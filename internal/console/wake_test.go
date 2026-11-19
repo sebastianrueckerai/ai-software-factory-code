@@ -150,7 +150,7 @@ func TestInboxAskNeedsChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	const bare = `{"ask":"Which store keeps the snapshots?"}`
-	const refused = "Refused: The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+	const refused = "Refused: The inbox takes buttons only: give choices, or record what you found with `attach_analysis`."
 	rowsIn := func(conv int64) []factoryd.ChatMessage {
 		t.Helper()
 		rows, err := chat.ChatMessages(ctx, "sf/code", "sebastian", conv, 50)
@@ -419,7 +419,7 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 	}
 	approve := func(t *testing.T, r *rig, a actor, id int64) string {
 		t.Helper()
-		note, err := r.c.doApprove(t.Context(), a, id, "", 0)
+		note, err := r.c.doApprove(t.Context(), a, id)
 		if err != nil {
 			t.Fatalf("approve %d: %v", id, err)
 		}
@@ -539,7 +539,7 @@ func mergeWake(t *testing.T, rule string, inbox bool, setup func(*rig), replies 
 // before, and at merge rule auto the inbox's wake decides the merge as the
 // factory's own.
 func TestWakeApproveMergeRefusedOnMergeRuleHuman(t *testing.T) {
-	const refused = "Refused: A human approves merges on merge rule human: record what you found with attach_analysis."
+	const refused = "Refused: A human approves merges on merge rule human: record what you found with `attach_analysis`."
 	merges := []string{call(1, "approve_merge", `{"task_id":"t-m"}`, "deny_merge", `{"task_id":"t-m","action":"reject","note":"The column breaks the index."}`)}
 	pending := func(t *testing.T, r *rig, chat *fakeChat, want int) {
 		t.Helper()
@@ -622,7 +622,7 @@ func TestAClimbingMergeTakesNoDecisionInTheChat(t *testing.T) {
 	r, _, calls := mergeWake(t, policy.MergeAuto, true, func(r *rig) { climbing(r, "t-m", 4) },
 		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("It is rung 2's case.")})
 	equal(t, "the wake's call on the climbing merge", calls, []wakeCall{{name: "approve_merge", status: http.StatusConflict,
-		result: "Refused: The merge request of #5 is case 41, open at rung 2: end it with answer and case_id 41, or with attach_analysis, case_id 41 and the recommended action."}})
+		result: "Refused: The merge request of #5 is case 41, open at rung 2: end it with `answer` and `case_id` 41, or with `attach_analysis`, `case_id` 41 and the recommended action."}})
 	if q := r.approvals.get(4); q.Status != "pending" {
 		t.Errorf("request 4 is %s after the wake, want pending", q.Status)
 	}
@@ -641,7 +641,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		}
 		r.tasks.mu.Unlock()
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaConsole}, 4, "", 0); err != nil {
+		if _, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaConsole}, 4); err != nil {
 			t.Fatalf("the human's approval: %v", err)
 		}
 		// the store's answer on a card whose merge request a human approved
@@ -657,9 +657,9 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		[]string{say("A human approved #5 already.")})
 	equal(t, "the wake's calls after the human's approval", calls, []wakeCall{
 		{name: "approve_merge", status: http.StatusConflict,
-			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run; nothing to do until they end."},
+			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run, and there is nothing to do until they end."},
 		{name: "attach_analysis", status: http.StatusConflict,
-			result: "Refused: The question of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
+			result: "Refused: The question of #5 is approved by sebastian. A settled ask is done. `escalate` files a new one when you need a human."}})
 }
 
 // By hand: a card the agent files in a human's turn goes out as its
@@ -673,7 +673,7 @@ func TestTheAgentsFilingInAHumansTurnIsTheChatBots(t *testing.T) {
 			_, s := r.loggedIn(t)
 			r.fg.calls = nil
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: c.decider}
-			if _, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.\n\nAcceptance:\n- go build passes", "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0); err != nil || n != 41 {
+			if _, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", bumpBrief, 1, "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0); err != nil || n != 41 {
 				t.Fatalf("file = #%d, %v", n, err)
 			}
 			if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues Bearer "+c.bearer) {
@@ -705,7 +705,7 @@ func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"}
-		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.\n\nAcceptance:\n- go build passes", "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0)
+		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", bumpBrief, 1, "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0)
 		return n, err
 	}
 	t.Run("recorded", func(t *testing.T) {
@@ -734,7 +734,7 @@ func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
 		r.events.fail = errors.New("the database is down")
 		n, err := file(t, r)
 		var no *refusal
-		if !errors.As(err, &no) || no.msg != "The factory could not record the filing of sf/code#41, so it is no card; the issue is closed. File the card again." || n != 0 {
+		if !errors.As(err, &no) || no.msg != "The factory could not record the filing of sf/code#41, so it is no card. The issue is closed. File the card again." || n != 0 {
 			t.Fatalf("file = #%d, %v", n, err)
 		}
 		if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/41/comments"); !slices.Equal(got, []string{"factoryd could not record this filing, so it is no card: the project agent closed it."}) {
@@ -819,3 +819,7 @@ func TestWakeApproveMergeRefusedAtTheSignal(t *testing.T) {
 		t.Fatalf("request 4 is %s, want pending", q.Status)
 	}
 }
+
+// bumpBrief is the brief of the dependency bump a wake files.
+var bumpBrief = factoryd.BriefText{Title: "Bump the dep", Why: "So the build takes the dep's security fix.",
+	Summary: "It bumps the dep in go.mod. The build checks it.", Body: "Bump it.\n\nAcceptance:\n- go build passes"}

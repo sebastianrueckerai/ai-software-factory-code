@@ -396,7 +396,8 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 		}
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
-	// each pending merge or criteria request has its case, as the store opens one
+	// each pending merge or criteria request has its case, as the store
+	// opens one
 	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 		open, err := ownCases(ctx, taskID)
 		if cfg.Approvals == nil {
@@ -404,19 +405,18 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 		}
 		pending, _ := cfg.Approvals.ApprovalRequests(ctx, "pending")
 		for _, q := range pending {
-			kind := map[string]factoryd.CaseKind{factoryd.ApprovalMerge: factoryd.CaseMergeApproval, factoryd.ApprovalCriteria: factoryd.CasePlanCriteria,
-				factoryd.ApprovalCriteriaRerun: factoryd.CasePlanCriteria}[q.Kind]
-			if q.TaskID == taskID && kind != "" {
-				open = append(open, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: kind,
-					Status: factoryd.CaseAtHuman, Facts: map[string]any{"approval": q.ID}})
+			if k, ok, kerr := requestCaseOf(q); kerr != nil {
+				return nil, kerr
+			} else if ok && q.TaskID == taskID {
+				open = append(open, k)
 			}
 		}
 		return open, err
 	}
 	// the desk holds every card's cases as OpenCasesOf reads them — a
 	// test's seated cases, a waiting card's standing case, the case the
-	// store opens for a request — each with the table's offers stored on
-	// its ask, as the Runner's passes write them when a case faces the
+	// store opens for a request — each with the register's face stored on
+	// its ask, as the Runner's passes write it when a case faces the
 	// human
 	cfg.CaseDesk = func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 		boards, err := tasks.BoardTasks(ctx, repository)
@@ -425,8 +425,9 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 			open, _ := cfg.OpenCasesOf(ctx, bt.ID)
 			for _, k := range open {
 				d.Cases = append(d.Cases, k)
-				if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k) {
-					d.Asks[k.ID] = factoryd.CaseAsk{Detail: map[string]any{"offers": offers, "refusals": refusals}}
+				if factoryd.AnswersByOffers(k) {
+					face := factoryd.FaceOf(k, factoryd.Facts{CaseFacts: factoryd.FactsOf(k), Card: bt.Task})
+					d.Asks[k.ID] = factoryd.CaseAsk{Detail: factoryd.FaceKeys(face)}
 				}
 			}
 		}
@@ -443,7 +444,15 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 		return d, err
 	}
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
-	cfg.CaseByID = func(_ context.Context, id int64) (factoryd.Case, error) {
+	cfg.CaseByID = func(ctx context.Context, id int64) (factoryd.Case, error) {
+		if cfg.Approvals != nil {
+			pending, _ := cfg.Approvals.ApprovalRequests(ctx, "pending")
+			for _, q := range pending {
+				if k, ok, err := requestCaseOf(q); ok && k.ID == id || err != nil {
+					return k, err
+				}
+			}
+		}
 		return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
 	}
 	// the newest of the cases OpenCasesOf answers that an answer on the
@@ -478,7 +487,6 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 	cfg.DecideCriterion = func(context.Context, string, string, string, string, string) error { return nil }
 	cfg.ConfirmDeliveredCriteria = func(context.Context, string, string, string) (int, error) { return 0, nil }
 	cfg.RetryCard = func(context.Context, string, string) (int64, error) { return 0, nil }
-	cfg.RetryFreeze = func(context.Context, string, string, string) error { return nil }
 	cfg.GoCard = func(context.Context, string, string) (int64, error) { return 0, nil }
 	cfg.HoldCard = func(context.Context, string, string, string, string) (bool, error) { return false, nil }
 	cfg.ReleaseCardHold = func(context.Context, string) (bool, error) { return false, nil }
@@ -1095,7 +1103,8 @@ func (a *AcceptanceRig) RollCarries(context.Context, string) ([]factoryd.Task, e
 	return nil, nil
 }
 
-func (a *AcceptanceRig) SetHumanSummary(context.Context, string, string) error { return nil }
+func (a *AcceptanceRig) SetBrief(context.Context, string, string, string, bool) error { return nil }
+func (a *AcceptanceRig) MarkChatFiled(context.Context, string, int64, string) error   { return nil }
 
 func (a *AcceptanceRig) SetTaskAccent(context.Context, string, string) error { return nil }
 
@@ -1179,7 +1188,9 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 		return factoryd.ActResult{}, factoryd.ErrActRefused(refusal)
 	}
 	out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
-	if factoryd.IsBoardAction(in.Res.Action) {
+	// a board action's work, and the work of a merge case's re-run, which
+	// decides the request: the request's decision ends the case
+	if factoryd.IsBoardAction(in.Res.Action) || in.Work != nil && in.Res.Action == factoryd.ActRerunChecks {
 		_, err := in.Work(ctx)
 		return out, err
 	}
@@ -1297,10 +1308,9 @@ func accWholeCents(eur float64) bool {
 
 // AttachAnalysis mirrors PGStore.AttachAnalysis for the rig's asks: the
 // findings recorded as one analysis_attached row on the spine — the card's
-// issue, the found text and the agent as its source — and the card's open
-// ask, its newest escalation row, rewritten to carry them after its
-// question so the member reads them with the ask. A card that asks
-// nothing in the chat holds no row to enrich: ErrNoAsk.
+// issue, the found text and the agent as its source — which the card
+// shows; no inbox row changes. A card that asks nothing in the chat holds
+// no ask: ErrNoAsk.
 func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recommendation string, e factoryd.Event) error {
 	a.mu.Lock()
 	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.Task.ID == taskID })
@@ -1318,15 +1328,6 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 		a.mu.Unlock()
 		return factoryd.ErrNoAsk
 	}
-	analysis := "\nAnalysis: " + found
-	if recommendation != "" {
-		analysis += "\nRecommendation: " + recommendation
-	}
-	content := a.msgs[ask].Content
-	if k := strings.Index(content, "\nAnalysis: "); k >= 0 { // a new attach replaces the earlier one's words
-		content = content[:k]
-	}
-	content += analysis
 	e.TaskID, e.IssueNumber, e.Kind = taskID, a.tasks[i].IssueNumber, factoryd.EventAnalysisAttached
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
@@ -1341,7 +1342,6 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 		a.mu.Unlock()
 		return err
 	}
-	a.msgs[ask].Content = content
 	a.mu.Unlock()
 	a.bus.Publish(stored)
 	return nil
@@ -2103,3 +2103,15 @@ func (s *AcceptanceRig) PlanClosed(context.Context, string) (time.Time, bool, er
 }
 
 func (s *AcceptanceRig) PlanMerged(context.Context, string) (bool, error) { return false, nil }
+
+// requestCaseOf is the case of pending request q once its climb faced it,
+// numbered 7000 and its id: a merge or a criteria request's, none for a
+// resource or a plan request.
+func requestCaseOf(q factoryd.ApprovalRequest) (factoryd.Case, bool, error) {
+	if q.Kind == factoryd.ApprovalResource || q.Kind == factoryd.ApprovalPlan {
+		return factoryd.Case{}, false, nil
+	}
+	k, err := factoryd.RequestCase(q)
+	k.ID, k.Status = 7000+q.ID, factoryd.CaseAtHuman
+	return k, err == nil, err
+}

@@ -447,23 +447,23 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 			log.Printf("console: the GitHub import of %s: delete: %v", p.Name, err)
 		}
 	}
-	msg := why + ": " + forgejoCause(failure)
+	msg := why + ": " + forgejoCause(failure) + "."
 	switch {
 	case gone:
 	case u.pr > 0:
-		msg += fmt.Sprintf("; %s#%d may stay open: close it", c.cfg.InfraRepo, u.pr)
+		msg += fmt.Sprintf(" %s#%d may stay open: close it.", c.cfg.InfraRepo, u.pr)
 	default:
-		msg += "; a pull request from " + branch + " may be open: close it"
+		msg += " A pull request from " + branch + " may be open: close it."
 	}
 	switch {
 	case deleted:
-		msg += "; the filing was undone. Try again in a moment."
+		msg += " The filing was undone. Try again in a moment."
 	case err == nil && u.held:
-		msg += "; another filing of " + p.Name + " holds the name. Choose another name, or open that filing's project when it lands."
+		msg += " Another filing of " + p.Name + " holds the name. Choose another name, or open that filing's project when it lands."
 	case err == nil || u.commit == "":
-		msg += ". Branch " + branch + " may be left. If no other filing of " + p.Name + " is in progress, delete it on Forgejo, then file the project again."
+		msg += " Branch " + branch + " may be left. If no other filing of " + p.Name + " is in progress, delete it on Forgejo, then file the project again."
 	default:
-		msg += "; delete branch " + branch + " to file the name again."
+		msg += " Delete branch " + branch + " to file the name again."
 	}
 	http.Error(w, msg, code)
 }
@@ -768,7 +768,7 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 		c.refuse(w, r, name, "No open pull request from project-"+name+".", http.StatusConflict)
 		return
 	}
-	err = c.mergeInfra(r.Context(), current(r), pr.Number)
+	err = c.mergePull(r.Context(), current(r), c.cfg.InfraRepo, pr.Number, "")
 	refusal := ""
 	if ae := (*apiError)(nil); errors.As(err, &ae) {
 		refusal = ae.reason()
@@ -800,15 +800,36 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	c.acted(w, r, name)
 }
 
-// mergeInfra merges pull request number of the infra repository as
-// member s, its branch deleted; Forgejo's 405 while it still checks the
-// pull request's mergeability is retried.
-func (c *Console) mergeInfra(ctx context.Context, s *session, number int64) error {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), number)
+// pullHead is the head commit of pull request number of repo, read as s.
+func (c *Console) pullHead(ctx context.Context, s *session, repo factoryd.Repo, number int64) (string, error) {
+	var pr struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), number)
+	if err := c.as(ctx, s, http.MethodGet, path, nil, http.StatusOK, &pr); err != nil {
+		return "", err
+	}
+	if pr.Head.SHA == "" {
+		return "", fmt.Errorf("pull request #%d names no head", number)
+	}
+	return pr.Head.SHA, nil
+}
+
+// mergePull merges pull request number of repo as member s, its branch
+// deleted, at head when head is set: Forgejo refuses the merge of a head
+// that moved. Forgejo's 405 while it still checks the pull request's
+// mergeability is retried.
+func (c *Console) mergePull(ctx context.Context, s *session, repo factoryd.Repo, number int64, head string) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), number)
 	body := map[string]any{"Do": "merge", "delete_branch_after_merge": true}
+	if head != "" {
+		body["head_commit_id"] = head
+	}
 	err := c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
 	for attempts := 0; apiStatus(err) == http.StatusMethodNotAllowed && attempts < mergeRetryTries && ctx.Err() == nil; attempts++ {
-		log.Printf("console: Forgejo refused %s's merge of %s#%d with 405; retry %d/%d", s.user, c.cfg.InfraRepo, number, attempts+1, mergeRetryTries)
+		log.Printf("console: Forgejo refused %s's merge of %s#%d with 405; retry %d/%d", s.user, repo, number, attempts+1, mergeRetryTries)
 		time.Sleep(time.Second)
 		err = c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
 	}
@@ -850,7 +871,7 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 	case !githubToken.MatchString(token):
 		return "", refuse(http.StatusBadRequest, "token must be a GitHub token: 8 to 255 letters, digits, _ or -")
 	case mode != factoryd.ModeMirror && mode != factoryd.ModePullRequests:
-		return "", refuse(http.StatusBadRequest, "mode must be mirror or pull_requests")
+		return "", refuse(http.StatusBadRequest, "Pick a mode: mirror, or pull requests (`mirror` or `pull_requests`).")
 	}
 	old, _, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
 	if err != nil {

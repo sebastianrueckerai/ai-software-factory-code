@@ -235,8 +235,8 @@
     "human_cases": 1,
     "face": [
       {
-        "ask": "merge approval",
-        "why": "The merge gate classes the change normal",
+        "ask": "Merge “[written by a model, 2391 bytes]”?",
+        "why": "The change is of normal risk, and the factory's rules let only a human merge it.",
         "recommendation": ""
       }
     ],

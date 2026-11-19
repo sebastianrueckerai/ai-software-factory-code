@@ -43,7 +43,7 @@ type ReportResult struct {
 
 // screenedLine is all the issue of a suspect screening shows: its reasons
 // would teach the author what to change (review M3).
-const screenedLine = "factoryd: screened: a human looks at this report first."
+const screenedLine = "The factory screened this report. A human looks at it first."
 
 // screeningAsks opens the escalation of a suspect screening verdict.
 const screeningAsks = "The screening finds this issue suspect: "
@@ -56,8 +56,8 @@ const noVerdict = "the review gave no verdict: "
 const stepAdjudicated = "finding_adjudicated"
 
 // stepAuditConfirmed records a person's confirmation of one audit finding
-// (audit-confirm): the text of the finding a person judged a fixture,
-// with who, why and when, which the audit's verdict settles past.
+// (audit-confirm): the finding's text a person judged a fixture, with who,
+// why and when, which the audit's verdict settles past.
 const stepAuditConfirmed = "audit_finding_confirmed"
 
 // reviewHistory opens the history lines of the review stage's findings.
@@ -66,32 +66,32 @@ const reviewHistory = policy.StageReview + ", round "
 // capReached heads the card of a task at its session cap.
 const CapReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
-// capReachedLadder heads the card of a run at its session cap from
+// CapReachedLadder heads the card of a run at its session cap from
 // versionLastRoundFindings on: the findings go back to the loop and the
 // ladder judges the stop, so no finding goes to a human first.
-const capReachedLadder = "the session cap is reached: the findings go back to the loop and the ladder judges this stop"
+const CapReachedLadder = "the session cap is reached: the findings go back to the loop and the ladder judges this stop"
 
 // noAgent heads the card of a factory pull request card whose stages found
 // what an agent's card would go back with.
-const noAgent = "factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"
+const noAgent = "the factory opened this pull request and no agent works on it, so the findings meant for an agent go to a human"
 
-// timeCapReached heads the card of a task whose agent time ran out with
+// TimeCapReached heads the card of a task whose agent time ran out with
 // sessions of its cap still left.
-const timeCapReached = "the agent time is used up: every finding sent to the agent so far goes to a human"
+const TimeCapReached = "the agent time is used up: every finding sent to the agent so far goes to a human"
 
-// timeCapReachedLadder heads that card from versionLastRoundFindings on: the
+// TimeCapReachedLadder heads that card from versionLastRoundFindings on: the
 // ladder judges the stop before a human is asked.
-const timeCapReachedLadder = "the agent time is used up: the ladder judges this stop before a human is asked"
+const TimeCapReachedLadder = "the agent time is used up: the ladder judges this stop before a human is asked"
 
 // AtSessionCap: escalation is the card of a task at its session cap or its
 // agent-time cap, the stops whose answer buys the next session.
 func AtSessionCap(escalation string) bool {
-	return strings.HasPrefix(escalation, CapReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
+	return strings.HasPrefix(escalation, CapReached) || strings.HasPrefix(escalation, CapReachedLadder) || AtTimeCap(escalation)
 }
 
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
 func AtTimeCap(escalation string) bool {
-	return strings.HasPrefix(escalation, timeCapReached) || strings.HasPrefix(escalation, timeCapReachedLadder)
+	return strings.HasPrefix(escalation, TimeCapReached) || strings.HasPrefix(escalation, TimeCapReachedLadder)
 }
 
 // AtTimeStop: escalation is an agent time stop, an agent's cap or a
@@ -139,6 +139,11 @@ const checkinTimeCapStop = "check-in time cap reached"
 // checkinCapStop is a cap stop's reason: stop, then the cap the check-in
 // ran with, which the stop's question names (checkinCapOf).
 func checkinCapStop(stop, cap string) string { return stop + " after " + cap }
+
+// CheckinTimeCapStop is the reason of a check-in stopped at its time cap.
+func CheckinTimeCapStop(timeCap time.Duration) string {
+	return checkinCapStop(checkinTimeCapStop, timeCap.String())
+}
 
 // checkinCapOf is the cap a cap stop's reason names after stop, "" for a
 // reason that names none.
@@ -507,13 +512,13 @@ func (t *taskRun) recordFindings(stage, to string, attempt int, findings []strin
 // remember adds findings from stage to the history the card shows.
 func (t *taskRun) remember(stage string, attempt int, findings []string) {
 	for _, f := range findings {
-		t.history = append(t.history, historyLine(stage, t.round, attempt, f))
+		t.history = append(t.history, HistoryLine(stage, t.round, attempt, f))
 	}
 }
 
-// historyLine is a finding as the card shows it: a session's (attempt >
+// HistoryLine is a finding as the card shows it: a session's (attempt >
 // 0) by its attempt, a stage's by its round.
-func historyLine(stage string, round, attempt int, finding string) string {
+func HistoryLine(stage string, round, attempt int, finding string) string {
 	if attempt > 0 {
 		return fmt.Sprintf("%s, attempt %d: %s", stage, attempt, finding)
 	}
@@ -554,7 +559,7 @@ func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stro
 // from versionLastRoundFindings on, the old one for a run from before.
 func (t *taskRun) capHead() string {
 	if t.lastRoundFindings >= versionLastRoundFindings {
-		return capReachedLadder
+		return CapReachedLadder
 	}
 	return CapReached
 }
@@ -562,19 +567,28 @@ func (t *taskRun) capHead() string {
 // timeCapHead is capHead for the agent-time cap.
 func (t *taskRun) timeCapHead() string {
 	if t.lastRoundFindings >= versionLastRoundFindings {
-		return timeCapReachedLadder
+		return TimeCapReachedLadder
 	}
-	return timeCapReached
+	return TimeCapReached
 }
 
 // sessionCapCard is the escalation of sessions at the cap: head names the
-// cap, capReached or timeCapReached, last is how the last round ended,
+// cap, capReached or TimeCapReached, last is how the last round ended,
 // findings those the next session would get; the history, then each of
 // them no history line holds, newest kept.
 func (t *taskRun) sessionCapCard(head, last string, findings []string) string {
-	lines := slices.Clone(t.history)
+	return CapStopReason(head, last, t.history, findings)
+}
+
+// CapStopReason is the escalation of a card at a cap: head names the cap
+// (CapReachedLadder, TimeCapReachedLadder), last is how the last round
+// ended, history the run's lines and findings those the next session
+// would get; the history, then each finding no history line holds, newest
+// kept.
+func CapStopReason(head, last string, history, findings []string) string {
+	lines := slices.Clone(history)
 	for _, f := range findings {
-		if !slices.ContainsFunc(t.history, func(h string) bool { return strings.HasSuffix(h, ": "+f) }) {
+		if !slices.ContainsFunc(history, func(h string) bool { return strings.HasSuffix(h, ": "+f) }) {
 			lines = append(lines, f)
 		}
 	}
@@ -1553,8 +1567,12 @@ func (t *taskRun) awaitSuspect(reasons []string) (final, why string, findings []
 	if len(reasons) == 0 {
 		return "", "", nil
 	}
-	return t.awaitScreening(screeningAsks + strings.Join(reasons, "; ") +
-		"\nReply on this issue to let the agent work on it, or close the issue.")
+	return t.awaitScreening(ScreeningReason(reasons))
+}
+
+// ScreeningReason is the ask of a suspect screening with reasons.
+func ScreeningReason(reasons []string) string {
+	return screeningAsks + strings.Join(reasons, "; ") + "\nReply on this issue to let the agent work on it, or close the issue."
 }
 
 // awaitScreening waits on the human who reads a suspect screening asked

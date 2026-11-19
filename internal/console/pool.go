@@ -42,7 +42,7 @@ type poolLine struct {
 // the settings, the policy page and the chat's pool line all read this
 // one projection at their own now.
 func (c *Console) ProjectPool(ctx context.Context, v policy.Version, p factoryd.Project, now time.Time) poolLine {
-	out := poolLine{Month: now.UTC().Format("2006-01"), Policy: fmt.Sprintf("policy version %d (commit %.7s)", v.ID, v.Commit),
+	out := poolLine{Month: now.UTC().Format("2006-01"), Policy: fmt.Sprintf("policy version %d (commit %s)", v.ID, factoryd.ShortSHA(v.Commit)),
 		Pool: v.Tree.EscalationOf(p.Repository).Pool}
 	if pc, ok := v.Tree.Projects[p.Name]; ok && pc.Escalation != nil {
 		out.Present = factoryd.Cents(pc.Escalation.Pool.EUR) > 0
@@ -50,13 +50,13 @@ func (c *Console) ProjectPool(ctx context.Context, v policy.Version, p factoryd.
 	drawn, err := c.cfg.PoolDrawn(ctx, p.Repository, now)
 	if err != nil {
 		log.Printf("console: the pool of %s: %v", p.Repository, err)
-		out.Words = fmt.Sprintf("the pool is %d sessions, %s of agent time and €%.2f this UTC month, but what its cards drew could not be read",
-			out.Pool.Sessions, agentHours(out.Pool.AgentTime), out.Pool.EUR)
+		out.Words = fmt.Sprintf("the pool is %d sessions, %s of agent time and %s EUR this UTC month, but what its cards drew could not be read",
+			out.Pool.Sessions, agentHours(out.Pool.AgentTime), textutil.EUR(out.Pool.EUR))
 		return out
 	}
 	out.Drawn, out.Readable = drawn, true
-	out.Words = fmt.Sprintf("%d of %d sessions, %s of %s agent time and €%.2f of €%.2f drawn this UTC month",
-		drawn.Sessions, out.Pool.Sessions, agentHours(drawn.AgentTime), agentHours(out.Pool.AgentTime), drawn.EUR, out.Pool.EUR)
+	out.Words = fmt.Sprintf("%d of %d sessions, %s of %s agent time and %s of %s EUR drawn this UTC month",
+		drawn.Sessions, out.Pool.Sessions, agentHours(drawn.AgentTime), agentHours(out.Pool.AgentTime), textutil.EUR(drawn.EUR), textutil.EUR(out.Pool.EUR))
 	var over []string
 	if drawn.Sessions > out.Pool.Sessions {
 		over = append(over, "sessions")
@@ -203,15 +203,15 @@ func (c *Console) doSetPool(ctx context.Context, name string, ch poolChange, a a
 	if _, err := c.cfg.Events.Record(context.WithoutCancel(ctx), factoryd.Event{Repository: repo, Kind: factoryd.EventPoolChanged,
 		Actor: a.approver(), Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail}); err != nil {
 		return res, refuse(http.StatusInternalServerError, fmt.Sprintf(
-			"The pool change is merged as %s#%d, but its pool_changed row could not be written: %v. The change stands: write the missing row (action %s, from_eur %.2f, confirmed_eur %.2f, to_eur %.2f, reason %q) and do not repeat the change.",
-			c.cfg.InfraRepo, pr, err, ch.action, res.from, res.confirmed, res.to, ch.reason))
+			"The pool change is merged as %s#%d, but its record could not be written: %v. The change stands, so do not repeat it. The missing record: %s from %s EUR, confirmed %s EUR, to %s EUR, reason %q.",
+			c.cfg.InfraRepo, pr, err, ch.action, textutil.EUR(res.from), textutil.EUR(res.confirmed), textutil.EUR(res.to), ch.reason))
 	}
 	if !res.loaded {
 		return res, refuse(http.StatusServiceUnavailable, fmt.Sprintf(
-			"The pool change is merged as %s#%d, but the policy in force still holds the pool of %s at EUR %.2f: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR %.2f until the policy holds EUR %.2f.",
-			c.cfg.InfraRepo, pr, name, held, held, res.to))
+			"The pool change is merged as %s#%d, but the policy in force still holds the pool of %s at %s EUR: the loader picks the merge up on its next poll. The change is recorded, and the pool stays %s EUR until the policy holds %s EUR.",
+			c.cfg.InfraRepo, pr, name, textutil.EUR(held), textutil.EUR(held), textutil.EUR(res.to)))
 	}
-	log.Printf("console: %s %s the pool of %s to EUR %.2f via %s (%s#%d) in %.1fs", a.s.user, ch.action, name, res.to, a.via, c.cfg.InfraRepo, pr, time.Since(start).Seconds())
+	log.Printf("console: %s %s the pool of %s to %s EUR via %s (%s#%d) in %.1fs", a.s.user, ch.action, name, textutil.EUR(res.to), a.via, c.cfg.InfraRepo, pr, time.Since(start).Seconds())
 	return res, nil
 }
 
@@ -248,9 +248,9 @@ func poolCents(ch poolChange) (int64, error) {
 // title.
 func poolMessage(name string, ch poolChange) string {
 	if ch.action == poolTopUp {
-		return fmt.Sprintf("Project %s: escalation pool +%.2f EUR", name, ch.eur)
+		return fmt.Sprintf("Project %s: escalation pool +%s EUR", name, textutil.EUR(ch.eur))
 	}
-	return fmt.Sprintf("Project %s: escalation pool %.2f EUR", name, ch.eur)
+	return fmt.Sprintf("Project %s: escalation pool %s EUR", name, textutil.EUR(ch.eur))
 }
 
 // capturePool is in's set_pool call captured as the proposal's own change:
@@ -326,13 +326,13 @@ func (t *turn) poolPress(p factoryd.ChatProposal, fix *poolCorrection) poolPress
 	if err != nil {
 		return poolPress{err: err}
 	}
-	was := fmt.Sprintf("was €%.2f", res.from)
+	was := fmt.Sprintf("was %s EUR", textutil.EUR(res.from))
 	if res.from == 0 {
 		was = "was the policy's"
 	}
 	return poolPress{res: res, words: fmt.Sprintf(
-		"The pool of %s is €%.2f now, %s: %s#%d carries the change and the policy in force holds it.",
-		t.p.Name, res.to, was, t.c.cfg.InfraRepo, res.pr)}
+		"The pool of %s is %s EUR now, %s: %s#%d carries the change and the policy in force holds it.",
+		t.p.Name, textutil.EUR(res.to), was, t.c.cfg.InfraRepo, res.pr)}
 }
 
 // poolLanded streams a pool press's already-landed result: the tool block and
@@ -366,16 +366,16 @@ func (t *turn) poolLanded(p factoryd.ChatProposal, fix *poolCorrection, pr poolP
 func (t *turn) poolDesc(title string) string {
 	cents := factoryd.Cents(t.pool.EUR)
 	to := cents
-	op := fmt.Sprintf("set it at %.2f EUR", t.pool.EUR)
+	op := fmt.Sprintf("set it at %s EUR", textutil.EUR(t.pool.EUR))
 	if t.pool.Action == poolTopUp {
 		to += t.pool.From
-		op = fmt.Sprintf("top it up by %.2f EUR", t.pool.EUR)
+		op = fmt.Sprintf("top it up by %s EUR", textutil.EUR(t.pool.EUR))
 	}
-	stands := fmt.Sprintf("the pool stands at %.2f EUR", poolEUR(t.pool.From))
+	stands := fmt.Sprintf("the pool stands at %s EUR", textutil.EUR(poolEUR(t.pool.From)))
 	if t.pool.From == 0 {
 		stands = "the pool's money is the policy's"
 	}
-	return fmt.Sprintf("%s, %s, %s, reason %s, it would stand at %.2f EUR", title, stands, op, t.pool.Reason, poolEUR(to))
+	return fmt.Sprintf("%s, %s, %s, reason %s, it would stand at %s EUR", title, stands, op, t.pool.Reason, textutil.EUR(poolEUR(to)))
 }
 
 // poolEdit is the change of escalation.pool.eur to cents: the file's own

@@ -21,6 +21,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // criteriaPlan is a plan with one revision holding three criteria (a test
@@ -172,9 +173,12 @@ func TestStandingRowSkipsARowOfAnotherKind(t *testing.T) {
 // says what the card's tests prove, and the prompt names no criterion's
 // test.
 func TestTheDeltaPromptReadsTheNewFields(t *testing.T) {
-	delta := fmt.Sprintf(deltaSystem, "")
+	delta := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
 	for _, want := range []string{
 		`"text": "what the card's tests prove, with the inputs and the numbers`,
+		`{"card": {"title": "...", "why": "...", "summary": "...", "brief": "..."`,
+		"title: the work, verb first, plain words, under 70 characters. why: one sentence, the reason this work exists. " +
+			"summary: what gets built, what it changes, how it is checked, under 600 characters.",
 		"acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers.",
 	} {
 		if !strings.Contains(delta, want) {
@@ -243,12 +247,13 @@ func TestDecideCriterion(t *testing.T) {
 // pinned images as the planner's guide does, only when the project pins
 // images.
 func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
-	bare := fmt.Sprintf(deltaSystem, "")
-	if got := deltaPrompt(nil); got != bare || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
+	forms := "\n\n" + writingguide.For(writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief)
+	bare := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
+	if got := deltaPrompt(nil); got != bare+forms || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
 		t.Fatalf("no pins: %q, want deltaSystem without the image field", got)
 	}
 	want := strings.Replace(bare, `"rung_reason": "..."}}`, `"rung_reason": "...", "image": "..."}}`, 1) +
-		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
+		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default." + forms
 	if got := deltaPrompt(map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}); got != want {
 		t.Fatalf("deltaPrompt =\n%q\nwant\n%q", got, want)
 	}
@@ -1152,7 +1157,7 @@ func commentBodies(fj *planForgejo) []string {
 func TestPlanCloseCheckClosesAPlanWithoutCriteria(t *testing.T) {
 	ctx := context.Background()
 	r, _, objs, fj := planWithoutCriteria(t, "done", "done", "closed")
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	r.planCloseCheck(ctx, "t-plan")
 	if n := planCloses(t, objs); n != 1 {
 		t.Fatalf("plan_closed with criteria 0 recorded %d times, want 1", n)
@@ -1213,7 +1218,7 @@ func TestClosePlanClosesItsOpenIssue(t *testing.T) {
 	ctx := context.Background()
 	r, s, objs, fj := planWithoutCriteria(t, "done", "done")
 	r.planCloseCheck(ctx, "t-plan")
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	if got := commentBodies(fj); fj.issues[1].state != "closed" || !slices.Equal(got, want) || planCloses(t, objs) != 1 {
 		t.Fatalf("#1 %s, comments %q, plan_closed %d times; want closed, %q, once", fj.issues[1].state, got, planCloses(t, objs), want)
 	}
@@ -1229,7 +1234,7 @@ func TestClosePlanCommentsOnAClosedIssue(t *testing.T) {
 	r, _, objs, fj := planWithoutCriteria(t, "done", "done")
 	fj.issues[1].state = "closed"
 	r.planCloseCheck(ctx, "t-plan")
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	if got := commentBodies(fj); slices.Contains(fj.calls, "PATCH issues/1") || !slices.Equal(got, want) || planCloses(t, objs) != 1 {
 		t.Fatalf("calls %q, comments %q, plan_closed %d times; want no close, %q, once", fj.calls, got, planCloses(t, objs), want)
 	}
@@ -1299,7 +1304,7 @@ func TestCriteriaPassVisitsOpenGroups(t *testing.T) {
 	if got := openPlans(t, s); !slices.Equal(got, []string{"t-plan"}) {
 		t.Fatalf("open groups = %v, want t-plan", got)
 	}
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	for pass := 1; pass <= 2; pass++ {
 		r.CriteriaPass(ctx)
 		if n, rows := planCloses(t, objs), closeRows(s); n != 1 || rows != 1 {
@@ -1331,7 +1336,7 @@ func TestCriteriaPassRetriesALostCloseRow(t *testing.T) {
 			t.Fatalf("pass %d: rows %d, open groups %v; want 1 and none", pass, rows, open)
 		}
 	}
-	if want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
+	if want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
 		t.Errorf("comments = %q, want %q", commentBodies(fj), want)
 	}
 }
@@ -1615,7 +1620,7 @@ func TestPlanCloseCheckWaitsForTheLastRound(t *testing.T) {
 // round, unless a criterion is open on a plan with a merged card.
 func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 	ctx := context.Background()
-	want := []string{"#1 factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+	want := []string{"#1 The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 	for second, closes := range map[string]int{"closed": 1, "failed": 1, "running": 0} {
 		r, s, objs, fj := planWithoutCriteria(t, "done", second)
 		newRevision(t, s, "t-plan", Plan{Summary: "the plan", Round: 1, Outline: []string{"more"}})
@@ -1904,13 +1909,14 @@ func TestConfirmDeliveredCriteriaOverAClosedIntegrationCard(t *testing.T) {
 		newRevision(t, s, "t-plan", p)
 		s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Source: SourceChat, Status: "done"}
 		s.tasks["card-foundation"] = Task{ID: "card-foundation", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
-		s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: status}
+		s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", IssueNumber: 9, Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: status}
 		return s
 	}
 	const line = "main at 6e3b46e: the three tests pass and ci / test is green"
 	s := seed("closed")
-	if _, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", " "); !errors.Is(err, ErrNoEvidence) || !strings.Contains(err.Error(), "t-int is closed") {
-		t.Fatalf("an empty line beside a closed card = %v, want ErrNoEvidence naming t-int", err)
+	if _, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", " "); !errors.Is(err, ErrNoEvidence) ||
+		err.Error() != "#9 is closed: a confirmation over closed cards needs your evidence" {
+		t.Fatalf("an empty line beside a closed card = %v, want ErrNoEvidence naming #9", err)
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
 		t.Fatalf("the refused confirmation wrote rows: %v", rows)
@@ -4051,7 +4057,7 @@ func TestCloseHeldPlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	var spec struct{ Face string }
 	if err := json.Unmarshal(pending[0].Spec, &spec); err != nil || len(commentBodies(fj)) != 0 ||
-		!strings.HasPrefix(spec.Face, "factoryd: every card of the plan has ended, and no verdict on main settles these criteria: the criteria gate has not settled k1, k2,") {
+		!strings.HasPrefix(spec.Face, "Every card of the plan has ended, and no verdict on main settles these criteria: the criteria gate has not settled k1, k2,") {
 		t.Errorf("comments %q, the ask's face %q (%v); want no comment, and words saying every card ended and nothing on main settles the criteria", commentBodies(fj), spec.Face, err)
 	}
 	n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
@@ -4106,11 +4112,11 @@ func TestCloseHeldPlanBetweenRoundsWithoutAnIntegrationCard(t *testing.T) {
 	}
 	between := criteriaPlan()
 	between.Outline = []string{"the rest"}
-	if open, err := PlanOpenCriteria(ctx, s, "t-plan", between); err != nil || len(open) != 0 {
-		t.Errorf("PlanOpenCriteria = %v, %v; want none and no error", open, err)
+	if open, _, err := planOpen(ctx, s, "t-plan", between); err != nil || len(open) != 0 {
+		t.Errorf("planOpen = %v, %v; want none and no error", open, err)
 	}
-	if open, err := PlanOpenCriteria(ctx, s, "t-plan", criteriaPlan()); err != nil || len(open) != 3 {
-		t.Errorf("PlanOpenCriteria in the last round = %v, %v; want the three criteria open", open, err)
+	if open, _, err := planOpen(ctx, s, "t-plan", criteriaPlan()); err != nil || len(open) != 3 {
+		t.Errorf("planOpen in the last round = %v, %v; want the three criteria open", open, err)
 	}
 }
 

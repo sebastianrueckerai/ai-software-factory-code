@@ -252,15 +252,21 @@ const (
 	queuedSince    = "2026-11-04T09:00:00Z"
 	queuedKey      = "queued_over_bound|queued|" + queuedSince
 	queuedLine     = "Monitor flag: queued_over_bound(work bound 3 of 3 for 3h)"
+	queuedAsk      = "This card has waited more than 2 hours for a free place to run. Is that fine?"
+	queuedPress    = "“It is fine, go on” or “Not now”"
 	monitorHandsUp = "no resolver fits"
 )
 
 // face is the comment of a monitor case's face on card id for line: the
-// card goes on, and the flag is answered in the chat.
-func face(id, line string) string {
-	return "factoryd: task " + id + " needs a human.\n\n```\n" + line + "\n```\n\n" +
-		"The card goes on meanwhile. Answer the flag in the project chat."
+// card goes on, and press names the answers its face on the board offers.
+func face(ask, why, press string) string {
+	return ask + "\n\n" + why + "\n\nThis card builds “x”.\n\nNo session has run on its 3.00 EUR budget yet.\n\nAll of its work is still to do.\n\n" +
+		"The card goes on meanwhile. Press " + press + " on the board."
 }
+
+const (
+	queuedWhy = "A card that waits this long in the queue may never get its turn."
+)
 
 // assertQueueCase checks that card id carries the queue's flag case alone,
 // at the human with rung 0's hand-up, rung 2's and the human's step, its
@@ -271,8 +277,8 @@ func (g monitorRig) assertQueueCase(t *testing.T, id string) {
 	ctx := context.Background()
 	cases := g.flagCases(t, id)
 	c, ok := cases[queuedKey]
-	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != queuedLine {
-		t.Fatalf("%s's flag cases = %v, want %s alone at the human on %q", id, slices.Sorted(maps.Keys(cases)), queuedKey, queuedLine)
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != queuedAsk || c.Facts["reason"] != queuedLine {
+		t.Fatalf("%s's flag cases = %v, want %s alone at the human asking %q on %q", id, slices.Sorted(maps.Keys(cases)), queuedKey, queuedAsk, queuedLine)
 	}
 	digest, _ := c.Facts["digest"].(string)
 	if c.Facts["flag"] != "queued_over_bound" || c.Facts["detail"] != "work bound 3 of 3 for 3h" || c.Facts["state"] != "queued|"+queuedSince ||
@@ -324,16 +330,16 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	g.rung2Faces(t, "t1")
 	g.assertQueueCase(t, "t1")
 	n := g.flagCases(t, "t1")[queuedKey].ID
-	if want := []string{face("t1", queuedLine)}; !slices.Equal(g.forge.comments[12], want) {
+	if want := []string{face(queuedAsk, queuedWhy, queuedPress)}; !slices.Equal(g.forge.comments[12], want) {
 		t.Fatalf("comments = %q, want %q", g.forge.comments[12], want)
 	}
 	if got := g.cursor(t); got != filed {
 		t.Fatalf("cursor = %d, want at the card_created row %d it read", got, filed)
 	}
-	const ask = "The monitor flagged this card (queued_over_bound(work bound 3 of 3 for 3h)): what should happen? Answer it in the project chat."
-	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 1 || asks[0].Detail["ask"] != ask || asks[0].Detail["case_id"] != float64(n) ||
-		asks[0].Detail["case_kind"] != string(CaseMonitorFlag) || asks[0].Detail["flag"] != "queued_over_bound" || len(asks[0].Detail["choices"].([]any)) != 0 {
-		t.Fatalf("asks = %+v, want one on case %d of kind monitor_flag and flag queued_over_bound asking %q with no choices", asks, n, ask)
+	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 1 || asks[0].Detail["ask"] != queuedAsk || asks[0].Detail["case_id"] != float64(n) ||
+		asks[0].Detail["case_kind"] != string(CaseMonitorFlag) || asks[0].Detail["flag"] != "queued_over_bound" || asks[0].Detail["choices"] != nil ||
+		!slices.Equal(offerValues(storedOffers(t, asks[0].Detail)), []string{ActSettle, ActNote}) {
+		t.Fatalf("asks = %+v, want one on case %d of kind monitor_flag and flag queued_over_bound asking %q with the register's settle and note, no agent's choices", asks, n, queuedAsk)
 	}
 	if _, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil {
 		t.Fatal(err)
@@ -506,8 +512,8 @@ func TestMonitorSweepOpensFlagsAndTheWakePassWakesDueCases(t *testing.T) {
 		expired[1].Rung != 0 || !strings.HasPrefix(expired[1].Found, markJudgmentUnread) || expired[2].Rung != 3 {
 		t.Fatalf("the steps of the case = %+v, want the step past its bound handed up as unanswered within 35m, rung 0's unread budget, then the human's", expired)
 	}
-	if c := caseByID(t, g.s, elsewhere.ID); c.Status != CaseAtHuman || c.Problem != "p ("+markJudgmentUnread+")" || len(g.forge.comments[1410]) != 1 {
-		t.Fatalf("the case of the expired step is %s on %q with comments %q, want it at the human, marked, with one face", c.Status, c.Problem, g.forge.comments[1410])
+	if c := caseByID(t, g.s, elsewhere.ID); c.Status != CaseAtHuman || c.Problem != "p" || len(g.forge.comments[1410]) != 1 {
+		t.Fatalf("the case of the expired step is %s on %q with comments %q, want it at the human, its problem its own, with one face", c.Status, c.Problem, g.forge.comments[1410])
 	}
 }
 
@@ -603,7 +609,7 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 			t.Fatalf("%s's flag cases = %v, comments on #%d %q; want none", id, cases, issue, g.forge.comments[issue])
 		}
 	}
-	if !slices.Equal(g.forge.closes, []int64{12}) || !slices.Equal(g.forge.comments[12], []string{"factoryd: this card ended closed, so its issue closes."}) ||
+	if !slices.Equal(g.forge.closes, []int64{12}) || !slices.Equal(g.forge.comments[12], []string{"This card ended closed, so its issue closes."}) ||
 		len(g.forge.comments[13]) != 0 {
 		t.Fatalf("closes %v, comments %v; want #12 alone closed with factoryd's comment and #13 untouched", g.forge.closes, g.forge.comments)
 	}
@@ -645,6 +651,18 @@ func TestMonitorWithdrawsTheIssueCaseOnceTheIssueCloses(t *testing.T) {
 	asks := (actRig{s: g.s}).rows(t, EventQuestionAsked)
 	if !ok || c.Status != CaseAtHuman || len(asks) != 1 || asks[0].Detail["case_id"] != float64(c.ID) || asks[0].Detail["flag"] != "issue_open_after_end" {
 		t.Fatalf("t1's flag case = %+v (found %v), asks %+v; want issue_open_after_end at the human with its ask", c, ok, asks)
+	}
+	// the issue and the inbox read the one face the ask row stores
+	var offered []string
+	for _, o := range offersOf(asks[0].Detail["offers"]) {
+		offered = append(offered, o.Label)
+	}
+	g.forge.mu.Lock()
+	comments := slices.Clone(g.forge.comments[13])
+	g.forge.mu.Unlock()
+	const line = "This card has ended. Press “Close the issue”, “Leave the issue open” or “Not now” on the board."
+	if !slices.Equal(offered, []string{"Close the issue", "Leave the issue open", "Not now"}) || len(comments) == 0 || !strings.Contains(comments[len(comments)-1], line) {
+		t.Fatalf("the ask row offers %v, the issue's comments %q; want the three answers, and the last comment to say %q", offered, comments, line)
 	}
 	settled := func() PokeSettle {
 		t.Helper()
@@ -788,7 +806,7 @@ func TestActKeepsTheNoteOfAHumansCloseOfAnEndedCard(t *testing.T) {
 	g.card(t, "t1", 12, "closed")
 	g.card(t, "t2", 13, "done")
 	g.forge.closed[13] = true
-	note := "factoryd: sebastian answered with close.\n\n```\nnot worth it\n```"
+	note := "sebastian answered with “End the card”.\n\n```\nnot worth it\n```"
 	for id, result := range map[string]string{"t1": "Closed #12.", "t2": "#13 was closed already."} {
 		c, _, err := openAtHuman(ctx, g.s, Case{TaskID: id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Problem: "p"})
 		if err != nil {
@@ -841,10 +859,11 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 	g.pass(t)
 	g.rung2Faces(t, "t1")
 
-	const ended = "ended the overdue step: rung 1 did not answer within 35m"
+	const ended = "ended the overdue step: the check-in did not answer within 35m"
 	cases := g.flagCases(t, "t1")
 	c, ok := cases["wait_over_bound|rung_answer|2026-11-04T11:20:00Z"]
-	if len(cases) != 1 || !ok || c.Problem != "Monitor flag: wait_over_bound(rung_answer since +3:20)" ||
+	if len(cases) != 1 || !ok || c.Problem != "This card has waited more than 35 minutes for the factory to decide how it goes on. Is that fine?" ||
+		c.Facts["reason"] != "Monitor flag: wait_over_bound(rung_answer since +3:20)" ||
 		c.Facts["wait"] != "rung_answer" || c.Facts["owner_rung"] != 1.0 || c.Status != CaseWithdrawn ||
 		!reflect.DeepEqual(c.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: ended}) {
 		t.Fatalf("t1's flag cases = %v, want wait_over_bound on rung 1's answer since 11:20 ended by factoryd on rung 0", cases)
@@ -886,7 +905,7 @@ func TestActSignalsNoRunForAMonitorCase(t *testing.T) {
 	}
 	_, err = g.m.Runner.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "settled"}})
 	var refused ErrActRefused
-	if !errors.As(err, &refused) || !strings.Contains(string(refused), "settle") || !strings.Contains(string(refused), "close ends the card") {
+	if !errors.As(err, &refused) || !strings.Contains(string(refused), "settle") || !strings.Contains(string(refused), "`close` ends the card") {
 		t.Fatalf("close of a monitor case = %v, want the refusal that names settle and says close ends the card", err)
 	}
 	if got := caseByID(t, g.s, c.ID); got.Status != CaseAtHuman {
@@ -1018,7 +1037,7 @@ func TestMonitorFacesACaseWhoseFaceFailed(t *testing.T) {
 	if got := caseByID(t, g.s, c.ID); got.Status != CaseAtHuman || !reflect.DeepEqual(found, want) {
 		t.Fatalf("case %s, steps %q; want it at the human, steps %q", got.Status, found, want)
 	}
-	if !slices.Equal(g.forge.comments[12], []string{face("t1", queuedLine)}) {
+	if !slices.Equal(g.forge.comments[12], []string{face(queuedAsk, queuedWhy, queuedPress)}) {
 		t.Fatalf("comments = %q, want the case's one face", g.forge.comments[12])
 	}
 }
@@ -1057,10 +1076,10 @@ func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
 	cases := g.flagCases(t, "t1")
 	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
-	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != line {
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?" || c.Facts["reason"] != line {
 		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
 	}
-	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?", "A card that waits this long may be stuck.", "“Rescue the work into a new card”, “It is fine, go on” or “Not now”")}) {
 		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
 	}
 	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
@@ -1184,7 +1203,7 @@ func TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes(t *tes
 	offered := func(id, line string) ([]string, Case) {
 		cases := g.flagCases(t, id)
 		c, ok := cases[key]
-		if len(cases) != 1 || !ok || c.Problem != "Monitor flag: queued_over_bound("+line+" for 2h1m)" {
+		if len(cases) != 1 || !ok || c.Problem != queuedAsk || c.Facts["reason"] != "Monitor flag: queued_over_bound("+line+" for 2h1m)" {
 			t.Fatalf("%s's flag cases = %v (%+v), want %s alone with the problem %q", id, slices.Sorted(maps.Keys(cases)), c, key, line)
 		}
 		task, _, err := g.s.Task(ctx, id)
@@ -1256,8 +1275,8 @@ func TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk(t *testing.T
 		t.Fatalf("t1's flag cases = %+v, want one wait_over_bound on the dependency wait", flags)
 	}
 	want := `The card waits on plan #31, which waits on a human to answer "Confirm the plan?" since ` + asked.Format("2006-01-02 15:04") + " UTC."
-	if why := CaseFace(flags[0], nil, FactsOf(flags[0]), CaseAsk{}, nil).Why; !strings.HasSuffix(why, want) {
-		t.Fatalf("the face's why = %q, want it to end with %q", why, want)
+	if left := CaseFace(flags[0], Task{ID: "t1", IssueNumber: 32}, CaseAsk{}).Story.Left; left != want {
+		t.Fatalf("what is left on the face = %q, want %q", left, want)
 	}
 	if got := g.flagCases(t, "p1"); len(got) != 0 {
 		t.Errorf("p1's flag cases = %v, want none", slices.Sorted(maps.Keys(got)))

@@ -3,6 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
+	"html/template"
 	"log"
 	"net/http"
 	"slices"
@@ -60,8 +61,9 @@ const routineRunsShown = 100
 // runDue is a run's due time as the drawer shows it.
 const runDue = "Mon 2 Jan 15:04"
 
-// routineDrawerData is a routine's drawer on one tab (C16). Sub is the
-// head's line and Rows the top block; Acts carries the ghost's forms.
+// routineDrawerData is a routine's drawer on one tab (C16), its opened
+// card (C46). Sub is the head's line and Rows the top block; Answers are
+// the routine's three answers, each with its effect line.
 // Runs are the newest runs, three on the Overview, and Older those past
 // the Runs tab's list; Config is the routine as its project file holds
 // it, Factory says the file is policy.yaml. Problems are what could not
@@ -72,7 +74,7 @@ type routineDrawerData struct {
 	Tabs     []drawerTab
 	Sub      string
 	Rows     []topRow
-	Acts     ghost
+	Answers  []answerView
 	Brief    string
 	Runs     []routineRun
 	Older    int
@@ -156,9 +158,7 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 		f = formFilter(r)
 	}
 	f.Project = cmp.Or(f.Project, project)
-	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Factory: rv.State.Project == "",
-		Acts: ghost{Project: project, Name: name, Title: rt.Title, Skipped: rv.State.SkipNext, Files: rt.Files, Side: rv.FilesInForce(),
-			Toggled: rv.State.NeedsMe != nil, Filter: f, CSRF: current(r).csrf, Drawer: true, Tab: tab}}
+	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Factory: rv.State.Project == "", Answers: routineAnswers(rv, f, current(r).csrf, tab)}
 	v, ok, perr := c.cfg.Policies.CurrentPolicy(ctx)
 	if !ok || perr != nil {
 		log.Printf("console: the policy in force: loaded %v, %v", ok, perr)
@@ -235,6 +235,35 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 		}
 	}
 	c.render(w, "routine_drawer.html", d)
+}
+
+// routineAnswers are routine rv's answers on its opened card on tab, in
+// the vocabulary's words: skip its next run or undo the skip, give its
+// card to a human, let it run alone or follow its file again (a human or
+// an agent routine's alone), and run it now. Each posts to the routine's
+// door with the board's filter f, and the drawer answers it.
+func routineAnswers(rv factoryd.RoutineView, f boardFilter, csrf, tab string) []answerView {
+	door := "/routines/" + rv.Project + "/" + rv.Routine.Name + "/"
+	answer := func(key, act string, values ...hidden) answerView {
+		a, _ := factoryd.AnswerOf(key)
+		values = append([]hidden{{"from", "drawer"}, {"tab", tab}}, values...)
+		return answerView{Action: a.Key(), Label: a.Label, Effect: template.HTML(template.HTMLEscapeString(a.Effect)), // #nosec G203 -- the effect text is escaped
+			Press: &pressForm{Post: door + act, Target: "#drawer", Values: values, CSRF: csrf, Filter: f}}
+	}
+	out := []answerView{answer(factoryd.AnswerSkipRun, "skip")}
+	if rv.State.SkipNext {
+		out[0] = answer(factoryd.KeyUndoSkip, "skip", hidden{"undo", "1"})
+	}
+	switch files := rv.Routine.Files; {
+	case files != policy.FilesHuman && files != policy.FilesAgent:
+	case rv.State.NeedsMe != nil:
+		out = append(out, answer(factoryd.KeyFollowFile, "needs-me", hidden{"undo", "1"}))
+	case rv.FilesInForce() == policy.FilesHuman:
+		out = append(out, answer(factoryd.KeyRunAlone, "needs-me", hidden{"needs_me", "0"}))
+	default:
+		out = append(out, answer(factoryd.AnswerNeedsMe, "needs-me", hidden{"needs_me", "1"}))
+	}
+	return append(out, answer(factoryd.AnswerRunNow, "run"))
 }
 
 // routineRunOf is run as its drawer row, its due time read in loc.

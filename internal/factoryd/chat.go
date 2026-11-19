@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -63,13 +64,15 @@ type ChatMessage struct {
 	// words that had arrived when the model call ended.
 	Cut bool `json:"cut,omitempty"`
 	// Settled and Reason are the console's read of a poke row at render:
-	// the row wants nothing any more, an ask with its reason line.
-	// NeedsReason is the label of the one choice among a row's choices a
-	// press of which needs the human's reason. They are derived, never
-	// stored.
-	Settled     bool   `json:"settled,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	NeedsReason string `json:"needs_reason,omitempty"`
+	// the row wants nothing any more, an ask with its reason line. They
+	// are derived, never stored.
+	Settled bool   `json:"settled,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	// Line is the one line the inbox shows of a note to the agent with the
+	// agent's reply to it, Short the opening of a long message above its
+	// fold; both derived, never stored.
+	Line  string `json:"line,omitempty"`
+	Short string `json:"short,omitempty"`
 	// Proposal is an ask row's binding token: the ask-kind proposal whose
 	// bound choice's press runs its tool, "" for an ask without one.
 	Proposal string `json:"proposal,omitempty"`
@@ -147,7 +150,7 @@ func StampReadAt(calls []ChatToolCall, now time.Time) []ChatToolCall {
 func (s *PGStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
 	t := Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository,
 		RequiredCapabilities: []string{policy.ClassChat},
-		Objective:            "the project agent's chat of " + name + " in " + at.UTC().Format("2006-01"), Source: "chat"}
+		Objective:            "the project agent's chat of " + name + " in " + at.UTC().Format("2006-01"), Source: SourceChat}
 	if err := s.InsertTask(ctx, t, `ON CONFLICT (id) DO UPDATE SET budget_eur = EXCLUDED.budget_eur WHERE tasks.budget_eur < EXCLUDED.budget_eur`); err != nil {
 		return Task{}, err
 	}
@@ -899,8 +902,12 @@ func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, 
 	return id, tx.Commit()
 }
 
-// insertChatMessage inserts m through tx as AddChatMessage stores it.
+// insertChatMessage inserts m through tx as AddChatMessage stores it. It
+// refuses a birth kind BirthKinds lacks: every chat row passes here.
 func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login string, m ChatMessage) (int64, error) {
+	if m.BirthKind != "" && !slices.Contains(BirthKinds(), m.BirthKind) {
+		return 0, fmt.Errorf("a chat row of birth kind %q is refused: BirthKinds lists no such kind, add it there", m.BirthKind)
+	}
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
 		b, err := json.Marshal(StampReadAt(m.ToolCalls, time.Now()))
@@ -1169,17 +1176,24 @@ func (e *AskSettledError) Error() string {
 	return "the ask is " + e.Word
 }
 
+// AskUnshownError says the card's open question holds no case, so no face
+// shows an analysis of it.
+type AskUnshownError struct{}
+
+func (e *AskUnshownError) Error() string { return "no case shows the question" }
+
 // AttachAnalysis records what the chat agent found about the card's open
 // ask (the main agent concept): e, the analysis_attached row on the spine
 // with its repository, actor, via and detail, the store adding the card
-// and the findings, and the ask's escalation rows rewritten to carry the
-// findings after the ask, so every member reads them with the ask. The
-// ask is the card's newest open question asked, a monitor's ask aside (a
-// request's ask is its case's face); none open, the newest ask there is
-// refuses as AskSettledError with its state, a card without an ask row as
-// ErrNoAsk.
+// and the findings. The card's face shows the newest one beside its ask
+// (CaseDesk), and no inbox row repeats it. The ask is the card's newest
+// open question asked, a monitor's ask aside (a request's ask is its
+// case's face); of a plan's newest open revision, its oldest open
+// question, else its confirmation, as its card shows them; none open, the
+// newest ask there is refuses as AskSettledError with its state, a card
+// without an ask as ErrNoAsk. The row names the ask's case by its id; a
+// question whose row names no case refuses as AskUnshownError.
 func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
-	repository := e.Repository
 	t, ok, err := s.Task(ctx, taskID)
 	if err != nil {
 		return err
@@ -1195,13 +1209,18 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 	if err != nil {
 		return err
 	}
-	var ask, newest *Event
+	var ask, newest, plan *Event
 	var newestState PokeSettle
+	revision := func(e *Event) int { n, _ := toInt(e.Detail["revision"]); return n }
 	for i := range events { // newest first
 		e := &events[i]
 		if e.Kind != EventQuestionAsked || e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			// a monitor's ask sits beside the card's own and is answered
 			// by its case's number: the analysis is the card's own ask's
+			continue
+		}
+		if revision(e) > 0 && e.Detail["case_kind"] == nil {
+			// the planner's row: its case climbs, and its face's row asks
 			continue
 		}
 		// the question is its own birth among the events: it settles
@@ -1211,84 +1230,43 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 		if newest == nil {
 			newest, newestState = e, st
 		}
-		if st.Open {
-			ask = e
-			break
+		if !st.Open {
+			continue
 		}
+		if revision(e) > 0 && (plan == nil || revision(e) == revision(plan)) {
+			// the card opens on the revision's first open question, the
+			// oldest, and shows its confirmation last
+			plan = cmp.Or(plan, e)
+			if e.Detail["kind"] != QuestionConfirmation {
+				ask = e
+			}
+			continue
+		}
+		ask = cmp.Or(ask, plan, e)
+		break
 	}
+	ask = cmp.Or(ask, plan)
 	if ask == nil {
 		if newest == nil {
 			return ErrNoAsk
 		}
 		return &AskSettledError{Word: newestState.Word, By: newestState.By}
 	}
-	// the ask's rows: the poke line the Poker wrote, alone or with an
-	// earlier analysis a new attach replaces; rows of an older ask keep
-	// their own words
-	poke, ok := pokeOf(*ask, t)
-	if !ok {
-		return ErrNoAsk
-	}
-	base := poke.Content
-	analysis := "\nAnalysis: " + found
-	if recommendation != "" {
-		analysis += "\nRecommendation: " + recommendation
+	ref := ask.Detail["case_id"]
+	if ref == nil {
+		return &AskUnshownError{}
 	}
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
 	}
-	e.Detail["found"], e.Detail["source"] = found, "agent"
+	e.Detail["found"], e.Detail["source"], e.Detail["case_id"] = found, "agent", ref
 	if recommendation != "" {
 		e.Detail["recommendation"] = recommendation
 	}
 	e.TaskID, e.IssueNumber, e.Kind = taskID, t.IssueNumber, EventAnalysisAttached
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	rows, err := tx.QueryContext(ctx, `SELECT id, content FROM chat_messages
-		WHERE repository = $1 AND task_id = $2 AND kind = $3 AND birth_kind = $4`,
-		repository, taskID, MessageEscalation, ask.Kind)
-	if err != nil {
-		return err
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		var content string
-		if err := rows.Scan(&id, &content); err != nil {
-			_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
-			return err
-		}
-		if content == base || strings.HasPrefix(content, base+"\nAnalysis: ") {
-			ids = append(ids, id)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close() // #nosec G104 -- best effort before the failed walk returns its own error
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if len(ids) == 0 {
-		return ErrNoAsk
-	}
-	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `UPDATE chat_messages SET content = $1 WHERE id = $2`, base+analysis, id); err != nil {
-			return err
-		}
-	}
-	if e, _, err = s.insertEvent(ctx, tx, e); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	s.publish(e)
-	return nil
+	_, err = s.Record(ctx, e)
+	return err
 }
 
 // ProposalState is a proposal's state as GET /chat answers it: pending

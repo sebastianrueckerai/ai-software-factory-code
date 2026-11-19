@@ -22,7 +22,7 @@ func TestNeedWaiting(t *testing.T) {
 	if got := (need{Since: now.Add(-25 * time.Minute)}).Waiting(); got != "25 min" {
 		t.Errorf("a need of 25 minutes waits %q", got)
 	}
-	if got := (approvalCard{ApprovalRequest: factoryd.ApprovalRequest{CreatedAt: now.Add(-125 * time.Minute)}}).Waiting(); got != "2 h 5 min" {
+	if got := (approvalCard{Request: factoryd.Request{ApprovalRequest: factoryd.ApprovalRequest{CreatedAt: now.Add(-125 * time.Minute)}}}).Waiting(); got != "2 h 5 min" {
 		t.Errorf("an approval of 125 minutes waits %q", got)
 	}
 	if got := (approvalCard{}).Waiting(); got != "" {
@@ -56,59 +56,48 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">20 min</span>`) {
+	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="st st-running"><i class="dot" aria-hidden="true"></i>building</span> 20 min</span>`) {
 		t.Errorf("the face lacks the time in its stage:\n%s", face)
 	}
-	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>building, 20 min, 4 h 0 min in all</dd>") {
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, `building</span></span> <span class="it">20 min</span>`) {
 		t.Errorf("the drawer counts the stage from the admission, not the newest status row:\n%s", drawer)
 	}
 }
 
-// The status panel's "In progress" and "Needs you" lists went with C20
-// (card t-e98f769e872d), and with them the test that read them
-// (TestStatusPanelListsInTheWideView): the lists duplicated the board —
-// the strip's counts already say how many cards work and need you, and
-// the columns already list the cards — so no list remains in the panel
-// whose content could be tested; its figures are covered by
-// TestBoardPageCarriesTheFiguresOfTheStatusPanel and, under a find, by
-// TestFindNarrowsTheColumns. What needs holding is the shape the ruling
-// leaves, in both views: the panel carries only its Spend and Factory
-// sections, and the columns list the cards the
-// lists once named — the human task as its case's row.
+// The status panel's "In progress" and "Needs you" lists went with C20:
+// the lists duplicated the board, as the strip's counts already say how
+// many cards work and need you, and the columns already list the cards.
+// Its figures are covered by TestBoardPageCarriesTheFiguresOfTheStatusPanel
+// and, under a find, by TestFindNarrowsTheColumns. What needs holding is
+// the shape the ruling leaves: the panel carries only its Spend and
+// Factory sections, and the columns list the cards the lists once named.
 func TestStatusPanelListsNoCards(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/code", Objective: "working", CreatedAt: time.Now().Add(-time.Hour)},
 		factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", Objective: "rotate the key", IssueNumber: 16})
 	ck, _ := r.loggedIn(t)
-	for _, page := range []string{"/", "/?view=wide"} {
-		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
-		start := strings.Index(body, `<div class="sp" id="status-panel"`)
-		if start < 0 {
-			t.Fatalf("%s: the status panel is missing", page)
-		}
-		panel := body[start:]
-		end := strings.Index(panel, "</section>\n</div>")
-		if end < 0 {
-			t.Fatalf("%s: the status panel does not close", page)
-		}
-		panel = panel[:end]
-		if n := strings.Count(panel, "<h3>"); n != 2 || !strings.Contains(panel, "<h3>Spend</h3>") || !strings.Contains(panel, "<h3>Factory</h3>") {
-			t.Errorf("%s: the panel holds %d sections, want only Spend and Factory:\n%s", page, n, panel)
-		}
-		if strings.Contains(body, `class="sp-link"`) || strings.Contains(panel, "<h3>In progress</h3>") || strings.Contains(panel, "<h3>Needs you</h3>") {
-			t.Errorf("%s: the panel still lists the board's cards", page)
-		}
-		if strings.Contains(panel, `need-t-h`) {
-			t.Errorf("%s: the panel lists the human task", page)
-		}
-	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	start := strings.Index(body, `<div class="sp" id="status-panel"`)
+	if start < 0 {
+		t.Fatal("the status panel is missing")
+	}
+	panel := body[start:]
+	end := strings.Index(panel, "</section>\n</div>")
+	if end < 0 {
+		t.Fatal("the status panel does not close")
+	}
+	panel = panel[:end]
+	if n := strings.Count(panel, "<h3>"); n != 2 || !strings.Contains(panel, "<h3>Spend</h3>") || !strings.Contains(panel, "<h3>Factory</h3>") {
+		t.Errorf("the panel holds %d sections, want only Spend and Factory:\n%s", n, panel)
+	}
+	if strings.Contains(body, `class="sp-link"`) || strings.Contains(panel, "<h3>In progress</h3>") || strings.Contains(panel, "<h3>Needs you</h3>") {
+		t.Error("the panel still lists the board's cards")
+	}
+	if strings.Contains(panel, `need-t-h`) {
+		t.Error("the panel lists the human task")
+	}
 	if !strings.Contains(col(t, body, "Needs you"), `data-card="t-h"`) || !strings.Contains(col(t, body, "In progress"), `data-card="t-run"`) {
 		t.Error("the four columns do not list the human task and the running card the panel once listed")
-	}
-	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if !strings.Contains(col(t, wide, "Escalations"), `data-card="t-h"`) || !strings.Contains(wide, `data-card="t-run"`) {
-		t.Error("the wide view does not list the human task and the running card the panel once listed")
 	}
 }
 
@@ -134,7 +123,7 @@ func TestNoInlineStyle(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/code", Objective: "spends", BudgetEUR: 10, SpentEUR: 5.1})
 	ck, _ := r.loggedIn(t)
-	for _, page := range []string{"/", "/?view=wide", "/cards/t-run/drawer?tab=overview", "/costs", "/tasks/t-run/timeline"} {
+	for _, page := range []string{"/", "/cards/t-run/drawer?tab=overview", "/costs", "/tasks/t-run/timeline"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
 		if strings.Contains(body, ` style="`) {
 			t.Errorf("%s sets a style attribute, which the policy drops", page)

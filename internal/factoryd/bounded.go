@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -53,6 +54,16 @@ type BoundedWorkflows struct {
 // bound N of M" with N the slots held and M the bound: one kind of
 // reason whatever its numbers, so its first refusal's time holds.
 const WorkBoundReason = "work bound "
+
+// The refusals admit records on a queued card beside the work bound's
+// (admissionWait): it has no issue yet, it waits on an open dependency
+// (QueueWaitsOn and the dependency's number), or its project spent its
+// month cap.
+const (
+	QueueNoIssue  = "no issue"
+	QueueWaitsOn  = "waits on #"
+	QueueMonthCap = "project month cap"
+)
 
 // admitMu holds the count-and-stamp of an admission together: with one
 // factoryd, two admissions can never take one slot (allDoneMu's pattern).
@@ -190,7 +201,7 @@ func admissionWait(ctx context.Context, store Store, tree policy.Tree, now time.
 	// card holds no slot until its issue is filed, and the next sweep
 	// starts it. A report card never reaches here: it is unbound.
 	if t.IssueNumber == 0 {
-		return "no issue", nil
+		return QueueNoIssue, nil
 	}
 	if held, err := cardHoldWait(ctx, store, t); err != nil || held != "" {
 		return held, err
@@ -200,7 +211,7 @@ func admissionWait(ctx context.Context, store Store, tree policy.Tree, now time.
 		return "", err
 	}
 	if len(deps) > 0 && ended(deps) == nil {
-		return fmt.Sprintf("waits on #%d", deps[0].Issue), nil
+		return QueueWaitsOn + strconv.FormatInt(deps[0].Issue, 10), nil
 	}
 	if _, cap := tree.ProjectCap(t.Repository); !math.IsInf(cap, 1) {
 		spent, err := store.ProjectMonthSpend(ctx, t.Repository, now)
@@ -208,7 +219,7 @@ func admissionWait(ctx context.Context, store Store, tree policy.Tree, now time.
 			return "", err
 		}
 		if spent.EUR >= cap {
-			return "project month cap", nil
+			return QueueMonthCap, nil
 		}
 	}
 	return "", nil

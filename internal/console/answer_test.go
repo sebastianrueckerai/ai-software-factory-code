@@ -126,14 +126,16 @@ func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
 }
 
 // The escalate tool files the question and its five parts through the
-// factory's escalation and names the card; a question without its why or
-// its info refuses, as do choices outside the rule.
+// factory's escalation and names the card; a question without its ask
+// within an issue title's 255 characters, its info or its recommendation
+// refuses, as do choices outside the rule. The ask and the why line pass
+// the factory's filing door.
 func TestChatEscalate(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	_, err := trn.escalate("Which store?", "", "", "", nil)
+	_, err := trn.escalate("Which store?", "", "", "", "", nil)
 	equal(t, "without the factory's escalation", err.Error(), "this factory files no escalation from the chat")
 	var filed []factoryd.HumanQuestion
 	var repo string
@@ -142,36 +144,37 @@ func TestChatEscalate(t *testing.T) {
 		filed = append(filed, q)
 		return 42, nil
 	}
-	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", []string{" Postgres ", "SQLite"})
+	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", " Postgres ", []string{" Postgres ", "SQLite"})
 	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's humans with its choices.", error(nil)})
 	equal(t, "what it filed", []any{repo, filed}, []any{"sf/code", []factoryd.HumanQuestion{{
 		Ask:            "Which store?",
 		Why:            "Postgres runs out of connections at the measured peak.",
 		Info:           "The counts and the plan section both say so.",
 		Recommendation: "Postgres, plan section 3",
+		Recommended:    "say:Postgres",
 		Source:         "the project agent",
 		Choices:        []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}},
 	}}})
 	two := []string{"a", "b"}
 	for _, in := range []struct {
-		name, ask, why, info, recommendation string
-		choices                              []string
-		want                                 string
+		name, ask, why, info, recommendation, choice string
+		choices                                      []string
+		want                                         string
 	}{
-		{"no ask", "", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 0"},
-		{"two lines", "One.\nTwo.", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 9"},
-		{"201 bytes", strings.Repeat("x", 201), "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 201"},
-		{"no why", "Which?", "", "info", "rec", two, "why: why the card cannot go on without a person, 1 to 2000 characters"},
-		{"no info", "Which?", "why", "", "rec", two, "info: what a person should know to answer well, 1 to 2000 characters"},
-		{"no recommendation", "Which?", "why", "info", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
-		{"no choices", "Which?", "why", "info", "rec", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"one choice", "Which?", "why", "info", "rec", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"six choices", "Which?", "why", "info", "rec", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"empty choice", "Which?", "why", "info", "rec", []string{"a", ""}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"twice", "Which?", "why", "info", "rec", []string{"a", " a"}, "choices: each answer once"},
-		{"twice by case and end punctuation", "Which?", "why", "info", "rec", []string{"Close it", "close IT."}, "choices: each answer once"},
+		{"no ask", "", "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title"},
+		{"256 characters", strings.Repeat("x", 256), "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title"},
+		{"no info", "Which?", "why", "", "rec", "", two, "info: what a human should know to answer well, 1 to 2000 characters"},
+		{"no recommendation", "Which?", "why", "info", "", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
+		{"no choices", "Which?", "why", "info", "rec", "", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"one choice", "Which?", "why", "info", "rec", "", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"six choices", "Which?", "why", "info", "rec", "", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"empty choice", "Which?", "why", "info", "rec", "", []string{"a", ""}, `choices: "": The answer is empty.`},
+		{"61 characters", "Which?", "why", "info", "rec", "", []string{"a", strings.Repeat("b", 61)}, `choices: "` + strings.Repeat("b", 61) + `": The answer has 61 characters, at most 60.`},
+		{"twice", "Which?", "why", "info", "rec", "", []string{"a", " a"}, "choices: each answer once"},
+		{"twice by case and end punctuation", "Which?", "why", "info", "rec", "", []string{"Close it", "close IT."}, "choices: each answer once"},
+		{"a choice of none of them", "Which?", "why", "info", "rec", "c", two, "`choice`: the one of `choices` you would pick, as written there. \"c\" is none of them."},
 	} {
-		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choices); err == nil || err.Error() != in.want {
+		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choice, in.choices); err == nil || err.Error() != in.want {
 			t.Errorf("%s: escalate = %v, want %q", in.name, err, in.want)
 		}
 	}
@@ -188,7 +191,7 @@ func TestChatEscalateRefusalNamesTheError(t *testing.T) {
 	}
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", []string{"Postgres", "SQLite"})
+	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", "Postgres", []string{"Postgres", "SQLite"})
 	refusedAs(t, err, http.StatusBadGateway, "The escalation could not be filed: forgejo rejected the card: Needs you is closed for sf/code. "+
 		"Try again, or post the question on the card's issue.")
 }
@@ -208,8 +211,8 @@ func TestChatEscalateInACaseWakeNamesTheCase(t *testing.T) {
 	trn := r.chatTurnOf(t, s, &events)
 	trn.a.wake, trn.a.birth = true, factoryd.EventCaseClimbed
 	r.c.books.add(trn.key(), []int64{61})
-	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", []string{"Postgres", "SQLite"})
-	refusedAs(t, err, http.StatusConflict, "You hold case 61: hand it up with attach_analysis, its case_id and your recommendation, and it reaches the human with your analysis; a second card would ask twice.")
+	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", "", []string{"Postgres", "SQLite"})
+	refusedAs(t, err, http.StatusConflict, "You hold case 61: hand it up with `attach_analysis`, its `case_id` and your recommendation, and it reaches the human with your analysis; a second card would ask twice.")
 	equal(t, "filings", filed, 0)
 }
 
@@ -232,7 +235,7 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range []struct{ task, text, choice string }{
-		{"t-e", "#13 needs you: " + question, "Approve"},
+		{"t-e", "#13 needs you. The factory's rules let only a human merge this change.", "Merge it"},
 	} {
 		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
 			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventQuestionAsked}); err != nil {
@@ -412,32 +415,31 @@ func TestChatAnswerPressesAnUnboundAsk(t *testing.T) {
 	}
 }
 
-// A poke's choices answer through /chat/answer as an ask's do: Retry
+// A poke's choices answer through /chat/answer as an ask's do: a press
 // lands the human's row and the agent's turn reads it, the proposals'
 // store asked nothing; a choice the poke does not offer is refused,
 // nothing stored.
 func TestChatAnswerPressesAPokeChoiceInTheInbox(t *testing.T) {
-	poke := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-r",
-		Content: "#11 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}}
-	p := pressAnswer(t, true, poke, "Retry", "I filed it again.")
+	poke := failedPoke("t-r", 11)
+	p := pressAnswer(t, true, poke, "Try the failed card again", "I filed it again.")
 	equal(t, "the press", []any{p.code, p.events, p.takes}, []any{http.StatusOK, []string{`text {"text":"I filed it again."}`, `done {}`}, 0})
 	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv),
-		[]string{"assistant: #11 failed: checks: the checks failed on c1.", "user: Retry", "assistant: I filed it again."})
-	if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "Retry" {
+		[]string{"assistant: #11 failed: the checks failed on c1.", "user: Try the failed card again", "assistant: I filed it again."})
+	if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "Try the failed card again" {
 		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
 	}
 
 	p = pressAnswer(t, true, poke, "Maybe", "")
 	equal(t, "a choice the poke does not offer", []any{p.code, p.events}, []any{http.StatusBadRequest, []string{"the choice is none of the poke's: press one of its buttons."}})
-	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv), []string{"assistant: #11 failed: checks: the checks failed on c1."})
+	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv), []string{"assistant: #11 failed: the checks failed on c1."})
 	if n := len(p.g.calls()); n != 0 {
 		t.Fatalf("%d model calls, want none", n)
 	}
 }
 
 // A factory pull request card's red checks run again from the chat as from
-// its card (roadmap 264): the inbox's Re-run the checks and the
-// rerun_checks tool signal the workflow as the member.
+// its card (roadmap 264): the inbox's "Run the failed checks again" and
+// the rerun_checks tool signal the workflow as the member.
 func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -445,13 +447,13 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","factory":true,"red_checks":true}`)
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
-		Content: "#5 waits for you: the checks of PR #9 are red, so it cannot merge; run them again, or close it with your words.",
-		Choices: []string{factoryd.ChoiceRerun}, TaskID: "t-m", Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
+		Content: "#5 (Fix the cache. It drops entries.) needs you. The change is of normal risk, and the factory's rules let only a human merge it.",
+		Choices: []string{"Run the failed checks again"}, TaskID: "t-m", Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
 		t.Fatal(err)
 	}
 	r.fg.calls = nil
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
-		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {factoryd.ChoiceRerun}}); code != http.StatusNoContent {
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {"Run the failed checks again"}}); code != http.StatusNoContent {
 		t.Fatalf("the answer = %d %q", code, body)
 	}
 	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
@@ -585,8 +587,9 @@ func TestChatClearsOldRows(t *testing.T) {
 	say(factoryd.ChatMessage{Role: "assistant", Content: "#15 closed.", Conversation: inbox})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
 		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
-	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, Content: "#21 failed: checks: the checks failed on c1.",
-		Choices: []string{"Retry", "Leave it"}, TaskID: "t-f", Conversation: inbox})
+	failed := failedPoke("t-f", 21)
+	failed.Conversation = inbox
+	say(failed)
 	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventQuestionAnswered,
 		Actor: "sebastian", Via: factoryd.ViaButton}); err != nil {
 		t.Fatal(err)
@@ -612,7 +615,7 @@ func TestChatClearsOldRows(t *testing.T) {
 	answer = read()
 	equal(t, "the sweep keeps the open ask and the open choices", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{2, 2, 0})
 	equal(t, "the kept rows", []any{answer.Messages[0].TaskID, answer.Messages[0].Settled, answer.Messages[1].TaskID, answer.Messages[1].Settled, answer.Messages[1].Choices},
-		[]any{"t-w", false, "t-f", false, []string{"Retry", "Leave it"}})
+		[]any{"t-w", false, "t-f", false, []string{"Try the failed card again", "Not now"}})
 	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-f", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"replacement": 22}}); err != nil {
 		t.Fatal(err)

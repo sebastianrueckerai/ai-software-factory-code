@@ -174,7 +174,6 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 	add := func(name, detail string) { flags = append(flags, DigestFlag{name, detail}) }
 	steps := d.Steps
 	confirmed := map[string]int{}
-	review := ""
 	// a grant is open until a session pushes, or, on a plan, the planner's
 	// session files a revision; afterNoPush names the first session after
 	// it that ended without a push — never one a provider-limit freeze
@@ -225,20 +224,16 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 			if run == d.Waits.NoPushSessions {
 				add("session_no_push", runFirst)
 			}
-		case "review":
-			if s.state != "" {
-				review = s.state
-			}
 		case "checkin":
 			refusedAt = ""
 			// a check-in inside a freeze the limit refused flags nothing:
 			// the hold answered it, not the card — a check-in stands at its
 			// moment, so only a freeze covering it quiets it
 			if s.refused && !d.frozenAt(s.At) {
-				refusedAt = offsetText(s.Offset)
+				refusedAt = OffsetText(s.Offset)
 			}
 			if s.state == "" {
-				add("checkin_cut", offsetText(s.Offset))
+				add("checkin_cut", OffsetText(s.Offset))
 			}
 			for _, id := range s.Findings {
 				if confirmed[id]++; confirmed[id] == 2 {
@@ -289,9 +284,6 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 		if c.Status != CaseOpen && c.Status != CaseAtHuman {
 			continue
 		}
-		if c.Money != nil && review == "concerns" {
-			add("money_ask_hides_findings", "")
-		}
 		if slices.ContainsFunc(cases, func(o Case) bool { return o.ID < c.ID && o.Status == CaseResolved && o.StateKey == c.StateKey }) {
 			add("answer_changed_nothing", c.StateKey)
 		}
@@ -316,20 +308,20 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 		add("proofs_missing", textutil.Plural(int(since/time.Hour), "hour", "hours"))
 	}
 	if defaultKind(t.Kind) == "agent" && Cents(t.BudgetEUR) != Cents(budget) {
-		add("budget_moved_no_event", fmt.Sprintf("%.2f EUR not %.2f EUR", t.BudgetEUR, budget))
+		add("budget_moved_no_event", fmt.Sprintf("%s EUR not %s EUR", textutil.EUR(t.BudgetEUR), textutil.EUR(budget)))
 	}
 	// a rung's step is past its bound once its wait holds: it carries its
 	// own due_at. A provider-limit freeze carries no bound: the freeze
 	// card owns the one escalation, however long the provider holds.
 	if w, ok := d.ownedWait(); ok && w.Kind != "provider_limit" && (w.Kind == "rung_answer" || d.at.Sub(w.Since) > d.Waits.Bound(w.Kind)) {
-		since := " since " + offsetText(w.Since.Sub(steps[0].At))
+		since := " since " + OffsetText(w.Since.Sub(steps[0].At))
 		add("wait_over_bound", w.Kind+since)
 		// the queue's wait starts at the row's queue_since, often the
 		// filing itself, so its offset from the first step reads +0:00:
 		// the detail names the wait's length instead, as the board's
 		// queue does
 		if w.Kind == "queued" {
-			add("queued_over_bound", d.Head.QueueReason+" for "+durationText(d.at.Sub(w.Since).Truncate(time.Minute)))
+			add("queued_over_bound", d.Head.QueueReason+" for "+DurationText(d.at.Sub(w.Since).Truncate(time.Minute)))
 		}
 	}
 	// the newest review and audit rows on the head, the head a session's

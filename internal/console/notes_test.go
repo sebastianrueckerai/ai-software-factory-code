@@ -76,7 +76,7 @@ func TestChatNotes(t *testing.T) {
 	_, err := trn.writeNotes(strings.Repeat("x", notesMax), "", "")
 	equal(t, "past the cap", err.Error(), "the scratchpad would be 16403 bytes, over its cap of 16384: remove what graduated into the roadmap first (old with new empty)")
 	_, err = trn.writeNotes("a", "b", "c")
-	equal(t, "text and old", err.Error(), "notes_write takes text to append, or old and new to replace a passage")
+	equal(t, "text and old", err.Error(), "`notes_write` takes `text` to append, or `old` and `new` to replace a passage")
 }
 
 // active_threads: the project's every member's active threads with their

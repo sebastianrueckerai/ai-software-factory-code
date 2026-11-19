@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -202,7 +203,7 @@ func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, 
 			}
 			st.Found = found
 			expired = append(expired, st)
-			words := fmt.Sprintf("rung %d did not answer within %s", st.Rung, durationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute)))
+			words := fmt.Sprintf("%s did not answer within %s", who(st.Rung), DurationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute)))
 			if took != "" {
 				words = expiredWords(st.Rung, took, st.DueAt.Sub(st.StartedAt))
 			}
@@ -336,9 +337,9 @@ func (r *Runner) waitsOnRung(ctx context.Context, c Case) (TripOutcome, bool, er
 // level, unless the case is the human's alone, the judgment budget is
 // spent or unreadable or rung 2 worked the case already; from rung 2, or
 // after any of those, to the human, with the recommendation the rung
-// before made, and a case no rung judged with the mark that says why. The
-// card keeps its status while a rung works: only the face moves it. A case
-// at the human climbs nowhere.
+// before made, and a case no rung judged with the agent's view saying why.
+// The card keeps its status while a rung works: only the face moves it. A
+// case at the human climbs nowhere.
 func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from int, found string) (TripOutcome, error) {
 	var unjudged *HandUp
 	if from == 0 {
@@ -442,17 +443,15 @@ func (r *Runner) spentJudgment(ctx context.Context, t Task, c Case) (*HandUp, er
 // no project, so no judgment budget can be read and no rung judges it.
 func (r *Runner) unreadJudgment(ctx context.Context, t Task, c Case, steps []CaseStep) (*HandUp, error) {
 	found := r.scrub(fmt.Sprintf("%s: repository %s names no project, so its judgment budget cannot be read", markJudgmentUnread, t.Repository))
-	return r.notJudged(ctx, c, steps, markJudgmentUnread, found)
+	seen := r.scrub(fmt.Sprintf("The factory agent did not judge it: %s names no project, so the factory cannot read its judgment budget.", t.Repository))
+	return r.notJudged(ctx, c, steps, markJudgmentUnread, found, seen)
 }
 
-// notJudged marks case c, which no rung judged, with mark, which says why:
-// on its problem, in a step of rung 0 that found found, and, through the
-// hand-up, on its face's ask.
-func (r *Runner) notJudged(ctx context.Context, c Case, steps []CaseStep, mark, found string) (*HandUp, error) {
-	if err := r.store.AppendCaseProblem(ctx, c.ID, notJudgedSuffix(mark)); err != nil {
-		return nil, err
-	}
-	return &HandUp{Found: found, Mark: mark}, r.stepOnce(ctx, c, steps, mark, found)
+// notJudged is the hand-up of case c, which no rung judged, with mark,
+// which says why: a step of rung 0 found found, and the agent's view on
+// the face says seen.
+func (r *Runner) notJudged(ctx context.Context, c Case, steps []CaseStep, mark, found, seen string) (*HandUp, error) {
+	return &HandUp{Found: seen, Mark: mark}, r.stepOnce(ctx, c, steps, mark, found)
 }
 
 // refusedUp is the hand-up of case c, whose rung steps are among steps,
@@ -474,7 +473,10 @@ func (r *Runner) refusedUp(ctx context.Context, c Case, steps []CaseStep, up *Ha
 	case len(refused) == 0:
 		return nil, up, nil
 	case !slices.ContainsFunc(kept, func(s CaseStep) bool { return s.Rung == 1 || s.Rung == 2 }):
-		unjudged, err = r.notJudged(ctx, c, steps, markProviderRefused, refused[len(refused)-1].Found)
+		last := refused[len(refused)-1]
+		// the provider's own words stay in the steps, which the card's life shows
+		seen := rungName(last.Rung) + " did not judge it: the model provider refused. The provider's words are in the card's life."
+		unjudged, err = r.notJudged(ctx, c, steps, markProviderRefused, last.Found, seen)
 		return unjudged, up, err
 	case !slices.ContainsFunc(kept, func(s CaseStep) bool {
 		return (s.Rung == 1 || s.Rung == 2) && s.Outcome == StepHandedUp && !strings.Contains(s.Found, expiredMark)
@@ -482,12 +484,16 @@ func (r *Runner) refusedUp(ctx context.Context, c Case, steps []CaseStep, up *Ha
 		return nil, up, nil
 	}
 	face = HandedUpBy(kept, 0, "")
-	who := "The check-in"
-	if refused[len(refused)-1].Rung == 2 {
-		who = "The factory agent"
-	}
-	face.Note = who + " did not judge it: the model provider refused."
+	face.Note = rungName(refused[len(refused)-1].Rung) + " did not judge it: the model provider refused."
 	return nil, face, nil
+}
+
+// rungName is how a face names the rung that works a case below the human.
+func rungName(rung int) string {
+	if rung == 2 {
+		return "The factory agent"
+	}
+	return "The check-in"
 }
 
 // noJudgmentLine is the face's line for a case a rung judged but the rung
@@ -519,10 +525,12 @@ func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string
 	}
 	r.FileJudgmentCard(ctx, t, chat)
 	if slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp && s.Decision != "" }) {
-		stepFound := fmt.Sprintf("%s The chat task %s has %.2f of %.2f EUR left.", noJudgmentLine, chat.ID, left, chat.BudgetEUR)
+		stepFound := fmt.Sprintf("%s The chat task %s has %s of %s EUR left.", noJudgmentLine, chat.ID, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
 		return &HandUp{Note: noJudgmentLine}, r.stepOnce(ctx, c, steps, noJudgmentLine, stepFound)
 	}
-	return r.notJudged(ctx, c, steps, markJudgmentSpent, fmt.Sprintf("%s: the chat task %s has %.2f of %.2f EUR left", markJudgmentSpent, chat.ID, left, chat.BudgetEUR))
+	found := fmt.Sprintf("%s: the chat task %s has %s of %s EUR left", markJudgmentSpent, chat.ID, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
+	seen := fmt.Sprintf("%s The project's judgment budget has %s of %s EUR left this month.", noJudgmentLine, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
+	return r.notJudged(ctx, c, steps, markJudgmentSpent, found, seen)
 }
 
 // stepOnce appends found as a step of rung 0 on case c unless one of steps
@@ -579,7 +587,8 @@ func (r *Runner) CountReached(ctx context.Context, c Case, limit int) (*HandUp, 
 		return nil, err
 	}
 	found := fmt.Sprintf("rung 1 reached its per-card count of %d on this card", limit)
-	return &HandUp{Found: found, Mark: found}, r.stepOnce(ctx, c, steps, found, found)
+	seen := fmt.Sprintf("The check-in did not look at this ask: it already ran %d times on this card, the most it may.", limit)
+	return &HandUp{Found: seen, Mark: found}, r.stepOnce(ctx, c, steps, found, found)
 }
 
 const (
@@ -587,9 +596,6 @@ const (
 	markJudgmentUnread  = "not judged, judgment budget unreadable"
 	markProviderRefused = "not judged: the model provider refused"
 )
-
-// notJudgedSuffix is what notJudged appends to a case's problem for mark.
-func notJudgedSuffix(mark string) string { return " (" + mark + ")" }
 
 // FacedTries and facedBackoff bound the retries of a case_faced signal.
 const FacedTries = 4
@@ -748,7 +754,8 @@ type HandUp struct {
 	Before string
 	// Note is a line the face adds, for a rung that could not judge the case
 	Note string
-	// Mark, when set, ends the ask itself: a case no rung judged says so
+	// Mark, when set, says why no rung judged the case: the agent's view
+	// names what the factory found
 	Mark string
 	// Preselected is the action rung 2 proposed, with its arguments and
 	// fund: the face offers it preselected
@@ -759,10 +766,17 @@ type HandUp struct {
 // and fenced as agent text: "" when the rung recommended no action or gave
 // no grounds. recommendedBy names its writer.
 func (r *Runner) recommendation(t Task, up *HandUp) string {
+	return up.recommendation(func(s string) string { return r.untrusted(t, s) }, r.scrub)
+}
+
+// recommendation is up's recommendation line: its grounds, scrubbed and
+// fenced, "" when the rung recommended no action or gave no grounds. The
+// face names the action by its answer's label.
+func (up *HandUp) recommendation(fence, scrub func(string) string) string {
 	if up.Action == "" || strings.TrimSpace(up.Grounds) == "" {
 		return ""
 	}
-	return r.untrusted(t, r.scrub(fmt.Sprintf("%s: %s", up.Action, up.Grounds)))
+	return fence(scrub(up.Grounds))
 }
 
 // recommendedBy is who wrote the recommendation of hand-up up.
@@ -837,7 +851,7 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 	}
 	// a rung that gave no recommendation (one that did not answer) leaves the
 	// newest one the rungs below it made, and what it found
-	if strings.Contains(first.Found, expiredMark) {
+	if first.Found == RungTwoStopped || strings.Contains(first.Found, expiredMark) {
 		for k := len(steps) - 1; k >= 0; k-- {
 			s := steps[k]
 			if s.Outcome != StepHandedUp || s.Rung != 1 {
@@ -870,19 +884,74 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 // did not answer.
 const expiredMark = "the rung did not answer within "
 
+// RungTwoStopped is the Found of rung 2's step when the factory agent's
+// turn stopped on its refused actions with the case unanswered.
+const RungTwoStopped = "The factory agent did not answer: the factory refused every action it tried."
+
 // foundLine is what the rung before the human found, as the face reads it:
-// an expired step says that its rung did not answer, no finding.
+// an expired step and a stopped turn say that the rung did not answer, no
+// finding.
 func foundLine(up *HandUp) string {
+	if up.Rung == 2 && up.Found == RungTwoStopped {
+		return RungTwoStopped
+	}
 	if _, bound, ok := strings.Cut(up.Found, expiredMark); ok && up.Rung == 2 {
 		return "The factory agent did not answer within " + bound + "."
 	}
+	if waits := stillWaits(up.Found); waits != "" && up.Rung == 2 {
+		return "The factory agent " + waits
+	}
 	switch {
 	case up.Mark != "":
-		return "The factory found: " + up.Found
+		return up.Found
 	case up.Rung == 2:
-		return "The factory agent found: " + up.Found
+		return "The factory agent found:\n\n" + Quoted(up.Found)
 	}
-	return "The check-in found: " + up.Found
+	return "The check-in found:\n\n" + Quoted(up.Found)
+}
+
+// tookAndWaits is what expiredWords writes for a rung whose choice kept the
+// card waiting.
+var tookAndWaits = regexp.MustCompile(`rung \d took (\S+) and the card still waits after (\S+)$`)
+
+// stillWaits says, of a step that found found, that its rung took a choice
+// and the card still waits, the choice by its label; "" for any other step.
+func stillWaits(found string) string {
+	m := tookAndWaits.FindStringSubmatch(found)
+	if m == nil {
+		return ""
+	}
+	return "took “" + cmp.Or(LabelOf(m[1]), strings.ReplaceAll(m[1], "_", " ")) + "”, and the card still waits after " + m[2] + "."
+}
+
+// Quoted is a writer's text as a quote in markup, so a reader tells it
+// from the factory's words.
+func Quoted(s string) string {
+	return "> " + strings.ReplaceAll(strings.TrimSpace(s), "\n", "\n> ")
+}
+
+// StepWords is case step s as the card's life names it: who took it and
+// what came of it, and the words it found, which are its writer's; an
+// expired step says its decider did not answer.
+func StepWords(s CaseStep) (lead, found string) {
+	if s.Found == RungTwoStopped {
+		return RungTwoStopped, ""
+	}
+	who := cmp.Or(deciderLead(s.Actor), "A human")
+	if _, bound, ok := strings.Cut(s.Found, expiredMark); ok {
+		return who + " did not answer within " + bound + ".", ""
+	}
+	if waits := stillWaits(s.Found); waits != "" {
+		return who + " " + waits, ""
+	}
+	next := []string{"the check-in", "the factory agent", "a human"}[min(max(s.Rung, 0), 2)]
+	did := map[string]string{StepInProgress: "is weighing it", StepResolved: "answered it", StepHandedUp: "passed it to " + next,
+		StepWithdrawn: "stopped when the ask was withdrawn"}[s.Outcome]
+	lead = who + " " + cmp.Or(did, "took a step")
+	if s.Found = strings.TrimSpace(s.Found); s.Found != "" {
+		return lead + ", and found: ", s.Found
+	}
+	return lead + ".", ""
 }
 
 // beforeLine is what rung 1 found under rung 2's expiry: its finding, or that
@@ -891,7 +960,7 @@ func beforeLine(found string) string {
 	if _, bound, ok := strings.Cut(found, expiredMark); ok {
 		return "The check-in did not answer within " + bound + "."
 	}
-	return "The check-in found: " + found
+	return "The check-in found:\n\n" + Quoted(found)
 }
 
 // errNoWait refuses a face of a card in status, which cannot wait for a
@@ -1121,14 +1190,19 @@ func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string
 		if asks[i].Comment == 0 || asks[i].Shaped == nil {
 			continue
 		}
-		info := asks[i].Shaped.Info
-		if have != "" {
-			info = strings.Replace(info, "\n\n"+have, "", 1)
+		var paras []string
+		if info := asks[i].Shaped.Info; info != "" {
+			paras = strings.Split(info, "\n\n")
 		}
-		if note != "" {
-			info += "\n\n" + note
+		if at := slices.Index(paras, have); have != "" && at >= 0 {
+			paras = slices.Delete(paras, at, at+1)
+			if note != "" {
+				paras = slices.Insert(paras, at, note)
+			}
+		} else if note != "" {
+			paras = append(paras, note)
 		}
-		return r.store.SetQuestionInfo(ctx, taskID, asks[i].Comment, info)
+		return r.store.SetQuestionInfo(ctx, taskID, asks[i].Comment, strings.Join(paras, "\n\n"))
 	}
 	return nil
 }
@@ -1205,11 +1279,8 @@ func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string)
 
 // tripCase is the case trip in makes on card t with facts f, open until
 // its face is written, with the card's cases, for OpenCase to open. The kind is caseKindOf's
-// of the reason, or in's own with its key. The problem is the shaped
-// question's ask where a template names the decision, else the reason's
-// first line, led by a merge conflict standing on the head (conflictLead)
-// and the findings standing on it for a money or cap ask (FindingsLead).
-// The facts are f with the reason, its source, what the reason
+// of the reason, or in's own with its key. The problem is the register's
+// ask. The facts are f with the reason, its source, what the reason
 // names and in's extra facts, the money the card's for a stop on its own
 // budget, with what the next opening needs at the floor. The case follows
 // the card's newest ended one.
@@ -1218,55 +1289,10 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	if err != nil {
 		return Case{}, nil, err
 	}
-	source := EscalationSource(in.Reason)
-	kind, named := CaseKindOf(source, in.Reason)
-	if in.Kind != "" {
-		kind, named = in.Kind, nil
-	}
-	kind = HumanCardKind(kind, t)
-	qf := r.questionFacts(ctx, t, in.Reason)
-	qf.BranchRead, qf.BranchHead = f.BranchRead, f.BranchHead
-	problem := ShapedQuestion(in.Reason, qf, in.Choices).Ask
-	if problem == plainAsk {
-		problem = EscalationQuestion(in.Reason)
-	}
-	b, err := json.Marshal(f)
+	c, err := TripCase(t, f, in, r.Scrub.String)
 	if err != nil {
 		return Case{}, nil, err
 	}
-	var facts map[string]any
-	if err := json.Unmarshal(b, &facts); err != nil {
-		return Case{}, nil, err
-	}
-	maps.Copy(facts, named)
-	maps.Copy(facts, in.Extra)
-	if d := tripDep(kind, f); kind == CaseDependencyClosed && d != nil && d.Why != "" {
-		facts["closed_why"] = d.Why
-	}
-	facts["source"], facts["reason"] = source, textutil.Truncate(r.Scrub.String(in.Reason), 300)
-	if !askedAgain(in.Reason) {
-		facts["face"] = textutil.Truncate(r.Scrub.String(in.Reason), 4000)
-	}
-	if len(in.Choices) > 0 {
-		facts["choices"] = in.Choices
-	}
-	if in.CheckinStop != "" {
-		facts["checkin_stop"] = in.CheckinStop
-	}
-	key := tripKey(kind, problem, f.Head, f)
-	if in.Kind != "" {
-		key = in.StateKey
-	}
-	// an ask leads with what stands on the head: a merge conflict, which
-	// only a session clears, and for a money or cap ask the unresolved
-	// review or audit findings, so the human reads what the money would
-	// build on before the ask itself
-	if lead := strings.TrimSpace(conflictLead(kind, f) + " " + FindingsLead(kind, f)); lead != "" {
-		facts["ask_lead"] = lead
-		problem = lead + " " + problem
-	}
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
-		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
 	for _, e := range cases {
 		if e.Status != CaseOpen && e.Status != CaseAtHuman {
 			c.Follows = max(c.Follows, e.ID)
@@ -1275,70 +1301,52 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	return c, cases, nil
 }
 
-// moneyAskKinds are the case kinds whose ask is the card's money or a cap
-// of it: the budget floor, the session cap, the agent-time cap. Their ask
-// leads with the findings standing on the head (findingsLead).
-var moneyAskKinds = []CaseKind{CaseBudgetFloor, CaseSessionCap, CaseAgentTimeCap}
-
-// FindingsLead is the sentence a money or cap ask leads with while an
-// unresolved review or audit finding stands on the case's head: the
-// findings with their texts, in the order the gates raised them. The
-// asks of 2026-11-14 fired bare over such findings (#1879 step 36,
-// #1889 step 45, #1899 case 3826); this is the ordering rule that ends
-// that: the ask names them first in its own text. "" when the kind asks
-// for no money or cap, or no such finding stands.
-func FindingsLead(kind CaseKind, f CaseFacts) string {
-	if !slices.Contains(moneyAskKinds, kind) {
-		return ""
+// TripCase is the case trip in opens on card t with facts f, before it
+// follows any case: tripCase's, its texts masked by scrub.
+func TripCase(t Task, f CaseFacts, in TripInput, scrub func(string) string) (Case, error) {
+	source := EscalationSource(in.Reason)
+	kind, named := CaseKindOf(source, in.Reason)
+	if in.Kind != "" {
+		kind, named = in.Kind, nil
 	}
-	ids := f.FindingOrder
-	if len(ids) == 0 {
-		ids = f.Findings
+	kind = HumanCardKind(kind, t)
+	b, err := json.Marshal(f)
+	if err != nil {
+		return Case{}, err
 	}
-	var items []string
-	for _, id := range ids {
-		if !slices.Contains(f.ReviewFindings, id) && !slices.Contains(f.AuditFindings, id) {
-			continue
-		}
-		text := f.FindingTexts[id]
-		if text == "" {
-			text = id
-		}
-		if item := `"` + textutil.Truncate(text, 120) + `"`; item != `""` {
-			items = append(items, item)
-		}
+	var facts map[string]any
+	if err := json.Unmarshal(b, &facts); err != nil {
+		return Case{}, err
 	}
-	if len(items) == 0 {
-		return ""
+	maps.Copy(facts, named)
+	maps.Copy(facts, in.Extra)
+	if d := tripDep(kind, f); kind == CaseDependencyClosed && d != nil && d.Why != "" {
+		facts["closed_why"] = d.Why
 	}
-	const most = 5
-	count := "one finding"
-	if n := len(items); n != 1 {
-		count = fmt.Sprintf("%d findings", n)
+	facts["source"], facts["reason"] = source, textutil.Truncate(scrub(in.Reason), 300)
+	if !askedAgain(in.Reason) {
+		facts["face"] = textutil.Truncate(scrub(in.Reason), 4000)
 	}
-	if len(items) > most {
-		items = append(items[:most], fmt.Sprintf("and %d more", len(items)-most))
+	if len(in.Choices) > 0 {
+		facts["choices"] = in.Choices
 	}
-	return fmt.Sprintf("The review or the audit left %s unresolved on the head %s: %s.",
-		count, f.Head, strings.Join(items, "; "))
+	if in.CheckinStop != "" {
+		facts["checkin_stop"] = in.CheckinStop
+	}
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, Status: CaseOpen, Facts: facts, Money: tripMoney(kind, f)}
+	c.Problem = ownAsk(c, t)
+	c.StateKey = tripKey(kind, in.Reason, f.Head, f)
+	if in.Kind != "" {
+		c.StateKey = in.StateKey
+	}
+	return c, nil
 }
 
-// conflictLead is the sentence a stop at the head, or a repeat of the
-// findings, leads with while the pull request no longer merges into main:
-// the ask names the one answer that clears it before the ask itself. ""
-// for any other kind, or when no conflict stands.
-func conflictLead(kind CaseKind, f CaseFacts) string {
-	if f.MergeConflict == "" || !slices.Contains(headKinds, kind) && kind != CaseFindingsRepeated {
-		return ""
-	}
-	return fmt.Sprintf("The pull request no longer merges into main: Forgejo refused to merge main into head %s. "+
-		"Only a session that merges main into the branch clears it, and no gate rerun does.", short(f.Head))
-}
-
-// tripKey is the state key of a trip's case of kind: head for a stop at
-// the head, the dependency's task id for a dependency's, else the
-// problem's words (caseStateKey), as for a kind with no head.
-func tripKey(kind CaseKind, problem, head string, f CaseFacts) string {
+// tripKey is the state key of a trip's case of kind at reason: head for a
+// stop at the head, the dependency's task id for a dependency's, else the
+// first line of the stop's reason (caseStateKey), never the face's words,
+// so a change of the register's copy opens no second case.
+func tripKey(kind CaseKind, reason, head string, f CaseFacts) string {
 	switch {
 	case slices.Contains(headKinds, kind) && head != "":
 		return head
@@ -1347,7 +1355,7 @@ func tripKey(kind CaseKind, problem, head string, f CaseFacts) string {
 			return d.TaskID
 		}
 	}
-	return caseStateKey(kind, problem, "")
+	return caseStateKey(kind, EscalationQuestion(reason), "")
 }
 
 // tripDep is the dependency a trip of a dependency kind stops on, as the
@@ -1367,9 +1375,9 @@ func tripDep(kind CaseKind, f CaseFacts) *DepFact {
 }
 
 // tripMoney is the money fact of a case of kind on facts f, nil for none:
-// a budget floor's names what the next opening needs past what a session may spend, in
-// cents rounded up, and what that buys. The other stops on
-// the card's own budget name the budget and what is spent.
+// the card's budget and what is spent, and at a budget floor what one
+// more session buys. The face reads the amount it names from the live
+// facts (shortfall).
 func tripMoney(kind CaseKind, f CaseFacts) *CaseMoney {
 	switch {
 	case kind == CaseBudgetFloor:
@@ -1377,11 +1385,7 @@ func tripMoney(kind CaseKind, f CaseFacts) *CaseMoney {
 		if f.Model != "" {
 			buys += " on " + f.Model
 		}
-		var need float64
-		if f.SessionLeft() < f.FloorEUR {
-			need = fundFor(f.FloorEUR, f.SessionLeft())
-		}
-		return &CaseMoney{Kind: "budget", BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR, NeedEUR: need, Buys: buys}
+		return &CaseMoney{Kind: "budget", BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR, Buys: buys}
 	case slices.Contains(cardMoneyKinds, kind):
 		return &CaseMoney{Kind: string(kind), BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR}
 	}
@@ -1407,34 +1411,91 @@ func replyNext(reason string) string {
 
 // noRoom is the face's line at a stop of case c whose card has no room
 // for a session by its facts (CaseFacts.noSession, refund and waiting as
-// there): a reply starts none, the task waits on a cap that binds first or
-// asks the stop next, which a fund or an extend answers. With a limit
-// unread a reply may start none. "" when a session fits.
+// there): a reply starts none, the task waits on a cap that binds first,
+// or the line names the stop asked next and the answers c's face holds
+// (boardMove). With a limit unread a reply may start none. "" when a
+// session fits.
 func noRoom(c Case, refund, waiting bool) string {
-	const extend = "Extend on the board or the project chat's extend"
-	const fund = "the Fund form on the board or the project chat's fund"
 	f := factsOf(c)
-	var lead, asked, answer string
+	var lead, asked string
 	switch kind, read := f.noSession(refund, waiting); {
 	case !read:
-		return "The card's limits could not be read, so a reply alone may start no attempt: " + extend + " buys sessions and time, the Fund form on the board or the chat's fund buys budget. Close this issue to end the task."
+		return "The card's limits could not be read, so a reply alone may start no attempt. " + boardMove(c) + " Close this issue to end the task."
 	case kind == CaseDayCap, kind == CaseMonthCap, kind == CaseProjectCap:
 		// the cap wait's own question line: when it lifts, what raises it
 		line := strings.ToUpper(f.CapWait[:1]) + f.CapWait[1:] + " A reply alone starts no attempt while the cap holds."
 		if f.unfunded() {
-			line += " Once it lifts, the task asks the budget floor, which " + fund + " answers."
+			line += " Once it lifts, the task asks the budget floor next."
 		}
 		return line
 	case kind == CaseBudgetFloor:
-		lead, asked, answer = "The card's budget no longer funds a session.", "budget floor", fund
+		lead, asked = "The card's budget no longer funds a session.", "budget floor"
 	case kind == CaseSessionCap:
-		lead, asked, answer = "The card's sessions are used up.", "session cap", extend
+		lead, asked = "The card's sessions are used up.", "session cap"
 	case kind == CaseAgentTimeCap:
-		lead, asked, answer = "The card's agent time is spent.", "agent-time cap", extend
+		lead, asked = "The card's agent time is spent.", "agent-time cap"
 	default:
 		return ""
 	}
-	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + answer + " answers. Close this issue to end the task."
+	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next. " + boardMove(c) + " Close this issue to end the task."
+}
+
+// boardMove is the issue's sentence of how case c is answered: every
+// answer its face holds, by label, and the project chat.
+func boardMove(c Case) string {
+	if press := boardAnswers(c); press != "" {
+		return "Press " + press + " on the board, or tell the project chat how the card goes on."
+	}
+	return "Tell the project chat how the card goes on."
+}
+
+// boardAnswers names, for the issue, the answers the board shows on case
+// c's face whose action is one of actions, every answer when actions
+// names none: each by its label, with the amount its money field asks. ""
+// when the face shows none of them. No issue line names an answer by hand.
+func boardAnswers(c Case, actions ...string) string {
+	f := Facts{CaseFacts: FactsOf(c)}
+	face := FaceOf(c, f)
+	_, f = facing(c, f)
+	var names []string
+	for _, a := range face.Answers {
+		if len(actions) > 0 && !slices.Contains(actions, a.Action) {
+			continue
+		}
+		name := "“" + a.Label + "”"
+		for _, field := range a.Fields {
+			if field.Kind != FieldMoney || field.Default == nil {
+				continue
+			}
+			if eur := field.Default(f); eur != "" && eur != textutil.EUR(0) {
+				name += " (" + field.Label + ": " + eur + ")"
+			}
+		}
+		names = append(names, name)
+	}
+	return orJoin(names)
+}
+
+// orJoin is names as one list: "a, b or c".
+func orJoin(names []string) string {
+	if n := len(names); n > 1 {
+		return strings.Join(names[:n-1], ", ") + " or " + names[n-1]
+	}
+	return strings.Join(names, "")
+}
+
+// flagNext is the issue's line of monitor flag c: its card goes on beside
+// it, or has ended, and offers, the answers on its face, by label.
+func flagNext(c Case, offers []AskOffer) string {
+	lead := "The card goes on meanwhile."
+	if c.Facts["flag"] == "issue_open_after_end" {
+		lead = "This card has ended."
+	}
+	names := make([]string, len(offers))
+	for i, o := range offers {
+		names[i] = "“" + o.Label + "”"
+	}
+	return lead + " Press " + orJoin(names) + " on the board."
 }
 
 // FactsOf is case c's facts, as its record holds them.
@@ -1453,27 +1514,20 @@ func factsOf(c Case) CaseFacts {
 	return f
 }
 
-// monitorFace is the face of a monitor flag on t: the reason's flag text
-// is agent-derived, so it is fenced and scrubbed as every text a human
-// reads.
-func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
-	return monitorQuestion(r.Scrub.String(r.untrusted(t, reason)))
-}
-
-// tripNext is the last line of a trip's face for case c: at a cap, where
-// a reply is a continue that asks again, the Extend form or the chat's
-// extend start the next attempt, at a budget floor the Fund form or the
-// chat's fund, for a monitor flag, whose card goes on, the flag in the
-// chat, and elsewhere a reply (replyNext).
+// tripNext is the last line of a trip's face for case c: at a cap or a
+// budget floor, where a reply is a continue that asks again, every answer
+// its face holds and the project chat (boardMove), for a
+// monitor flag the answers on its face (flagNext; AskHuman names those of
+// the face its row stores), and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
 	if ChoiceKind(c.Kind) {
 		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
 	}
 	switch c.Kind {
 	case CaseMonitorFlag:
-		return "The card goes on meanwhile. Answer the flag in the project chat."
-	case CaseSessionCap, CaseAgentTimeCap:
-		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
+		return flagNext(c, offersOfAnswers(FaceOf(c, Facts{CaseFacts: FactsOf(c)}).Answers))
+	case CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor:
+		return boardMove(c) + " A reply alone starts no attempt. Close this issue to end the task."
 	case CaseCheckinFailed:
 		const failed = "The factory's own check-in failed, not the card's work. "
 		if no := noRoom(c, false, false); no != "" {
@@ -1509,25 +1563,86 @@ func tripNext(c Case, reason string) string {
 		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
-		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
+		exits := "Answer on the board"
+		if press := boardAnswers(c, ActExtend, ActReverify, ActSuccessor); press != "" {
+			exits = "Press " + press + " on the board"
+		}
+		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. " + exits + ", or close this issue to end the task."
 	case CaseScreeningSuspect:
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
-	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria:
+	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria, CasePlanHeld, CaseAgentRequestInfo:
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
 	case CasePlanQuestion, CasePlanConfirmation:
 		return "A reply on this issue asks the planner for a new revision instead. Closing the issue ends the plan."
 	case CaseDependencyClosed, CaseDependencyFailed:
 		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
-	case CaseBudgetFloor:
-		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	}
 	return replyNext(reason)
+}
+
+// healedLine opens the comment of an ask the factory puts again after a
+// restart: its face stands on the board as it was.
+const healedLine = "The factory restarted while this card waited for a human. Its question on the board still stands."
+
+// asklessLine opens the comment of an ask the heal pass puts again on a
+// card that waited with no live ask.
+const asklessLine = "This card waited for a human with no question open. The factory asks its question on the board again."
+
+// askedAgainLine opens the comment of an ask the factory puts again for reason
+// (askedAgain), "" for any other reason.
+func askedAgainLine(reason string) string {
+	switch reason {
+	case HealedReason:
+		return healedLine
+	case AsklessReason:
+		return asklessLine
+	}
+	return ""
+}
+
+// IssueAsk opens the comment of ask row face on its card's issue with the
+// face as the board shows it: the ask, the why line and the story, each
+// in its paragraph, a writer's words quoted.
+func IssueAsk(face map[string]any) string {
+	ask, _ := face["ask"].(string)
+	why, _ := face["why"].(string)
+	story, _ := face["story"].(Story)
+	var paras []string
+	for _, l := range []string{ask, why, story.Planned, story.Happened, story.Left} {
+		switch lead, words, ok := QuotedLine(l); {
+		case ok:
+			paras = append(paras, strings.TrimSpace(lead), Quoted(words))
+		case l != "":
+			paras = append(paras, l)
+		}
+	}
+	return strings.Join(paras, "\n\n")
+}
+
+// quotedLead are the leads of a story line that quotes a writer's words.
+var quotedLead = regexp.MustCompile(`^(The agent asks: |(?:The |)[A-Z][\w -]*'s view: )`)
+
+// QuotedLine splits a story line that quotes a writer into its lead and
+// the words.
+func QuotedLine(line string) (lead, words string, ok bool) {
+	m := quotedLead.FindString(line)
+	if m == "" {
+		return "", "", false
+	}
+	return m, line[len(m):], true
 }
 
 // PlanWaitCase says case c is the case of plan t's wait on its failed card
 // (ownFailedCard): it sits beside the plan, which no run holds.
 func PlanWaitCase(c Case, t Task) bool {
 	return c.Kind == CaseDependencyFailed && t.Track == policy.TrackPlan
+}
+
+// EndedCardCase says case c is the open-issue flag of ended card t
+// (issue_open_after_end): it asks about the issue the card left open, so
+// it stands beside the card at rest.
+func EndedCardCase(c Case, t Task) bool {
+	return Final(t.Status) && c.Kind == CaseMonitorFlag && c.Facts["flag"] == "issue_open_after_end"
 }
 
 // caseBesideRun says no run of card t waits on case c's face: a monitor
@@ -1559,11 +1674,11 @@ func outlivesCard(c Case, t Task) bool {
 // and the alert, and moves no status, writes no ask the run reads and no
 // timeline line. A criteria case's comment is its request's words; a
 // merge's face posts none; a plan question's is its revision's one face
-// comment (planFaceComment), and its row the planner's again. A case that asks its card's stop again (asked_again) says so
-// above the stop. An asked-again reason is a stop of its own on a case
-// that has no face yet, and on a case at the human repeats the face it had
-// (repeatFace). It returns the comment's id: only later comments answer
-// it.
+// comment (planFaceComment), and its row the planner's again. A case that
+// asks its card's stop again (asked_again) says so above the stop. An
+// asked-again reason is a stop of its own on a case that has no face yet,
+// and on a case at the human repeats the face it had (repeatFace). It
+// returns the comment's id: only later comments answer it.
 func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *HandUp) (int64, error) {
 	beside := caseBesideRun(c, t)
 	repo, err := SplitRepo(t.Repository)
@@ -1581,18 +1696,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			return 0, errNoWait{cur.Status}
 		}
 	}
-	// the reason in a code block: a mention the agent wrote rings no bell
-	safe := r.untrusted(t, reason)
-	body := "factoryd: task " + t.ID + " needs a human.\n\n"
-	if again, _ := c.Facts["asked_again"].(string); again != "" && !askedAgain(reason) {
-		body += again + "\n\n"
-	}
-	body += fenced(safe)
-	if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
-		// the fence renders no link: the ones the sanitiser keeps follow it
-		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
-	}
-	body += "\n\n" + next
+	body := askedAgainLine(reason)
 	stop := reason
 	if askedAgain(reason) {
 		stop, _ = c.Facts["reason"].(string)
@@ -1601,6 +1705,57 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	if err != nil {
 		return 0, err
 	}
+	question := EscalationQuestion(reason)
+	held := r.heldAsk(ctx, t, c)
+	var face map[string]any
+	whole := (!askedAgain(reason) || c.Status == CaseOpen) && !strings.HasPrefix(reason, screeningAsks)
+	if whole {
+		// the register writes the face on the facts Act judges, as the case
+		// reaches the human; a render reads it as stored
+		f, err := r.FactsAtCase(ctx, t, c)
+		if err != nil {
+			log.Printf("task %s: the facts of case %d: %v", t.ID, c.ID, err)
+			f = FactsOf(c)
+		}
+		fence := func(s string) string { return r.untrusted(t, s) }
+		face = FaceRow(r.fencedChoices(t, c), t, f, note, up, fence, r.scrub)
+		if slices.Contains(f.Partial, partialTimeline) {
+			face[faceUnweighed] = true
+		}
+		question, _ = face["ask"].(string)
+		// the face carries the agent's own words (a why line read from the
+		// stop's reason): the comment is sanitised as every outbound text
+		body = r.untrusted(t, IssueAsk(face))
+		if again := askedAgainLine(factString(c, "asked_again")); again != "" && !askedAgain(reason) {
+			// a case that asks its card's stop again says so above the stop
+			body = again + "\n\n" + body
+		}
+		// the stop's evidence follows the face as the agent wrote it, fenced
+		// so a mention rings no bell; the fence renders no link, so the
+		// links the sanitiser keeps follow it
+		safe := r.untrusted(t, reason)
+		if _, details, ok := strings.Cut(safe, "\n\n"); ok && strings.TrimSpace(details) != "" {
+			body += "\n\nWhat the factory saw:\n\n" + fenced(strings.TrimSpace(details))
+		}
+		if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
+			body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
+		}
+		// the refusal the newest session ended on rides with the ask,
+		// verbatim: the blocker reaches the human with no agent-side
+		// reporting to lose it (card #1345). A prover's refusals name its
+		// hold-outs, so its ask is factoryd's words alone.
+		if t.Source != SourceProver && !planAsk(c) {
+			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
+				view, _ := face["info"].(string)
+				face["info"] = strings.TrimSpace(view + "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal))
+			}
+		}
+		if offers, ok := face["offers"].([]AskOffer); ok && c.Kind == CaseMonitorFlag {
+			// the issue names the answers the inbox and the board offer
+			next = flagNext(c, offers)
+		}
+	}
+	body += "\n\n" + next
 	if note != "" {
 		body += "\n\n" + note
 	}
@@ -1613,7 +1768,14 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		body = reason
 	}
 	var id int64
-	if t.IssueNumber != 0 && c.Kind != CaseMergeApproval && !planAsk(c) {
+	switch {
+	case held != nil && whole && t.IssueNumber == 0:
+		// factoryd's own human card: its issue is the face, the body asks,
+		// and no comment repeats it
+		if t, err = r.fileFace(ctx, t, repo, held, face); err != nil {
+			return 0, err
+		}
+	case t.IssueNumber != 0 && c.Kind != CaseMergeApproval && !planAsk(c):
 		// a task without one (a report task) has its question on the card alone
 		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 			return 0, err
@@ -1625,75 +1787,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	for i, c := range choices {
 		choices[i] = r.untrusted(t, c)
 	}
-	question := EscalationQuestion(reason)
-	held := r.heldAsk(ctx, t, c)
-	var shaped *HumanQuestion
-	if (!askedAgain(reason) || c.Status == CaseOpen) && !strings.HasPrefix(reason, screeningAsks) {
-		// the deterministic stops shape their five-part question from the
-		// stop's own numbers; every other ask gets the same five parts
-		// from its reason, so no card asks with words alone
-		switch {
-		case held != nil:
-			// factoryd's own human card asks its held row's question
-			shaped = questionOfAsk(held)
-		case c.Kind == CaseMonitorFlag:
-			shaped = r.monitorFace(t, reason)
-		case c.Kind == CasePlanCriteria:
-			shaped = criteriaQuestion(c.Problem, reason)
-		case c.Kind == CaseMergeApproval:
-			shaped = mergeQuestion(c)
-		case planAsk(c):
-			shaped = planQuestion(c)
-		default:
-			qf, held := r.questionFacts(ctx, t, reason), factsOf(c)
-			qf.BranchRead, qf.BranchHead = held.BranchRead, held.BranchHead
-			shaped = ShapedQuestion(reason, qf, choices)
-		}
-		// the ask leads with what stands on its head, as its case stored
-		// it (tripCase): a merge conflict, and unresolved review or audit
-		// findings under an ask for money
-		if lead, _ := c.Facts["ask_lead"].(string); lead != "" {
-			shaped.Ask = r.untrusted(t, lead) + " " + shaped.Ask
-		}
-		// the refusal the newest session ended on rides with the ask,
-		// verbatim: the blocker reaches the human with no agent-side
-		// reporting to lose it (card #1345). A prover's refusals name its
-		// hold-outs, so its ask is factoryd's words alone.
-		if note != "" {
-			shaped.Info += "\n\n" + note
-		}
-		if up != nil {
-			if rec := r.recommendation(t, up); rec != "" {
-				shaped.Recommendation, shaped.Source = rec, recommendedBy(up)
-			}
-			if up.Mark != "" {
-				shaped.Ask += " (" + up.Mark + ")"
-			}
-			if up.Found != "" {
-				shaped.Info += "\n\n" + r.untrusted(t, r.scrub(foundLine(up)))
-				if up.Before != "" {
-					shaped.Info += "\n\n" + r.untrusted(t, r.scrub(beforeLine(up.Before)))
-				}
-			}
-			if up.Note != "" {
-				shaped.Info += "\n\n" + up.Note
-			}
-		}
-		if t.Source != SourceProver && !planAsk(c) {
-			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
-				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
-			}
-		}
-		// a merge's face has no info of its own: the rungs' lines open it
-		shaped.Info = strings.TrimLeft(shaped.Info, "\n")
-		question = shaped.Ask
-	}
-	if held != nil && shaped != nil && t.IssueNumber == 0 {
-		// its issue is the face: the body asks, and no comment repeats it
-		if t, err = r.fileFace(ctx, t, repo, *shaped, held); err != nil {
-			return 0, err
-		}
-	}
+	step := map[string]any{"reason": reason, "comment": id}
 	if askedAgain(reason) {
 		// the sentence asks nothing: the row names the question it asks again
 		asks, err := r.store.AskAnchors(ctx, t.ID)
@@ -1704,82 +1798,24 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			question = cmp.Or(asks[len(asks)-1].Question, question)
 		}
 	}
-	// the shaped question's buttons are not these choices: they carry
-	// values, and park and keep waiting record an answer without posting
-	// one, so the console renders them from the question itself
-	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": EscalationSource(reason),
-		"reason": textutil.Truncate(r.Scrub.String(reason), 300)}
-	if c.ID != 0 {
-		asked["case_id"] = c.ID
+	if len(choices) > 0 {
+		step["choices"] = choices
 	}
-	if beside {
-		// the card's own ask stays the card's: its thread seeds from that.
-		// The flag tells the settle the ask of an ended card's open issue
-		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
-	}
-	if c.Kind == CasePlanCriteria {
-		asked["approval"] = c.Facts["approval"]
-	}
+	asked := AskRow(c, t, reason, question, id, face, choices, up, r.Scrub.String)
 	for _, k := range []string{"source", "decider_line", "labels"} {
 		// the held row's own: the poke's line, and the asker its refreshes find
 		if v, ok := held[k]; ok {
 			asked[k] = v
 		}
 	}
-	if planAsk(c) {
-		// the planner's row again, which the plan's answer settles by its
-		// revision and index
-		for _, k := range []string{"revision", "index", "kind", "recommended", "grounds"} {
-			if v, ok := c.Facts[k]; ok {
-				asked[k] = v
-			}
-		}
-	}
-	if shaped != nil {
-		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
-		if shaped.Recommendation != "" && shaped.Source != "" {
-			asked["recommendation"], asked["recommended_by"] = shaped.Recommendation, shaped.Source
-		}
-		asked["choices"] = shaped.Labels()
-		if shaped.Cap != "" {
-			asked["cap"] = shaped.Cap
-		}
-		if len(shaped.Choices) > 0 {
-			asked["offers"] = shaped.Choices
-		}
-	}
-	if len(choices) > 0 {
-		step["choices"] = choices
-		if shaped == nil {
-			asked["choices"] = choices
-		}
-	}
 	if planAsk(c) && t.IssueNumber != 0 {
-		if id, err = r.planFaceComment(ctx, t, repo, c, shaped, next); err != nil {
+		if id, err = r.planFaceComment(ctx, t, repo, c, asked, next); err != nil {
 			return 0, err
 		}
 		asked["comment"], step["comment"] = id, id
 	}
-	if up != nil && up.Preselected != nil {
-		asked["preselected"] = up.Preselected.preselected()
-	}
-	if shaped == nil {
+	if !whole {
 		r.repeatFace(ctx, t, c, asked)
-	}
-	if c.Kind != CaseMonitorFlag && c.ID != 0 && AnswersByOffers(c) {
-		// the buttons are decided once, on the facts Act judges, as the case
-		// reaches the human; a render reads them as stored
-		if f, err := r.FactsAtCase(ctx, t, c); err != nil {
-			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
-		} else if offers, refusals, ok := storeOffers(c, t, f); ok {
-			asked["offers"] = withTableOffers(asked["offers"], offers)
-			// with no refusals stored the offers pass weighs them again
-			// once the timeline, whose actions are refused unread, reads
-			if !slices.Contains(f.Partial, partialTimeline) {
-				asked["refusals"] = nonNilList(refusals)
-			}
-		}
 	}
 	// the ask's record comes before the wait: a card that waits on a human
 	// has its ask row, so a failed write fails the step
@@ -1793,6 +1829,131 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		r.record(ctx, t.ID, "escalated", step)
 	}
 	return id, nil
+}
+
+// AskRow is the question_asked row of case c on card t: the comment id
+// that asks, the source and the reason, scrubbed by scrub, the case, the
+// face the register wrote (none for a healed or screened ask), the
+// question, the agent's choices and the answer a rung preselected. A case
+// beside the run, and a closed plan's ask, names its kind and flag: the
+// card's own ask stays the card's, its thread seeds from that, and the
+// settle reads the ask of an ended card's open issue and the closed
+// plan's as open.
+func AskRow(c Case, t Task, reason, question string, comment int64, face map[string]any, choices []string, up *HandUp, scrub func(string) string) map[string]any {
+	asked := map[string]any{"comment": comment, "source": EscalationSource(reason), "reason": textutil.Truncate(scrub(reason), 300)}
+	if c.ID != 0 {
+		asked["case_id"] = c.ID
+	}
+	if caseBesideRun(c, t) || c.Kind == CasePlanHeld {
+		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
+	}
+	switch {
+	case c.Kind == CasePlanCriteria:
+		asked["approval"] = c.Facts["approval"]
+	case c.Kind == CaseMergeApproval:
+		// the promises a human judges first, which the inbox's message opens on
+		asked["approval"], asked["open"] = c.Facts["approval"], c.Facts["open"]
+	case planAsk(c):
+		// the planner's row again, which the plan's answer settles by its
+		// revision and index
+		for _, k := range []string{"revision", "index", "kind", "recommended", "grounds"} {
+			if v, ok := c.Facts[k]; ok {
+				asked[k] = v
+			}
+		}
+	}
+	maps.Copy(asked, face)
+	asked["question"] = textutil.Truncate(question, 300)
+	if len(choices) > 0 {
+		asked["choices"] = choices
+	}
+	if up != nil && up.Preselected != nil {
+		asked["preselected"] = up.Preselected.preselected()
+	}
+	return asked
+}
+
+// FaceRow is the face an ask row of case c on card t stores: the
+// register's face on facts f with up's recommendation, and as its info the
+// agent's view, note before it. fence fences agent text, scrub masks
+// secrets.
+func FaceRow(c Case, t Task, f CaseFacts, note string, up *HandUp, fence, scrub func(string) string) map[string]any {
+	rec := up.recommend(fence, scrub)
+	if c.Kind == CasePlanQuestion && rec.Action != "" {
+		// a rung recommends a plan question's choice by its words
+		rec.Action = planPrefix + rec.Action
+	}
+	row := FaceKeys(FaceOf(c, Facts{CaseFacts: f, Card: t, Recommend: rec}))
+	if view := agentView(note, up, fence, scrub); view != "" {
+		row["info"] = view
+	}
+	return row
+}
+
+// InfoRequestRow is the ask row of the agent's request for information
+// reason on card t, asked by comment at asked, with the register's face of
+// its case on facts f: the row opens the agent_request_info case at the
+// human (askCase). fence fences agent text, scrub masks secrets.
+func InfoRequestRow(t Task, f CaseFacts, reason string, comment int64, asked time.Time, fence, scrub func(string) string) map[string]any {
+	at := asked.UTC().Format(time.RFC3339)
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: CaseAgentRequestInfo, Status: CaseAtHuman, Facts: map[string]any{"reason": reason, "asked_at": at}}
+	f.atCase(c)
+	face := FaceRow(c, t, f, "", nil, fence, scrub)
+	ask, _ := face["ask"].(string)
+	row := AskRow(c, t, reason, ask, comment, face, nil, nil, scrub)
+	row["asked_at"] = at
+	return row
+}
+
+// fencedChoices is case c with the agent's choices as a face shows them:
+// sanitised as every agent text, since a press posts one as the human's
+// answer.
+func (r *Runner) fencedChoices(t Task, c Case) Case {
+	raw := factStrings(c, "choices")
+	if len(raw) == 0 {
+		return c
+	}
+	safe := make([]string, len(raw))
+	for i, s := range raw {
+		safe[i] = r.untrusted(t, s)
+	}
+	c.Facts = maps.Clone(c.Facts)
+	c.Facts["choices"] = safe
+	return c
+}
+
+// recommend is up's recommendation as a face takes it: the action rung 2
+// proposed, else the one the rung below recommended, with its grounds;
+// none for no hand-up. fence fences agent text, scrub masks secrets.
+func (up *HandUp) recommend(fence, scrub func(string) string) Recommendation {
+	if up == nil {
+		return Recommendation{}
+	}
+	rec := Recommendation{Action: up.Action, By: recommendedBy(up), Grounds: up.recommendation(fence, scrub)}
+	if up.Preselected != nil {
+		rec.Action = verdictKey(up.Preselected.Action, up.Preselected.Args)
+	}
+	if rec.Action == "" || rec.Action == RungHandUp {
+		return Recommendation{}
+	}
+	return rec
+}
+
+// agentView is what the rungs below the human found on the case, the
+// planner's note before it: the agent's view beside the face. fence fences
+// agent text, scrub masks secrets.
+func agentView(note string, up *HandUp, fence, scrub func(string) string) string {
+	parts := []string{note}
+	if up != nil {
+		if up.Found != "" {
+			parts = append(parts, fence(scrub(foundLine(up))))
+			if up.Before != "" {
+				parts = append(parts, fence(scrub(beforeLine(up.Before))))
+			}
+		}
+		parts = append(parts, up.Note)
+	}
+	return strings.TrimSpace(strings.Join(slices.DeleteFunc(parts, func(p string) bool { return p == "" }), "\n\n"))
 }
 
 // heldAsk is the held question_asked row of case c of card t: factoryd's
@@ -1815,21 +1976,40 @@ func (r *Runner) heldAsk(ctx context.Context, t Task, c Case) map[string]any {
 }
 
 // fileFace files the issue of factoryd's own human card t, which has none,
-// at its face: question q asked by the held row's asker, labelled with the
-// row's labels and the wait on a human. A face that failed after its issue
+// at its face: the held row's question, the card's own, with the rungs'
+// view under its info, the face's answers by their labels and the face's
+// recommendation, which names one of them, labelled with the row's labels
+// and the wait on a human. A face that failed after its issue
 // was filed takes that issue on again. A routine's run follows its card to
 // the issue.
-func (r *Runner) fileFace(ctx context.Context, t Task, repo Repo, q HumanQuestion, held map[string]any) (Task, error) {
-	by, _ := held["by"].(string)
-	labels := stringsOf(held["labels"])
-	title := askTitle(q)
-	reuse, err := strandedIssue(ctx, r.store, r.forgejo, repo, title)
+func (r *Runner) fileFace(ctx context.Context, t Task, repo Repo, held, face map[string]any) (Task, error) {
+	q := *questionOfAsk(held)
+	str := func(k string) string { s, _ := face[k].(string); return s }
+	q.Info = strings.TrimSpace(q.Info + "\n\n" + str("info"))
+	offers, _ := face["offers"].([]AskOffer)
+	if len(offers) > 0 {
+		// the issue lists the answers as the card labels them
+		q.Choices = nil
+		for _, o := range offers {
+			q.Choices = append(q.Choices, QuestionChoice{Value: o.Value, Label: o.Label})
+		}
+	}
+	if rec := str("recommendation"); rec != "" {
+		// the answer the face suggests, by its label, then its grounds
+		q.Recommendation = rec
+		pick, _ := face["preselected"].(map[string]any)
+		if i := slices.IndexFunc(offers, func(o AskOffer) bool { return o.Value == pick["action"] }); i >= 0 {
+			q.Recommendation = "\u201c" + offers[i].Label + "\u201d: " + rec
+		}
+	}
+	b := HumanCardText(q, "", false)
+	reuse, err := strandedIssue(ctx, r.store, r.forgejo, repo, b.Title)
 	if err != nil {
 		return t, err
 	}
 	asking := t
 	asking.Status = "waiting-human"
-	filed, _, err := fileOnIssue(ctx, r.forgejo, repo, title, questionBody(q, factorydFooter(by)), labels, asking, reuse, func(f Task) (Task, error) {
+	filed, _, err := fileOnIssue(ctx, r.forgejo, repo, b, stringsOf(held["labels"]), asking, reuse, func(f Task) (Task, error) {
 		return f, r.store.SetTaskIssue(ctx, f.ID, f.IssueNumber)
 	})
 	if err != nil {
@@ -1845,7 +2025,7 @@ func (r *Runner) fileFace(ctx context.Context, t Task, repo Repo, q HumanQuestio
 }
 
 // faceKeys are the keys of a question_asked row that make its face.
-var faceKeys = []string{"info", "recommendation", "recommended_by", "choices", "offers", "preselected"}
+var faceKeys = []string{"ask", "why", "story", "info", "recommendation", "recommended_by", "choices", "offers", "preselected", "findings"}
 
 // repeatFace fills the face keys asked lacks from the newest ask of case c
 // that has them, so an ask repeated (a restart's) is a whole face too.
@@ -1859,7 +2039,7 @@ func (r *Runner) repeatFace(ctx context.Context, t Task, c Case, asked map[strin
 		if id, _ := toInt(e.Detail["case_id"]); c.ID != 0 && int64(id) != c.ID {
 			continue
 		}
-		if _, whole := e.Detail["offers"]; !whole && e.Detail["info"] == nil {
+		if _, whole := e.Detail["story"]; !whole {
 			continue
 		}
 		for _, k := range faceKeys {

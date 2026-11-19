@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"net/http"
 	"strconv"
@@ -163,8 +164,8 @@ func (t *turn) stop(refusal *policy.Refusal) bool {
 			t.fail("The chat's task could not be read.")
 			return true
 		}
-		row.Content = fmt.Sprintf("The judgment budget for %s is used up: €%.2f of €%.2f spent, and the next call does not fit what is left.",
-			time.Now().UTC().Format("January"), task.EnforcedSpent(), task.BudgetEUR)
+		row.Content = fmt.Sprintf("The judgment budget for %s is used up: %s of %s EUR spent, and the next call does not fit what is left.",
+			time.Now().UTC().Format("January"), textutil.EUR(task.EnforcedSpent()), textutil.EUR(task.BudgetEUR))
 		fund = t.c.fundState(ctx, t.c.askFund(ctx, t.p, task), t.a.s.user, t.p.Repository)
 	}
 	row.Content += "\n" + refusal.Reason
@@ -245,7 +246,7 @@ func (c *Console) chatFundAndGo(w http.ResponseWriter, r *http.Request) {
 	defer c.turns.leave(t.key())
 	t.detach()
 	t.open(w)
-	t.send("applied", map[string]string{"tool": "fund the chat", "result": fmt.Sprintf("Raised the judgment budget from €%.2f to €%.2f.", from, to)})
+	t.send("applied", map[string]string{"tool": "fund the chat", "result": fmt.Sprintf("Raised the judgment budget from %s to %s EUR.", textutil.EUR(from), textutil.EUR(to))})
 	t.takeTurn(pos, wait)
 	if !t.stopRow() {
 		t.send("done", struct{}{})

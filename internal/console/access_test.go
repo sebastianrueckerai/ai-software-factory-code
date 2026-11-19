@@ -26,6 +26,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	members(r)
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
+	// the card of the pending resource request 3, which its door's refusal names
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}})
 	bk, bs := memberLogin(t, r, "bob")
 	ak, as := memberLogin(t, r, "alice")
 
@@ -80,9 +82,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 			continue
 		}
 		cookie, csrf, name := bk, bs.csrf, "ai-software-factory-code"
-		subject, user := "task t-c", "bob"
+		subject, user := "card #5", "bob"
 		if rule.scope == scApproval {
-			subject = "approval request 3"
+			subject = "card #21"
 		}
 		if rule.scope == scProject || rule.scope == scChat {
 			cookie, csrf, name, subject, user = ak, as.csrf, "demo", "demo", "alice"
@@ -96,9 +98,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 49 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /mcp", "POST /notifications/telegram/code",
+	if pages != 35 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /mcp", "POST /notifications/telegram/code",
 		"POST /notifications/disconnect", "POST /notifications/level", "POST /notifications/tokens", "POST /notifications/tokens/revoke", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 49 driven and only the telegram webhook, /mcp, the notifications' posts, the chat tokens' posts, logout and the documents' save skipped", pages, skipped)
+		t.Fatalf("%d POST routes driven, skipped %v: want 35 driven and only the telegram webhook, /mcp, the notifications' posts, the chat tokens' posts, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -124,7 +126,7 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 			continue
 		}
 		rule := accessTable[tool.name]
-		trn, subject, project, who := turnOf(bs, code), "task t-c", "ai-software-factory-code", "bob"
+		trn, subject, project, who := turnOf(bs, code), "card #5", "ai-software-factory-code", "bob"
 		if rule.scope == scFactory {
 			trn = turnOf(bs, demo)
 		}
@@ -143,8 +145,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 38 || len(tools) != 82 {
-		t.Fatalf("%d of %d tools checked as writes: want 38 of 82", writes, len(tools))
+	if writes != 37 || len(tools) != 81 {
+		t.Fatalf("%d of %d tools checked as writes: want 37 of 81", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -237,9 +239,9 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 	for _, p := range r.c.postRoutes() {
 		rule := accessTable[p.pattern]
 		cookie, s, name := ak, as, "ai-software-factory-code"
-		subject := "task t-c"
+		subject := "card #5"
 		if rule.scope == scApproval {
-			subject = "approval request 3"
+			subject = "card #21"
 		}
 		if rule.scope == scProject {
 			cookie, s, name, subject = bk, bs, "demo", "demo"
@@ -279,8 +281,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 38 {
-		t.Fatalf("%d write tools driven: want 38", writes)
+	if writes != 37 {
+		t.Fatalf("%d write tools driven: want 37", writes)
 	}
 }
 
@@ -302,12 +304,120 @@ func TestChatTimelineIsACard(t *testing.T) {
 	}
 	ak, _ := memberLogin(t, r, "alice")
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+task.ID+"/timeline", nil), ak); rec.Code != http.StatusForbidden ||
-		strings.TrimSpace(rec.Body.String()) != "you write no project of task "+task.ID {
+		strings.TrimSpace(rec.Body.String()) != "you write no project of card "+task.ID {
 		t.Fatalf("demo's chat task timeline as alice = %d %q, want the writer refusal", rec.Code, rec.Body)
 	}
 	r.ledger.costs = policy.Costs{Tasks: []policy.TaskCost{{TaskID: task.ID, EUR: 1.25}}}
 	costs := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ak)
 	if costs.Code != http.StatusOK || !strings.Contains(costs.Body.String(), `href="/tasks/`+task.ID+`/timeline"`) {
 		t.Fatalf("the costs page as alice = %d, want demo's chat task linked:\n%s", costs.Code, costs.Body)
+	}
+}
+
+// The opened card's answers keep their doors' rules: a writer who is no
+// approver sees the merge disabled beside the line that says so, and gets
+// 403 for an approver's answer, on a merge case (approve_merge), on a
+// card's own door (retry, replan, extend, fund) and on any case that offers
+// one (replan, extend, fund on a gate stop), and nothing changes. A case's
+// other actions leave out what the writer may not press.
+func TestAWriterPressesNoApproversAnswer(t *testing.T) {
+	r := newRig(t)
+	withRequestCards(r)
+	k, err := factoryd.RequestCase(r.approvals.get(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.ID, k.Status = 90, factoryd.CaseAtHuman
+	r.openCases = map[string][]factoryd.Case{"t-m": {k}, "t-g": {{ID: 91, TaskID: "t-g", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman,
+		Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Kind, f.Gate, f.Attempts = factoryd.CaseGateStop, "review", 1 })}}}
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 22, BudgetEUR: 2}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 23}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 24, BudgetEUR: 2}})
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
+	ck, s := r.loggedIn(t)
+	ask := askBlockOf(t, drawer(t, r, ck, "t-m", "overview"))
+	if !strings.Contains(ask, `<p class="o-who">Only the project&#39;s approvers may choose Merge it.</p>`) ||
+		!strings.Contains(ask, `<button type="button" class="pick" disabled>Merge it</button>`) || !strings.Contains(ask, `data-answer="deny_merge"`) {
+		t.Errorf("a writer's merge ask lacks the line, the disabled merge or the return:\n%s", ask)
+	}
+	before := r.events.count()
+	for _, tc := range []struct {
+		id   string
+		form url.Values
+	}{
+		{"t-m", url.Values{"case_id": {"90"}, "action": {factoryd.ActApproveMerge}}},
+		{"t-f", url.Values{"action": {factoryd.ActRetry}}},
+		{"t-run", url.Values{"action": {factoryd.ActReplan}, "replan.note": {"cut it smaller"}}},
+		{"t-run", url.Values{"action": {factoryd.ActExtend}, "extend.sessions": {"1"}}},
+		{"t-run", url.Values{"action": {factoryd.ActFund}, "fund.eur": {"1.00"}}},
+		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActReplan}, "replan.note": {"cut it smaller"}}},
+		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}}},
+		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActFund}, "fund.eur": {"1.00"}}},
+	} {
+		tc.form.Set("csrf", s.csrf)
+		if rec := r.do(post("/tasks/"+tc.id+"/resolve", tc.form), ck); rec.Code != http.StatusForbidden {
+			t.Errorf("%s by a writer on %s = %d, want 403: %s", tc.form.Get("action"), tc.id, rec.Code, rec.Body)
+		}
+	}
+	if r.approvals.get(4).Status != "pending" || r.events.count() != before || len(r.acted) != 0 {
+		t.Errorf("a refused press acted: request %s, %d rows, Act %+v", r.approvals.get(4).Status, r.events.count()-before, r.acted)
+	}
+	if more := otherActionsOf(t, drawer(t, r, ck, "t-g", "overview")); strings.Contains(more, `data-answer="replan"`) ||
+		strings.Contains(more, `data-answer="extend"`) || strings.Contains(more, `data-answer="fund"`) {
+		t.Errorf("the case's other actions offer a writer an approver's action:\n%s", more)
+	}
+	if k, _, _ := r.tasks.Task(t.Context(), "t-run"); k.BudgetEUR != 2 || k.Status != "running" {
+		t.Errorf("t-run = %s with %.2f EUR, want running with 2.00", k.Status, k.BudgetEUR)
+	}
+}
+
+// More sessions for a case's cap is an approver's on every door: the
+// opened card's Allow more sessions and the chat's grant_session give one
+// verdict for the same human. A writer is refused on both and Act takes
+// nothing; an approver reaches Act on both.
+func TestBothDoorsGiveOneVerdictOnMoreSessions(t *testing.T) {
+	for _, tc := range []struct {
+		who  string
+		acts int
+	}{{"alice", 0}, {"sebastian", 2}} {
+		r := newRig(t)
+		r.openCases = map[string][]factoryd.Case{"t-g": {{ID: 91, TaskID: "t-g", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman,
+			Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Kind, f.Gate, f.Attempts = factoryd.CaseGateStop, "review", 1 })}}}
+		r.tasks.tasks = append(r.tasks.tasks,
+			factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 24, BudgetEUR: 2}})
+		r.fg.user, r.repoWriters["sf/code"] = tc.who, []string{"sebastian", "alice"}
+		r.forgetWriters()
+		ck, s := r.loggedIn(t)
+		press := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"91"}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}}), ck)
+		_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-g", Text: "Go on"})
+		var no *refusal
+		refused := errors.As(err, &no) && no.status == http.StatusForbidden
+		switch {
+		case tc.acts == 0 && (press.Code != http.StatusForbidden || !refused):
+			t.Errorf("%s, a writer: the press = %d, the chat's grant = %v; want both refused with 403", tc.who, press.Code, err)
+		case tc.acts > 0 && (press.Code != http.StatusSeeOther || err != nil):
+			t.Errorf("%s, an approver: the press = %d: %s, the chat's grant = %v; want both taken", tc.who, press.Code, press.Body, err)
+		}
+		if len(r.acted) != tc.acts {
+			t.Errorf("%s: Act took %+v, want %d answers", tc.who, r.acted, tc.acts)
+		}
+	}
+}
+
+// A viewer who may give none of an ask's answers sees its question and one
+// line that names who can answer, and no button: a writer on a plan's
+// criteria request, whose every answer is an approver's.
+func TestAViewerWhoMayAnswerNothingSeesWhoCan(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
+	ck, _ := r.loggedIn(t)
+	ask := askBlockOf(t, drawer(t, r, ck, "t-plan", "overview"))
+	if !strings.Contains(ask, `<p class="o-question">`) || !strings.Contains(ask, `<p class="o-who">Only the project&#39;s approvers may answer this.</p>`) ||
+		strings.Contains(ask, "<button") || strings.Contains(ask, `class="answer`) {
+		t.Errorf("the ask of a viewer who may answer nothing:\n%s", ask)
 	}
 }

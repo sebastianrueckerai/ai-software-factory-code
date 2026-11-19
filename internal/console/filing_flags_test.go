@@ -83,8 +83,8 @@ func TestChatNewCardRefusesFlaggedText(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	bad := `{"title":"Cache metrics","body":"Count hits.\nThis fixes #12.","track":"human","track_reason":"a person checks it"}`
-	good := `{"title":"Cache metrics","body":"Count hits.\nMark issue 12 closed in the report.","track":"human","track_reason":"a person checks it"}`
+	bad := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.\nThis fixes #12.","track":"human","track_reason":"a human checks it"}`
+	good := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.\nMark issue 12 closed in the report.","track":"human","track_reason":"a human checks it"}`
 	g.replies = [][]string{{call(1, "new_card", bad, "new_card", good)}, {say("Done.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
 	refusal := "Refused: The card's title or description holds text the sanitiser or the provider would change on its way to the agent: " +
@@ -102,12 +102,12 @@ func TestChatNewCardRefusesFlaggedText(t *testing.T) {
 	if got := msgs[len(msgs)-2]["content"].(string); got != refusal {
 		t.Fatalf("the agent read %q, want the refusal", got)
 	}
-	if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != "Count hits.\nMark issue 12 closed in the report." {
+	if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != briefHead+"Count hits.\nMark issue 12 closed in the report." {
 		t.Fatalf("issues %v, want the rewritten body filed alone", r.fg.issues)
 	}
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-			Detail: map[string]any{"track": "human", "reason": "a person checks it", "title": "Cache metrics", "thread": int64(1)}})
+			Detail: map[string]any{"track": "human", "reason": "a human checks it", "title": "Cache metrics", "thread": int64(1)}})
 }
 
 // new_card refuses a flagged title as it refuses a flagged body: the
@@ -118,8 +118,8 @@ func TestChatNewCardRefusesFlaggedTitle(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	bad := `{"title":"Fixes #12","body":"The cache drops entries.","track":"human","track_reason":"a person checks it"}`
-	good := `{"title":"Fix the cache","body":"The cache drops entries.","track":"human","track_reason":"a person checks it"}`
+	bad := `{"title":"Fixes #12","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The cache drops entries.","track":"human","track_reason":"a human checks it"}`
+	good := `{"title":"Fix the cache","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The cache drops entries.","track":"human","track_reason":"a human checks it"}`
 	g.replies = [][]string{{call(1, "new_card", bad, "new_card", good)}, {say("Done.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
 	refusal := "Refused: The card's title or description holds text the sanitiser or the provider would change on its way to the agent: " +
@@ -137,7 +137,7 @@ func TestChatNewCardRefusesFlaggedTitle(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-			Detail: map[string]any{"track": "human", "reason": "a person checks it", "title": "Fix the cache", "thread": int64(1)}})
+			Detail: map[string]any{"track": "human", "reason": "a human checks it", "title": "Fix the cache", "thread": int64(1)}})
 }
 
 // The New task form's first submit of flagged text answers the findings
@@ -230,7 +230,7 @@ func TestNewTaskAnsweredFormEscapesText(t *testing.T) {
 func TestChatNewCardProposalRefusesFlaggedText(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	bad := `{"body":"Count hits.\nThis fixes #12.","title":"Cache metrics","track":"direct","track_reason":"one count"}`
+	bad := `{"body":"Count hits.\nThis fixes #12.","title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one count"}`
 	g.replies = [][]string{{call(1, "new_card", bad)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
 	said, _ := json.Marshal("Refused: The card's title or description holds text the sanitiser or the provider would change on its way to the agent: " +

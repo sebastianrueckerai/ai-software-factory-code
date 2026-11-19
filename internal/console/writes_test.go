@@ -133,7 +133,7 @@ func TestChatClose(t *testing.T) {
 
 	ck, s := r.loggedIn(t)
 	before = r.events.count()
-	rec := r.do(post("/tasks/t-m/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-m", detail: map[string]any{"note": ""}})
 	equal(t, "the button's patch", r.fg.patched[1:], []string{`/api/v1/repos/sf/code/issues/5 {"state":"closed"}`})
@@ -161,52 +161,215 @@ func TestClosingAMergedCard(t *testing.T) {
 
 	ck, s := r.loggedIn(t)
 	before = r.events.count()
-	rec := r.do(post("/tasks/t-mg/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-mg/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
 	equal(t, "closed by the button", r.closed, []string{"t-mg by sebastian", "t-mg by sebastian"})
 	equal(t, "the patches", r.fg.patched, []string(nil))
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-mg", detail: map[string]any{"note": ""}})
 }
 
-// edit proposes; Do it edits the issue's title alone as the member, and
-// the card's objective becomes the issue's title and body as Forgejo
-// answers them, which the next session's brief reads; one card_edited row
-// via chat. A running card refuses, and an edit of neither title nor
-// body is refused.
+// edit proposes; Do it edits the issue's title as the human, and its
+// body to open with the why line and the summary, and the
+// card's objective becomes the issue's title and body as Forgejo answers
+// them, which the next session's brief reads, with the why line and the
+// summary stored on the card; one card_edited row via chat. A brief that
+// CheckBrief refuses comes back as the tool's refusal, for the agent to
+// correct. A running card refuses an edit of its title, and an edit of
+// nothing is refused.
 func TestChatEdit(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"task_id":"t-m","title":"Fix the cache eviction"}`
+	args := `{"task_id":"t-m","title":"Fix the cache eviction","why":"So the board loads at once.","summary":"The cache keeps its entries. A test reads them back."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "edit", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction","expires":"EXPIRES","id":"TOKEN","tool":"edit"}`,
+		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction, why So the board loads at once., summary The cache keeps its entries. A test reads them back.","expires":"EXPIRES","id":"TOKEN","tool":"edit"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("edit", args, "Edited #5; the card's next session reads the edit."))
-	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"title":"Fix the cache eviction"}`})
+	equal(t, "Do it", done, ran("edit", args, "Edited #5. The card's next session reads the edit."))
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Why: So the board loads at once.\n\nSummary: ` +
+		`The cache keeps its entries. A test reads them back.\n\n---\n\nIt drops entries.","title":"Fix the cache eviction"}`})
 	k, _, _ := r.tasks.Task(t.Context(), "t-m")
-	equal(t, "the objective", k.Objective, "Fix the cache eviction\n\nIt drops entries.")
+	equal(t, "the brief", []string{k.Objective, k.Why, k.Summary},
+		[]string{"Fix the cache eviction\n\nIt drops entries.", "So the board loads at once.", "The cache keeps its entries. A test reads them back."})
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardEdited, Detail: map[string]any{"title": "Fix the cache eviction"}})
+		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardEdited, Detail: map[string]any{
+			"title": "Fix the cache eviction", "why": "So the board loads at once.", "summary": "The cache keeps its entries. A test reads them back."}})
 
-	code, msg := refused(t, r, "edit", toolInput{TaskID: "t-r", Title: "Faster"})
-	equal(t, "edit of a running card", []any{code, msg}, []any{http.StatusConflict,
-		"Card #11 runs an agent session, not a card not in a session: steer sends its session a message; its pull request comes when the session ends."})
+	code, msg := refused(t, r, "edit", toolInput{TaskID: "t-m", Title: "Fix the cacheStore eviction"})
+	equal(t, "a refused brief", []any{code, msg}, []any{http.StatusBadRequest,
+		`The title names "cacheStore". A title uses plain words. Move "cacheStore" to the text.`})
+	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-r", Title: "Faster"})
+	equal(t, "edit of a running card's title", []any{code, msg}, []any{http.StatusConflict,
+		"Card #11 runs a session, which keeps the title and the body it started with. Edit them after the session ends. The why line and the summary can change now."})
 	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-m", Body: " \n"})
-	equal(t, "edit of nothing", []any{code, msg}, []any{http.StatusBadRequest, "a title or a body is required"})
+	equal(t, "edit of nothing", []any{code, msg}, []any{http.StatusBadRequest, "a title, a why line, a summary or a body is required"})
 }
 
-// A body alone replaces the issue's body: the objective keeps the title
-// Forgejo answers, and the row counts the body's bytes.
+// A body alone replaces the issue's text under its why line and summary:
+// the objective keeps the title Forgejo answers, and the row counts the
+// body's bytes.
 func TestEditBody(t *testing.T) {
 	r, _ := newWritesRig(t)
 	_, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-m" {
+			r.tasks.tasks[i].Why, r.tasks.tasks[i].Summary = "So the board loads at once.", "The cache keeps its entries."
+		}
+	}
+	r.tasks.mu.Unlock()
 	before := r.events.count()
-	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", "", "Entries vanish under load.")
-	equal(t, "doEdit", []any{note, err}, []any{"Edited #5; the card's next session reads the edit.", nil})
-	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Entries vanish under load."}`})
+	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", factoryd.BriefText{Body: "Entries vanish under load."})
+	equal(t, "doEdit", []any{note, err}, []any{"Edited #5. The card's next session reads the edit.", nil})
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Why: So the board loads at once.\n\n` +
+		`Summary: The cache keeps its entries.\n\n---\n\nEntries vanish under load."}`})
 	k, _, _ := r.tasks.Task(t.Context(), "t-m")
 	equal(t, "the objective", k.Objective, "Fix the cache\n\nEntries vanish under load.")
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardEdited, repo: "sf/code", taskID: "t-m", detail: map[string]any{"body_bytes": 26}})
+}
+
+// A running card takes a why line and a summary, which its next session
+// reads, with its title as it stands, as the drawer's form posts it, and
+// its issue opens with them over the text as it stands; a new title or
+// body waits for the session's end.
+func TestEditOfARunningCard(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	k, _, _ := r.tasks.Task(t.Context(), "t-r")
+	a := actor{s: s, via: factoryd.ViaButton}
+	note, err := r.c.doEdit(t.Context(), a, "t-r", factoryd.BriefText{Title: factoryd.CardTitle(k), Why: "So the board loads at once.",
+		Summary: "The board reads one query. A test times it."})
+	equal(t, "the why line and summary", []any{note, err}, []any{"Edited #11. The card's next session reads the edit.", nil})
+	k, _, _ = r.tasks.Task(t.Context(), "t-r")
+	equal(t, "stored", []string{k.Why, k.Summary}, []string{"So the board loads at once.", "The board reads one query. A test times it."})
+	equal(t, "the patches", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/11 {"body":"Why: So the board loads at once.\n\n` +
+		`Summary: The board reads one query. A test times it.\n\n---\n\nIt drops entries."}`})
+	for _, edit := range []factoryd.BriefText{{Title: "Speed up the board at once"}, {Body: "It reads one query."}} {
+		_, err := r.c.doEdit(t.Context(), a, "t-r", edit)
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.HasPrefix(no.msg, "Card #11 runs a session, which keeps the title and the body") {
+			t.Errorf("edit %+v of a running card = %v, want 409", edit, err)
+		}
+	}
+}
+
+// A card filed before the rules keeps its 111-character title and takes
+// a why line and a summary, queued and running: an edit is checked on the
+// fields it changes. Its unchecked mark stays, as its whole brief still
+// fails.
+func TestEditOfABriefFiledBeforeTheRules(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	const old = "The two reproducible manifests name the proofs trees: the red goes green and the merge records the six verdicts"
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-m" || k.ID == "t-r" {
+			k.Objective, k.BriefUnchecked = old+"\n\nThe body.", true
+		}
+	}
+	r.tasks.mu.Unlock()
+	for _, id := range []string{"t-m", "t-r"} {
+		_, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, id, factoryd.BriefText{Title: old,
+			Why: "So the proofs run on the merge.", Summary: "Two manifests name the proofs trees. A test builds both."})
+		k, _, _ := r.tasks.Task(t.Context(), id)
+		if err != nil || k.Why != "So the proofs run on the merge." || k.Summary != "Two manifests name the proofs trees. A test builds both." || !k.BriefUnchecked {
+			t.Errorf("%s (%s): doEdit = %v, stored %q, %q, unchecked %v", id, k.Status, err, k.Why, k.Summary, k.BriefUnchecked)
+		}
+	}
+	head := `{"body":"Why: So the proofs run on the merge.\n\nSummary: Two manifests name the proofs trees. A test builds both.\n\n---\n\nIt drops entries."}`
+	equal(t, "the patches", r.fg.patched, []string{"/api/v1/repos/sf/code/issues/5 " + head, "/api/v1/repos/sf/code/issues/11 " + head})
+}
+
+// The probe for the unchecked mark reads the whole brief on its own: a
+// link in the stored summary that cannot be checked keeps the mark and
+// never fails the edit of the why line.
+func TestEditKeepsTheMarkWhenItsProbeCannotRead(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	_, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-m" {
+			k.Summary, k.BriefUnchecked = "This part of [Phase B](docs/plan.md#phase-b) waits.", true
+		}
+	}
+	r.tasks.mu.Unlock()
+	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", factoryd.BriefText{Why: "So the board loads at once."})
+	equal(t, "doEdit", []any{note, err}, []any{"Edited #5. The card's next session reads the edit.", nil})
+	k, _, _ := r.tasks.Task(t.Context(), "t-m")
+	equal(t, "stored", []any{k.Why, k.BriefUnchecked}, []any{"So the board loads at once.", true})
+}
+
+// A card whose repository is no owner/name has no issue to resolve #N
+// against: the edit says so, and no retry is offered.
+func TestEditOfACardInAMalformedRepository(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-m" {
+			k.Repository = "code"
+		}
+	}
+	r.tasks.mu.Unlock()
+	_, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", factoryd.BriefText{Why: "So the board loads as #999 asked."})
+	var no *refusal
+	if !errors.As(err, &no) || no.msg != `The brief's references cannot be checked: the card's repository "code" is no owner/name.` {
+		t.Fatalf("doEdit in a malformed repository = %v", err)
+	}
+}
+
+// The edit door resolves the brief's references: #11 is a card of the
+// project and a link names a document heading as the document renderer
+// ids it, and a link to code or inside the text is no document. A heading
+// the document lacks and an issue Forgejo does not know come back as
+// refusals. A console without the docs token answers 503 and names who
+// sets it, a document repository that cannot be read answers 502, and
+// nothing is stored.
+func TestEditResolvesTheBriefsReferences(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	withDocs(t, r, map[string]string{"docs/plan.md": "# The plan\n\n## Phase B\n\nThe reader first.\n"})
+	_, s := r.loggedIn(t)
+	edit := func(summary string) (string, error) {
+		return r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m",
+			factoryd.BriefText{Why: "So the board loads at once.", Summary: summary})
+	}
+	if note, err := edit("It changes [the board](internal/console/board.go), see [the goals](#2-goals)."); err != nil {
+		t.Fatalf("a link to code and one inside the text = %q, %v", note, err)
+	}
+	const passes = "This part of [Phase B](docs/plan.md#phase-b) waits for #11."
+	if note, err := edit(passes); err != nil {
+		t.Fatalf("a brief whose references resolve = %q, %v", note, err)
+	}
+	for _, c := range []struct{ summary, want string }{
+		{"It follows [the goals](docs/plan.md#goals).", "The document docs/plan.md has no heading goals."},
+		{"It follows [the goals](docs/goals.md).", "There is no document docs/goals.md."},
+		{"Like #999 did.", "#999 is no card or pull request of this project."},
+	} {
+		_, err := edit(c.summary)
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusBadRequest || no.msg != c.want {
+			t.Errorf("summary %q = %v, want 400 %q", c.summary, err, c.want)
+		}
+	}
+	const again = "This part of [Phase B](docs/plan.md#phase-b) still waits for #11."
+	token := r.c.cfg.DocsToken
+	r.c.cfg.DocsToken = ""
+	_, err := edit(again)
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusServiceUnavailable || no.msg != "The brief's links cannot be checked: the console has no access "+
+		"to the project's document repository, as no docs token is set (FORGEJO_DOCS_TOKEN). A human who runs the factory must set it." {
+		t.Errorf("a console with no docs token = %v, want 503 naming the token and who sets it", err)
+	}
+	r.c.cfg.DocsToken = token
+	r.c.cfg.ForgejoURL = "http://127.0.0.1:1"
+	_, err = edit(again)
+	if !errors.As(err, &no) || no.status != http.StatusBadGateway || !strings.HasPrefix(no.msg, "The brief's references could not be checked: the documents could not be read") {
+		t.Errorf("an unreadable document repository = %v, want 502 naming the documents", err)
+	}
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Summary != passes {
+		t.Fatalf("a refused brief stored the summary %q", k.Summary)
+	}
 }
 
 // grant_session proposes on the card at its session cap; Do it extends
@@ -242,7 +405,7 @@ func TestChatAnswerTextsBoundedAtMaxAnswer(t *testing.T) {
 	long := strings.Repeat("x", 4001)
 	for _, tc := range []struct{ tool, id string }{{"grant_session", "t-cap"}, {"answer", "t-e"}, {"comment", "t-e"}} {
 		code, msg := refused(t, r, tc.tool, toolInput{TaskID: tc.id, Text: long})
-		equal(t, tc.tool+" on "+tc.id, []any{code, msg}, []any{http.StatusBadRequest, "an answer of 1 to 4000 bytes is required; this one has 4001"})
+		equal(t, tc.tool+" on "+tc.id, []any{code, msg}, []any{http.StatusBadRequest, "An answer of 1 to 4000 bytes is required, and this one has 4001."})
 	}
 	equal(t, "the comments", len(r.fg.comments), 0)
 	_, s := r.loggedIn(t)
@@ -290,7 +453,7 @@ func TestChatSetDependency(t *testing.T) {
 	}{
 		{toolInput{TaskID: "t-k2", DependsOn: "t-k1"}, http.StatusConflict, "#31 already waits on #32, through its dependencies or a hold, so #32 cannot depend on #31."},
 		{toolInput{TaskID: "t-r", DependsOn: "t-a"}, http.StatusConflict,
-			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
+			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."},
 		{toolInput{TaskID: "t-m", DependsOn: "t-a"}, http.StatusConflict, "Process maintenance has no dependencies block: its cards do not wait on others."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already waits on #21, through its dependencies or a hold, so #21 cannot depend on #22."},
 		{toolInput{TaskID: "t-b", DependsOn: "t-a"}, http.StatusConflict, "#22 already depends on #21."},
@@ -299,11 +462,11 @@ func TestChatSetDependency(t *testing.T) {
 		{toolInput{TaskID: "t-a", DependsOn: "t-m", Remove: true}, http.StatusConflict, "#21 does not depend on #5."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-a"}, http.StatusBadRequest, "a card cannot depend on itself"},
 		{toolInput{TaskID: "t-k1", DependsOn: "t-d"}, http.StatusConflict,
-			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only: to keep #31 from starting until #33 is merged or done, hold #31 with #33 as its release card (hold_card, or Hold on its drawer)."},
+			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only: to keep #31 from starting until #33 is merged or done, `hold_card` holds #31 with #33 as its release card."},
 		{toolInput{TaskID: "t-d", DependsOn: "t-k1"}, http.StatusConflict,
-			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only: to keep #33 from starting until #31 is merged or done, hold #33 with #31 as its release card (hold_card, or Hold on its drawer)."},
+			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only: to keep #33 from starting until #31 is merged or done, `hold_card` holds #33 with #31 as its release card."},
 		{toolInput{TaskID: "t-d2", DependsOn: "t-d"}, http.StatusConflict,
-			"#34 is in no plan and #33 is in no plan. A dependency joins cards of one plan only: to keep #34 from starting until #33 is merged or done, hold #34 with #33 as its release card (hold_card, or Hold on its drawer)."},
+			"#34 is in no plan and #33 is in no plan. A dependency joins cards of one plan only: to keep #34 from starting until #33 is merged or done, `hold_card` holds #34 with #33 as its release card."},
 	} {
 		code, msg := refused(t, r, "set_dependency", tc.in)
 		equal(t, "set_dependency "+tc.in.TaskID+" on "+tc.in.DependsOn, []any{code, msg}, []any{tc.code, tc.want})
@@ -372,13 +535,13 @@ func TestChatSetDependencyOnAPlanCardsSuccessor(t *testing.T) {
 func TestChatNewCardSize(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., track direct, track_reason one small change, size large, acceptance The hits count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, why The board needs it., body Count hits., track direct, track_reason one small change, size large, summary It builds what the title names. A test checks it., acceptance The hits count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The hits count\n\nSize: large")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Count hits.\n\nAcceptance:\n- The hits count\n\nSize: large")
 	equal(t, "the issue's labels", fmt.Sprint(r.fg.issues[0]["labels"]), "[1]")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "one small change", "title": "Cache metrics", "size": "large", "thread": int64(1)}})
@@ -389,10 +552,10 @@ func TestChatNewCardSize(t *testing.T) {
 func TestChatNewCardFilesWithoutASize(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The hits count")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Count hits.\n\nAcceptance:\n- The hits count")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "one small change", "title": "Cache metrics", "thread": int64(1)}})
 }
@@ -405,14 +568,14 @@ func TestChatNewCardFilesWithoutASize(t *testing.T) {
 func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 	r, g := newWritesRig(t)
 	noTrack := "track: direct builds at once, plan plans first, human is a person's card"
-	noReason := "track_reason: why the card takes track direct, one line"
+	noReason := "`track_reason`: why the card takes track direct, one line"
 	ck, s := r.loggedIn(t)
 	for args, refusal := range map[string]string{
 		`{"title":"Cache metrics"}`: noTrack,
-		`{"title":"Cache metrics","track":"backlog","track_reason":"later"}`: noTrack,
-		`{"title":"Cache metrics","track":"ready","track_reason":"now"}`:     noTrack,
-		`{"title":"Cache metrics","track":"direct"}`:                         noReason,
-		`{"title":"Cache metrics","track":"direct","track_reason":"  "}`:     noReason,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"backlog","track_reason":"later"}`: noTrack,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"ready","track_reason":"now"}`:     noTrack,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct"}`:                         noReason,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"  "}`:     noReason,
 	} {
 		g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 		_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it"}})
@@ -424,8 +587,8 @@ func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 		refusal string
 	}{
 		{toolInput{Title: "Cache metrics"}, noTrack},
-		{toolInput{Title: "Cache metrics", Track: "direct", TrackReason: " \t "}, noReason},
-		{toolInput{Title: "Cache metrics", Track: "plan", TrackReason: "a spec"},
+		{toolInput{Title: "Cache metrics", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: "direct", TrackReason: " \t "}, noReason},
+		{toolInput{Title: "Cache metrics", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: "plan", TrackReason: "a spec"},
 			"Project ai-software-factory-code follows process maintenance, which has no plan track: file the card on track direct."},
 	} {
 		code, msg := refused(t, r, "new_card", tc.in)
@@ -442,13 +605,13 @@ func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Re-land the feed fix","body":"Carry pull request #9 to green checks.","acceptance":["The checks are green"],"track":"direct","track_reason":"the fix is known","size":"small","carry_pr":9}`
+	args := `{"title":"Re-land the feed fix","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Carry pull request #9 to green checks.","acceptance":["The checks are green"],"track":"direct","track_reason":"the fix is known","size":"small","carry_pr":9}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, body Carry pull request #9 to green checks., track direct, track_reason the fix is known, size small, carries #9, acceptance The checks are green","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, why The board needs it., body Carry pull request #9 to green checks., track direct, track_reason the fix is known, size small, summary It builds what the title names. A test checks it., carries #9, acceptance The checks are green","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Carry pull request #9 to green checks.\n\nAcceptance:\n- The checks are green\n\nSize: small\nCarries: #9")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Carry pull request #9 to green checks.\n\nAcceptance:\n- The checks are green\n\nSize: small\nCarries: #9")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "the fix is known", "title": "Re-land the feed fix", "size": "small", "carry": int64(9), "thread": int64(1)}})
 
@@ -474,12 +637,12 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 		}
 	}
 
-	refusal := "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone."
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Body: "Carry pull request #9 to green checks.", Track: policy.TrackDirect, TrackReason: "the fix is known"})
+	refusal := "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name `carry_pr` as the pull request's number, which supplies its head in the clone."
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Carry pull request #9 to green checks.", Track: policy.TrackDirect, TrackReason: "the fix is known"})
 	equal(t, "a carry brief without carry_pr", []any{code, msg}, []any{http.StatusBadRequest, refusal})
 	// the proposal judges the brief, so the agent corrects it before Do it
 	ck, s := r.loggedIn(t)
-	args = `{"body":"Carry pull request #9 to green checks.","title":"Re-land the feed fix","track":"direct","track_reason":"the fix is known"}`
+	args = `{"body":"Carry pull request #9 to green checks.","title":"Re-land the feed fix","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the fix is known"}`
 	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"re-land the feed fix"}})
 	equal(t, "the proposal of a carry brief without carry_pr", events, []string{
@@ -490,9 +653,9 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 // document repository's whole tree at HEAD, read page by page at the sha
 // the first page answers: a link to a plan, or to the root's README.md
 // beside docs/README.md, files; a link to no file, or to several, is
-// refused at the run and at the proposal, with the way out for a path in
-// the code repository. Without a document repository or the docs token
-// nothing is checked, and a docs outage files the card.
+// refused at the run and at the proposal. Without a document repository nothing is checked;
+// without the docs token, or in a docs outage, the agent's try fails on
+// the read and the human's Do it files the card marked unchecked.
 func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
 	// eight entries, four pages of two: README.md, docs, docs/README.md,
 	// docs/notes.md, docs/plans, the plan, guide, then guide/notes.md
@@ -501,56 +664,62 @@ func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	f := withDocs(t, r, docs)
-	args := `{"title":"Collapse the lanes","body":"Builds [the plan](../plans/2026-10-14-lane-collapse.md) as [the readme](README.md) says.","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
+	args := `{"title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Builds [the plan](../plans/2026-10-14-lane-collapse.md) as [the readme](README.md) says.","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "a link to the plan and to the root's README.md", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 
 	f.treeRefs = nil
-	const asText = " A path in the code repository goes in as text, not as a link."
-	none := "The link ../plans/2026-10-15-none.md resolves to no file in the document repository sf/docs: name the path from the repository's root." + asText
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Body: "Builds [the plan](../plans/2026-10-15-none.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
+	const none = "There is no document ../plans/2026-10-15-none.md."
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Builds [the plan](../plans/2026-10-15-none.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to no file", []any{code, msg}, []any{http.StatusBadRequest, none})
 	equal(t, "the tree's pages, after the first at its sha", f.treeRefs, []string{"HEAD page 1", "c0ffee page 2", "c0ffee page 3", "c0ffee page 4"})
-	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes by [the plan](../plans/2026-10-15-none.md)", Body: "Collapse.", Track: policy.TrackDirect, TrackReason: "the plan is written"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes by [the plan](../plans/2026-10-15-none.md)", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Collapse.", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to no file in the title", []any{code, msg}, []any{http.StatusBadRequest, none})
-	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Body: "Read [the notes](notes.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Read [the notes](notes.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to two files", []any{code, msg}, []any{http.StatusBadRequest,
-		"The link notes.md matches 2 files in the document repository sf/docs (docs/notes.md, guide/notes.md): name one path from the repository's root." + asText})
+		"The link notes.md matches 2 files of the document repository (docs/notes.md, guide/notes.md): name one path from the repository's root."})
 
 	ck, s := r.loggedIn(t)
-	args = `{"body":"Builds [the plan](../plans/2026-10-15-none.md).","title":"Collapse the lanes","track":"direct","track_reason":"the plan is written"}`
-	inAcceptance := `{"acceptance":["The lanes follow [the plan](../plans/2026-10-15-none.md)"],"body":"Collapse the lanes.","title":"Collapse the lanes","track":"direct","track_reason":"the plan is written"}`
+	args = `{"body":"Builds [the plan](../plans/2026-10-15-none.md).","title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the plan is written"}`
+	inAcceptance := `{"acceptance":["The lanes follow [the plan](../plans/2026-10-15-none.md)"],"body":"Collapse the lanes.","title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the plan is written"}`
 	g.replies = [][]string{{call(1, "new_card", args, "new_card", inAcceptance)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"collapse the lanes"}})
 	equal(t, "the proposals of a link to no file, in the body and in an acceptance item", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + none + `"}`,
 		`tool {"arguments":` + inAcceptance + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + none + `"}`, `text {"text":"Refused."}`, `done {}`})
 
-	args = `{"title":"Collapse the lanes","body":"Builds [the plan](../plans/2026-10-15-none.md).","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
+	r, g = newWritesRig(t)
+	withDocs(t, r, docs)
+	args = `{"title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Builds [the plan](../plans/2026-10-15-none.md).","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
+	_, done, _ = proposeAndDo(t, r, g, "new_card", args)
+	equal(t, "a project without a document repository", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+
+	in := toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.",
+		Body: "Builds [the plan](../plans/2026-10-15-none.md).", Acceptance: []string{"The board shows no lanes"}, Track: policy.TrackDirect, TrackReason: "the plan is written"}
 	for _, tt := range []struct {
-		name  string
-		seat  func(r *rig) *docsFake
-		reads []string
+		name   string
+		seat   func(r *rig, f *docsFake)
+		status int
+		msg    string
 	}{
-		{"a project without a document repository", func(r *rig) *docsFake { return withDocs(t, r, docs) }, nil},
-		{"a console without the docs token", func(r *rig) *docsFake {
-			r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
-			f := withDocs(t, r, docs)
-			r.c.cfg.DocsToken = ""
-			return f
-		}, nil},
-		// the proposal's read and the run's, each refused
-		{"a docs outage", func(r *rig) *docsFake {
-			r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
-			f := withDocs(t, r, docs)
-			f.failTree = true
-			return f
-		}, []string{"HEAD page 1", "HEAD page 1"}},
+		{"a console without the docs token", func(r *rig, _ *docsFake) { r.c.cfg.DocsToken = "" }, http.StatusServiceUnavailable,
+			"The brief's links cannot be checked: the console has no access to the project's document repository, as no docs token is set (FORGEJO_DOCS_TOKEN). " +
+				"A human who runs the factory must set it."},
+		{"a docs outage", func(_ *rig, f *docsFake) { f.failTree = true }, http.StatusBadGateway,
+			"The brief's references could not be checked: the documents could not be read, "},
 	} {
-		r, g := newWritesRig(t)
-		f := tt.seat(r)
-		_, done, _ := proposeAndDo(t, r, g, "new_card", args)
-		equal(t, tt.name, []any{done, f.treeRefs}, []any{ran("new_card", args, "Filed sf/code#41 on track direct."), tt.reads})
+		r, _ := newWritesRig(t)
+		r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
+		tt.seat(r, withDocs(t, r, docs))
+		if code, msg := refused(t, r, "new_card", in); code != tt.status || !strings.HasPrefix(msg, tt.msg) {
+			t.Errorf("%s: the agent's try = %d %q, want %d %q", tt.name, code, msg, tt.status, tt.msg)
+		}
+		before := r.events.count()
+		note, err := runTool(t, r, "new_card", "member", in)
+		equal(t, tt.name+": the human's Do it", []any{note, fmt.Sprint(err)}, []any{"Filed sf/code#41 on track direct.", "<nil>"})
+		if rows := r.events.all()[before:]; len(rows) != 1 || rows[0].Detail["brief_unchecked"] != true {
+			t.Errorf("%s: the human's Do it recorded %+v, want one card_filed row marked unchecked", tt.name, rows)
+		}
 	}
 }
 
@@ -589,7 +758,7 @@ func TestChatSetPool(t *testing.T) {
 	args := `{"action":"set","eur":25,"reason":"the findings cost money"}`
 	_, done, _ := proposeAndDo(t, r, g, "set_pool", args)
 	equal(t, "set", done, ran("set_pool", args,
-		"The pool of ai-software-factory-code is €25.00 now, was €20.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 25.00 EUR now, was 20.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool 25.00 EUR\n") || !strings.Contains(got, "Factory-Role: chat\n") {
 		t.Errorf("the commit's message = %q", got)
 	}
@@ -605,7 +774,7 @@ func TestChatSetPool(t *testing.T) {
 	args = `{"action":"top_up","eur":5,"reason":"a second finding"}`
 	_, done, _ = proposeAndDo(t, r, g, "set_pool", args)
 	equal(t, "top up", done, ran("set_pool", args,
-		"The pool of ai-software-factory-code is €30.00 now, was €25.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 30.00 EUR now, was 25.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool +5.00 EUR\n") {
 		t.Errorf("the top-up's message = %q", got)
 	}
@@ -714,7 +883,7 @@ func TestPoolProposal(t *testing.T) {
 	}
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":12}}`)
 	equal(t, "the corrected Do it", done, ran("set_pool", `{"action":"set","eur":12,"reason":"Allow two small verified follow-ups"}`,
-		"The pool of ai-software-factory-code is €12.00 now, was €8.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 12.00 EUR now, was 8.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	if got, _ := infra.contents[0].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool 12.00 EUR\n") {
 		t.Errorf("the commit's message = %q", got)
 	}
@@ -781,7 +950,7 @@ func TestPoolProposal(t *testing.T) {
 		{"pending 503", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error { return nil }
 		}, http.StatusServiceUnavailable,
-			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at EUR 8.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 8.00 until the policy holds EUR 12.00.",
+			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at 8.00 EUR: the loader picks the merge up on its next poll. The change is recorded, and the pool stays 8.00 EUR until the policy holds 12.00 EUR.",
 			1},
 		{"repair 500", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error {
@@ -790,7 +959,7 @@ func TestPoolProposal(t *testing.T) {
 			}
 			r.events.fail = errors.New("the events store is down")
 		}, http.StatusInternalServerError,
-			"The pool change is merged as sf/infra#12, but its pool_changed row could not be written: the events store is down. The change stands: write the missing row (action set, from_eur 8.00, confirmed_eur 12.00, to_eur 12.00, reason \"Allow two small verified follow-ups\") and do not repeat the change.",
+			"The pool change is merged as sf/infra#12, but its record could not be written: the events store is down. The change stands, so do not repeat it. The missing record: set from 8.00 EUR, confirmed 12.00 EUR, to 12.00 EUR, reason \"Allow two small verified follow-ups\".",
 			1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -933,7 +1102,7 @@ func TestPoolProposalAccess(t *testing.T) {
 		{`{"correction":{"eur":12.005}}`, "a pool change's amount is whole cents"},
 		{`{"correction":{"eur":-3}}`, "a set takes an amount above 0 EUR: a pool of 0 takes the policy's figure"},
 		{`{"correction":{"eur":900000000001}}`, "a pool change's amount is too large"},
-		{strings.Repeat(" ", 8<<10) + `{"correction":{"eur":12}}`, "The correction's body is over 8192 bytes; press the proposal again."},
+		{strings.Repeat(" ", 8<<10) + `{"correction":{"eur":12}}`, "The correction's body is over 8192 bytes. Press the proposal again."},
 	}
 	for _, w := range wrong {
 		if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], w.body); code != http.StatusBadRequest || body[0] != w.want {
@@ -1022,7 +1191,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 		`done {}`})
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`)
 	equal(t, "the corrected top-up", done, ran("set_pool", `{"action":"top_up","eur":4,"reason":"a second finding"}`,
-		"The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 14.00 EUR now, was 10.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	rows := r.events.all()
 	e := rows[len(rows)-1]
 	equal(t, "the event's detail", e.Detail, map[string]any{"action": "top_up", "from_eur": 10.0, "confirmed_eur": 4.0, "to_eur": 14.0,
@@ -1083,7 +1252,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("the bound press = %d: %v", code, events)
 	}
-	const landed = "The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."
+	const landed = "The pool of ai-software-factory-code is 14.00 EUR now, was 10.00 EUR: sf/infra#12 carries the change and the policy in force holds it."
 	equal(t, "the one-click confirmation", events, []string{
 		`tool {"arguments":{"action":"top_up","eur":4,"reason":"a second finding"},"duration_ms":0,"name":"set_pool","result":"` + landed + `"}`,
 		`applied {"result":"` + landed + `","tool":"set_pool"}`, `done {}`})
@@ -1113,7 +1282,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 		t.Fatalf("the stale bound press wrote: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
 	}
 	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
-	equal(t, "the stale attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+	equal(t, "the stale attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo. It may have expired."})
 
 	// a file that moves in the press's own gap — after the pre-stream
 	// guard read it, before the writer's locked recheck — answers the
@@ -1143,18 +1312,18 @@ func TestPoolProposalTopUp(t *testing.T) {
 		t.Fatalf("%d model calls after the gap's refusal, want the offers' alone", n)
 	}
 	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
-	equal(t, "the gap attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+	equal(t, "the gap attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo. It may have expired."})
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason
 // (roadmap 222, item 5); a rung without a reason is refused.
 func TestChatNewCardRung(t *testing.T) {
 	r, g := newWritesRig(t)
-	args := `{"title":"Cache metrics","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"small and clear","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"small and clear","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
-	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "direct", "", "", "", "cheap", "", "", 0, 0, 0); err == nil {
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
+	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", factoryd.BriefText{Title: "x", Body: "y"}, 1, "direct", "", "", "", "cheap", "", "", 0, 0, 0); err == nil {
 		t.Fatal("a rung without a reason was filed")
 	}
 }
@@ -1170,11 +1339,8 @@ func TestCloseAFailedCardWithAnIssue(t *testing.T) {
 	equal(t, "CloseCard", r.closed, []string(nil))
 }
 
-// A done plan that holds production offers a writer Close behind a
-// confirm. A plan with open criteria offers instead a Close with a
-// required note whose label says the note becomes each open criterion's
-// waiver reason; a plan whose plan_closed row stands and none open offers
-// none. Close hands the note to factoryd, which waives each open
+// A done plan's small card offers no Close. Its close, by the POST or the
+// chat, hands the note to factoryd, which waives each open
 // criterion and records plan_closed; the issue hears the closing words and
 // closes, and the answer says what happened. A close that factoryd
 // refuses closes nothing.
@@ -1266,47 +1432,23 @@ func TestCloseADonePlan(t *testing.T) {
 		return open, factoryd.PlanCloseWords(by, note, true), true, nil
 	}
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	plain := `<form method="post" action="/tasks/t-br/close" hx-post="/tasks/t-br/close" ` +
-		`hx-confirm="Close #50? Its issue closes as you, and the card ends." class="inline close" data-to="closed">`
-	if face := faceOf(t, body, "t-br"); !strings.Contains(face, plain) {
-		t.Errorf("the plan without open criteria: face =\n%s\nwant it to hold\n%s", face, plain)
-	}
-	if face := faceOf(t, body, "t-cl"); strings.Contains(face, `action="/tasks/t-cl/close"`) {
-		t.Errorf("the plan whose plan_closed row stands, a criterion open again: face =\n%s\nwant no Close", face)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	// a done plan's small card offers no Close: the close is the chat's
+	// and the POST's, with the note that waives
+	for _, id := range []string{"t-br", "t-cl", "t-fp", "t-cc", "t-lr", "t-one"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "/close") || strings.Contains(face, "<form") {
+			t.Errorf("the finished plan %s's small card offers a Close:\n%s", id, face)
+		}
 	}
 	equal(t, "the action that fits a done plan", fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{}),
-		"Close with a note ends a plan that still holds production; a new card continues the work")
-	for id, label := range map[string]string{
-		"t-fp":  `aria-label="note: becomes the waiver reason of the open criterion"`,
-		"t-cc":  `aria-label="note: becomes the waiver reason of the open criterion"`,
-		"t-lr":  `aria-label="note: becomes the waiver reason of each of the 2 open criteria"`,
-		"t-one": `aria-label="note: becomes the waiver reason of the open criterion"`,
-	} {
-		face := faceOf(t, body, id)
-		for _, want := range []string{
-			`<form method="post" action="/tasks/` + id + `/close" hx-post="/tasks/` + id + `/close" class="inline close" data-to="closed">`,
-			`<textarea name="note" rows="1" maxlength="2000" required ` + label + `></textarea>`,
-		} {
-			if !strings.Contains(face, want) {
-				t.Errorf("the plan %s with open criteria: face =\n%s\nwant it to hold %s", id, face, want)
-			}
-		}
-		if strings.Contains(face, "hx-confirm") {
-			t.Errorf("the plan %s with open criteria offers a Close without a note:\n%s", id, face)
-		}
-	}
-	if face := faceOf(t, body, "t-lr"); !strings.Contains(face, `aria-label="Close #51 and waive 2 open criteria with this note">Close with note</button>`) {
-		t.Errorf("the plan with two open criteria: face =\n%s\nwant the button to name them", face)
-	}
-	if face := faceOf(t, body, "t-one"); !strings.Contains(face, `aria-label="Close #53 and waive 1 open criterion with this note">Close with note</button>`) {
-		t.Errorf("the plan with one open criterion: face =\n%s\nwant the button to name it", face)
-	}
+		"`close` with a note ends a plan that still holds production, and a new card continues the work")
+	equal(t, "the same as a human reads it", factoryd.ForHuman(fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{})),
+		"“End the card” with a note ends a plan that still holds production, and a new card continues the work")
 	if strings.Contains(body, `role="alert"`) && strings.Contains(body, "the criteria of") {
 		t.Errorf("the board shows a problem for a plan's criteria")
 	}
 
-	rec := r.do(post("/tasks/t-br/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-br/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/50 {"state":"closed"}`})
 	equal(t, "the closing words", r.fg.comments["/api/v1/repos/sf/code/issues/50/comments"], "closed by sebastian; its merged cards stay on main")
@@ -1353,7 +1495,7 @@ func TestCloseADonePlan(t *testing.T) {
 		r.fg.mu.Unlock()
 		return 1, factoryd.PlanCloseWords(by, note, true), true, nil
 	}
-	rec = r.do(post("/tasks/t-one/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"swept first"}}), ck)
+	rec = r.do(post("/tasks/t-one/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "close.note": {"swept first"}}), ck)
 	equal(t, "the press after the sweep", rec.Code, http.StatusSeeOther)
 	equal(t, "the words once", r.fg.commentBodies(issue53), []string{words})
 	r.c.cfg.CloseHeldPlan = func(context.Context, string, string, string, bool) (int, string, bool, error) {
@@ -1412,34 +1554,26 @@ func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
 	}
 }
 
-// The face offers a writer Close on a card waiting on a human, behind a
-// confirm, and on a failed one, and on no queued, running, done or closed card; the answer
+// No small card offers Close, a press the opened card carries; the answer
 // form of a card at its session cap says what the answer does, and its
-// answer is a grant: one session_granted row via button.
+// answer is a grant: one session_granted row via button. A stopped card's
+// opened card answers from its case, the words riding the note.
 func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
 	seatAsk(r, "t-cap", factoryd.CaseSessionCap, roomyFacts(nil))
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	closeForm := `<form method="post" action="/tasks/t-plan/close" hx-post="/tasks/t-plan/close" ` +
-		`hx-confirm="Close #40? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
-		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<input type="hidden" name="view" value="wide">` +
-		`<button type="submit" class="deny" aria-label="Close #40">Close</button></form>`
-	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, closeForm) {
-		t.Errorf("the waiting card's face =\n%s\nwant it to hold\n%s", face, closeForm)
-	}
-	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-a": false, "t-r": false, "t-done": false, "t-f": true} {
-		face := faceOf(t, body, id)
-		if got := strings.Contains(face, `action="/tasks/`+id+`/close"`) || strings.Contains(face, `name="action" value="close"`); got != closes {
-			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
+	seatAsk(r, "t-e", factoryd.CaseOther, roomyFacts(nil))
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	for _, id := range []string{"t-plan", "t-e", "t-cap", "t-a", "t-r", "t-done", "t-f"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "/close") || strings.Contains(face, `value="close"`) {
+			t.Errorf("the small card of %s offers Close:\n%s", id, face)
 		}
 	}
-	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit" name="action" value="extend" class="secondary">Extend</button>`) {
-		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
+	if extend := answerForm(t, drawer(t, r, ck, "t-cap", "overview"), factoryd.ActExtend); extend.Action != "/tasks/t-cap/resolve" || extend.Label != "Allow more sessions" {
+		t.Errorf("the capped card's answer = %+v, want it to extend", extend)
 	}
-	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
-		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
+	if note := answerForm(t, drawer(t, r, ck, "t-e", "overview"), factoryd.ActNote); note.Action != "/tasks/t-e/resolve" || note.Label != "Not now" || !note.Values.Has("note.note") {
+		t.Errorf("the question's answer = %+v, want its case's Not now with the note for the words", note)
 	}
 	before := r.events.count()
 	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
@@ -1450,8 +1584,8 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 }
 
 // A card without an issue closes through factoryd's CloseCard alone
-// (roadmap 170), by the chat and the face's POST: one card_closed row each,
-// no Forgejo call. The face offers Close on a failed one.
+// (roadmap 170), by the chat and the close POST: one card_closed row each,
+// no Forgejo call.
 func TestCloseACardWithoutAnIssue(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.tasks.mu.Lock()
@@ -1467,12 +1601,8 @@ func TestCloseACardWithoutAnIssue(t *testing.T) {
 		factoryd.Event{Repository: "sf/code", TaskID: "t-n", Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
 
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-nf"); !strings.Contains(face, `hx-confirm="Close t-nf? The card ends."`) || !strings.Contains(face, `aria-label="Close t-nf"`) {
-		t.Errorf("the failed card without an issue's face =\n%s\nwant Close", face)
-	}
 	before = r.events.count()
-	rec := r.do(post("/tasks/t-nf/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-nf/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-nf", detail: map[string]any{"note": ""}})
 	equal(t, "CloseCard", r.closed, []string{"t-n by sebastian", "t-nf by sebastian"})
@@ -1491,17 +1621,18 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Objective: "Write it up."}})
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `name="action" value="close"`) {
+	if esc := escalationOf(t, r, ck, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `name="action" value="close"`) {
 		t.Errorf("the waiting card without an issue =\n%s\nwant Close and no answer form", esc)
 	}
 	ra := newRealRunner(t, policy.AutonomyManual)
 	ra.seed(t, factoryd.Task{ID: "t-nw", Kind: "agent", Status: "waiting-human", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
 	ra.seed(t, factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
 	ra.wire(r, "t-nw", false)
-	// a waiting card with no case waits on the heal pass; the failed card meets the real Act's gate
-	for id, want := range map[string]string{"t-nw": "this card waits with no open case: the heal pass opens one within a minute",
-		"t-nf": "no case is open on card t-nf, so continue has nothing to answer, and the human may take replan and close"} {
+	// a waiting card with no case waits on the heal pass; the failed card
+	// meets the real Act's gate, which names a card with no issue by its
+	// title, and the chat's door adds the task id its tools take
+	for id, want := range map[string]string{"t-nw": "this card waits with no open ask: the factory opens one within a minute",
+		"t-nf": "no ask is open on card “Write it up.” (t-nf), so `continue` has nothing to answer, and the human may take `replan` and `close`"} {
 		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
 		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, want})
 	}
@@ -1551,7 +1682,7 @@ func TestCloseRemovesTheCardsOwnDependencies(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7, 9)}
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "note": {"Not needed."}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "close.note": {"Not needed."}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	equal(t, "the removals", r.fg.deleted, []string{depsPath + " 7", depsPath + " 9"})
 	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"], "Not needed.\n\nIt no longer waits on #7 and #9.")
@@ -1564,7 +1695,7 @@ func TestCloseNamesASingleDependency(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	ck, s := r.loggedIn(t)
-	r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"], "It no longer waits on #7.")
 }
 
@@ -1575,7 +1706,7 @@ func TestCloseRefusedWhenARemovalFails(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	r.fg.failDeps = "no push to https://user:pass@git.example/x with Authorization: Bearer abcdef0123456789"
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the status", rec.Code, http.StatusBadGateway)
 	for _, leak := range []string{"user:pass", "abcdef0123456789"} {
 		if strings.Contains(rec.Body.String(), leak) {
@@ -1595,7 +1726,7 @@ func TestCloseRefusedForGoodNamesTheEdge(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	r.fg.failDeps, r.fg.depsStatus = "not found", http.StatusNotFound
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
 		"Forgejo refused to remove #31's dependency on sf/code#7: not found. Remove that dependency in Forgejo, then press Close again."})
 	equal(t, "the patches", r.fg.patched, []string(nil))
@@ -1608,7 +1739,7 @@ func TestCloseRefusalNamesForgejosReason(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	r.fg.depsStay = true
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
 		"Forgejo refused to close the issue: cannot close this issue because it still has open dependencies. Try again in a moment."})
 }
@@ -1635,10 +1766,10 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{plan: dependsOn(7)}
 	r.fg.failDeps = "no push"
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-dep/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-dep/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "a refused removal", []any{rec.Code, closes}, []any{http.StatusBadGateway, 0})
 	r.fg.failDeps = ""
-	rec = r.do(post("/tasks/t-dep/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec = r.do(post("/tasks/t-dep/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	equal(t, "the order", writesOf(r.fg), []string{"DELETE " + plan, "DELETE " + plan, "POST /api/v1/repos/sf/code/issues/60/comments",
 		"POST /api/v1/repos/sf/code/issues/60/comments", "PATCH /api/v1/repos/sf/code/issues/60"})
@@ -1649,7 +1780,7 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 	// a closed plan's issue is closed already: its dependencies stay
 	r.fg.deleted = nil
 	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/62/dependencies": dependsOn(7)}
-	r.do(post("/tasks/t-shut/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	r.do(post("/tasks/t-shut/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	// (the fake refuses the PATCH over an open dependency whatever the issue's
 	// state; only the removal is under test)
 	equal(t, "the removals on a closed plan", r.fg.deleted, []string(nil))

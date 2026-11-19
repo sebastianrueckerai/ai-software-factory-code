@@ -30,21 +30,14 @@ func PgRunner(store Store, objects ObjectStore, cfg RunnerConfig) *Runner {
 	return &Runner{store: store, objects: objects, cfg: cfg}
 }
 
-// PgQuestionFacts exposes the runner's unexported questionFacts to the
-// moved tests that build a budget question from it.
-func (r *Runner) PgQuestionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
-	return r.questionFacts(ctx, t, reason)
-}
-
 // Aliases of the names the moved tests call. main renamed the first four
 // onto the package's export surface when it landed its own export list;
 // holdsSlot joined them when main exported its next measured slice. The
 // aliases keep the pg package's shim stable for the later move cards.
 var (
-	PgBudgetQuestion = BudgetQuestion
-	PgHoldsSlot      = HoldsSlot
-	PgToInt          = toInt
-	PgErrHeld        = errHeld
+	PgHoldsSlot = HoldsSlot
+	PgToInt     = toInt
+	PgErrHeld   = errHeld
 )
 
 // Aliases of the constants the moved tests read.

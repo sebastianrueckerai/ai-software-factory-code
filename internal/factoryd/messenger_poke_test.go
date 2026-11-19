@@ -96,7 +96,7 @@ func TestPGStorePokeDeliveries(t *testing.T) {
 	if err := p.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got := deliveries("t-1 needs you: Which store?")
+	got := deliveries("A card needs you. Which store?")
 	want := map[string][]string{"sebastian": {VenueDiscord, VenueTelegram}, "bob": {VenueTelegram}, "dana": {VenueTelegram}}
 	if len(got) != len(want) {
 		t.Fatalf("the ask's deliveries = %v, want %v", got, want)
@@ -167,7 +167,7 @@ func TestPGStorePokeDeliveries(t *testing.T) {
 		t.Fatal(err)
 	}
 	var old int64
-	if err := s.db.QueryRowContext(ctx, `SELECT m.id FROM chat_messages m WHERE m.content = 't-3 needs you: Late?' AND m.login = 'sebastian'`).Scan(&old); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT m.id FROM chat_messages m WHERE m.content = 'A card needs you. Late?' AND m.login = 'sebastian'`).Scan(&old); err != nil {
 		t.Fatal(err)
 	}
 	due := func() []Delivery {
@@ -179,7 +179,7 @@ func TestPGStorePokeDeliveries(t *testing.T) {
 	}
 	var late []Delivery
 	for _, d := range due() {
-		if d.Content == "t-3 needs you: Late?" {
+		if d.Content == "A card needs you. Late?" {
 			late = append(late, d)
 		}
 	}
@@ -191,7 +191,7 @@ func TestPGStorePokeDeliveries(t *testing.T) {
 	}
 	late = nil
 	for _, d := range due() {
-		if d.Content == "t-3 needs you: Late?" {
+		if d.Content == "A card needs you. Late?" {
 			late = append(late, d)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,8 +19,8 @@ import (
 // tabs of a narrow screen under the status line, which spans both, the
 // chat's keys and its script; a reader's (a project they see but do not
 // write) holds it without the input, the history it may not read or the
-// keys; a human who writes no project, the wide view and a console
-// without the chat's model get no panel.
+// keys; a human who writes no project and a console without the chat's
+// model get no panel.
 func TestChatPanel(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
@@ -116,7 +117,6 @@ func TestChatPanel(t *testing.T) {
 		}
 	}
 	none("bob, who writes no project agents work on", page(bk, "/"))
-	none("the wide view", page(ck, code+"&view=wide"))
 	r.c.cfg.Operator = nil
 	none("a console without the model", page(ck, code))
 }
@@ -135,10 +135,9 @@ func TestChatPanel(t *testing.T) {
 // and a stopped turn leaves its grey mark on the cut answer and the
 // factory's stop row. Every choice, a poke's or an ask's, is a press
 // through /answer; an inbox's answer row offers no words of one's own,
-// and its head names it the factory's thread, whoever's inbox it is. The
-// choice that needs a reason gets its field and its post from the row's
-// needs_reason, so a label factoryd renames still gets its reason. Run
-// under node, which the test needs.
+// and its head names it the factory's thread, whoever's inbox it is. A
+// press posts its choice alone, no field beside it. Run under node, which
+// the test needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -177,12 +176,8 @@ console.log(JSON.stringify({
   askAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One card"]}),
   boundAskAnswerRow: chatView.answerHTML({id: 2, kind: "ask", proposal: "tok", choices: ["close it", "hold"]}),
   inboxAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One a night", "One an hour"]}, true),
-  overruleAnswerRow: chatView.answerHTML({id: 3, kind: "escalation", choices: ["End the card", "Overrule the review"], needs_reason: "Overrule the review"}, true),
-  overruleRowWithoutReason: chatView.answerHTML({id: 4, kind: "escalation", choices: ["End the card", "Overrule the review"]}, true),
-  overrulePost: JSON.stringify(chatView.answerBody({id: 3, needs_reason: "Overrule the review"}, "Overrule the review", "the flag's name is the spec's", 5, "sebastian")),
-  plainPost: JSON.stringify(chatView.answerBody({id: 4, choices: ["Go on"]}, "Go on", "words beside the label", 5, "sebastian")),
-  renamedRow: chatView.answerHTML({id: 5, kind: "escalation", choices: ["End the card", "Overrule the review verdict"], needs_reason: "Overrule the review verdict"}, true),
-  renamedPost: JSON.stringify(chatView.answerBody({id: 5, needs_reason: "Overrule the review verdict"}, "Overrule the review verdict", "why", 5, "sebastian")),
+  overruleAnswerRow: chatView.answerHTML({id: 3, kind: "escalation", choices: ["End the card", "Overrule the review"]}, true),
+  plainPost: JSON.stringify(chatView.answerBody({id: 4, choices: ["Go on"]}, "Go on", 5, "sebastian")),
   levelMenu: chatView.levelMenuHTML([{name: "manual", words: "every action confirms"}, {name: "assisted", words: "a <b>"}], "assisted"),
   deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
   deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
@@ -202,7 +197,7 @@ console.log(JSON.stringify({
   settledEscalation: chatView.factoryHTML({id: 10, role: "assistant", kind: "escalation", content: "Which store?", at: "2026-10-11T09:15:00Z",
     choices: ["Postgres", "SQLite"], settled: true, reason: "answered by sebastian · 09:14"}),
   settledPoke: chatView.factoryHTML({id: 11, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:16:00Z",
-    choices: ["Retry", "Leave it"], settled: true, reason: "moved on · 09:16"}),
+    choices: ["Try the failed card again", "Not now"], settled: true, reason: "moved on · 09:16"}),
   calls: chatView.historyHTML([{role: "user", content: "look", at: "2026-10-11T09:30:01Z"},
     {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "c1", name: "board", arguments: "{}", result: "3 cards"},
       {id: "c2", name: "card", arguments: "{}", result: "Refused: no card 9"}]},
@@ -231,7 +226,7 @@ console.log(JSON.stringify({
   share: JSON.stringify([chatView.clampShare(300, 1200, 16), chatView.clampShare(100, 1200, 16),
     chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)]),
   budgetRow: chatView.factoryHTML({id: 12, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", at: "2026-10-28T22:20:00Z",
-    content: "The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\nfree headroom 0.038793 EUR"},
+    content: "The chat's budget for October is used up: 14.96 of 15.00 EUR spent, and the next call does not fit what is left.\nfree headroom 0.04 EUR"},
     {budget_eur: 15, spent_eur: 14.96, suggest_eur: 3, can_fund: true}),
   budgetRowWriter: chatView.factoryHTML({id: 12, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", at: "2026-10-28T22:20:00Z",
     content: "The chat's budget is used up."}, {budget_eur: 15, spent_eur: 14.96, suggest_eur: 3, can_fund: false}),
@@ -300,16 +295,8 @@ console.log(JSON.stringify({
 			`<button type="button" data-answer="hold">hold</button><span class="answer-or">a bound ask: your words below deliver a message but answer nothing — this ask answers by its buttons alone</span>`},
 		{"inboxAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="One a night">One a night</button><button type="button" data-answer="One an hour">One an hour</button>`},
 		{"overruleAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
-			`<button type="button" data-answer="Overrule the review">Overrule the review</button>` +
-			`<input type="text" data-reason maxlength="4000" aria-label="your reason for overruling the review" placeholder="reason for Overrule the review (required)">`},
-		{"overruleRowWithoutReason", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
 			`<button type="button" data-answer="Overrule the review">Overrule the review</button>`},
-		{"overrulePost", `{"conversation":5,"message":3,"choice":"Overrule the review","reason":"the flag's name is the spec's","owner":"sebastian"}`},
-		{"plainPost", `{"conversation":5,"message":4,"choice":"Go on","reason":"","owner":"sebastian"}`},
-		{"renamedRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
-			`<button type="button" data-answer="Overrule the review verdict">Overrule the review verdict</button>` +
-			`<input type="text" data-reason maxlength="4000" aria-label="your reason for overruling the review" placeholder="reason for Overrule the review verdict (required)">`},
-		{"renamedPost", `{"conversation":5,"message":5,"choice":"Overrule the review verdict","reason":"why","owner":"sebastian"}`},
+		{"plainPost", `{"conversation":5,"message":4,"choice":"Go on","owner":"sebastian"}`},
 		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>one click sets it</span></p>` +
 			`<button type="button" role="menuitemradio" aria-checked="false" data-lvl="manual"><i aria-hidden="true"></i><b>manual</b><span class="ck" aria-hidden="true"></span><span class="lw">every action confirms</span></button>` +
 			`<button type="button" role="menuitemradio" aria-checked="true" data-lvl="assisted"><i aria-hidden="true"></i><b>assisted</b><span class="ck" aria-hidden="true">✓</span><span class="lw">a &lt;b&gt;</span></button>`},
@@ -385,7 +372,7 @@ console.log(JSON.stringify({
 		{"openQ", `<p class="meta chat-open">question that may be open: Can you do that? &lt;b&gt;</p>|`},
 		{"share", `[384,384,720,500.25]`},
 		{"budgetRow", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
-			`<div class="said"><p>The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.<br>free headroom 0.038793 EUR</p></div>` +
+			`<div class="said"><p>The chat's budget for October is used up: 14.96 of 15.00 EUR spent, and the next call does not fit what is left.<br>free headroom 0.04 EUR</p></div>` +
 			`<form class="choices fund" data-fund><label>Raise the judgment budget by, EUR <input type="number" name="eur" step="0.01" min="0.01" required value="3"></label> ` +
 			`<button type="submit">Fund and go on</button></form></div>`},
 		{"budgetRowWriter", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
@@ -1125,7 +1112,7 @@ func TestPoolProposalPanel(t *testing.T) {
 	}
 	const driver = `var fs = require("fs"), vm = require("vm");
 var listeners = [], posts = [], made = [], sends = [], byId = {}, poolHostEl = null;
-var poolLine = {present: false, can_ask: true, words: "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"};
+var poolLine = {present: false, can_ask: true, words: "0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month"};
 function el() {
   var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false,
     dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
@@ -1263,11 +1250,11 @@ Promise.resolve().then(function () {
 		`<form class="pool-edit" data-pool data-action="set" data-from="0" data-suggested="10">` +
 		`<label>Set the pool at, EUR <input type="number" name="eur" step="0.01" min="0.01" value="10" aria-label="Set the pool at, EUR"></label>` +
 		`<p class="pool-reason">reason (fixed): the month's two verified findings</p>` +
-		`<p class="pool-preview" data-pool-preview>the pool would stand at €10.00</p></form>` +
+		`<p class="pool-preview" data-pool-preview>the pool would stand at 10.00 EUR</p></form>` +
 		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["setHTML"] != want {
 		t.Errorf("the set_pool proposal =\n%s\nwant\n%s", got["setHTML"], want)
 	}
-	const poolWords = "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
+	const poolWords = "0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month"
 	if want := `<div class="poolctl" data-pool-ctl><p class="pool-note">` + poolWords + `</p>` +
 		`<p class="pool-why">Only an approver of the project asks for a pool change.</p></div>`; got["readerCtl"] != want {
 		t.Errorf("the non-approver's pool line =\n%s\nwant\n%s", got["readerCtl"], want)
@@ -1381,7 +1368,7 @@ Promise.resolve().then(function () {
   var card = cardFake("tok7", topUp);
   card.input.value = "4";
   fire(byId["chat-log"], "input", {target: {closest: function (sel) { return sel === "form[data-pool]" ? card.edit : null; }}});
-  out.previewFollows = card.preview.textContent === "the pool would stand at €14.00";
+  out.previewFollows = card.preview.textContent === "the pool would stand at 14.00 EUR";
   out.previewAsksNothing = posts.length === 0;
   fire(byId["chat-log"], "click", {target: card.doit});
   return tick(); // the corrected press runs
@@ -1417,7 +1404,7 @@ Promise.resolve().then(function () {
 		`<form class="pool-edit" data-pool data-action="top_up" data-from="10" data-suggested="5">` +
 		`<label>Top up the pool by, EUR <input type="number" name="eur" step="0.01" min="0.01" value="5" aria-label="Top up the pool by, EUR"></label>` +
 		`<p class="pool-reason">reason (fixed): a second verified finding</p>` +
-		`<p class="pool-preview" data-pool-preview>the pool would stand at €15.00</p></form>` +
+		`<p class="pool-preview" data-pool-preview>the pool would stand at 15.00 EUR</p></form>` +
 		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["topUpHTML"] != want {
 		t.Errorf("the top_up proposal =\n%s\nwant\n%s", got["topUpHTML"], want)
 	}
@@ -1463,7 +1450,7 @@ func TestPoolPanelPending(t *testing.T) {
 		repairShown = "The pool change is merged as sf/infra#1482, but its pool_changed row could not be written: the events store is down. " +
 			"The change stands: write the missing row (action set, from_eur 10.00, confirmed_eur 4.00, to_eur 14.00, " +
 			"reason &quot;the month's two verified findings&quot;) and do not repeat the change."
-		landed = "The pool of demo-app is €14.00 now, was €10.00: sf/infra#1482 carries the change and the policy in force holds it."
+		landed = "The pool of demo-app is 14.00 EUR now, was 10.00 EUR: sf/infra#1482 carries the change and the policy in force holds it."
 	)
 	const poolDriver = `var fs = require("fs"), vm = require("vm");
 var listeners = [], posts = [], made = [], byId = {}, answers = ANSWERS;
@@ -1657,7 +1644,7 @@ function el(props) {
   return Object.assign(e, props);
 }
 var byID = {board: el({dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
-  drawer: el({hidden: true}), "session-log": el(), "steer-input": el(), q: el({value: ""}),
+  drawer: el({hidden: true}), "session-log": el(), q: el({value: ""}),
   chat: el({dataset: {login: "sebastian", project: "code"}}), "chat-log": el(), "chat-input": el({value: ""}),
   "chat-new": el(), "thread-rows": el(), "thread-head": el(), "chat-answer": el(), "chat-commands": el(), "chat-palette": el(),
   documents: el(), "doc-view": el(), "doc-article": el(), "doc-path": el(), "doc-facts": el(), "doc-edit": el(),
@@ -1725,5 +1712,37 @@ function settle() {
 		`"fetches":["/projects/code/docs/docs/roadmap.md","/projects/code/docs/docs/plans/2026-09-24-build-plan.md"]}`
 	if strings.TrimSpace(string(out)) != want {
 		t.Errorf("console.js and chat.js under node:\n%s\nwant\n%s", out, want)
+	}
+}
+
+// The panel's script calls the view's functions through chatView: a bare
+// call of one the view defines and the panel does not throws on its first
+// press, as the answer row's did, and no node run reaches the panel's
+// handlers, which need a page.
+func TestThePanelCallsTheViewThroughChatView(t *testing.T) {
+	src, err := os.ReadFile("static/chat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, panel, ok := strings.Cut(string(src), "\n})();\n")
+	if !ok {
+		t.Fatal("chat.js holds no view")
+	}
+	exports := regexp.MustCompile(`(?s)return \{(.*)\};\s*$`).FindStringSubmatch(view)
+	if exports == nil {
+		t.Fatal("the view returns no functions")
+	}
+	names := regexp.MustCompile(`(\w+): \w+`).FindAllStringSubmatch(exports[1], -1)
+	if len(names) < 30 {
+		t.Fatalf("%d view functions, want every one it returns", len(names))
+	}
+	for _, n := range names {
+		name := n[1]
+		if regexp.MustCompile(`\bfunction ` + name + `\(|\bvar ` + name + `\b`).MatchString(panel) {
+			continue
+		}
+		if bare := regexp.MustCompile(`(^|[^.\w])` + name + `\(`).FindString(panel); bare != "" {
+			t.Errorf("the panel calls %s( outside the view that defines it", name)
+		}
 	}
 }

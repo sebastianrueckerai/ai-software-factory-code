@@ -169,10 +169,6 @@ func newRigWithEvents(t *testing.T) (*rig, *fakeEvents) {
 	return r, r.events
 }
 
-// postedDetail is the detail an answer event carries: the comment Forgejo
-// gave the button's own comment.
-func postedDetail(id int64) map[string]any { return map[string]any{"comment": id} }
-
 // action is one POST handler: the request to send, what it needs on the
 // rig, and the event exactly one row must carry afterwards.
 type action struct {
@@ -252,24 +248,26 @@ var actions = []action{
 		url.Values{"revision": {"2"}, "index": {"1"}, "answer": {"60 seconds"}}),
 	boardAction("planChanges", "/tasks/t-plan/plan/changes", factoryd.EventPlanChangesRequested, "linkshort/linkshort", "t-plan",
 		nil, planRig, url.Values{"text": {"Split the web pages into two cards."}}),
-	boardAction("retryCard", "/tasks/t-c2/retry", factoryd.EventCardRetried, "linkshort/linkshort", "t-c2",
-		map[string]any{"replacement": 9}, failedPlanCard, url.Values{}),
+	boardAction("retryCard", "/tasks/t-c2/resolve", factoryd.EventCardRetried, "linkshort/linkshort", "t-c2",
+		map[string]any{"replacement": 9}, failedPlanCard, url.Values{"action": {factoryd.ActRetry}}),
 	boardAction("approve resource", "/approvals/3/approve", factoryd.EventMergeApproved, "sf/code", "t-res",
 		map[string]any{"approval": 3, "kind": "resource"}, nil, url.Values{}),
-	boardAction("approve merge", "/approvals/4/approve", factoryd.EventMergeApproved, "sf/code", "t-m",
-		map[string]any{"pr": 9}, nil, url.Values{}),
+	boardAction("approve merge", "/tasks/t-m/resolve", factoryd.EventMergeApproved, "sf/code", "t-m",
+		map[string]any{"pr": 9}, nil, askForm("", 4, factoryd.ActApproveMerge)),
 	boardAction("deny resource", "/approvals/3/deny", factoryd.EventMergeDenied, "sf/code", "t-res",
 		map[string]any{"approval": 3, "kind": "resource"}, nil, url.Values{"note": {"wait for the envelope"}}),
-	boardAction("deny request changes", "/approvals/4/deny", factoryd.EventMergeDenied, "sf/code", "t-m",
-		map[string]any{"pr": 9, "action": "request_changes"}, nil, url.Values{"note": {"split it"}, "action": {"request_changes"}}),
-	boardAction("deny reject", "/approvals/4/deny", factoryd.EventMergeDenied, "sf/code", "t-m",
-		map[string]any{"pr": 9, "action": "reject"}, nil, url.Values{"note": {"not wanted"}, "action": {"reject"}}),
-	boardAction("setSummary", "/tasks/t-m/summary", factoryd.EventSummarySet, "sf/code", "t-m",
-		map[string]any{"summary": "a short summary"}, queuedCard, url.Values{"summary": {"a short summary"}}),
-	boardAction("closeCard", "/tasks/t-m/close", factoryd.EventCardClosed, "sf/code", "t-m",
-		map[string]any{"note": ""}, queuedCard, url.Values{"project": {"ai-software-factory-code"}}),
-	boardAction("setAccent", "/tasks/t-m/accent", factoryd.EventAccentSet, "sf/code", "t-m",
-		map[string]any{"accent": "blue"}, queuedCard, url.Values{"value": {"blue"}}),
+	boardAction("deny request changes", "/tasks/t-m/resolve", factoryd.EventMergeDenied, "sf/code", "t-m",
+		map[string]any{"pr": 9, "action": "request_changes"}, nil, askForm("", 4, factoryd.ActDenyMerge, "note", "split it")),
+	boardAction("deny reject", "/tasks/t-m/resolve", factoryd.EventMergeDenied, "sf/code", "t-m",
+		map[string]any{"pr": 9, "action": "reject"}, nil, askForm("", 4, factoryd.ActDenyMerge+"/reject", "note", "not wanted")),
+	boardAction("editBrief", "/tasks/t-m/resolve", factoryd.EventCardEdited, "sf/code", "t-m",
+		map[string]any{"title": "Fix the cache eviction", "why": "So the board loads at once.", "summary": "The cache keeps its entries. A test reads them back."},
+		queuedCard, url.Values{"action": {factoryd.AnswerEditBrief}, "edit_brief.title": {"Fix the cache eviction"}, "edit_brief.why": {"So the board loads at once."},
+			"edit_brief.summary": {"The cache keeps its entries. A test reads them back."}}),
+	boardAction("closeCard", "/tasks/t-m/resolve", factoryd.EventCardClosed, "sf/code", "t-m",
+		map[string]any{"note": ""}, queuedCard, url.Values{"project": {"ai-software-factory-code"}, "action": {factoryd.ActClose}}),
+	boardAction("setAccent", "/tasks/t-m/resolve", factoryd.EventAccentSet, "sf/code", "t-m",
+		map[string]any{"accent": "blue"}, queuedCard, url.Values{"action": {factoryd.AnswerAccent}, "accent.accent": {"blue"}}),
 	boardAction("promote", "/resources/11/promote", factoryd.EventResourcePromoted, "sf/code", "t-res",
 		map[string]any{"resource": 11, "kind": "server"}, standingResource, url.Values{}),
 	boardAction("release", "/resources/11/release", factoryd.EventResourceReleased, "sf/code", "t-res",
@@ -355,8 +353,8 @@ func TestDenyBadActionLeavesNoRow(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, s := r.loggedIn(t)
 	before := ev.count()
-	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"no"}, "action": {"maybe"}}), ck)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "choose request changes or reject") {
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/maybe", "note", "no")), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "That is no answer of this card. Press one of the card's answers.") {
 		t.Fatalf("deny with no action = %d: %s", rec.Code, rec.Body)
 	}
 	if ev.count() != before {
@@ -889,7 +887,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	status := func(s string) bool {
 		for _, cell := range []string{`<span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>`,
 			`<span class="cell"><span><b class="n">1</b> working</span></span>`, `<a href="#needs-you" class="cell needs on"><span><b class="n">2</b> need you</span></a>`,
-			`<span class="cell spend" title="spend this UTC month against the month cap: the project file's when it sets one, else the factory's, holds included"><a href="/costs"><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`} {
+			`<span class="cell spend" title="spend this UTC month against the month cap: the project file's when it sets one, else the factory's, holds included"><a href="/costs"><span><b class="n">0.00 EUR</b> <span class="of">/ 50.00 EUR</span></span>`} {
 			if !strings.Contains(s, cell) {
 				return false
 			}
@@ -988,7 +986,8 @@ func TestStreamEndsAtTheServersShutdown(t *testing.T) {
 // for byte, under the board's filter: the escalated card in its column and
 // in the escalations, queued cards, a done plan with its rollup, a plan's
 // cards with Retry and their plan's issue, the blocked, waiting and merge
-// queue lines, a human task, an accent and an activity line.
+// queue lines, a human task, an accent, an unchecked brief and an
+// activity line.
 func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	withLinkshort(r)
@@ -1001,14 +1000,14 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 14,
 			PRNumber: 21, Objective: "queue it", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-blk", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15,
-			Objective: "blocked work", HumanSummary: "the blocked one", CreatedAt: since}, Dependencies: "#3, #5"},
+			Objective: "blocked work", BriefUnchecked: true, CreatedAt: since}, Dependencies: []factoryd.DepFact{{Issue: 3, Status: "queued"}, {Issue: 5, Status: "queued"}}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "queued", Repository: "sf/code", IssueNumber: 16, Objective: "rotate the key"}})
 	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, At: since}); err != nil {
 		t.Fatal(err)
 	}
 	ck, _ := r.loggedIn(t)
-	for _, page := range []string{"", "?view=wide", "?project=linkshort", "?project=linkshort&view=wide"} {
+	for _, page := range []string{"", "?project=linkshort"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, "/"+page, nil), ck).Body.String()
 		// the script asks for a card under the board's own query, the
 		// project it shows included
@@ -1024,17 +1023,20 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 			rest = rest[i:]
 			face := rest[:strings.Index(rest, "</article>")+len("</article>")]
 			rest = rest[len(face):]
+			if !strings.Contains(face[:strings.Index(face, ">")], " data-place=") {
+				faces-- // a face the swap leaves to the board's: an approval's
+				continue
+			}
 			id, _, _ := strings.Cut(face[strings.Index(face, `data-card="`)+len(`data-card="`):], `"`)
 			rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+query, nil), ck)
 			if rec.Code != http.StatusOK || rec.Body.String() != face {
 				t.Errorf("board%s: the fragment of %s = %d\n%s\nwant the board's face\n%s", page, id, rec.Code, rec.Body, face)
 			}
 		}
-		// the code project: t-run, t-b, t-blk and the human task t-h; the
-		// escalated t-e is a case row, which is no face, and the wide view
-		// shows its face in its column alone; linkshort: the plan, its cards
-		// 2 to 5 and 7, the second spec and t-q
-		if want := map[string]int{"": 4, "?view=wide": 5, "?project=linkshort": 8, "?project=linkshort&view=wide": 8}[page]; faces != want {
+		// the code project: t-run, t-b, t-blk, the human task t-h, the
+		// escalated t-e's case row and the merge request's card t-m;
+		// linkshort: the plan, its cards 2 to 5 and 7, the second spec and t-q
+		if want := map[string]int{"": 6, "?project=linkshort": 8}[page]; faces != want {
 			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}
@@ -1060,7 +1062,7 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // and no timer for anything; counters set the status line and the
 // columns' counts; the agent's text and a steer reach the drawer's Chat
 // once each, and another session's text and the card's new status load
-// the tab again, a steer being typed kept; event board swaps the board,
+// the tab again; event board swaps the board,
 // and a swap the open drawer holds back runs once it closes, or once the
 // focus lands elsewhere, not while it moves on to another field. The
 // find's box, focused and holding text, holds no swap; a find in flight
@@ -1115,7 +1117,7 @@ log.querySelector = function (sel) {
 };
 var themeLight = el({dataset: {themeSet: "light"}});
 var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
-  drawer: el({hidden: true}), "session-log": log, "steer-input": el({value: "half a steer"})};
+  drawer: el({hidden: true}), "session-log": log};
 function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
 EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
 EventSource.prototype.close = function () { this.closed = true; };
@@ -1138,7 +1140,6 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
       return Promise.resolve();
     }
     requests.push(verb + " " + url);
-    if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
     if (url.indexOf("/board") !== 0) return new Promise(function (ok) { pending.push(ok); });
     locked = true;
     return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });
@@ -1231,7 +1232,6 @@ out.released = requests;
 out.said = log.children.map(function (m) { var who = m.children[1]; return [m.className, m.dataset.key, who.children[0].textContent + " · " + who.children[1].textContent, m.children[2].textContent].join(" | "); });
 out.timers = timers;
 await settle();
-out.steer = byID["steer-input"].value;
 // the find's box, focused and holding text, holds no swap of the board
 var q = el({id: "q", type: "text", value: "exp", defaultValue: "", selectionStart: 2, selectionEnd: 3,
   matches: function () { return true; }, focus: function () { sandbox.document.activeElement = q; },
@@ -1397,7 +1397,7 @@ console.log(JSON.stringify(out));
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
 		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
 		`"held":["GET /board?project=code","GET /board?project=code"],"moved":["GET /board?project=code","GET /board?project=code"],"focused":["GET /board?project=code","GET /board?project=code"],"released":["GET /board?project=code"],` +
-		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer",` +
+		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],` +
 		`"typing":["GET /board?project=code"],"finding":[],"found":["GET /board?project=code","GET /board?project=code"],` +
 		`"failing":[],"failed":["GET /board?project=code"],"reads":[1,2,2],"unsettled":["GET /board?project=code","GET /board?project=code"],` +
 		`"rerun":["GET /board?project=code","GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /board?project=code"],` +
@@ -1652,7 +1652,6 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
       return Promise.resolve();
     }
     requests.push(verb + " " + url);
-    if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
     if (url.indexOf("/board") !== 0) return new Promise(function (ok) { pending.push(ok); });
     locked = true;
     return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });
@@ -1744,8 +1743,8 @@ winListeners.popstate.forEach(function (fn) { fn({}); });
 out.popDoc = [box.value, requests.length, byID.board.dataset.query];
 await settle();
 await settle();
-byID.board.dataset.query = "?project=code&q=exp&view=wide";
-Object.assign(sandbox.location, {search: "?project=code&view=wide&q=exp"});
+byID.board.dataset.query = "?project=code&q=exp&queued=oldest";
+Object.assign(sandbox.location, {search: "?project=code&queued=oldest&q=exp"});
 requests = [];
 winListeners.popstate.forEach(function (fn) { fn({}); });
 out.popOrder = [byID.board.dataset.query, requests.length];
@@ -1786,16 +1785,16 @@ console.log(JSON.stringify(out));
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
 		`"theme":1,` +
 		`"flatTheme":[0,2],"flatCard":[0,false],"flatTab":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
-		`"popOrder":["?project=code&q=exp&view=wide",0],"backBox":["old",["GET /board?project=code&q=lock","GET /board?project=code&q=old"]],` +
+		`"popOrder":["?project=code&q=exp&queued=oldest",0],"backBox":["old",["GET /board?project=code&q=lock","GET /board?project=code&q=old"]],` +
 		`"twoShots":[0,1],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}
 }
 
-// The board's activity line: one line of the card's newest event where one
-// exists (a task_status row in words), the escalation's question where it
-// has none but waits on an answer, and nothing at all where it has neither.
+// The small card holds no activity line: its newest event and its status
+// rows are the opened card's, and a card that waits on an answer asks its
+// question as its title in Needs you.
 func TestBoardActivityLine(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "code", Repository: "sf/code", MergeRule: "human",
@@ -1827,40 +1826,12 @@ func TestBoardActivityLine(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	// the escalated card's face is its column's in the wide view; the five columns show it as its case's row
-	wide := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Waiting on a human")
-	card := func(id string) string {
-		body := body
-		if id == "t-e" {
-			body = wide
-		}
-		i := strings.Index(body, `data-card="`+id+`"`)
-		if i < 0 {
-			i = strings.Index(body, `/tasks/`+id+`/timeline`)
-		}
-		if i < 0 {
-			t.Fatalf("card %s missing from the board", id)
-		}
-		start := strings.LastIndex(body[:i], "<article")
-		end := strings.Index(body[i:], "</article>")
-		return body[start : i+end]
-	}
-	if got := card("t-run"); !strings.Contains(got, `class="activity">card retried by sebastian via button at `+at.UTC().Format("15:04")+`<`) {
-		t.Errorf("the card with an event: %.400s", got)
-	}
-	if got := card("t-e"); !strings.Contains(got, `class="activity">use a replica or a shard?<`) {
-		t.Errorf("the escalated card without an event lacks its question: %.400s", got)
-	}
-	hhmm := at.UTC().Format("15:04")
-	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm} {
-		if got := card(id); !strings.Contains(got, `class="activity">`+want+`<`) {
-			t.Errorf("the card whose newest event is its status lacks %q: %.400s", want, got)
+	for _, id := range []string{"t-run", "t-e", "t-b", "t-rev", "t-fin"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "activity") || strings.Contains(face, "retried") || strings.Contains(face, "status in-review") {
+			t.Errorf("the small card of %s carries an activity line:\n%s", id, face)
 		}
 	}
-	if got := card("t-fin"); strings.Contains(got, `activity`) {
-		t.Errorf("a finished card claims an activity line: %.400s", got)
-	}
-	if got := card("t-b"); strings.Contains(got, `activity`) {
-		t.Errorf("a card with neither claims an activity line: %.400s", got)
+	if face := faceOf(t, body, "t-e"); !strings.Contains(face, `<strong class="title">Use a replica or a shard?</strong>`) {
+		t.Errorf("the escalated card does not ask its question in Needs you:\n%s", face)
 	}
 }

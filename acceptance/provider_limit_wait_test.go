@@ -212,7 +212,8 @@ func plWaitCard(t *testing.T, store *factoryd.PGStore, id string, preGate bool, 
 	}
 	for _, c := range cases {
 		if c.Kind == factoryd.CaseProviderRefused {
-			run.asks = append(run.asks, c.Problem)
+			reason, _ := c.Facts["reason"].(string)
+			run.asks = append(run.asks, reason)
 		}
 	}
 	return run

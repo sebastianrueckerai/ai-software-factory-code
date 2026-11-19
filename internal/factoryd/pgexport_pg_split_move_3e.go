@@ -43,13 +43,6 @@ func (a CaseAction) PgPreselected() map[string]any { return a.preselected() }
 // names as its writer.
 func PgRecommendedBy(up *HandUp) string { return recommendedBy(up) }
 
-// PgTimeCapReached and PgTimeCapReachedLadder alias the unexported words of
-// an agent-time cap, which the moved trip tests read.
-const (
-	PgTimeCapReached       = timeCapReached
-	PgTimeCapReachedLadder = timeCapReachedLadder
-)
-
 // PgSetNow sets the runner's unexported clock, for the moved rung 1 tests
 // that move time past a step's bound.
 func (r *Runner) PgSetNow(now func() time.Time) { r.now = now }

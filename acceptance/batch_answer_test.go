@@ -309,9 +309,10 @@ func (s *accBatchTasks) RollCarries(_ context.Context, _ string) ([]factoryd.Tas
 	return nil, nil
 }
 
-func (s *accBatchTasks) SetHumanSummary(_ context.Context, _, _ string) error { return nil }
-func (s *accBatchTasks) SetTaskAccent(_ context.Context, _, _ string) error   { return nil }
-func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error    { return nil }
+func (s *accBatchTasks) SetBrief(_ context.Context, _, _, _ string, _ bool) error   { return nil }
+func (s *accBatchTasks) MarkChatFiled(context.Context, string, int64, string) error { return nil }
+func (s *accBatchTasks) SetTaskAccent(_ context.Context, _, _ string) error         { return nil }
+func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error          { return nil }
 func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }
@@ -541,6 +542,12 @@ func (s *accBatchStore) ResolveApprovals(ctx context.Context, taskID, kind, stat
 
 // The rest of factoryd's Store: the fixture plan flow touches none of it.
 func (s *accBatchStore) CreateTask(ctx context.Context, t factoryd.Task) error { panic("unused") }
+func (s *accBatchStore) CardBrief(context.Context, string) (factoryd.CardBrief, error) {
+	panic("unused")
+}
+func (s *accBatchStore) SessionBriefs(context.Context, string) ([]factoryd.SessionBrief, error) {
+	panic("unused")
+}
 func (s *accBatchStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	panic("unused")
 }
@@ -811,7 +818,7 @@ func (s *accBatchStore) NewestAskCase(ctx context.Context, taskID string) (facto
 func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	panic("unused")
 }
-func (s *accBatchStore) SetCaseOffers(context.Context, int64, []factoryd.AskOffer, []factoryd.ActionRefusal) error {
+func (s *accBatchStore) SetCaseFace(context.Context, int64, map[string]any) error {
 	return nil
 }
 
@@ -904,6 +911,9 @@ func (s *accBatchStore) OpenReportTask(ctx context.Context, t factoryd.Task) (fa
 	panic("unused")
 }
 func (s *accBatchStore) ReportOf(ctx context.Context, parent, source string) (factoryd.Task, bool, error) {
+	panic("unused")
+}
+func (s *accBatchStore) TasksByParent(ctx context.Context, id string) ([]factoryd.Task, error) {
 	panic("unused")
 }
 func (s *accBatchStore) PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error) {
@@ -1016,7 +1026,7 @@ func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]str
 func (s *accBatchStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
 	panic("unused")
 }
-func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
+func (s *accBatchStore) ReplaceCard(ctx context.Context, id, status string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) CreateSuccessor(ctx context.Context, id string, t factoryd.Task) error {

@@ -143,7 +143,7 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 			older = append(older, pr)
 		}
 	}
-	why := "the copies on main equal the schemas of factoryd " + c.Build
+	why := "the copies on main equal the factory's schemas of build " + ShortSHA(c.Build)
 	if len(diffs) > 0 {
 		if own == nil {
 			if own, err = c.open(ctx, fork, branch, diffs); err != nil {
@@ -159,7 +159,7 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 		if err := c.Forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, pr.Number); err != nil {
 			return fmt.Errorf("close #%d: %w", pr.Number, err)
 		}
-		if _, err := c.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, "Closed by factoryd: "+why+"."); err != nil {
+		if _, err := c.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, "Closed by the factory: "+why+"."); err != nil {
 			return fmt.Errorf("comment on #%d: %w", pr.Number, err)
 		}
 		log.Printf("schema copies: closed pull request #%d: %s", pr.Number, why)
@@ -175,10 +175,14 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 	return nil
 }
 
-// schemaCardBody tells what the card carries and how it ends.
-func schemaCardBody(pr PullRequestRef, repo, build string, paths []string) string {
-	return fmt.Sprintf("factoryd opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
+// SchemaCopyCard is the brief of the card of pull request pr, which copies
+// the schemas build generates to paths of repo: its text tells what the
+// card carries and how it ends.
+func SchemaCopyCard(pr PullRequestRef, repo, build string, paths []string) BriefText {
+	b := SourceBriefs[SourceSchemaCopy](BriefFacts{Name: repo})
+	b.Body = fmt.Sprintf("The factory opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
 		pr.Number, pr.URL, repo, build, strings.Join(paths, ", "))
+	return b
 }
 
 // card files the card of the schema pull request ref (roadmap 187) through
@@ -207,10 +211,9 @@ func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []str
 		log.Printf("schema copies: no project has the repository %s: pull request #%d stays uncarded", repo, ref.Number)
 		return
 	}
-	title := "Schema copies for " + c.Build
-	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, c.budget(), p, title,
-		schemaCardBody(ref, repo, c.Build, paths), nil,
-		Task{ID: NewTaskID(), RiskClass: "standard", Objective: title, SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
+	b := SchemaCopyCard(ref, repo, c.Build, paths)
+	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, c.budget(), p, b, nil,
+		Task{ID: NewTaskID(), RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
 		log.Printf("schema copies: file the card of pull request #%d: %v", ref.Number, err)
 	} else {
 		log.Printf("schema copies: filed the card of pull request #%d on %s", ref.Number, repo)
@@ -334,12 +337,12 @@ func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs
 		return nil, err
 	}
 	var body strings.Builder
-	fmt.Fprintf(&body, "Main's copies of these schemas differ from what factoryd build %s generates; this pull request writes them whole:\n\n", c.Build)
+	fmt.Fprintf(&body, "Main's copies of these schemas differ from what the factory's build %s generates. This pull request writes them whole:\n\n", c.Build)
 	for _, path := range slices.Sorted(maps.Keys(why)) {
 		fmt.Fprintf(&body, "- `%s`: %s\n", path, why[path])
 	}
 	fmt.Fprintf(&body, "\n`%s` names the build's commit %s: a later build writes over these copies, an older one leaves them.\n", stamp, c.Commit)
-	body.WriteString("\nfactoryd opens it when it starts and never merges it, an approver does. `factoryd config check` only warns about a stale copy.\n")
+	body.WriteString("\nThe factory opens it when it starts and never merges it: a human does. `factoryd config check` only warns about a stale copy.\n")
 	ref, err := c.Forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, "main", title, body.String())
 	if err != nil {
 		return nil, err

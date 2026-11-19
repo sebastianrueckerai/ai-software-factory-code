@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -95,8 +95,8 @@ func TestRung2AnalysisFacesTheHumanWithItsRecommendation(t *testing.T) {
 		t.Fatalf("HandUpRung2 = %v, %v; want handled", handled, err)
 	}
 	asks := g.asks(t)
-	if len(g.forge.comments) != 1 || len(asks) != 1 || asks[0].Detail["recommendation"] != "close: nothing is left to build" || asks[0].Detail["recommended_by"] != "the factory agent" ||
-		!strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: the pull request is merged on main") {
+	if len(g.forge.comments) != 1 || len(asks) != 1 || asks[0].Detail["recommendation"] != "nothing is left to build" || asks[0].Detail["recommended_by"] != "the factory agent" ||
+		!strings.Contains(asks[0].Detail["info"].(string), "The factory agent found:\n\n> the pull request is merged on main") {
 		t.Fatalf("comments %q, asks %+v; want one face recommending close with the grounds", g.forge.comments, asks)
 	}
 	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || c.OwnerRung != 3 {
@@ -223,12 +223,17 @@ func refusedTrip(t *testing.T) (rungRig, int64) {
 	return g, out.CaseID
 }
 
-const refusedMark = " (not judged: the model provider refused)"
+// refusedSeen is the agent's view of a case whose rungs the provider
+// refused, rung 2 last with "the model refused the call (400): bad
+// request": one plain sentence, the provider's words left to the steps.
+const refusedSeen = "The factory agent did not judge it: the model provider refused. The provider's words are in the card's life."
 
 // Both rungs refused: the provider refuses rung 1's call and rung 2's wake
 // turn, whose refusal hands the case up at once. The face comes in that
-// call: one comment, the problem and the ask ending in the mark, rung 2's
-// step ended with the refusal as its finding.
+// call: one comment, the agent's view saying that no rung judged the case
+// and what the provider said, the problem and the ask as the case's own,
+// rung 2's step ended with the refusal as its finding and rung 0's step
+// with the mark.
 func TestBothRungsRefusedFaceMarkedNotJudged(t *testing.T) {
 	g, id := refusedTrip(t)
 	if err := g.r.RefusedRung2(context.Background(), []int64{id}, "the model refused the call (400): bad request"); err != nil {
@@ -236,11 +241,18 @@ func TestBothRungsRefusedFaceMarkedNotJudged(t *testing.T) {
 	}
 	c := caseByID(t, g.s, id)
 	asks := g.asks(t)
-	if c.Status != CaseAtHuman || !strings.HasSuffix(c.Problem, refusedMark) || len(g.forge.comments) != 1 || len(asks) != 1 {
-		t.Fatalf("case %s %q, comments %d, asks %d; want one face, the problem ending %q", c.Status, c.Problem, len(g.forge.comments), len(asks), refusedMark)
+	if c.Status != CaseAtHuman || strings.Contains(c.Problem, "not judged") || len(g.forge.comments) != 1 || len(asks) != 1 {
+		t.Fatalf("case %s %q, comments %d, asks %d; want one face and the problem as the case's own", c.Status, c.Problem, len(g.forge.comments), len(asks))
 	}
-	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasSuffix(ask, refusedMark) {
-		t.Fatalf("the face's ask %q, want it ending %q", ask, refusedMark)
+	info, _ := asks[0].Detail["info"].(string)
+	if ask, _ := asks[0].Detail["ask"].(string); strings.Contains(ask, "not judged") || info != refusedSeen ||
+		strings.Contains(info, "400") || strings.Contains(info, "bad request") {
+		t.Fatalf("the face's ask %q, info %q; want the ask as the case's own and the view %q, with none of the provider's words", ask, info, refusedSeen)
+	}
+	if zero := g.stepsOfRung(t, id, 0); !slices.ContainsFunc(zero, func(s CaseStep) bool {
+		return s.Found == "not judged: the model provider refused: the model refused the call (400): bad request"
+	}) {
+		t.Fatalf("rung 0 steps %+v, want one marked not judged with the refusal", zero)
 	}
 	if two := g.stepsOfRung(t, id, 2); len(two) != 1 || two[0].Outcome != StepHandedUp ||
 		two[0].Found != "not judged: the model provider refused: the model refused the call (400): bad request" {
@@ -262,7 +274,7 @@ func TestARung2HandUpAfterARefusedRung1FacesUnmarked(t *testing.T) {
 	}
 	info, _ := asks[0].Detail["info"].(string)
 	if ask, _ := asks[0].Detail["ask"].(string); strings.Contains(ask, "(not judged") ||
-		!strings.Contains(info, "The factory agent found: the card's work is merged on main") ||
+		!strings.Contains(info, "The factory agent found:\n\n> the card's work is merged on main") ||
 		!strings.Contains(info, "The check-in did not judge it: the model provider refused.") {
 		t.Fatalf("ask %q, info %q; want no mark, rung 2's finding and the check-in's line", ask, info)
 	}
@@ -326,7 +338,7 @@ func TestRung2ExpiryFacesTheHumanOnce(t *testing.T) {
 	}
 	info, rec := asks[0].Detail["info"].(string), asks[0].Detail["recommendation"]
 	if !strings.Contains(info, "The factory agent did not answer within 35m.") || strings.Contains(info, "The factory agent found") ||
-		!strings.Contains(info, "The check-in found: ") || rec != "close: the card's work is done on main" || asks[0].Detail["recommended_by"] != "the check-in" {
+		!strings.Contains(info, "The check-in found:\n\n> ") || rec != "the card's work is done on main" || asks[0].Detail["recommended_by"] != "the check-in" {
 		t.Fatalf("info %q, recommendation %v; want the expiry in words, rung 1's finding and its recommendation", info, rec)
 	}
 }
@@ -364,7 +376,7 @@ func TestRung2NeedsTheJudgmentBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has %.2f of 10.00 EUR left", chat.ID, left)
-		if out.Rung != 3 || len(g.rows(t, EventCaseClimbed)) != 0 || !strings.HasSuffix(c.Problem, unjudgedSuffix) || cases != 1 ||
+		if out.Rung != 3 || len(g.rows(t, EventCaseClimbed)) != 0 || strings.Contains(c.Problem, "not judged") || cases != 1 ||
 			!slices.ContainsFunc(g.steps(t, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == want }) {
 			t.Fatalf("left %v: outcome %+v, problem %q, %d money cases, steps %+v; want the spent path in full", left, out, c.Problem, cases, g.steps(t, c.ID))
 		}
@@ -387,7 +399,7 @@ func TestRung2AnalysisIsMasked(t *testing.T) {
 			t.Fatalf("%q reached the face or the step: %s", secret, blob)
 		}
 	}
-	if !strings.Contains(string(blob), "close: ") {
+	if !strings.Contains(string(blob), `"preselected":{"action":"close"`) {
 		t.Fatalf("the face lost its recommendation: %s", blob)
 	}
 }
@@ -475,10 +487,10 @@ func TestWakeTextIsMaskedThroughTheRealReads(t *testing.T) {
 	}
 }
 
-// Register entry 7: at an agent-time cap rung 2's first action is the extend
-// that raises agent time, a replan is offered and not refused, and a probe
-// that buys sessions alone is not what the extend lists.
-func TestRung2OffersTheExtendFirstAtAnAgentTimeCap(t *testing.T) {
+// Register entry 7: at an agent-time cap rung 2 is offered the extend that
+// raises agent time, a replan is offered and not refused, and a probe that
+// buys sessions alone is not what the extend lists.
+func TestRung2OffersTheExtendAtAnAgentTimeCap(t *testing.T) {
 	f := CaseFacts{Kind: CaseAgentTimeCap, PROpen: true, Head: "h2", Checks: "green", ReviewApproved: true, FloorFree: true,
 		SessionCap: 3, Attempts: 1, AgentTimeS: 1200, AgentTimeCapS: 1200, SessionLeastS: 300,
 		PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour, EUR: 20}}
@@ -486,25 +498,23 @@ func TestRung2OffersTheExtendFirstAtAnAgentTimeCap(t *testing.T) {
 	for _, a := range Offered(f, 2) {
 		names = append(names, a.Name)
 	}
-	if len(names) == 0 || names[0] != ActExtend || !slices.Contains(names, ActReplan) {
-		t.Fatalf("rung 2 is offered %v, want extend first and replan among them", names)
+	if !slices.Contains(names, ActExtend) || !slices.Contains(names, ActReplan) {
+		t.Fatalf("rung 2 is offered %v, want extend and replan among them", names)
 	}
-	if why := (&Runner{}).PgRungStatement(Case{Kind: CaseAgentTimeCap, Problem: "agent time"}, f, "digest", nil, 2); !strings.Contains(why, "\n- extend\n- ") ||
-		strings.Index(why, "- extend") > strings.Index(why, "- reverify") {
-		t.Fatalf("the statement lists %q, want extend ahead of reverify", why)
+	if why := (&Runner{}).PgRungStatement(Case{Kind: CaseAgentTimeCap, Problem: "agent time"}, f, "digest", nil, 2); !strings.Contains(why, "\n- extend\n- ") {
+		t.Fatalf("the statement lists %q, want extend as offered", why)
 	}
 }
 
 // Register entry 50, first half: a planner that stopped for time is extended
-// by rung 2 with the cut as its guidance: the extend is offered first, the
+// by rung 2 with the cut as its guidance: the extend is offered, the
 // draw of agent time is taken, and the session's note carries the cut.
 func TestRung2ExtendsAPlannerWithTheCutAsGuidance(t *testing.T) {
 	const cut = "land one card compiling, then one card per proof"
 	f := CaseFacts{Kind: CaseAgentTimeCap, Planner: true, FloorFree: true, SessionCap: 3, Attempts: 1,
 		AgentTimeS: 1200, AgentTimeCapS: 1200, SessionLeastS: 300, PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour}}
-	offered := Offered(f, 2)
-	if len(offered) == 0 || offered[0].Name != ActExtend {
-		t.Fatalf("rung 2 is offered %v, want extend first", offered)
+	if offered := Offered(f, 2); !slices.ContainsFunc(offered, func(a Action) bool { return a.Name == ActExtend }) {
+		t.Fatalf("rung 2 is offered %v, want extend among them", offered)
 	}
 	extend, _ := ActionByName(ActExtend)
 	res := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 1800}, Note: cut}
@@ -526,7 +536,7 @@ func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 		CapWait: line, PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour}}
 	resume, _ := ActionByName(ActResume)
 	why := resume.PgRefusal(f, 2, Resolution{Action: ActResume})
-	if why == "" || !strings.Contains(why, "a cap binds before a session can start: "+line) {
+	if why == "" || !strings.Contains(why, "the day cap is reached: the card resumes on its own once the money left under the day cap funds a session, at the latest when the UTC day turns at 2026-11-12T00:00:00Z.") {
 		t.Fatalf("resume refusal = %q, want the day cap's line", why)
 	}
 	for _, a := range Offered(f, 2) {
@@ -535,7 +545,7 @@ func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 		}
 	}
 	f.CapWait = ""
-	if why := resume.PgRefusal(f, 2, Resolution{Action: ActResume}); strings.Contains(why, "a cap binds") {
+	if why := resume.PgRefusal(f, 2, Resolution{Action: ActResume}); strings.Contains(why, "cap is reached: the card resumes") {
 		t.Fatalf("resume refusal = %q without a cap wait", why)
 	}
 }
@@ -594,19 +604,9 @@ func TestHandUpRung2RefusesAnotherCardsCase(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = g.r.HandUpRung2(ctx, "t1", other.ID, "found", RungTwoRecommendation{Action: ActClose}, nil)
-	want := fmt.Sprintf("case %d is not a case of this card: its open cases are %d", other.ID, out.CaseID)
+	want := fmt.Sprintf("`case_id` %d is no ask of this card. Its open asks, by `case_id`: %d.", other.ID, out.CaseID)
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
-	}
-}
-
-// An action table whose fitting action is missing lists the table as it is.
-func TestOrderedActionsWithoutTheFittingAction(t *testing.T) {
-	saved := factoryd.Actions
-	t.Cleanup(func() { factoryd.Actions = saved })
-	factoryd.Actions = slices.DeleteFunc(slices.Clone(saved), func(a Action) bool { return a.Name == ActExtend })
-	if got := orderedActions(CaseFacts{Kind: CaseAgentTimeCap}); len(got) != len(factoryd.Actions) {
-		t.Fatalf("%d actions, want the table's %d", len(got), len(factoryd.Actions))
 	}
 }
 
@@ -687,7 +687,7 @@ func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	out := g.trip(t, timeCapReached+"\nlast: no session produced a result")
+	out := g.trip(t, TimeCapReached+"\nlast: no session produced a result")
 	g.settle()
 	if err := drainPass(t, w); err != nil {
 		t.Fatal(err)
@@ -736,7 +736,8 @@ func TestWakeNamesOnlyTheClimbedCases(t *testing.T) {
 
 // A rung 1 that ended without judging (no decision: a refused call, a cap, a
 // failed run, an expiry) does not make a judged case: at a spent budget the
-// case keeps the mark, and its rung 0 step says "not judged".
+// case keeps the mark: the agent's view says the factory found it not
+// judged, never that a rung judged it, and the problem stays its own.
 func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 	for _, found := range []string{"rung 1 could not run: the gateway refused the call for money", "the rung did not answer within 35m"} {
 		g := newRungRig(t, "success")
@@ -755,8 +756,11 @@ func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 		if _, err := g.r.Climb(ctx, task, c, CaseFacts{}, 1, found); err != nil {
 			t.Fatal(err)
 		}
-		if got := caseByID(t, g.s, c.ID); got.Problem != "stuck"+unjudgedSuffix {
-			t.Fatalf("%q: problem %q, want the mark", found, got.Problem)
+		if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" {
+			t.Fatalf("%q: problem %q, want it unmarked", found, got.Problem)
+		}
+		if info := g.infoOf(t, c.ID); !strings.Contains(info, "The project's judgment budget has") || strings.Contains(info, "not judged") || strings.Contains(info, "t-chat") {
+			t.Fatalf("%q: info %q, want the mark", found, info)
 		}
 	}
 }
@@ -819,7 +823,7 @@ func TestFaceAfterRung2ExpiryKeepsTheMomentsReasonAndRungOnesExpiry(t *testing.T
 		t.Fatal(err)
 	}
 	g.afterRung2(t, out.CaseID)
-	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory agent did not answer within 35m.") || !strings.Contains(info, "The check-in found: the check-in sends this to a human: "+CheckSpend) {
+	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory agent did not answer within 35m.") || !strings.Contains(info, "The check-in found:\n\n> the check-in sends this to a human: "+CheckSpend) {
 		t.Fatalf("info = %q, want the moment's reason kept", info)
 	}
 
@@ -875,8 +879,8 @@ func (g rungRig) pokeRowsOf(t *testing.T, taskID string) []string {
 // no rerun, and hands it to rung 2, whose one wake turn takes it. Rung 2's
 // hand-up faces it: the case at the human with its steps of rung 0, 2 and 3,
 // one comment holding the request's words as factoryd wrote them, an ask
-// naming the case and the request whose info holds rung 2's finding and
-// which carries its recommendation,
+// naming the case and the request, the register's face of the gap with
+// rung 2's finding as the agent's view and its grant suggested,
 // one poke, the ask's, and no case_faced, for no run waits on the plan.
 func TestACriteriaCaseClimbsToRung2AndFacesItsHandUp(t *testing.T) {
 	g, w, starter, stub, c := planCriteriaRig(t, "m1", "m1", "m1")
@@ -913,18 +917,26 @@ func TestACriteriaCaseClimbsToRung2AndFacesItsHandUp(t *testing.T) {
 	if got.Status != CaseAtHuman || len(steps) != 3 || steps[0].Rung != 0 || steps[1].Rung != 2 || steps[2].Rung != 3 {
 		t.Fatalf("case %s, steps %+v; want it at the human with steps of rung 0, 2 and 3", got.Status, steps)
 	}
-	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], "every card of the plan has ended with a criterion still unmet.\\n\\n- k1 (test): the page k1 loads") ||
+	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], "Every card of the plan has ended with a criterion still unmet.\\n\\n- k1 (test): the page k1 loads") ||
 		strings.Contains(g.forge.comments[0], "```") {
 		t.Fatalf("comments = %q, want one with the request's words, unfenced", g.forge.comments)
 	}
 	asks := g.asks(t)
 	if len(asks) != 1 || asks[0].Detail["case_id"] != float64(c.ID) || asks[0].Detail["approval"] != float64(stub.approval) ||
-		asks[0].Detail["ask"] != "criteria not met once every card of the plan ended: k1, k2, k3" ||
-		asks[0].Detail["why"] != "Every card of the plan has ended with a criterion still unmet." || fmt.Sprint(asks[0].Detail["choices"]) != "[]" ||
-		!strings.HasPrefix(asks[0].Detail["info"].(string), "The plan's criteria card answers it: ") ||
-		!strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: k1 to k3 still fail on main") ||
-		asks[0].Detail["recommendation"] != "grant_criteria: one more card can make the pages load" || asks[0].Detail["recommended_by"] != "the factory agent" {
-		t.Fatalf("asks = %+v, want one asking the request's reason, its words' first line as the why, no choice, rung 2's finding and recommendation", asks)
+		asks[0].Detail["case_kind"] != string(CasePlanCriteria) ||
+		asks[0].Detail["ask"] != "Plan “x” finished, but 3 of 3 promises are not met. Settle each one." ||
+		asks[0].Detail["why"] != "Until all 3 are settled, the plan stays open and holds production deploys." ||
+		asks[0].Detail["info"] != "The factory agent found:\n\n> k1 to k3 still fail on main" ||
+		asks[0].Detail["recommendation"] != "one more card can make the pages load" || asks[0].Detail["recommended_by"] != "the factory agent" {
+		t.Fatalf("asks = %+v, want one with the gap's ask and why, rung 2's finding and its recommendation", asks)
+	}
+	var offered []string
+	offers, _ := asks[0].Detail["offers"].([]any)
+	for _, o := range offers {
+		offered = append(offered, fmt.Sprint(o.(map[string]any)["value"]))
+	}
+	if pre, _ := asks[0].Detail["preselected"].(map[string]any); pre["action"] != ActGrantCriteria || !slices.Equal(offered, []string{ActGrantCriteria, ActAnswerCriteria + "/waive"}) {
+		t.Fatalf("the face suggests %v among %v, want the grant first, then the waiver", asks[0].Detail["preselected"], offered)
 	}
 	if pokes := g.pokeRows(t); !slices.Equal(pokes, []string{EventQuestionAsked}) {
 		t.Fatalf("pokes = %v, want the face's ask alone", pokes)
@@ -1084,7 +1096,7 @@ func TestAMergeOnMergeRuleHumanIsHandedUpWithRung2sRecommendation(t *testing.T) 
 	g, _, _, stub, c := mergeWakeRig(t, policy.AutonomyAutonomous)
 	ctx := context.Background()
 	g.wakePass(t)
-	const refusal = "the merge rule is human at autonomous: hand_up with approve_merge or deny_merge as the recommendation"
+	const refusal = "the merge rule is human at `autonomous`: hand the case up (`hand_up`) with `approve_merge` or `deny_merge` as the recommendation"
 	for _, res := range []Resolution{{Action: ActApproveMerge}, {Action: ActDenyMerge, Args: map[string]any{"action": "reject"}, Note: "the tests miss the rename"}} {
 		_, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: res})
 		var refused ErrActRefused
@@ -1107,14 +1119,20 @@ func TestAMergeOnMergeRuleHumanIsHandedUpWithRung2sRecommendation(t *testing.T) 
 		t.Fatalf("comments %q, case_faced %+v; want none", g.forge.comments, g.signalsOf(SignalCaseFaced))
 	}
 	asks := g.asks(t)
-	if len(asks) != 1 || asks[0].Detail["case_id"] != float64(c.ID) || asks[0].Detail["ask"] != "Merge PR #9, standard risk." ||
-		asks[0].Detail["why"] != "The merge gate classes the change standard: a human decides its merge." || fmt.Sprint(asks[0].Detail["choices"]) != "[Approve]" ||
-		!strings.HasPrefix(asks[0].Detail["info"].(string), "The factory agent found: the review approved h2 and the checks are green") ||
-		asks[0].Detail["recommendation"] != "approve_merge: the change is small and covered" || asks[0].Detail["recommended_by"] != "the factory agent" {
-		t.Fatalf("asks = %+v, want one asking the merge with Approve, rung 2's finding and recommendation", asks)
+	if len(asks) != 1 {
+		t.Fatalf("asks = %+v, want one", asks)
 	}
-	if pokes, choices := g.pokeRows(t), g.pokeChoices(t); !slices.Equal(pokes, []string{EventQuestionAsked}) || !slices.Equal(choices, []string{`["Approve"]`}) {
-		t.Fatalf("pokes %v with choices %v, want the face's ask alone, offering Approve", pokes, choices)
+	face := asks[0].Detail
+	offers, _ := face["offers"].([]any)
+	suggested, _ := face["preselected"].(map[string]any)
+	if len(offers) == 0 || face["case_id"] != float64(c.ID) || face["ask"] != "Merge “x”?" ||
+		face["why"] != "The factory's rules let only a human merge this change." || offers[0].(map[string]any)["value"] != ActApproveMerge ||
+		!strings.HasPrefix(face["info"].(string), "The factory agent found:\n\n> the review approved h2 and the checks are green") ||
+		suggested["action"] != ActApproveMerge || face["recommendation"] != "the change is small and covered" || face["recommended_by"] != "the factory agent" {
+		t.Fatalf("asks = %+v, want one asking the merge, its merge the first answer, with rung 2's finding and recommendation", asks)
+	}
+	if pokes, choices := g.pokeRows(t), g.pokeChoices(t); !slices.Equal(pokes, []string{EventQuestionAsked}) || !slices.Equal(choices, []string{`["Merge it"]`}) {
+		t.Fatalf("pokes %v with choices %v, want the face's ask alone, offering the merge", pokes, choices)
 	}
 }
 
@@ -1159,7 +1177,7 @@ func TestAnUndoneRung2ApprovalReachesItsFaceInOneWakePass(t *testing.T) {
 	if n := len(slices.DeleteFunc(g.steps(t, c.ID), func(s CaseStep) bool { return s.Rung != 2 })); n != 1 || len(g.rows(t, EventCaseClimbed)) != 1 {
 		t.Fatalf("%d rung 2 steps and %d case_climbed rows, want one of each", n, len(g.rows(t, EventCaseClimbed)))
 	}
-	if asks := g.asks(t); len(asks) != 1 || !strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: "+undone) {
+	if asks := g.asks(t); len(asks) != 1 || !strings.Contains(asks[0].Detail["info"].(string), "The factory agent found:\n\n> "+undone) {
 		t.Fatalf("asks = %+v, want one whose info carries the undo", asks)
 	}
 }
@@ -1270,14 +1288,16 @@ func TestAPlanConfirmationThatTakesWorkOffMainIsHandedUp(t *testing.T) {
 		t.Fatalf("asks = %+v, want the planner's row and the face's", asks)
 	}
 	face := asks[1].Detail
+	suggested, _ := face["preselected"].(map[string]any)
 	if face["case_id"] != float64(c.ID) || face["case_kind"] != string(CasePlanConfirmation) || face["revision"] != float64(1) || face["index"] != float64(1) ||
-		face["kind"] != QuestionConfirmation || !strings.HasPrefix(face["question"].(string), confirmation) ||
-		!strings.HasPrefix(face["info"].(string), "The factory agent found: revision 1 takes the merged api card off main") ||
-		face["recommendation"] != "revise: keep the api card on main" || face["recommended_by"] != "the factory agent" || face["comment"] != float64(501) {
+		face["kind"] != QuestionConfirmation || face["ask"] != "Confirm plan “x” so its cards can start?" ||
+		!strings.HasPrefix(face["info"].(string), "The factory agent found:\n\n> revision 1 takes the merged api card off main") ||
+		suggested["action"] != factoryd.AnswerRevisePlan || face["recommendation"] != "keep the api card on main" || face["recommended_by"] != "the factory agent" ||
+		face["comment"] != float64(501) {
 		t.Fatalf("the face's row = %+v", face)
 	}
-	want := "factoryd: revision 1 of the plan waits for the humans' answers in Needs you on the factory console.\n\n" +
-		"1. " + confirmation + "\n   Recommendation (the factory agent): revise: keep the api card on main\n\n" +
+	want := "Revision 1 of the plan waits for the humans' answers in Needs you on the factory console.\n\n" +
+		"1. " + confirmation + "\n   The factory agent suggests “Ask for changes”: keep the api card on main\n\n" +
 		"A reply on this issue asks the planner for a new revision instead. Closing the issue ends the plan.\n<!-- factoryd questions of plan t1 revision 1 -->"
 	if bodies := g.commentBodies(t); len(bodies) != 1 || bodies[0] != want {
 		t.Fatalf("comments %q, want one:\n%s", bodies, want)
@@ -1311,10 +1331,10 @@ func TestTheQuestionsOfARevisionShareOneFaceComment(t *testing.T) {
 		t.Fatalf("the hand-up with MySQL = %v, want %q", err, want)
 	}
 	recs := []RungTwoRecommendation{{Action: "SQLite", Grounds: "one process writes"}, {Action: "NATS", Grounds: "two services"}, {Action: "Redis", Grounds: "the board is hot"}}
-	head := "factoryd: revision 2 of the plan waits for the humans' answers in Needs you on the factory console.\n\n"
-	lines := []string{"1. Which database?\n   Recommendation (the factory agent): SQLite: one process writes\n",
-		"2. Which queue?\n   Recommendation (the factory agent): NATS: two services\n",
-		"3. Which cache?\n   Recommendation (the factory agent): Redis: the board is hot\n"}
+	head := "Revision 2 of the plan waits for the humans' answers in Needs you on the factory console.\n\n"
+	lines := []string{"1. Which database?\n   The factory agent suggests “SQLite”: one process writes\n",
+		"2. Which queue?\n   The factory agent suggests “NATS”: two services\n",
+		"3. Which cache?\n   The factory agent suggests “Redis”: the board is hot\n"}
 	const tail = "\nA reply on this issue asks the planner for a new revision instead. Closing the issue ends the plan.\n<!-- factoryd questions of plan t1 revision 2 -->"
 	for i, c := range open {
 		if _, err := g.r.HandUpRung2(ctx, "t1", c.ID, "read the plan", recs[i], nil); err != nil {
@@ -1432,5 +1452,54 @@ func TestAnAgentCardsMonthCapStopClimbs(t *testing.T) {
 	}
 	if rows := g.rows(t, EventCaseClimbed); len(rows) != 1 || rows[0].Detail["case_id"] != float64(out.CaseID) || len(g.forge.comments) != 0 {
 		t.Fatalf("case_climbed rows %+v, comments %d; want one for case %d and no face", rows, len(g.forge.comments), out.CaseID)
+	}
+}
+
+// A human's re-run of a factory pull request's red checks is an answer of
+// the merge case, taken through Act: its work decides the request and
+// sends the run its re-run signal, the request's decision ends the case,
+// and the run hears no second signal for the case.
+func TestARerunOfAMergeCasesChecksGoesThroughActOnce(t *testing.T) {
+	g, _, _, _, c := mergeWakeRig(t, policy.AutonomyAutonomous)
+	ctx := context.Background()
+	work := func(ctx context.Context) (int64, error) {
+		return 0, factoryd.RerunFactoryChecks(ctx, g.s, g.signals, "t1", 9, "sebastian")
+	}
+	pending := func() bool {
+		t.Helper()
+		var status string
+		if err := g.s.PgDB().QueryRowContext(ctx, `SELECT status FROM approval_requests WHERE task_id = 't1' AND kind = $1`, ApprovalMerge).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		return status == "pending"
+	}
+	// on a green head Act refuses before any work: a human reads the state
+	// and the answers that fit, the keys as their labels
+	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}, Work: work})
+	const green = "the checks on the head are green, so there is nothing to run again, and the human may take “Merge it” or “Reject and close it”"
+	if err == nil || factoryd.ForHuman(err.Error()) != green || len(g.signalsOf(factoryd.SignalRerunChecks)) != 0 || !pending() {
+		t.Fatalf("the re-run on a green head = %q, signals %+v, pending %t; want %q, no signal and the request still pending",
+			factoryd.ForHuman(fmt.Sprint(err)), g.signalsOf(factoryd.SignalRerunChecks), pending(), green)
+	}
+	// a re-run with no work would end the case and tell the run nothing it
+	// reads: Act refuses it
+	g.forge.checks["h2"] = "failure"
+	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}})
+	if want := "`rerun_checks` on a merge ask needs the re-run's work, which only a human's button on the board or the chat carries: ask the human to press it"; err == nil || err.Error() != want || !pending() {
+		t.Fatalf("the re-run with no work = %v, pending %t; want %q and the request still pending", err, pending(), want)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}, Work: work}); err != nil {
+		t.Fatalf("the re-run: %v", err)
+	}
+	if reruns := g.signalsOf(factoryd.SignalRerunChecks); len(reruns) != 1 || reruns[0].taskID != "t1" || reruns[0].sig.Author != "sebastian" || reruns[0].sig.PR != 9 {
+		t.Fatalf("rerun signals = %+v, want one for t1 by sebastian for #9", reruns)
+	}
+	if resolved := g.signalsOf(SignalCaseResolved); len(resolved) != 0 {
+		t.Fatalf("case_resolved signals = %+v, want none: the run takes the re-run signal alone", resolved)
+	}
+	got := caseByID(t, g.s, c.ID)
+	if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.By != "sebastian" || got.Resolution.Action != ActDenyMerge ||
+		got.Resolution.Reason != "the checks run again; a new request follows" {
+		t.Fatalf("case = %+v, resolution %+v; want it ended by the request's decision", got, got.Resolution)
 	}
 }

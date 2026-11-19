@@ -60,7 +60,7 @@ func TestPoolDoesNotLiftSpendCaps(t *testing.T) {
 		t.Fatalf("the top-up's Do it = %d:\n%s", code, body)
 	}
 	landedPress(t, "the top-up's Do it", body, topUp,
-		"The pool of "+accProjectName+" is €11.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it.")
+		"The pool of "+accProjectName+" is 11.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it.")
 
 	// the one write the top-up made: only escalation.pool.eur moved, from
 	// 10 to 11 — the comment, the caps and every other key stand
@@ -123,7 +123,7 @@ func TestPoolDoesNotLiftSpendCaps(t *testing.T) {
 func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 	t.Helper()
 	body, bytes := gwChatBody(t), gwBodyBytes(t)
-	refusal := "free headroom 0.500000 EUR (task 100.000000, "
+	refusal := "free headroom 0.50 EUR (task 100.00, "
 	tail := ") fits 0 output tokens after a request of " + strconv.Itoa(bytes) + " bytes (at most " +
 		strconv.Itoa(bytes) + " prompt tokens), below the minimum call of " + strconv.Itoa(policy.MinCallTokens)
 	for _, tc := range []struct {
@@ -138,7 +138,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 				s.seedDay(gwOtherRepo.ID, 99.5) // today, so this month too: day 0.50, month 500.50
 			},
 			decision: policy.RefusedDayCap,
-			reason:   refusal + "day 0.500000, month 500.500000, project 100.000000" + tail,
+			reason:   refusal + "day 0.50, month 500.50, project 100.00" + tail,
 		},
 		{
 			bound: "the day cap, spend beside a hold counted once",
@@ -147,7 +147,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 				s.seedHold(gwOtherRepo.ID, 1) // counted once: day 0.50, not -0.50
 			},
 			decision: policy.RefusedDayCap,
-			reason:   refusal + "day 0.500000, month 500.500000, project 100.000000" + tail,
+			reason:   refusal + "day 0.50, month 500.50, project 100.00" + tail,
 		},
 		{
 			bound: "the month cap, spend alone",
@@ -155,7 +155,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 				s.seedMonth(gwOtherRepo.ID, 599.5) // earlier this UTC month: the day stays loose
 			},
 			decision: policy.RefusedMonthCap,
-			reason: refusal + "day 100.000000, month 0.500000, project 100.000000" + tail +
+			reason: refusal + "day 100.00, month 0.50, project 100.00" + tail +
 				"; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit",
 		},
 		{
@@ -165,7 +165,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 				s.seedHold(gwOtherRepo.ID, 1) // counts against the day too: day 99, month 0.50
 			},
 			decision: policy.RefusedMonthCap,
-			reason: refusal + "day 99.000000, month 0.500000, project 100.000000" + tail +
+			reason: refusal + "day 99.00, month 0.50, project 100.00" + tail +
 				"; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit",
 		},
 		{
@@ -174,7 +174,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 				s.seedMonth(gwOwnRepo.ID, 99.5) // the code project's sibling, under its cap of EUR 100
 			},
 			decision: policy.RefusedProjectCap,
-			reason: refusal + "day 100.000000, month 500.500000, project 0.500000" + tail +
+			reason: refusal + "day 100.00, month 500.50, project 0.50" + tail +
 				"; the project cap budget.month_eur in projects/" + accProjectName + ".yaml is spent, and only a human raises it, by a commit",
 		},
 		{
@@ -184,7 +184,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 				s.seedHold(gwOwnRepo.ID, 1) // a same-repo hold binds the project too: project 0.50, not -0.50
 			},
 			decision: policy.RefusedProjectCap,
-			reason: refusal + "day 99.000000, month 500.500000, project 0.500000" + tail +
+			reason: refusal + "day 99.00, month 500.50, project 0.50" + tail +
 				"; the project cap budget.month_eur in projects/" + accProjectName + ".yaml is spent, and only a human raises it, by a commit",
 		},
 	} {

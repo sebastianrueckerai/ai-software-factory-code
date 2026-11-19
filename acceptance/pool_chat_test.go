@@ -131,7 +131,7 @@ func TestPoolChatProposal(t *testing.T) {
 		t.Fatalf("the unchanged Do it = %d:\n%s", code, body)
 	}
 	landedPress(t, "the unchanged Do it", body, args,
-		"The pool of "+accProjectName+" is €10.00 now, was the policy's: sf/infra#101 carries the change and the policy in force holds it.")
+		"The pool of "+accProjectName+" is 10.00 EUR now, was the policy's: sf/infra#101 carries the change and the policy in force holds it.")
 	equal(t, "main's file after the set", r.InfraFiles()[accInfraFile], accPoolHead)
 	loaded, ok := r.LoadedPool()
 	equal(t, "the loaded pool", []any{ok, loaded}, []any{true, 10.0})
@@ -150,7 +150,7 @@ func TestPoolChatProposal(t *testing.T) {
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, `{"correction":{"eur":12}}`)
 	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) !=
 		"The pool change is merged as sf/infra#102, but the policy in force still holds the pool of "+accProjectName+
-			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 12.00." {
+			" at 10.00 EUR: the loader picks the merge up on its next poll. The change is recorded, and the pool stays 10.00 EUR until the policy holds 12.00 EUR." {
 		t.Fatalf("the corrected Do it = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the corrected confirmation", r.InfraFiles()[accInfraFile], accPoolLanded)
@@ -210,14 +210,14 @@ func TestPoolTopUp(t *testing.T) {
 		t.Fatalf("the corrected Do it = %d:\n%s", code, body)
 	}
 	landedPress(t, "the corrected Do it", body, `{"action":"top_up","eur":4,"reason":"a second finding"}`,
-		"The pool of "+accProjectName+" is €14.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it.")
+		"The pool of "+accProjectName+" is 14.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it.")
 	rows := poolChangedRows(r)
 	equal(t, "the rows", len(rows), 1)
 	equal(t, "the top-up's row", rows[0].Detail, map[string]any{"action": "top_up", "from_eur": 10.0,
 		"confirmed_eur": 4.0, "to_eur": 14.0, "reason": "a second finding", "pr": "sf/infra#101"})
 	equal(t, "main's file after the top-up", r.InfraFiles()[accInfraFile], accPoolTopped4)
 	equal(t, "the pool line", poolLineOf(t, r, now), []any{14.0, 3.0, true, false,
-		"0 of 30 sessions, 0 h of 30 h agent time and €3.00 of €14.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 3.00 of 14.00 EUR drawn this UTC month"})
 	if drawn, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || drawn != (policy.Draw{EUR: 3}) {
 		t.Fatalf("the month's draws = %+v, %v; want 3 EUR still", drawn, err)
 	}
@@ -239,10 +239,10 @@ func TestPoolTopUp(t *testing.T) {
 		t.Fatalf("the lowered set's Do it = %d:\n%s", code, body)
 	}
 	landedPress(t, "the lowered set's Do it", body, set,
-		"The pool of "+accProjectName+" is €2.00 now, was €14.00: sf/infra#102 carries the change and the policy in force holds it.")
+		"The pool of "+accProjectName+" is 2.00 EUR now, was 14.00 EUR: sf/infra#102 carries the change and the policy in force holds it.")
 	equal(t, "main's file after the lowered set", r.InfraFiles()[accInfraFile], accPoolSet2)
 	equal(t, "the pool line the lowered set leaves", poolLineOf(t, r, now), []any{2.0, 3.0, true, true,
-		"0 of 30 sessions, 0 h of 30 h agent time and €3.00 of €2.00 drawn this UTC month, overdrawn in money: only the human draws more of that part until the month turns"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 3.00 of 2.00 EUR drawn this UTC month, overdrawn in money: only the human draws more of that part until the month turns"})
 
 	// set 0 refuses at the offer, before any token: a pool of 0 is the
 	// policy's figure, which the project file leaves unset
@@ -362,7 +362,7 @@ func TestPoolConfirmationAccess(t *testing.T) {
 		t.Fatalf("the owner's corrected Do it = %d:\n%s", code, body)
 	}
 	landedPress(t, "the owner's corrected Do it", body, `{"action":"set","eur":12,"reason":"Allow two small verified follow-ups"}`,
-		"The pool of "+accProjectName+" is €12.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it.")
+		"The pool of "+accProjectName+" is 12.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it.")
 	commits := r.InfraCommits()
 	equal(t, "the commits", len(commits), 1)
 	if !strings.Contains(commits[0].Message, "Requested-by: sebastian\n") {
@@ -428,7 +428,7 @@ func TestPoolPendingAndFailures(t *testing.T) {
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) !=
 		"The pool change is merged as sf/infra#102, but the policy in force still holds the pool of "+accProjectName+
-			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 14.00." {
+			" at 10.00 EUR: the loader picks the merge up on its next poll. The change is recorded, and the pool stays 10.00 EUR until the policy holds 14.00 EUR." {
 		t.Fatalf("the unloaded merge's press = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the unloaded merge", r.InfraFiles()[accInfraFile], accPoolTopped4)
@@ -448,10 +448,10 @@ func TestPoolPendingAndFailures(t *testing.T) {
 	// the pool line reads the old pool until the loader activates the
 	// merged one
 	equal(t, "the pool line before the activation", poolLineOf(t, r, now), []any{10.0, 8.0, true, false,
-		"0 of 30 sessions, 0 h of 30 h agent time and €8.00 of €10.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 8.00 of 10.00 EUR drawn this UTC month"})
 	r.SetLoadedPool(14)
 	equal(t, "the pool line the activation leaves", poolLineOf(t, r, now), []any{14.0, 8.0, true, false,
-		"0 of 30 sessions, 0 h of 30 h agent time and €8.00 of €14.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 8.00 of 14.00 EUR drawn this UTC month"})
 
 	// a merged change whose audit row the spine refused: the repair
 	// names the pull request and the missing row, the activation stands
@@ -461,7 +461,7 @@ func TestPoolPendingAndFailures(t *testing.T) {
 	token, _, _ = poolOffer(t, r, path, ck, csrf, args)
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusInternalServerError || strings.TrimSpace(body) !=
-		`The pool change is merged as sf/infra#103, but its pool_changed row could not be written: the spine is down. The change stands: write the missing row (action top_up, from_eur 14.00, confirmed_eur 4.00, to_eur 18.00, reason "a verified finding") and do not repeat the change.` {
+		`The pool change is merged as sf/infra#103, but its record could not be written: the spine is down. The change stands, so do not repeat it. The missing record: top_up from 14.00 EUR, confirmed 4.00 EUR, to 18.00 EUR, reason "a verified finding".` {
 		t.Fatalf("the unwritten row's press = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the repair", r.InfraFiles()[accInfraFile], accPool18)

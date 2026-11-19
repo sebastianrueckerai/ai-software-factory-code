@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	humanConfirmButton = "made with the plan's Confirm button."
+	humanConfirmButton = "made with Confirm the plan on the plan's card."
 	belowFullAutoWord  = "below full auto is the human's"
 	offMainWord        = "takes merged work off main"
 )
@@ -37,9 +37,9 @@ func TestPlanAnswerRefusal(t *testing.T) {
 		{"the agent's confirmation at assisted", 2, policy.AutonomyAssisted, true, false, "x", belowFullAutoWord, humanConfirmButton},
 		{"the agent's question at autonomous", 2, policy.AutonomyAutonomous, false, false, "x", belowFullAutoWord, "on the plan's card"},
 		{"the agent's answer with no level read", 2, "", false, false, "x", "autonomy level could not be read", "on the plan's card"},
-		{"rung 1's confirmation at full auto", 1, policy.AutonomyFullAuto, true, false, "x", "Rung 1 decides no plan answer", "on the plan's card"},
-		{"rung 1's question at full auto", 1, policy.AutonomyFullAuto, false, false, "x", "Rung 1 decides no plan answer", "on the plan's card"},
-		{"rung 0's question at full auto", 0, policy.AutonomyFullAuto, false, false, "x", "Rung 0 decides no plan answer", "on the plan's card"},
+		{"rung 1's confirmation at full auto", 1, policy.AutonomyFullAuto, true, false, "x", "The check-in decides no plan answer", "on the plan's card"},
+		{"rung 1's question at full auto", 1, policy.AutonomyFullAuto, false, false, "x", "The check-in decides no plan answer", "on the plan's card"},
+		{"rung 0's question at full auto", 0, policy.AutonomyFullAuto, false, false, "x", "The factory decides no plan answer", "on the plan's card"},
 	} {
 		got := PlanAnswerRefusal(c.rung, c.autonomy, c.confirming, c.off)
 		if got != "" && strings.Contains(got, "attach_analysis") != (c.rung == 2) {
@@ -135,8 +135,8 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 		{"confirmation at assisted", policy.AutonomyAssisted, CasePlanConfirmation, 2, nil, false, humanConfirmButton},
 		{"question at full auto", policy.AutonomyFullAuto, CasePlanQuestion, 2, nil, false, ""},
 		{"question at autonomous", policy.AutonomyAutonomous, CasePlanQuestion, 2, nil, false, belowFullAutoWord},
-		{"rung 1's confirmation at full auto", policy.AutonomyFullAuto, CasePlanConfirmation, 1, nil, false, "Rung 1 decides no plan answer"},
-		{"rung 1's question at full auto", policy.AutonomyFullAuto, CasePlanQuestion, 1, nil, false, "Rung 1 decides no plan answer"},
+		{"rung 1's confirmation at full auto", policy.AutonomyFullAuto, CasePlanConfirmation, 1, nil, false, "The check-in decides no plan answer"},
+		{"rung 1's question at full auto", policy.AutonomyFullAuto, CasePlanQuestion, 1, nil, false, "The check-in decides no plan answer"},
 	} {
 		g, k := planAskRig(t, c.autonomy, c.takeOff)
 		g.store.cases[len(g.store.cases)-1].Kind = c.kind
@@ -167,7 +167,7 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 // off_main, which answers that the plan has no card on main. A plain replan
 // is not refused for it.
 func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
-	const why = "A replan that takes merged work off main is the human's, made with the Replan button's off-main box."
+	const why = "A replan that takes merged work off main is the human's, made with the off-main box of the card's Send back to the planner."
 	args := map[string]any{"off_main": true}
 	for _, c := range []struct {
 		name, autonomy, by string
@@ -212,7 +212,7 @@ func TestActOffersAPlanCaseOnlyTheAnswerAndANote(t *testing.T) {
 	for _, action := range []string{ActRouteApproval, ActClose, ActReplan} {
 		g, k := planAskRig(t, policy.AutonomyFullAuto, nil)
 		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: ChatUser, Rung: 2, Res: Resolution{Action: action, Note: "x"}})
-		want := "case 7 is the plan's plan confirmation: answer it with the answer tool (revision 1, question 1), note it, or hand it up with attach_analysis; " + action + " resolves no plan case without answering the plan"
+		want := "`case_id` 7 is the plan's plan confirmation: answer it with the `answer` tool (`revision` 1, `question` 1), note it, or hand it up with `attach_analysis`. `" + action + "` answers no plan question without answering the plan."
 		if err == nil || err.Error() != want || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || len(g.store.caseSteps[k.ID]) != 0 {
 			t.Errorf("%s: Act = %v, want %q and the case left open", action, err, want)
 		}

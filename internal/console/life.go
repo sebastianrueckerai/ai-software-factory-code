@@ -59,7 +59,12 @@ func sizingNote(m map[string]any) string {
 // Costs is whether the run shows a cost: a building or planning run.
 func (r run) Costs() bool { return r.Kind == "building" || r.Kind == "planning" }
 
-var runClasses = map[string]string{"queued": "st-closed", "planning": "st-running", "building": "st-running", "verifying": "st-review", "waiting on you": "st-waiting"}
+var runClasses = map[string]string{"queued": "st-closed", "planning": "st-running", "building": "st-running", "verifying": "st-review", "waiting on you": "st-waiting",
+	withTheAgent: "st-running"}
+
+// withTheAgent is the stage of factoryd's own human card while its case
+// climbs: the factory agent judges it before a human is asked.
+const withTheAgent = "with the factory agent"
 
 // runKind is the stage a status puts a card on track in, "" for a final
 // one: a running plan-track card plans, any other builds.
@@ -76,6 +81,8 @@ func runKind(status, track string) string {
 		return "verifying"
 	case "waiting-human", "waiting-poster":
 		return "waiting on you"
+	case "waiting-agent":
+		return withTheAgent
 	}
 	return ""
 }
@@ -271,21 +278,17 @@ func lifeLine(runs []run, spent float64) string {
 		parts = append(parts, minutes(time.Duration(waiting)*time.Minute)+" waiting")
 	}
 	if spent > 0 {
-		parts = append(parts, fmt.Sprintf("\u20ac%.2f", spent))
+		parts = append(parts, textutil.EUR(spent)+" EUR")
 	}
 	return strings.Join(parts, " · ")
 }
 
-// lifeOf reads card t's runs: its events, its timeline and its model
-// calls; a read that fails leaves its part out and is logged.
-func (c *Console) lifeOf(ctx context.Context, t factoryd.Task) []run {
+// lifeOf is card t's runs from its events, its timeline's steps and its
+// model calls; a read that fails leaves its part out and is logged.
+func (c *Console) lifeOf(ctx context.Context, t factoryd.Task, steps []map[string]any) []run {
 	events, err := c.cfg.Events.TaskEvents(ctx, t.ID, eventLimitMax)
 	if err != nil {
 		log.Printf("console: the events of %s: %v", t.ID, err)
-	}
-	steps, err := c.readTimeline(ctx, t.ID)
-	if err != nil {
-		log.Printf("console: the timeline of %s: %v", t.ID, err)
 	}
 	var calls []policy.ModelCall
 	if c.cfg.Costs != nil {

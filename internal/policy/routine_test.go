@@ -86,6 +86,8 @@ func TestRoutineValidate(t *testing.T) {
 		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassLongWaits}, "a pull-request routine names its pass, template"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "docs/a.md"}, `brief "docs/a.md": a file routines/<name>.md`},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "routines/a.txt"}, `brief "routines/a.txt": a file routines/<name>.md`},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Why: strings.Repeat("a", 161)}, "the why: one sentence on one line, at most 160 characters"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Why: "So fixes land.\nAnd fast."}, "the why: one sentence on one line"},
 	} {
 		if err := c.r.Validate("p"); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%+v: got %v, want %q", c.r, err, c.want)
@@ -97,6 +99,7 @@ func TestRoutineValidate(t *testing.T) {
 		{Name: "a", Title: "t", Files: FilesPullRequest, Pass: PassTemplate, Schedule: merges, WhileOpen: WhileOpenFold, Tell: TellQuiet},
 		{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Tell: TellInbox},
 		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 3 1-7 * 0"}}},
+		{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Why: strings.Repeat("a", 160)},
 	} {
 		if err := r.Validate("p"); err != nil {
 			t.Errorf("%+v: %v", r, err)

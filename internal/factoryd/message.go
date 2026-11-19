@@ -17,6 +17,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // messageTokenHash is what the worker pod gets of the session's message
@@ -228,7 +229,7 @@ func sessionMessage(taskID, user, text string, basics bool) string {
 		msg = "You are the agent session of card " + taskID + " in the AI software factory. " + manual.Loop +
 			". When you end, the factory commits your working tree, pushes it and opens the pull request. " +
 			"A writer of this project talks to you through the card's chat; the gates judge what you push. " +
-			"The manual tool reads the rest.\n\n" + msg
+			"The manual tool reads the rest.\n\n" + writingguide.For(writingguide.JobChat) + "\n\n" + msg
 	}
 	return msg
 }

@@ -240,7 +240,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			// the row names its case, which the events writer withdraws,
 			// and settles the case's ask in the inbox
 			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": monitorFlagText(c.Problem)}})
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": c.Problem}})
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
@@ -249,7 +249,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 	head := digestHeadCommit(d)
 	for _, o := range opens {
 		o.facts["flag"], o.facts["detail"], o.facts["state"], o.facts["digest"] = o.f.Name, o.f.Detail, o.state, d.Render()
-		in := TripInput{TaskID: taskID, Reason: monitorFlagPrefix + flagsText([]DigestFlag{o.f}), Head: head, Kind: CaseMonitorFlag, StateKey: o.key, Extra: o.facts}
+		in := TripInput{TaskID: taskID, Reason: MonitorFlagReason(o.f), Head: head, Kind: CaseMonitorFlag, StateKey: o.key, Extra: o.facts}
 		if _, err := m.Runner.OpenTrip(ctx, in, tripAttempt{}); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", o.key, err))
 		}
@@ -338,7 +338,7 @@ func flagCase(d CardDigest, f DigestFlag) (string, map[string]any, bool) {
 	case f.Name == "wait_over_bound" || f.Name == "queued_over_bound":
 		w, ok := d.ownedWait()
 		since := w.Since.UTC().Format(time.RFC3339)
-		facts := map[string]any{"wait": w.Kind, "owner_rung": w.Rung, "since": since, "bound": durationText(d.Waits.Bound(w.Kind))}
+		facts := map[string]any{"wait": w.Kind, "owner_rung": w.Rung, "since": since, "bound": DurationText(d.Waits.Bound(w.Kind))}
 		return w.Kind + "|" + since, facts, ok && !(f.Name == "wait_over_bound" && w.Kind == "queued")
 	case slices.Contains(eventFlags, f.Name):
 		return f.Detail, map[string]any{}, true
@@ -386,4 +386,12 @@ func (s *PGStore) FlaggedEnds(ctx context.Context) ([]string, error) {
 		[]any{CaseMonitorFlag, FinalStatuses, KindChat}, func(row rowScanner) (id string, err error) {
 			return id, row.Scan(&id)
 		})
+}
+
+// monitorFlagPrefix starts the reason and the problem of a monitor flag's case.
+const monitorFlagPrefix = "Monitor flag: "
+
+// MonitorFlagReason is the reason of flag f's monitor case.
+func MonitorFlagReason(f DigestFlag) string {
+	return monitorFlagPrefix + flagsText([]DigestFlag{f})
 }

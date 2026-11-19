@@ -36,8 +36,8 @@ const readsTimeline = `{"step":"session_start","time":"2026-10-11T09:00:00Z","se
 // newReadsRig is the chat rig with what the reads read. Plan card t-p #20
 // holds revision 1 of three cards, of which api is filed as #21 t-c1
 // (running, three sessions spent of its cap of four) and web as #22 t-c2
-// (waiting on #21, after #19 t-d, done); t-r #11 has spent €1.23 of
-// €5.00 and one session, and its pull request #9 the timeline
+// (waiting on #21, after #19 t-d, done); t-r #11 has spent 1.23 of
+// 5.00 EUR and one session, and its pull request #9 the timeline
 // readsTimeline.
 func newReadsRig(t *testing.T) (*rig, *chatGateway) {
 	r, _, g := newChatRig(t)
@@ -218,8 +218,8 @@ func TestChatPlanReadReadsEachKeysCard(t *testing.T) {
 			`api foundation "API layer" small depends on none issue #25` + "\n" +
 			`web feature "Web UI" medium depends on api issue #22` + "\n" +
 			`accept integration "Acceptance tests" small depends on api, web not filed` + "\n" +
-			`#25 ` + succ + ` "api" done (is done), €0.75 of €2.00` + "\n" +
-			`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00`})
+			`#25 ` + succ + ` "Build the API, carried on." done (is done), 0.75 of 2.00 EUR` + "\n" +
+			`#22 t-c2 "Build the web UI." waiting-deps (waits for the cards it depends on), 0.00 of 2.00 EUR`})
 }
 
 // readsPlanRows are plan t-p's rows and its filed cards as the plan read
@@ -227,8 +227,8 @@ func TestChatPlanReadReadsEachKeysCard(t *testing.T) {
 const readsPlanRows = `api foundation "API layer" small depends on none issue #21` + "\n" +
 	`web feature "Web UI" medium depends on api issue #22` + "\n" +
 	`accept integration "Acceptance tests" small depends on api, web not filed` + "\n" +
-	`#21 t-c1 "api" running (runs an agent session), gate session (an agent works in a sandbox), €0.50 of €2.00` + "\n" +
-	`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00`
+	`#21 t-c1 "Build the API." running (runs an agent session), gate session (an agent works in a sandbox), 0.50 of 2.00 EUR` + "\n" +
+	`#22 t-c2 "Build the web UI." waiting-deps (waits for the cards it depends on), 0.00 of 2.00 EUR`
 
 // A revision without questions of its own lists the answers of the
 // newest earlier revision with answered ones, which the planner built it
@@ -273,8 +273,8 @@ func TestChatCardMoneyNetsHolds(t *testing.T) {
 		}
 	}
 	r.tasks.mu.Unlock()
-	if got := reads(t, r, g, "card", `{"task_id":"t-r"}`)[0]; !strings.Contains(got, ", €4.90 of €5.00\n") {
-		t.Fatalf("the card read = %q, want €4.90 of €5.00", got)
+	if got := reads(t, r, g, "card", `{"task_id":"t-r"}`)[0]; !strings.Contains(got, ", 4.90 of 5.00 EUR\n") {
+		t.Fatalf("the card read = %q, want 4.90 of 5.00 EUR", got)
 	}
 }
 
@@ -290,18 +290,18 @@ func TestChatCardInFull(t *testing.T) {
 	// (77.1%); 0.0072 EUR over four
 	equal(t, "the card reads", reads(t, r, g, "card", `{"task_id":"t-r"}`, "card", `{"task_id":"t-c2"}`, "card", `{"task_id":"t-c1"}`), []string{
 		"#11 · budget 5.00 spent 1.23 holds 0.00 EUR · running, session\nflags: none\n\n" +
-			`#11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox), €1.23 of €5.00` + "\n" +
+			`#11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox), 1.23 of 5.00 EUR` + "\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/11\nsessions: 1 of 3\n" +
 			s2Cost + "cost: small, 4 calls, prompt tokens per call median 40,000 max 52,000, 77% cached, 0.0018 EUR per call\n" +
 			"pull request #9 https://git.example/sf/code/pulls/9, head c0ffee1, open\n" +
 			"reviews: concerns (2 findings): see pr\naudit: clear: see pr\nchecks: 1/2: see pr\nsessions: 1: see session\n" +
 			"objective: Speed up the board.",
 		"#22 · budget 2.00 spent 0.00 holds 0.00 EUR · waiting-deps\nflags: none\n\n" +
-			`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00` + "\n" +
+			`#22 t-c2 "Build the web UI." waiting-deps (waits for the cards it depends on), 0.00 of 2.00 EUR` + "\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\ncost: no model calls\n" +
 			"depends on #21 (runs an agent session)\ndepends on #19 (is done)\nplan: see plan\nobjective: Build the web UI.",
 		"#21 · budget 2.00 spent 0.50 holds 0.00 EUR · running, session\nflags: none\n\n" +
-			`#21 t-c1 "api" running (runs an agent session), gate session (an agent works in a sandbox), €0.50 of €2.00` + "\n" +
+			`#21 t-c1 "Build the API." running (runs an agent session), gate session (an agent works in a sandbox), 0.50 of 2.00 EUR` + "\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/21\nsessions: 3 of 4\ncost: no model calls\n" +
 			"needed by #22 (waits for the cards it depends on)\nplan: see plan\nobjective: Build the API.",
 	})

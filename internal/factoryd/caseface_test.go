@@ -2,42 +2,146 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestCaseFaceReadsTheLadder(t *testing.T) {
-	c := Case{Kind: CaseSessionCap, Problem: "#1 used its 3 sessions, and 2 findings are open.",
-		Money: &CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, NeedEUR: 0.5, Buys: "one more session"}}
-	steps := []CaseStep{
-		{Rung: 1, Outcome: StepHandedUp, Found: "two findings stand: f1 at store.go:672 and f2. The second is older. A third sentence.", Decision: "continue", Grounds: "rung one grounds"},
-		{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "the review's two findings are real; a fresh session with the note fixes both"},
+// stored is detail as the events table gives it back: through JSON.
+func stored(t *testing.T, detail map[string]any) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
 	}
-	ask := CaseAsk{Detail: map[string]any{"recommendation": "handover: the review's two findings are real; a fresh session with the note fixes both", "recommended_by": "the factory agent"}}
-	got := CaseFace(c, steps, CaseFacts{}, ask, nil)
-	if got.Ask != c.Problem {
-		t.Errorf("Ask = %q, want the problem", got.Ask)
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
 	}
-	if got.Money != "1.48 of 2.00 EUR spent; the next step needs 0.50 EUR for one more session" {
-		t.Errorf("Money = %q", got.Money)
+	return out
+}
+
+// A case's face is the one its ask stored, whatever its facts say now: the
+// ask, the why line, the story, the answers with their labels and effects,
+// the suggestion with who made it and why, and the agent's view.
+func TestCaseFaceReadsTheStoredFace(t *testing.T) {
+	card := Task{ID: "t1", Kind: "agent", IssueNumber: 1, Objective: "Count the skipped rows"}
+	c := Case{ID: 3, Kind: CaseSessionCap, Facts: map[string]any{}}
+	f := CaseFacts{Kind: CaseSessionCap, SessionCap: 3, Attempts: 3, BudgetEUR: 2, SpentEUR: 1.48}
+	face := FaceOf(c, Facts{CaseFacts: f, Card: card, Recommend: Recommendation{Action: ActClose, By: "the factory agent", Grounds: "no session fixes the two findings"}})
+	detail := FaceKeys(face)
+	detail["info"] = "The factory agent found: two findings stand."
+	got := CaseFace(Case{ID: 3, Kind: CaseSessionCap, Problem: "an older ask"}, card, CaseAsk{Detail: stored(t, detail)})
+	if got.Ask != face.Ask || got.Why != face.Why || got.Story != face.Story || got.Info != "The factory agent found: two findings stand." {
+		t.Errorf("face = %+v, want the stored %+v", got, face)
 	}
-	if !strings.HasSuffix(got.Why, "two findings stand: f1 at store.go:672 and f2. The second is older.") {
-		t.Errorf("Why = %q, want the found cut after its second sentence", got.Why)
+	if got.Preselected != ActClose || got.Source != "the factory agent" || got.Recommendation != "no session fixes the two findings" {
+		t.Errorf("suggestion %q by %q on %q, want the stored close", got.Preselected, got.Source, got.Recommendation)
 	}
-	if got.Recommendation != ask.Detail["recommendation"] || got.Source != "the factory agent" {
-		t.Errorf("Recommendation = %q by %q, want the ask's with its writer", got.Recommendation, got.Source)
+	if want := offersOfAnswers(face.Answers); !reflect.DeepEqual(got.Offers, want) {
+		t.Errorf("offers = %+v, want %+v", got.Offers, want)
+	}
+	if got.Offers[0].Value != ActClose || got.Offers[0].Label != "End the card" {
+		t.Errorf("the first offer = %+v, want the suggested close in the vocabulary's words", got.Offers[0])
 	}
 }
 
-func TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney(t *testing.T) {
-	c := Case{Kind: CaseBudgetFloor, Problem: "The budget is short.", Money: &CaseMoney{BudgetEUR: 2, SpentEUR: 1.9, NeedEUR: 0.4, Buys: "a session"}}
-	line := "1.90 of 2.00 EUR spent; the next step needs 0.40 EUR for a session"
-	if got := CaseFace(c, nil, CaseFacts{Checks: "green"}, CaseAsk{}, nil); got.Ask != line || got.Money != "" {
-		t.Errorf("green head: Ask = %q, Money = %q; want the money line as the ask", got.Ask, got.Money)
+// A case whose ask stored no face, a request's case, is faced by the
+// register on the case's own facts, its suggestion the ask row's.
+func TestCaseFaceWithoutAStoredFaceReadsTheRegister(t *testing.T) {
+	c := Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration", "pr": 9, "checks": "green", "pr_open": true}}
+	card := Task{ID: "t1", Kind: "agent", IssueNumber: 4}
+	ask := CaseAsk{Detail: map[string]any{"preselected": map[string]any{"action": ActApproveMerge}, "recommended_by": "the factory agent"}}
+	got := CaseFace(c, card, ask)
+	want := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card, Recommend: Recommendation{Action: ActApproveMerge, By: "the factory agent"}})
+	if got.Ask != want.Ask || got.Why != want.Why || got.Story != want.Story || !reflect.DeepEqual(got.Offers, offersOfAnswers(want.Answers)) {
+		t.Errorf("face = %+v, want the register's %+v", got, want)
 	}
-	if got := CaseFace(c, nil, CaseFacts{Checks: "green", Findings: []string{"f1"}}, CaseAsk{}, nil); got.Ask != c.Problem || got.Money != line {
-		t.Errorf("with a finding: Ask = %q, Money = %q; want the problem over the money line", got.Ask, got.Money)
+	if got.Why != "The change alters the database, and the factory's rules let only a human merge it." {
+		t.Errorf("why = %q, want the risk class named", got.Why)
+	}
+	if got.Preselected != ActApproveMerge || got.Source != "the factory agent" {
+		t.Errorf("suggestion %q by %q, want the ask row's", got.Preselected, got.Source)
+	}
+}
+
+// A merge whose model review did not run waits for a human for that: its
+// why line says so.
+func TestCaseFaceOfAMergeApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
+	line := "The model review did not run: the month cap is spent."
+	c := Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "normal", "review_not_run": line}}
+	if got := CaseFace(c, Task{ID: "t1"}, CaseAsk{}).Why; got != line {
+		t.Errorf("Why = %q, want %q", got, line)
+	}
+}
+
+// A monitor flag on a wait for dependencies names, as what is left, what
+// each dependency waits on; a flag on any other wait names none.
+func TestCaseFaceOfADependencyWaitNamesThePlansOwnWait(t *testing.T) {
+	since := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	c := Case{Kind: CaseMonitorFlag, Facts: map[string]any{"flag": "wait_over_bound", "wait": "dependency",
+		"dependencies": []any{map[string]any{"issue": 31, "status": "waiting-human", "plan": true, "ask": "Confirm the plan?", "since": since}}}}
+	want := `The card waits on plan #31, which waits on a human to answer "Confirm the plan?" since 2026-11-01 08:00 UTC.`
+	if got := CaseFace(c, Task{ID: "t1"}, CaseAsk{}).Story.Left; got != want {
+		t.Errorf("Left = %q, want %q", got, want)
+	}
+	c.Facts["dependencies"] = []any{map[string]any{"issue": 5, "status": "running", "since": since}}
+	if got, want := CaseFace(c, Task{ID: "t1"}, CaseAsk{}).Story.Left, "The card waits on card #5, which is running since 2026-11-01 08:00 UTC."; got != want {
+		t.Errorf("Left = %q, want %q", got, want)
+	}
+	c.Facts["wait"] = "gate"
+	if got := CaseFace(c, Task{ID: "t1"}, CaseAsk{}).Story.Left; strings.Contains(got, "waits on card") {
+		t.Errorf("Left = %q, want no dependency sentence for a gate wait", got)
+	}
+}
+
+// An agent's words that read as an answer of the vocabulary leave its
+// answers: the face's "End the card" stays the card's own end, never a
+// session that reads the words.
+func TestAnAgentsWordsNeverStandForTheCardsOwnAnswer(t *testing.T) {
+	c := Case{Kind: CaseAgentEscalate, Facts: map[string]any{"reason": AgentAsks + "Ship A or B?", "choices": []any{"Ship A", "end the card.", "Not now"}}}
+	room := CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeCapS: 7200, SessionLeastS: 300, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.3}
+	face := FaceOf(c, Facts{CaseFacts: room, Card: Task{ID: "t1", Kind: "agent"}})
+	var keys []string
+	for _, a := range face.Answers {
+		keys = append(keys, a.Key())
+	}
+	if want := []string{"say:Ship A", ActNote, ActClose}; !reflect.DeepEqual(keys, want) {
+		t.Errorf("answers %v, want %v", keys, want)
+	}
+}
+
+// A merge whose model review approved its head suggests the merge, by the
+// model review, on a line composed from the review's facts. Red checks, a
+// review with concerns and a review that did not run suggest nothing.
+func TestAMergeSuggestsWhatItsReviewApproved(t *testing.T) {
+	request := func(spec MergeSpec) ApprovalRequest {
+		b, err := json.Marshal(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ApprovalRequest{ID: 4, Kind: ApprovalMerge, TaskID: "t-m", Project: "sf/r", PRNumber: 9, Spec: b}
+	}
+	approved := Review{Verdict: "approve", Summary: "Adds the column safely."}
+	for name, c := range map[string]struct {
+		spec MergeSpec
+		want string
+	}{
+		"approved":    {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: approved, VerdictSummary: approved.Summary}, ActApproveMerge},
+		"red checks":  {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: approved, VerdictSummary: approved.Summary, RedChecks: true}, ""},
+		"concerns":    {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: Review{Verdict: "concerns", Summary: "The column lacks a default."}}, ""},
+		"did not run": {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: Review{Verdict: "approve", Note: "the review did not run"}}, ""},
+	} {
+		k, err := RequestCase(request(c.spec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		face := CaseFace(k, Task{ID: "t-m", Kind: "agent"}, CaseAsk{})
+		if face.Preselected != c.want || c.want != "" && (face.Source != "the model review" || face.Recommendation != "It approved the change with no finding.") {
+			t.Errorf("%s: suggests %q by %q on %q, want %q by the model review", name, face.Preselected, face.Source, face.Recommendation, c.want)
+		}
 	}
 }
 
@@ -66,142 +170,17 @@ func TestCaseFaceAndAskAgreeOnLostWork(t *testing.T) {
 	if _, err := g.r.AskHuman(ctx, card, c, why, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	var asked string
+	var asked Story
+	var askedWhy string
 	for _, e := range g.store.events {
 		if e.Kind == EventQuestionAsked {
-			asked, _ = e.Detail["why"].(string)
+			asked, _ = e.Detail["story"].(Story)
+			askedWhy, _ = e.Detail["why"].(string)
 		}
 	}
-	const lost = "The last session's work was not pushed and is lost."
-	face := CaseFace(c, nil, FactsOf(c), CaseAsk{}, nil)
-	if !strings.Contains(asked, lost) || face.Why != asked {
-		t.Errorf("face why %q, asked why %q; want both to say the work is lost", face.Why, asked)
-	}
-}
-
-func TestCaseFaceWithoutAKindReasonSaysTheKind(t *testing.T) {
-	got := CaseFace(Case{Kind: CaseOther, Problem: "p"}, nil, CaseFacts{}, CaseAsk{}, nil)
-	if got.Recommendation != "" || got.Why != "The case is the open problem." {
-		t.Errorf("Recommendation = %q, Why = %q", got.Recommendation, got.Why)
-	}
-}
-
-func TestCaseFaceTakesTheAsksOffersInfoAndTheLastAnswer(t *testing.T) {
-	at := time.Date(2026, 11, 1, 21, 40, 0, 0, time.UTC)
-	ask := CaseAsk{Detail: map[string]any{"info": "What each answer does.",
-		"offers":      []any{map[string]any{"value": "park", "label": "Park it"}},
-		"preselected": map[string]any{"action": "handover"}}}
-	got := CaseFace(Case{Kind: CaseOther, Problem: "p"}, nil, CaseFacts{}, ask, &at)
-	if len(got.Choices) != 1 || got.Choices[0] != (QuestionChoice{Value: "park", Label: "Park it"}) || got.Preselected != "handover" {
-		t.Errorf("Choices = %v, Preselected = %q", got.Choices, got.Preselected)
-	}
-	if got.Info != "What each answer does." || got.LastAnswerAt != &at {
-		t.Errorf("Info = %q", got.Info)
-	}
-}
-
-func TestCaseFaceBudgetFloorOnARedHeadKeepsTheProblem(t *testing.T) {
-	c := Case{Kind: CaseBudgetFloor, Problem: "The budget is short.", Money: &CaseMoney{BudgetEUR: 2, SpentEUR: 1.9}}
-	if got := CaseFace(c, nil, CaseFacts{Checks: "red"}, CaseAsk{}, nil); got.Ask != c.Problem {
-		t.Errorf("red head: Ask = %q, want the problem", got.Ask)
-	}
-	c.Kind = CaseSessionCap
-	if got := CaseFace(c, nil, CaseFacts{Checks: "green"}, CaseAsk{}, nil); got.Ask != c.Problem || got.Money == "" {
-		t.Errorf("green session cap with money: Ask = %q, Money = %q", got.Ask, got.Money)
-	}
-}
-
-// The brief's background is the face's info, over the ask's; a rung's
-// recommended action keeps its name and writer while the grounds are the
-// brief's words; with no rung's recommendation part 4 stays empty, whatever
-// the writer answered, and the factory's own template recommendation stays.
-func TestCaseFaceTakesTheBriefsBackgroundAndGrounds(t *testing.T) {
-	handedUp := []CaseStep{{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "terse grounds"}}
-	c := Case{Kind: CaseOther, Problem: "p", Brief: "The card set out to add a retry.", BriefDetail: "A fresh session fixes both findings."}
-	ask := CaseAsk{Detail: map[string]any{"info": "the digest's render", "recommendation": "handover: terse grounds", "recommended_by": "the factory agent"}}
-	got := CaseFace(c, handedUp, CaseFacts{}, ask, nil)
-	if got.Info != "The card set out to add a retry." || got.Recommendation != "handover: A fresh session fixes both findings." || got.Source != "the factory agent" {
-		t.Errorf("Info = %q, Recommendation = %q by %q", got.Info, got.Recommendation, got.Source)
-	}
-	if got := CaseFace(c, nil, CaseFacts{}, CaseAsk{Detail: map[string]any{"info": "x"}}, nil); got.Recommendation != "" || got.Source != "" {
-		t.Errorf("with no rung recommendation: Recommendation = %q by %q, want none", got.Recommendation, got.Source)
-	}
-	template := CaseAsk{Detail: map[string]any{"recommendation": "Go on: the last review approved the head", "recommended_by": "the factory's"}}
-	if got := CaseFace(c, nil, CaseFacts{}, template, nil); got.Recommendation != "Go on: the last review approved the head" {
-		t.Errorf("the template's Recommendation = %q, want it kept", got.Recommendation)
-	}
-	c.Brief = ""
-	if got := CaseFace(c, handedUp, CaseFacts{}, ask, nil); got.Info != "the digest's render" {
-		t.Errorf("without a brief Info = %q, want the ask's", got.Info)
-	}
-}
-
-// A newer step that handed up with no decision, or with the human's, does
-// not name the action: the newest decision of a rung does.
-func TestCaseFaceNamesTheNewestRungDecision(t *testing.T) {
-	steps := []CaseStep{
-		{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "g"},
-		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp},
-		{Rung: 1, Outcome: StepHandedUp},
-	}
-	c := Case{Kind: CaseOther, Problem: "p", BriefDetail: "plain grounds"}
-	ask := CaseAsk{Detail: map[string]any{"recommendation": "handover: g", "recommended_by": "the factory agent"}}
-	if got := CaseFace(c, steps, CaseFacts{}, ask, nil); got.Recommendation != "handover: plain grounds" {
-		t.Errorf("Recommendation = %q, want the handover's action with the brief's grounds", got.Recommendation)
-	}
-}
-
-// rungAction skips a moment's hand_up step: it is a hand-up, not a
-// recommendation, so the newest decision a rung handed up names the action.
-func TestRungActionSkipsAMomentsHandUpStep(t *testing.T) {
-	steps := []CaseStep{
-		{Rung: 2, Outcome: StepHandedUp, Decision: ActHandover, Grounds: "g"},
-		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict"},
-	}
-	if got := rungAction(steps); got != ActHandover {
-		t.Fatalf("rungAction = %q, want the rung's handover: the moment's hand_up recommends nothing", got)
-	}
-	if got := rungAction(steps[1:]); got != "" {
-		t.Fatalf("rungAction of a moment's hand-up alone = %q, want none", got)
-	}
-}
-
-// A merge approval's why names the risk class the merge gate gave the
-// change, from the case's facts; one with no class says the kind.
-func TestCaseFaceOfAMergeApprovalNamesTheRiskClass(t *testing.T) {
-	c := Case{Kind: CaseMergeApproval, Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"class": "migration"}}
-	if got, want := CaseFace(c, nil, CaseFacts{}, CaseAsk{}, nil).Why, "The merge gate classes the change migration: a human decides its merge."; got != want {
-		t.Errorf("Why = %q, want %q", got, want)
-	}
-	c.Facts = nil
-	if got, want := CaseFace(c, nil, CaseFacts{}, CaseAsk{}, nil).Why, "The case is the merge approval."; got != want {
-		t.Errorf("Why with no class = %q, want %q", got, want)
-	}
-}
-
-func TestCaseFaceOfAMergeApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
-	line := "The model review did not run: the month cap is spent."
-	c := Case{Kind: CaseMergeApproval, Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"class": "normal", "review_not_run": line}}
-	if got, want := CaseFace(c, nil, CaseFacts{}, CaseAsk{}, nil).Why, "The merge gate classes the change normal: a human decides its merge. "+line; got != want {
-		t.Errorf("Why = %q, want %q", got, want)
-	}
-}
-
-func TestCaseFaceOfADependencyWaitNamesThePlansOwnWait(t *testing.T) {
-	since := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
-	c := Case{Kind: CaseMonitorFlag, Problem: "p", Facts: map[string]any{"wait": "dependency"}}
-	f := CaseFacts{Dependencies: []DepFact{{Issue: 31, Status: "waiting-human", Plan: true, Ask: "Confirm the plan?", Since: &since}}}
-	want := `The card waits on plan #31, which waits on a human to answer "Confirm the plan?" since 2026-11-01 08:00 UTC.`
-	if got := CaseFace(c, nil, f, CaseAsk{}, nil).Why; !strings.HasSuffix(got, want) {
-		t.Errorf("Why = %q, want it to end with %q", got, want)
-	}
-	f.Dependencies = []DepFact{{Issue: 5, Status: "running", Since: &since}}
-	want = "The card waits on card #5, which is running since 2026-11-01 08:00 UTC."
-	if got := CaseFace(c, nil, f, CaseAsk{}, nil).Why; !strings.HasSuffix(got, want) {
-		t.Errorf("Why = %q, want it to end with %q", got, want)
-	}
-	c.Facts["wait"] = "gate"
-	if got := CaseFace(c, nil, f, CaseAsk{}, nil).Why; strings.Contains(got, "waits on card") {
-		t.Errorf("Why = %q, want no dependency sentence for a gate wait", got)
+	const lost = "The last session's work was not pushed and is lost. The next session starts again from main."
+	face := CaseFace(c, card, CaseAsk{})
+	if asked.Left != lost || face.Story != asked || askedWhy == "" || face.Why != askedWhy {
+		t.Errorf("the face's story %+v and why %q, the ask's story %+v and why %q; want both to say the work is lost", face.Story, face.Why, asked, askedWhy)
 	}
 }

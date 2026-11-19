@@ -147,11 +147,6 @@ func chunks(text string, n int) []string {
 	return out
 }
 
-const compactPrompt = `You keep the running summary of a human's thread with the project agent of a software factory.
-Write the new summary from the summary so far and the turns after it: what the human asked for and decided, what the agent did (cards filed, moved, answered, steered, approved, with their issue numbers and task ids), what is open, and the facts a later turn needs.
-Keep issue numbers (#12), task ids (t-...), names, numbers and quoted decisions exactly. Leave out greetings, tool output nobody needs, and anything the turns settled and left behind.
-Answer with the summary alone, as short paragraphs, at most 400 words.`
-
 // compact folds thread n's rows before its last keep turns, with its
 // summary so far, into a new summary on chat task taskID's account: one
 // cheap call, chunk by chunk past the summariser's window. A piece whose
@@ -180,7 +175,7 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 		piece := pieces[0]
 		pieces = pieces[1:]
 		so := cmp.Or(summary, "(none yet)")
-		msgs := []factoryd.OperatorMessage{{Role: "system", Content: compactPrompt},
+		msgs := []factoryd.OperatorMessage{{Role: "system", Content: factoryd.CompactPrompt},
 			{Role: "user", Content: "The summary so far:\n" + so + "\n\nThe turns after it:\n" + piece}}
 		answer, err := t.c.cfg.Operator.Compact(ctx, taskID, t.threadRef(), msgs)
 		if err != nil {

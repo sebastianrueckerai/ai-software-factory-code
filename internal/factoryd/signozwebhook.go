@@ -163,6 +163,10 @@ type AlertBook interface {
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 	CloseClearedCard(ctx context.Context, alertID int64, taskID string) error
+	// SetAskFace writes card t's objective and why line, merges facts into
+	// its live case caseID and stores face on its ask row, in one
+	// transaction.
+	SetAskFace(ctx context.Context, t Task, caseID int64, facts, face map[string]any) error
 }
 
 // AlertIntake serves POST /webhooks/signoz, SigNoz's webhook channel
@@ -343,8 +347,15 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 			// it ended before a window let it file: the rollout's own
 			return in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictNoise, "factoryd", map[string]any{"resolved_at": at})
 		}
+		// the card first: a failure here leaves the row unresolved, so the
+		// next delivery or the sweep walks the whole resolve again
+		if filed && t.Kind == "human" && !Final(t.Status) && row.Detail["event"] != true {
+			if err := in.alertOnCard(ctx, t, p, clearedQuestion(row, a.EndsAt), map[string]any{"resolved_at": at}); err != nil {
+				return err
+			}
+		}
 		if filed && ok && t.IssueNumber != 0 && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
-			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
+			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "Resolved at "+at); err != nil {
 				return err
 			}
 		}
@@ -393,7 +404,14 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 		return nil
 	}
 	if !Final(t.Status) {
-		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
+		// the card first, as a resolve's, whatever the row says: a resolve
+		// whose comment failed wrote the card and not the row
+		if t.Kind == "human" {
+			if err := in.alertOnCard(ctx, t, p, AlertQuestion(a, p.Name, ns, AlertHumanWhy(p, a), ""), map[string]any{"resolved_at": ""}); err != nil {
+				return err
+			}
+		}
+		msg := "The alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
 		if t.IssueNumber != 0 {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 				return err
@@ -531,6 +549,20 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
+// clearedQuestion is the face of the human card of alert row, which
+// cleared at until.
+func clearedQuestion(row Alert, until time.Time) HumanQuestion {
+	labels := map[string]string{}
+	for _, k := range []string{"alertname", "service", "service.name", "k8s.deployment.name", "deployment"} {
+		labels[k] = rowLabel(row, k)
+	}
+	ns, _ := row.Detail["namespace"].(string)
+	starts, _ := row.Detail["starts_at"].(string)
+	from, _ := time.Parse(time.RFC3339, starts)
+	_, _, source := alertParts(SigNozAlert{Fingerprint: row.Fingerprint})
+	return AlertClearedQuestion(source, cmp.Or(labels["alertname"], row.Source), cmp.Or(alertService(labels), ns), from, until)
+}
+
 // CloseCleared closes each human card of a cleared SigNoz alert that no
 // person touched: the row's verdict is unjudged, the task closed before
 // its issue, so the issue-closed webhook finds it final and judges
@@ -593,7 +625,7 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	case touched:
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
-	return in.endCard(ctx, row, t, "the alert cleared at "+at, "factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes.")
+	return in.endCard(ctx, row, t, "the alert cleared at "+at, "The alert cleared at "+at+". Nobody touched the card, so it closes.")
 }
 
 // endCard judges row unjudged by factoryd and closes its human card t,
@@ -700,7 +732,7 @@ func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf 
 	if next.Name == "" {
 		return nil
 	}
-	note := fmt.Sprintf("factoryd: the CronJob %s ran again after the failed Job %s: Job %s completed at %s; the card closes.",
+	note := fmt.Sprintf("The CronJob %s ran again after the failed Job %s: Job %s completed at %s. The card closes.",
 		owner.Name, failedName, next.Name, stamp(next.Completed))
 	return in.endCard(ctx, row, t, "the CronJob "+owner.Name+" completed Job "+next.Name, note)
 }
@@ -882,6 +914,20 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 	return in.fileTask(ctx, a, p, ns, row)
 }
 
+// AlertHumanWhy is why alert a on project p goes to a human card, "" when
+// an agent card takes it. A capacity alert goes to a human card even on a
+// project with agents: a coding agent can only raise a limit, the decision
+// needs evidence.
+func AlertHumanWhy(p Project, a SigNozAlert) string {
+	switch {
+	case p.Agents == policy.AgentsNone:
+		return "the project runs no agents"
+	case a.Labels["capacity"] != "":
+		return "a capacity alert needs a human's evidence: a coding agent can only raise a limit"
+	}
+	return ""
+}
+
 // alertRow is the alerts row of a on project p, with the id of the task
 // it files.
 func alertRow(a SigNozAlert, p Project, ns, at string, refiled bool) Alert {
@@ -908,16 +954,17 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if err != nil {
 		return err
 	}
-	title, body := alertIssue(a, p.Name, ns, in.hostsFor(p))
-	body += in.healthSection(ctx, a, p, ns)
+	b := AlertIssue(a, p.Name, ns, in.hostsFor(p))
+	body := b.Body + in.healthSection(ctx, a, p, ns)
 	if row.Detail["refiled"] == true {
-		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
+		body = "The alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
 	if w, ok := row.Detail["roll_window"].(string); ok {
-		body = "factoryd: the alert fired while " + w + " rolled out and still fires " + rolloutSettle.String() + " after the rollouts settled.\n\n" + body
+		body = "The alert fired while " + w + " rolled out and still fires " + rolloutSettle.String() + " after the rollouts settled.\n\n" + body
 	}
+	b.Body = body
 	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: policy.CardBudget(in.Budget(), p.Budget, "", false, 0),
-		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
+		Objective: IssueObjective(b.Title, body), SHA: sha, Source: SourceAlert,
 		// the reproduction runs against the tree that was live when the
 		// alert fired, even though main has moved on (roadmap 194)
 		ReproBase: base,
@@ -926,18 +973,12 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		AlertFingerprint: a.Fingerprint,
 		// factoryd files as the bot; the brief marks the text as telemetry
 		Author: in.Forgejo.BotUser}
-	// A capacity alert goes to a human card even on a project with agents:
-	// a coding agent can only raise a limit, the decision needs evidence.
-	if p.Agents == policy.AgentsNone || a.Labels["capacity"] != "" {
-		why := "the project runs no agents"
-		if p.Agents != policy.AgentsNone {
-			why = "a capacity alert needs a person's evidence: a coding agent can only raise a limit"
-		}
-		q := alertQuestion(a, p.Name, ns, why, body)
-		q.Ask = sanitize.Outbound(q.Ask, in.hostsFor(p))
+	if why := AlertHumanWhy(p, a); why != "" {
+		q := AlertQuestion(a, p.Name, ns, why, body)
+		q.Ask, q.Why = sanitize.Outbound(q.Ask, in.hostsFor(p)), sanitize.Outbound(q.Why, in.hostsFor(p))
 		t, err = EscalateToHuman(ctx, in.Store, in.Forgejo, repo, q, "factoryd", t, "bug")
 	} else {
-		t, _, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
+		t, _, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, b, []string{"bug"}, t)
 	}
 	if err != nil {
 		return err
@@ -1035,9 +1076,9 @@ func (in *AlertIntake) healthSection(ctx context.Context, a SigNozAlert, p Proje
 	defer cancel()
 	text, err := DeploymentHealthText(ctx, in.Health, p, dep, ns, time.Now())
 	if err != nil {
-		text = fmt.Sprintf("factoryd could not read the Deployment `%s` in `%s`: %s", dep, ns, oneLine(err.Error()))
+		text = fmt.Sprintf("The factory could not read the Deployment `%s` in `%s`: %s", dep, ns, oneLine(err.Error()))
 	} else {
-		text = fmt.Sprintf("The Deployment `%s` in `%s` as factoryd read it when it filed this card:\n\n%s", dep, ns, fenced(text))
+		text = fmt.Sprintf("The Deployment `%s` in `%s` as the factory read it when it filed this card:\n\n%s", dep, ns, fenced(text))
 	}
 	return "\n\n" + sanitize.Outbound(text, in.hostsFor(p))
 }
@@ -1061,20 +1102,15 @@ func alertParts(a SigNozAlert) (name, on, source string) {
 	return name, on, source
 }
 
-// alertIssue is the bug issue of alert a: title "alert: <name> on
-// <service> in <ns>" (no "on" without a service) and a body with the
-// firing time, the SigNoz link, the value and annotations and the labels,
-// the values one line each inside fences. The text goes to Forgejo, so it
-// is sanitised Outbound: hosts is the links left unmangled.
-func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
+// AlertIssue is the brief of the bug issue of alert a in namespace ns of
+// project: the alert's brief (alertBrief) and a body with the firing time,
+// the SigNoz link, the value and annotations and the labels, the values
+// one line each inside fences. The text goes to Forgejo, so it is
+// sanitised Outbound: hosts is the links left unmangled.
+func AlertIssue(a SigNozAlert, project, ns string, hosts []string) BriefText {
 	name, on, source := alertParts(a)
-	if s := alertService(a.Labels); s != "" {
-		title = "alert: " + name + " on " + s + " in " + ns
-	} else {
-		title = "alert: " + name + " in " + ns
-	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "factoryd: %s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, stamp(a.StartsAt))
+	fmt.Fprintf(&b, "%s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, stamp(a.StartsAt))
 	if safeLink(a.GeneratorURL) {
 		b.WriteString(" SigNoz: " + a.GeneratorURL)
 	}
@@ -1090,9 +1126,17 @@ func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body 
 			labels = append(labels, oneLine(k)+"="+oneLine(a.Labels[k]))
 		}
 	}
-	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from %s alert %s",
+	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nFiled by the factory from the %s alert %s.",
 		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), source, oneLine(a.Fingerprint))
-	return sanitize.Outbound(title, hosts), sanitize.Outbound(b.String(), hosts)
+	brief := alertBrief(a, ns)
+	return BriefText{Title: sanitize.Outbound(brief.Title, hosts), Why: sanitize.Outbound(brief.Why, hosts), Summary: brief.Summary,
+		Body: sanitize.Outbound(b.String(), hosts)}
+}
+
+// alertBrief is the brief of alert a in namespace ns: its name on its
+// service, else on the namespace.
+func alertBrief(a SigNozAlert, ns string) BriefText {
+	return SourceBriefs[SourceAlert](BriefFacts{Name: oneLine(a.Labels["alertname"]), Of: cmp.Or(alertService(a.Labels), ns)})
 }
 
 // The final reasons of a task whose issue a human closed; the merge state
@@ -1134,6 +1178,45 @@ func namespaceOf(labels map[string]string) string {
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// alertOnCard writes how its alert stands on human card t of project p
+// and its live ask (AlertOnCard): q's words, cleaned as the filing cleans
+// them, with facts beside them, a resolve's resolved_at, go on the card
+// and the case, and the ask's face stored again on them goes on its row,
+// in one write, so the card says whether its alert still fires. A card
+// with no live ask keeps its face.
+func (in *AlertIntake) alertOnCard(ctx context.Context, t Task, p Project, q HumanQuestion, facts map[string]any) error {
+	c, err := in.Store.NewestAskCase(ctx, t.ID)
+	if err != nil || c.ID == 0 {
+		return err
+	}
+	q.Ask, q.Why = sanitize.Outbound(q.Ask, in.hostsFor(p)), sanitize.Outbound(q.Why, in.hostsFor(p))
+	ask, _ := caseAskIn(ctx, in.Store, c)
+	card, set, face := AlertOnCard(t, c, q, facts, ask.Detail)
+	if err := in.Store.SetAskFace(ctx, card, c.ID, set, face); !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return nil // the case ended since the read
+}
+
+// AlertOnCard is human card t with live ask c once q says how its alert
+// stands, with facts beside q's words: the card (Refaced), the facts its
+// case takes, and the face its ask row, asked, stores again on them, the
+// factory's own pick on the old facts dropped.
+func AlertOnCard(t Task, c Case, q HumanQuestion, facts, asked map[string]any) (Task, map[string]any, map[string]any) {
+	card, set := Refaced(t, q)
+	maps.Copy(set, facts)
+	c.Facts = maps.Clone(c.Facts)
+	if c.Facts == nil {
+		c.Facts = map[string]any{}
+	}
+	maps.Copy(c.Facts, set)
+	rec := RecommendationOf(asked)
+	if rec.By == "the factory" {
+		rec = Recommendation{} // the face's own pick, which the new facts write again
+	}
+	return card, set, FaceKeys(FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card, Recommend: rec}))
+}
 
 // oneLine is s on one line, whitespace collapsed; sanitize.Outbound, applied
 // to the whole issue or comment before it posts, neutralises any mention.

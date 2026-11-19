@@ -472,7 +472,7 @@ func restorePlanAsk(ctx context.Context, store Store, r *Runner, t Task) (int, e
 		if q.Answered() {
 			continue
 		}
-		if err := r.timeline.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, planAskRow(rev.Revision, i+1, q)); err != nil {
+		if err := r.timeline.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, PlanAskRow(q, rev.Revision, i+1)); err != nil {
 			return n, err
 		}
 		n++

@@ -97,6 +97,8 @@ func TestOpenGroups(t *testing.T) {
 			('b10', 1, 0, 'merged', 'sf/r', 'agent', 'successor', 'p8', 'direct', 'one', 82, 'vwx', '2026-10-01T11:05:00Z'),
 			('c11', 1, 0, 'queued', 'sf/r', 'agent', 'plan', 'p8', 'direct', 'two', 83, '', NULL)`,
 		`UPDATE tasks SET reverted_at = '2026-10-04T09:00:00Z' WHERE id = 'c9'`,
+		`UPDATE tasks SET plan_name = 'members page', objective = E'Build the members page.\n\nIts text.' WHERE id = 'p1'`,
+		`UPDATE tasks SET objective = E'Build the feed page.\n\nIts text.' WHERE id = 'p4'`,
 		`UPDATE tasks SET created_at = '2026-10-01T00:00:00Z' WHERE id = 'c10'`,
 		`UPDATE tasks SET created_at = '2026-10-01T08:00:00Z' WHERE id = 'b10'`,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
@@ -127,7 +129,7 @@ func TestOpenGroups(t *testing.T) {
 		"sf/r": {
 			{Plan: "p6", Issue: 6, Repository: "sf/r", FirstMerge: time.Date(2026, 9, 30, 18, 0, 0, 0, time.UTC),
 				Children: map[string]int{"merged": 1}},
-			{Plan: "p1", Issue: 1, Repository: "sf/r", FirstMerge: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC),
+			{Plan: "p1", Issue: 1, Name: "members page", Repository: "sf/r", FirstMerge: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC),
 				Children: map[string]int{"done": 1, "queued": 1, "merged": 1}},
 			{Plan: "p8", Issue: 8, Repository: "sf/r", FirstMerge: time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC),
 				Children: map[string]int{"merged": 1, "queued": 1}},
@@ -135,7 +137,7 @@ func TestOpenGroups(t *testing.T) {
 				Children: map[string]int{"done": 1}},
 		},
 		"sf/q": {
-			{Plan: "p4", Issue: 4, Repository: "sf/q", FirstMerge: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC),
+			{Plan: "p4", Issue: 4, Name: "Build the feed page", Repository: "sf/q", FirstMerge: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC),
 				Children: map[string]int{"merged": 1}},
 		},
 	}

@@ -18,6 +18,7 @@ func TestHoldReason(t *testing.T) {
 		want   string
 	}{
 		{[]Group{plan(12)}, "plan #12 is open on main"},
+		{[]Group{{Issue: 12, Name: "members page"}}, "plan “members page” (#12) is open on main"},
 		{[]Group{plan(12), plan(15)}, "plans #12 and #15 are open on main"},
 		{[]Group{plan(12), plan(15), plan(18)}, "plans #12, #15 and #18 are open on main"},
 	} {

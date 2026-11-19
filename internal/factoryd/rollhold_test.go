@@ -291,7 +291,7 @@ func TestRollerRetryWhileHeldSaysWhen(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := "factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts once no plan is open on main. Closing this issue."
+	want := "A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts once no plan is open on main. This issue closes."
 	if closes := factoryCloses(store, ask.ID); len(f.closed) != 0 || len(f.comments) != 0 || !slices.Equal(closes, []string{want}) {
 		t.Fatalf("closed %v, comments %q, records %q; want the card's close recorded alone as %q", f.closed, f.comments, closes, want)
 	}
@@ -757,7 +757,7 @@ func TestRollerFilesNoRollWhenItsResumeFails(t *testing.T) {
 	}
 }
 
-const fluxRefusedComment = "77 factoryd: the factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
+const fluxRefusedComment = "77 The factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
 
 // heldAsk files the hold's ask as the keeper does, issue #77, in status.
 func heldAsk(store *fakeStore, status string) {
@@ -980,5 +980,22 @@ func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *test
 			}
 			unjudged(t, f, store, flux, true, 1)
 		})
+	}
+}
+
+// A plan's name is text an agent wrote, and the hold's reason carries it to
+// Forgejo in the roller's commit status and to the release gate's answer:
+// its mention, its closing keyword and its link arrive neutralised.
+func TestTheHoldsReasonCarriesAPlansNameCleaned(t *testing.T) {
+	roller, f, store, _ := newHeldRoller(t)
+	plan := store.tasks["t-plan"]
+	plan.PlanName = "fixes #5 for @mallory at https://evil.example/x"
+	store.tasks["t-plan"] = plan
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const want = "held: plan “(fixes) #5 for ＠mallory at hxxps://evil[.]example/x” (#40) is open on main; the roll follows once no plan is open on main"
+	if got := f.statuses[commitC2]; len(got) != 2 || got[1]["description"] != want {
+		t.Fatalf("the statuses of main's head: %+v, want the held mark %q", got, want)
 	}
 }

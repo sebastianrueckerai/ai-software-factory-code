@@ -48,7 +48,7 @@ var (
 	shortMoney  = map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3}
 )
 
-const shortFloor = BudgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
+const shortFloor = BudgetRefused + ": Raise the budget and answer, or close the card.\n" +
 	"0.080 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
 
 // fundUntilAsked refuses h's sessions their opening with shortFloor once
@@ -203,7 +203,7 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 					}
 					faceSays(t, stopFace(t, h, tc.asked, fundedMoney), false, "agent-time cap")
 				default:
-					if !askedWith(h, capReachedLadder) || len(h.sessions) != 1 {
+					if !askedWith(h, CapReachedLadder) || len(h.sessions) != 1 {
 						t.Fatalf("asks %q, sessions %d; want the session cap asked after the reply and the stopped session alone", h.escalated, len(h.sessions))
 					}
 					faceSays(t, stopFace(t, h, tc.asked, fundedMoney), false, "session cap")
@@ -215,17 +215,21 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 
 // A reply at the session cap, the agent-time cap or the budget floor
 // starts no session: the run asks the stop again, and the face says a reply
-// alone starts none and names the extend or the fund that does.
+// alone starts none and names every answer the face holds: the floor's
+// "Add money" with the 0.22 EUR the 0.08 a session may spend lacks of the
+// 0.30 an opening needs, well under the card's limit of 6 EUR.
 func TestReplyAtACapStartsNone(t *testing.T) {
 	for name, tc := range map[string]struct {
-		usage    TaskUsage
-		refusal  string // SessionFunded's, "" to fund the session
-		asked    string
-		buysOnly string
+		usage   TaskUsage
+		refusal string // SessionFunded's, "" to fund the session
+		asked   string
+		money   map[string]any
+		press   string
 	}{
-		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", capReachedLadder, "Extend on the board"},
-		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", timeCapReachedLadder, "Extend on the board"},
-		"budget floor":   {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, BudgetRefused, "Fund form on the board"},
+		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", CapReachedLadder, nil, "Press “Allow more sessions”, “End the card” or “Not now” on the board"},
+		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", TimeCapReachedLadder, nil, "Press “Allow more sessions”, “End the card” or “Not now” on the board"},
+		"budget floor": {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, BudgetRefused,
+			map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3, "ceiling_eur": 6}, "Press “Add money” (EUR to add: 0.22), “End the card” or “Not now” on the board"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
@@ -243,8 +247,8 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 			if len(h.sessions) != 0 || asks != 2 {
 				t.Fatalf("sessions %d, asks %q; want none and the stop asked before and after the reply", len(h.sessions), h.escalated)
 			}
-			if face := stopFace(t, h, tc.asked, nil); !strings.Contains(face, "A reply alone starts none") || !strings.Contains(face, tc.buysOnly) {
-				t.Fatalf("face %q, want it to say a reply alone starts none and name %q", face, tc.buysOnly)
+			if face := stopFace(t, h, tc.asked, tc.money); !strings.Contains(face, "A reply alone starts no attempt") || !strings.Contains(face, tc.press) {
+				t.Fatalf("face %q, want it to say a reply alone starts none and name %q", face, tc.press)
 			}
 		})
 	}
@@ -281,8 +285,8 @@ func TestReplyAtProviderAndPodStops(t *testing.T) {
 			state RunState
 			cap   string
 		}{
-			"time spent":    {spentState(), timeCapReachedLadder},
-			"session limit": {RunState{Status: "running", Usage: TaskUsage{Attempts: testWorkflowConfig.MaxSessions}}, capReachedLadder},
+			"time spent":    {spentState(), TimeCapReachedLadder},
+			"session limit": {RunState{Status: "running", Usage: TaskUsage{Attempts: testWorkflowConfig.MaxSessions}}, CapReachedLadder},
 			"budget short":  {RunState{Status: "running", Usage: TaskUsage{Attempts: 1, AgentTime: time.Minute}}, BudgetRefused},
 		} {
 			t.Run(name+" with "+v, func(t *testing.T) {
@@ -390,7 +394,7 @@ func TestReplyAtAShareStopWithThePullRequestOpen(t *testing.T) {
 				})
 			h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on with this", Comment: 602})
 			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-			if final := h.run(t); final != "done" || len(h.sessions) != 2 || askedWith(h, capReachedLadder) || !slices.Contains(steps, "pr c1 after 1 cards") {
+			if final := h.run(t); final != "done" || len(h.sessions) != 2 || askedWith(h, CapReachedLadder) || !slices.Contains(steps, "pr c1 after 1 cards") {
 				t.Fatalf("final %q, sessions %d, steps %q, asks %q; want c1 through the gates again after the reply, no session", final, len(h.sessions), steps, h.escalated)
 			}
 			face := stopFace(t, h, CheckinSpendAsk, map[string]any{"pr_open": true})
@@ -500,7 +504,7 @@ func TestReplyAtTheDeadlock(t *testing.T) {
 				}
 				return
 			}
-			if !strings.HasPrefix(h.escalated[2], capReachedLadder) {
+			if !strings.HasPrefix(h.escalated[2], CapReachedLadder) {
 				t.Fatalf("asks %q; want the session cap after the reply", h.escalated)
 			}
 			faceSays(t, face, false, "session cap")
@@ -526,7 +530,7 @@ func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
 			case len(h.escalated) == 0:
 				return "", nil
 			case h.env.Now().Before(dayTurn(h.escalatedAt[0])):
-				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" + state, nil
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" + state, nil
 			}
 			return shortFloor, nil
 		})

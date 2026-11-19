@@ -99,7 +99,7 @@ func TestEnvelopeViolations(t *testing.T) {
 		"volume": {EnvelopeUse{}, "cx23", 60, 21, 0.01, "a 21 GB volume exceeds the envelope's 20 GB"},
 		"count":  {EnvelopeUse{OpenServers: 2}, "cx23", 60, 0, 0.01, "the project already holds 2 of its 2 servers"},
 		"month": {EnvelopeUse{MonthEUR: 9.995}, "cx23", 60, 0, 0.0096,
-			"the reservation of 0.009600 EUR on top of 9.995000 EUR this month exceeds the envelope's 10.00 EUR a month"},
+			"the reservation of 0.01 EUR on top of 9.99 EUR this month exceeds the envelope's 10.00 EUR a month by less than 0.01 EUR"},
 	} {
 		if v := EnvelopeViolations(testEnvelope, tc.use, tc.typ, tc.minutes, tc.gb, tc.res); len(v) != 1 || v[0].Text != tc.want || v[0].Kind != name {
 			t.Errorf("%s: %v, want [%s]", name, v, tc.want)
@@ -329,7 +329,7 @@ func TestReserveProjectCap(t *testing.T) {
 	_, err := a.Reserve(ctx, capped("t2"))
 	var ref *policy.Refusal
 	if !errors.As(err, &ref) || ref.Decision != policy.RefusedProjectCap ||
-		ref.Reason != "cx23: worst case 0.019200 EUR exceeds the free headroom 0.010800 EUR (task 20.000000, day 19.980800, month 49.980800, project 0.010800); "+
+		ref.Reason != "cx23: worst case 0.02 EUR exceeds the free headroom 0.01 EUR by 0.01 EUR (task 20.00, day 19.98, month 49.98, project 0.01); "+
 			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/app.yaml), and only a human raises it, by a commit" {
 		t.Fatalf("second = %v, want refused_project_cap", err)
 	}
@@ -566,7 +566,7 @@ func TestAccrualPastTheReservationIsBookedAndReported(t *testing.T) {
 		t.Fatalf("accrual = %+v, %v", acc, err)
 	}
 	if o := acc.Overruns[0]; o.TaskID != "t1" || o.ResourceID != srv.ID || !near(o.EUR, 0.0192) || !near(o.HeldEUR, 0.0096) ||
-		o.Reason != "COST OVER HOLD: resource "+itoa(srv.ID)+" cost 0.019200 EUR against a hold of 0.009600 EUR; booked in full" {
+		o.Reason != "COST OVER HOLD: resource "+itoa(srv.ID)+" cost 0.02 EUR against a hold of 0.01 EUR; booked in full" {
 		t.Fatalf("overrun = %+v", o)
 	}
 	if spent := scalar[float64](t, db, `SELECT spent_eur::float8 FROM tasks WHERE id = 't1'`); !near(spent, 0.0192) {

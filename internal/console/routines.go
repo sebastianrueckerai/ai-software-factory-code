@@ -14,8 +14,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// The routines' acts (roadmap 267): Skip once and Run now on a routine of
-// a project's board, each one event with its via.
+// The routines' answers (roadmap 267): "Skip the next run", "Run it now"
+// and the toggle on a routine's opened card, each one event with its via.
 
 // Run now waits up to runNowWait for its run's outcome, read every
 // runNowPoll, so its note names what the run did; settable for the tests.
@@ -24,8 +24,8 @@ var (
 	runNowPoll = 500 * time.Millisecond
 )
 
-// routineSkip is a routine's Skip once, and with the form's undo=1 its
-// undo (doRoutineSkip).
+// routineSkip is a routine's "Skip the next run", and with the form's
+// undo=1 its undo (doRoutineSkip).
 func (c *Console) routineSkip(w http.ResponseWriter, r *http.Request) {
 	_, err := c.doRoutineSkip(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"), r.PostFormValue("undo") == "1")
 	c.routineActed(w, r, err)
@@ -79,7 +79,7 @@ func (c *Console) doRoutineSkip(ctx context.Context, a actor, project, name stri
 	log.Printf("console: %s set the skip of routine %s of %s to %t via %s", a.s.user, name, project, !undo, a.via)
 	c.record(ctx, a, repository, "", 0, factoryd.EventRoutineSkipped, map[string]any{"project": project, "routine": name, "undo": undo})
 	if undo {
-		return "Skip once undone", nil
+		return "The skip is undone", nil
 	}
 	views, err := c.cfg.Routines.Views(ctx, project)
 	if err != nil {

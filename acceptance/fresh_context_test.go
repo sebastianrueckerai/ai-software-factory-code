@@ -6,9 +6,9 @@
 // the time it was read, which GET /projects/{name}/chat answers as
 // read_at, and a later turn replays an earlier turn's read without its
 // result, for its time and age. The rig is the whole chat stack over the
-// fixture stores with the operator model scripted: the agent's set_summary
+// fixture stores with the operator model scripted: the agent's set_accent
 // runs through the console's own action, the fixture board keeps the new
-// summary as factoryd would, and the next turn's card read answers the new
+// accent as factoryd would, and the next turn's card read answers the new
 // state while the conversation holds no old read.
 package acceptance
 
@@ -27,16 +27,18 @@ import (
 )
 
 const (
-	// summaryNote is what the console's set_summary answers; the member's
+	// accentNote is what the console's set_accent answers; the member's
 	// undo of it rides the applied event, not the tool block.
-	summaryNote = "The summary of #5 is set."
+	accentNote = "The accent of #5 is set."
 	// oldCardHead and newCardHead are #5 as the card tool reads it before
-	// and after the summary is set, its digest's head first; the fixture
+	// and after the accent is set, its digest's head first; the fixture
 	// files it with a budget of 3 EUR.
 	oldCardHead = "#5 · budget 3.00 spent 0.00 holds 0.00 EUR · queued\nflags: none\n\n" +
-		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), €0.00 of €3.00`
+		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), 0.00 of 3.00 EUR` +
+		"\ntrack direct of process maintenance\nissue"
 	newCardHead = "#5 · budget 3.00 spent 0.00 holds 0.00 EUR · queued\nflags: none\n\n" +
-		`#5 t-m "Cache fix" queued (waits for a free work slot, in filing order), €0.00 of €3.00`
+		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), 0.00 of 3.00 EUR` +
+		"\ntrack direct of process maintenance, accent blue\nissue"
 	// statusHead and statusTail end every turn's system message around
 	// today's date, built at use time — a const holds no runtime value —:
 	// the code project's status line, #11 running and #5 waiting in the
@@ -44,15 +46,15 @@ const (
 	// the policy's escalation pool with nothing drawn, and its sandbox
 	// images, none pinned.
 	statusHead = "\n\nThe project now:\nToday is "
-	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00, the factory's whole ledger" +
-		"; pool: 0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month\n" +
+	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month 0.00 of 50.00 EUR, the factory's whole ledger" +
+		"; pool: 0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month\n" +
 		"Sandbox images: none; every card runs the factory image."
 )
 
 // freshRig is the chat rig of these tests: the fixture stores, the code
 // project's two cards, the gateway scripting the operator model, and the
-// chat block of an empty confirm list, so every tool — set_summary
-// included — runs at once.
+// chat block of an empty confirm list, so every tool, set_accent
+// included, runs at once.
 func freshRig(t *testing.T) *rig {
 	t.Helper()
 	r := newRig(t)
@@ -61,7 +63,7 @@ func freshRig(t *testing.T) *rig {
 }
 
 // TestAcceptanceFreshContextPerTurn sends two messages with a card-state
-// change between them: the first turn sets #5's summary through the
+// change between them: the first turn sets #5's accent through the
 // agent's own tool and the fixture board, naming it
 // "#5", the second reads it as 5, with no board read between. Each
 // turn's system message ends with the status and images lines and holds
@@ -70,15 +72,15 @@ func freshRig(t *testing.T) *rig {
 func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	r := freshRig(t)
 	r.gateway.replies = [][]string{
-		{call(1, "set_summary", `{"task_id":"#5","summary":"Cache fix"}`)},
-		{say("summarized it.")},
+		{call(1, "set_accent", `{"task_id":"#5","accent":"blue"}`)},
+		{say("marked it.")},
 		{call(2, "card", `{"task_id":5}`)},
-		{say("it is titled Cache fix now.")},
+		{say("it is blue now.")},
 	}
-	if code, events := r.post("summarize #5"); code != http.StatusOK {
-		t.Fatalf("the summary turn = %d %v", code, events)
-	} else if !hasToolResult(events, "set_summary", summaryNote) {
-		t.Fatalf("the summary was not set; events:\n%s", strings.Join(events, "\n"))
+	if code, events := r.post("mark #5 blue"); code != http.StatusOK {
+		t.Fatalf("the accent turn = %d %v", code, events)
+	} else if !hasToolResult(events, "set_accent", accentNote) {
+		t.Fatalf("the accent was not set; events:\n%s", strings.Join(events, "\n"))
 	}
 	if code, events := r.post("and now?"); code != http.StatusOK {
 		t.Fatalf("the second turn = %d %v", code, events)
@@ -177,7 +179,7 @@ func TestAcceptanceToolResultTimestamps(t *testing.T) {
 }
 
 // TestAcceptanceEarlierReadLeftOut reads a card by its issue number,
-// mutates it through the agent's own set_summary, then sends another
+// mutates it through the agent's own set_accent, then sends another
 // message: the replayed card read is its time, its age and the call to
 // read again, without the card it read, the write's result is whole, and the
 // same turn's fresh read of "#5" shows the new state.
@@ -186,10 +188,10 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	r.gateway.replies = [][]string{
 		{call(1, "card", `{"task_id":"#5"}`)},
 		{say("read it.")},
-		{call(2, "set_summary", `{"task_id":5,"summary":"Cache fix"}`)},
-		{say("summarized it.")},
+		{call(2, "set_accent", `{"task_id":5,"accent":"blue"}`)},
+		{say("marked it.")},
 		{call(3, "card", `{"task_id":"#5"}`)},
-		{say("it is titled Cache fix now.")},
+		{say("it is blue now.")},
 	}
 	if code, events := r.post("what about #5?"); code != http.StatusOK {
 		t.Fatalf("the read turn = %d %v", code, events)
@@ -197,10 +199,10 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 		t.Fatalf("the card read did not answer the card as filed; events:\n%s", strings.Join(events, "\n"))
 	}
 	readAt := cardReadAt(t, r)
-	if code, events := r.post("summarize #5"); code != http.StatusOK {
-		t.Fatalf("the summary turn = %d %v", code, events)
-	} else if !hasToolResult(events, "set_summary", summaryNote) {
-		t.Fatalf("the summary was not set; events:\n%s", strings.Join(events, "\n"))
+	if code, events := r.post("mark #5 blue"); code != http.StatusOK {
+		t.Fatalf("the accent turn = %d %v", code, events)
+	} else if !hasToolResult(events, "set_accent", accentNote) {
+		t.Fatalf("the accent was not set; events:\n%s", strings.Join(events, "\n"))
 	}
 	if code, events := r.post("and now?"); code != http.StatusOK {
 		t.Fatalf("the third turn = %d %v", code, events)
@@ -226,7 +228,7 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	want := map[string]string{
 		"call_1": "[read at " + readAt.UTC().Format("2006-01-02 15:04 UTC") +
 			", 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]",
-		"call_2": summaryNote + " The human may undo it.",
+		"call_2": accentNote + " The human may undo it.",
 	}
 	if !reflect.DeepEqual(results, want) {
 		t.Errorf("the replayed results =\n%q\nwant\n%q", results, want)

@@ -142,12 +142,18 @@ func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	}
 	reopened := ask
 	posted := g.forge.comments()
-	if len(posted) != 1 || !strings.Contains(posted[0], AsklessReason) || !strings.Contains(posted[0], capReached) {
+	if len(posted) != 1 || !strings.HasPrefix(posted[0], "This card waited for a human with no question open. The factory asks its question on the board again.\n\n") {
 		t.Fatalf("posted %q; want the ask's face once, asking the stop again after the wait", posted)
 	}
 	rows, err := g.s.TaskEventsOfKind(ctx, caseTask, EventQuestionAsked, 1)
-	if want := "The card reached its session cap of 3 sessions. Grant it one more session? (not judged, judgment budget unreadable)"; err != nil || len(rows) != 1 || rows[0].Detail["ask"] != want {
-		t.Fatalf("the newest ask = %+v, %v; want the stop's own ask %q", rows, err, want)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("the newest ask = %+v, %v; want the stop's own face", rows, err)
+	}
+	asked, _ := rows[0].Detail["ask"].(string)
+	info, _ := rows[0].Detail["info"].(string)
+	if want := "The card used all 3 sessions. How should it go on?"; asked != want || !strings.Contains(posted[0], want) ||
+		info != "The factory agent did not judge it: sf/r names no project, so the factory cannot read its judgment budget." {
+		t.Fatalf("the newest ask = %q with the view %q, posted %q; want the stop's own ask %q, unjudged as sf/r names no project", asked, info, posted[0], want)
 	}
 	asks, err := g.s.AskAnchors(ctx, caseTask)
 	if err != nil || len(asks) == 0 {
@@ -454,8 +460,8 @@ func TestHealPassLeavesAnAnsweredRevisionToTheStop(t *testing.T) {
 	if live.Kind == factoryd.CasePlanConfirmation || live.Kind == CasePlanQuestion {
 		t.Fatalf("the live case = %+v; want no plan case", live)
 	}
-	if live.Problem != AsklessReason+" (not judged, judgment budget unreadable)" || !holdsAskless(t, g.s, live) {
-		t.Fatalf("the new case = %+v, steps %+v; want the askless reason as its problem and its step", live, caseStepsOf(t, g.s, live.ID))
+	if live.Facts["reason"] != AsklessReason || !holdsAskless(t, g.s, live) {
+		t.Fatalf("the new case = %+v, steps %+v; want the askless reason as its reason and its step", live, caseStepsOf(t, g.s, live.ID))
 	}
 	if cases, err := g.s.CasesOf(ctx, caseTask); err != nil || len(cases) != 2 {
 		t.Fatalf("the card's cases = %+v, %v; want the withdrawn confirmation and one new case", cases, err)

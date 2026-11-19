@@ -467,15 +467,10 @@ func (i *Imager) removal(ctx context.Context, v policy.Version, repository strin
 			return err
 		}
 	}
-	title := "Remove image " + r.Image + " (unused for 30 days)"
-	body := fmt.Sprintf("Image %s of project %s has been pinned for 30 days, and no card ran on it in that time.\n\n"+
-		"Delete the %s entry from %s and change nothing else; where it is the file's only entry, delete the file, as an images file declares one image at least. "+
-		"After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n"+
-		"Acceptance:\n- %s no longer declares image %s.\n- %s passes the factory's check, which the policy gate runs on this pull request.\n\n"+
-		"Size: small\nRung: cheap", r.Image, r.Project, r.Image, imagesPath, imagesPath, r.Image, imagesPath)
-	card, ref, err := FileAgentTask(ctx, i.Store, i.Forgejo, i.Workflows, i.Timeline, p, title, body, nil, Task{
+	b := ImageRemovalCard(r.Image, r.Project)
+	card, ref, err := FileAgentTask(ctx, i.Store, i.Forgejo, i.Workflows, i.Timeline, p, b, nil, Task{
 		ID: r.RemovalTask, RiskClass: "standard", BudgetEUR: policy.CardBudget(v.Document.Budget, p.Budget, "small", false, 0),
-		Objective: title + "\n\n" + body, Source: SourceImageRemoval, Rung: RungCheap, Size: "small",
+		Objective: IssueObjective(b.Title, b.Body), Source: SourceImageRemoval, Rung: RungCheap, Size: "small",
 	})
 	if err != nil {
 		return err
@@ -849,7 +844,7 @@ func (i *Imager) closePin(ctx context.Context, pr PullRequestRef, why string) er
 	if err := i.Forgejo.ClosePullRequest(ctx, infra.Owner, infra.Name, pr.Number); err != nil {
 		return err
 	}
-	if _, err := i.Forgejo.CreateIssueComment(ctx, infra.Owner, infra.Name, pr.Number, "Closed by factoryd: "+why+"."); err != nil {
+	if _, err := i.Forgejo.CreateIssueComment(ctx, infra.Owner, infra.Name, pr.Number, "Closed by the factory: "+why+"."); err != nil {
 		return err
 	}
 	log.Printf("imager: closed pull request #%d: %s", pr.Number, why)
@@ -882,8 +877,8 @@ func (i *Imager) open(ctx context.Context, project, repository string, fork Repo
 		[]FileChange{{Path: path, Content: want, Blob: blob}}); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("factoryd pins the sandbox images %s of %s declares: this pull request changes only the images block of %s.\n\n"+
-		"factoryd merges it itself once it has checked that, and that the tree at its head passes factoryd's config check; otherwise it stays open and factoryd raises an alert naming why.\n",
+	body := fmt.Sprintf("The factory pins the sandbox images that %s of %s declares. This pull request changes only the images block of %s.\n\n"+
+		"The factory merges it itself once it has checked that, and once the tree at its head passes the factory's config check. Otherwise it stays open, and the factory raises an alert that names why.\n",
 		imagesPath, repository, path)
 	ref, err := i.Forgejo.CreatePullRequest(ctx, infra.Owner, infra.Name, fork.Owner+":"+branch, "main", title, body)
 	if err != nil {
@@ -984,7 +979,7 @@ func (i *Imager) judge(ctx context.Context, project string, pr PullRequestRef) (
 		return "", "", err
 	}
 	if _, err := CheckTree(tree, i.Ladder); err != nil {
-		return "check", fmt.Sprintf("the tree at the head of pull request #%d fails factoryd's config check: %v", pr.Number, err), nil
+		return "check", fmt.Sprintf("the tree at the head of pull request #%d fails the factory's config check: %v", pr.Number, err), nil
 	}
 	return "", "", nil
 }
@@ -1130,4 +1125,16 @@ func (s *PGStore) ImageUsed(ctx context.Context, repository, image, store string
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE repository = $1 AND (image = $2 OR strpos(image_digest, $3) > 0)
 		AND (finished_at IS NULL OR finished_at >= $4))`, repository, image, "/"+store+"@", since).Scan(&used)
 	return used, err
+}
+
+// ImageRemovalCard is the brief of the card that removes image of
+// project, pinned for 30 days with no card run on it.
+func ImageRemovalCard(image, project string) BriefText {
+	b := SourceBriefs[SourceImageRemoval](BriefFacts{Name: image})
+	b.Body = fmt.Sprintf("Image %s of project %s has been pinned for 30 days, and no card ran on it in that time.\n\n"+
+		"Delete the %s entry from %s and change nothing else; where it is the file's only entry, delete the file, as an images file declares one image at least. "+
+		"After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n"+
+		"Acceptance:\n- %s no longer declares image %s.\n- %s passes the factory's check, which the policy gate runs on this pull request.\n\n"+
+		"Size: small\nRung: cheap", image, project, image, imagesPath, imagesPath, image, imagesPath)
+	return b
 }

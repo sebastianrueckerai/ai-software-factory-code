@@ -14,10 +14,6 @@ func (r *Runner) PgRungStatement(c Case, f CaseFacts, digest string, steps []Cas
 	return r.rungStatement(c, f, digest, steps, rung)
 }
 
-// PgOrderedActions aliases the unexported orderedActions, for the moved
-// rung 2 test that empties the action table.
-func PgOrderedActions(f CaseFacts) []Action { return orderedActions(f) }
-
 // PgTaskRun is the workflow's unexported taskRun, whose card words the
 // moved cases_events test reads.
 type PgTaskRun = taskRun
@@ -42,7 +38,6 @@ const (
 	PgMonthCapReached   = monthCapReached
 	PgProjectCapReached = projectCapReached
 	PgNoModelAnswer     = noModelAnswer
-	PgPlainInfo         = plainInfo
 	PgPodNeverStarted   = podNeverStarted
 	PgScreeningAsks     = screeningAsks
 	PgStaleQuiet        = staleQuiet
@@ -65,9 +60,6 @@ var PgMonitorKinds = monitorKinds
 // monitor test that keeps rung 1's conversation from running.
 func (r *Runner) PgSetLaunchRung1(f func(run func())) { r.launchRung1 = f }
 
-// PgDepFailedReason and PgPlanCardFailedReason run the unexported reasons a
-// failed dependency's stop and a plan's wait on its failed card ask with,
-// for the moved trip and rung 2 tests that open those cases.
-func PgDepFailedReason(d Dependency) string { return depFailedReason(d) }
-
+// PgPlanCardFailedReason runs the unexported reason a plan's wait on its
+// failed card asks with, for the moved rung 2 test that opens that case.
 func PgPlanCardFailedReason(k Task) string { return planCardFailedReason(k) }

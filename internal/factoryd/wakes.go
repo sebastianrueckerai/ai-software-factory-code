@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +27,18 @@ func wakeCaseIDs(asks []pendingAsk) []int64 {
 	}
 	return out
 }
+
+// The wakes' birth kinds: WakeCard a watched card's news, WakeTimer a timer
+// the agent set, WakeRefill a queue whose waiting cards fell below
+// refill_below. A wake for cases handed to rung 2 is born case_climbed.
+// WakeAsk is the kind of the stored rows of a wake that named asks: no
+// wake is born so any more, and the inbox still reads those rows.
+const (
+	WakeAsk    = "wake_ask"
+	WakeCard   = "wake_card"
+	WakeTimer  = "wake_timer"
+	WakeRefill = "queue_refill"
+)
 
 // WakeStarter starts one wake turn on the member's thread: the console's
 // seam (Console.StartWake). The turn runs without the member's request
@@ -290,7 +303,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	if len(watched) > 0 {
 		c := watched[0]
 		w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-			if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, "wake_card", w.cardText(ctx, c.e)); err != nil {
+			if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, WakeCard, w.cardText(ctx, c.e)); err != nil {
 				if errors.Is(err, ErrWakeVenueGone) {
 					log.Printf("wake %s: %v", name, err)
 					// the watch's thread is gone for good: the row goes with it,
@@ -369,7 +382,7 @@ func (w *Waker) fireTimer(ctx context.Context, name string, p policy.ProjectConf
 		return nil
 	}
 	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-		if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
+		if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, WakeTimer, timerText(t)); err != nil {
 			if errors.Is(err, ErrWakeVenueGone) {
 				log.Printf("wake %s: %v", name, err)
 				// the timer's thread is gone for good: the row goes with it
@@ -439,7 +452,7 @@ func (w *Waker) fireRefill(ctx context.Context, v policy.Version, name string, p
 		return err
 	}
 	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-		if err := w.Start.StartWake(ctx, name, logins[0], conv, "queue_refill", refillText(name, below)); err != nil {
+		if err := w.Start.StartWake(ctx, name, logins[0], conv, WakeRefill, refillText(name, below)); err != nil {
 			log.Printf("wake %s: %v", name, err)
 			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 		}
@@ -484,18 +497,36 @@ func (w *Waker) cardText(ctx context.Context, e Event) string {
 	return fmt.Sprintf("The watched card %s moved: read the card and act on where it stands.", cardRef(e, t))
 }
 
-// askText is the wake's text: the cases handed to rung 2 of the batch
-// counted, each with its card ref, its statement for rung 2 and the two
-// ends of the turn, then the project's board digest once.
+// WakeCards are the cards a wake's text names in its first line, by
+// their refs (cardRef): the cards a wake turn looked at.
+func WakeCards(text string) []string {
+	first, _, _ := strings.Cut(text, "\n")
+	return wakeRef.FindAllString(first, -1)
+}
+
+var wakeRef = regexp.MustCompile(`#\d+\b|\bt-[0-9a-z][0-9a-z-]*`)
+
+// askText is the wake's text: its first line the cases handed to rung 2 of
+// the batch counted, with the refs of their cards (WakeCards), then each
+// with its card ref, its statement for rung 2 and the two ends of the turn,
+// then the project's board digest once.
 func (w *Waker) askText(ctx context.Context, asks []pendingAsk, repository string) string {
 	verb := "wait"
 	if len(asks) == 1 {
 		verb = "waits"
 	}
+	cards := make([]Task, len(asks))
+	var refs []string
+	for i, a := range asks {
+		cards[i], _, _ = w.Store.Task(ctx, a.e.TaskID)
+		if ref := cardRef(a.e, cards[i]); !slices.Contains(refs, ref) {
+			refs = append(refs, ref)
+		}
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Wake: %s %s for the factory agent.", plural(len(asks), "case"), verb)
-	for _, a := range asks {
-		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
+	fmt.Fprintf(&b, "Wake: %s %s for the factory agent: %s.", plural(len(asks), "case"), verb, strings.Join(refs, ", "))
+	for i, a := range asks {
+		t := cards[i]
 		line, _ := a.e.Detail["problem"].(string)
 		id, _ := toInt(a.e.Detail["case_id"])
 		withStatement := id != 0 && w.Statement != nil

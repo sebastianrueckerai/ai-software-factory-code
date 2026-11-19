@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -46,8 +48,7 @@ type Task struct {
 	// IssueNumber is the Forgejo issue mirroring this task's state; 0 means
 	// none is linked yet.
 	IssueNumber int64
-	// Source is how the task arrived: "api" (POST /tasks) or "webhook" (an
-	// issue labelled in Forgejo).
+	// Source is how the task arrived, one of CardSources.
 	Source string
 	// PRNumber is the pull request the task's workflow opened; 0 = none yet.
 	PRNumber int64
@@ -140,10 +141,19 @@ type Task struct {
 	// and fails a card whose screen-after clause is left to no card.
 	ShipsRuling  string
 	ShipsClauses []int
-	// HumanSummary is what a writer of the task's project says the card
-	// is about, shown on its face instead of the generated title; "" when
-	// nothing is set (the column is NULL).
-	HumanSummary string
+	// Why is the card's why line, one sentence on why it exists, and
+	// Summary what it builds, changes and checks: with the title, the
+	// opening paragraph of Objective, they are the brief CheckBrief
+	// passes. BriefUnchecked marks a brief filed after its writer's last
+	// refused try (AdmitBrief), which the board shows. ChatFiled says the
+	// project agent wrote the card in a human's chat, which the human
+	// authors: its brief is checked as the agent's work (BriefJobOf).
+	Why, Summary   string
+	BriefUnchecked bool
+	ChatFiled      bool
+	// ToolImage is the sandbox image a tool card adds its tool to, which
+	// the next ask for that image joins (OpenToolCard); "" on other cards.
+	ToolImage string
 	// Accent is the card's colour label (one of Accents), "" when none.
 	// It never changes a state rendering and never enters a brief.
 	Accent string
@@ -190,13 +200,19 @@ func (t Task) EnforcedSpent() float64 { return t.SpentEUR + t.HeldEUR }
 // Left is the budget the caps and the floor leave the card.
 func (t Task) Left() float64 { return policy.Left(t.BudgetEUR, t.SpentEUR, t.HeldEUR) }
 
+// reportSources are the sources of the report tasks; reportSourcesSQL
+// is the same list in SQL.
+var (
+	reportSources    = []string{SourceScreening, SourceSizing, SourceProver}
+	reportSourcesSQL = "('" + strings.Join(reportSources, "', '") + "')"
+)
+
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
 // and the runner's RunState ask it; it folds Source alone, no row read.
+// A report task is a step of its parent's life: the board shows it on
+// its parent, never as a card.
 func (t Task) Report() bool { return slices.Contains(reportSources, t.Source) }
-
-// reportSources are the sources of a report task.
-var reportSources = []string{SourceScreening, SourceSizing, SourceProver}
 
 // Standing is the issue author's standing: telemetry for an
 // alert card, writer for an author who could write the repository,
@@ -284,8 +300,9 @@ type IntakeEvent struct {
 	Author    string
 	Body      string
 	CreatedAt time.Time
-	// DeliveryID is the webhook delivery that produced it: a redelivery
-	// inserts no second row.
+	// DeliveryID is the webhook delivery that produced it, or the mark of
+	// the information request whose anchor it is (requestMark): a
+	// redelivery or a retry inserts no second row.
 	DeliveryID string
 	// CommentID is Forgejo's id of the comment (0 for a review; for a
 	// decision, the number of the issue or pull request it ended): the
@@ -333,6 +350,11 @@ type TaskCallTotals struct {
 type Store interface {
 	CreateTask(ctx context.Context, t Task) error
 	Task(ctx context.Context, id string) (Task, bool, error)
+	// CardBrief is card taskID's brief, as its agent and its face read it
+	// (ReadCardBrief).
+	CardBrief(ctx context.Context, taskID string) (CardBrief, error)
+	// SessionBriefs are the texts card taskID's sessions got, oldest first.
+	SessionBriefs(ctx context.Context, taskID string) ([]SessionBrief, error)
 	// TransitionTask moves a task to status `to` only from one of the
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time and leaves the gate; entering a
@@ -447,12 +469,13 @@ type Store interface {
 	// SetQuestionInfo replaces the info of the question task's escalation
 	// at comment commentID asked.
 	SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error
+	// SetCaseFace stores the face keys of case caseID on its newest ask,
+	// in place of the suggestion the ask held before.
+	SetCaseFace(ctx context.Context, caseID int64, keys map[string]any) error
 	// SetQuestionProposal puts rung 2's recommendation and its preselected
 	// action on the face of case caseID: its question_asked row's
 	// recommendation and preselected, and for a case that is no monitor
 	// flag's (beside) the card's newest question's recommendation too.
-	// SetCaseOffers stores the table offers and refusals of case caseID on its newest ask, after the question's own choices
-	SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error
 	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
@@ -684,6 +707,9 @@ type Store interface {
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
 	// ReportOf is parent's report task of source.
 	ReportOf(ctx context.Context, parent, source string) (Task, bool, error)
+	// TasksByParent is the tasks whose parent is task id, in any status,
+	// oldest first.
+	TasksByParent(ctx context.Context, id string) ([]Task, error)
 	// PlanCards are the cards plan filed (source plan) that hold their
 	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
@@ -783,12 +809,13 @@ type Store interface {
 	// Dependencies are the cards task id depends on, each with its
 	// status, those not done first.
 	Dependencies(ctx context.Context, id string) ([]Dependency, error)
-	// ReplaceFailedCard puts card t in failed card id's place in one
+	// ReplaceCard puts card t in the place of card id, in status, in one
 	// transaction: id lets go of its plan key, which t holds, if any; t is
 	// inserted with every dependency of id, and every task waiting on id
-	// waits on t. False, and nothing changed, when id is no failed card
-	// holding t's key (none outside a plan) or t exists already.
-	ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error)
+	// waits on t. A retry replaces a failed card, a hand-over a card
+	// waiting on a human. False, and nothing changed, when id is no card in
+	// status holding t's key (none outside a plan) or t exists already.
+	ReplaceCard(ctx context.Context, id, status string, t Task) (bool, error)
 	// CreateSuccessor inserts t, the successor of card id, in one
 	// transaction with every dependency of id, and every task waiting on id
 	// waits on t.
@@ -955,9 +982,6 @@ type Store interface {
 	// unless the task's cases hold limit steps of rung 1 already (atLimit),
 	// the count and the insert one write.
 	StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (id int64, atLimit bool, err error)
-	// AppendCaseProblem appends suffix to live case id's problem line,
-	// once: a problem that ends with suffix already stays as it is.
-	AppendCaseProblem(ctx context.Context, id int64, suffix string) error
 	// SetCaseWake sets who owns the next move on case id, the events that
 	// end its wait, and when the case-wake pass wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
@@ -1173,7 +1197,7 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 
 // InsertTask, the package helper, inserts t through db, onConflict the
 // insert's conflict clause, so the pool's writers and a retry's
-// transaction (ReplaceFailedCard) reuse it. An issue a live card of the
+// transaction (ReplaceCard) reuse it. An issue a live card of the
 // same repository still holds is refused, naming the holder (roadmap 298).
 func InsertTask(ctx context.Context, db interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -1233,18 +1257,21 @@ func InsertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur, plan_revision)
+		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur,
+		                    why, summary, brief_unchecked, chat_filed, tool_image, plan_revision)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
-         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0), $37)
+         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0),
+         $37, $38, $39, $40, NULLIF($41, ''), $42)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem,
-		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR, t.PlanRevision)
+		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR,
+		t.Why, t.Summary, t.BriefUnchecked, t.ChatFiled, t.ToolImage, t.PlanRevision)
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
 	}
@@ -1405,12 +1432,13 @@ func (s *PGStore) SetTaskImage(ctx context.Context, id, digest string, egress []
 }
 
 // UpdatePlanCardBrief replaces a not-yet-started card's stored brief
-// (Objective), image, rung and size with card's, its card's of the plan's
-// newest revision (roadmap 291); restartChildren is its sole caller. The
-// UPDATE guards nothing: it stamps whatever row id names.
+// (Objective, its why line, summary and unchecked mark), image, rung and
+// size with card's, its card's of the plan's newest revision (roadmap
+// 291); restartChildren is its sole caller. The UPDATE guards nothing: it
+// stamps whatever row id names.
 func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id string, card Task) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3, rung = $4, size = $5 WHERE id = $1`,
-		id, card.Objective, card.Image, card.Rung, card.Size)
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3, rung = $4, size = $5, why = $6, summary = $7, brief_unchecked = $8 WHERE id = $1`,
+		id, card.Objective, card.Image, card.Rung, card.Size, card.Why, card.Summary, card.BriefUnchecked)
 	return err
 }
 
@@ -1435,7 +1463,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, last_uncounted, repro_command, extra_lines, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
-	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
+	why, summary, brief_unchecked, chat_filed, COALESCE(tool_image, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
 	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason,
 	hold_at, hold_by, hold_reason, COALESCE(hold_release, '')`
@@ -1453,7 +1481,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
+		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.Why, &t.Summary, &t.BriefUnchecked, &t.ChatFiled, &t.ToolImage, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
 		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason,
 		&holdAt, &hold.By, &hold.Reason, &hold.Release); err != nil {
@@ -1509,8 +1537,9 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 }
 
 // TaskStatuses reads many cards' statuses at once, keyed by id: a card
-// with no row gets no entry. The console's chat facts, which paints a
-// board of cards in one round, is its sole caller.
+// with no row gets no entry. The console's chat facts read a board of
+// cards in one round with it, and the board reads the statuses of the
+// cards past Done's pages that hold a case.
 func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(ids) == 0 {
@@ -1540,6 +1569,18 @@ func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]st
 func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
 	return s.oneTask(ctx, `repository = $1 AND issue_number = $2
 		ORDER BY status IN ('done', 'failed', 'closed'), created_at DESC, id DESC`, repository, issueNumber)
+}
+
+// IssueCardOrder orders the cards of one issue as TaskByIssue picks among
+// them: a live card first, then the newest, then the greater id.
+func IssueCardOrder(a, b Task) int {
+	if fa, fb := Final(a.Status), Final(b.Status); fa != fb {
+		if fa {
+			return 1
+		}
+		return -1
+	}
+	return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
 }
 
 // TaskByPR is the newest card whose row links pull request number on
@@ -1598,45 +1639,33 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 	return err
 }
 
-// SetAskInfo rewrites the info of held-production card taskID's newest ask:
-// its question and its own question_asked row, which the drawer reads, and
-// not a proposal's row beside it. An info that is the stored one writes nothing.
-func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
+// askInfoSQL rewrites the info ($2) of card $1's newest ask of kind $3
+// from source $4. An info that is the stored one writes nothing.
+const askInfoSQL = `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
-			AND detail->>'info' IS DISTINCT FROM $2::text`,
-		taskID, info, EventQuestionAsked, SourceProductionHeld); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
+			AND detail->>'info' IS DISTINCT FROM $2::text`
 
-func (s *PGStore) SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error {
-	o, err := json.Marshal(nonNilList(offers))
-	if err != nil {
-		return err
-	}
-	f, err := json.Marshal(nonNilList(refusals))
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(jsonb_set(detail, '{offers}',
-		    COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements(COALESCE(detail->'offers', '[]'::jsonb)) x WHERE COALESCE(x->>'effect', '') = ''), '[]'::jsonb) || $2::jsonb), '{refusals}', $3::jsonb)
-		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $4
-		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`, caseID, o, f, EventQuestionAsked)
+// SetAskInfo rewrites the info of card taskID's newest ask from source:
+// its own question_asked row, which the opened card reads, and
+// not a proposal's row beside it.
+func (s *PGStore) SetAskInfo(ctx context.Context, taskID, source, info string) error {
+	_, err := s.db.ExecContext(ctx, askInfoSQL, taskID, info, EventQuestionAsked, source)
 	return err
 }
 
-func nonNilList[T any](l []T) []T {
-	if l == nil {
-		return []T{}
+// caseFaceSQL stores face keys $2 on the newest ask row of case $1
+// ($3 the ask's kind), its pick dropped for the face's own.
+const caseFaceSQL = `UPDATE events SET detail = (detail - 'preselected' - 'recommended_by' - 'recommendation' - 'unweighed') || $2::jsonb
+		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $3
+		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`
+
+func (s *PGStore) SetCaseFace(ctx context.Context, caseID int64, keys map[string]any) error {
+	k, err := json.Marshal(keys)
+	if err != nil {
+		return err
 	}
-	return l
+	_, err = s.db.ExecContext(ctx, caseFaceSQL, caseID, k, EventQuestionAsked)
+	return err
 }
 
 func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error {
@@ -1688,8 +1717,7 @@ func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.D
 }
 
 // ReleaseHandover deletes the card's hand-over claim, the failed filing's,
-// so a retry can claim it again. ReplaceFailedCard (deps.go) is its sole
-// caller; a task with no claim deletes nothing and still succeeds.
+// so a retry can claim it again. Go (deps.go) is its sole caller; a task with no claim deletes nothing and still succeeds.
 func (s *PGStore) ReleaseHandover(ctx context.Context, taskID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = 'handover'`, taskID)
 	return err
@@ -2014,11 +2042,11 @@ func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error
 	return oneRow(res, err, "task "+id)
 }
 
-// SetHumanSummary sets task id's human summary; "" restores the generated
-// title by storing NULL. The console's card edit is its sole caller;
-// oneRow answers ErrNotFound for an unknown task.
-func (s *PGStore) SetHumanSummary(ctx context.Context, id, summary string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET human_summary = NULLIF($2, '') WHERE id = $1`, id, summary)
+// SetBrief stores task id's why line, summary and unchecked mark. The
+// console's card edit is its sole caller; oneRow answers ErrNotFound for
+// an unknown task.
+func (s *PGStore) SetBrief(ctx context.Context, id, why, summary string, unchecked bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET why = $2, summary = $3, brief_unchecked = $4 WHERE id = $1`, id, why, summary, unchecked)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -2057,7 +2085,7 @@ type CardCapError struct{ Budget float64 }
 // Error is CardCapError's message, the ceiling's refusal of a raise; the
 // console's fund answer prints it whole.
 func (e *CardCapError) Error() string {
-	return fmt.Sprintf("the card holds %.2f EUR and the raise passes its cap", e.Budget)
+	return fmt.Sprintf("the card holds %s EUR and the raise passes its cap", textutil.EUR(e.Budget))
 }
 
 // commitRows runs write in one transaction and publishes the rows it
@@ -2254,7 +2282,7 @@ func newDrawBound(rung int, want, need policy.Draw, lines int, cardLeft, poolLef
 func (e *DrawBoundError) Error() string {
 	bound := fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
 	if e.Card {
-		bound = fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(e.Left))
+		bound = fmt.Sprintf("the card's draw bound leaves %s: the factory agent or the human may draw more", drawText(e.Left))
 	}
 	var over []string
 	if e.Want.Sessions > e.Left.Sessions {
@@ -2264,7 +2292,7 @@ func (e *DrawBoundError) Error() string {
 		over = append(over, fmt.Sprintf("agent time (asked %s, left %s)", minutesWord(e.Want.AgentTime), minutesWord(e.Left.AgentTime)))
 	}
 	if Cents(e.Want.EUR) > Cents(e.Left.EUR) {
-		over = append(over, fmt.Sprintf("EUR (asked %.2f, left %.2f)", e.Want.EUR, e.Left.EUR))
+		over = append(over, fmt.Sprintf("EUR (asked %s, left %s)", textutil.EUR(e.Want.EUR), textutil.EUR(e.Left.EUR)))
 	}
 	bound += ". This draw does not fit in " + textutil.AndList(over)
 	lines := textutil.Plural(e.Lines, "line", "lines")
@@ -2274,7 +2302,7 @@ func (e *DrawBoundError) Error() string {
 	case e.Fit.IsZero() && !e.Least.IsZero():
 		return fmt.Sprintf("%s, and nothing of it fits, but %s does: ask for that", bound, drawText(e.Least))
 	case e.Fit.IsZero():
-		return bound + ", and nothing of it fits: hand_up with it as the recommendation"
+		return bound + ", and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
 	case e.Lines > 0:
 		return fmt.Sprintf("%s. The largest draw that fits is %s with %s beside it, as lines ride free: ask for that", bound, drawText(e.Fit), lines)
 	}

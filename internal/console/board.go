@@ -14,10 +14,13 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -30,7 +33,9 @@ var funcs = template.FuncMap{
 	// markup is the writer's markdown as HTML, for the drawer's question
 	// text; askline is a text's first line, what a card's face shows
 	"markup": markup, "askline": askline,
-	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
+	"eur":   textutil.EUR,
+	"rate":  textutil.Rate,
+	"short": factoryd.ShortSHA,
 	// away reports whether a link leaves the console, so it opens its own
 	// tab while a console path stays in this one
 	"away": func(href string) bool { return !strings.HasPrefix(href, "/") },
@@ -41,8 +46,6 @@ var funcs = template.FuncMap{
 		}
 		return fmt.Sprintf("%d servers", n)
 	},
-	// eur2 is money to the cent, as a card's face reads spend against budget
-	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
 	// the metrics page's rows (C30): the deck's formatters, the weeks'
 	// spark, and the window-move subtraction
 	"mDur": mDur, "mDurMove": mDurMove, "mPct": mPct, "mPctMove": mPctMove,
@@ -56,16 +59,8 @@ var funcs = template.FuncMap{
 	"mRoundName": mRoundName, "mRoundSpans": mRoundSpans, "mOriginSpans": mOriginSpans,
 	"mGateCov": mGateCov, "mSessCov": mSessCov, "mEconCov": mEconCov,
 	"mGroupCov": mGroupCov, "mHoldCov": mHoldCov, "mReviewCov": mReviewCov,
-	// accents are the colour labels a writer may put on a card
-	"accents": func() []string { return factoryd.Accents },
 	// maxAnswer is the answer box's bound (answerFits)
 	"maxAnswer": func() int { return factoryd.MaxAnswer },
-	// maxWaiverNote is the plan Close's note bound
-	"maxWaiverNote": func() int { return factoryd.MaxWaiverNote },
-	// maxReplan is the Replan box's bound, the replan step's
-	"maxReplan": func() int { return factoryd.MaxReplanComment },
-	// maxHoldReason is the Hold form's reason bound
-	"maxHoldReason": func() int { return maxHoldReason },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {
@@ -94,8 +89,6 @@ var funcs = template.FuncMap{
 	"pct100": func(spent, cap float64) int { return min(pct(spent, cap), 100) },
 	// initial is a member's avatar letter
 	"initial": func(s string) string { return strings.ToUpper(string([]rune(s)[:min(1, len([]rune(s)))])) },
-	// andlist is "a, b and c"
-	"andlist": textutil.AndList,
 	// words is a stored word of the factory's, its underscores spaces
 	"words": func(s string) string { return strings.ReplaceAll(s, "_", " ") },
 	// switch is whether the top bar shows the project select: the board
@@ -118,9 +111,8 @@ var funcs = template.FuncMap{
 		}
 		return ""
 	},
-	"inc":             func(i int) int { return i + 1 },
-	"join":            strings.Join,
-	"alertSupervisor": alertSupervisor,
+	"inc":  func(i int) int { return i + 1 },
+	"join": strings.Join,
 }
 
 // alertSupervisor is what the supervisor did on a machine alert.
@@ -308,11 +300,10 @@ func label(options []option, value string) string {
 }
 
 // find narrows the columns to the terms of q (C13): a word matches what
-// the face says (the ref, the title, the state and stage words, the
-// activity line, the chips, an item's headline), a key:value term a fact
-// behind the face (plan:558, stage:verifying, status:failed, is:failed
-// and the other exceptional states, by:sebastian, model:small,
-// pr:612), and every term must match. Each column keeps its whole count;
+// the face says (faceWords), or the title of a card whose face asks, a
+// key:value term a fact behind the face (plan:558, stage:verifying,
+// status:failed, is:failed and the other exceptional states,
+// by:sebastian, model:small, pr:612), and every term must match. Each column keeps its whole count;
 // the columns given stay as they were, for the column menus.
 func find(cols []column, q string) []column {
 	terms := strings.Fields(strings.ToLower(q))
@@ -322,15 +313,23 @@ func find(cols []column, q string) []column {
 		if len(terms) > 0 {
 			var cards []card
 			for _, k := range col.Cards {
-				if found(k, nil, terms) {
+				if found(faceWords(k, nil, k.Face), k, nil, terms) {
 					cards = append(cards, k)
 				}
 			}
+			// a card whose face asks shows its title where only the title
+			// matched, so the reader sees why it is in the result
 			var needs []need
 			for _, n := range col.Needs {
-				if found(n.Card, n.Approval, terms) {
-					needs = append(needs, n)
+				words, title := faceWords(n.Card, n.Approval, n.Face), factoryd.CardTitle(n.Card.Task)
+				switch {
+				case found(words, n.Card, n.Approval, terms):
+				case n.Approval == nil && title != "" && found(words+" "+title, n.Card, nil, terms):
+					n.Face.Found = n.Face.own
+				default:
+					continue
 				}
+				needs = append(needs, n)
 			}
 			col.Cards, col.Needs = cards, needs
 		}
@@ -339,9 +338,10 @@ func find(cols []column, q string) []column {
 	return out
 }
 
-// found is whether card k, or the approval item a, matches every term.
-func found(k card, a *approvalCard, terms []string) bool {
-	text := strings.ToLower(faceWords(k, a))
+// found is whether words, what an item's face says, and the facts of
+// card k, or of the approval item a, match every term.
+func found(words string, k card, a *approvalCard, terms []string) bool {
+	text := strings.ToLower(words)
 	for _, t := range terms {
 		if key, val, ok := strings.Cut(t, ":"); ok && key != "" {
 			if match, known := fact(k, a, key, val); known {
@@ -358,66 +358,30 @@ func found(k card, a *approvalCard, terms []string) bool {
 	return true
 }
 
-// faceWords is what the face says, for a word of the find to match.
-func faceWords(k card, a *approvalCard) string {
+// faceWords is what face f of card k, or of the approval item a, says,
+// for a word of the find to match, with the item's numbers.
+func faceWords(k card, a *approvalCard, f faceView) string {
+	w := []string{f.text()}
 	if a != nil {
 		switch a.Kind {
 		case factoryd.ApprovalMerge:
-			w := []string{fmt.Sprintf("merge pr #%d", a.PRNumber), a.Merge.RiskClass + " risk", a.TaskID}
+			w = append(w, fmt.Sprintf("merge pr #%d", a.PRNumber), a.Merge.RiskClass+" risk", a.TaskID)
 			if a.Merge.Migration {
 				w = append(w, "migration")
 			}
-			return strings.Join(w, " ")
 		case factoryd.ApprovalPlan:
-			return fmt.Sprintf("plan #%d %s %s %s", a.Issue, a.PlanName, a.PlanSummary, a.TaskID)
+			w = append(w, fmt.Sprintf("plan #%d %s %s %s", a.Issue, a.PlanName, a.PlanSummary, a.TaskID))
+		default:
+			w = append(w, "resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID)
 		}
-		return strings.Join([]string{"resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID}, " ")
+		return strings.Join(w, " ")
 	}
-	w := []string{k.ID, k.Title, k.Status, k.Stage, k.Activity, k.StaleText, k.Reason, k.Children}
+	w = append(w, k.ID)
 	if k.IssueNumber > 0 {
 		w = append(w, fmt.Sprintf("#%d", k.IssueNumber))
 	}
 	if k.PRNumber > 0 {
 		w = append(w, fmt.Sprintf("pr #%d", k.PRNumber))
-	}
-	if k.PlanIssue > 0 {
-		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
-	}
-	w = append(w, k.PlanName, k.Task.PlanName)
-	if k.Routine() {
-		w = append(w, "routine")
-	}
-	if k.Blocked > 0 {
-		w = append(w, fmt.Sprintf("blocked by %d %s", k.Blocked, k.BlockedOn))
-	}
-	if k.WaitingOn != "" {
-		w = append(w, "waiting on "+k.WaitingOn)
-	}
-	w = append(w, k.SlotWait, k.HoldLine)
-	if k.Checks != "" {
-		w = append(w, k.Checks+" checks")
-	}
-	if k.NearBudget {
-		w = append(w, "near its budget")
-	}
-	if k.Retrying {
-		w = append(w, "retrying")
-	}
-	if k.Provider {
-		// a named limit carries the words and the reset it froze the card to
-		w = append(w, cmp.Or(k.Frozen, providerWords))
-	}
-	if k.Stale {
-		w = append(w, "stale")
-	}
-	if k.Status == "waiting-poster" {
-		w = append(w, "waiting on the author")
-	}
-	if k.Status == "waiting-image" {
-		w = append(w, k.Pill())
-	}
-	if k.Kind == "human" {
-		w = append(w, "human task")
 	}
 	return strings.Join(w, " ")
 }
@@ -475,56 +439,25 @@ func isState(k card, v string) bool {
 	return false
 }
 
-// stateColumns are the wide view's columns, in board order; waiting-deps
-// counts as queued, closing and waiting-agent as running.
-var stateColumns = []struct{ Title, Status string }{
-	{"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting for image", "waiting-image"}, {"Waiting on the author", "waiting-poster"},
-	{"In review", "in-review"}, {"Merged", "merged"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
-}
-
 type card struct {
 	factoryd.Task
-	// MergeBehind is the issue of the card ahead in the merge queue, 0 for none.
-	MergeBehind int64
 	// HeldFor is the issue of the open plan this card waits for, 0 for none.
 	HeldFor  int64
 	IssueURL string
 	PRURL    string
 	// RollID is the roll task a merged card waits for.
-	RollID  string
-	Reason  string   // an escalation's reason
-	Choices []string // the answers its agent offered, a button each
-	Capped  bool     // an escalated card at its session or agent time cap, which an answer grants what the cap asks for
-	// TimeCapped: the cap is its agent time's, which an answer grants more of
-	TimeCapped bool
-	// Ask says the card waits on an answer: an intake row holds its ask.
-	// Without one a human card that waits offers the factory or a close
-	// (roadmap 1131).
-	Ask bool
-	// Question is the escalation's five-part question (the question
-	// format): the ask as the headline, the why under it, its buttons by
-	// value, and the info and recommendation behind the fold. nil on a
-	// card whose ask no template shaped.
+	RollID string
+	Reason string // an escalation's reason, which the find reads
+	// Question is the escalation's question: a human card's ask is its
+	// title, and the activity line names it. nil on a card whose ask no
+	// template shaped.
 	Question *factoryd.HumanQuestion
-	// AnswersPending counts the trusted answers the card's workflow has
-	// not taken: one that holds some cannot process another, so its
-	// answer box yields to the liveness warning.
-	AnswersPending int
-	// Fund is the approver's Fund action on an escalated card whose
-	// remaining budget cannot fund a call, which
-	// raises its budget (roadmap 210).
-	Fund *fundForm
-	// Extend is the approver's Extend action on a card whose question
-	// offers the exit (a stop that names the owner's decision): the
-	// stated sessions, lines and EUR raise its caps and answer the stop.
-	Extend *extendForm
-	// Replan is the drawer's Replan of a card that may go back to the
-	// planner, for an approver.
-	Replan *replanForm
-	// Total is the task's time so far, or in all once it finished; GateAge
-	// how long it has been in its gate, which GateText names as the card
-	// reads it.
-	Total, GateAge string
+	// MayExtend: the viewer may give the live agent card more sessions and
+	// money, MayReplan send it back to the planner, MayRetry file the
+	// failed plan card again; each an approver's action.
+	MayExtend, MayReplan, MayRetry bool
+	// Total is the task's time so far, or in all once it finished.
+	Total string
 	// Cover is a done card's cover clause (C38): the run that ran its
 	// change live and how long after its merge, "" for a card the chain
 	// does not cover.
@@ -535,26 +468,19 @@ type card struct {
 	// StageURL is the chain word's link, the run on the forge the word
 	// names (C38), "" for a word that names none.
 	Stage, StageAge, StageURL string
-	GateText                  string
 	WaitingOn                 string // a card in waiting-deps: the issues it waits on
-	SlotWait                  string // a card queued for a work slot: "waits for a slot, N ahead (L live)"
+	SlotWait                  string // a card queued for a work slot: "waits for its turn to start, N ahead (L running)"
 	PlanIssue                 int64  // a plan's card: the plan's issue
 	PlanURL                   string // a plan's card: the plan's issue on the forge
 	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
-	Plan                      []card // a done plan's cards, which its drawer lists
-	Retry                     *retry // a failed plan card's Retry, for an approver
-	RetryFreeze               *retry // an open freeze card's Retry now, for an approver
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
 	// HoldLine is a human's hold on the card as the board words it, ""
-	// for none; HoldWarn marks one whose release card ended failed or
-	// closed and releases nothing.
+	// for none.
 	HoldLine string
-	HoldWarn bool
-	// Title is the face's first line: human_summary when a writer set
-	// one, else the objective's first paragraph, the title as the issue
-	// was filed.
+	// Title is the face's first line: the card's title, the objective's
+	// first paragraph whole (factoryd.CardTitle), or a human card's ask.
 	Title string
 	// StatusClass is the pill's class, one hue per state.
 	StatusClass string
@@ -578,22 +504,6 @@ type card struct {
 	// session last reported, an input to the stale ring beside the newest
 	// event.
 	stepAt time.Time
-	// Children roll up a done plan: n running, n done, n waiting, n queued,
-	// each count bound to its word by a no-break space, so a narrow column
-	// wraps between the parts.
-	Children string
-	// Round is a done plan's round and what is still to plan
-	// (factoryd.RoundLine), shown in place of its rollup; "" for a plan
-	// of one round or filed before rounds.
-	Round string
-	// DonePlan is a plan card at rest (factoryd.ClosablePlan) that still
-	// holds production, no plan_closed row yet, and a closed one only with
-	// open criteria: its Close ends it.
-	DonePlan bool
-	// OpenCriteria counts the plan's criteria that stand neither met nor
-	// waived while a card holds a merge: its Close waives each with the
-	// note it asks for.
-	OpenCriteria int
 	// Blocked is how many cards this one depends on that are not done;
 	// BlockedOn names their issues in its title attribute ("#3, #5").
 	Blocked   int
@@ -620,40 +530,19 @@ type card struct {
 	Filter boardFilter
 	// Place is where the board puts the card (boardCard).
 	Place string
-}
-
-// Closes: the face offers its viewer, a writer, Close: a card waiting on
-// a human, or failed, which has no other way out, or a plan at rest that
-// holds production still. A card whose question offers a close, or a
-// choice card, offers its choices alone.
-func (k card) Closes() bool {
-	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
-	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.DonePlan)
-}
-
-// Holds: the drawer offers its viewer, a writer, the Hold form on a card
-// that has not started, and Release on a held one.
-func (k card) Holds() bool { return k.MayWriteSummary && (k.Holdable() || k.Held()) }
-
-// OpenPhrase counts the done plan's open criteria in words.
-func (k card) OpenPhrase() string { return factoryd.OpenCriteriaPhrase(k.OpenCriteria) }
-
-// WaiverNoteLabel says what the plan Close's note becomes.
-func (k card) WaiverNoteLabel() string {
-	if k.OpenCriteria == 1 {
-		return "note: becomes the waiver reason of the open criterion"
-	}
-	return fmt.Sprintf("note: becomes the waiver reason of each of the %d open criteria", k.OpenCriteria)
-}
-
-// ChoiceCard: the card answers by its question's choices alone, no free
-// answer and no close of its own (choiceCard).
-func (k card) ChoiceCard() bool { return choiceCard(k.Task) }
-
-// PressOnly: a human card whose question has choices takes a press of one
-// of them, never free words (doHumanAnswer refuses those).
-func (k card) PressOnly() bool {
-	return k.Kind == "human" && k.Question != nil && len(k.Question.Choices) > 0
+	// QueueAhead counts the cards ahead of it in its merge queue, -1 when
+	// it waits after the open plan; MergeBehind is the issue of the card
+	// that holds the queue's turn, 0 at the front.
+	QueueAhead  int
+	MergeBehind int64
+	// Failure is a failed card's failure in one clause, "" when its end
+	// named none that fits one.
+	Failure string
+	// Face is the card's small card (faceOf).
+	Face faceView
+	// Helper is the card's newest helper task that has not ended, nil for
+	// none: the step its state names.
+	Helper *factoryd.Task
 }
 
 // Routine: a routine's run filed the card, which wears the chip (C16).
@@ -662,10 +551,9 @@ func (k card) Routine() bool { return k.Source == factoryd.SourceRoutine }
 // fine is a card's fine state as a chip in the pill's hues.
 type fine struct{ Words, Class string }
 
-// fineStates are what k's column and pill leave unsaid: retrying; in the
-// four columns waiting on the author, which the wide view has a column
-// for; and stale. Failed and closed are the pill's own words.
-func fineStates(k card, wide bool) []fine {
+// fineStates are what k's column and pill leave unsaid: retrying, waiting
+// on the author and stale. Failed and closed are the pill's own words.
+func fineStates(k card) []fine {
 	var out []fine
 	switch {
 	case k.Provider:
@@ -673,7 +561,7 @@ func fineStates(k card, wide bool) []fine {
 		out = append(out, fine{cmp.Or(k.Frozen, providerWords), "st-waiting"})
 	case k.Retrying:
 		out = append(out, fine{"retrying", "st-running"})
-	case !wide && k.Status == "waiting-poster":
+	case k.Status == "waiting-poster":
 		out = append(out, fine{"waiting on the author", "st-waiting hollow"})
 	}
 	if k.Stale {
@@ -890,26 +778,19 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 	return got
 }
 
-// depsCount is how many issues a "#3, #5" list names (0 an empty one).
-func depsCount(list string) int {
-	if list == "" {
-		return 0
-	}
-	return strings.Count(list, "#")
-}
-
-// planIssue is plan task id's issue, name and repository: from the board's tasks, else read.
+// planIssue is plan task id's issue, its name (its title while it has
+// none) and its repository: from the board's tasks, else read.
 func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) (int64, string, string) {
-	if t, ok := byID[id]; ok {
-		return t.IssueNumber, t.PlanName, t.Repository
+	t, ok := byID[id]
+	if !ok {
+		var err error
+		if t, ok, err = c.cfg.Tasks.Task(ctx, id); err != nil || !ok {
+			log.Printf("console: plan %s: found %v, %v", id, ok, err)
+			return 0, "", ""
+		}
+		byID[id] = t
 	}
-	t, ok, err := c.cfg.Tasks.Task(ctx, id)
-	if err != nil || !ok {
-		log.Printf("console: plan %s: found %v, %v", id, ok, err)
-		return 0, "", ""
-	}
-	byID[id] = t
-	return t.IssueNumber, t.PlanName, t.Repository
+	return t.IssueNumber, cmp.Or(t.PlanName, factoryd.CardTitle(t)), t.Repository
 }
 
 func plural(n int, word string) string {
@@ -917,63 +798,6 @@ func plural(n int, word string) string {
 		return word
 	}
 	return word + "s"
-}
-
-// planRollup is a done plan's children as one line: only the parts
-// with cards in them, in the order running, done, waiting, queued.
-func planRollup(cards []card) string {
-	var running, done, waiting, queued int
-	for _, k := range cards {
-		switch {
-		case k.Status == "running" || k.Status == "closing":
-			running++
-		case k.Status == "done":
-			done++
-		case strings.HasPrefix(k.Status, "waiting"):
-			waiting++
-		case k.Status == "queued":
-			queued++
-		}
-	}
-	var parts []string
-	if running > 0 {
-		parts = append(parts, fmt.Sprintf("%d\u00a0running", running))
-	}
-	if done > 0 {
-		parts = append(parts, fmt.Sprintf("%d\u00a0done", done))
-	}
-	if waiting > 0 {
-		parts = append(parts, fmt.Sprintf("%d\u00a0waiting", waiting))
-	}
-	if queued > 0 {
-		parts = append(parts, fmt.Sprintf("%d\u00a0queued", queued))
-	}
-	return strings.Join(parts, " \u00b7 ")
-}
-
-// fundForm is an approver's Fund action beside a capped card's answer box:
-// the stated amount raises the card's budget_eur (roadmap 210).
-type fundForm struct{ CSRF string }
-
-// extendForm is an approver's Extend action on a live card: the stated
-// sessions, lines and EUR raise the card's caps, and on a waiting card the
-// note answers the stop. Cap, Bound,
-// Budget and Left are the card's numbers the raise starts from.
-type extendForm struct {
-	CSRF       string
-	Cap, Bound int
-	Budget     float64
-	Left       float64
-}
-
-// retry is a failed plan card's Retry button.
-type retry struct{ CSRF string }
-
-// replanForm is the drawer's Replan; Group: the card is a plan or a
-// plan's card, so its plan goes back.
-type replanForm struct {
-	CSRF  string
-	Group bool
 }
 
 type column struct {
@@ -986,8 +810,8 @@ type column struct {
 	// progress and Done have one, Needs you none.
 	Menu  *colMenu
 	Cards []card
-	// Needs is the five columns' Needs you: what the wide view's human
-	// lane holds and every card that needs the viewer, oldest first.
+	// Needs is Needs you's items: the approvals, the cases at the human
+	// and every card that needs the viewer, oldest first.
 	Needs []need
 	// Finished is a column of finished cards' key, the status it holds
 	// (done for the four columns' Done, which holds all three): the col of
@@ -997,35 +821,10 @@ type column struct {
 	Finished string
 	Whole    int
 	More     *more
-	// Ghosts are the column's routines at its foot (C16), and
-	// GhostsHidden those the board's routines choice hides.
-	Ghosts       []ghost
+	// Ghosts are the faces of the column's routines at its foot (C16),
+	// and GhostsHidden those the board's routines choice hides.
+	Ghosts       []faceView
 	GhostsHidden int
-}
-
-// ghost is a routine as a card that is not yet there (C16): its schedule
-// in words, its next run ("Mon 06:00 · in 20 min · human card"), its last
-// ("last #781 done in 2 d"), a held run's words, the open card (Open) it
-// runs, and its acts, offered to a writer (CSRF set) with the board's
-// filter. Skipped says a Skip once is pending, which its act undoes.
-type ghost struct {
-	Project, Name, Title        string
-	Words, NextWords, LastWords string
-	Soon, Held, Running         bool
-	Skipped                     bool
-	HeldWords                   string
-	Open                        int64
-	Filter                      boardFilter
-	CSRF                        string
-	// Files is the config's side of what the routine files, Side the one
-	// in force; Toggled says a live override set the side, so the
-	// toggle's act is the undo.
-	Files, Side string
-	Toggled     bool
-	// Drawer says the acts sit in the routine's drawer, which answers them
-	// on its tab Tab.
-	Drawer bool
-	Tab    string
 }
 
 // Count is the number the column's head shows: its needs, else its
@@ -1066,17 +865,16 @@ type colMenu struct {
 	ClearQuery     string
 }
 
-// need is an item of the human lane, or of the Needs you column: an
-// approval request, an escalated card with its answer form (CSRF), or a card that
-// needs the viewer; Since is when it began to wait.
+// need is an item of the Needs you column: an approval request, a card with its case at the human and its answer form
+// (CSRF), or a card that needs the viewer; Since is when it began to wait.
 type need struct {
-	Since     time.Time
-	Approval  *approvalCard
-	Card      card
-	Escalated bool
-	CSRF      string
-	Case      *caseRow // the case the row shows, for a card that holds one at the human
-	Suffix    string   // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
+	Since    time.Time
+	Approval *approvalCard
+	Card     card
+	CSRF     string
+	Case     *caseRow // the case the row shows, for a card that holds one at the human
+	Suffix   string   // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
+	Face     faceView // the item's small card (faceOf)
 }
 
 // Waiting is how long the item has waited for a member, in minutes or
@@ -1088,14 +886,11 @@ func (n need) Waiting() string {
 	return minutes(time.Since(n.Since))
 }
 
-// viewWide is the board's wide view: a column per task state, as the
-// board was before the four columns.
-const viewWide = "wide"
-
-// boardFilter is what the board was asked to show: the project and the
-// view; every form on it carries it back, so an action keeps the view.
+// boardFilter is what the board was asked to show: the project, the find
+// and the columns' choices; every form on it carries it back, so an action
+// keeps the view.
 type boardFilter struct {
-	Project, View string
+	Project string
 	// Q is the find (C13): words and key:value terms that narrow every
 	// column, kept by every form, the poll, the fragments and the stream.
 	Q string
@@ -1136,7 +931,7 @@ func (f boardFilter) Period() string {
 
 // whole: the find or the Done column's show narrows the finished cards,
 // so the board reads them all rather than a page.
-func (f boardFilter) whole() bool { return f.Q != "" || !f.wide() && f.Done.Only != "" }
+func (f boardFilter) whole() bool { return f.Q != "" || f.Done.Only != "" }
 
 // colFilter is a column's order and show from its menu (C13): "" is the
 // default, arrival newest first and every card.
@@ -1204,13 +999,8 @@ func readCols(f *boardFilter, get func(string) string) {
 			f.Unit = u
 		}
 	}
-	for _, key := range factoryd.FinalStatuses {
-		if n, err := strconv.Atoi(get(key + "-shown")); err == nil && n > 0 {
-			if f.Shown == nil {
-				f.Shown = map[string]int{}
-			}
-			f.Shown[key] = n
-		}
+	if n, err := strconv.Atoi(get("done-shown")); err == nil && n > 0 {
+		f.Shown = map[string]int{"done": n}
 	}
 	for _, m := range colMenus {
 		c := colFilter{Order: get(m.Name), Only: get(m.Name + "-only")}
@@ -1236,7 +1026,7 @@ type hidden struct{ Name, Value string }
 // menu's form its own column's two, the routines control's form
 // routines with its period.
 func (f boardFilter) Hidden(except ...string) []hidden {
-	fields := []hidden{{"project", f.Project}, {"view", f.View}, {"q", f.Q}}
+	fields := []hidden{{"project", f.Project}, {"q", f.Q}}
 	for _, m := range colMenus {
 		c := f.col(m.Name)
 		fields = append(fields, hidden{m.Name, c.Order}, hidden{m.Name + "-only", c.Only})
@@ -1256,7 +1046,7 @@ func (f boardFilter) Hidden(except ...string) []hidden {
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	f := boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view"), Q: strings.TrimSpace(r.PostFormValue("q"))}
+	f := boardFilter{Project: r.PostFormValue("project"), Q: strings.TrimSpace(r.PostFormValue("q"))}
 	readCols(&f, r.PostFormValue)
 	return f
 }
@@ -1264,21 +1054,16 @@ func formFilter(r *http.Request) boardFilter {
 // urlFilter is the board's filter in the URL's query.
 func urlFilter(r *http.Request) boardFilter {
 	q := r.URL.Query()
-	f := boardFilter{Project: q.Get("project"), View: q.Get("view"), Q: strings.TrimSpace(q.Get("q"))}
+	f := boardFilter{Project: q.Get("project"), Q: strings.TrimSpace(q.Get("q"))}
 	readCols(&f, q.Get)
 	return f
 }
-
-func (f boardFilter) wide() bool { return f.View == viewWide }
 
 // query is the filter as a URL query, empty when it names nothing.
 func (f boardFilter) query() string {
 	q := url.Values{}
 	if f.Project != "" {
 		q.Set("project", f.Project)
-	}
-	if f.View != "" {
-		q.Set("view", f.View)
 	}
 	if f.Q != "" {
 		q.Set("q", f.Q)
@@ -1399,25 +1184,21 @@ type boardData struct {
 	User string
 	CSRF string
 	Page string // the layout marks the bar's current destination: the board
-	// Project and View are the board's filter, which every form
-	// on it carries back so an action keeps the view.
+	// boardFilter is the board's filter, which every form on it carries
+	// back so an action keeps the view.
 	boardFilter
-	Query       string   // the filter as a URL query for the poll's hx-get
-	Writes      bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
-	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
-	Messengers  bool     // the layout's notifications link
-	ToggleQuery string   // the filter with the other view
-	ClearQuery  string   // the filter without the find, the ×'s link (C13)
-	whole       []column // the columns before the find narrowed them, the menus'
-	Projects    []string // the projects the viewer writes, and the shown one
-	Status      statusLine
-	Columns     []column
-	HumanTasks  []card
-	Escalations []need
-	Approvals   []approvalCard
-	Problems    []string
-	Approver    bool // may authorize the shown project's spend
-	Factory     bool // writes the factory's own code: the layout links the factory-level pages
+	Query      string   // the filter as a URL query for the poll's hx-get
+	Writes     bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
+	Chat       bool     // the project agent's panel shows beside the four columns, its input to a writer
+	Messengers bool     // the layout's notifications link
+	ClearQuery string   // the filter without the find, the ×'s link (C13)
+	whole      []column // the columns before the find narrowed them, the menus'
+	Projects   []string // the projects the viewer writes, and the shown one
+	Status     statusLine
+	Columns    []column
+	Problems   []string
+	Approver   bool // may authorize the shown project's spend
+	Factory    bool // writes the factory's own code: the layout links the factory-level pages
 	// Autonomy is the shown project's autonomy state, which the chat's
 	// level control shows and an approver changes (roadmap 239, C14), and
 	// Levels the four states with their words; empty: no policy in force.
@@ -1469,19 +1250,6 @@ func (d boardData) cols() []column {
 // Final is a done, failed or closed card: a two-line row on the board.
 func (k card) Final() bool { return factoryd.Final(k.Status) }
 
-// Pill is the pill's word: the stage word, except a merged card, which
-// says merged and wears its chain word beside the pill, and a card parked
-// on its image, which says it waits for it.
-func (k card) Pill() string {
-	switch {
-	case k.Status == "waiting-image":
-		return "waiting for image"
-	case k.Status == "merged" || k.Stage == "":
-		return k.Status
-	}
-	return k.Stage
-}
-
 // ChainHue is the merged card's chain word's hue: red where the chain
 // failed, amber while it stalls, the merged teal while it runs.
 func (k card) ChainHue() string {
@@ -1492,26 +1260,6 @@ func (k card) ChainHue() string {
 		return "st-waiting"
 	}
 	return "st-merged"
-}
-
-// Glyph is the final state's mark beside its word.
-func (k card) Glyph() string {
-	switch k.Status {
-	case "done":
-		return "✓"
-	case "failed":
-		return "✕"
-	case "closed":
-		return "⊘"
-	}
-	return "·"
-}
-
-// Speaks is whether the face shows the activity line: a card in progress,
-// one that waits, one stalled on the provider or stale; a queued card
-// keeps its face bare.
-func (k card) Speaks() bool {
-	return k.Stage != "" || strings.HasPrefix(k.Status, "waiting") || k.Stale || k.Provider || k.Retrying
 }
 
 // configTree is commit's tree of the configuration directory in Forgejo,
@@ -1525,13 +1273,9 @@ func (c *Console) runURL(repository string, run int64) string {
 	return fmt.Sprintf("%s/%s/actions/runs/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), repository, run)
 }
 
-// counts are the board's column counts in the page's order, the wide
-// view's human lane first.
+// counts are the board's column counts in the page's order.
 func (c *Console) counts(d boardData) ([]string, error) {
 	var out []string
-	if d.wide() {
-		out = append(out, strconv.Itoa(len(d.Approvals)), strconv.Itoa(len(d.Escalations)), strconv.Itoa(len(d.HumanTasks)))
-	}
 	for _, col := range d.Columns {
 		var b strings.Builder
 		if err := c.tmpl.ExecuteTemplate(&b, "count", col); err != nil {
@@ -1548,14 +1292,14 @@ func (c *Console) counts(d boardData) ([]string, error) {
 func (d boardData) faces() string {
 	var b strings.Builder
 	add := func(k card) {
-		fmt.Fprintf(&b, "%s %t %q %t %t %s %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Checks, k.Total, k.GateAge, k.StageAge, k.Attempt)
+		fmt.Fprintf(&b, "%s %t %q %t %t %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Checks, k.Total, k.StageAge, k.Attempt)
 	}
 	for _, col := range d.Columns {
 		for _, k := range col.Cards {
 			add(k)
 		}
 		for _, g := range col.Ghosts {
-			fmt.Fprintf(&b, "ghost %s %s\n", g.Name, g.NextWords)
+			fmt.Fprintf(&b, "ghost %s %s\n", g.Routine.Key, g.Routine.Next)
 		}
 		for _, n := range col.Needs {
 			if n.Approval == nil {
@@ -1565,12 +1309,6 @@ func (d boardData) faces() string {
 				fmt.Fprintf(&b, "approval %d %s\n", n.Approval.ID, n.Approval.Waiting())
 			}
 		}
-	}
-	for _, k := range d.HumanTasks {
-		add(k)
-	}
-	for _, n := range d.Escalations {
-		add(n.Card)
 	}
 	return b.String()
 }
@@ -1594,13 +1332,10 @@ func (c *Console) card(t factoryd.Task) card {
 	if !t.CreatedAt.IsZero() {
 		k.Total = minutes(end.Sub(t.CreatedAt))
 	}
-	if t.Gate != "" && t.GateSince != nil {
-		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
-	}
 	k.StatusClass = statusClass(t.Status)
 	k.endAt = end
 	k.Stage, k.StageAge = stage(t, end)
-	k.Title = cmp.Or(t.HumanSummary, factoryd.TitleClause(t.Objective))
+	k.Title = factoryd.CardTitle(t)
 	k.PlanKey = t.PlanKey
 	if t.BudgetEUR > 0 {
 		k.NearBudget = nearBudget(t.EnforcedSpent(), t.BudgetEUR)
@@ -1780,10 +1515,6 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 // readBoard is the board under f for a GET, false after it answered the
 // refusal.
 func (c *Console) readBoard(w http.ResponseWriter, r *http.Request, f boardFilter) (boardData, bool) {
-	if f.View != "" && !f.wide() {
-		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
-		return boardData{}, false
-	}
 	d, err := c.boardOf(r, f, button(r))
 	switch {
 	case errors.Is(err, errNoProject):
@@ -1812,10 +1543,6 @@ func (c *Console) finishedPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.After.At = at
-	if f.View != "" && !f.wide() {
-		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
-		return
-	}
 	col, ok := c.readFinishedColumn(w, r, f)
 	if !ok {
 		return
@@ -1823,22 +1550,13 @@ func (c *Console) finishedPage(w http.ResponseWriter, r *http.Request) {
 	c.render(w, "finished-page", col)
 }
 
-// finishedColumn is the view's column of finished cards key — the four
-// columns' Done, which holds all three final states, or the wide view's
-// column of that state — false when the view has none.
-func finishedColumn(f boardFilter, key string) (column, bool) {
-	if !f.wide() {
-		if key != "done" {
-			return column{}, false
-		}
-		return column{Title: columnTitles[colDone], Finished: key}, true
+// finishedColumn is the board's column of finished cards key, Done, which
+// holds all three final states; false for any other key.
+func finishedColumn(key string) (column, bool) {
+	if key != "done" {
+		return column{}, false
 	}
-	for _, s := range stateColumns {
-		if s.Status == key && factoryd.Final(s.Status) {
-			return column{Title: s.Title, Finished: s.Status}, true
-		}
-	}
-	return column{}, false
+	return column{Title: columnTitles[colDone], Finished: key}, true
 }
 
 // readFinishedColumn is the board's column of finished cards f.Col, f's
@@ -1859,7 +1577,7 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
 		return column{}, false
 	}
-	col, ok := finishedColumn(f, f.Col)
+	col, ok := finishedColumn(f.Col)
 	if !ok {
 		http.Error(w, "the board has no column of finished cards "+f.Col, http.StatusBadRequest)
 		return column{}, false
@@ -1878,35 +1596,23 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 		http.Error(w, "cannot read the board", http.StatusInternalServerError)
 		return column{}, false
 	}
-	col = d.Columns[0]
 	for _, bt := range page {
 		v.byID[bt.ID] = bt.Task
-	}
-	// a failed plan card's Retry, its successor's too, follows its
-	// replacement, an open card the page does not read; boardCard reads it
-	// from the board's tasks
-	for _, bt := range page {
-		t := bt.Task
-		if t.Status == "failed" && (t.Source == factoryd.SourcePlan || t.Source == factoryd.SourceSuccessor) && t.Parent != "" && t.PlanKey == "" {
-			if rt, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(t.ID)); err == nil && ok &&
-				rt.Kind != factoryd.KindChat && !factoryd.Final(rt.Status) {
-				v.byID[rt.ID] = rt
-			}
-		}
 	}
 	for _, bt := range page {
 		// a finished card of the human lane holds no column (boardOf)
 		if v.humanLane(bt.Task) {
 			continue
 		}
-		col.Cards = append(col.Cards, c.boardCard(ctx, v, bt))
+		d.Columns[0].Cards = append(d.Columns[0].Cards, c.boardCard(ctx, v, bt))
 	}
 	c.finishCards(ctx, v, func(fn func(*card)) {
-		for i := range col.Cards {
-			fn(&col.Cards[i])
+		for i := range d.Columns[0].Cards {
+			fn(&d.Columns[0].Cards[i])
 		}
 	})
-	return col, true
+	c.setFaces(ctx, v, &d)
+	return d.Columns[0], true
 }
 
 // pressed answers a press with no content and the board-refresh trigger:
@@ -1947,6 +1653,17 @@ type boardView struct {
 	// planTrack names the repositories whose project's process has a plan
 	// track.
 	planTrack map[string]bool
+	// refs resolve the references of the render's texts by repository,
+	// each read once (linkRefs)
+	refs map[string]renderRefs
+	// cases are the shown repository's cases, plans the plans the faces
+	// read and rollups their cards' states, each once
+	cases   caseSet
+	plans   map[string]planRead
+	rollups map[string]rollup
+	// requests are the requests the opened card read for its brief, which
+	// its case's page reads no second time
+	requests map[int64]approvalCard
 }
 
 // viewOf reads what every card of a render shares, and the projects agents
@@ -2030,11 +1747,10 @@ func (v *boardView) approves(repository string) bool {
 	return slices.Contains(v.policy.ApproversOf(repository), v.user)
 }
 
-// boardCard is bt's card as the board shows it, in a column, the human
-// lane or the escalations, and as the card fragment swaps it in; its
-// activity line, checks and forms follow from finishCards. Place is
-// where the board puts it, in either view: the script swaps a card whose
-// place changed with the whole board.
+// boardCard is bt's card as the board shows it, in a column or in Needs
+// you, and as the card fragment swaps it in; its activity line, checks
+// and forms follow from finishCards. Place is where the board puts it:
+// the script swaps a card whose place changed with the whole board.
 func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
 	t := bt.Task
 	k := c.card(t)
@@ -2055,28 +1771,29 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			minutes(max(bt.ChainGreenAt.Sub(*bt.FinishedAt), 0)))
 	}
 	k.WaitingOn, k.SlotWait, k.MergeBehind, k.HeldFor = bt.WaitingOn, bt.SlotWait, bt.MergeBehind, bt.HeldFor
-	k.HoldLine, k.HoldWarn = bt.HoldView.Line, bt.HoldView.Warn
+	k.HoldLine = bt.HoldView.Line
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.
-	if bt.Dependencies != "" && bt.WaitingOn == "" {
-		k.Blocked, k.BlockedOn = depsCount(bt.Dependencies), bt.Dependencies
+	var refs []string
+	for _, d := range bt.Dependencies {
+		if d.Issue > 0 {
+			refs = append(refs, "#"+strconv.FormatInt(d.Issue, 10))
+		}
+	}
+	if len(refs) > 0 && bt.WaitingOn == "" {
+		k.Blocked, k.BlockedOn = len(refs), strings.Join(refs, ", ")
 	}
 	// a merged card's row may still name gate merge-queue
-	switch inQueue := t.Status == "in-review" && t.Gate == factoryd.GateMergeQueue; {
-	case inQueue && bt.QueueAhead < 0:
-		k.GateText = "merge queue, after the open plan,"
-	case inQueue:
-		k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
+	k.QueueAhead, k.MergeBehind = bt.QueueAhead, bt.MergeBehind
+	if n := len(bt.Helpers); n > 0 {
+		h := bt.Helpers[n-1].Task
+		k.Helper = &h
 	}
-	k.Ask = bt.Escalation != ""
 	if v.humanLane(t) {
 		k.Question = bt.Question
 		if bt.Question != nil {
-			k.Title = cmp.Or(t.HumanSummary, bt.Question.Ask)
-		}
-		if factoryd.FreezeCardHolds(t) && v.approves(t.Repository) {
-			k.RetryFreeze = &retry{CSRF: v.csrf}
+			k.Title = bt.Question.Ask
 		}
 		return k
 	}
@@ -2087,77 +1804,18 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			k.PlanURL = fmt.Sprintf("%s/%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), planRepo, k.PlanIssue)
 		}
 	}
-	if t.Track == policy.TrackPlan && t.Status == "done" {
-		cards, cardsErr := factoryd.PlanWaits(ctx, c.cfg.Tasks, t.ID)
-		if cardsErr != nil {
-			log.Printf("console: the cards of plan %s: %v", t.ID, cardsErr)
-			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
-		} else {
-			for _, child := range cards {
-				k.Plan = append(k.Plan, c.card(child))
-			}
-		}
-		_, p, _, err := c.planTable(ctx, t.ID, 0)
-		if err != nil {
-			log.Printf("console: the plan of %s: %v", t.ID, err)
-			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
-		} else if cardsErr == nil {
-			k.Round = factoryd.RoundLine(p, cards)
-		}
-		if err == nil && factoryd.DonePlan(t) {
-			c.planHold(ctx, v, t, p, &k)
-		}
-		k.Children = cmp.Or(k.Round, planRollup(k.Plan))
-	}
-	if t.Track == policy.TrackPlan && (t.Status == "failed" || t.Status == "closed") {
-		// a plan whose plan_closed row stands holds nothing: no further reads
-		_, closed, err := c.cfg.Tasks.PlanClosed(ctx, t.ID)
-		var p factoryd.Plan
-		var ok bool
-		if err == nil && !closed {
-			_, p, ok, err = c.planTable(ctx, t.ID, 0)
-		}
-		switch {
-		case err != nil:
-			log.Printf("console: the plan of %s: %v", t.ID, err)
-			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
-		case !closed && ok:
-			c.planHold(ctx, v, t, p, &k)
-		}
-	}
 	// a retry that stopped before its replacement got an issue is finished by the next
 	// a card cut into a successor is that card's to answer: RetryCard refuses it
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
 	_, cut := v.byID[factoryd.SuccessorID(t.ID)]
 	if t.Status == "failed" && (t.PlanCard() && t.PlanKey != "" || retried && replacement.PlanCard() && replacement.IssueNumber == 0) &&
 		!cut && v.approves(t.Repository) {
-		k.Retry = &retry{CSRF: v.csrf}
+		k.MayRetry = true
 	}
-	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
-		k.Replan = &replanForm{CSRF: v.csrf, Group: factoryd.InPlan(t)}
-	}
-	// the Extend action is offered on every live agent card, to its
-	// approvers, with its numbers the raise starts from
-	if v.approves(t.Repository) && extendable(t) {
-		k.Extend = &extendForm{CSRF: v.csrf,
-			Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
-			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage),
-			Budget: t.BudgetEUR, Left: t.Left()}
-	}
+	k.MayReplan = factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository)
+	k.MayExtend = v.approves(t.Repository) && extendable(t)
 	if v.escalated(t) {
-		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
-		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
-		f := capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, bt.Question, v.pending)
-		k.Capped, k.TimeCapped = f.capped, f.timeCap
-		// the Fund action is offered where the fund's floor refuses a
-		// session's opening calls for want of budget (roadmap 243): the same
-		// card, to its project's approvers; a refusal no raise answers
-		// offers none
-		if why, err := c.unfundedSession(ctx, t); err != nil {
-			log.Printf("console: task %s's remaining budget: %v", t.ID, err)
-		} else if v.approves(t.Repository) && factoryd.BudgetRefusal(why) {
-			k.Fund = &fundForm{CSRF: v.csrf}
-		}
+		k.Reason, k.Question = cardReason(bt.Escalation), bt.Question
 	}
 	return k
 }
@@ -2216,7 +1874,12 @@ func cardReason(body string) string {
 // each visits every card once.
 func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(*card))) {
 	var ids []string
-	each(func(k *card) { ids = append(ids, k.ID) })
+	each(func(k *card) {
+		ids = append(ids, k.ID)
+		if k.Helper != nil {
+			ids = append(ids, k.Helper.ID)
+		}
+	})
 	newest, err := c.cfg.Events.NewestTaskEvents(ctx, ids)
 	if err != nil {
 		log.Printf("console: newest events: %v", err)
@@ -2229,17 +1892,19 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// newest of its newest event and its newest timeline step (its own
 	// session's last report), one that never had either its own age —
 	// comes only on a card that is running its work: never a final one,
-	// never a queued one; a card parked for a slot owes no work while it
-	// waits.
+	// a queued one or one that waits for a human's answer; a card parked
+	// for a slot owes no work while it waits. A helper task at work on the
+	// card is the card's activity.
 	setActivity := func(k *card) {
 		lastAt := func(at time.Time) time.Time {
-			if k.stepAt.After(at) {
-				return k.stepAt
+			last := []time.Time{at, k.stepAt}
+			if h := k.Helper; h != nil {
+				last = append(last, h.CreatedAt, newest[h.ID].At)
 			}
-			return at
+			return slices.MaxFunc(last, time.Time.Compare)
 		}
 		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
-		live := !factoryd.Final(k.Status) && k.Status != "queued" && k.MergeBehind == 0 && k.HeldFor == 0
+		live := !factoryd.Final(k.Status) && k.Status != "queued" && k.Status != "waiting-human" && k.Status != "waiting-poster" && k.MergeBehind == 0 && k.HeldFor == 0
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
 			return q
@@ -2248,11 +1913,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		titled := k.Kind == "human" && k.Question != nil
 		if e, ok := newest[k.ID]; ok {
 			k.Activity = activityLine(e)
-			if k.HeldFor > 0 {
-				k.Activity = fmt.Sprintf("waits for plan #%d to close", k.HeldFor)
-			}
-			if k.MergeBehind > 0 {
-				k.Activity = fmt.Sprintf("waits to merge behind #%d", k.MergeBehind)
+			if why, _ := e.Detail["reason"].(string); e.Kind == factoryd.EventTaskEnded && k.Status == "failed" {
+				k.Failure = failureClause(why)
+				if s, ok := v.byID[factoryd.SuccessorID(k.ID)]; ok && s.IssueNumber > 0 {
+					k.Failure = fmt.Sprintf("closed into successor #%d", s.IssueNumber)
+				}
 			}
 			// the stage began at its status row, when that row is the newest event
 			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
@@ -2289,7 +1954,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	c.faceTimelines(ctx, each)
 	each(setActivity)
 	c.callTotals(ctx, each)
-	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
+	each(func(k *card) { k.Fine = fineStates(*k) })
 	setForms := func(k *card) {
 		ok, err := c.writesRepo(ctx, v.user, k.Repository)
 		if err != nil && !v.unchecked {
@@ -2303,6 +1968,25 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	}
 	each(setForms)
 }
+
+// failureClause is a failure's reason as one clause after "failed: ":
+// its first sentence, "" when that is no short clause or names a card by
+// its task id.
+func failureClause(reason string) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(reason), "\n")
+	first, _, _ = strings.Cut(first, ". ")
+	first = strings.TrimRight(first, ".")
+	if first == "" || utf8.RuneCountInString(first) > 80 || strings.ContainsAny(first, ":;") || taskIDWord.MatchString(first) {
+		return ""
+	}
+	r, size := utf8.DecodeRuneInString(first)
+	if rest := first[size:]; rest == "" || !unicode.IsUpper(rune(rest[0])) {
+		first = string(unicode.ToLower(r)) + rest
+	}
+	return first
+}
+
+var taskIDWord = regexp.MustCompile(`\bt-[0-9a-f]{6,}`)
 
 // callTotals fills each card's calls line beside its spend: the task's
 // call rows summed — its tokens and modeled cost to date (roadmap 206) —
@@ -2327,8 +2011,8 @@ func callsLine(t policy.CallTotals) string {
 	if t == (policy.CallTotals{}) {
 		return ""
 	}
-	return commas.Sprintf("%d prompt · %d cached · %d output tokens · €%.4f modeled",
-		t.Prompt, t.Cached, t.Output, t.ModeledEUR)
+	return commas.Sprintf("%d prompt · %d cached · %d output tokens · %s EUR modeled",
+		t.Prompt, t.Cached, t.Output, textutil.EUR(t.ModeledEUR))
 }
 
 // shownProject is the board's shown project under f among all, the
@@ -2375,9 +2059,7 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 
 // boardOf is the board of one project, f.Project or else the first the
 // viewer writes, the project's cards, as the session's
-// human sees it. The four columns are the default, the human lane folded
-// into Needs you; the wide view puts a column per state under the human
-// lane. act is the actor whose board read this is — the
+// human sees it in the four columns. act is the actor whose board read this is — the
 // button's or the chat's — which its approval cards read the head's
 // checks as (#1013).
 func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData, error) {
@@ -2415,7 +2097,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			d.Docs = v.Document.ChatOf(v.Projects[shown.Name]).DocRepo
 		}
 	}
-	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
+	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != ""
 	if d.Chat {
 		if row, ok, err := c.cfg.Chat.ChatIntake(ctx, shown.Repository); err != nil {
 			log.Printf("console: the intake of %s: %v", shown.Name, err)
@@ -2424,37 +2106,13 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 	}
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
-	wide := f.wide()
-	other := f
-	if other.View = viewWide; wide {
-		other.View = ""
-	}
-	d.ToggleQuery = other.query()
 	clear := f
 	clear.Q = ""
 	d.ClearQuery = clear.query()
-	byStatus := map[string]int{}
-	if wide {
-		for _, col := range stateColumns {
-			byStatus[col.Status] = len(d.Columns)
-			k := column{Title: col.Title, Holds: col.Status}
-			if factoryd.Final(col.Status) {
-				k.Finished = col.Status
-			}
-			d.Columns = append(d.Columns, k)
-		}
-		for _, status := range []string{"closing", "waiting-agent"} {
-			byStatus[status] = byStatus["running"]
-			d.Columns[byStatus[status]].Holds += " " + status
-		}
-		byStatus["waiting-deps"] = byStatus["queued"]
-		d.Columns[byStatus["waiting-deps"]].Holds += " waiting-deps"
-	} else {
-		for i, title := range columnTitles {
-			d.Columns = append(d.Columns, column{Title: title, Holds: strings.Join(columnHolds[i], " ")})
-		}
-		d.Columns[colDone].Finished = "done"
+	for i, title := range columnTitles {
+		d.Columns = append(d.Columns, column{Title: title, Holds: strings.Join(columnHolds[i], " ")})
 	}
+	d.Columns[colDone].Finished = "done"
 
 	tasks, err := c.cfg.Tasks.BoardTasks(ctx, shown.Repository)
 	if err != nil {
@@ -2474,15 +2132,17 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 	}
 	var needs []need
-	cs, err := c.caseSetOf(ctx, shown.Repository)
+	cs, err := c.caseSetOf(ctx, shown.Repository, tasks...)
 	if err != nil {
 		log.Printf("console: the cases of %s: %v", shown.Name, err)
 		v.problems = append(v.problems, "the cases waiting on you could not be read")
 	}
-	inView := casesInView(r)
-	escalation := func(k card) need {
-		return need{Card: k, Escalated: true, CSRF: v.csrf}
+	for _, bt := range c.askingCards(ctx, cs, tasks) {
+		v.byID[bt.ID] = bt.Task
+		tasks = append(tasks, bt)
 	}
+	v.cases = cs
+	inView := casesInView(r)
 	// BoardTasks and readFinished read shown.Repository's cards only, so
 	// every byID lookup below stays right: a plan parent not among them
 	// (finished, another project's) is read by planIssue's own read, a
@@ -2495,9 +2155,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		human, col := v.humanLane(t) && t.Status != "waiting-agent", fiveColumn(t)
 		// a done plan that waits on its failed card holds its case at the
 		// human: its row of Needs you carries the case
-		holds := slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
-			return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t)
-		})
+		holds := cs.holds(t)
+		k := c.boardCard(ctx, v, bt)
 		// the status line counts the project's cards, whatever the accent;
 		// a card that holds a case at the human counts once, as its row,
 		// and a plan that waits for its answers counts as its approval
@@ -2508,6 +2167,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			if !factoryd.Final(t.Status) {
 				d.Status.NeedYou++
 			}
+		case c.working(ctx, v, k):
+			d.Status.Working++
 		case col == colProgress && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
 			d.Status.Waiting++
 		case col == colProgress && t.Status != "in-review":
@@ -2515,7 +2176,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		case col == colNeedsYou && !v.planned[t.ID]:
 			d.Status.NeedYou++
 		}
-		k := c.boardCard(ctx, v, bt)
 		// a card that holds a case at the human is one row of Needs you, its
 		// case in view, and yields its column to it as a merge card does
 		var row need
@@ -2528,44 +2188,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				break
 			}
 			if holds {
-				if wide {
-					// the case face is the one render; the plain card
-					// would double it
-					d.Escalations = append(d.Escalations, row)
-				} else {
-					needs = append(needs, row)
-				}
+				needs = append(needs, row)
 				break
 			}
-			// a human card's question answers from its face, as an
-			// escalation's does
-			asks := k.Question != nil && v.escalated(t)
-			n := need{Since: t.CreatedAt, Card: k}
-			if asks {
-				n = escalation(k)
-				n.Since = t.CreatedAt
-			}
-			if !wide {
-				needs = append(needs, n)
-				break
-			}
-			// an asking human task renders once, through its escalation,
-			// which carries the card and its actions
-			if !asks {
-				d.HumanTasks = append(d.HumanTasks, k)
-			} else {
-				d.Escalations = append(d.Escalations, n)
-			}
-		case wide:
-			if i, ok := byStatus[t.Status]; ok {
-				d.Columns[i].Cards = append(d.Columns[i].Cards, k)
-			}
-			switch {
-			case holds:
-				d.Escalations = append(d.Escalations, row)
-			case v.escalated(t):
-				d.Escalations = append(d.Escalations, escalation(k))
-			}
+			needs = append(needs, need{Since: t.CreatedAt, Card: k})
 		case holds:
 			needs = append(needs, row)
 		case col == colNeedsYou && v.planned[t.ID] && !planFaced(v, cs, t.ID):
@@ -2577,12 +2203,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			if v.planned[t.ID] {
 				break
 			}
-			n := need{Since: waitingSince(bt), Card: k}
-			if v.escalated(t) {
-				n = escalation(k)
-				n.Since = waitingSince(bt)
-			}
-			needs = append(needs, n)
+			needs = append(needs, need{Since: waitingSince(bt), Card: k})
 		case col >= 0:
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
@@ -2591,36 +2212,22 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if a.Project != shown.Repository {
 			continue
 		}
-		// the card's row holds its approvals, unless the card has ended and
-		// has no row; a card outside the board's pages has ended
-		if t, ok := v.byID[a.TaskID]; ok && len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
+		// the card's row holds its requests
+		if cs.holds(v.byID[a.TaskID]) {
 			continue
 		}
-		// a merge's, a plan's or a plan's criteria request waits for its
-		// case to reach the human, whose face the card carries
-		criteria := a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun
-		held, faced := cs.faced(a)
-		if waitsForFace(a) && !faced {
+		// a merge's, a plan's or a plan's criteria request shows through its
+		// case alone, whose pages the card's row carries
+		if waitsForFace(a) {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
-		if criteria {
-			k.faceOf(cs, held, v.policy.Document.LinkHosts)
-		}
 		k.Filter, k.Writer = f, d.Writes
-		k.buildDecide()
-		k.Asks = a.Kind == factoryd.ApprovalPlan
 		d.Status.NeedYou++
-		if wide {
-			d.Approvals = append(d.Approvals, k)
-		} else {
-			needs = append(needs, need{Since: a.CreatedAt, Approval: &k})
-		}
+		needs = append(needs, need{Since: a.CreatedAt, Approval: &k})
 	}
-	if !wide {
-		slices.SortStableFunc(needs, func(a, b need) int { return a.Since.Compare(b.Since) })
-		d.Columns[colNeedsYou].Needs = needs
-	}
+	slices.SortStableFunc(needs, func(a, b need) int { return a.Since.Compare(b.Since) })
+	d.Columns[colNeedsYou].Needs = needs
 	c.finishCards(ctx, v, func(fn func(*card)) {
 		for i := range d.Columns {
 			for j := range d.Columns[i].Cards {
@@ -2632,22 +2239,15 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				}
 			}
 		}
-		for i := range d.HumanTasks {
-			fn(&d.HumanTasks[i])
-		}
-		for i := range d.Escalations {
-			fn(&d.Escalations[i].Card)
-		}
 	})
+	c.setFaces(ctx, v, &d)
 	d.whole = d.Columns
 	d.Columns = find(d.Columns, f.Q)
-	if !wide {
-		arrange(&d, f)
-	}
+	arrange(&d, f)
 	if shown.Name != "" {
 		c.statusLine(ctx, v, f, shown, &d)
 		if c.cfg.Routines != nil {
-			c.placeGhosts(ctx, &d)
+			c.placeGhosts(ctx, v, &d, shown.Repository)
 		}
 	}
 	d.Problems = append(d.Problems, v.problems...)
@@ -2660,9 +2260,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 // for GET /board/finished f.Col's page after f.After, and the column
 // gets its whole count and the form of its next page.
 func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter, repository string) ([]factoryd.BoardTask, error) {
-	q := factoryd.FinishedQuery{Repository: repository, Since: time.Now().Add(-finishedSince), Oldest: !f.wide() && f.Done.Order == "oldest"}
+	q := factoryd.FinishedQuery{Repository: repository, Statuses: factoryd.FinalStatuses, Since: time.Now().Add(-finishedSince), Oldest: f.Done.Order == "oldest"}
 	if f.whole() {
-		q.Statuses = factoryd.FinalStatuses
 		all, _, err := c.cfg.Tasks.FinishedTasks(ctx, q)
 		return all, err
 	}
@@ -2672,10 +2271,7 @@ func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter,
 		if col.Finished == "" || f.Col != "" && col.Finished != f.Col {
 			continue
 		}
-		q.Statuses, q.After, q.Limit = []string{col.Finished}, f.After, max(finishedPerPage, f.Shown[col.Finished])
-		if !f.wide() {
-			q.Statuses = factoryd.FinalStatuses
-		}
+		q.After, q.Limit = f.After, max(finishedPerPage, f.Shown[col.Finished])
 		if f.Col != "" {
 			q.Limit = finishedPerPage
 		}
@@ -2766,7 +2362,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			s.Hold = &holdLine{For: coarse(time.Since(h.Since)), Reason: factoryd.HoldReason(h.Groups)}
 			for _, g := range h.Groups {
 				merged, total := g.Merged()
-				s.Hold.Groups = append(s.Hold.Groups, fmt.Sprintf("plan #%d · %d of %d merged", g.Issue, merged, total))
+				s.Hold.Groups = append(s.Hold.Groups, fmt.Sprintf("%s · %d of %d merged", factoryd.PlanWords(g.Name, g.Issue), merged, total))
 			}
 			if h.DeployNow != "" && c.cfg.MainCommit != nil {
 				switch head, err := c.cfg.MainCommit(ctx, p.Repository); {
@@ -2774,7 +2370,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 					log.Printf("console: the head of %s: %v", p.Repository, err)
 					d.Problems = append(d.Problems, "main's head could not be read")
 				case head == h.DeployNow:
-					s.Hold.Released = &releaseStanding{Commit: h.DeployNow[:min(7, len(h.DeployNow))], Age: coarse(time.Since(h.DeployAt))}
+					s.Hold.Released = &releaseStanding{Commit: factoryd.ShortSHA(h.DeployNow), Age: coarse(time.Since(h.DeployAt))}
 				}
 			}
 		}
@@ -2804,7 +2400,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 // those whose next run is further away than its period, or all, and each
 // lane counts what it hides. The strip's cell names the first held run,
 // else the soonest under an hour away, whatever the choice.
-func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
+func (c *Console) placeGhosts(ctx context.Context, v *boardView, d *boardData, repository string) {
 	views, err := c.cfg.Routines.Views(ctx, d.Project)
 	if err != nil {
 		log.Printf("console: the routines of %s: %v", d.Project, err)
@@ -2836,22 +2432,12 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	all := d.boardFilter
 	all.Routines = "all"
 	d.AllRoutines = all.query()
-	csrf := ""
-	if d.Writes {
-		csrf = d.CSRF
-	}
-	// the queue group: the five columns' Queued, the wide lane's first
-	// state column
-	q := colQueued
-	if d.wide() {
-		q = 0
-	}
 	for _, rv := range views {
 		if d.Routines == "none" || d.Routines == "within" && rv.Next.Sub(now) > d.period() {
-			d.Columns[q].GhostsHidden++
+			d.Columns[colQueued].GhostsHidden++
 			continue
 		}
-		d.Columns[q].Ghosts = append(d.Columns[q].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
+		d.Columns[colQueued].Ghosts = append(d.Columns[colQueued].Ghosts, c.routineFace(ctx, v, repository, rv, now, d.Writes))
 	}
 }
 
@@ -2859,41 +2445,53 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 var filesWords = map[string]string{policy.FilesHuman: "human card", policy.FilesAgent: "agent card",
 	policy.FilesPullRequest: "pull request", policy.FilesReport: "report"}
 
-// ghostOf is routine rv's ghost at now. Its next line names the run's
-// time, how soon it comes and what it files. A merge-counted routine's
-// names the merges it lacks, an event's only what it files, as the
-// schedule line names the event. A pending Skip once leads the line, the
-// run it names being the one after the skipped. Its last line names the
-// newest run.
-func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string) ghost {
+// routineFace is routine rv's face at now (C16, C46), which a writer may
+// open: one paragraph of its title and the why line its file holds, and a
+// foot of its schedule, its next run and its last. The next names the
+// run's time, how soon it comes and what it files; a merge-counted
+// routine's the merges it lacks, an event's only what it files, as the
+// schedule names the event. A pending skip leads it, the run it
+// names being the one after the skipped. The last names a held run's
+// words, the open card running, or the newest run by the card it filed.
+// It holds no button: its answers are its opened card's.
+func (c *Console) routineFace(ctx context.Context, v *boardView, repository string, rv factoryd.RoutineView, now time.Time, open bool) faceView {
 	rt := rv.Routine
-	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), Soon: rv.Soon, Held: rv.Held, Skipped: rv.State.SkipNext,
-		Files: rt.Files, Side: rv.FilesInForce(), Toggled: rv.State.NeedsMe != nil, Filter: f, CSRF: csrf}
+	foot := &routineFoot{Key: rv.Project + "/" + rt.Name, Title: oneLine(rt.Title), Schedule: rt.Words(), Soon: rv.Soon, Held: rv.Held}
+	f := faceView{Open: open, Routine: foot}
+	f.title(c.linkRefs(ctx, v, repository, rt.Title), rt.Title)
+	if rt.Why != "" {
+		f.Why = c.linkRefs(ctx, v, repository, rt.Why)
+	}
 	when, in, kind := nextWords(rv, now)
 	switch {
 	case in != "":
-		g.NextWords = when + " · in " + in + " · " + kind
+		foot.Next = when + " · in " + in + " · " + kind
 	case when != "":
-		g.NextWords = when
+		foot.Next = when
 	default:
-		g.NextWords = kind
+		foot.Next = kind
 	}
 	switch {
-	case g.Skipped && when == "":
-		g.NextWords = "skipped once · " + kind
-	case g.Skipped:
-		g.NextWords = "skipped once · next " + g.NextWords
+	case rv.State.SkipNext && when == "":
+		foot.Next = "skipped once · " + kind
+	case rv.State.SkipNext:
+		foot.Next = "skipped once · next " + foot.Next
 	}
-	if l := runWords(rv.Last); l != "" {
-		g.LastWords = "last " + l
+	var last string
+	switch l := runWords(rv.Last); {
+	case rv.Held:
+		last = rv.Last.Note
+	case rv.Open != nil && rv.Open.Status == "running":
+		foot.Running, last = true, fmt.Sprintf("#%d running", rv.Open.IssueNumber)
+	case rv.Last.Issue > 0:
+		last = fmt.Sprintf("last run #%d", rv.Last.Issue)
+	case l != "":
+		last = "last " + l
 	}
-	if g.Held {
-		g.HeldWords = rv.Last.Note
+	if last != "" {
+		foot.Last = c.linkRefs(ctx, v, repository, last)
 	}
-	if rv.Open != nil {
-		g.Open, g.Running = rv.Open.IssueNumber, rv.Open.Status == "running"
-	}
-	return g
+	return f
 }
 
 // nextWords are routine rv's next run at now as its ghost and its drawer
@@ -2951,9 +2549,9 @@ func (c *Console) monthFigures(ctx context.Context, v policy.Version, p factoryd
 // project's own split, which does not sum to it.
 func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool) string {
 	if factory {
-		return fmt.Sprintf("spend this month €%.2f of €%.2f, the factory's whole ledger", spend.EUR, capEUR)
+		return fmt.Sprintf("spend this month %s of %s EUR, the factory's whole ledger", textutil.EUR(spend.EUR), textutil.EUR(capEUR))
 	}
-	return fmt.Sprintf("spend this month €%.2f of €%.2f: the cards €%.2f, the chat €%.2f", spend.EUR, capEUR, spend.EUR-spend.ChatEUR, spend.ChatEUR)
+	return fmt.Sprintf("spend this month %s of %s EUR: the cards %s EUR, the chat %s EUR", textutil.EUR(spend.EUR), textutil.EUR(capEUR), textutil.EUR(spend.EUR-spend.ChatEUR), textutil.EUR(spend.ChatEUR))
 }
 
 type timelineEntry struct {
@@ -3163,8 +2761,9 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("console: the chain of %s: %v", t.ID, err)
 	}
+	v := &boardView{user: current(r).user, csrf: current(r).csrf, byID: map[string]factoryd.Task{t.ID: t}}
 	c.render(w, "timeline.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf, "Factory": c.factoryWriter(r),
-		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest, "Chain": chain})
+		"Card": c.card(t), "Face": c.faceOf(r.Context(), v, need{Card: c.card(t)}, false), "Entries": entries, "Gates": gates, "Longest": longest, "Chain": chain})
 }
 
 // userCall is a call as member s in the shape factoryd.GetPages calls.
@@ -3203,7 +2802,9 @@ func (c *Console) coderProjects(ctx context.Context) ([]factoryd.Project, error)
 // findings of a first submit with the text as the member wrote it
 // (roadmap 125).
 type newTask struct {
-	Project, Title, Body, Track, Priority, Size string
+	Project, Title, Why, Summary, Body, Track, Priority, Size string
+	// Refused is the filing door's refusal of the brief, "" for none
+	Refused string
 }
 
 func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
@@ -3212,8 +2813,9 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 
 // renderNewTask answers the New task form: the projects agents work on,
 // those whose process has a plan track and the priority labels the first's repository offers. A
-// first submit whose text is flagged answers the form again, the form's
-// values kept and the findings shown above it.
+// first submit whose text is flagged, or whose brief the filing door
+// refuses, answers the form again, the form's values kept and the
+// findings or the refusal shown above it.
 func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form newTask, flags []filingFlag) {
 	ps, err := c.coderProjects(r.Context())
 	if err != nil {
@@ -3247,20 +2849,32 @@ func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form new
 }
 
 // createTask files the issue as the human (doFileCard). Text the
-// sanitiser or the provider would change (roadmap 125) is not filed at
-// once: the form answers the findings with everything the member wrote
-// kept, and only its File as written button files the text as it stands,
-// because a human may mean it.
+// sanitiser or the provider would change (roadmap 125), or a brief the
+// filing door refuses, is not filed at once: the form answers the findings
+// or the refusal with everything the human wrote kept, and only its File
+// as written button files the text as it stands, because a human may mean
+// it; the door then files it marked unchecked.
 func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
-	form := newTask{Project: r.PostFormValue("project"), Title: r.PostFormValue("title"), Body: r.PostFormValue("body"),
-		Track: r.PostFormValue("track"), Priority: r.PostFormValue("priority"), Size: r.PostFormValue("size")}
+	form := newTask{Project: r.PostFormValue("project"), Title: r.PostFormValue("title"), Why: r.PostFormValue("why"), Summary: r.PostFormValue("summary"),
+		Body: r.PostFormValue("body"), Track: r.PostFormValue("track"), Priority: r.PostFormValue("priority"), Size: r.PostFormValue("size")}
+	try := factoryd.BriefTries
 	if r.PostFormValue("as_written") == "" {
 		if flags := filingFlags(form.Title, form.Body); len(flags) > 0 {
 			c.renderNewTask(w, r, form, flags)
 			return
 		}
+		try = 1
 	}
-	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0, 0)
+	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, factoryd.BriefText{Title: form.Title, Why: form.Why, Summary: form.Summary, Body: form.Body}, try,
+		form.Track, "", form.Priority, form.Size, "", "", "", 0, 0, 0)
+	var no *briefRefusal
+	if errors.As(err, &no) {
+		form.Refused = no.msg
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		c.renderNewTask(w, r, form, nil)
+		return
+	}
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3268,15 +2882,15 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?"+url.Values{"project": {form.Project}}.Encode(), http.StatusSeeOther)
 }
 
-// answer posts the human's answer to an escalation (doAnswer). Words that
-// matched none of the question's choices went to the chat (answerInChat):
-// the member lands on it.
+// answer posts the human's answer to an escalation (doAnswerValue): a
+// human card's choice, or the human's words, which went to the chat
+// (answerInChatTurn), where the human lands.
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	if err := c.answersLiveAsk(r.Context(), r.PathValue("id"), r.PostFormValue("case")); err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"), r.PostFormValue("instruction"), 0)
+	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"), r.PostFormValue("head"))
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3293,102 +2907,39 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	c.pressed(w, r, nil)
 }
 
-// resolve answers POST /tasks/{id}/resolve: the one send of the case's
-// face and of the escalation's. The form posts the case, the action its
-// button names with that action's arguments ("<action>.<argument>"), the
-// fund beside it and the note; doAnswerCase builds the one resolution and
-// Act runs it once. A premade answer that is one of the card's question's
-// choices answers as that choice's button does (doAnswerValue), the note
-// and the fund its own; any other is a continue. A form that names no
-// case is the escalation face's send: the choice its button names, the
-// fund and the note in one answer on the card (doAnswerValue).
+// resolve answers POST /tasks/{id}/resolve: the one send of an answer of
+// the opened card. The form posts the answer its button names, with that
+// answer's fields ("<answer>.<field>"), the note among them, and the case
+// it answers; doPressCase makes the one resolution and Act runs it once.
+// A form that names no case presses one of the card's own actions
+// (doCardAnswer).
 func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
-	id, action, note := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("note")
-	caseID, err := strconv.ParseInt(cmp.Or(r.PostFormValue("case_id"), "0"), 10, 64)
-	if err != nil || caseID < 0 {
-		c.fail(w, r, refuse(http.StatusBadRequest, "case_id is a case number"))
-		return
-	}
-	var fund float64
-	if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
-		if fund, err = strconv.ParseFloat(v, 64); err != nil || fund < 0 {
-			c.fail(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero"))
-			return
-		}
-	}
-	if caseID == 0 {
-		// The escalation face's send: the choice its button names, the fund
-		// beside it and the note in one answer on the card, which
-		// doAnswerValue resolves as the card's choice button does.
-		value := ""
-		if premade := strings.TrimSpace(r.PostFormValue("premade")); premade != "" {
-			bt, _, err := c.cfg.Tasks.BoardTask(r.Context(), id)
-			if err != nil {
-				c.fail(w, r, err)
-				return
-			}
-			if bt.Question != nil {
-				value = bt.Question.ChoiceValue(premade)
-			}
-			if value == "" {
-				note = strings.TrimSpace(premade + "\n\n" + note)
-			}
-		}
-		_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "", fund)
+	id, action, named := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("case_id")
+	field := func(name string) string { return strings.Join(r.PostForm[action+"."+name], "\n") }
+	if named == "" {
+		_, err := c.doCardAnswer(r.Context(), button(r), id, action, field)
 		c.pressed(w, r, err)
 		return
 	}
-	if err := c.answersLiveAsk(r.Context(), id, r.PostFormValue("case_id")); err != nil {
+	caseID, err := strconv.ParseInt(named, 10, 64)
+	if err != nil || caseID <= 0 {
+		c.fail(w, r, refuse(http.StatusBadRequest, "The press names no ask of this card. Reload the board and press the answer again."))
+		return
+	}
+	if err := c.answersLiveAsk(r.Context(), id, named); err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	if premade := r.PostFormValue("premade"); premade != "" {
-		bt, _, err := c.cfg.Tasks.BoardTask(r.Context(), id)
-		if err != nil {
-			c.fail(w, r, err)
-			return
-		}
-		if bt.Question != nil {
-			if value := bt.Question.ChoiceValue(premade); value != "" {
-				_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "", fund)
-				c.pressed(w, r, err)
-				return
-			}
-		}
-		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
+	answer, ok := factoryd.AnswerOf(action)
+	if !ok {
+		c.fail(w, r, refuse(http.StatusBadRequest, "That is no answer of this card. Press one of the card's answers."))
+		return
 	}
-	args := map[string]any{}
-	var raise float64
-	for _, arg := range factoryd.ActionArgs[action] {
-		v := strings.TrimSpace(r.PostFormValue(action + "." + arg.Name))
-		if arg.Float && v != "" {
-			amount, err := strconv.ParseFloat(v, 64)
-			if err != nil || amount < 0 {
-				c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is an amount in EUR"))
-				return
-			}
-			raise = amount
-			continue
-		}
-		switch n, err := strconv.Atoi(v); {
-		case v == "":
-		case !arg.Number:
-			args[arg.Name] = v
-		case err != nil || n < 0:
-			c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is a whole number"))
-			return
-		case arg.Name == "minutes":
-			args["agent_time_s"] = n * 60
-		default:
-			args[arg.Name] = n
-		}
+	values := map[string]string{}
+	for _, f := range answer.Fields {
+		values[f.Name] = field(f.Name)
 	}
-	eur := fund
-	if raise > 0 {
-		eur = raise
-	}
-	raw, _ := json.Marshal(args)
-	_, err = c.doAnswerCase(r.Context(), button(r), id, caseID, note, action, raw, eur)
+	_, err = c.doPressCase(r.Context(), button(r), id, caseID, answer, values)
 	c.pressed(w, r, err)
 }
 
@@ -3401,69 +2952,27 @@ func (c *Console) answersLiveAsk(ctx context.Context, id, named string) error {
 	}
 	shown, err := strconv.ParseInt(named, 10, 64)
 	if err != nil {
-		return refuse(http.StatusBadRequest, "case is a case number")
+		return refuse(http.StatusBadRequest, "The press names no ask of this card. Reload the board and press the answer again.")
 	}
 	live, err := c.cfg.NewestAskCase(ctx, id)
 	if err != nil {
 		log.Printf("console: the cases of %s: %v", id, err)
-		return refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+		return refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was answered. Try again.")
+	}
+	if live.ID != shown {
+		// a merge's, a plan's criteria and a monitor's flag are answered by
+		// their own number, beside the card's live ask
+		if k, err := c.cfg.CaseByID(ctx, shown); err == nil && k.TaskID == id && !factoryd.AnsweredOnCard(k.Kind) {
+			return nil
+		}
 	}
 	switch {
 	case live.ID == 0:
-		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card has no live ask, so nothing was answered. Reload the board.", shown))
+		return refuse(http.StatusConflict, "This ask is no longer open, and the card asks nothing now, so nothing was answered. Reload the board.")
 	case live.ID != shown:
-		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card's live ask is case %d, so nothing was answered. Reload the board.", shown, live.ID))
+		return refuse(http.StatusConflict, "This ask is no longer open, and the card asks something else now, so nothing was answered. Reload the board to see it.")
 	}
 	return nil
-}
-
-// extendCard raises a waiting card's caps (doExtend): its sessions, its
-// minutes of agent time, its lines and its budget.
-func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
-	sessions, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("sessions")))
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "sessions is a whole number"))
-		return
-	}
-	minutes, err := 0, error(nil)
-	if m := strings.TrimSpace(r.PostFormValue("minutes")); m != "" {
-		minutes, err = strconv.Atoi(m)
-	}
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "minutes is a whole number"))
-		return
-	}
-	lines, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("lines")))
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "lines is a whole number"))
-		return
-	}
-	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR is required"))
-		return
-	}
-	_, err = c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, minutes, eur, r.PostFormValue("reason"))
-	c.pressed(w, r, err)
-}
-
-// fundCard raises a waiting card's budget (doFund), its ceiling first by
-// the optional ceiling field.
-func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
-	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
-		return
-	}
-	var raise float64
-	if v := strings.TrimSpace(r.PostFormValue("ceiling")); v != "" {
-		if raise, err = strconv.ParseFloat(v, 64); err != nil {
-			c.fail(w, r, refuse(http.StatusBadRequest, "the ceiling's raise is an amount in EUR, 0 for none"))
-			return
-		}
-	}
-	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), raise)
-	c.pressed(w, r, err)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),
@@ -3497,7 +3006,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 }
 
 // writableCard is the card the path names, built as the board shows it
-// under the URL's filter (?project, ?view); an unknown card is
+// under the URL's filter (?project, ?q, the menus); an unknown card is
 // 404. The route's access-table rule has judged the writer. false: the
 // answer is written.
 func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd.BoardTask, card, *boardView, bool) {
@@ -3520,8 +3029,10 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd
 	}
 	v.byID[bt.ID] = bt.Task
 	if bt.Status == "failed" {
-		if rt, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(bt.ID)); err == nil && ok {
-			v.byID[rt.ID] = rt
+		for _, id := range []string{factoryd.RetryID(bt.ID), factoryd.SuccessorID(bt.ID)} {
+			if rt, ok, err := c.cfg.Tasks.Task(ctx, id); err == nil && ok {
+				v.byID[rt.ID] = rt
+			}
 		}
 	}
 	k := c.boardCard(ctx, v, bt)
@@ -3531,7 +3042,7 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd
 
 // cardFragment answers GET /cards/{id} to a writer of the card's project,
 // 404 to anyone else: the one card as the board renders it, its forms
-// carrying the filter (?project, ?view) of the board it is
+// carrying the filter (?project, ?q, the menus) of the board it is
 // swapped into.
 func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	bt, k, v, ok := c.writableCard(w, r)
@@ -3539,18 +3050,26 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if cs, err := c.caseSetOf(ctx, bt.Repository); err != nil {
-		log.Printf("console: the cases of %s: %v", bt.ID, err)
-	} else if len(cs.byCard[bt.ID]) > 0 && !factoryd.Final(bt.Status) && !v.filter.wide() {
-		all, _ := c.coderProjects(ctx)
-		if i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Repository == bt.Repository }); i >= 0 {
-			v.filter.Project = all[i].Name
-		}
-		v.writes, _ = c.writesRepo(ctx, v.user, bt.Repository)
-		c.render(w, "case", c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID]))
-		return
+	// the five columns stand a human's open card in Needs you
+	needs := fiveColumn(bt.Task) == colNeedsYou || bt.Kind == "human" && !factoryd.Final(bt.Status)
+	n := need{Since: waitingSince(bt), Card: k}
+	if bt.Kind == "human" {
+		n.Since = bt.CreatedAt
 	}
-	c.render(w, "card", k)
+	if cs, err := c.caseSetOf(ctx, bt.Repository, bt); err != nil {
+		log.Printf("console: the cases of %s: %v", bt.ID, err)
+	} else {
+		v.cases = cs
+		if cs.holds(bt.Task) {
+			all, _ := c.coderProjects(ctx)
+			if i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Repository == bt.Repository }); i >= 0 {
+				v.filter.Project = all[i].Name
+			}
+			v.writes, _ = c.writesRepo(ctx, v.user, bt.Repository)
+			n, needs = c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID]), true
+		}
+	}
+	c.render(w, "face", c.faceOf(ctx, v, n, needs))
 }
 
 // drawerTab is a tab of the card drawer: its ?tab= and its title.
@@ -3561,49 +3080,22 @@ type drawerTab struct{ Name, Title string }
 // the stored receipt of a merged task.
 var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"activity", "Activity"}, {"files", "Files"}, {"receipt", "Receipt"}}
 
-// drawerData is the card drawer on one tab, under the card's face.
-// Overview: the objective as its headline, a planned card's provenance
-// line and its body, the plan's rounds and what is still to plan, its
-// table, a pending merge's reviews and audit, and the related cards.
+// drawerData is the card drawer on one tab. Overview: the opened card.
 // Activity: the timeline page's gates and steps. Files: the pull
-// request's changed files. Chat: the newest session's messages, and the
-// input that steers it while it runs.
+// request's changed files. Chat: the newest session's messages.
 type drawerData struct {
-	Card                       card
-	Tab                        string
-	Tabs                       []drawerTab
-	Headline, Provenance, Body string
-	PlanSummary                string
-	PlanRounds                 []factoryd.RoundItem
-	PlanStill                  []string
-	PlanRows                   []factoryd.PlanRow
-	TakeOffMain                []string
-	Merge                      *approvalCard
-	PlanApproval               *approvalCard
-	Related                    []related
-	Gates                      []gateRow
-	Longest                    int
-	Entries                    []timelineEntry
-	Files                      []prFile
-	MoreFiles                  bool // Files are the first filesPages pages
-	Session                    *sessionRef
-	Said                       []said
-	Steers                     bool   // the session runs and takes the member's messages
-	Problem                    string // what the tab could not read
-	// Runs are the card's life for the Time section (C10) and Life its
-	// at-a-glance line; Need is the open question with its actions when
-	// the card waits on a person.
-	Runs []run
-	Life string
-	Need *need
-	// Thread is the chat thread the card came from, nil for none.
-	Thread *threadLink
-	// Door is the card door: the card waits on a person and its own
-	// thread is the viewer's or not bound yet (the main agent concept).
-	Door bool
-	// RoutineLine names the routine run that filed the card, nil for a
-	// card no routine filed.
-	RoutineLine *routineProvenance
+	Card      card
+	Tab       string
+	Tabs      []drawerTab
+	Opened    *openedView
+	Gates     []gateRow
+	Longest   int
+	Entries   []timelineEntry
+	Files     []prFile
+	MoreFiles bool // Files are the first filesPages pages
+	Session   *sessionRef
+	Said      []said
+	Problem   string // what the tab could not read
 	// Chain is the chain behind the card's change as the Chain section
 	// reads it (C38), nil while the chain holds nothing to say.
 	Chain *chainReadout
@@ -3667,9 +3159,6 @@ func receiptViewOf(r factoryd.MergeReceipt) *receiptView {
 	}
 	return v
 }
-
-// Suffix is the drawer's id suffix on the fields of the forms it shares with the column's copy.
-func (drawerData) Suffix() string { return "-d" }
 
 // chainReadout is the Chain section of a merged or done card's Activity
 // tab and timeline (C38): the chain behind its change in the drawer's
@@ -3803,26 +3292,6 @@ func (c *Console) cardThread(ctx context.Context, t factoryd.Task, viewer string
 	return l
 }
 
-// Age is the card's time in its stage, or in all once it ended.
-func (d drawerData) Age() string {
-	var parts []string
-	if d.Card.StageAge != "" {
-		parts = append(parts, d.Card.StageAge)
-	}
-	// the card's place in the merge queue, the one gate worth a word here;
-	// the Time section holds the rest
-	if strings.HasPrefix(d.Card.GateText, "merge queue") {
-		parts = append(parts, strings.TrimSuffix(d.Card.GateText, ","))
-	}
-	if d.Card.Total != "" {
-		parts = append(parts, d.Card.Total+" in all")
-	}
-	return strings.Join(parts, ", ")
-}
-
-// Word is the pill's word in the drawer's facts.
-func (d drawerData) Word() string { return d.Card.Pill() }
-
 // said is a message of a session in the drawer's Chat: the agent's text
 // between its tool calls, or a member's steer. Key is what the stream's
 // copy of it carries, so the live one is not added twice.
@@ -3830,12 +3299,6 @@ type said struct {
 	Key, Who, Text string
 	Agent          bool
 	At             time.Time
-}
-
-// related is a card the drawer's card relates to, Why, in its live state.
-type related struct {
-	Why  string
-	Card card
 }
 
 // cardDrawer answers GET /cards/{id}/drawer?tab=overview|activity|files|chat|receipt
@@ -3880,8 +3343,8 @@ func (c *Console) cardThreadStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // seedCardAsk writes the card's open ask as its thread's first row: the
-// ask's five parts with its choices, the row the thread's answer buttons
-// settle. A monitor's ask is not the card's.
+// inbox's message of it (factoryd.PokeOf) with its choices, the row the
+// thread's answer buttons settle. A monitor's ask is not the card's.
 func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who string, n int64) {
 	events, err := c.cfg.Events.TaskEvents(ctx, bt.ID, startEvents)
 	if err != nil {
@@ -3904,48 +3367,14 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 		BirthKind: factoryd.EventQuestionAsked, At: ask.At}, events, bt.Status, false); !s.Open {
 		return
 	}
-	question, _ := ask.Detail["ask"].(string) // the wake path writes "ask", older rows "question"
-	if question == "" {
-		question, _ = ask.Detail["question"].(string)
+	m, ok := factoryd.PokeOf(*ask, bt.Task, factoryd.Task{})
+	if !ok {
+		return
 	}
-	ref := ask.TaskID
-	switch {
-	case bt.IssueNumber != 0:
-		ref = "#" + strconv.FormatInt(bt.IssueNumber, 10)
-	case ask.IssueNumber != 0:
-		ref = "#" + strconv.FormatInt(ask.IssueNumber, 10)
-	}
-	content := factoryd.TitledRef(ref, bt.Task) + " needs you: " + question
-	for _, part := range []struct{ label, key string }{{"Why", "why"}, {"Info", "info"}, {"Recommendation", "recommendation"}} {
-		if s, _ := ask.Detail[part.key].(string); s != "" {
-			content += "\n" + part.label + ": " + s
-		}
-	}
-	m := factoryd.ChatMessage{Role: "user", Kind: factoryd.MessageEscalation, BirthKind: factoryd.EventQuestionAsked,
-		Content: content, TaskID: bt.ID, Conversation: n}
-	switch cs := ask.Detail["choices"].(type) {
-	case []any:
-		for _, ch := range cs {
-			if s, ok := ch.(string); ok {
-				m.Choices = append(m.Choices, s)
-			}
-		}
-	case []string:
-		m.Choices = append(m.Choices, cs...)
-	}
+	m.Role, m.Conversation = "user", n
 	if _, err := c.cfg.Chat.AddChatMessage(ctx, bt.Repository, who, m); err != nil {
 		log.Printf("console: the card thread of %s: %v", bt.ID, err)
 	}
-}
-
-// steerCard hands the member's message from the drawer's Chat to card
-// id's running session (doSteer) and answers the tab again.
-func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
-	if _, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text")); err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.drawer(w, r, "chat")
 }
 
 // drawer renders the card drawer on tab, "" for the card's default.
@@ -3962,10 +3391,9 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	}
 	ctx := r.Context()
 	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs}
-	// the drawer's head carries the title as filed, whole: the objective's
-	// first line, unless a writer's summary names the card
-	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" {
-		d.Card.Title = headline
+	// the drawer's head carries the title as filed, a human card's too
+	if title := factoryd.CardTitle(bt.Task); title != "" {
+		d.Card.Title = title
 	}
 	problem := func(what, action string, err error) {
 		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)
@@ -3973,75 +3401,11 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	}
 	switch tab {
 	case "overview":
-		d.Headline, d.Provenance, d.Body = objectiveParts(bt.Objective)
-		if bt.Track == policy.TrackPlan {
-			if _, p, _, err := c.planTable(ctx, bt.ID, 0); err != nil {
-				problem("plan", "Open the card again, or read the plan on its issue.", err)
-			} else {
-				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffLines()
-				if p.Round > 1 || len(p.Outline) > 0 {
-					if cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, bt.ID); err != nil {
-						problem("plan's cards", "Reload the board.", err)
-					} else {
-						d.PlanRounds = slices.DeleteFunc(factoryd.RoundItems(p, cards), func(i factoryd.RoundItem) bool { return i.Still })
-						d.PlanStill = p.Outline
-					}
-				}
-			}
+		steps, err := c.readTimeline(ctx, bt.ID)
+		if err != nil {
+			log.Printf("console: the timeline of %s: %v", bt.ID, err)
 		}
-		cs, cerr := c.caseSetOf(ctx, bt.Repository)
-		if cerr != nil {
-			problem("cases", "Reload the board.", cerr)
-		}
-		for _, a := range v.pending {
-			if a.TaskID == bt.ID && (a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan) {
-				// a merge's or a plan's request waits for its case's face, as Needs you's does
-				if _, faced := cs.faced(a); cerr != nil || !faced {
-					continue
-				}
-				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
-				m.Filter, m.IDSuffix = k.Filter, "-d"
-				m.buildDecide()
-				m.Writer = true // the drawer's route already asked for a writer
-				if a.Kind == factoryd.ApprovalMerge {
-					m.Detail = c.caseBriefOf(ctx, a, v.policy.Document.LinkHosts)
-					d.Merge = &m
-				} else {
-					m.scrubLayers(v.policy.Document.LinkHosts)
-					d.PlanApproval = &m
-				}
-			}
-		}
-		if v.escalated(bt.Task) && bt.Escalation != "" {
-			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
-			// a card with a live case answers from the case's own face
-			if cerr == nil && len(cs.byCard[bt.ID]) > 0 {
-				n := c.caseNeed(ctx, v, button(r), bt, k, cs, 0)
-				n.Suffix = "-d"
-				d.Need = &n
-			}
-		}
-		d.Runs = c.lifeOf(ctx, bt.Task)
-		d.Life = lifeLine(d.Runs, bt.SpentEUR)
-		d.Thread = c.cardThread(ctx, bt.Task, current(r).user)
-		if v.escalated(bt.Task) && c.cfg.Chat != nil {
-			// the card door: its own thread, unbound for the first
-			// member to start, bound for every member to open
-			d.Door = true
-		}
-		var err error
-		if bt.Source == factoryd.SourceRoutine && c.cfg.Routines != nil {
-			if d.RoutineLine, err = c.routineLineOf(ctx, bt.ID); err != nil {
-				problem("routine", "Reload the board.", err)
-			}
-			// a human card's body ends in the line factoryd filed it with, which the routine line says
-			if i := strings.LastIndex(d.Body, "\n"); d.RoutineLine != nil && strings.HasPrefix(d.Body[i+1:], factoryd.RoutineProvenance) {
-				d.Body = strings.TrimSpace(d.Body[:max(i, 0)])
-			}
-		}
-		if d.Related, err = c.relatedCards(ctx, bt, k); err != nil {
-			problem("related cards", "Reload the board.", err)
-		}
+		d.Opened = c.opened(ctx, r, v, bt, k, steps, problem)
 	case "activity":
 		steps, err := c.readTimeline(ctx, bt.ID)
 		if err != nil {
@@ -4078,11 +3442,10 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		var no *refusal
 		switch d.Session, d.Said, err = c.sessionChat(r, bt.Task); {
 		case errors.As(err, &no):
-			d.Problem = no.msg
+			d.Problem = factoryd.ForHuman(no.msg)
 		case err != nil:
 			problem("session", "Reload the board.", err)
 		}
-		d.Steers = d.Session != nil && d.Session.Ended.IsZero() && bt.Status == "running" && c.cfg.Steer != nil
 	}
 	c.render(w, "drawer.html", d)
 }
@@ -4121,68 +3484,6 @@ func (c *Console) sessionChat(r *http.Request, k factoryd.Task) (*sessionRef, []
 	return &s, out, err
 }
 
-// objectiveParts is an objective as the drawer shows it: its first line
-// the headline, a planned card's "Card k of plan #n ..." line its
-// provenance, the rest its body.
-func objectiveParts(objective string) (headline, provenance, body string) {
-	headline, body, _ = strings.Cut(strings.TrimSpace(objective), "\n")
-	body = strings.TrimSpace(body)
-	if line, rest, _ := strings.Cut(body, "\n"); strings.HasPrefix(line, "Card ") && strings.Contains(line, " of plan #") {
-		provenance, body = strings.TrimSpace(line), strings.TrimSpace(rest)
-	}
-	return strings.TrimSpace(headline), provenance, body
-}
-
-// relatedCards are the cards t relates to, each in its live state: those
-// it waits on that are not done, the plan it is part of, and an accepted
-// plan's cards (k's Plan).
-func (c *Console) relatedCards(ctx context.Context, bt factoryd.BoardTask, k card) ([]related, error) {
-	t := bt.Task
-	var ids, whys []string
-	deps, err := c.cfg.Tasks.Dependencies(ctx, t.ID)
-	if err != nil {
-		return nil, err
-	}
-	for _, dep := range deps {
-		if dep.Status != "done" {
-			ids, whys = append(ids, dep.TaskID), append(whys, "blocked by")
-		}
-	}
-	if t.PlanCard() {
-		ids, whys = append(ids, t.Parent), append(whys, "part of plan")
-	}
-	var out []related
-	if bt.RollID != "" {
-		if roll, ok, err := c.cfg.Tasks.Task(ctx, bt.RollID); err != nil {
-			return nil, err
-		} else if ok {
-			out = append(out, related{"blocked by", c.card(roll)})
-		}
-	}
-	if t.Source == factoryd.SourceRoll {
-		carried, err := c.cfg.Tasks.RollCarries(ctx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, ct := range carried {
-			out = append(out, related{"carries", c.card(ct)})
-		}
-	}
-	for i, id := range ids {
-		rt, ok, err := c.cfg.Tasks.Task(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			out = append(out, related{whys[i], c.card(rt)})
-		}
-	}
-	for _, child := range k.Plan {
-		out = append(out, related{"child", child})
-	}
-	return out, nil
-}
-
 // prFile is a changed file of a pull request, as Forgejo lists it.
 type prFile struct {
 	Filename  string `json:"filename"`
@@ -4204,26 +3505,4 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 	}
 	return factoryd.GetPagesUpTo[prFile](r.Context(), c.userCall(current(r)),
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
-}
-
-// planReader is the store a plan's open criteria are read from: its cards
-// and rows on the tasks port, its criteria gate's runs on the events port.
-type planReader struct {
-	Tasks
-	Events
-}
-
-// planHold fills k with plan t's production hold: Close is offered while no
-// plan_closed row stands (a closed plan: while criteria are open), and with
-// the note's form while criteria are open.
-func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p factoryd.Plan, k *card) {
-	open, openErr := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, t.ID, p)
-	_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
-	if err := cmp.Or(openErr, closedErr); err != nil {
-		log.Printf("console: the criteria of %s: %v", t.ID, err)
-		v.problems = append(v.problems, "the criteria of "+t.ID+" could not be read")
-		return
-	}
-	k.OpenCriteria = len(open)
-	k.DonePlan = !closed && (t.Status != "closed" || len(open) > 0)
 }

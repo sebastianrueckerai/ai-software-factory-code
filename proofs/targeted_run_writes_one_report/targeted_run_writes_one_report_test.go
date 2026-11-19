@@ -61,7 +61,7 @@ func TestTargetedRunWritesOneReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkLock, proofsLock, _ := strings.Cut(string(paths), "\n")
-	cmd := exec.Command("flock", proofsLock, "env", "CHECK_LOCK="+checkLock, "bash", "check", "test", "./internal/console", "TestConfirmationLead")
+	cmd := exec.Command("flock", proofsLock, "env", "CHECK_LOCK="+checkLock, "bash", "check", "test", "./internal/console", "TestACompoundHoldoutClaimRendersWhole")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CHECK_REPORT="+report)
 	var run bytes.Buffer
@@ -93,7 +93,7 @@ func TestTargetedRunWritesOneReport(t *testing.T) {
 			}
 		}
 	}
-	if len(cases) != 1 || !strings.HasPrefix(cases[0], "TestConfirmationLead in ") {
-		t.Errorf("the report holds %d testcases, want the one TestConfirmationLead: %+v", len(cases), cases)
+	if len(cases) != 1 || !strings.HasPrefix(cases[0], "TestACompoundHoldoutClaimRendersWhole in ") {
+		t.Errorf("the report holds %d testcases, want the one TestACompoundHoldoutClaimRendersWhole: %+v", len(cases), cases)
 	}
 }

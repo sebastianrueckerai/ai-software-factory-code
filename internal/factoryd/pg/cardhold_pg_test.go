@@ -98,7 +98,7 @@ func TestPGStoreCardHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	i := slices.IndexFunc(board, func(b BoardTask) bool { return b.ID == "t-q" })
-	if v := board[i].HoldView; v.Line != "on hold until #2062 (plan #1915) is merged or done: needs the finished pg split" || v.Warn || v.Released {
+	if v := board[i].HoldView; v.Line != "on hold until #2062 (plan #1915) is merged or done: needs the finished pg split" || v.Released {
 		t.Fatalf("the board's hold = %+v", v)
 	}
 
@@ -117,7 +117,7 @@ func TestPGStoreCardHold(t *testing.T) {
 	if ok, err := s.SetCardHold(ctx, "t-q2", CardHold{Reason: "after #2063", Release: "t-f", By: "sebastian", At: at}); err != nil || !ok {
 		t.Fatalf("SetCardHold(t-q2) = %v, %v", ok, err)
 	}
-	if ok, err := s.ReplaceFailedCard(ctx, "t-f", Task{ID: "t-f2", Status: "queued", BudgetEUR: 1, Repository: "sf/r", Kind: "agent",
+	if ok, err := s.ReplaceCard(ctx, "t-f", "failed", Task{ID: "t-f2", Status: "queued", BudgetEUR: 1, Repository: "sf/r", Kind: "agent",
 		Track: policy.TrackDirect, Source: "webhook"}); err != nil || !ok {
 		t.Fatalf("ReplaceFailedCard = %v, %v", ok, err)
 	}

@@ -80,7 +80,7 @@ func FitBound(g PushGit, send, head, tree, base, guard, mainHead string, bound i
 	if mErr == nil && fits(g, send, mainHead, merged, bound) {
 		return merge(merged)
 	}
-	return "", "", fmt.Errorf("%w: the branch's diff against its merge base is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
+	return "", "", fmt.Errorf("%w: the branch's diff against its merge base is %d lines over the card's %d-line bound. Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor",
 		ErrPushOverBound, billed-bound, bound)
 }
 

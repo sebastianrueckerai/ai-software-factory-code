@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -108,7 +107,8 @@ type toolInput struct {
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
 	// Choice is the ask's bound choice, Args the bound tool call's
-	// arguments, as the ask tool binds them.
+	// arguments, as the ask tool binds them; for escalate, the choice it
+	// would pick.
 	Choice string          `json:"choice,omitempty"`
 	Args   json.RawMessage `json:"args,omitempty"`
 	// Tool, Need and Image are request_image's ask: the tool, what for
@@ -145,7 +145,6 @@ type toolInput struct {
 	// The view tools' arguments (282), one per control of the screen
 	// board_view works; Find is the find's words, a call that names it
 	// with empty text clearing them.
-	View         string `json:"view,omitempty"`
 	Queued       string `json:"queued,omitempty"`
 	QueuedOnly   string `json:"queued_only,omitempty"`
 	Progress     string `json:"progress,omitempty"`
@@ -380,7 +379,7 @@ func refuseTrack(in toolInput) error {
 	case trackLabels[in.Track] == "":
 		return refuse(http.StatusBadRequest, "track: direct builds at once, plan plans first, human is a person's card")
 	case strings.TrimSpace(in.TrackReason) == "":
-		return refuse(http.StatusBadRequest, "track_reason: why the card takes track "+in.Track+", one line")
+		return refuse(http.StatusBadRequest, "`track_reason`: why the card takes track "+in.Track+", one line")
 	}
 	return nil
 }
@@ -394,55 +393,17 @@ func refuseCarry(title, body string, carry int64) error {
 	if carry > 0 || !carryAsk.MatchString(title+"\n"+body) {
 		return nil
 	}
-	return refuse(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone.")
-}
-
-// refuseDocLinks refuses a card whose text, its title and body, links
-// relatively to no path or to several of the document repository's whole
-// tree at HEAD. The agent's pod resolves the same links against its docs
-// clone, which holds only the text files, so a link to an image passes
-// here and the pod's brief names it not among the text files. Without the
-// document repository, its token or its tree there is no check: the check
-// helps the agent correct a link, a docs outage must not block filing.
-func (c *Console) refuseDocLinks(ctx context.Context, docRepo, text string) error {
-	const codePathAsText = " A path in the code repository goes in as text, not as a link."
-	links := doclinks.Links(text)
-	if docRepo == "" || c.cfg.DocsToken == "" || len(links) == 0 {
-		return nil
-	}
-	repo, err := factoryd.SplitRepo(docRepo)
-	var tree []string
-	if err == nil {
-		tree, err = c.docTree(ctx, repo)
-	}
-	if err != nil {
-		log.Printf("console: check the card's document links against %s: %v", docRepo, err)
-		return nil
-	}
-	for _, l := range links {
-		switch m := doclinks.Resolve(l, tree); len(m) {
-		case 0:
-			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s resolves to no file in the document repository %s: name the path from the repository's root."+codePathAsText, l, repo))
-		case 1:
-		default:
-			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s matches %d files in the document repository %s (%s): name one path from the repository's root."+codePathAsText,
-				l, len(m), repo, strings.Join(m[:min(len(m), 3)], ", ")))
-		}
-	}
-	return nil
+	return refuseAgent(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name `carry_pr` as the pull request's number, which supplies its head in the clone.")
 }
 
 // refuseCard is new_card's judgement of the card with in's title and
-// body, at the proposal and at the run: the filing flags, a carry ask
-// without carry_pr and a link to no document.
+// body, at the proposal and at the run: the filing flags and a carry ask
+// without carry_pr. Its links pass the filing door (cardBrief).
 func (t *turn) refuseCard(in toolInput, body string) error {
 	if flags := filingFlags(in.Title, body); len(flags) > 0 {
 		return refuse(http.StatusBadRequest, flaggedCard(flags))
 	}
-	if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
-		return err
-	}
-	return t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, factoryd.IssueObjective(in.Title, body))
+	return refuseCarry(in.Title, body, in.CarryPR)
 }
 
 // cardBody is the issue body new_card files from in, before its
@@ -459,7 +420,8 @@ func cardBody(in toolInput) string {
 }
 
 // describe is one line saying what a proposal of tool with in would do,
-// an approve_merge's with its warning; a card of another project refuses it, and so do an
+// an approve_merge's with its warning, an answer's Merge it of a human
+// card with the pull request's head, which it carries; a card of another project refuses it, and so do an
 // approve_merge or a deny_merge without a pending merge request and a
 // github_export the console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
@@ -491,6 +453,21 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if err := t.refuseCard(*in, cardBody(*in)); err != nil {
 			return "", err
 		}
+		_, err := t.c.cardBrief(t.r.Context(), t.a, t.p.Repository, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: cardBody(*in)},
+			in.Track, t.briefTry(tool.name))
+		if t.briefDone(tool.name, err); err != nil {
+			return "", err
+		}
+	}
+	if tool.name == "answer" && in.Action == factoryd.ActFileCard {
+		var args map[string]any
+		json.Unmarshal(in.Args, &args) // #nosec G104 -- args that do not decode refuse at the run
+		arg := func(key string) string { s, _ := args[key].(string); return s }
+		_, err := t.c.cardBrief(t.r.Context(), t.a, t.p.Repository, factoryd.BriefText{Title: arg("title"), Why: arg("why"), Summary: arg("summary"), Body: arg("body")},
+			cmpOr(arg("track"), policy.TrackDirect), t.briefTry(factoryd.ActFileCard))
+		if t.briefDone(factoryd.ActFileCard, err); err != nil {
+			return "", err
+		}
 	}
 	parts := []string{tool.title}
 	var k factoryd.Task
@@ -513,15 +490,15 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, factoryd.CardTitle(d)))
 	}
 	if in.EUR > 0 {
-		parts = append(parts, fmt.Sprintf("%.2f EUR", in.EUR))
+		parts = append(parts, fmt.Sprintf("%s EUR", textutil.EUR(in.EUR)))
 	}
 	if in.FundEUR > 0 {
-		parts = append(parts, fmt.Sprintf("fund_eur %.2f EUR", in.FundEUR))
+		parts = append(parts, fmt.Sprintf("fund_eur %s EUR", textutil.EUR(in.FundEUR)))
 	}
 	if in.CaseID > 0 {
 		parts = append(parts, fmt.Sprintf("case %d", in.CaseID))
 	}
-	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
+	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"why", in.Why}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
 		{"size", in.Size}, {"image", in.Image}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
 		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content},
@@ -586,6 +563,22 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 		if in.Decision != "" {
 			parts = append(parts, "decision "+in.Decision)
+		}
+		if in.Action == factoryd.ActApproveMerge && k.Kind == "human" && k.PRNumber != 0 {
+			// the proposal carries the head it names, so Do it merges what the human read
+			repo, err := factoryd.SplitRepo(k.Repository)
+			if err != nil {
+				return "", err
+			}
+			head, err := t.c.pullHead(t.r.Context(), t.a.s, repo, k.PRNumber)
+			if err != nil {
+				return "", &forgejoRefusal{what: fmt.Sprintf("read the head of pull request #%d", k.PRNumber), err: err}
+			}
+			args := map[string]any{}
+			json.Unmarshal(in.Args, &args) // #nosec G104 -- args that do not decode refuse at the run
+			args["head"] = head
+			in.Args, _ = json.Marshal(args)
+			parts = append(parts, fmt.Sprintf("merges %s of pull request #%d", factoryd.ShortSHA(head), k.PRNumber))
 		}
 		if len(in.Answers) > 0 {
 			lines := make([]string, 0, len(in.Answers))
@@ -714,9 +707,17 @@ func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) ([]factory
 // their revision and numbers, all of them in one call when in names a list
 // of answers, which a newer revision refuses; any other question with the
 // typed action and the money in names (doAnswerAs), or with in's text
-// alone.
+// alone. A file_card's brief passes the filing door on the turn's try.
 func (t *turn) answer(in toolInput) (string, error) {
-	ctx := t.r.Context()
+	if in.Action != factoryd.ActFileCard {
+		return t.answerIn(t.r.Context(), in)
+	}
+	say, err := t.answerIn(factoryd.WithBriefTry(t.r.Context(), t.briefTry(factoryd.ActFileCard)), in)
+	t.briefDone(factoryd.ActFileCard, err)
+	return say, err
+}
+
+func (t *turn) answerIn(ctx context.Context, in toolInput) (string, error) {
 	if in.CaseID != 0 {
 		return t.c.doAnswerCase(ctx, t.a, in.TaskID, in.CaseID, in.Text, in.Action, in.Args, in.FundEUR)
 	}
@@ -746,7 +747,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 		if len(in.Answers) > 0 {
 			return t.c.doAnswerPlanQuestions(ctx, a, in.TaskID, in.Revision, in.Answers)
 		}
-		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text, 0)
+		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:
@@ -758,8 +759,8 @@ func (t *turn) answer(in toolInput) (string, error) {
 // fileForCase files the card of in as the file_card of the live case of card
 // in.TaskID, through Act: every field new_card takes rides in the action's
 // args, and the thread's images upload to the issue once it is filed.
-func (t *turn) fileForCase(in toolInput, body string, ups []upload) (string, *inverse, error) {
-	ctx := t.r.Context()
+func (t *turn) fileForCase(in toolInput, body string, ups []upload, try int) (string, *inverse, error) {
+	ctx := factoryd.WithBriefTry(t.r.Context(), try)
 	k, err := t.card(in)
 	if err != nil {
 		return "", nil, err
@@ -768,7 +769,7 @@ func (t *turn) fileForCase(in toolInput, body string, ups []upload) (string, *in
 	if err != nil {
 		return "", nil, err
 	}
-	args := map[string]any{"title": in.Title, "body": body, "size": in.Size, "track": in.Track, "track_reason": in.TrackReason,
+	args := map[string]any{"title": in.Title, "why": in.Why, "summary": in.Summary, "body": body, "size": in.Size, "track": in.Track, "track_reason": in.TrackReason,
 		"rung": in.Rung, "rung_reason": in.RungReason, "image": in.Image, "carry_pr": in.CarryPR, "roadmap_item": in.RoadmapItem, "refile_of": in.RefileOf}
 	ctx = context.WithValue(ctx, uploadsKey{}, func(ctx context.Context, repo factoryd.Repo, issue int64) string {
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
@@ -816,7 +817,7 @@ func cardLine(t factoryd.Task) string {
 		s += fmt.Sprintf(", gate %s (%s)", t.Gate, factoryd.GateMeaning(t.Gate))
 	}
 	if t.BudgetEUR > 0 {
-		s += fmt.Sprintf(", €%.2f of €%.2f", t.EnforcedSpent(), t.BudgetEUR)
+		s += fmt.Sprintf(", %s of %s EUR", textutil.EUR(t.EnforcedSpent()), textutil.EUR(t.BudgetEUR))
 	}
 	return s
 }
@@ -825,12 +826,12 @@ func cardLine(t factoryd.Task) string {
 // cards, the approval requests and the notes.
 const boardListed = 25
 
-// boardText is project p's board in the wide view as the session's member
-// sees it, for the agent: each column with its cards, the human lane, the
-// escalations and the approval requests waiting. a is the chat's actor,
-// whose member its approval cards read a healed head's checks as.
+// boardText is project p's board as the session's human sees it, for the
+// agent: each column with its cards and the approval requests waiting. a
+// is the chat's actor, whose human its approval cards read a healed
+// head's checks as.
 func (c *Console) boardText(r *http.Request, p factoryd.Project, a actor) (string, error) {
-	d, err := c.boardOf(r, boardFilter{Project: p.Name, View: viewWide}, a)
+	d, err := c.boardOf(r, boardFilter{Project: p.Name}, a)
 	if errors.Is(err, errNoProject) {
 		return "Project " + p.Name + " takes no agent cards: it has no board.", nil
 	}
@@ -863,6 +864,9 @@ func boardWords(d boardData) string {
 			if k.Provider {
 				lines[i] += ", " + providerWords
 			}
+			if h := k.Helper; h != nil {
+				lines[i] += fmt.Sprintf(", its %s %s is %s", h.Source, h.ID, h.Status)
+			}
 			if k.HoldLine != "" {
 				lines[i] += ", " + k.HoldLine
 			}
@@ -877,17 +881,21 @@ func boardWords(d boardData) string {
 		fmt.Fprintf(&b, "Pool (%s, %s UTC): %s.\n", d.Status.Pool.Policy, d.Status.Pool.Month, d.Status.Pool.Words)
 	}
 	b.WriteString("Open cards:\n")
+	var approvals []*approvalCard
 	for _, col := range d.Columns {
-		if col.Finished == "" {
-			list(col.Title, len(col.Cards), col.Cards)
+		if col.Finished != "" {
+			continue
 		}
+		cards := col.Cards
+		for _, n := range col.Needs {
+			if n.Approval != nil {
+				approvals = append(approvals, n.Approval)
+				continue
+			}
+			cards = append(cards, n.Card)
+		}
+		list(col.Title, len(cards), cards)
 	}
-	list("Human lane", len(d.HumanTasks), d.HumanTasks)
-	escalated := make([]card, 0, len(d.Escalations))
-	for _, n := range d.Escalations {
-		escalated = append(escalated, n.Card)
-	}
-	list("Escalated, waiting on an answer", len(escalated), escalated)
 	if i := slices.IndexFunc(d.Columns, func(col column) bool { return col.Finished != "" }); i >= 0 {
 		fmt.Fprintf(&b, "Finished cards, ended in the last %d days and open no more:\n", finishedSince/(24*time.Hour))
 		for _, col := range d.Columns[i:] {
@@ -896,9 +904,9 @@ func boardWords(d boardData) string {
 			}
 		}
 	}
-	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(d.Approvals))
-	requests := make([]string, len(d.Approvals))
-	for i, a := range d.Approvals {
+	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(approvals))
+	requests := make([]string, len(approvals))
+	for i, a := range approvals {
 		requests[i] = fmt.Sprintf("%s request %d of %s", a.Kind, a.ID, a.TaskID)
 		if a.Issue > 0 {
 			requests[i] += fmt.Sprintf(" (#%d)", a.Issue)
@@ -967,7 +975,7 @@ func (t *turn) mergeOnRungs(k factoryd.Task, q factoryd.ApprovalRequest) error {
 	case !climbs:
 		return nil
 	case t.a.caseWake():
-		return refuse(http.StatusConflict, fmt.Sprintf("The merge request of #%d is case %d, open at rung %d: end it with answer and case_id %d, or with attach_analysis, case_id %d and the recommended action.",
+		return refuse(http.StatusConflict, fmt.Sprintf("The merge request of #%d is case %d, open at rung %d: end it with `answer` and `case_id` %d, or with `attach_analysis`, `case_id` %d and the recommended action.",
 			k.IssueNumber, c.ID, c.OwnerRung, c.ID, c.ID))
 	}
 	return refuse(http.StatusConflict, fmt.Sprintf("The merge request of #%d waits on its case %d, open at rung %d: rung 2 decides it or hands it up, and only then is it the human's, in Needs you.",
@@ -993,7 +1001,7 @@ func (t *turn) planOnRungs(k factoryd.Task, in toolInput) error {
 	}
 	for _, q := range asked {
 		i := slices.IndexFunc(open, func(c factoryd.Case) bool {
-			return planCase(c) && c.Status == factoryd.CaseOpen && caseRevision(c) == in.Revision && factInt(c, "index") == q
+			return factoryd.PlanCase(c) && c.Status == factoryd.CaseOpen && factoryd.FactInt(c, "revision") == in.Revision && factoryd.FactInt(c, "index") == q
 		})
 		if i >= 0 {
 			return refuse(http.StatusConflict, fmt.Sprintf("Question %d of revision %d of plan #%d waits on its case %d, open at rung %d: rung 2 answers it or hands it up, and only then is it the human's, in Needs you.",
@@ -1065,11 +1073,11 @@ func (t *turn) planActor() (actor, error) {
 // humanWord is planActor for a write on the human's word alone: a turn
 // on no line the human typed, a wake's among them, is refused, naming
 // what the tool would not do (refused) and how the human takes it: a
-// bound ask of tool, or button on the card's drawer.
+// bound ask of tool, or button on the opened card.
 func (t *turn) humanWord(refused, tool, button string) (actor, error) {
 	a, err := t.planActor()
 	if err == nil && a.decider == "agent" {
-		err = refuse(http.StatusConflict, fmt.Sprintf("This turn runs on no line the human typed, so it %s. Give them the choice with ask, its press bound to %s, or let them press %s on the card's drawer.",
+		err = refuse(http.StatusConflict, fmt.Sprintf("This turn runs on no line the human typed, so it %s. Give them the choice with ask, its press bound to %s, or let them press “%s” on the opened card.",
 			refused, tool, button))
 	}
 	return a, err
@@ -1163,16 +1171,12 @@ func takeShow(m menuSpec, w string) (set bool, v string, err error) {
 	return false, "", refuse(http.StatusBadRequest, fmt.Sprintf("The %s show must be %s.", m.Name, orWords(showWords(m)...)))
 }
 
-// pageFilter is the board's filter the member's page stands on (282):
+// pageFilter is the board's filter the human's page stands on (282):
 // the view field the chat's POST carries, read as the URL's query is,
-// under the chat's own project. Only the wide view is a view the board
-// carries, so no other view word rides along.
+// under the chat's own project.
 func (t *turn) pageFilter() boardFilter {
 	v, _ := url.ParseQuery(strings.TrimPrefix(t.pageQuery, "?"))
 	f := boardFilter{Project: t.p.Name, Q: strings.TrimSpace(v.Get("q"))}
-	if v.Get("view") == viewWide {
-		f.View = viewWide
-	}
 	readCols(&f, v.Get)
 	return f
 }
@@ -1181,9 +1185,6 @@ func (t *turn) pageFilter() boardFilter {
 // for the view tools' stored answer (282).
 func (f boardFilter) viewNote() string {
 	var parts []string
-	if f.View == viewWide {
-		parts = append(parts, "the wide view")
-	}
 	if f.Q != "" {
 		parts = append(parts, fmt.Sprintf("find %q", f.Q))
 	}
@@ -1267,15 +1268,6 @@ func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 		if t.present["find"] {
 			f.Q = strings.TrimSpace(in.Find)
 		}
-		switch in.View {
-		case "":
-		case "wide":
-			f.View = viewWide
-		case "none":
-			f.View = ""
-		default:
-			return "", nil, refuse(http.StatusBadRequest, "The view must be wide or none.")
-		}
 		switch in.Routines {
 		case "":
 		case "all":
@@ -1356,7 +1348,6 @@ func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 // control of the screen, the menus' words read from the menus themselves.
 func boardViewParams() map[string]any {
 	p := map[string]any{
-		"view":     enum("the wide view: wide or none", "wide", "none"),
 		"find":     str("the find's words, empty clears"),
 		"routines": enum("the routines: all, within or none", "all", "within", "none"),
 		"within":   map[string]any{"type": "integer", "description": "the period's length, 1 to 999", "minimum": 1, "maximum": 999},
@@ -1373,829 +1364,830 @@ func boardViewParams() map[string]any {
 	return p
 }
 
-// tools are the project agent's tools in policy.ChatTools' order.
-var tools = []chatTool{
-	{name: "system", title: "Read the manual",
-		about: "The factory's manual: states, gates, how the tools work, autonomy, the process and its limits.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.systemText()
-			return s, nil, err
-		}},
-	{name: "board", title: "Read the board",
-		about: "The project's board: each column's cards, the human lane, the escalations and the approval requests.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.c.boardText(t.r, t.p, t.a)
-			return s, nil, err
-		}},
-	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "One card in full: its numbered steps and flags, then its model calls and pointers to other reads.",
-		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
-	{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
-		about: "The project's events, newest first: what was done to which card, by whom and how.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, in.limit())
-			return eventLines(events), nil, err
-		}},
-	{name: "card_history", title: "Read a card's history", params: map[string]any{"task_id": taskParam, "n": nParam}, required: []string{"task_id"},
-		about: "One card's events, newest first.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			k, err := t.card(in)
-			if err != nil {
-				return "", nil, err
-			}
-			events, err := t.c.cfg.Events.TaskEvents(t.r.Context(), k.ID, in.limit())
-			return eventLines(events), nil, err
-		}},
-	{name: "card_step", title: "Read a card's step",
-		params:   map[string]any{"task_id": taskParam, "step": stepParam("the step's number in the card read")},
-		required: []string{"task_id", "step"},
-		about:    "One step of a card in full, by the number the card read gives it.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			k, err := t.card(in)
-			if err != nil {
-				return "", nil, err
-			}
-			s, err := t.c.cfg.CardStep(t.r.Context(), k.ID, in.Step, "card", func(_ string, n int) string {
-				if n == 0 {
-					return ""
-				}
-				return fmt.Sprintf("session_steps task %s n %d", k.ID, n)
-			})
-			if no := factoryd.ErrNoStep(""); errors.As(err, &no) {
-				return "", nil, refuse(http.StatusNotFound, string(no))
-			}
-			return s, nil, err
-		}},
-	{name: "board_digest", title: "Read the board digest",
-		about: "The project's board in a few lines: live cards with their flags, the queue, slots, plans and caps.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			b, err := t.c.cfg.BoardDigest(t.r.Context(), t.p.Repository)
-			if err != nil {
-				return "", nil, err
-			}
-			return b.Render(), nil, nil
-		}},
-	{name: "costs", title: "Read the costs",
-		params: map[string]any{"by": enum("the whole ledger by day, card or tier", "day", "card", "tier"),
-			"from_date": str("the first UTC day, YYYY-MM-DD (default the month's first)"),
-			"to_date":   str("the last UTC day, YYYY-MM-DD (default today)")},
-		about: "The project's spend this month against its cap, or the whole ledger by day, card or tier.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			if in.By != "" {
-				s, err := t.c.costsByText(t.r.Context(), t.a, in.By, in.FromDate, in.ToDate)
-				return s, nil, err
-			}
-			s, err := t.c.spendLine(t.r.Context(), t.p)
-			return "The project's " + s + ".", nil, err
-		}},
-	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam,
-		"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
-		"ask": str("what a small digest answers (default the raw read)")}, required: []string{"task_id"},
-		about: "A card's pull request diff, its lines from and to, else its first 20 KB.",
-		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
-	{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "The newest revision of a card's plan: its sha256, questions and cards.",
-		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.planText(in); return s, nil, err }},
-	{name: "pr", title: "Read a pull request",
-		params:   map[string]any{"task_id": taskParam, "with_diff": map[string]any{"type": "boolean", "description": "add the diff"}},
-		required: []string{"task_id"},
-		about:    "A card's pull request: its checks, reviews, audit and changed files.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
-	{name: "file", title: "Read a file",
-		params: map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path"),
-			"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
-			"ask": str("what a small digest answers (default the raw read)")},
-		required: []string{"ref", "path"},
-		about:    "A file of the project's repository at a ref, its lines from and to, else its first 64 KiB.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
-	{name: "tree", title: "Read the tree",
-		params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("a path prefix (default the whole tree)")},
-		required: []string{"ref"},
-		about:    "Every file of the repository at a ref, cut at 500 lines.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.treeText(in); return s, nil, err }},
-	{name: "grep", title: "Search the files",
-		params: map[string]any{"pattern": str("the text to find, a regular expression"), "ref": str("a branch, tag or commit"),
-			"path": str("a path prefix (default the whole tree)")},
-		required: []string{"pattern", "ref"},
-		about:    "Files at a ref whose lines match a pattern, at most 50.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.grepText(in); return s, nil, err }},
-	{name: "web_search", title: "Search the web",
-		params:   map[string]any{"query": str("the search query"), "limit": fallback(5, stepParam("results to show, at most 10"))},
-		required: []string{"query"},
-		about:    "At most ten pages the web search found for a query, each a title, its url and a snippet.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webSearch(in); return s, nil, err }},
-	{name: "web_scrape", title: "Read a web page",
-		params:   map[string]any{"url": str("the page's http(s) address"), "ask": str("what the digest answers (default the page's gist)")},
-		required: []string{"url"},
-		about:    "The web page at one address, digested to the ask, never raw.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webScrape(in); return s, nil, err }},
-	{name: "research", title: "Research a question",
-		params:   map[string]any{"ask": str("the question to research")},
-		required: []string{"ask"},
-		about:    "A researcher reads the repository, the documents and the web, and answers with a sourced report.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { return researchRun(t, in) }},
-	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
-		about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
-		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
-	{name: "session_steps", title: "List a session's steps",
-		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
-			"to": stepParam("the last step (default and most: from + 99)")},
-		required: []string{"task_id"},
-		about:    "A session's steps, one line each.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepsText(in); return s, nil, err }},
-	{name: "session_step", title: "Read a session's steps",
-		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
-			"to":  stepParam("the last step (default from, most from + 19)"),
-			"ask": str("what a small digest answers (default the raw read)")},
-		required: []string{"task_id"},
-		about:    "A session's steps in full.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepText(in); return s, nil, err }},
-	{name: "session_search", title: "Search a card's sessions",
-		params: map[string]any{"task_id": taskParam, "query": str("the text to find, any case"),
-			"n": stepParam("one session's number (default all)")},
-		required: []string{"task_id", "query"},
-		about:    "Search a card's sessions for a text, at most 20 hits.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.searchText(in); return s, nil, err }},
-	{name: "ci", title: "Read CI",
-		params: map[string]any{"ref": fallback("main", str("a branch")), "sha": str("a commit (default the ref's head)")},
-		about:  "The CI result of main, a branch or a commit.",
-		run:    func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.ciText(in); return s, nil, err }},
-	{name: "alerts", title: "Read the alerts",
-		params: map[string]any{"state": fallback("open", enum("open: without a verdict, all: every alert", "open", "all"))},
-		about:  "The factory's alerts, newest first.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.c.alertsText(t.r.Context(), t.a, cmp.Or(in.State, "open"))
-			return s, nil, err
-		}},
-	{name: "deployment_health", title: "Read a Deployment",
-		params:   map[string]any{"deployment": str("the Deployment's name"), "namespace": str("a project namespace (default: the first that holds it)")},
-		required: []string{"deployment"},
-		about:    "A Deployment in the project's namespaces only: its pods, restarts, terminations and events, no logs.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.c.deploymentHealthText(t.r.Context(), t.p, in.Deployment, in.Namespace)
-			return s, nil, err
-		}},
-	{name: "resources", title: "Read the resources",
-		about: "The commissioned cloud resources by project.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.c.resourcesText(t.r.Context(), t.a)
-			return s, nil, err
-		}},
-	{name: "settings", title: "Read the settings",
-		about: "Every project's settings.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.c.projectsText(t.r.Context(), t.a)
-			return s, nil, err
-		}},
-	{name: "policy", title: "Read the policy",
-		about: "The policy in force: its limits, budgets, risk classes and approvers.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.c.policyText(t.r.Context(), t.a)
-			return s, nil, err
-		}},
-	{name: "project_images", title: "Read the sandbox images",
-		about: "The project's sandbox images in force, its open tool cards and the cards waiting for an image.",
-		run:   func(t *turn, _ toolInput) (string, *inverse, error) { s, err := t.imagesText(); return s, nil, err }},
-	{name: "promote_resource", title: "Make a resource standing", write: true,
-		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id", "minimum": 1}}, required: []string{"id"},
-		about: "Make a leased resource standing, owned by its project.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doPromoteResource(t.r.Context(), t.a, in.ID)
-			return note, nil, err
-		}},
-	{name: "release_resource", title: "Release a resource", write: true,
-		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id", "minimum": 1}}, required: []string{"id"},
-		about: "End a resource's lease now, so the collector deletes it.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doReleaseResource(t.r.Context(), t.a, in.ID)
-			return note, nil, err
-		}},
-	{name: "new_card", title: "File a card", write: true,
-		params: map[string]any{"title": str("one line"), "body": str("the description, Markdown"),
-			"task_id": str("the card whose case this filing answers"),
-			"acceptance": map[string]any{"type": "array", "minItems": 1, "maxItems": factoryd.MaxCardAcceptance,
-				"items":       map[string]any{"type": "string"},
-				"description": "the acceptance tests, one line each"},
-			"track":        enum("how the card's work runs", policy.TrackDirect, policy.TrackPlan, factoryd.LabelHuman),
-			"track_reason": str("why that track, one line"),
-			"size":         enum("the card's size, if you know it", policy.CardSizes...),
-			"rung":         enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
-			"rung_reason":  str("why that rung, one line"),
-			"image":        str("a pinned sandbox image to run on, none for the default"),
-			"carry_pr":     map[string]any{"type": "integer", "minimum": 1, "description": "the pull request the card carries: its head is in the clone"},
-			"roadmap_item": map[string]any{"type": "integer", "minimum": 1, "description": "the roadmap item the card builds: one card per item"},
-			"refile_of":    map[string]any{"type": "integer", "minimum": 1, "description": "the issue of the closed or failed card it replaces"},
-			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
-				"description": "the thread's images to attach (img1, as their rows show)"}},
-		required: []string{"title", "track", "track_reason"},
-		about:    "File a new card on the project.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			if err := refuseTrack(in); err != nil {
-				return "", nil, err
-			}
-			body := cardBody(in)
-			ups, err := t.assets(in.Attachments)
-			if err != nil {
-				return "", nil, err
-			}
-			body = withAssets(body, ups)
-			if err := t.refuseCard(in, body); err != nil {
-				return "", nil, err
-			}
-			if in.TaskID != "" {
-				return t.fileForCase(in, body, ups)
-			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem, in.RefileOf)
-			if err != nil {
-				return "", nil, err
-			}
-			path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
-			return fmt.Sprintf("Filed %s#%d on track %s.", repo, issue, in.Track) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repo.String(), path, ups), nil, nil
-		}},
-	{name: "request_image", title: "Ask for a sandbox tool", write: true,
-		params: map[string]any{
-			"tool":  map[string]any{"type": "string", "maxLength": policy.MaxToolName, "description": "the Debian package or binary name"},
-			"need":  map[string]any{"type": "string", "maxLength": policy.MaxToolNeed, "description": "what the project's cards need it for"},
-			"image": str("the image to add the tool to, none for one named after it")},
-		required: []string{"tool", "need"},
-		about:    "Ask the factory to add a tool to one of the project's sandbox images through a tool card.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.requestImage(in)
-			return s, nil, err
-		}},
-	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
-		"case_id": map[string]any{"type": "integer", "minimum": 1,
-			"description": "the number of a case to answer, none for the card's own ask"},
-		"action": map[string]any{"type": "string", "enum": actionNames(),
-			"description": "the typed action on the card's case, continue when none"},
-		"fund_eur": map[string]any{"type": "number", "exclusiveMinimum": 0,
-			"description": "the EUR it draws: the fund's own, else beside the action"},
-		"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
-			"properties": map[string]any{
-				"model":        map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
-				"sessions":     map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
-				"agent_time_s": map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
-				"lines":        map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
-				"eur":          map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
-				"action":       map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
-				"task_id":      map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
-				"depends_on":   map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
-				"title":        map[string]any{"type": "string", "description": "file_card's title"},
-				"body":         map[string]any{"type": "string", "description": "file_card's description"},
-				"size":         map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
-				"criterion":    map[string]any{"type": "string", "description": "answer_criteria's criterion"},
-				"verdict":      map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
-		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
-			"description": "confirm accepts the plan, revise asks for changes in text"},
-		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
-		"revision": map[string]any{"type": "integer", "description": "the plan's revision, for a plan's questions", "minimum": 1},
-		"answers": map[string]any{"type": "array", "description": "every open question's answer at once",
-			"items": map[string]any{"type": "object", "properties": map[string]any{
-				"question": map[string]any{"type": "integer", "description": "the question's number", "minimum": 1},
-				"text":     map[string]any{"type": "string", "description": "its answer"},
-				"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
-					"description": "its decision when this one is the plan's confirmation"}},
-				"required": []string{"question"}}}},
-		required: []string{"task_id"},
-		about:    "Answer a card's case or a plan's open questions, the plan's confirmation by your own decision.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.answer(in)
-			return note, nil, err
-		}},
-	{name: "comment", title: "Comment on a card", write: true,
-		params: map[string]any{"task_id": taskParam, "text": textParam,
-			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
-				"description": "the thread's images to attach (img1, as their rows show)"}},
-		required: []string{"task_id", "text"},
-		about:    "Comment on a card's issue.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			ups, err := t.assets(in.Attachments)
-			if err != nil {
-				return "", nil, err
-			}
-			var assets, repository string
-			if len(ups) > 0 {
-				card, err := t.card(in)
-				if err != nil {
-					return "", nil, err
-				}
-				repo, err := factoryd.SplitRepo(card.Repository)
-				if err != nil {
-					return "", nil, err
-				}
-				assets, repository = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name)), card.Repository
-			}
-			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, withAssets(in.Text, ups))
-			if err == nil {
-				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repository, fmt.Sprintf("%s%d/assets", assets, posted), ups)
-			}
-			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
-		}},
-	{name: "tell_card", title: "Tell a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
-		required: []string{"task_id", "text"},
-		about:    "Tell a card one text, routed by its state to its session, its merge request or its question.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.runTellCard(in)
-			return note, nil, err
-		}},
-	{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
-		required: []string{"task_id", "text"},
-		about:    "Send a running card's session a message.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
-			return note, nil, err
-		}},
-	{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "File a failed work card again as its replacement, once, which starts when a work slot is free.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
-			return note, nil, err
-		}},
-	{name: "request_changes", title: "Ask for changes to a plan", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
-		required: []string{"task_id", "text"},
-		about:    "Ask the planner for changes to a plan.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			a, err := t.planActor()
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doRequestChanges(t.r.Context(), a, in.TaskID, in.Text)
-			return note, nil, err
-		}},
-	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "Approve a card's pending merge request, which factoryd then merges.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			q, err := t.mergeRequest(in)
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doApprove(t.r.Context(), t.a, q.ID, "", 0)
-			return note, nil, err
-		}},
-	{name: "deny_merge", title: "Deny a merge", write: true,
-		params: map[string]any{"task_id": taskParam, "note": str("why"),
-			"action": fallback("request_changes", enum("request_changes returns it to its agent, reject fails it", "request_changes", "reject"))},
-		required: []string{"task_id", "note"},
-		about:    "Deny a card's merge request with a reason, or close a pull request factoryd opened with it.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			q, err := t.mergeRequest(in)
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doDeny(t.r.Context(), t.a, q.ID, in.Action, in.Note)
-			return note, nil, err
-		}},
-	{name: "rerun_checks", title: "Re-run a pull request's checks", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "Run the red checks of a pull request factoryd opened again, from its pending merge request.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			q, err := t.mergeRequest(in)
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doRerun(t.r.Context(), t.a, q.ID)
-			return note, nil, err
-		}},
-	{name: "answer_criteria", title: "Answer a plan's criteria", write: true,
-		params: map[string]any{"task_id": taskParam,
-			"action":    enum("met or not_met on a human row, waive any row, confirm", "waive", "confirm", "met", "not_met"),
-			"criterion": str("the criterion a waive, met or not_met names"),
-			"reason":    str("a waive's or a not_met's reason, or a met's words")},
-		required: []string{"task_id", "action"},
-		about:    "Decide a plan's criteria on the human's word: the plan's ask, or its integration card's merge.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			line, ok, err := t.humanAnswerLine()
-			if err != nil {
-				return "", nil, err
-			}
-			if !ok && t.a.caseWake() {
-				return "", nil, refuse(http.StatusConflict, t.criteriaWordRefusal(in))
-			}
-			if !ok {
-				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
-			}
-			var q factoryd.ApprovalRequest
-			switch in.Action {
-			case "waive", "met", "not_met":
-				var k factoryd.Task
-				if q, k, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {
-					q, err = t.criteriaRequest(in)
-				} else if err == nil {
-					err = t.mergeOnRungs(k, q)
-				}
-			default:
-				q, err = t.criteriaRequest(in)
-			}
-			if err != nil {
-				return "", nil, err
-			}
-			t.a.decider = "member"
-			switch in.Action {
-			case "waive":
-				note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, "waived", in.Reason)
-				return note, nil, err
-			case "met", "not_met":
-				note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, in.Action, in.Reason)
-				return note, nil, err
-			case "confirm":
-				note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
-				return note, nil, err
-			}
-			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, confirm, met or not_met; a grant answers the plan's criteria case with answer and grant_criteria.")
-		}},
-	{name: "set_summary", title: "Set a card's summary", write: true,
-		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},
-		required: []string{"task_id"},
-		about:    "Set the one-line summary a card's face shows instead of its generated title.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			was, err := t.c.doSetSummary(t.r.Context(), t.a, in.TaskID, in.Summary)
-			return in.setNote("summary", was.IssueNumber, in.Summary), &inverse{"set_summary", toolInput{TaskID: in.TaskID, Summary: was.HumanSummary}}, err
-		}},
-	{name: "set_accent", title: "Set a card's accent", write: true,
-		params:   map[string]any{"task_id": taskParam, "accent": enum("the colour, empty removes it", append([]string{""}, factoryd.Accents...)...)},
-		required: []string{"task_id"},
-		about:    "Set a card's colour label.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
-			return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
-		}},
-	{name: "invite", title: "Invite a human", write: true,
-		params: map[string]any{"login": str("the Forgejo user name")}, required: []string{"login"},
-		about: "Make a Forgejo user a writer of the project's repository.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doInvite(t.r.Context(), t.a, in.Login)
-			return note, nil, err
-		}},
-	{name: "github_export", title: "Export to GitHub", write: true,
-		params: map[string]any{"remote": str("the GitHub repository, owner/name"),
-			"mode": fallback(factoryd.ModeMirror, enum("the export's mode", factoryd.ModeMirror, factoryd.ModePullRequests))},
-		required: []string{"remote"},
-		about:    "Export the project's repository to GitHub, in place of its last export.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			m, err := t.exportToken()
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, m.Username, m.Token, in.Mode)
-			return note, nil, err
-		}},
-	{name: "github_sync", title: "Sync from GitHub", write: true, params: map[string]any{},
-		about: "Bring the GitHub export's moved default branch back as a pull request to main.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doGithubSync(t.r.Context(), t.a, t.p)
-			return note, nil, err
-		}},
-	{name: "close", title: "Close a card", write: true,
-		params: map[string]any{"task_id": taskParam, "note": str("why, commented first")}, required: []string{"task_id"},
-		about: "Close a card's issue, which ends the card.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			// a held card's close and a plan's, which waives its open
-			// criteria, are the human's: their typed line is their word
-			a := t.a
-			if k, err := t.card(in); err == nil && (k.Held() || factoryd.ClosablePlan(k)) {
-				if a, err = t.planActor(); err != nil {
-					return "", nil, err
-				}
-			}
-			note, err := t.c.doClose(t.r.Context(), a, in.TaskID, in.Note)
-			return note, nil, err
-		}},
-	{name: "edit", title: "Edit a card", write: true,
-		params: map[string]any{"task_id": taskParam, "title": str("the new title, empty keeps it"),
-			"body": str("the new description, empty keeps it")},
-		required: []string{"task_id"},
-		about:    "Edit a card's issue title or description.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, in.Title, in.Body)
-			return note, nil, err
-		}},
-	{name: "grant_session", title: "Grant what the stop asks for", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
-		required: []string{"task_id", "text"},
-		about:    "Grant a card at a cap what the cap asks for, with an answer to its findings.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
-			return note, nil, err
-		}},
-	{name: "fund", title: "Fund a card", write: true,
-		params:   map[string]any{"task_id": taskParam, "eur": map[string]any{"type": "number", "description": "the raise in EUR", "exclusiveMinimum": 0}, "text": textParam},
-		required: []string{"task_id", "eur", "text"},
-		about:    "Raise a card's budget for its question or its refused brief: the pool's money, or the human's.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.fund(in)
-			return note, nil, err
-		}},
-	{name: "set_dependency", title: "Set a dependency", write: true,
-		params: map[string]any{"task_id": taskParam, "depends_on": str("the card it waits for, by task id or issue number"),
-			"remove": map[string]any{"type": "boolean", "description": "removes the dependency"}},
-		required: []string{"task_id", "depends_on"},
-		about:    "Make an unstarted card wait for another until that one is done.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
-			return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
-		}},
-	{name: "hold_card", title: "Hold a card", write: true,
-		params: map[string]any{"task_id": taskParam,
-			"release_card": str("the card whose merge or done releases it, any plan"),
-			"reason":       str("why the card waits, one line the board shows")},
-		required: []string{"task_id", "reason"},
-		about:    "Hold a card that has not started, on the human's word, until it is released.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			a, err := t.humanWord("sets no hold: a hold is the human's own", "hold_card", "Hold")
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doHoldCard(t.r.Context(), a, in.TaskID, in.ReleaseCard, in.Reason)
-			return note, nil, err
-		}},
-	{name: "release_hold", title: "Release a hold", write: true,
-		params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "End the hold on a card, on the human's word: it queues for a work slot again.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			a, err := t.humanWord("releases no hold: only the human ends one", "release_hold", "Release")
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doReleaseHold(t.r.Context(), a, in.TaskID)
-			return note, nil, err
-		}},
-	{name: "replan", title: "Replan a card", write: true,
-		params: map[string]any{"task_id": taskParam, "note": str("why it goes back: the planner reads it"),
-			"off_main": map[string]any{"type": "boolean", "description": "take the plan's merged cards off main first"}}, required: []string{"task_id", "note"},
-		about: "Send a card or its plan back to the planner, which plans on top of what was built.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			a, err := t.planActor()
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doReplan(t.r.Context(), a, in.TaskID, in.Note, in.OffMain)
-			return note, nil, err
-		}},
-	{name: "set_pool", title: "Set the pool", write: true, memberOnly: true,
-		params: map[string]any{"action": enum("set the pool or top up the standing one", poolSet, poolTopUp),
-			"eur":    map[string]any{"type": "number", "description": "the pool in EUR, or the raise on a top-up", "exclusiveMinimum": 0},
-			"reason": str("why this number, one line")},
-		required: []string{"action", "eur", "reason"},
-		about:    "Set or top up the money of the project's escalation pool through a pull request on its file.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			ch := poolChange{action: in.Action, eur: in.EUR, reason: in.Reason}
-			if t.pool != nil {
-				// a confirmed press runs the captured change: the
-				// operation, the reason and the source stay the row's,
-				// the amount the one thing a correction changed
-				ch.action, ch.reason, ch.source = t.pool.Action, t.pool.Reason, t.pool.Source
-			} else {
-				path := policy.ProjectFile(t.p.Name)
-				_, source, present, err := t.c.infraFile(t.r.Context(), path)
-				switch {
-				case err != nil:
-					return "", nil, err
-				case !present:
-					return "", nil, refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
-				}
-				ch.source = source
-			}
-			res, err := t.c.doSetPool(t.r.Context(), t.p.Name, ch, t.a)
-			if err != nil {
-				return "", nil, err
-			}
-			return fmt.Sprintf("The pool of %s is €%.2f now, was €%.2f: %s#%d carries the change and the policy in force holds it.",
-				t.p.Name, res.to, res.from, t.c.cfg.InfraRepo, res.pr), nil, nil
-		}},
-	{name: "read_doc", title: "Read a document",
-		params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
-			"from":  stepParam("the first line to read"),
-			"to":    stepParam("the last line to read"),
-			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"},
-			"ask":   str("what a small digest answers (default the raw read)")},
-		required: []string{"path"},
-		about:    "Any file of the project's document repository with its base_sha256 and line count.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.docText(in)
-			return s, nil, err
-		}},
-	{name: "write_doc", title: "Write a document", write: true,
-		params: map[string]any{"path": docWrite,
-			"old":         str("the passage to replace, as read"),
-			"new":         str("the passage that replaces old, empty removes it"),
-			"content":     str("a new file's content"),
-			"base_sha256": str("read_doc's base_sha256, optional")},
-		required: []string{"path"},
-		about:    "Commit an edit of one passage, or a new file, to the project's document repository.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, t.p.Repository, in.Path, docEdit{Old: in.Old, New: in.New, Content: in.Content, Base: in.BaseSHA256})
-			return note, nil, err
-		}},
-	{name: "show_doc", title: "Show a document",
-		params:   map[string]any{"path": docPath, "heading": str("the heading to open at")},
-		required: []string{"path"},
-		about:    "Open a document of the project's document repository in the member's own document view.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			repo, err := t.c.docRepoOf(t.cfg.DocRepo, in.Path)
-			if err != nil {
-				return "", nil, err
-			}
-			if _, _, present, err := t.c.docFile(t.r.Context(), repo, in.Path); err != nil {
-				return "", nil, err
-			} else if !present {
-				tree, err := t.c.docTree(t.r.Context(), repo)
-				if err != nil {
-					return "", nil, err
-				}
-				return "", nil, refuse(http.StatusNotFound, fmt.Sprintf("There is no document %s on master. The nearest: %s.", in.Path, strings.Join(nearestDocs(tree, in.Path), ", ")))
-			}
-			t.viewEvent = map[string]any{"doc": in.Path}
-			open := in.Path + " is open in your document view."
-			if in.Heading != "" {
-				t.viewEvent["heading"] = in.Heading
-				open = fmt.Sprintf("%s is open in your document view, at %q.", in.Path, in.Heading)
-			}
-			return open, nil, nil
-		}},
-	{name: "set_autonomy", title: "Set the autonomy level", write: true,
-		params: map[string]any{"autonomy": enum("the autonomy state", policy.AutonomyStates...),
-			"queue_cap": map[string]any{"type": "integer", "description": "how many cards may wait unstarted, unset keeps it", "minimum": 1}},
-		required: []string{"autonomy"},
-		about:    "Set the project's autonomy state and queue cap through a pull request on its project file.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			if err := t.c.doSetAutonomy(t.r.Context(), t.p.Name, in.Autonomy, in.QueueCap, t.a); err != nil {
-				return "", nil, err
-			}
-			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.QueueCap)), nil, nil
-		}},
-	{name: "routines", title: "Read the routines",
-		about: "The project's routines: each one's schedule, next run, last run and open card.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.routinesText()
-			return s, nil, err
-		}},
-	{name: "routine_write", title: "Write a routine", write: true,
-		params: map[string]any{"name": routineName, "title": str("the title of the card each run files"),
-			"schedule": map[string]any{"type": "array", "description": "the triggers, any one of which starts a run", "minItems": 1,
-				"items": map[string]any{"type": "object", "description": "exactly one of cron, merges or on", "properties": map[string]any{
-					"cron":   str("five fields in the factory's zone, day and weekday ANDed"),
-					"merges": map[string]any{"type": "integer", "description": "a run every n merged cards of the project", "minimum": 1},
-					"on":     enum("a run on each such event", policy.RoutineEvents...)}}},
-			"files":      enum("what a run files", policy.FilesHuman, policy.FilesAgent, policy.FilesReport),
-			"skill":      str("the skill an agent routine's card runs, unset keeps it"),
-			"brief_text": str("each filed card's body, Markdown, unset keeps it"),
-			"while_open": enum("what a run does while the last card is open, unset keeps it", policy.WhileOpenHold, policy.WhileOpenFile),
-			"missed":     enum("what a run does when the factory was down, unset keeps it", policy.MissedValues...),
-			"tell":       enum("whether a filing tells the inbox, unset keeps it", policy.TellValues...)},
-		required: []string{"name", "title", "schedule", "files"},
-		about:    "Create or change one of the project's routines through a pull request on its project file.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.writeRoutine(in)
-			return s, nil, err
-		}},
-	{name: "routine_delete", title: "Delete a routine", write: true,
-		params: map[string]any{"name": routineName}, required: []string{"name"},
-		about: "Delete one of the project's routines through a pull request on its project file.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.deleteRoutine(in)
-			return s, nil, err
-		}},
-	{name: "routine_run", title: "Run a routine now", write: true,
-		params: map[string]any{"name": routineName}, required: []string{"name"},
-		about: "Run one of the project's routines now, as the board's Run now does.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doRoutineRun(t.r.Context(), t.a, t.p.Name, in.Name)
-			return note, nil, err
-		}},
-	{name: "routine_skip", title: "Skip a routine's next run", write: true,
-		params:   map[string]any{"name": routineName, "undo": map[string]any{"type": "boolean", "description": "clears a pending skip"}},
-		required: []string{"name"},
-		about:    "Skip the next run of one of the project's routines, or undo a pending skip.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doRoutineSkip(t.r.Context(), t.a, t.p.Name, in.Name, in.SkipUndo)
-			return note, nil, err
-		}},
-	{name: "notes_read", title: "Read the scratchpad",
-		about: "The project's scratchpad, which every thread of the chat shares.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.notesText()
-			return s, nil, err
-		}},
-	{name: "notes_write", title: "Write the scratchpad", write: true,
-		params: map[string]any{"text": str("a note to append"),
-			"old": str("a passage to replace"), "new": str("the passage that replaces old, empty removes it")},
-		about: "Append a note to the scratchpad, or replace one passage of it.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.writeNotes(in.Text, in.Old, in.New)
-			return s, nil, err
-		}},
-	{name: "escalate", title: "Escalate to the humans", write: true,
-		params: map[string]any{"ask": str("the title: one sentence, 200 bytes at most, with numbers"),
-			"why":            str("why the card cannot go on without a person's answer"),
-			"info":           str("the facts a reader needs, with what would change your mind"),
-			"recommendation": str("the answer you would pick and where you read it"),
-			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
-				"description": "answers the humans may press, each once"}},
-		required: []string{"ask", "why", "info", "recommendation", "choices"},
-		about:    "Ask the humans for a decision, its why and its info with it.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
-			return s, nil, err
-		}},
-	{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,
-		params: map[string]any{"task_id": taskParam,
-			"case_id": map[string]any{"type": "integer", "minimum": 1,
-				"description": "the case you hold: the analysis hands it up"},
-			"found":          str("what you learned about the ask, the facts with their numbers"),
-			"recommendation": str("the answer you would pick and where you read it"),
-			"recommended": map[string]any{"type": "object", "description": "what the human is asked to take: an action or a plan answer",
-				"properties": map[string]any{
-					"action": map[string]any{"type": "string", "enum": humanActionNames()},
-					"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer takes them"},
-					"answer": map[string]any{"type": "string", "description": "a plan question's choice, confirm or revise, or a human card's choice by its value"}}}},
-		required: []string{"task_id", "found"},
-		about:    "Record what you found on a card's ask, or hand your case up to the human.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.attachAnalysis(in)
-			return s, nil, err
-		}},
-	{name: "active_threads", title: "Read the project's threads",
-		about: "The project's active threads, every human's with its owner named, then the scratchpad's tail.",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.activeThreads()
-			return s, nil, err
-		}},
-	{name: "chat_search", title: "Search the project's threads",
-		params: map[string]any{"query": str("the text to find, any case"),
-			"thread": map[string]any{"type": "integer", "description": "one of your own thread's numbers to search only it", "minimum": 1}},
-		required: []string{"query"},
-		about:    "Search every thread of the project, every human's, for a text, at most 20 hits.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
-	{name: "inbox", title: "Read the inbox",
-		params: map[string]any{"query": str("a word to filter by, 2 to 200 characters"),
-			"before": map[string]any{"type": "integer", "description": "a row id: older rows, the open asks left out", "minimum": 1}},
-		about: "The factory's thread: open asks first, then the newest rows, filtered by query, paged by before.",
-		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.inboxText(in); return s, nil, err }},
-	{name: "board_view", title: "Board view",
-		about:  "Works the board's view controls as a click does: menus, find, routines, card, theme.",
-		params: boardViewParams(),
-		run:    func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(in, false) },
-	},
-	{name: "board_view_reset", title: "Board view reset",
-		about: "Clears the board's view controls to the default and closes the drawer.",
-		run:   func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(toolInput{}, true) },
-	},
-	{name: "watch_card", title: "Watch a card",
-		params:   map[string]any{"task_id": taskParam},
-		required: []string{"task_id"},
-		about:    "Watch a card: its moves wake this thread.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.watchCard(in); return s, nil, err }},
-	{name: "unwatch_card", title: "End a watch",
-		params:   map[string]any{"task_id": taskParam},
-		required: []string{"task_id"},
-		about:    "End this thread's watch on a card.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.unwatchCard(in); return s, nil, err }},
-	{name: "set_timer", title: "Set a timer",
-		params: map[string]any{"minutes": map[string]any{"type": "integer", "description": "the minutes from now, 1 to 1440", "minimum": 1, "maximum": 1440},
-			"note":    str("the note the wake carries, 1 to 200 characters"),
-			"task_id": str("the card this timer dies with, its task id or issue number")},
-		required: []string{"minutes", "note"},
-		about:    "Set a one-shot timer that wakes this thread with its note.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.setTimer(in); return s, nil, err }},
-	{name: "delete_comment", write: true, internal: true,
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doDeleteComment(t.r.Context(), t.a, in.TaskID, int64(in.N))
-			return note, nil, err
-		}},
-	{name: "analyze_image", title: "Look at an image",
-		params: map[string]any{"name": str("the image's name, img1 as its row shows"),
-			"ask": map[string]any{"type": "string", "maxLength": 2000, "description": "what to look for (default what the image shows)"}},
-		required: []string{"name"},
-		priced:   true,
-		about:    "One look at an image a human sent: the vision model's answer to a question about it.",
-		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.lookImage(in); return s, nil, err }},
-	{name: "read_attachment", title: "Read a sent document",
-		params: map[string]any{"name": str("the document's name, doc1 as its row shows"), "find": str("the lines holding this text, case-insensitive"),
-			"from":  stepParam("the first line to read"),
-			"to":    stepParam("the last line to read"),
-			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
-		required: []string{"name"},
-		about:    "A document a human sent, with its base_sha256 and line count.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.readAttachment(in)
-			return s, nil, err
-		}},
-	{name: "summarize_attachment", title: "Summarise a sent document",
-		params:   map[string]any{"name": str("the document's name, doc1 as its row shows"), "ask": str("what the summary answers (default what the document says)")},
-		required: []string{"name"},
-		priced:   true,
-		about:    "One model call over a document a human sent: its answer to a question about it.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.summarizeAttachment(in)
-			return s, nil, err
-		}},
-}
+// tools are the project agent's tools in policy.ChatTools' order. The
+// table is built in init: its runs reach code that reads it, a cycle Go
+// refuses in a variable's initializer.
+var tools []chatTool
 
-// The ask tool joins the table here, not in its initializer: its run
-// reads the table's own lookup (the binding validates the bound tool),
-// an initialization cycle Go refuses.
 func init() {
+	tools = []chatTool{
+		{name: "system", title: "Read the manual",
+			about: "The factory's manual: states, gates, how the tools work, autonomy, the process and its limits.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.systemText()
+				return s, nil, err
+			}},
+		{name: "board", title: "Read the board",
+			about: "The project's board: each column's cards and the approval requests in Needs you.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.c.boardText(t.r, t.p, t.a)
+				return s, nil, err
+			}},
+		{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+			about: "One card in full: its numbered steps and flags, then its model calls and pointers to other reads.",
+			run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
+		{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
+			about: "The project's events, newest first: what was done to which card, by whom and how.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, in.limit())
+				return eventLines(events), nil, err
+			}},
+		{name: "card_history", title: "Read a card's history", params: map[string]any{"task_id": taskParam, "n": nParam}, required: []string{"task_id"},
+			about: "One card's events, newest first.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				k, err := t.card(in)
+				if err != nil {
+					return "", nil, err
+				}
+				events, err := t.c.cfg.Events.TaskEvents(t.r.Context(), k.ID, in.limit())
+				return eventLines(events), nil, err
+			}},
+		{name: "card_step", title: "Read a card's step",
+			params:   map[string]any{"task_id": taskParam, "step": stepParam("the step's number in the card read")},
+			required: []string{"task_id", "step"},
+			about:    "One step of a card in full, by the number the card read gives it.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				k, err := t.card(in)
+				if err != nil {
+					return "", nil, err
+				}
+				s, err := t.c.cfg.CardStep(t.r.Context(), k.ID, in.Step, "card", func(_ string, n int) string {
+					if n == 0 {
+						return ""
+					}
+					return fmt.Sprintf("session_steps task %s n %d", k.ID, n)
+				})
+				if no := factoryd.ErrNoStep(""); errors.As(err, &no) {
+					return "", nil, refuse(http.StatusNotFound, string(no))
+				}
+				return s, nil, err
+			}},
+		{name: "board_digest", title: "Read the board digest",
+			about: "The project's board in a few lines: live cards with their flags, the queue, slots, plans and caps.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				b, err := t.c.cfg.BoardDigest(t.r.Context(), t.p.Repository)
+				if err != nil {
+					return "", nil, err
+				}
+				return b.Render(), nil, nil
+			}},
+		{name: "costs", title: "Read the costs",
+			params: map[string]any{"by": enum("the whole ledger by day, card or tier", "day", "card", "tier"),
+				"from_date": str("the first UTC day, YYYY-MM-DD (default the month's first)"),
+				"to_date":   str("the last UTC day, YYYY-MM-DD (default today)")},
+			about: "The project's spend this month against its cap, or the whole ledger by day, card or tier.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				if in.By != "" {
+					s, err := t.c.costsByText(t.r.Context(), t.a, in.By, in.FromDate, in.ToDate)
+					return s, nil, err
+				}
+				s, err := t.c.spendLine(t.r.Context(), t.p)
+				return "The project's " + s + ".", nil, err
+			}},
+		{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam,
+			"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
+			"ask": str("what a small digest answers (default the raw read)")}, required: []string{"task_id"},
+			about: "A card's pull request diff, its lines from and to, else its first 20 KB.",
+			run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
+		{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+			about: "The newest revision of a card's plan: its sha256, questions and cards.",
+			run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.planText(in); return s, nil, err }},
+		{name: "pr", title: "Read a pull request",
+			params:   map[string]any{"task_id": taskParam, "with_diff": map[string]any{"type": "boolean", "description": "add the diff"}},
+			required: []string{"task_id"},
+			about:    "A card's pull request: its checks, reviews, audit and changed files.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
+		{name: "file", title: "Read a file",
+			params: map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path"),
+				"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
+				"ask": str("what a small digest answers (default the raw read)")},
+			required: []string{"ref", "path"},
+			about:    "A file of the project's repository at a ref, its lines from and to, else its first 64 KiB.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
+		{name: "tree", title: "Read the tree",
+			params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("a path prefix (default the whole tree)")},
+			required: []string{"ref"},
+			about:    "Every file of the repository at a ref, cut at 500 lines.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.treeText(in); return s, nil, err }},
+		{name: "grep", title: "Search the files",
+			params: map[string]any{"pattern": str("the text to find, a regular expression"), "ref": str("a branch, tag or commit"),
+				"path": str("a path prefix (default the whole tree)")},
+			required: []string{"pattern", "ref"},
+			about:    "Files at a ref whose lines match a pattern, at most 50.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.grepText(in); return s, nil, err }},
+		{name: "web_search", title: "Search the web",
+			params:   map[string]any{"query": str("the search query"), "limit": fallback(5, stepParam("results to show, at most 10"))},
+			required: []string{"query"},
+			about:    "At most ten pages the web search found for a query, each a title, its url and a snippet.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webSearch(in); return s, nil, err }},
+		{name: "web_scrape", title: "Read a web page",
+			params:   map[string]any{"url": str("the page's http(s) address"), "ask": str("what the digest answers (default the page's gist)")},
+			required: []string{"url"},
+			about:    "The web page at one address, digested to the ask, never raw.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webScrape(in); return s, nil, err }},
+		{name: "research", title: "Research a question",
+			params:   map[string]any{"ask": str("the question to research")},
+			required: []string{"ask"},
+			about:    "A researcher reads the repository, the documents and the web, and answers with a sourced report.",
+			run:      (*turn).researchTool},
+		{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
+			about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
+			run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
+		{name: "session_steps", title: "List a session's steps",
+			params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
+				"to": stepParam("the last step (default and most: from + 99)")},
+			required: []string{"task_id"},
+			about:    "A session's steps, one line each.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepsText(in); return s, nil, err }},
+		{name: "session_step", title: "Read a session's steps",
+			params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
+				"to":  stepParam("the last step (default from, most from + 19)"),
+				"ask": str("what a small digest answers (default the raw read)")},
+			required: []string{"task_id"},
+			about:    "A session's steps in full.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepText(in); return s, nil, err }},
+		{name: "session_search", title: "Search a card's sessions",
+			params: map[string]any{"task_id": taskParam, "query": str("the text to find, any case"),
+				"n": stepParam("one session's number (default all)")},
+			required: []string{"task_id", "query"},
+			about:    "Search a card's sessions for a text, at most 20 hits.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.searchText(in); return s, nil, err }},
+		{name: "ci", title: "Read CI",
+			params: map[string]any{"ref": fallback("main", str("a branch")), "sha": str("a commit (default the ref's head)")},
+			about:  "The CI result of main, a branch or a commit.",
+			run:    func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.ciText(in); return s, nil, err }},
+		{name: "alerts", title: "Read the alerts",
+			params: map[string]any{"state": fallback("open", enum("open: without a verdict, all: every alert", "open", "all"))},
+			about:  "The factory's alerts, newest first.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.c.alertsText(t.r.Context(), t.a, cmp.Or(in.State, "open"))
+				return s, nil, err
+			}},
+		{name: "deployment_health", title: "Read a Deployment",
+			params:   map[string]any{"deployment": str("the Deployment's name"), "namespace": str("a project namespace (default: the first that holds it)")},
+			required: []string{"deployment"},
+			about:    "A Deployment in the project's namespaces only: its pods, restarts, terminations and events, no logs.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.c.deploymentHealthText(t.r.Context(), t.p, in.Deployment, in.Namespace)
+				return s, nil, err
+			}},
+		{name: "resources", title: "Read the resources",
+			about: "The commissioned cloud resources by project.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.c.resourcesText(t.r.Context(), t.a)
+				return s, nil, err
+			}},
+		{name: "settings", title: "Read the settings",
+			about: "Every project's settings.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.c.projectsText(t.r.Context(), t.a)
+				return s, nil, err
+			}},
+		{name: "policy", title: "Read the policy",
+			about: "The policy in force: its limits, budgets, risk classes and approvers.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.c.policyText(t.r.Context(), t.a)
+				return s, nil, err
+			}},
+		{name: "project_images", title: "Read the sandbox images",
+			about: "The project's sandbox images in force, its open tool cards and the cards waiting for an image.",
+			run:   func(t *turn, _ toolInput) (string, *inverse, error) { s, err := t.imagesText(); return s, nil, err }},
+		{name: "promote_resource", title: "Make a resource standing", write: true,
+			params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id", "minimum": 1}}, required: []string{"id"},
+			about: "Make a leased resource standing, owned by its project.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doPromoteResource(t.r.Context(), t.a, in.ID)
+				return note, nil, err
+			}},
+		{name: "release_resource", title: "Release a resource", write: true,
+			params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id", "minimum": 1}}, required: []string{"id"},
+			about: "End a resource's lease now, so the collector deletes it.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doReleaseResource(t.r.Context(), t.a, in.ID)
+				return note, nil, err
+			}},
+		{name: "new_card", title: "File a card", write: true,
+			params: map[string]any{"title": str(writingguide.TitleLine), "why": str(writingguide.WhyLine), "summary": str(writingguide.SummaryLine),
+				"body":    str("the description, Markdown"),
+				"task_id": str("the card whose case this filing answers"),
+				"acceptance": map[string]any{"type": "array", "minItems": 1, "maxItems": factoryd.MaxCardAcceptance,
+					"items":       map[string]any{"type": "string"},
+					"description": "the acceptance tests, one line each"},
+				"track":        enum("how the card's work runs", policy.TrackDirect, policy.TrackPlan, factoryd.LabelHuman),
+				"track_reason": str("why that track, one line"),
+				"size":         enum("the card's size, if you know it", policy.CardSizes...),
+				"rung":         enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
+				"rung_reason":  str("why that rung, one line"),
+				"image":        str("a pinned sandbox image to run on, none for the default"),
+				"carry_pr":     map[string]any{"type": "integer", "minimum": 1, "description": "the pull request the card carries: its head is in the clone"},
+				"roadmap_item": map[string]any{"type": "integer", "minimum": 1, "description": "the roadmap item the card builds: one card per item"},
+				"refile_of":    map[string]any{"type": "integer", "minimum": 1, "description": "the issue of the closed or failed card it replaces"},
+				"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
+					"description": "the thread's images to attach (img1, as their rows show)"}},
+			required: []string{"title", "why", "track", "track_reason"},
+			about:    "File a new card on the project.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				if err := refuseTrack(in); err != nil {
+					return "", nil, err
+				}
+				body := cardBody(in)
+				ups, err := t.assets(in.Attachments)
+				if err != nil {
+					return "", nil, err
+				}
+				body = withAssets(body, ups)
+				if err := t.refuseCard(in, body); err != nil {
+					return "", nil, err
+				}
+				try := t.briefTry("new_card")
+				if in.TaskID != "" {
+					out, inv, err := t.fileForCase(in, body, ups, try)
+					t.briefDone("new_card", err)
+					return out, inv, err
+				}
+				repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: body}, try,
+					in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem, in.RefileOf)
+				t.briefDone("new_card", err)
+				if err != nil {
+					return "", nil, err
+				}
+				path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
+				return fmt.Sprintf("Filed %s#%d on track %s.", repo, issue, in.Track) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repo.String(), path, ups), nil, nil
+			}},
+		{name: "request_image", title: "Ask for a sandbox tool", write: true,
+			params: map[string]any{
+				"tool":  map[string]any{"type": "string", "maxLength": policy.MaxToolName, "description": "the Debian package or binary name"},
+				"need":  map[string]any{"type": "string", "maxLength": policy.MaxToolNeed, "description": "what the project's cards need it for"},
+				"image": str("the image to add the tool to, none for one named after it")},
+			required: []string{"tool", "need"},
+			about:    "Ask the factory to add a tool to one of the project's sandbox images through a tool card.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.requestImage(in)
+				return s, nil, err
+			}},
+		{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
+			"case_id": map[string]any{"type": "integer", "minimum": 1,
+				"description": "the number of a case to answer, none for the card's own ask"},
+			"action": map[string]any{"type": "string", "enum": actionNames(),
+				"description": "the typed action on the card's case, continue when none"},
+			"fund_eur": map[string]any{"type": "number", "exclusiveMinimum": 0,
+				"description": "the EUR it draws: the fund's own, else beside the action"},
+			"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
+				"properties": map[string]any{
+					"model":        map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
+					"sessions":     map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
+					"agent_time_s": map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
+					"lines":        map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
+					"eur":          map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
+					"action":       map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
+					"task_id":      map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
+					"depends_on":   map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
+					"title":        str(writingguide.TitleLine),
+					"why":          str(writingguide.WhyLine),
+					"summary":      str(writingguide.SummaryLine),
+					"body":         map[string]any{"type": "string", "description": "file_card's description"},
+					"size":         map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
+					"criterion":    map[string]any{"type": "string", "description": "answer_criteria's criterion"},
+					"verdict":      map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
+			"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
+				"description": "confirm accepts the plan, revise asks for changes in text"},
+			"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
+			"revision": map[string]any{"type": "integer", "description": "the plan's revision, for a plan's questions", "minimum": 1},
+			"answers": map[string]any{"type": "array", "description": "every open question's answer at once",
+				"items": map[string]any{"type": "object", "properties": map[string]any{
+					"question": map[string]any{"type": "integer", "description": "the question's number", "minimum": 1},
+					"text":     map[string]any{"type": "string", "description": "its answer"},
+					"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
+						"description": "its decision when this one is the plan's confirmation"}},
+					"required": []string{"question"}}}},
+			required: []string{"task_id"},
+			about:    "Answer a card's case or a plan's open questions, the plan's confirmation by your own decision.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.answer(in)
+				return note, nil, err
+			}},
+		{name: "comment", title: "Comment on a card", write: true,
+			params: map[string]any{"task_id": taskParam, "text": textParam,
+				"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
+					"description": "the thread's images to attach (img1, as their rows show)"}},
+			required: []string{"task_id", "text"},
+			about:    "Comment on a card's issue.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				ups, err := t.assets(in.Attachments)
+				if err != nil {
+					return "", nil, err
+				}
+				var assets, repository string
+				if len(ups) > 0 {
+					card, err := t.card(in)
+					if err != nil {
+						return "", nil, err
+					}
+					repo, err := factoryd.SplitRepo(card.Repository)
+					if err != nil {
+						return "", nil, err
+					}
+					assets, repository = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name)), card.Repository
+				}
+				posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, withAssets(in.Text, ups))
+				if err == nil {
+					note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repository, fmt.Sprintf("%s%d/assets", assets, posted), ups)
+				}
+				return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
+			}},
+		{name: "tell_card", title: "Tell a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+			required: []string{"task_id", "text"},
+			about:    "Tell a card one text, routed by its state to its session, its merge request or its question.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.runTellCard(in)
+				return note, nil, err
+			}},
+		{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+			required: []string{"task_id", "text"},
+			about:    "Send a running card's session a message.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
+				return note, nil, err
+			}},
+		{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+			about: "File a failed work card again as its replacement, once, which starts when a work slot is free.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
+				return note, nil, err
+			}},
+		{name: "request_changes", title: "Ask for changes to a plan", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+			required: []string{"task_id", "text"},
+			about:    "Ask the planner for changes to a plan.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				a, err := t.planActor()
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doRequestChanges(t.r.Context(), a, in.TaskID, in.Text)
+				return note, nil, err
+			}},
+		{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+			about: "Approve a card's pending merge request, which factoryd then merges.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				q, err := t.mergeRequest(in)
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
+				return note, nil, err
+			}},
+		{name: "deny_merge", title: "Deny a merge", write: true,
+			params: map[string]any{"task_id": taskParam, "note": str("why"),
+				"action": fallback("request_changes", enum("request_changes returns it to its agent, reject fails it", "request_changes", "reject"))},
+			required: []string{"task_id", "note"},
+			about:    "Deny a card's merge request with a reason, or close a pull request factoryd opened with it.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				q, err := t.mergeRequest(in)
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doDeny(t.r.Context(), t.a, q.ID, in.Action, in.Note)
+				return note, nil, err
+			}},
+		{name: "rerun_checks", title: "Re-run a pull request's checks", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+			about: "Run the red checks of a pull request factoryd opened again, from its pending merge request.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				q, err := t.mergeRequest(in)
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doRerun(t.r.Context(), t.a, q.ID)
+				return note, nil, err
+			}},
+		{name: "answer_criteria", title: "Answer a plan's criteria", write: true,
+			params: map[string]any{"task_id": taskParam,
+				"action":    enum("met or not_met on a human row, waive any row, confirm", "waive", "confirm", "met", "not_met"),
+				"criterion": str("the criterion a waive, met or not_met names"),
+				"reason":    str("a waive's or a not_met's reason, or a met's words")},
+			required: []string{"task_id", "action"},
+			about:    "Decide a plan's criteria on the human's word: the plan's ask, or its integration card's merge.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				line, ok, err := t.humanAnswerLine()
+				if err != nil {
+					return "", nil, err
+				}
+				if !ok && t.a.caseWake() {
+					return "", nil, refuse(http.StatusConflict, t.criteriaWordRefusal(in))
+				}
+				if !ok {
+					return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no promise: give them choices with `ask`, or let them answer on the board's card, and `answer_criteria` runs on their word.")
+				}
+				var q factoryd.ApprovalRequest
+				switch in.Action {
+				case "waive", "met", "not_met":
+					var k factoryd.Task
+					if q, k, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {
+						q, err = t.criteriaRequest(in)
+					} else if err == nil {
+						err = t.mergeOnRungs(k, q)
+					}
+				default:
+					q, err = t.criteriaRequest(in)
+				}
+				if err != nil {
+					return "", nil, err
+				}
+				t.a.decider = "member"
+				switch in.Action {
+				case "waive":
+					note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, "waived", in.Reason)
+					return note, nil, err
+				case "met", "not_met":
+					note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, in.Action, in.Reason)
+					return note, nil, err
+				case "confirm":
+					note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
+					return note, nil, err
+				}
+				return "", nil, refuse(http.StatusBadRequest, "The action must be `waive`, `confirm`, `met` or `not_met`; a grant answers the plan's criteria case with `answer` and `grant_criteria`.")
+			}},
+		{name: "set_accent", title: "Set a card's accent", write: true,
+			params:   map[string]any{"task_id": taskParam, "accent": enum("the colour, empty removes it", append([]string{""}, factoryd.Accents...)...)},
+			required: []string{"task_id"},
+			about:    "Set a card's colour label.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
+				return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
+			}},
+		{name: "invite", title: "Invite a human", write: true,
+			params: map[string]any{"login": str("the Forgejo user name")}, required: []string{"login"},
+			about: "Make a Forgejo user a writer of the project's repository.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doInvite(t.r.Context(), t.a, in.Login)
+				return note, nil, err
+			}},
+		{name: "github_export", title: "Export to GitHub", write: true,
+			params: map[string]any{"remote": str("the GitHub repository, owner/name"),
+				"mode": fallback(factoryd.ModeMirror, enum("the export's mode", factoryd.ModeMirror, factoryd.ModePullRequests))},
+			required: []string{"remote"},
+			about:    "Export the project's repository to GitHub, in place of its last export.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				m, err := t.exportToken()
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, m.Username, m.Token, in.Mode)
+				return note, nil, err
+			}},
+		{name: "github_sync", title: "Sync from GitHub", write: true, params: map[string]any{},
+			about: "Bring the GitHub export's moved default branch back as a pull request to main.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doGithubSync(t.r.Context(), t.a, t.p)
+				return note, nil, err
+			}},
+		{name: "close", title: "Close a card", write: true,
+			params: map[string]any{"task_id": taskParam, "note": str("why, commented first")}, required: []string{"task_id"},
+			about: "Close a card's issue, which ends the card.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				// a held card's close and a plan's, which waives its open
+				// criteria, are the human's: their typed line is their word
+				a := t.a
+				if k, err := t.card(in); err == nil && (k.Held() || factoryd.ClosablePlan(k)) {
+					if a, err = t.planActor(); err != nil {
+						return "", nil, err
+					}
+				}
+				note, err := t.c.doClose(t.r.Context(), a, in.TaskID, in.Note)
+				return note, nil, err
+			}},
+		{name: "edit", title: "Edit a card", write: true,
+			params: map[string]any{"task_id": taskParam, "title": str(writingguide.TitleLine), "why": str(writingguide.WhyLine), "summary": str(writingguide.SummaryLine),
+				"body": str("the new description, empty keeps it")},
+			required: []string{"task_id"},
+			about:    "Edit a card's brief: a field left out keeps its value.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: in.Body})
+				return note, nil, err
+			}},
+		{name: "grant_session", title: "Grant what the stop asks for", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+			required: []string{"task_id", "text"},
+			about:    "Grant a card at a cap what the cap asks for, with an answer to its findings.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
+				return note, nil, err
+			}},
+		{name: "fund", title: "Fund a card", write: true,
+			params:   map[string]any{"task_id": taskParam, "eur": map[string]any{"type": "number", "description": "the raise in EUR", "exclusiveMinimum": 0}, "text": textParam},
+			required: []string{"task_id", "eur", "text"},
+			about:    "Raise a card's budget for its question or its refused brief: the pool's money, or the human's.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.fund(in)
+				return note, nil, err
+			}},
+		{name: "set_dependency", title: "Set a dependency", write: true,
+			params: map[string]any{"task_id": taskParam, "depends_on": str("the card it waits for, by task id or issue number"),
+				"remove": map[string]any{"type": "boolean", "description": "removes the dependency"}},
+			required: []string{"task_id", "depends_on"},
+			about:    "Make an unstarted card wait for another until that one is done.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
+				return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
+			}},
+		{name: "hold_card", title: "Hold a card", write: true,
+			params: map[string]any{"task_id": taskParam,
+				"release_card": str("the card whose merge or done releases it, any plan"),
+				"reason":       str("why the card waits, one line the board shows")},
+			required: []string{"task_id", "reason"},
+			about:    "Hold a card that has not started, on the human's word, until it is released.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				a, err := t.humanWord("sets no hold: a hold is the human's own", "hold_card", "Put on hold")
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doHoldCard(t.r.Context(), a, in.TaskID, in.ReleaseCard, in.Reason)
+				return note, nil, err
+			}},
+		{name: "release_hold", title: "Release a hold", write: true,
+			params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+			about: "End the hold on a card, on the human's word: it queues for a work slot again.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				a, err := t.humanWord("releases no hold: only the human ends one", "release_hold", "Release the hold")
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doReleaseHold(t.r.Context(), a, in.TaskID)
+				return note, nil, err
+			}},
+		{name: "replan", title: "Replan a card", write: true,
+			params: map[string]any{"task_id": taskParam, "note": str("why it goes back: the planner reads it"),
+				"off_main": map[string]any{"type": "boolean", "description": "take the plan's merged cards off main first"}}, required: []string{"task_id", "note"},
+			about: "Send a card or its plan back to the planner, which plans on top of what was built.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				a, err := t.planActor()
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doReplan(t.r.Context(), a, in.TaskID, in.Note, in.OffMain)
+				return note, nil, err
+			}},
+		{name: "set_pool", title: "Set the pool", write: true, memberOnly: true,
+			params: map[string]any{"action": enum("set the pool or top up the standing one", poolSet, poolTopUp),
+				"eur":    map[string]any{"type": "number", "description": "the pool in EUR, or the raise on a top-up", "exclusiveMinimum": 0},
+				"reason": str("why this number, one line")},
+			required: []string{"action", "eur", "reason"},
+			about:    "Set or top up the money of the project's escalation pool through a pull request on its file.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				ch := poolChange{action: in.Action, eur: in.EUR, reason: in.Reason}
+				if t.pool != nil {
+					// a confirmed press runs the captured change: the
+					// operation, the reason and the source stay the row's,
+					// the amount the one thing a correction changed
+					ch.action, ch.reason, ch.source = t.pool.Action, t.pool.Reason, t.pool.Source
+				} else {
+					path := policy.ProjectFile(t.p.Name)
+					_, source, present, err := t.c.infraFile(t.r.Context(), path)
+					switch {
+					case err != nil:
+						return "", nil, err
+					case !present:
+						return "", nil, refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+					}
+					ch.source = source
+				}
+				res, err := t.c.doSetPool(t.r.Context(), t.p.Name, ch, t.a)
+				if err != nil {
+					return "", nil, err
+				}
+				return fmt.Sprintf("The pool of %s is %s EUR now, was %s EUR: %s#%d carries the change and the policy in force holds it.",
+					t.p.Name, textutil.EUR(res.to), textutil.EUR(res.from), t.c.cfg.InfraRepo, res.pr), nil, nil
+			}},
+		{name: "read_doc", title: "Read a document",
+			params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
+				"from":  stepParam("the first line to read"),
+				"to":    stepParam("the last line to read"),
+				"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"},
+				"ask":   str("what a small digest answers (default the raw read)")},
+			required: []string{"path"},
+			about:    "Any file of the project's document repository with its base_sha256 and line count.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.docText(in)
+				return s, nil, err
+			}},
+		{name: "write_doc", title: "Write a document", write: true,
+			params: map[string]any{"path": docWrite,
+				"old":         str("the passage to replace, as read"),
+				"new":         str("the passage that replaces old, empty removes it"),
+				"content":     str("a new file's content"),
+				"base_sha256": str("read_doc's base_sha256, optional")},
+			required: []string{"path"},
+			about:    "Commit an edit of one passage, or a new file, to the project's document repository.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, t.p.Repository, in.Path, docEdit{Old: in.Old, New: in.New, Content: in.Content, Base: in.BaseSHA256})
+				return note, nil, err
+			}},
+		{name: "show_doc", title: "Show a document",
+			params:   map[string]any{"path": docPath, "heading": str("the heading to open at")},
+			required: []string{"path"},
+			about:    "Open a document of the project's document repository in the member's own document view.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				repo, err := t.c.docRepoOf(t.cfg.DocRepo, in.Path)
+				if err != nil {
+					return "", nil, err
+				}
+				if _, _, present, err := t.c.docFile(t.r.Context(), repo, in.Path); err != nil {
+					return "", nil, err
+				} else if !present {
+					tree, err := t.c.docTree(t.r.Context(), repo)
+					if err != nil {
+						return "", nil, err
+					}
+					return "", nil, refuse(http.StatusNotFound, fmt.Sprintf("There is no document %s on master. The nearest: %s.", in.Path, strings.Join(nearestDocs(tree, in.Path), ", ")))
+				}
+				t.viewEvent = map[string]any{"doc": in.Path}
+				open := in.Path + " is open in your document view."
+				if in.Heading != "" {
+					t.viewEvent["heading"] = in.Heading
+					open = fmt.Sprintf("%s is open in your document view, at %q.", in.Path, in.Heading)
+				}
+				return open, nil, nil
+			}},
+		{name: "set_autonomy", title: "Set the autonomy level", write: true,
+			params: map[string]any{"autonomy": enum("the autonomy state", policy.AutonomyStates...),
+				"queue_cap": map[string]any{"type": "integer", "description": "how many cards may wait unstarted, unset keeps it", "minimum": 1}},
+			required: []string{"autonomy"},
+			about:    "Set the project's autonomy state and queue cap through a pull request on its project file.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				if err := t.c.doSetAutonomy(t.r.Context(), t.p.Name, in.Autonomy, in.QueueCap, t.a); err != nil {
+					return "", nil, err
+				}
+				return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.QueueCap)), nil, nil
+			}},
+		{name: "routines", title: "Read the routines",
+			about: "The project's routines: each one's schedule, next run, last run and open card.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.routinesText()
+				return s, nil, err
+			}},
+		{name: "routine_write", title: "Write a routine", write: true,
+			params: map[string]any{"name": routineName, "title": str(writingguide.TitleLine), "why": str(writingguide.WhyLine),
+				"schedule": map[string]any{"type": "array", "description": "the triggers, any one of which starts a run", "minItems": 1,
+					"items": map[string]any{"type": "object", "description": "exactly one of cron, merges or on", "properties": map[string]any{
+						"cron":   str("five fields in the factory's zone, day and weekday ANDed"),
+						"merges": map[string]any{"type": "integer", "description": "a run every n merged cards of the project", "minimum": 1},
+						"on":     enum("a run on each such event", policy.RoutineEvents...)}}},
+				"files":      enum("what a run files", policy.FilesHuman, policy.FilesAgent, policy.FilesReport),
+				"skill":      str("the skill an agent routine's card runs, unset keeps it"),
+				"brief_text": str("each filed card's body, Markdown, unset keeps it"),
+				"while_open": enum("what a run does while the last card is open, unset keeps it", policy.WhileOpenHold, policy.WhileOpenFile),
+				"missed":     enum("what a run does when the factory was down, unset keeps it", policy.MissedValues...),
+				"tell":       enum("whether a filing tells the inbox, unset keeps it", policy.TellValues...)},
+			required: []string{"name", "title", "why", "schedule", "files"},
+			about:    "Create or change one of the project's routines through a pull request on its project file.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.writeRoutine(in)
+				return s, nil, err
+			}},
+		{name: "routine_delete", title: "Delete a routine", write: true,
+			params: map[string]any{"name": routineName}, required: []string{"name"},
+			about: "Delete one of the project's routines through a pull request on its project file.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.deleteRoutine(in)
+				return s, nil, err
+			}},
+		{name: "routine_run", title: "Run a routine now", write: true,
+			params: map[string]any{"name": routineName}, required: []string{"name"},
+			about: "Run one of the project's routines now, as the board's Run now does.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doRoutineRun(t.r.Context(), t.a, t.p.Name, in.Name)
+				return note, nil, err
+			}},
+		{name: "routine_skip", title: "Skip a routine's next run", write: true,
+			params:   map[string]any{"name": routineName, "undo": map[string]any{"type": "boolean", "description": "clears a pending skip"}},
+			required: []string{"name"},
+			about:    "Skip the next run of one of the project's routines, or undo a pending skip.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doRoutineSkip(t.r.Context(), t.a, t.p.Name, in.Name, in.SkipUndo)
+				return note, nil, err
+			}},
+		{name: "notes_read", title: "Read the scratchpad",
+			about: "The project's scratchpad, which every thread of the chat shares.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.notesText()
+				return s, nil, err
+			}},
+		{name: "notes_write", title: "Write the scratchpad", write: true,
+			params: map[string]any{"text": str("a note to append"),
+				"old": str("a passage to replace"), "new": str("the passage that replaces old, empty removes it")},
+			about: "Append a note to the scratchpad, or replace one passage of it.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.writeNotes(in.Text, in.Old, in.New)
+				return s, nil, err
+			}},
+		{name: "escalate", title: "Escalate to the humans", write: true,
+			params: map[string]any{"ask": str("the question the humans answer"),
+				"why":            str(writingguide.WhyLine),
+				"info":           str("the facts a reader needs, with what would change your mind"),
+				"recommendation": str("the answer you would pick and where you read it"),
+				"choice":         str("the one of choices you would pick, as written"),
+				"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": writingguide.MaxChoice},
+					"description": "answers the humans may press, each once"}},
+			required: []string{"ask", "why", "info", "recommendation", "choices"},
+			about:    "Ask the humans for a decision, its why and its info with it.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choice, in.Choices)
+				return s, nil, err
+			}},
+		{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,
+			params: map[string]any{"task_id": taskParam,
+				"case_id": map[string]any{"type": "integer", "minimum": 1,
+					"description": "the case you hold: the analysis hands it up"},
+				"found":          str("what you learned about the ask, the facts with their numbers"),
+				"recommendation": str("the answer you would pick and where you read it"),
+				"recommended": map[string]any{"type": "object", "description": "what the human is asked to take: an action or a plan answer",
+					"properties": map[string]any{
+						"action": map[string]any{"type": "string", "enum": humanActionNames()},
+						"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer takes them"},
+						"answer": map[string]any{"type": "string", "description": "a plan question's choice, confirm or revise, or a human card's choice by its value"}}}},
+			required: []string{"task_id", "found"},
+			about:    "Record what you found on a card's ask, or hand your case up to the human.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.attachAnalysis(in)
+				return s, nil, err
+			}},
+		{name: "active_threads", title: "Read the project's threads",
+			about: "The project's active threads, every human's with its owner named, then the scratchpad's tail.",
+			run: func(t *turn, _ toolInput) (string, *inverse, error) {
+				s, err := t.activeThreads()
+				return s, nil, err
+			}},
+		{name: "chat_search", title: "Search the project's threads",
+			params: map[string]any{"query": str("the text to find, any case"),
+				"thread": map[string]any{"type": "integer", "description": "one of your own thread's numbers to search only it", "minimum": 1}},
+			required: []string{"query"},
+			about:    "Search every thread of the project, every human's, for a text, at most 20 hits.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
+		{name: "inbox", title: "Read the inbox",
+			params: map[string]any{"query": str("a word to filter by, 2 to 200 characters"),
+				"before": map[string]any{"type": "integer", "description": "a row id: older rows, the open asks left out", "minimum": 1}},
+			about: "The factory's thread: open asks first, then the newest rows, filtered by query, paged by before.",
+			run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.inboxText(in); return s, nil, err }},
+		{name: "board_view", title: "Board view",
+			about:  "Works the board's view controls as a click does: menus, find, routines, card, theme.",
+			params: boardViewParams(),
+			run:    func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(in, false) },
+		},
+		{name: "board_view_reset", title: "Board view reset",
+			about: "Clears the board's view controls to the default and closes the drawer.",
+			run:   func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(toolInput{}, true) },
+		},
+		{name: "watch_card", title: "Watch a card",
+			params:   map[string]any{"task_id": taskParam},
+			required: []string{"task_id"},
+			about:    "Watch a card: its moves wake this thread.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.watchCard(in); return s, nil, err }},
+		{name: "unwatch_card", title: "End a watch",
+			params:   map[string]any{"task_id": taskParam},
+			required: []string{"task_id"},
+			about:    "End this thread's watch on a card.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.unwatchCard(in); return s, nil, err }},
+		{name: "set_timer", title: "Set a timer",
+			params: map[string]any{"minutes": map[string]any{"type": "integer", "description": "the minutes from now, 1 to 1440", "minimum": 1, "maximum": 1440},
+				"note":    str("the note the wake carries, 1 to 200 characters"),
+				"task_id": str("the card this timer dies with, its task id or issue number")},
+			required: []string{"minutes", "note"},
+			about:    "Set a one-shot timer that wakes this thread with its note.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.setTimer(in); return s, nil, err }},
+		{name: "delete_comment", write: true, internal: true,
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				note, err := t.c.doDeleteComment(t.r.Context(), t.a, in.TaskID, int64(in.N))
+				return note, nil, err
+			}},
+		{name: "analyze_image", title: "Look at an image",
+			params: map[string]any{"name": str("the image's name, img1 as its row shows"),
+				"ask": map[string]any{"type": "string", "maxLength": 2000, "description": "what to look for (default what the image shows)"}},
+			required: []string{"name"},
+			priced:   true,
+			about:    "One look at an image a human sent: the vision model's answer to a question about it.",
+			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.lookImage(in); return s, nil, err }},
+		{name: "read_attachment", title: "Read a sent document",
+			params: map[string]any{"name": str("the document's name, doc1 as its row shows"), "find": str("the lines holding this text, case-insensitive"),
+				"from":  stepParam("the first line to read"),
+				"to":    stepParam("the last line to read"),
+				"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
+			required: []string{"name"},
+			about:    "A document a human sent, with its base_sha256 and line count.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.readAttachment(in)
+				return s, nil, err
+			}},
+		{name: "summarize_attachment", title: "Summarise a sent document",
+			params:   map[string]any{"name": str("the document's name, doc1 as its row shows"), "ask": str("what the summary answers (default what the document says)")},
+			required: []string{"name"},
+			priced:   true,
+			about:    "One model call over a document a human sent: its answer to a question about it.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.summarizeAttachment(in)
+				return s, nil, err
+			}},
+	}
 	tools = append(tools, chatTool{name: "ask", title: "Ask the human",
 		params: map[string]any{"ask": str("the question, with its state and its numbers"),
-			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
+			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": writingguide.MaxChoice},
 				"description": "the answers the human may press"},
 			"tool":   str("the write tool the bound press runs, none for a plain ask"),
 			"args":   map[string]any{"type": "object", "description": "the bound tool's arguments as it reads them"},
@@ -2230,7 +2222,7 @@ func (t *turn) imagesText() (string, error) {
 	issue := map[string]int64{}
 	for _, k := range cards {
 		issue[k.ID] = k.IssueNumber
-		if k.Source == factoryd.SourceToolRequest && k.Status != "merged" {
+		if k.ToolImage != "" && k.Status != "merged" {
 			open = append(open, fmt.Sprintf("  #%d %s %q: %s", k.IssueNumber, k.ID, factoryd.CardTitle(k.Task), k.Status))
 		}
 	}
@@ -2406,11 +2398,10 @@ func (t *turn) systemText() (string, error) {
 	}
 	fmt.Fprintf(&b, "  approvers: %s\n", strings.Join(v.ApproversOf(t.p.Repository), ", "))
 	if _, eur := v.ProjectCap(t.p.Repository); !math.IsInf(eur, 1) {
-		fmt.Fprintf(&b, "  project month cap: €%.2f\n", eur)
+		fmt.Fprintf(&b, "  project month cap: %s EUR\n", textutil.EUR(eur))
 	}
 	b.WriteString(limitLines(v.Tree.Document))
 	fmt.Fprintf(&b, "\nChat bounds:\n  message size: %d KiB\n  model calls: as many as the task's budget holds\n", chatMessageMax>>10)
-	b.WriteString("\nThe writing guide, for every word a person reads:\n" + writingguide.Guide)
 	return b.String(), nil
 }
 
@@ -2424,7 +2415,7 @@ func (t *turn) fund(in toolInput) (string, error) {
 // capSpent is the refusal of money res draws past card issue's ceiling,
 // held the budget it met: it names the raise that makes room by the
 // control the human has where they are, the answer's raise_ceiling in the
-// chat, the Fund form's ceiling field elsewhere.
+// chat, the opened card's raise of the spend limit elsewhere.
 func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float64, via string) string {
 	eur, _ := res.Args["eur"].(float64)
 	if res.Action != factoryd.ActFund {
@@ -2433,11 +2424,11 @@ func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float6
 	if res.Fund != nil {
 		eur += res.Fund.EUR
 	}
-	raise := "raise the ceiling in the Fund form's ceiling field as you fund"
+	raise := "press “" + factoryd.LabelOf(factoryd.ActRaiseCeiling) + "” on the opened card, which adds the money beside it"
 	if via == factoryd.ViaChat {
-		raise = "raise the ceiling first (answer with action raise_ceiling), then fund"
+		raise = "raise the spend limit first (answer with the action `" + factoryd.ActRaiseCeiling + "`), then add the money"
 	}
-	return fmt.Sprintf("Card #%d holds €%.2f now, and €%.2f more passes its ceiling of €%.2f: %s.", issue, held, eur, ceiling, raise)
+	return fmt.Sprintf("Card #%d holds %s EUR now, and %s EUR more passes its spend limit of %s EUR: %s.", issue, textutil.EUR(held), textutil.EUR(eur), textutil.EUR(ceiling), raise)
 }
 
 // limitLines are the policy's task budget and limits, one indented line
@@ -2449,9 +2440,9 @@ func limitLines(d policy.Document) string {
 		checkIn = l.CheckIn.String()
 	}
 	after, nudges := l.Nudge()
-	return fmt.Sprintf("  task budget: €%.2f default, €%.2f maximum\n  sessions per card: %d\n  agent time: %s\n  check-in: %s\n"+
+	return fmt.Sprintf("  task budget: %s EUR default, %s EUR maximum\n  sessions per card: %d\n  agent time: %s\n  check-in: %s\n"+
 		"  supervisor calls per session: %d\n  supervisor timeout: %s\n  returns before the stronger model: %d\n  steps per session: %d\n"+
 		"  identical calls before a nudge: %d, nudges: %d\n  identical calls that trip the supervisor: %d\n",
-		d.Budget.TaskDefaultEUR, d.Budget.TaskMaxEUR, l.Sessions, l.AgentTime, checkIn,
+		textutil.EUR(d.Budget.TaskDefaultEUR), textutil.EUR(d.Budget.TaskMaxEUR), l.Sessions, l.AgentTime, checkIn,
 		l.SupervisorCalls, l.SupervisorTimeout, l.StrongerAfter, l.StepCap(), after, nudges, l.SameCallAfter())
 }

@@ -170,7 +170,7 @@ func (t *turn) sessions(in toolInput) (factoryd.Task, []map[string]any, []sessio
 		return k, nil, nil, refuse(http.StatusConflict, fmt.Sprintf("Card #%d has had no session yet.", k.IssueNumber))
 	}
 	if in.N < 0 || in.N > len(all) {
-		return k, nil, nil, refuse(http.StatusNotFound, fmt.Sprintf("Card #%d has no session %d; it has had %s.",
+		return k, nil, nil, refuse(http.StatusNotFound, fmt.Sprintf("Card #%d has no session %d. It has had %s.",
 			k.IssueNumber, in.N, textutil.Plural(len(all), "session", "sessions")))
 	}
 	return k, steps, all, nil
@@ -199,7 +199,7 @@ func (t *turn) transcript(k factoryd.Task, s sessionRef) ([]byte, error) {
 	case body == nil:
 		return nil, refuse(http.StatusNotFound, fmt.Sprintf("no transcript for session %d", s.N))
 	case len(body) > transcriptMax:
-		return body, refuse(http.StatusConflict, fmt.Sprintf("session %d's transcript is %.1f MiB; too large to read", s.N, float64(len(body))/(1<<20)))
+		return body, refuse(http.StatusConflict, fmt.Sprintf("session %d's transcript is %.1f MiB, too large to read", s.N, float64(len(body))/(1<<20)))
 	}
 	return body, nil
 }
@@ -539,7 +539,7 @@ func costLines(calls []policy.ModelCall) []string {
 			line += commas.Sprintf(", prompt tokens per call median %d max %d, %.0f%% cached",
 				prompts[(len(prompts)-1)/2], prompts[len(prompts)-1], 100*float64(cached)/float64(prompt))
 		}
-		lines = append(lines, line+fmt.Sprintf(", %.4f EUR per call", eur/float64(n)))
+		lines = append(lines, line+fmt.Sprintf(", %s EUR per call", textutil.Rate(eur/float64(n))))
 	}
 	return lines
 }

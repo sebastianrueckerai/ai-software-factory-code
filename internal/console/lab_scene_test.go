@@ -284,7 +284,7 @@ func TestLabSceneFilesIssue(t *testing.T) {
 	token := strings.Repeat("p", 43)
 	s := nordScene(nordCard(102, "running", policy.TrackDirect), nordCard(101, "done", policy.TrackDirect))
 	s.proposals = []factoryd.ChatProposal{{Token: token, Kind: "proposal", Repository: "nord/booking", Login: "sebastian",
-		Tool: "new_card", Args: json.RawMessage(`{"title":"Export","body":"Export the bookings.","acceptance":["The export holds every booking"],"track":"plan","track_reason":"a feature","size":"medium"}`),
+		Tool: "new_card", Args: json.RawMessage(`{"title":"Export","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Export the bookings.","acceptance":["The export holds every booking"],"track":"plan","track_reason":"a feature","size":"medium"}`),
 		ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}}
 	r.seedScene(s)
 	ck, sess := r.loggedIn(t)

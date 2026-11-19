@@ -57,13 +57,13 @@ func assetPosts(r *rig) []string {
 // with the project agent's token.
 func TestChatNewCardUploadsTheThreadsImages(t *testing.T) {
 	r, _, jpg, post := assetRig(t)
-	args := `{"title":"Fix the button","body":"It is red.","track":"direct","track_reason":"one fix","size":"small","acceptance":["The button is blue"],"attachments":["img2","img1"]}`
+	args := `{"title":"Fix the button","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"It is red.","track":"direct","track_reason":"one fix","size":"small","acceptance":["The button is blue"],"attachments":["img2","img1"]}`
 	events := post(call(1, "new_card", args))
 	filed := "Filed sf/code#41 on track direct."
 	if len(events) != 4 || !strings.Contains(events[0], `"result":"`+filed+`"`) {
 		t.Fatalf("the stream = %v, want the filing alone", events)
 	}
-	if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != "It is red.\n\nAcceptance:\n- The button is blue\n\nAttachments: img2.jpg, img1.png\n\nSize: small" {
+	if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != briefHead+"It is red.\n\nAcceptance:\n- The button is blue\n\nAttachments: img2.jpg, img1.png\n\nSize: small" {
 		t.Fatalf("the issues = %v, want one carrying the Attachments line before the field lines", r.fg.issues)
 	}
 	equal(t, "the assets", r.fg.assets, []asset{
@@ -78,7 +78,7 @@ func TestChatNewCardUploadsTheThreadsImages(t *testing.T) {
 // with the project agent's token, the agent having decided the filing.
 func TestChatCaseFilingUploadsItsImagesAsItsDecider(t *testing.T) {
 	r, _, _, post := assetRig(t)
-	events := post(call(1, "new_card", `{"task_id":"t-m","title":"Fix the button","body":"It is red.","track":"direct","track_reason":"one fix","size":"small","acceptance":["The button is blue"],"attachments":["img1"]}`))
+	events := post(call(1, "new_card", `{"task_id":"t-m","title":"Fix the button","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"It is red.","track":"direct","track_reason":"one fix","size":"small","acceptance":["The button is blue"],"attachments":["img1"]}`))
 	if len(events) != 4 || !strings.Contains(events[0], `"result":"Filed sf/code#41."`) {
 		t.Fatalf("the stream = %v, want the filing alone", events)
 	}
@@ -97,7 +97,7 @@ func TestChatNewCardWithoutTheAgentsTokenForItsImages(t *testing.T) {
 		}
 		return "chat-token"
 	}
-	events := post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img2"]}`))
+	events := post(call(1, "new_card", `{"title":"Fix the button","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img2"]}`))
 	want := `Filed sf/code#41 on track direct. The project agent's token could not be read, so img1, img2 did not go up: attach them again with comment's attachments.`
 	if len(events) != 4 || !strings.Contains(events[0], `"result":"`+want+`"`) || len(assetPosts(r)) != 0 {
 		t.Fatalf("the stream = %v, uploads %v; want the filing, the names and no upload", events, assetPosts(r))
@@ -108,7 +108,7 @@ func TestChatNewCardWithoutTheAgentsTokenForItsImages(t *testing.T) {
 // session's look ask which one.
 func TestChatNewCardAttachesARepeatedNameOnce(t *testing.T) {
 	r, _, _, post := assetRig(t)
-	post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img1"]}`))
+	post(call(1, "new_card", `{"title":"Fix the button","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img1"]}`))
 	if len(r.fg.issues) != 1 || !strings.Contains(r.fg.issues[0]["body"].(string), "\n\nAttachments: img1.png\n\n") {
 		t.Fatalf("the issues = %v, want one naming img1.png once", r.fg.issues)
 	}
@@ -120,7 +120,7 @@ func TestChatNewCardAttachesARepeatedNameOnce(t *testing.T) {
 // naming the images there are.
 func TestChatNewCardUnknownAttachmentFilesNothing(t *testing.T) {
 	r, _, _, post := assetRig(t)
-	events := post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img7"]}`))
+	events := post(call(1, "new_card", `{"title":"Fix the button","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img7"]}`))
 	if len(events) != 3 || !strings.Contains(events[0], `"result":"Refused: no image \"img7\": the conversation's images are img2, img1"`) {
 		t.Fatalf("the stream = %v", events)
 	}
@@ -134,7 +134,7 @@ func TestChatNewCardUnknownAttachmentFilesNothing(t *testing.T) {
 func TestChatNewCardUploadFailureStillAnswersTheFiling(t *testing.T) {
 	r, _, _, post := assetRig(t)
 	r.fg.failAssets = true
-	events := post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img2"]}`))
+	events := post(call(1, "new_card", `{"title":"Fix the button","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img2"]}`))
 	want := `Filed sf/code#41 on track direct. Forgejo did not take img1, img2: attach them again with comment's attachments.`
 	if len(events) != 4 || !strings.Contains(events[0], `"result":"`+want+`"`) {
 		t.Fatalf("the stream = %v, want the filing and the failed names", events)

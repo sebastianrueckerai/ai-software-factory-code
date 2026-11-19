@@ -8,7 +8,7 @@ import (
 
 // gatePlanCard seeds a criteria plan whose integration card t-int is open
 // and holds PR 12 at head c7, and returns the store, the card and the
-// plan as filedPlan hands it over. settled gives every criterion a met row
+// plan as planOfStore hands it over. settled gives every criterion a met row
 // of that source.
 func gatePlanCard(t *testing.T, settled string) (*fakeStore, Task, Plan) {
 	t.Helper()

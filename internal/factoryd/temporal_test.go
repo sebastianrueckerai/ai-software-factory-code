@@ -466,7 +466,7 @@ func TestTemporalAliveIsARunningWorkflow(t *testing.T) {
 // issue a person closed alone, and settles a close Forgejo refuses.
 func TestHealFactoryCloses(t *testing.T) {
 	ctx := context.Background()
-	const body = "factoryd: closing this issue."
+	const body = "Closing this issue."
 	type want struct {
 		calls     []string
 		comments  []string

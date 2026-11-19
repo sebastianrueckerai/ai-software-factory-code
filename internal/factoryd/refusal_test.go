@@ -129,7 +129,7 @@ func TestRefusedIssueIsToldOnceAndLeftBe(t *testing.T) {
 	}
 	open := "The factory made no card for this issue: card #1547, running, already builds roadmap item 66 of sf/ai-software-factory-code. " +
 		"Wait for it to end, or close it. The factory looks at this issue again within a day. " +
-		"Add the line \"Refile of #1547\" to this issue's description; a comment does not count."
+		"Add the line \"Refile of #1547\" to this issue's description. A comment does not count."
 	if got := fj.bodies(); len(got) != 1 || !strings.HasPrefix(got[0], open+"\n\n<!-- factoryd refusal") {
 		t.Fatalf("comments = %q, want exactly one: %s", got, open)
 	}
@@ -161,7 +161,7 @@ func TestRefusedIssueIsToldOnceAndLeftBe(t *testing.T) {
 	}
 	edited(t, in, fj)
 	ended := "The factory made no card for this issue: card #1547, closed, still holds roadmap item 66 of sf/ai-software-factory-code. " +
-		"Add the line \"Refile of #1547\" to this issue's description; a comment does not count."
+		"Add the line \"Refile of #1547\" to this issue's description. A comment does not count."
 	if got := fj.bodies(); len(store.tasks) != 1 || len(got) != 2 || !strings.HasPrefix(got[1], ended+"\n\n") {
 		t.Fatalf("after the close: %d cards, comments %q; want the holder only and a second comment: %s", len(store.tasks), got, ended)
 	}
@@ -182,7 +182,7 @@ func TestRefusedIssueIsToldOnceAndLeftBe(t *testing.T) {
 // Each holder state names its own way forward, whole.
 func TestRefusalTextByHolderState(t *testing.T) {
 	in := &Intake{}
-	line := "Add the line \"Refile of #1547\" to this issue's description; a comment does not count."
+	line := "Add the line \"Refile of #1547\" to this issue's description. A comment does not count."
 	for status, want := range map[string]string{
 		"running":   "The factory made no card for this issue: card #1547, running, already builds roadmap item 66 of sf/r. Wait for it to end, or close it. The factory looks at this issue again within a day. " + line,
 		"in-review": "The factory made no card for this issue: card #1547, in review, already builds roadmap item 66 of sf/r. Wait for it to end, or close it. The factory looks at this issue again within a day. " + line,

@@ -58,6 +58,15 @@ func TestPGStore(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("task = %+v, want %+v", got, want)
 	}
+	// a card that continues a tool card carries the tool card's image
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, track, source, tool_image) VALUES ('t-succ', 10, 0, 'running', '["coder"]', 'sf/app', 'small', 'direct', 'successor', 'video')`,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if got, ok, err := s.Task(ctx, "t-succ"); err != nil || !ok || got.Source != "successor" || got.ToolImage != "video" {
+		t.Fatalf("successor = (%+v, %v, %v), want source successor, image video", got, ok, err)
+	}
 
 	// a hold and its release book the task and the ledger together
 	h, err := s.TakeHold(ctx, policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "small",
@@ -68,7 +77,7 @@ func TestPGStore(t *testing.T) {
 	cost := 0.5
 	// the hold is 1000 × 1e-6 + 1024 × 4e-6 = 0.005096 EUR: 0.5 is over it
 	if b, err := s.ReleaseHold(ctx, h, &cost, policy.Usage{}); err != nil || b.Spent != 2.5 ||
-		b.OverHold != "COST OVER HOLD: model small cost 0.500000 EUR against a hold of 0.005096 EUR; booked in full" {
+		b.OverHold != "COST OVER HOLD: model small cost 0.50 EUR against a hold of 0.01 EUR; booked in full" {
 		t.Fatalf("ReleaseHold = (%+v, %v), want spent 2.5, flagged", b, err)
 	}
 	var ledger string
@@ -232,7 +241,7 @@ func TestPGPremiumHeadroom(t *testing.T) {
 	req := policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "operator/premium", Bytes: 1000,
 		Price: policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}, DayEUR: 100, MonthEUR: 100, ProjectEUR: math.Inf(1), PremiumEUR: 0.05}
 	var ref *policy.Refusal
-	if _, err := s.TakeHold(ctx, req); !errors.As(err, &ref) || ref.Decision != policy.RefusedPremiumCap || !strings.Contains(ref.Reason, "premium 0.005000)") {
+	if _, err := s.TakeHold(ctx, req); !errors.As(err, &ref) || ref.Decision != policy.RefusedPremiumCap || !strings.Contains(ref.Reason, "premium 0.01)") {
 		t.Fatalf("premium cap 0.05 = %v, want refused_premium_cap at 0.005 EUR", err)
 	}
 	req.PremiumEUR = 1

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // The skeleton's two findings and their ids: the first 12 hex of the
@@ -162,9 +163,25 @@ func TestCardDigestRendersTheSkeleton(t *testing.T) {
 		"   5 +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
 		"   6 +9:40   answer by sebastian    → Grant one session\n" +
 		"   7 +9:41   session 4 small        → no push ×2\n" +
-		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4)\n"
+		"flags: grant_bought_nothing(session 4), session_no_push(session 4)\n"
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+	life := []LifeLine{
+		{Text: "Filed by the planner: revision 2, depends on #1402 (done)."},
+		{Text: "Session 1 on small: pushed its work, 0.41 EUR in 23 calls."},
+		{Text: "The model review: concerns, 2 findings."},
+		{Text: "The check-in at the gate: confirmed 2, handover."},
+		{Text: "It asked: Card 1410 asks: grant one more session?"},
+		{Text: "Answered by sebastian:", Quote: "Grant one session"},
+		{Text: "Session 4 on small: no push, 2 times."},
+	}
+	got := d.Life()
+	for i := range got {
+		got[i].At = time.Time{}
+	}
+	if !slices.Equal(got, life) {
+		t.Fatalf("Life =\n%+v\nwant\n%+v", got, life)
 	}
 	if got := FindingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
 		t.Fatalf("findingID of the spaced, upper-case text = %s, want %s", got, idA)
@@ -326,21 +343,15 @@ func TestCardDigestFlagsAFindingConfirmedTwice(t *testing.T) {
 	}
 }
 
-func TestCardDigestFlagsMoneyAskHidingFindings(t *testing.T) {
+// A money ask over open review findings names the findings itself, so the
+// digest raises no flag about it.
+func TestCardDigestRaisesNoFlagOnAMoneyAskOverFindings(t *testing.T) {
 	g := newDigestRig(nil)
 	g.line(t, 10, "model_review", map[string]any{"verdict": "concerns", "findings": []string{findingA}, "round": 1})
 	g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseSessionCap, StateKey: "k1", Status: CaseOpen,
 		Money: &CaseMoney{Kind: string(CaseSessionCap), BudgetEUR: 5, SpentEUR: 4}}}
-	if got, want := g.digest(t).Flags, []DigestFlag{{"money_ask_hides_findings", ""}}; !slices.Equal(got, want) {
-		t.Fatalf("Flags = %v, want %v", got, want)
-	}
-	g.line(t, 15, "model_review", map[string]any{"round": 2})
-	if got, want := g.digest(t).Flags, []DigestFlag{{"money_ask_hides_findings", ""}}; !slices.Equal(got, want) {
-		t.Fatalf("Flags after a review with no verdict = %v, want %v", got, want)
-	}
-	g.line(t, 20, "model_review", map[string]any{"verdict": "approve", "round": 3})
 	if got := g.digest(t).Flags; len(got) != 0 {
-		t.Fatalf("Flags after an approving review = %v, want none", got)
+		t.Fatalf("Flags = %v, want none", got)
 	}
 }
 
@@ -394,8 +405,8 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseJudgmentBudget, StateKey: "k1", Status: CaseAtHuman, Problem: "p"}}
 		}, nil},
 		{"a case at the human no rung could judge", nil, func(t *testing.T, g digestRig) {
-			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseOther, StateKey: "k1", Status: CaseAtHuman, Problem: "p (not judged: the model provider refused)"}}
-			g.store.caseSteps = map[int64][]CaseStep{1: {{CaseID: 1, Rung: 0, Outcome: StepHandedUp}}}
+			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseOther, StateKey: "k1", Status: CaseAtHuman, Problem: "p"}}
+			g.store.caseSteps = map[int64][]CaseStep{1: {{CaseID: 1, Rung: 0, Outcome: StepHandedUp, Found: "not judged: the model provider refused: the model refused the call (400)"}}}
 		}, nil},
 		{"a case at the human rung 2 handed up", nil, func(t *testing.T, g digestRig) {
 			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseOther, StateKey: "k1", Status: CaseAtHuman, Problem: "p"}}
@@ -458,8 +469,21 @@ func TestCardDigestWithoutATimelineRendersTheEventsAlone(t *testing.T) {
 		"   1 +0:00   filed by webhook       → direct card\n" +
 		"   2 +0:30   ask                    → agent_escalate: Which file should change?\n" +
 		"flags: none\n"
-	if got := g.digest(t).Render(); got != want {
+	d := g.digest(t)
+	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+	// the same log as a human reads it: the ask's kind gone
+	life := []LifeLine{
+		{Text: "Filed by webhook: direct card."},
+		{Text: "It asked: Which file should change?"},
+	}
+	got := d.Life()
+	for i := range got {
+		got[i].At = time.Time{}
+	}
+	if !slices.Equal(got, life) {
+		t.Fatalf("Life =\n%+v\nwant\n%+v", got, life)
 	}
 }
 
@@ -549,8 +573,39 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 		"  18 +0:19   criteria by review     → C1 met, C2 undecided\n" +
 		"  19 +0:20   criteria by sebastian  → C2 met\n" +
 		"flags: none\n"
-	if got := g.digest(t).Render(); got != want {
+	d := g.digest(t)
+	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+	// the same log as a human reads it: words, a count for the finding
+	// ids, no hash, a writer's words apart
+	life := []LifeLine{
+		{Text: "Filed by webhook: depends on #1409 (done)."},
+		{Text: "Made to wait by sebastian: depends on #1409."},
+		{Text: "Status: queued, intake."},
+		{Text: "Status: running, session."},
+		{Text: "Money added by sebastian: 1.00 EUR."},
+		{Text: "More allowed by sebastian: 2 sessions, 100 lines, 0.50 EUR."},
+		{Text: "The checks: failure, 1 finding."},
+		{Text: "The security audit: 1 finding."},
+		{Text: "Handed over:", Quote: "Fix the vet finding first."},
+		{Text: "Asked to approve: merge, pull request #12."},
+		{Text: "Tried again by sebastian: as #1411."},
+		{Text: "Sent back to the planner by sebastian: asked for a new plan."},
+		{Text: "Cut into cards by the factory: revision 3 into #1412, #1413 at session 2."},
+		{Text: "Granted by sebastian: one more session."},
+		{Text: "Answered by sebastian:", Quote: "Keep the table"},
+		{Text: "Merged: pull request #12."},
+		{Text: "Ended: done."},
+		{Text: "The promises by review: C1 met, C2 undecided."},
+		{Text: "The promises by sebastian: C2 met."},
+	}
+	got := d.Life()
+	for i := range got {
+		got[i].At = time.Time{}
+	}
+	if !slices.Equal(got, life) {
+		t.Fatalf("Life =\n%+v\nwant\n%+v", got, life)
 	}
 }
 
@@ -937,12 +992,13 @@ func digestPlanRig(t *testing.T, key string) digestRig {
 
 // The digest of the successor that carries the integration card's key
 // counts the plan's criteria and reads their rows on the plan-filed
-// integration card: at its approval the one criterion no row holds there
-// flags.
+// integration card: at its approval the one test criterion no row holds
+// there, whose proof is stored, flags. The human criterion pages_ok, with no row either, is asked
+// on the merge's own page and flags nothing.
 func TestCardDigestOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
 	var rows []CriterionVerdict
 	for _, c := range digestPlan().Criteria {
-		if c.ID != "pages_ok" {
+		if c.ID != "pages_ok" && c.ID != "group_open" {
 			rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
 				DecidedBy: FactoryDecider, CreatedAt: digestAt(30)})
 		}
@@ -954,8 +1010,12 @@ func TestCardDigestOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
 	g.store.tasks["t-int"] = Task{ID: "t-int", Kind: "agent", Repository: "sf/app", IssueNumber: 1400, Source: SourcePlan, Parent: "plan1",
 		PlanKey: "integ", Status: "failed"}
 	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t-int": rows}
+	if _, err := g.store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{{Idx: 1, Origin: ProofOriginCriterion, Criterion: "group_open", ID: "group_open",
+		State: ProofStored, Suite: "proofs/group_open", Name: "TestGroupOpen", Path: "proofs/group_open/group_open_test.go", Code: "package group_open"}}); err != nil {
+		t.Fatal(err)
+	}
 	d := g.digest(t)
-	if want := []DigestFlag{{"criterion_unproven", "pages_ok"}}; d.Head.Criteria != 7 || !slices.Equal(d.Flags, want) {
+	if want := []DigestFlag{{"criterion_unproven", "group_open"}}; d.Head.Criteria != 7 || !slices.Equal(d.Flags, want) {
 		t.Fatalf("Head criteria %d, flags %+v; want 7 and %+v", d.Head.Criteria, d.Flags, want)
 	}
 }
@@ -1162,12 +1222,14 @@ func TestCardDigestFlagsTheOpenedProofs(t *testing.T) {
 	}
 }
 
-// At the approval a criterion no row holds flags; not at another gate,
-// not on a card that is not the plan's integration card.
+// At the approval a promise no row holds flags when a run of the factory
+// can check it: group_open, whose proof is stored. pages_ok, which a human judges
+// on the merge's own pages, does not flag. Nor does any promise at
+// another gate, or on a card that is not the plan's integration card.
 func TestCardDigestFlagsACriterionNoRowHolds(t *testing.T) {
 	var rows []CriterionVerdict
 	for _, c := range digestPlan().Criteria {
-		if c.ID == "pages_ok" {
+		if c.ID == "pages_ok" || c.ID == "group_open" {
 			continue
 		}
 		rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
@@ -1177,7 +1239,7 @@ func TestCardDigestFlagsACriterionNoRowHolds(t *testing.T) {
 		key, gate string
 		want      []DigestFlag
 	}{
-		{"integ", GateApproval, []DigestFlag{{"criterion_unproven", "pages_ok"}}},
+		{"integ", GateApproval, []DigestFlag{{"criterion_unproven", "group_open"}}},
 		{"integ", GateReview, nil},
 		{"sizes", GateApproval, nil},
 	} {
@@ -1187,6 +1249,10 @@ func TestCardDigestFlagsACriterionNoRowHolds(t *testing.T) {
 			c.Status, c.Gate = "in-review", tc.gate
 			g.store.tasks["t1410"] = c
 			g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t1410": rows}
+			if _, err := g.store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{{Idx: 1, Origin: ProofOriginCriterion, Criterion: "group_open", ID: "group_open",
+				State: ProofStored, Suite: "proofs/group_open", Name: "TestGroupOpen", Path: "proofs/group_open/group_open_test.go", Code: "package group_open"}}); err != nil {
+				t.Fatal(err)
+			}
 			if got := g.digest(t).Flags; !slices.Equal(got, tc.want) {
 				t.Fatalf("flags = %+v, want %+v", got, tc.want)
 			}
@@ -1657,6 +1723,82 @@ func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
 	want := []DigestFlag{{"queued_over_bound", "resumed: work bound 7 of 7 live, 1 ahead for 3h"}, {"wait_over_bound", "queued since +1:00"}}
 	if got := g.digest(t).Flags; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
+	}
+}
+
+// The digest names what a case asks by its problem, one source: an agent's
+// question asked at the session cap stores the cap's ask on its row, and
+// its ask line names the question.
+func TestTheDigestsAskLineNamesTheCasesQuestion(t *testing.T) {
+	c := Case{ID: 7, Kind: CaseAgentEscalate, Problem: "Which store keeps the snapshots?"}
+	e := Event{ID: 1, Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(7), "reason": AgentAsks + "Which store keeps the snapshots?",
+		"ask": "The card used all 3 sessions. How should it go on?"}}
+	steps := eventSteps(redact.New(), Task{ID: "t1"}, []Event{e}, []Case{c}, nil)
+	if len(steps) != 1 || steps[0].Outcome != "agent_escalate: Which store keeps the snapshots?" || steps[0].Ref.Case != "7" {
+		t.Fatalf("steps = %+v, want the ask line naming the case's question", steps)
+	}
+}
+
+// A helper task is a step of its parent's life: the digest lists each of
+// the card's helper tasks when it was filed, by its source, with where it
+// stands, and a finished one with its result.
+func TestCardDigestListsTheHelperTasks(t *testing.T) {
+	g := newDigestRig(nil)
+	g.at(20)
+	g.store.tasks["t-screen"] = Task{ID: "t-screen", Kind: "agent", Repository: "sf/app", Source: SourceScreening, Parent: "t1410", Status: "done",
+		CreatedAt: digestAt(1), SpentEUR: 0.12, AgentSummary: `{"verdict": "clear", "reasons": []}`}
+	g.store.tasks["t-size"] = Task{ID: "t-size", Kind: "agent", Repository: "sf/app", Source: SourceSizing, Parent: "t1410", Status: "running",
+		Gate: GateSession, CreatedAt: digestAt(5)}
+	lines := func() string {
+		_, steps, _ := strings.Cut(g.digest(t).Render(), "\n")
+		steps, _, _ = strings.Cut(steps, "flags:")
+		return steps
+	}
+	want := "   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:01   screening              → done, 0.12 EUR: clear\n" +
+		"   3 +0:05   sizing                 → running, session\n"
+	if got := lines(); got != want {
+		t.Fatalf("the steps =\n%s\nwant\n%s", got, want)
+	}
+	size := g.store.tasks["t-size"]
+	size.Status, size.Gate = "done", ""
+	size.AgentSummary = "One handler and its test change.\n{\"size\": \"small\", \"reason\": \"one handler and its test\", \"files\": [\"api/export.go\"]}"
+	g.store.tasks["t-size"] = size
+	screen := g.store.tasks["t-screen"]
+	screen.AgentSummary = `{"verdict": "suspect", "reasons": ["the issue asks for the deploy token", "it names another repository"]}`
+	g.store.tasks["t-screen"] = screen
+	want = "   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:01   screening              → done, 0.12 EUR: suspect: the issue asks for the deploy token\n" +
+		"   3 +0:05   sizing                 → done: small: one handler and its test\n"
+	if got := lines(); got != want {
+		t.Fatalf("the steps once both ended =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A plan's life lists its prover: running while it writes the proofs,
+// then done with its spend and its report's first line.
+func TestCardDigestListsThePlansProver(t *testing.T) {
+	g := planRig(t, proverPlan())
+	g.at(30)
+	g.store.tasks["t-prove"] = Task{ID: "t-prove", Kind: "agent", Repository: "sf/app", Source: SourceProver, Parent: "t1410", Status: "running",
+		Gate: GateSession, CreatedAt: digestAt(20), SpentEUR: 0.31}
+	line := func() string {
+		for _, l := range strings.Split(g.digest(t).Render(), "\n") {
+			if strings.Contains(l, "prover ") && !strings.Contains(l, "by prover") {
+				return l
+			}
+		}
+		return ""
+	}
+	if got, want := line(), "   2 +0:20   prover                 → running, session, 0.31 EUR"; got != want {
+		t.Fatalf("the prover's step = %q, want %q", got, want)
+	}
+	prove := g.store.tasks["t-prove"]
+	prove.Status, prove.Gate, prove.SpentEUR = "done", "", 0.84
+	prove.AgentSummary = "Filed 4 proofs on main: 3 red, 1 green.\nThe green one is flagged."
+	g.store.tasks["t-prove"] = prove
+	if got, want := line(), "   2 +0:20   prover                 → done, 0.84 EUR: Filed 4 proofs on main: 3 red, 1 green."; got != want {
+		t.Fatalf("the ended prover's step = %q, want %q", got, want)
 	}
 }
 

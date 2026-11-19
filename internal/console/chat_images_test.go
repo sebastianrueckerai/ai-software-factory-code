@@ -22,7 +22,7 @@ import (
 // request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
-	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger; pool: " + noDraws
+	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month 0.00 of 50.00 EUR, the factory's whole ledger; pool: " + noDraws
 	for _, tc := range []struct {
 		agents string
 		pins   map[string]policy.ImagePin
@@ -40,7 +40,7 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 		if tc.agents == policy.AgentsNone {
 			r.ledger.enforced = policy.Enforced{Month: 3.75}
 			want = "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: agents none, every issue goes to the human lane; " +
-				"spend this month €3.75 of €50.00, the factory's whole ledger"
+				"spend this month 3.75 of 50.00 EUR, the factory's whole ledger"
 		}
 		r.projects.rows[0].Agents, r.projects.rows[0].Images = tc.agents, tc.pins
 		ck, s := r.loggedIn(t)
@@ -72,7 +72,7 @@ func TestChatStatusOfAProjectFactorydDoesNotWorkOn(t *testing.T) {
 	g.replies = [][]string{{say("ok")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is it?"}})
 	system, _ := messages(t, g.calls()[0])[0]["content"].(string)
-	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
+	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month 0.00 of 50.00 EUR, the factory's whole ledger\n" +
 		"Sandbox images: none; every card runs the factory image."
 	if !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
@@ -81,8 +81,9 @@ func TestChatStatusOfAProjectFactorydDoesNotWorkOn(t *testing.T) {
 
 // project_images reads the project's pins in force with their tools,
 // egress, short digest and key, its open tool cards (a merged one is open
-// no more) and its cards waiting in waiting-image with the image each
-// waits for; another project's park is not the project's.
+// no more, and a card that continues one is one) and its cards waiting in
+// waiting-image with the image each waits for; another project's park is
+// not the project's.
 func TestChatProjectImagesRead(t *testing.T) {
 	r, g := newReadsRig(t)
 	equal(t, "without images", reads(t, r, g, "project_images", `{}`),
@@ -95,8 +96,9 @@ func TestChatProjectImagesRead(t *testing.T) {
 	}
 	r.tasks.mu.Lock()
 	for _, k := range []factoryd.Task{
-		{ID: "t-tool", Status: "queued", IssueNumber: 50, Source: factoryd.SourceToolRequest, Objective: "Add sox to image video\n\nRequested in the project chat by sebastian: mix."},
-		{ID: "t-old", Status: "merged", IssueNumber: 49, Source: factoryd.SourceToolRequest, Objective: "Add jq to image default\n\nRequested."},
+		{ID: "t-tool", Status: "queued", IssueNumber: 50, Source: policy.SourceToolRequest, ToolImage: "video", Objective: "Add sox to image video\n\nRequested in the project chat by sebastian: mix."},
+		{ID: "t-old", Status: "merged", IssueNumber: 49, Source: policy.SourceToolRequest, ToolImage: "default", Objective: "Add jq to image default\n\nRequested."},
+		{ID: "t-succ", Status: "queued", IssueNumber: 51, Source: factoryd.SourceSuccessor, ToolImage: "docs", Objective: "Add pandoc to the image docs\n\nContinues #48."},
 		{ID: "t-wait", Status: "waiting-image", IssueNumber: 41, Image: "video", Objective: "Mix the trailer."},
 		{ID: "t-w2", Status: "waiting-image", IssueNumber: 42, Image: "browser", Objective: "Shoot the page."},
 	} {
@@ -114,6 +116,7 @@ func TestChatProjectImagesRead(t *testing.T) {
 		"  default: tools jq; egress none; digest sha256:dddddddddddd; key k-eeeeeeeeeeeeeeeeeeeeeeee\n" +
 		"Open tool cards:\n" +
 		"  #50 t-tool \"Add sox to image video\": queued\n" +
+		"  #51 t-succ \"Add pandoc to the image docs\": queued\n" +
 		"Cards in waiting-image:\n" +
 		"  #41 t-wait: image video, tool card #50\n" +
 		"  #42 t-w2: image browser, no tool card"})
@@ -129,37 +132,37 @@ func TestChatNewCardImage(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.projects.rows[0].Images = pins
 	before := r.events.count()
-	args := `{"title":"Shoot the page","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"chromium"}`
+	args := `{"title":"Shoot the page","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"chromium"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, body Screenshot the landing page., track direct, track_reason one screenshot, size small, image chromium, acceptance The page is shot","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, why The board needs it., body Screenshot the landing page., track direct, track_reason one screenshot, size small, image chromium, summary It builds what the title names. A test checks it., acceptance The page is shot","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small\nImage: chromium")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small\nImage: chromium")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "one screenshot", "title": "Shoot the page", "size": "small", "image": "chromium", "thread": int64(1)}})
 
 	r, g = newWritesRig(t)
 	r.projects.rows[0].Images = pins
-	args = `{"title":"Shoot the page","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"default"}`
+	args = `{"title":"Shoot the page","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"default"}`
 	_, done, _ = proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it on default", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body on default", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small")
+	equal(t, "the issue's body on default", r.fg.issues[0]["body"], briefHead+"Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small")
 
-	unpinned := "Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave image out for the default, or add the image with request_image."
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
+	unpinned := "Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave `image` out for the default, or add the image with `request_image`."
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "an unpinned image", []any{code, msg}, []any{http.StatusConflict, unpinned})
 	// the proposal judges the image, so the agent corrects it before Do it
 	ck, s := r.loggedIn(t)
-	args = `{"image":"video","title":"Shoot the page","track":"direct","track_reason":"one screenshot"}`
+	args = `{"image":"video","title":"Shoot the page","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one screenshot"}`
 	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it on video"}})
 	equal(t, "the proposal of an unpinned image", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + unpinned + `"}`, `text {"text":"Refused."}`, `done {}`})
 	r.projects.rows[0].Images = nil
-	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "a project without images", []any{code, msg}, []any{http.StatusConflict,
-		"Project ai-software-factory-code pins no sandbox images. Leave image out for the default, or add the image with request_image."})
+		"Project ai-software-factory-code pins no sandbox images. Leave `image` out for the default, or add the image with `request_image`."})
 }
 
 // request_image is the member's ask for a tool, confirmed as new_card is:

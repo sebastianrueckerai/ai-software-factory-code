@@ -224,8 +224,8 @@ func TestRoutineSkipAnswersWithTheBoardAlone(t *testing.T) {
 }
 
 // The live toggle: a human or agent routine's ghost names the side in
-// force and offers its flip, an override offers the undo, and a
-// pull-request routine offers none. Each flip is one event with its via,
+// force and its drawer offers its flip, an override offers the undo, and
+// a pull-request routine offers none. Each flip is one event with its via,
 // the undo follows the config again, and a routine the project does not
 // run is 404 without an event.
 func TestRoutineToggle(t *testing.T) {
@@ -244,29 +244,31 @@ func TestRoutineToggle(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{weeklyBump(), audit(), overridden, roll}
 	ck, s := r.loggedIn(t)
 	queued := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued")
-	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me">` +
-		`<input type="hidden" name="csrf" value="` + s.csrf + `">%s<input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<button type="submit" class="xs" aria-label="%s">%s</button></form>`
-	bumpG := ghostIn(t, queued, "weekly-bump")
-	if want := fmt.Sprintf(form, "weekly-bump", "weekly-bump", `<input type="hidden" name="needs_me" value="0">`, "Weekly bump runs on its own", "Runs on its own"); !strings.Contains(bumpG, want) {
-		t.Fatalf("the bump's ghost lacks its flip to the agent side:\n%s", bumpG)
+	// the side shows on the ghost; its flip is the routine drawer's act
+	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#drawer" hx-swap="innerHTML" class="answer" data-answer="%s">` +
+		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
+		`<input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="overview">%s` + "\n" +
+		`<button type="submit" class="pick">%s</button>`
+	acts := func(name string) string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/routines/ai-software-factory-code/"+name+"/drawer?project=ai-software-factory-code", nil), ck).Body.String()
 	}
-	if !strings.Contains(bumpG, "human card") {
-		t.Fatalf("the bump's ghost names no side:\n%s", bumpG)
+	if want := fmt.Sprintf(form, "weekly-bump", "weekly-bump", factoryd.KeyRunAlone, `<input type="hidden" name="needs_me" value="0">`, "Let it run alone"); !strings.Contains(acts("weekly-bump"), want) {
+		t.Fatalf("the bump's drawer lacks its flip to the agent side:\n%s", acts("weekly-bump"))
 	}
-	auditG := ghostIn(t, queued, "audit")
-	if want := fmt.Sprintf(form, "audit", "audit", `<input type="hidden" name="needs_me" value="1">`, "Audit needs you", "Needs me"); !strings.Contains(auditG, want) {
-		t.Fatalf("the audit's ghost lacks its flip to the human side:\n%s", auditG)
+	if !strings.Contains(ghostIn(t, queued, "weekly-bump"), "human card") {
+		t.Fatalf("the bump's ghost names no side:\n%s", ghostIn(t, queued, "weekly-bump"))
 	}
-	overG := ghostIn(t, queued, "nightly-hold")
-	if want := fmt.Sprintf(form, "nightly-hold", "nightly-hold", `<input type="hidden" name="undo" value="1">`, "Nightly hold follows its config", "Follow the config"); !strings.Contains(overG, want) {
-		t.Fatalf("an overridden ghost lacks the undo:\n%s", overG)
+	if want := fmt.Sprintf(form, "audit", "audit", factoryd.AnswerNeedsMe, `<input type="hidden" name="needs_me" value="1">`, "Give it to me"); !strings.Contains(acts("audit"), want) {
+		t.Fatalf("the audit's drawer lacks its flip to the human side:\n%s", acts("audit"))
 	}
-	if !strings.Contains(overG, "agent card") {
-		t.Fatalf("the override's ghost names no side:\n%s", overG)
+	if want := fmt.Sprintf(form, "nightly-hold", "nightly-hold", factoryd.KeyFollowFile, `<input type="hidden" name="undo" value="1">`, "Follow the file"); !strings.Contains(acts("nightly-hold"), want) {
+		t.Fatalf("an overridden routine's drawer lacks the undo:\n%s", acts("nightly-hold"))
 	}
-	if g := ghostIn(t, queued, "roll-prs"); strings.Contains(g, "needs-me") {
-		t.Fatalf("a pull-request routine carries the toggle:\n%s", g)
+	if !strings.Contains(ghostIn(t, queued, "nightly-hold"), "agent card") {
+		t.Fatalf("the override's ghost names no side:\n%s", ghostIn(t, queued, "nightly-hold"))
+	}
+	if d := acts("roll-prs"); strings.Contains(d, "needs-me") {
+		t.Fatalf("a pull-request routine carries the toggle:\n%s", d)
 	}
 
 	for _, tt := range []struct {

@@ -293,7 +293,7 @@ func TestBecomePlanAfterAnEarlierAttemptSwitched(t *testing.T) {
 // queue, the planner's session is funded, and the to_plan step names the
 // pull request. A refused switch closes and denies nothing.
 func TestBecomePlanClosesAnOpenPullRequest(t *testing.T) {
-	note := "factoryd: card #7 went back to the planner; its branch stays."
+	note := "Card #7 went back to the planner. Its branch stays."
 	rig := func(status string) (*Runner, *fakeStore, *fakeObjectStore, *prForgejo) {
 		card := directCard()
 		card.PRNumber, card.Status = 12, status

@@ -12,9 +12,9 @@ import (
 )
 
 // attachAnalysis is the attach_analysis tool: what the agent found about
-// a card's ask, recorded inside the ask itself, where the member reads it
-// with the ask (the main agent concept). An ask already settled is done;
-// a card with no ask needs escalate, not an analysis.
+// a card's ask, recorded on the card, where the human reads it beside the
+// ask (the main agent concept); no inbox row repeats it. An ask already
+// settled is done; a card with no ask needs escalate, not an analysis.
 func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	found, recommendation := strings.TrimSpace(in.Found), strings.TrimSpace(in.Recommendation)
 	switch {
@@ -23,7 +23,10 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	case found == "" || len(found) > 2000:
 		return "", refuse(http.StatusBadRequest, "found: what you learned about the ask, 1 to 2000 characters")
 	case len(recommendation) > 2000:
-		return "", refuse(http.StatusBadRequest, "recommendation: 0 to 2000 characters, empty to offer none")
+		return "", refuse(http.StatusBadRequest, "`recommendation`: 0 to 2000 characters, empty to suggest none")
+	}
+	if err := groundsRefusal(recommendation); err != nil {
+		return "", err
 	}
 	k, err := t.card(in)
 	if err != nil {
@@ -43,24 +46,41 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 			log.Printf("console: the hand-up of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 			return "", refuse(http.StatusBadGateway, fmt.Sprintf("The hand-up could not be recorded: %s. Attach the analysis again.", errText(err)))
 		case handled != 0:
-			return fmt.Sprintf("Handed #%d to the human with your analysis and recommendation; the card waits at its face.", k.IssueNumber), nil
+			return fmt.Sprintf(handedUp+"%d to the human with your analysis and recommendation; the card waits at its face.", k.IssueNumber), nil
 		}
 	}
 	err = t.c.cfg.AttachAnalysis(t.r.Context(), k.ID, found, recommendation,
 		factoryd.Event{Repository: t.p.Repository, Actor: t.a.approver(), Via: factoryd.ViaChat})
 	var settled *factoryd.AskSettledError
+	var unshown *factoryd.AskUnshownError
 	switch {
 	case errors.As(err, &settled):
 		line := fmt.Sprintf("The question of #%d is %s", k.IssueNumber, settled.Word)
 		if settled.By != "" {
 			line += " by " + settled.By
 		}
-		return "", refuse(http.StatusConflict, line+". A settled ask is done; escalate files a new one when you need a person.")
+		return "", refuse(http.StatusConflict, line+". A settled ask is done. `escalate` files a new one when you need a human.")
+	case errors.As(err, &unshown):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The question of #%d holds no open ask, so no card shows an analysis of it. "+
+			"Tell the human in the chat, or `escalate` when a human must decide.", k.IssueNumber))
 	case errors.Is(err, factoryd.ErrNoAsk):
-		return "", refuse(http.StatusNotFound, fmt.Sprintf("Card #%d asks nothing in the chat; escalate files an ask when you need a person.", k.IssueNumber))
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("Card #%d asks nothing in the chat. `escalate` files an ask when you need a human.", k.IssueNumber))
 	case err != nil:
 		log.Printf("console: the analysis of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, fmt.Sprintf("The analysis could not be recorded: %s. Attach the analysis again.", errText(err)))
 	}
-	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the humans read it with the ask.", k.IssueNumber), nil
+	return fmt.Sprintf("Recorded the analysis on the card #%d; the humans read it beside its ask there.", k.IssueNumber), nil
+}
+
+// handedUp opens the tool's answer when the analysis handed the case to
+// the human: the inbox reads that the turn asks the human on a card.
+const handedUp = "Handed #"
+
+// groundsRefusal refuses a recommendation that fails the one check every
+// writer of grounds meets (factoryd.GroundsFaults), with its faults named.
+func groundsRefusal(recommendation string) error {
+	if faults := factoryd.GroundsFaults(recommendation); len(faults) > 0 {
+		return refuse(http.StatusBadRequest, "recommendation: "+strings.Join(faults, " "))
+	}
+	return nil
 }

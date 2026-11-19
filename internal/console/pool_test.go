@@ -21,7 +21,7 @@ import (
 
 // noDraws is the pool's words of a project with no draws this month under
 // the default pool.
-const noDraws = "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
+const noDraws = "0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month"
 
 // defaultPoolRead is the settings and policy reads' pool line over the
 // fixtures' loaded policy for a project with no draws: the identity and
@@ -53,7 +53,7 @@ func poolFace(t *testing.T, r *rig) (pool poolLine, board, html, snap string) {
 	ck, s := r.loggedIn(t)
 	req := httptest.NewRequest(http.MethodGet, "/board?project=ai-software-factory-code", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
-	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code", View: viewWide}, actor{})
+	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code"}, actor{})
 	if err != nil {
 		t.Fatalf("the board of ai-software-factory-code: %v", err)
 	}
@@ -86,14 +86,14 @@ func TestProjectPoolStatus(t *testing.T) {
 		want              string
 	}{
 		{name: "the default", drawn: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 4.5}, readable: true,
-			want: "3 of 30 sessions, 1 h 30 min of 30 h agent time and €4.50 of €60.00 drawn this UTC month"},
+			want: "3 of 30 sessions, 1 h 30 min of 30 h agent time and 4.50 of 60.00 EUR drawn this UTC month"},
 		{name: "its own money", pool: &policy.Draw{EUR: 10}, drawn: policy.Draw{EUR: 3}, present: true, readable: true,
-			want: "0 of 30 sessions, 0 h of 30 h agent time and €3.00 of €10.00 drawn this UTC month"},
+			want: "0 of 30 sessions, 0 h of 30 h agent time and 3.00 of 10.00 EUR drawn this UTC month"},
 		{name: "overdrawn", pool: &policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 2}, drawn: policy.Draw{Sessions: 3, AgentTime: 61 * time.Minute, EUR: 2},
 			present: true, readable: true, overdrawn: true,
-			want: "3 of 2 sessions, 1 h 1 min of 1 h agent time and €2.00 of €2.00 drawn this UTC month, overdrawn in sessions and agent time: only the human draws more of those parts until the month turns"},
+			want: "3 of 2 sessions, 1 h 1 min of 1 h agent time and 2.00 of 2.00 EUR drawn this UTC month, overdrawn in sessions and agent time: only the human draws more of those parts until the month turns"},
 		{name: "unreadable draws", pool: &policy.Draw{EUR: 10}, fail: errors.New("the store is down"), present: true,
-			want: "the pool is 30 sessions, 30 h of agent time and €10.00 this UTC month, but what its cards drew could not be read"},
+			want: "the pool is 30 sessions, 30 h of agent time and 10.00 EUR this UTC month, but what its cards drew could not be read"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, board, html, snap := poolFace(t, poolRig(t, tc.pool, tc.drawn, tc.fail))
@@ -139,7 +139,7 @@ func TestSettingsPolicyPool(t *testing.T) {
 	settings := r.do(httptest.NewRequest(http.MethodGet, "/settings?project=ai-software-factory-code", nil), ck).Body.String()
 	policyPage := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck).Body.String()
 	chatSettings, chatPolicy := poolTool(t, r, "settings"), poolTool(t, r, "policy")
-	const figures = "3 of 30 sessions, 0 h of 30 h agent time and €4.00 of €10.00 drawn this UTC month"
+	const figures = "3 of 30 sessions, 0 h of 30 h agent time and 4.00 of 10.00 EUR drawn this UTC month"
 	id := func(page, name string) string {
 		t.Helper()
 		m := poolIdentity.FindStringSubmatch(page)
@@ -541,8 +541,8 @@ func TestPoolChangeAudit(t *testing.T) {
 // one partial failure that names the already-merged pull request and the
 // missing row to write by hand, and the change is never repeated.
 func TestPoolPolicyFailure(t *testing.T) {
-	const unloaded = "The pool change is merged as sf/infra#12, but the policy in force still holds the pool of demo-app at EUR 10.00: " +
-		"the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 12.00."
+	const unloaded = "The pool change is merged as sf/infra#12, but the policy in force still holds the pool of demo-app at 10.00 EUR: " +
+		"the loader picks the merge up on its next poll. The change is recorded, and the pool stays 10.00 EUR until the policy holds 12.00 EUR."
 	for _, row := range []struct {
 		name    string
 		seat    func(*testing.T) (*rig, *infraFake, *session)
@@ -586,8 +586,8 @@ func TestPoolPolicyFailure(t *testing.T) {
 			_, s := r.loggedIn(t)
 			return r, infra, s
 		}, "", http.StatusInternalServerError,
-			"The pool change is merged as sf/infra#12, but its pool_changed row could not be written: the events store is down. " +
-				"The change stands: write the missing row (action set, from_eur 10.00, confirmed_eur 12.00, to_eur 12.00, reason \"the load test needs a bigger pool\") and do not repeat the change.",
+			"The pool change is merged as sf/infra#12, but its record could not be written: the events store is down. " +
+				"The change stands, so do not repeat it. The missing record: set from 10.00 EUR, confirmed 12.00 EUR, to 12.00 EUR, reason \"the load test needs a bigger pool\".",
 			poolResult{from: 10, confirmed: 12, to: 12, pr: 12, loaded: true}, 0},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -692,11 +692,11 @@ func TestPoolProposalDisplay(t *testing.T) {
 	}
 
 	// a generic proposal's shape changes none: no preview rides it
-	cardArgs := `{"title":"Cache metrics","track":"direct","track_reason":"one count"}`
+	cardArgs := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one count"}`
 	g.replies = [][]string{{call(1, "new_card", cardArgs)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the count"}})
 	equal(t, "the generic proposal", events, []string{
-		`proposal {"arguments":` + cardArgs + `,"description":"File a card, title Cache metrics, track direct, track_reason one count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + cardArgs + `,"description":"File a card, title Cache metrics, why The board needs it., track direct, track_reason one count, summary It builds what the title names. A test checks it.","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	if st := states()[tokens[0]]; st.Pool != nil {
 		t.Errorf("a generic proposal carries a pool preview: %+v", st)
@@ -719,7 +719,7 @@ func TestPoolProposalDisplay(t *testing.T) {
 	}
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`)
 	equal(t, "the corrected Do it", done, ran("set_pool", `{"action":"top_up","eur":4,"reason":"a second finding"}`,
-		"The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 14.00 EUR now, was 10.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	if used := states()[tokens[0]]; used.State != "used" || used.Pool == nil || *used.Pool != want {
 		t.Errorf("the used top-up's state = %+v, want used with the captured %+v", used, want)
 	}

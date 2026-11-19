@@ -26,9 +26,9 @@ var wantReasonKinds = []string{
 	"gate_stop", "findings_repeated", "dependency_closed", "dependency_failed",
 	"wait_expired", "pod_never_started", "provider_refused", "no_answer",
 	"content_filter", "image_wait", "screening_suspect", "agent_escalate",
-	"plan_question", "plan_confirmation", "merge_approval",
+	"agent_request_info", "plan_question", "plan_confirmation", "merge_approval",
 	"human_card", "other", "monitor_flag", "judgment_budget",
-	"policy_class", "red_main", "roll_held", "config_refused", "plan_criteria",
+	"policy_class", "red_main", "roll_held", "config_refused", "plan_criteria", "plan_held", "provider_freeze",
 	"goal_conflict", "spend_above_policy", "access_factory_lacks",
 }
 
@@ -381,7 +381,8 @@ func TestParseRungAnswerTakesTheRungsRealAnswerShape(t *testing.T) {
 
 // A handover at the cap parses for rung 1 with a draw of a session and is
 // refused at the parse without one, so rung 1 is asked again instead of
-// handing up for Act to refuse. By hand: 3 of 3 sessions used, the card's
+// handing up for Act to refuse, with the stop, the answers the card holds
+// there and the answers the rung may give. By hand: 3 of 3 sessions used, the card's
 // draw left holds 2 sessions.
 func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
 	f := answerFacts
@@ -398,7 +399,13 @@ func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
 		t.Fatalf("with a draw: %+v, %v; want the handover accepted", got, err)
 	}
 	_, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 0, "agent_time_s": 0, "eur": 0}))
-	if err == nil || !strings.Contains(err.Error(), "the session cap of 3 is reached") {
-		t.Fatalf("with no draw: %v, want the refusal naming the cap", err)
+	// the card has an open pull request, so its cap's face holds a successor
+	// beside the extend, the close and the note; the check-in takes the
+	// first two
+	want := "the answer handover is refused on these facts: the session cap of 3 is reached" +
+		" (the card's answers at this stop that the check-in may take: `extend` and `successor`);" +
+		" the rung answers with handover, route_approval, reverify, extend, successor and replan, or hand_up when it cannot resolve"
+	if err == nil || err.Error() != want {
+		t.Fatalf("with no draw: %v, want the refusal naming the cap and the answers: %s", err, want)
 	}
 }

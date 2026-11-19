@@ -44,6 +44,7 @@ const (
 	CaseImageWait        CaseKind = "image_wait"
 	CaseScreeningSuspect CaseKind = "screening_suspect"
 	CaseAgentEscalate    CaseKind = "agent_escalate"
+	CaseAgentRequestInfo CaseKind = "agent_request_info"
 	CasePlanQuestion     CaseKind = "plan_question"
 	CasePlanConfirmation CaseKind = "plan_confirmation"
 	CaseMergeApproval    CaseKind = "merge_approval"
@@ -56,6 +57,12 @@ const (
 	CaseRollHeld         CaseKind = "roll_held"
 	CaseConfigRefused    CaseKind = "config_refused"
 	CasePlanCriteria     CaseKind = "plan_criteria"
+	// CasePlanHeld is a plan whose card a human closed while promises
+	// were open: it holds production deploys until it closes
+	CasePlanHeld CaseKind = "plan_held"
+	// CaseProviderFreeze is the ask of the card a provider's limit on a
+	// model class files
+	CaseProviderFreeze CaseKind = "provider_freeze"
 )
 
 // caseKindRow is what the ladder does with a case of one kind.
@@ -92,6 +99,9 @@ const (
 	choicesAnswer    = "its question's choices answer it, and rung 1 answers with the action table's actions"
 	noRungRunsBudget = "the judgment budget that pays the rungs is spent, so no rung can run"
 	noRungRunsCap    = "the factory's month cap refuses the agent's own model calls, so no rung can run"
+	authorAnswers    = "the agent asks its issue's author, whose answer alone the card's wait takes"
+	humanClosedPlan  = "a human closed the plan's card, and only a human says whether its open promises are dropped"
+	limitHoldsRungs  = "the provider's limit holds a model class, the rungs' own calls among its waiters, so no rung is sure to run"
 )
 
 // headRows are rung 0's rows for a stop at the card's head.
@@ -128,6 +138,8 @@ var caseKinds = []caseKindRow{
 	{Kind: CaseImageWait, Words: "image wait", Rung2: rung2Decides},
 	{Kind: CaseScreeningSuspect, Words: "screening suspect", Rung2: rung2Decides},
 	{Kind: CaseAgentEscalate, Words: "agent's escalation", Rung2: rung2Decides},
+	{Kind: CaseAgentRequestInfo, Words: "agent's request for information", NoRung1: authorAnswers, Rung2: rung2Nothing, Rung2Why: authorAnswers,
+		Exception: authorAnswers},
 	{Kind: CasePlanQuestion, Words: "plan question", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides},
 	{Kind: CasePlanConfirmation, Words: "plan confirmation", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides},
 	{Kind: CaseMergeApproval, Words: "merge approval", NoRung1: "a merge is the merge gate's question, not one card's session's, which rung 1 reads",
@@ -144,6 +156,9 @@ var caseKinds = []caseKindRow{
 	{Kind: CaseConfigRefused, Words: "refused configuration", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
 	{Kind: CasePlanCriteria, Words: "plan's criteria", Rung0: []string{"rerun_criteria_gate"},
 		NoRung1: "a plan's criteria are the criteria gate's question, not one card's session's, which rung 1 reads", Rung2: rung2Decides},
+	{Kind: CasePlanHeld, Words: "held plan", NoRung1: humanClosedPlan, Rung2: rung2Nothing, Rung2Why: humanClosedPlan, Exception: humanClosedPlan},
+	{Kind: CaseProviderFreeze, Words: "provider freeze", NoRung1: limitHoldsRungs, Rung2: rung2Nothing, Rung2Why: limitHoldsRungs,
+		Choices: true, Exception: limitHoldsRungs},
 }
 
 // kindRow is kind k's row of the kind table, the zero row for a kind it
@@ -158,7 +173,7 @@ func kindRow(k CaseKind) caseKindRow {
 // caseWords says case c of card as a human reads it, with no case id: the
 // kind in words, the card, and the problem cut short.
 func caseWords(card string, c Case) string {
-	kind := cmp.Or(kindRow(c.Kind).Words, strings.ReplaceAll(string(c.Kind), "_", " "), "case")
+	kind := cmp.Or(kindRow(c.Kind).Words, strings.ReplaceAll(string(c.Kind), "_", " "), "ask")
 	words := "the " + kind
 	if card != "" {
 		words += " on " + card
@@ -210,21 +225,19 @@ type Case struct {
 	OwnerRung  int
 	NextWakeAt *time.Time
 	WakeOn     []string
-	// Brief is the writer's background for the face's part 3 and
-	// BriefDetail its words for part 4's grounds; BriefError marks a writer
-	// that failed.
+	// Brief and BriefDetail are the case writer's lines of the story, what
+	// happened and what is left; BriefError marks a writer that failed.
 	Brief       string
 	BriefDetail string
 	BriefError  string
 }
 
 // CaseMoney is the money a case is about: the budget of kind, what is
-// spent of it, what more it needs and what that buys.
+// spent of it and what one more session buys.
 type CaseMoney struct {
 	Kind      string  `json:"kind"`
 	BudgetEUR float64 `json:"budget_eur"`
 	SpentEUR  float64 `json:"spent_eur"`
-	NeedEUR   float64 `json:"need_eur,omitempty"`
 	Buys      string  `json:"buys,omitempty"`
 }
 
@@ -445,7 +458,8 @@ func toHuman(ctx context.Context, q rowQuerier, id int64) error {
 		return err
 	}
 	var climbed bool
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM case_steps WHERE case_id = $1 AND rung IN (1, 2))`, id).Scan(&climbed); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM case_steps WHERE case_id = $1 AND (rung IN (1, 2)
+		OR rung = 0 AND EXISTS (SELECT 1 FROM unnest($2::text[]) mark WHERE starts_with(found, mark))))`, id, notJudgedMarks).Scan(&climbed); err != nil {
 		return err
 	}
 	if err := doorRefusal(c, climbed); err != nil {
@@ -460,20 +474,25 @@ func toHuman(ctx context.Context, q rowQuerier, id int64) error {
 }
 
 // doorRefusal is why case c may not reach the human, nil when it may: a
-// rung 1 or rung 2 step stands on it (climbed), the kind table names its
-// kind an exception, or its problem ends with a mark that says no rung could
-// judge it.
+// step lets it through (climbed), or the kind table names its kind an
+// exception.
 func doorRefusal(c Case, climbed bool) error {
-	if climbed || kindRow(c.Kind).Exception != "" || slices.ContainsFunc([]string{markJudgmentSpent, markJudgmentUnread, markProviderRefused},
-		func(mark string) bool { return strings.HasSuffix(c.Problem, notJudgedSuffix(mark)) }) {
+	if climbed || kindRow(c.Kind).Exception != "" {
 		return nil
 	}
 	return fmt.Errorf("case %d (%s) has no rung 1 or rung 2 step and no exception: the case climbs first", c.ID, c.Kind)
 }
 
-// climbed says a step of rung 1 or rung 2 stands among steps.
+// notJudgedMarks lead rung 0's step on a case no rung could judge.
+var notJudgedMarks = []string{markJudgmentSpent, markJudgmentUnread, markProviderRefused}
+
+// climbed says a step among steps lets its case through the door: one of
+// rung 1 or rung 2, or rung 0's that marks the case not judged.
 func climbed(steps []CaseStep) bool {
-	return slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 || s.Rung == 2 })
+	return slices.ContainsFunc(steps, func(s CaseStep) bool {
+		return s.Rung == 1 || s.Rung == 2 ||
+			s.Rung == 0 && slices.ContainsFunc(notJudgedMarks, func(mark string) bool { return strings.HasPrefix(s.Found, mark) })
+	})
 }
 
 func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
@@ -517,20 +536,6 @@ func (s *PGStore) StartRung1Step(ctx context.Context, taskID string, limit int, 
 		return 0, false, err
 	}
 	return id, false, tx.Commit()
-}
-
-func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE cases SET problem = problem || $2::text WHERE id = $1 AND right(problem, length($2::text)) <> $2::text AND `+caseLive, id, suffix)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 1 {
-		return nil
-	}
-	if c, err := s.CaseByID(ctx, id); err != nil || strings.HasSuffix(c.Problem, suffix) {
-		return err
-	}
-	return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 }
 
 // StartRungStep appends st, the in-progress step of a rung that works on its
@@ -658,7 +663,7 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 
 // stepExpired is the Found of a step of rung that ended at due, after
 // found, what the step found before: its bound, due less its start, to the
-// minute as durationText writes it, which its rung did not answer within,
+// minute as DurationText writes it, which its rung did not answer within,
 // or after which the card still waits on took, the choice the rung took
 // since (tookSince).
 func stepExpired(found string, rung int, took string, started, due time.Time) string {
@@ -674,9 +679,9 @@ func stepExpired(found string, rung int, took string, started, due time.Time) st
 // waiting.
 func expiredWords(rung int, took string, bound time.Duration) string {
 	if took != "" {
-		return fmt.Sprintf("rung %d took %s and the card still waits after %s", rung, took, durationText(bound.Round(time.Minute)))
+		return fmt.Sprintf("rung %d took %s and the card still waits after %s", rung, took, DurationText(bound.Round(time.Minute)))
 	}
-	return expiredMark + durationText(bound.Round(time.Minute))
+	return expiredMark + DurationText(bound.Round(time.Minute))
 }
 
 // tookSince is the decision of the newest step of st's rung that resolved
@@ -691,9 +696,9 @@ func tookSince(steps []CaseStep, st CaseStep) string {
 	return ""
 }
 
-// durationText is d, whole minutes, as Go prints a duration less its zero
+// DurationText is d, whole minutes, as Go prints a duration less its zero
 // units: 35m, 1h30m, 2h.
-func durationText(d time.Duration) string {
+func DurationText(d time.Duration) string {
 	s := d.String()
 	if m, ok := strings.CutSuffix(s, "m0s"); ok {
 		s = m + "m"

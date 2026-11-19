@@ -1,0 +1,46 @@
+{{define "gallery"}}<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gallery of the faces</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/console.css">
+<style>
+.gallery main { padding: 16px; }
+.gallery-entry { margin: 0 0 28px; padding: 12px; border: 1px solid var(--line-strong); background: var(--bg); }
+.gallery-entry > h2 { margin: 0 0 10px; font: 600 14px/1.4 var(--font-mono); color: var(--text-muted); }
+.gallery-faces { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+.gallery-small { flex: 0 0 20rem; max-width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.gallery-small .lane.five { display: block; overflow: visible; }
+.gallery-small .column { min-height: 0; }
+.gallery-small .column > .cards { overflow: visible; max-height: none; }
+.gallery-open { flex: 1 1 26rem; min-width: 0; }
+.gallery-open .drawer { position: static; inset: auto; width: auto; max-width: none; z-index: auto; overflow: visible; }
+.gallery-open details.status, .gallery-small details.status { position: static; }
+.gallery-inbox { max-width: 26rem; }
+.gallery-inbox .chat-log { overflow: visible; }
+</style>
+</head>
+<body class="gallery">
+<main>
+<h1>The faces of every kind, {{len .}} entries</h1>
+{{range .}}<section class="gallery-entry" id="{{.ID}}" data-entry="{{.Group}}/{{.Kind}}">
+<h2>{{.Group}}: {{.Kind}}</h2>
+{{if .Problem}}<p class="problem" role="alert">{{.Problem}}</p>
+{{else if .Inbox}}<div class="gallery-inbox chat"><div class="chat-log" data-inbox="{{.Inbox}}" data-budget="{{.InboxBudget}}"></div></div>
+{{else}}<div class="gallery-faces">
+<div class="gallery-small"><div class="lane five">{{.Small}}</div></div>
+<div class="gallery-open">{{if .Strip}}{{.Open}}{{else}}<aside class="drawer" aria-label="The card">{{.Open}}</aside>{{end}}</div>
+</div>
+{{end}}</section>
+{{end}}</main>
+<script src="/static/chat.js"></script>
+<script>
+document.querySelectorAll("[data-inbox]").forEach(function (el) {
+  el.innerHTML = chatView.historyHTML(JSON.parse(el.dataset.inbox), "sebastian", [], JSON.parse(el.dataset.budget));
+});
+</script>
+</body>
+</html>
+{{end}}

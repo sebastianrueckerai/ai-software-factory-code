@@ -8,7 +8,7 @@ import (
 
 // daemonSecrets are the credentials factoryd loads at boot, by env name
 // and whether the daemon needs them. The daemon's scrubber and the
-// commands that print text built from its records (export-fixture) load
+// command that prints text built from its records (export-fixture) load
 // this one list, so no secret is scrubbed in one and missed in the other.
 var daemonSecrets = []struct {
 	name     string
@@ -54,6 +54,17 @@ func loadSecrets(strict bool) map[string]string {
 		}
 	}
 	return out
+}
+
+// unsetSecrets names every required secret of daemonSecrets that is unset.
+func unsetSecrets(secrets map[string]string) []string {
+	var unset []string
+	for _, s := range daemonSecrets {
+		if s.required && secrets[s.name] == "" {
+			unset = append(unset, s.name)
+		}
+	}
+	return unset
 }
 
 // daemonURLs are the endpoints factoryd reaches, by env name, with the

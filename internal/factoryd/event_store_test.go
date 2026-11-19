@@ -175,7 +175,7 @@ func TestPGStoreRecordEventLeavesRow(t *testing.T) {
 	}
 }
 
-// FiledFor answers the actor of the console's card_filed row of exactly
+// FiledFor answers the actor and the unchecked mark of the console's card_filed row of exactly
 // that repository's issue, none for another issue, repository or kind.
 func TestPGStoreFiledFor(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
@@ -191,7 +191,8 @@ func TestPGStoreFiledFor(t *testing.T) {
 	for _, e := range []Event{
 		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardRetried, Actor: "alice", Via: ViaChat},
 		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat},
-		{Repository: "sf/other", IssueNumber: 8, Kind: EventCardFiled, Actor: "bob", Via: ViaChat},
+		{Repository: "sf/other", IssueNumber: 8, Kind: EventCardFiled, Actor: "bob", Via: ViaChat, Detail: map[string]any{"brief_unchecked": true}},
+		{Repository: "sf/other", IssueNumber: 9, Kind: EventCardFiled, Actor: "carol", Via: ViaButton, Detail: map[string]any{"brief_unchecked": true}},
 	} {
 		if _, err := s.Record(ctx, e); err != nil {
 			t.Fatalf("Record: %v", err)
@@ -200,11 +201,36 @@ func TestPGStoreFiledFor(t *testing.T) {
 	for _, tc := range []struct {
 		repository string
 		issue      int64
-		who        string
+		want       Filing
 		ok         bool
-	}{{"sf/r", 7, "sebastian", true}, {"sf/r", 8, "", false}, {"sf/other", 7, "", false}} {
-		if who, ok, err := s.FiledFor(ctx, tc.repository, tc.issue); err != nil || who != tc.who || ok != tc.ok {
-			t.Errorf("FiledFor(%s, %d) = %q, %v, %v; want %q, %v", tc.repository, tc.issue, who, ok, err, tc.who, tc.ok)
+	}{{"sf/r", 7, Filing{By: "sebastian", Chat: true}, true}, {"sf/r", 8, Filing{}, false}, {"sf/other", 7, Filing{}, false},
+		{"sf/other", 8, Filing{By: "bob", Unchecked: true, Chat: true}, true}, {"sf/other", 9, Filing{By: "carol", Unchecked: true}, true}} {
+		if f, ok, err := s.FiledFor(ctx, tc.repository, tc.issue); err != nil || f != tc.want || ok != tc.ok {
+			t.Errorf("FiledFor(%s, %d) = %+v, %v, %v; want %+v, %v", tc.repository, tc.issue, f, ok, err, tc.want, tc.ok)
+		}
+	}
+
+	// a card made before its chat row takes the row's mark; a button's
+	// filing and an issue without a row leave theirs
+	for _, k := range []Task{
+		{ID: "t-chat", Repository: "sf/other", IssueNumber: 8},
+		{ID: "t-button", Repository: "sf/other", IssueNumber: 9},
+		{ID: "t-none", Repository: "sf/other", IssueNumber: 10, BriefUnchecked: true},
+	} {
+		k.Kind, k.Status, k.Track, k.Source, k.Objective = "agent", "queued", "direct", SourceWebhook, "x"
+		if err := s.CreateTask(ctx, k); err != nil {
+			t.Fatalf("CreateTask %s: %v", k.ID, err)
+		}
+		if err := s.MarkChatFiled(ctx, k.Repository, k.IssueNumber, "So the board loads."); err != nil {
+			t.Fatalf("MarkChatFiled %s: %v", k.ID, err)
+		}
+	}
+	for id, want := range map[string]struct {
+		chat, unchecked bool
+		why             string
+	}{"t-chat": {true, true, "So the board loads."}, "t-button": {false, false, ""}, "t-none": {false, true, ""}} {
+		if k, _, err := s.Task(ctx, id); err != nil || k.ChatFiled != want.chat || k.BriefUnchecked != want.unchecked || k.Why != want.why {
+			t.Errorf("%s after MarkChatFiled: chat filed %v, unchecked %v, why %q, %v; want %+v", id, k.ChatFiled, k.BriefUnchecked, k.Why, err, want)
 		}
 	}
 }

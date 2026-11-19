@@ -299,7 +299,7 @@ func TestWakeApprovalRowsWakeNobody(t *testing.T) {
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	want := "Wake: 1 case waits for the factory agent.\nt-1: Use a replica?"
+	want := "Wake: 1 case waits for the factory agent: t-1.\nt-1: Use a replica?"
 	if calls := starter.recorded(); len(calls) != 1 || calls[0].text != want {
 		t.Fatalf("the wakes are %+v, want one with text %q", calls, want)
 	}
@@ -584,7 +584,7 @@ func TestWakeTextNamesCards(t *testing.T) {
 	}
 	text := calls[0].text
 	for _, want := range []string{
-		"Wake: 1 case waits for the factory agent.",
+		"Wake: 1 case waits for the factory agent: #40.",
 		"#40: Use a replica?",
 	} {
 		if !strings.Contains(text, want) {
@@ -599,7 +599,8 @@ func TestWakeTextNamesCards(t *testing.T) {
 }
 
 // The wake line counts cases in the singular and the plural: one case
-// waits, two cases wait.
+// waits, two cases wait, then the cards they wait on, which WakeCards reads
+// back.
 func TestWakeTextCountsCases(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
 	wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
@@ -617,12 +618,22 @@ func TestWakeTextCountsCases(t *testing.T) {
 		t.Fatalf("%d wakes, want 2: %+v", len(calls), calls)
 	}
 	for i, want := range []string{
-		"Wake: 1 case waits for the factory agent.",
-		"Wake: 2 cases wait for the factory agent.",
+		"Wake: 1 case waits for the factory agent: t-1.",
+		"Wake: 2 cases wait for the factory agent: t-2, t-3.",
 	} {
 		if !strings.HasPrefix(calls[i].text, want) {
 			t.Fatalf("wake %d's text %q does not open %q", i, calls[i].text, want)
 		}
+	}
+	// the inbox reads the cards a wake looked at from its first line alone
+	for i, want := range [][]string{{"t-1"}, {"t-2", "t-3"}} {
+		if got := WakeCards(calls[i].text); !slices.Equal(got, want) {
+			t.Errorf("wake %d names the cards %q, want %q", i, got, want)
+		}
+	}
+	// a card with an issue is named by it, and a later line names no card
+	if got := WakeCards("Wake: 2 cases wait for the factory agent: #44, t-6.\n#99: Which file?"); !slices.Equal(got, []string{"#44", "t-6"}) {
+		t.Errorf("the cards of a wake by issue and id = %q, want #44 and t-6", got)
 	}
 }
 

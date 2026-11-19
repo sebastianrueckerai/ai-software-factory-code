@@ -716,7 +716,7 @@ func TestWorkflowWallClockAtTheSizedCapAsksTheCapCard(t *testing.T) {
 	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 3*time.Hour {
 		t.Fatalf("sessions %+v, want one of the card's 3h", h.sessions)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) || h.tripUsage[0].AgentTime != 3*time.Hour {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], TimeCapReachedLadder) || h.tripUsage[0].AgentTime != 3*time.Hour {
 		t.Fatalf("asked %q after usage %+v, want the agent time's card once, after 3h used", h.escalated, h.tripUsage)
 	}
 }
@@ -903,7 +903,7 @@ func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
 			calls++
 			reads[activity]++
 			if slices.Contains(refusing, calls) {
-				return fmt.Sprintf("%s: Raise the budget (Fund on the board) and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
+				return fmt.Sprintf("%s: Raise the budget and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
 					BudgetRefused, float64(calls)/10, model), nil
 			}
 			return "", nil
@@ -1113,7 +1113,7 @@ func TestWorkflowSessionCapCardListsEachFindingOnce(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	change := "reviewer sebastian requested changes: rename it"
-	want := capReachedLadder + "\nlast: session failed: pod lost\n- checks, round 1: red\n- " + change
+	want := CapReachedLadder + "\nlast: session failed: pod lost\n- checks, round 1: red\n- " + change
 	if !slices.Equal(h.escalated, []string{want}) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
@@ -1237,7 +1237,7 @@ func TestSessionCapCardIsBounded(t *testing.T) {
 	for i := range 20 {
 		run.history = append(run.history, fmt.Sprintf("%02d", i)+strings.Repeat("x", 1498))
 	}
-	card := run.sessionCapCard(capReachedLadder, strings.Repeat("y", 1500), []string{"new"})
+	card := run.sessionCapCard(CapReachedLadder, strings.Repeat("y", 1500), []string{"new"})
 	lines := strings.Split(card, "\n")
 	// each history line is "- " + 1000 bytes + "…": 1006 bytes with its
 	// newline, "- new" 6; 7 history lines and "new" fit 8000, 8 do not
@@ -2217,7 +2217,7 @@ func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.signalAfter(61*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], TimeCapReachedLadder) {
 		t.Fatalf("final = %q, escalations %q; want closed after the cap card", final, h.escalated)
 	}
 	if !slices.Equal(backoffs, []int{120, 120}) {
@@ -2319,13 +2319,13 @@ func isCheck(in CapCheck, model, decision string, refusedAt time.Time) bool {
 }
 
 var (
-	dayRefusal = CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"},
+	dayRefusal = CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: "free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55)"},
 		At: oct(14, 20, 43)}
 	dayCapped = SessionResult{Outcome: OutcomeDayCap, SessionID: "s1", Capped: &dayRefusal,
 		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_day_cap"}}
-	dayQuestion = "the day cap is reached: the card resumes on its own once the day's free headroom " +
-		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml to resume it sooner, or close the card."
-	dayReason = dayQuestion + "\nthe gateway refused this task's spend (refused_day_cap): free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"
+	dayQuestion = "the day cap is reached: the card resumes on its own once the money left under the day cap " +
+		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
+	dayReason = dayQuestion + "\nthe gateway refused this task's spend (refused_day_cap): free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55)"
 
 	// monthRefusal is card #1352's: the gateway's own hold under policy
 	// version 971 refused its first call at 23:22:52
@@ -2335,8 +2335,8 @@ var (
 	// with the cap's reason and the refusal
 	monthCapped = SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: capRefused(monthRefusal.Refusal), Capped: &monthRefusal,
 		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_month_cap"}}
-	monthQuestion = "the month cap is reached: the card resumes on its own once the month's free headroom " +
-		"funds a session, at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card."
+	monthQuestion = "the month cap is reached: the card resumes on its own once the money left under the month cap " +
+		"funds a session, at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card."
 	monthReason = monthQuestion + "\nthe gateway refused this task's spend (refused_month_cap): free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 0.000001)"
 )
 
@@ -2393,11 +2393,11 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	h, run := capHarness(t, 0, pushed("s1", "c1"))
 	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
-		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
+		"(1024 output tokens at the hold machinery's minimum). An answer would start an attempt whose first call cannot run."
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(oct(15, 0, 0)) {
-				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" + state, nil
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" + state, nil
 			}
 			return "", nil
 		})
@@ -2627,11 +2627,11 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	h.signalAfter(time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
 	run.funded = oct31(22, 30, 0)
 	const state = "0.000001 EUR of the month's 544.00 EUR (budget.month_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
-		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
+		"(1024 output tokens at the hold machinery's minimum). An answer would start an attempt whose first call cannot run."
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(run.funded) {
-				return "the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" + state, nil
+				return "the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" + state, nil
 			}
 			return "", nil
 		})
@@ -2641,8 +2641,8 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	want := "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, at the latest when the UTC month turns at " +
-		"2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card.\n" +
+	want := "the month cap is reached: the card resumes on its own once the money left under the month cap funds a session, at the latest when the UTC month turns at " +
+		"2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_month_cap): " + state
 	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != SourceMonthCap {
 		t.Fatalf("escalations = %q, want the month cap's wait once: %q", h.escalated, want)
@@ -2815,8 +2815,8 @@ func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	want := "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+	want := "the project's month cap is reached: the card resumes on its own once the money left under the project's month cap funds a session, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the project's month cap in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_project_cap): " + refusal
 	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "project_cap" {
 		t.Fatalf("escalations = %q, want the project cap's wait once: %q", h.escalated, want)
@@ -3549,7 +3549,7 @@ func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
 
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], CapReachedLadder) {
 		t.Fatalf("final = %q, finals = %v, escalations %q; want the last attempt, then the card, closed", final, h.finals, h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 3 {
@@ -5094,7 +5094,7 @@ func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], CapReachedLadder) {
 		t.Fatalf("asked %q, want the session cap's", h.escalated)
 	}
 	want := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too big", "card": "t1"}

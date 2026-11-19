@@ -359,7 +359,7 @@ func TestTokenSessionNamesRefusedForgejoToken(t *testing.T) {
 	r := newRig(t)
 	r.fg.tokens = map[string]string{"fj-live": "sebastian"}
 	var me struct{ Login string }
-	const want = "the Forgejo token behind chat token laptop was refused; make a new chat token"
+	const want = "the Forgejo token behind chat token laptop was refused. Make a new chat token."
 
 	s := &session{user: "sebastian", access: "fj-deleted", chatToken: 1, tokenName: "laptop"}
 	err := r.c.as(context.Background(), s, http.MethodGet, "/api/v1/user", nil, http.StatusOK, &me)
@@ -629,7 +629,7 @@ func TestMCPChatSendFailureLandsAsRow(t *testing.T) {
 
 func TestMCPChatSendBudgetStop(t *testing.T) {
 	r, chat, g := newChatRig(t)
-	const reason = "free headroom 0.000000 EUR (day 20.000000 of 20.000000); the day cap budget.day_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	const reason = "free headroom 0.00 EUR (day 20.000000 of 20.000000); the day cap budget.day_eur in policy.yaml is spent, and only a human raises it, by a commit"
 	g.replies = [][]string{{refuseFor(policy.RefusedDayCap, reason)}}
 	stop := "The factory's day cap is used up: the chat goes on when the UTC day turns, or once a commit raises budget.day_eur in policy.yaml.\n" + reason
 	var a struct {
@@ -651,7 +651,7 @@ func TestMCPChatSendBudgetStop(t *testing.T) {
 func TestMCPChatSendBudgetStopNamesTheFund(t *testing.T) {
 	const then = "this thread then goes on by itself, and chat_read reads it."
 	for _, tc := range []struct{ login, action string }{
-		{"sebastian", "Fund the chat with chat_fund, €1 suggested: " + then},
+		{"sebastian", "Fund the chat with chat_fund, 1.00 EUR suggested: " + then},
 		{"anna", "An approver of ai-software-factory-code funds the chat: " + then},
 	} {
 		t.Run(tc.login, func(t *testing.T) {
@@ -661,7 +661,7 @@ func TestMCPChatSendBudgetStopNamesTheFund(t *testing.T) {
 			crumbsChat(t, r)
 			g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}}
 			stop := "The judgment budget for " + time.Now().UTC().Format("January") +
-				" is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\n" + budgetReason
+				" is used up: 14.96 of 15.00 EUR spent, and the next call does not fit what is left.\n" + budgetReason
 			var a struct {
 				Budget, Error string
 				Ended         bool
@@ -703,7 +703,7 @@ func TestMCPChatFundResumesTheStoppedThread(t *testing.T) {
 	session := tokenSession(t, r)
 	answerOf(t, session, "chat_send", map[string]any{"message": "what is open?"})
 	if got, want := answerOf(t, session, "chat_fund", map[string]any{}),
-		`{"from_eur":15,"to_eur":16,"result":"Raised the judgment budget from €15.00 to €16.00. Every thread the budget stopped goes on by itself; chat_read reads it."}`; got != want {
+		`{"from_eur":15,"to_eur":16,"result":"Raised the judgment budget from 15.00 to 16.00 EUR. Every thread the budget stopped goes on by itself; chat_read reads it."}`; got != want {
 		t.Fatalf("chat_fund = %s\nwant %s", got, want)
 	}
 	if !waitFor(t, 2*time.Second, func() bool {
@@ -754,7 +754,7 @@ func TestMCPChatFundWhereTheChatIsNotStopped(t *testing.T) {
 		t.Fatalf("a refused fund wrote %+v", rows)
 	}
 	if got, want := answerOf(t, session, "chat_fund", map[string]any{"eur": 2}),
-		`{"from_eur":15,"to_eur":17,"result":"Raised the judgment budget from €15.00 to €17.00. The chat was not stopped."}`; got != want {
+		`{"from_eur":15,"to_eur":17,"result":"Raised the judgment budget from 15.00 to 17.00 EUR. The chat was not stopped."}`; got != want {
 		t.Fatalf("chat_fund = %s\nwant %s", got, want)
 	}
 	if n := len(g.calls()); n != 0 {
@@ -980,7 +980,7 @@ func TestMCPChatSendLeavesWithItsRequest(t *testing.T) {
 func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 	r, _, g := newChatRig(t)
 	g.replies = [][]string{
-		{call(1, "card", `{"task_id":"t-m"}`, "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{call(1, "card", `{"task_id":"t-m"}`, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
 	var a struct {
@@ -989,28 +989,28 @@ func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 		Applied []map[string]string
 		Ended   bool
 	}
-	if err := json.Unmarshal([]byte(answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "summarize #5"})), &a); err != nil {
+	if err := json.Unmarshal([]byte(answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "mark #5 blue"})), &a); err != nil {
 		t.Fatal(err)
 	}
 	card := "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
-		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
-		"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nm…"
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\n" +
+		"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nmer…"
 	equal(t, "the answer", a, struct {
 		Reply   string
 		Tools   []map[string]string
 		Applied []map[string]string
 		Ended   bool
-	}{"Done.", []map[string]string{{"name": "card", "result": card}, {"name": "set_summary", "result": "The summary of #5 is set."}},
-		[]map[string]string{{"tool": "set_summary", "result": "The summary of #5 is set."}}, true})
-	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.HumanSummary != "Cache fix" {
-		t.Fatalf("summary = %q, want Cache fix", k.HumanSummary)
+	}{"Done.", []map[string]string{{"name": "card", "result": card}, {"name": "set_accent", "result": "The accent of #5 is set."}},
+		[]map[string]string{{"tool": "set_accent", "result": "The accent of #5 is set."}}, true})
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "blue" {
+		t.Fatalf("accent = %q, want blue", k.Accent)
 	}
 }
 
 func TestMCPChatReadTwoProposalsOnARow(t *testing.T) {
 	r, g := newWritesRig(t)
 	g.replies = [][]string{{call(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`,
-		"new_card", `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`)}}
+		"new_card", `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`)}}
 	session := tokenSession(t, r)
 	var a struct{ Proposals []struct{ ID string } }
 	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "two things"})), &a); err != nil {
@@ -1221,7 +1221,7 @@ func raised(t *testing.T, session *mcp.ClientSession, message string) string {
 func TestMCPChatConfirmApplies(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyManual, MergeRule: policy.MergeHuman}}
-	args := `{"title":"Cache metrics","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
 	g.replies = [][]string{{call(1, "new_card", args)}}
 	session := tokenSession(t, r)
 	id := raised(t, session, "file a card for cache metrics")
@@ -1272,7 +1272,7 @@ func TestMCPChatConfirmNamesARefusedForgejoToken(t *testing.T) {
 	r.fg.revoked = "fj-sebastian"
 	g.replies = [][]string{{say("It was refused.")}}
 	a := confirmed(t, session, id)
-	const want = "the Forgejo token behind chat token laptop was refused; make a new chat token"
+	const want = "the Forgejo token behind chat token laptop was refused. Make a new chat token."
 	if a.Error != want || len(a.Applied) != 0 || len(r.fg.reviews) != 0 {
 		t.Fatalf("chat_confirm = %+v, reviews %v, want the error %q and no review", a, r.fg.reviews, want)
 	}
@@ -1367,7 +1367,7 @@ func TestMCPChatConfirmUsedOnce(t *testing.T) {
 	confirmed(t, session, id)
 	for _, again := range []string{id, "no-such-proposal"} {
 		text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": again})
-		if err != nil || !refused || text != "There is no such proposal or undo; it may have expired." {
+		if err != nil || !refused || text != "There is no such proposal or undo. It may have expired." {
 			t.Fatalf("chat_confirm(%s) = %q, refused %v, %v, want the used-or-expired refusal", again, text, refused, err)
 		}
 	}
@@ -1386,7 +1386,7 @@ func TestMCPChatConfirmRefusesOtherHumansProposal(t *testing.T) {
 	put("p-elsewhere-proposal", "sebastian", "linkshort/linkshort")
 	session := tokenSession(t, r)
 	for token, want := range map[string]string{"p-anna-proposal": "It is another human's.",
-		"p-elsewhere-proposal": "There is no such proposal or undo; it may have expired."} {
+		"p-elsewhere-proposal": "There is no such proposal or undo. It may have expired."} {
 		text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": token})
 		if err != nil || !refused || text != want {
 			t.Fatalf("chat_confirm(%s) = %q, refused %v, %v, want %q", token, text, refused, err, want)
@@ -1404,7 +1404,7 @@ func TestMCPChatConfirmPoolWithARefusedForgejoToken(t *testing.T) {
 	id := raised(t, session, "a pool for the findings")
 	infra.revoked = "fj-sebastian"
 	text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": id})
-	const want = "the Forgejo token behind chat token laptop was refused; make a new chat token"
+	const want = "the Forgejo token behind chat token laptop was refused. Make a new chat token."
 	if err != nil || !refused || text != want {
 		t.Fatalf("chat_confirm = %q, refused %v, %v, want the tool's error %q", text, refused, err, want)
 	}
@@ -1461,7 +1461,7 @@ func TestMCPChatConfirmPoolAgainstItsCapture(t *testing.T) {
 	g.replies = [][]string{{topUp}}
 	session := tokenSession(t, r)
 	id := raised(t, session, "top the pool up")
-	const landed = "The pool of ai-software-factory-code is €15.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."
+	const landed = "The pool of ai-software-factory-code is 15.00 EUR now, was 10.00 EUR: sf/infra#12 carries the change and the policy in force holds it."
 	equal(t, "the answer", confirmed(t, session, id), sendAnswer{Conversation: 2, Tools: []mcpTool{{Name: "set_pool", Result: landed}},
 		Proposals: []mcpProposal{}, Applied: []mcpApplied{{Tool: "set_pool", Result: landed}}, Ended: true})
 	if len(infra.contents) != 1 {

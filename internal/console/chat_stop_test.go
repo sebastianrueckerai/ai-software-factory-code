@@ -16,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // chatStream posts form, the session's CSRF token added, to path and
@@ -458,5 +460,57 @@ func TestChatStopReachesThePressBeforeAMessageThatWaits(t *testing.T) {
 	}
 	if n := len(g.calls()); n != 1 {
 		t.Fatalf("%d model calls, want the message's alone", n)
+	}
+}
+
+// A turn whose every tool call is refused, round after round, ends at
+// refusedRounds: Act refuses the agent's proposal for its grounds five
+// times, the model is asked no sixth time, and the turn's last words say
+// why it stopped. A round whose call ran starts the count anew: four
+// refused rounds, one that ran and four more refused end no turn.
+func TestATurnEndsWhenItsRoundsAreAllRefused(t *testing.T) {
+	const grounds = `the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`
+	rounds := func(n int) [][]string {
+		var out [][]string
+		for i := range n {
+			out = append(out, []string{call(i+1, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)})
+		}
+		return append(out, []string{say("Done.")})
+	}
+	turn := func(t *testing.T, n int, refused map[int]error) (events []string, asked int) {
+		r, _, g := newChatRig(t)
+		r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman}}
+		r.tasks.tasks = append(r.tasks.tasks, holdAsk())
+		r.actErrs = refused
+		g.replies = rounds(n)
+		ck, s := r.loggedIn(t)
+		_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"deploy anyway on the held ask"}})
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return events, len(g.requests)
+	}
+	refusals := func(events []string) int {
+		n := 0
+		for _, e := range events {
+			if strings.HasPrefix(e, "tool ") && strings.Contains(e, `"result":"Refused: `) {
+				n++
+			}
+		}
+		return n
+	}
+	no := factoryd.ErrActRefused(grounds)
+
+	events, asked := turn(t, 7, map[int]error{1: no, 2: no, 3: no, 4: no, 5: no, 6: no, 7: no})
+	const stopped = "The turn stopped: every action of its last 5 rounds was refused. Send a message to go on."
+	if n := len(events); asked != 5 || refusals(events) != 5 || n < 2 || events[n-2] != `text {"text":"`+stopped+`"}` || events[n-1] != "done {}" {
+		t.Fatalf("the model was asked %d times and refused %d times, the stream ends %q; want 5, 5 and the stop's words", asked, refusals(events), events[max(len(events)-2, 0):])
+	}
+	if faults := facefixtures.TextFaults(stopped); len(faults) > 0 {
+		t.Errorf("the stop's words: %v", faults)
+	}
+
+	events, asked = turn(t, 9, map[int]error{1: no, 2: no, 3: no, 4: no, 6: no, 7: no, 8: no, 9: no})
+	if n := len(events); asked != 10 || refusals(events) != 8 || events[n-2] != `text {"text":"Done."}` || events[n-1] != "done {}" {
+		t.Fatalf("the model was asked %d times and refused %d times, the stream ends %q; want 10, 8 and the agent's own last words", asked, refusals(events), events[max(len(events)-2, 0):])
 	}
 }

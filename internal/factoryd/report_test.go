@@ -428,9 +428,9 @@ func TestRunReportNamesACostHoldCrossing(t *testing.T) {
 	}()
 	awaitPod(t, kube, done)
 	kube.scriptPods(0, resultLine(false, said))
-	want := "the report session ended without a report: " + said + "; a model call on small crossed its cost hold: " +
-		"90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
-		"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
+	want := "the report session ended without a report: " + said + ". A model call on small crossed its cost hold: " +
+		"90000 prompt tokens (0 cached) and 3000 output tokens cost 0.14 EUR against a hold of 0.13 EUR. " +
+		"Its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
 	if err := <-done; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("RunReport = %v, want %q", err, want)
 	}
@@ -504,21 +504,6 @@ func TestRunReportNamesAProviderRefusal(t *testing.T) {
 	}
 }
 
-// The writing guide rides in the context of every step that writes text a
-// person reads (the question format's context rule): the check-in's
-// statement (checkin_test.go holds that pin) and each report session's
-// guide. A work session's env carries none: its pod sets REPORT_GUIDE
-// only where the spec's report is set, which no coding session's is
-// (agent-worker's env test holds that pin).
-func TestWritingGuideRidesWithHumanFacingSteps(t *testing.T) {
-	if writingguide.Guide == "" {
-		t.Fatal("the writing guide is empty")
-	}
-	if guide := (&Runner{cfg: testRunnerConfig()}).reportGuide(); !strings.Contains(guide, writingguide.Guide) {
-		t.Error("the screening guide carries no writing guide")
-	}
-}
-
 func TestParseSizing(t *testing.T) {
 	long := strings.Repeat("a", 400)
 	manyFiles := make([]string, 60)
@@ -553,7 +538,7 @@ func TestParseSizing(t *testing.T) {
 
 func TestSizingGuideNamesTheBounds(t *testing.T) {
 	g := sizingGuide(sizeLines(1000))
-	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`, writingguide.Guide} {
+	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`, writingguide.For(writingguide.JobLine)} {
 		if !strings.Contains(g, want) {
 			t.Fatalf("guide lacks %q:\n%s", want, g)
 		}
@@ -639,7 +624,7 @@ func TestRunReportCarriesTheAnswersToItsSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(env["ANSWERS"]), &answers); err != nil || !slices.Equal(answers, []string{answer}) {
 		t.Fatalf("ANSWERS = %s (%v), want [%q]", env["ANSWERS"], err, answer)
 	}
-	if statement := briefText(harness.TaskBrief{Objective: env["OBJECTIVE"], Answers: answers, Report: env["REPORT_GUIDE"]}, "t"); !strings.Contains(statement, "\n- "+answer) {
+	if statement := briefText(harness.TaskBrief{Objective: "the slug breaks on BAD000", Answers: answers, Report: env["REPORT_GUIDE"]}, "t"); !strings.Contains(statement, "\n- "+answer) {
 		t.Fatalf("the statement holds no answer:\n%s", statement)
 	}
 }

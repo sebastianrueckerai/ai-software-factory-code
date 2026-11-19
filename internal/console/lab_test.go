@@ -33,6 +33,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// labPull is the factory pull request of the lab's and the gallery's
+// cards, and labPullHead its head, which the card's Merge it names.
+const labPull, labPullHead = "/api/v1/repos/sf/code/pulls/14", "5b2e7d1c4a9f8e3b6d0c2a1f4e7b9d8c3a5f6e21"
+
 // TestLab serves the console on a real port over the rig's fakes, seeded
 // as one of labScenes, for scripts/console-lab. GET /lab/scenario/{name}
 // seeds another scenario in place and names the running card the drawer
@@ -52,6 +56,8 @@ func TestLab(t *testing.T) {
 
 	r := newRig(t)
 	r.c.cfg.Timelines = lockedObjects{r.objects}
+	// the factory pull request's card reads the head its Merge it pins
+	r.fg.setPullHead(labPull, labPullHead)
 	forgejo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		labObjects.RLock()
 		files, ok := labFiles[req.URL.Path]
@@ -107,7 +113,7 @@ func TestLab(t *testing.T) {
 	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
 		if id == labID(610) {
 			return "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-				"0.520 EUR of the 2.000 EUR budget remains, and a session's first call on factory/big needs 0.600000 EUR", nil
+				"0.52 EUR of the 2.00 EUR budget remains, and a session's first call on factory/big needs 0.60 EUR", nil
 		}
 		return "", nil
 	}
@@ -252,6 +258,20 @@ func TestLab(t *testing.T) {
 		w.Header().Set("X-Lab-Drawer", r.seedScene(j.scene()))
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// the gallery: every entry's small card beside its opened card, each
+	// entry seated on a rig of its own, rendered on the first read
+	var gallery struct {
+		sync.Mutex
+		faces []galleryFace
+	}
+	mux.HandleFunc("GET /lab/gallery", func(w http.ResponseWriter, req *http.Request) {
+		gallery.Lock()
+		defer gallery.Unlock()
+		if gallery.faces == nil {
+			t.Run("gallery", func(t *testing.T) { gallery.faces = galleryPage(t) })
+		}
+		r.c.render(w, "gallery", gallery.faces)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		// the event stream stays open as long as its page; a seed must not wait for it
 		if !strings.HasSuffix(req.URL.Path, "/events/stream") {
@@ -346,6 +366,8 @@ type labScene struct {
 	// criteria are the criteria verdict rows by task
 	criteria  map[string][]factoryd.CriterionVerdict
 	approvals []factoryd.ApprovalRequest
+	// briefs are the texts each card's sessions got, by task id
+	briefs    map[string][]factoryd.SessionBrief
 	objects   map[string]string
 	events    []factoryd.Event
 	chat      []factoryd.ChatMessage
@@ -432,18 +454,56 @@ func pokeScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	s.inbox, s.open = 5, 4
 	s.chat = append(s.chat,
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
-			Content: "#603 needs you: Which store keeps the nightly board snapshots?", Choices: []string{"Postgres", "SQLite", "Ask the author"}},
+		s.poke(603, ago(28*time.Minute), factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: map[string]any{
+			"question": "Which store keeps the nightly board snapshots?", "choices": []any{"Postgres", "SQLite", "Ask the author"}}}),
 		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "Postgres", At: ago(20 * time.Minute)},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(603), At: ago(20 * time.Minute),
 			Content: "Answered #603 with “Postgres”; the card goes on."},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(606), At: ago(12 * time.Minute),
-			Content: "#606 needs you: Merge PR #612, high risk.\nWhy: The merge gate classes the change high: a human decides its merge.", Choices: []string{"Approve"}},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(600), At: ago(time.Minute),
-			Content: "#600 is done: Costs: the day cap line under the table. €0.18 in all."})
+		s.poke(606, ago(12*time.Minute), factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: s.mergeFaceRow(606, map[string]any{"approval": float64(1), "pr": float64(612), "class": "high"})}),
+		s.poke(600, ago(time.Minute), factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "done"}}))
 	s.seen[5] = int64(len(s.chat) - 1)
 	s.archived = []int64{1}
 	return s
+}
+
+// poke is the inbox row of the factory's poke e on the scene's card of
+// issue n at at, as the Poker writes it.
+func (s labScene) poke(n int64, at time.Time, e factoryd.Event) factoryd.ChatMessage {
+	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.IssueNumber == n })
+	if i < 0 {
+		panic(fmt.Sprintf("lab: no card #%d", n))
+	}
+	t := s.tasks[i].Task
+	e.TaskID, e.Repository = t.ID, t.Repository
+	m, ok := factoryd.PokeOf(e, t, factoryd.Task{})
+	if !ok {
+		panic(fmt.Sprintf("lab: no poke of %s on #%d", e.Kind, n))
+	}
+	m.Conversation, m.At = 5, at
+	return m
+}
+
+// mergeFaceRow is the ask row the face of a merge case on the scene's card
+// of issue n writes as it reaches the human, facts its request's.
+func (s labScene) mergeFaceRow(n int64, facts map[string]any) map[string]any {
+	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.IssueNumber == n })
+	if i < 0 {
+		panic(fmt.Sprintf("lab: no card #%d", n))
+	}
+	t := s.tasks[i].Task
+	same := func(s string) string { return s }
+	c := factoryd.Case{TaskID: t.ID, Repository: t.Repository, Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Facts: facts}
+	face := factoryd.FaceRow(c, t, factoryd.FactsOf(c), "", nil, same, same)
+	ask, _ := face["ask"].(string)
+	b, err := json.Marshal(factoryd.AskRow(c, t, "", ask, 0, face, nil, nil, same))
+	var row map[string]any
+	if err == nil {
+		err = json.Unmarshal(b, &row)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("lab: the merge face of #%d: %v", n, err))
+	}
+	return row
 }
 
 // escalationScene is the busy board at autonomy autonomous with the
@@ -453,7 +513,8 @@ func pokeScene(now time.Time) labScene {
 // (roadmap 239, C14). A later ask, already settled by the human's press,
 // sits over the escalation: the row must still offer the escalation, not
 // fall silent on it. #597 failed a minute ago, its poke the one unread
-// row, its Retry and Leave it a press whose turn the agent answers.
+// row, its "Try the failed card again" and "Not now" a press whose turn
+// the agent answers.
 func escalationScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -464,14 +525,13 @@ func escalationScene(now time.Time) labScene {
 	s.chat = append(s.chat,
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(617), At: ago(40 * time.Minute),
 			Content: `Started #617 "Chat form: center the Send button next to the two-row textarea".`, Decider: "autonomous level · started by the agent"},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
-			Content: "#603 needs you: Which store keeps the nightly board snapshots? Postgres shares the factory's backups; SQLite keeps them beside the export and off the cluster.",
-			Choices: []string{"Postgres", "SQLite", "Ask the author"}},
+		s.poke(603, ago(28*time.Minute), factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: map[string]any{
+			"question": "Which store keeps the nightly board snapshots?", "why": "Postgres shares the factory's backups, and SQLite keeps them beside the export and off the cluster.",
+			"choices": []any{"Postgres", "SQLite", "Ask the author"}}}),
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageAsk, At: ago(20 * time.Minute),
 			Content: "One snapshot a night, or one an hour?", Choices: []string{"One a night", "One an hour"}},
 		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "One a night", At: ago(18 * time.Minute)},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, TaskID: labID(597),
-			At: end, Content: "#597 failed: the session spent its €2.00 budget before the checks passed.", Choices: []string{"Retry", "Leave it"}})
+		s.poke(597, end, factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "failed", "reason": "the session spent its 2.00 EUR budget before the checks passed"}}))
 	s.seen[5] = int64(len(s.chat) - 1)
 	s.replies = []labReply{{{Say: "#597 stays failed: nothing retries it, and its card keeps the reason."}}}
 	return s
@@ -480,15 +540,15 @@ func escalationScene(now time.Time) labScene {
 // wakeScene is the threads scene at autonomous with one wake turn in the
 // inbox, which the human opens by its row (the main agent concept): the
 // factory woke the agent on #603's ask; the turn's rows are one row that
-// folds to the wake's first line and opens on a click, the settled row's
-// fold.
+// folds to one line, what the turn means for the human and the card it
+// looked at, and opens on a click.
 func wakeScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 4
 	s.chat = append(s.chat,
 		factoryd.ChatMessage{Conversation: 5, Role: "user", BirthKind: "wake_ask", At: ago(15 * time.Minute),
-			Content: "Wake: 1 ask waits for a human.\n#603: Which store keeps the nightly board snapshots?"},
+			Content: "Wake: 1 ask waits for a human: #603.\n#603: Which store keeps the nightly board snapshots?"},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", At: ago(15*time.Minute - 30*time.Second), ToolCalls: []factoryd.ChatToolCall{{
 			ID: "call_w", Name: "card", Arguments: `{"task_id":"#603"}`,
 			Result: "#603 asks which store keeps the nightly board snapshots; the plan names Postgres."}}},
@@ -611,14 +671,14 @@ func assistedScene(now time.Time) labScene {
 		Objective: "Speed up the find box.\n\nAcceptance:\n- The find answers in under 100 ms\n"}}
 	moved := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a2", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 		Process: "spec", Repository: "sf/code", IssueNumber: 8, Size: "small", BudgetEUR: 2, CreatedAt: ago(30 * time.Minute),
-		Objective: "Fix the login redirect.\n\nAcceptance:\n- A signed-in member lands on the board\n"}}
+		Objective: "Fix the login redirect.\n\nAcceptance:\n- A signed-in human lands on the board\n"}}
 	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a3", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 		Process: "spec", Repository: "sf/code", IssueNumber: 9, Size: "small", CreatedAt: ago(2 * time.Hour),
 		Objective: "Trim the roll notes.\n\nAcceptance:\n- The roll comment fits on one line\n"}}
 	msgs := []factoryd.ChatMessage{
 		{Role: "user", Content: "File the login redirect fix; it is small.", At: ago(9 * time.Minute)},
 		{Role: "assistant", At: ago(9*time.Minute - 5*time.Second), ToolCalls: []factoryd.ChatToolCall{{
-			ID: "call_1", Name: "new_card", Arguments: `{"title":"Fix the login redirect","acceptance":["A signed-in member lands on the board"],"track":"direct","track_reason":"a small, clear fix","size":"small"}`,
+			ID: "call_1", Name: "new_card", Arguments: `{"title":"Fix the login redirect","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","acceptance":["A signed-in human lands on the board"],"track":"direct","track_reason":"a small, clear fix","size":"small"}`,
 			ReadAt: ago(9*time.Minute - 5*time.Second), Result: "Filed sf/code#8 on track direct."}}},
 		{Role: "assistant", At: ago(9*time.Minute - 3*time.Second), Content: "#8 is queued for a work slot; #7 runs its session. The ready check passed: criteria, size, budget and room."},
 		{Conversation: 2, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-a2", At: ago(9*time.Minute - 4*time.Second),
@@ -738,7 +798,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
 	r.tasks.criteria = s.criteria
 	r.tasks.mu.Unlock()
-	r.openCases, r.caseSteps, r.caseAsks = s.cases, s.steps, s.asks
+	r.openCases, r.caseSteps, r.caseAsks, r.briefs = s.cases, s.steps, s.asks, s.briefs
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
 	var highest int64
@@ -856,7 +916,7 @@ func (r *rig) seedScene(s labScene) string {
 			return factoryd.Hold{}, nil
 		}
 		return factoryd.Hold{Since: time.Now().Add(-7 * time.Hour), Groups: []factoryd.Group{
-			{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
+			{Plan: "t-pl", Issue: 12, Name: "link shortener", Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
 	}
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
@@ -1112,7 +1172,7 @@ func busyScene(now time.Time) labScene {
 	deps := factoryd.BoardTask{Task: labCard(now, 616, "waiting-deps", "direct", 70*time.Minute, "Board export: a download button on the costs page",
 		"Offer the newest snapshot as a download beside the costs table."), WaitingOn: "#603, #611"}
 	queued := factoryd.BoardTask{Task: labCard(now, 617, "queued", "direct", 40*time.Minute, "Chat form: center the Send button next to the two-row textarea",
-		"The Send button sits at the textarea's top edge; center it on the two rows."), Dependencies: "#611, #614"}
+		"The Send button sits at the textarea's top edge; center it on the two rows."), Dependencies: []factoryd.DepFact{{TaskID: labID(611), Issue: 611, Status: "running"}, {TaskID: labID(614), Issue: 614, Status: "running"}}}
 	planOpen := factoryd.BoardTask{Task: labCard(now, 537, "waiting-deps", "plan", 8*time.Hour, "Costs: a per-model spend table",
 		"Break the costs page's spend down by model, with a cap line per model."), WaitingOn: "#533"}
 	planOpen.PlanName = "quota guard"
@@ -1298,18 +1358,18 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 		// fed: the filing again, now with its acceptance tests
 		{Role: "assistant", At: ago(16*time.Minute - 20*time.Second), ToolCalls: []factoryd.ChatToolCall{
 			{ID: "do-" + used[0].Token[:12], Name: "new_card", Arguments: noTests, ReadAt: ago(16*time.Minute - 20*time.Second),
-				Result: "Refused: The ready check refuses the filing: card " + fileTitle + ": 0 acceptance tests; want 1 to 10"}}},
+				Result: "Refused: The ready check refuses the filing: card " + fileTitle + ": 0 acceptance tests, want 1 to 10"}}},
 		{Role: "assistant", At: ago(15*time.Minute - 50*time.Second), Content: "The ready check wants acceptance tests on a plan card. " +
 			"This filing carries two; it waits for your click.",
 			ToolCalls: []factoryd.ChatToolCall{call(filed, "call_300c", ago(15*time.Minute-50*time.Second))}},
 		{Role: "user", Content: "What is #606 stuck on, and can it finish under its budget?", At: ago(14 * time.Minute)},
 		{Role: "assistant", At: ago(14*time.Minute - 4*time.Second), ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card",
 			Arguments: fmt.Sprintf(`{"task_id":%q}`, running.ID), ReadAt: ago(14*time.Minute - 4*time.Second),
-			Result: ref(running) + ": running, gate session for 23 min, session 2 on big\nspent €1.72 of €2.00\n" +
+			Result: ref(running) + ": running, gate session for 23 min, session 2 on big\nspent 1.72 of 2.00 EUR\n" +
 				"PR #609: checks 3/4, acceptance failed (TestDrawerObjective)"}}},
 		{Role: "assistant", At: ago(14*time.Minute - 9*time.Second), Content: "#606 is in its second session. The first pushed PR #609, then the " +
 			"**acceptance** job failed: the clamp cuts the objective at two lines and `TestDrawerObjective` reads three.\n\n" +
-			"It has spent €1.72 of its €2.00, so this session is its last under the budget."},
+			"It has spent 1.72 of its 2.00 EUR, so this session is its last under the budget."},
 		{Role: "user", Content: "Tell it to keep the drawer unclamped, and hold #617 until #606 is done.", At: ago(12 * time.Minute)},
 		{Role: "assistant", At: ago(12*time.Minute - 6*time.Second), ToolCalls: []factoryd.ChatToolCall{
 			call(proposals[0], "call_2", ago(12*time.Minute-6*time.Second)), call(proposals[1], "call_3", ago(12*time.Minute-6*time.Second))}},
@@ -1340,12 +1400,14 @@ const labBumpBrief = "The factory pins every outside input of its builds and its
 // The round's four routines of the code project: its weekly bump, the
 // factory's template pass, a dependency update and an audit.
 var (
-	labBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}, Files: policy.FilesHuman,
+	labBump = policy.Routine{Name: "weekly-bump", Title: "Update the fixed versions of outside software every week", Why: "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.",
+		Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}, Files: policy.FilesHuman,
 		Brief: "routines/weekly-bump.md", WhileOpen: policy.WhileOpenHold, Missed: policy.MissedFileOnce, Tell: policy.TellInbox}
 	labTemplatePass = policy.Routine{Name: "template-pass", Title: "Template pass", Schedule: []policy.Trigger{{Cron: "3 * * * *"},
 		{On: policy.OnConfigurationVersion}}, Files: policy.FilesPullRequest, Pass: policy.PassTemplate, WhileOpen: policy.WhileOpenFold, Tell: policy.TellQuiet}
-	labDeps = policy.Routine{Name: "dependency-update", Title: "Dependency update", Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}},
-		Files: policy.FilesAgent, Skill: "dependency-update", Tell: policy.TellQuiet}
+	labDeps = policy.Routine{Name: "dependency-update", Title: "Dependency update", Why: "Outside libraries fall behind their fixes unless someone updates them.",
+		Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}},
+		Files:    policy.FilesAgent, Skill: "dependency-update", Tell: policy.TellQuiet}
 	labAudit = policy.Routine{Name: "audit", Title: "Audit", Schedule: []policy.Trigger{{Merges: 20}}, Files: policy.FilesAgent, Skill: "audit"}
 )
 
@@ -1430,7 +1492,7 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	if held {
 		bump[0].Outcome, bump[0].Ended, status781 = "filed", time.Time{}, "waiting-human"
 	}
-	k781 := card(labBump, bump[0], status781, "Weekly bump of the pinned outside inputs", labBumpBrief)
+	k781 := card(labBump, bump[0], status781, "Update the fixed versions of outside software every week", labBumpBrief)
 	s.tasks = append(s.tasks, factoryd.BoardTask{Task: k781}, factoryd.BoardTask{Task: card(labDeps, s.runs[labDeps.Name][0], "done",
 		"Dependency update: go.mod and package.json, patch and minor", "Run the skill dependency-update.")})
 	var open *factoryd.Task
@@ -1502,7 +1564,7 @@ func idleScene(now time.Time) labScene {
 
 // criteriaScene is a plan every card of which ended with three test criteria
 // partial: its criteria gap card holds a reviewer's long evidence, one
-// unbroken file::test name in it, and a waiver form under each.
+// unbroken file::test name in it, and asks on a page per promise.
 func criteriaScene(now time.Time) labScene {
 	plan := labCard(now, 1344, "done", "plan", 30*time.Hour, "Metrics: divide and conquer", "Twelve panels on the metrics page.")
 	plan.PlanName = "divide and conquer"
@@ -1523,9 +1585,16 @@ func criteriaScene(now time.Time) labScene {
 			{Key: "foundation", Role: factoryd.RoleFoundation, Title: "Metrics: the panels' read model", Size: "medium"},
 			{Key: "integration", Role: factoryd.RoleIntegration, Title: "Metrics: the panels on the page", Size: "medium", DependsOn: []string{"foundation"}},
 		}})
-	return labScene{
-		tasks: []factoryd.BoardTask{{Task: plan}, {Task: found}, {Task: integ}},
-		plans: map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 0, Plan: planJSON, SHA256: "sha-lab", CreatedAt: now.Add(-30 * time.Hour)}}},
+	// the gate ran at main's head for the plan as it stands, so the review's
+	// rows judge main
+	marks := []string{found.ID + ":done", integ.ID + ":done"}
+	slices.Sort(marks)
+	ran := labEvent(1344, factoryd.EventCriteriaGateRun, "factoryd", factoryd.ViaFactoryd, now.Add(-5*time.Minute),
+		map[string]any{"task": integ.ID, "pr": 0, "cards": "rev 0 " + strings.Join(marks, " "), "outcome": "ran"})
+	return withRequestCases(labScene{
+		tasks:  []factoryd.BoardTask{{Task: plan}, {Task: found}, {Task: integ}},
+		events: []factoryd.Event{ran},
+		plans:  map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 0, Plan: planJSON, SHA256: "sha-lab", CreatedAt: now.Add(-30 * time.Hour)}}},
 		criteria: map[string][]factoryd.CriterionVerdict{integ.ID: {
 			{Criterion: "size_bound_escape", Verdict: "partial", Kind: factoryd.CriterionTest, Source: "review",
 				Evidence: "acceptance/divide_size_sessions_test.go adds the named proof using authenticated real-console HTML with both fake figures and actual PGStore. It seeds no missing-bound or unsized cases."},
@@ -1537,15 +1606,30 @@ func criteriaScene(now time.Time) labScene {
 		approvals: []factoryd.ApprovalRequest{{ID: 1040, Kind: factoryd.ApprovalCriteria, TaskID: plan.ID, Project: "sf/code", Status: "pending",
 			Reason: "criteria not met once every card of the plan ended: size_bound_escape, window_and_existing_figures, ledger_retry_integrity",
 			Spec:   json.RawMessage(`{"revision":0,"task":"` + integ.ID + `"}`), CreatedAt: now.Add(-3 * time.Minute)}},
+	})
+}
+
+// withRequestCases is scene s with the case each of its pending requests
+// opens, as openRequestCase opens it, so its card asks on its pages.
+func withRequestCases(s labScene) labScene {
+	s.cases = map[string][]factoryd.Case{}
+	for _, a := range s.approvals {
+		k, err := factoryd.RequestCase(a)
+		if err != nil {
+			panic(err)
+		}
+		k.ID, k.Status = 7000+a.ID, factoryd.CaseAtHuman
+		s.cases[a.TaskID] = append(s.cases[a.TaskID], k)
 	}
+	return s
 }
 
 // humanScene is humanRig's board, pages_ok's artifact one unbroken line
-// of 300 characters.
+// of 300 characters, its human promises each asking on its page.
 func humanScene(time.Time) labScene {
 	s := humanBoard()
 	s.objects[factoryd.ArtifactKey("t-int", "pages_ok")] = pagesOK(strings.Repeat("smallmediumlarge", 19)[:300])
-	return s
+	return withRequestCases(s)
 }
 
 // historyScene is the idle board after a busy week: 320 more cards
@@ -1587,7 +1671,7 @@ func fireScene(now time.Time) labScene {
 	s.objects["sessions/"+near.ID+"/timeline.jsonl"] = jsonl(tl...)
 	s.objects["sessions/"+near.ID+"/s-2.jsonl"] = jsonl(
 		map[string]any{"time": stamp(ago(13 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "The test job failed on TestPulseOrder: the failed card comes second. Sorting the bullets by state first."}},
-		map[string]any{"time": stamp(ago(5 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "€1.95 of €2.00 spent; I push this fix and stop here."}},
+		map[string]any{"time": stamp(ago(5 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "1.95 of 2.00 EUR spent; I push this fix and stop here."}},
 	)
 
 	refused := func(d time.Duration) string {
@@ -1944,10 +2028,12 @@ func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 			t.Errorf("child #%d's title %q, want its headline %q", tc.issue, got, tc.title)
 		}
 	}
-	// the three children in play (#606, #617, #533) wear the plan's name on the
-	// plan chip; the finished children's rows have none
-	if got := strings.Count(body, `<span class="chip plan">from plan #531 · card chips</span>`); got != 3 {
-		t.Errorf("%d chips read from plan #531 · card chips, want the 3 children in play", got)
+	// the three children in play (#606, #617, #533) name the plan as their
+	// place, a link that opens the plan's card
+	for _, issue := range []int64{606, 617, 533} {
+		if face := faceOf(t, body, labID(issue)); !strings.Contains(face, `<span class="it place"><a class="ref-link" href="#card=`+labID(531)+`">card chips</a>`) {
+			t.Errorf("child #%d does not name plan #531 as its place:\n%s", issue, face)
+		}
 	}
 	for _, key := range []string{"drawer-files", "drawer-overview", "drawer-chat", "drawer-activity"} {
 		if n := strings.Count(body, ">"+key+"</a>") + strings.Count(body, ">"+key+"</strong>"); n != 0 {
@@ -2019,7 +2105,7 @@ func casesScene(now time.Time) labScene {
 		return factoryd.Case{ID: id, TaskID: task, Repository: "sf/code", Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, OpenedAt: ago(d), CommentID: 1000 + id}
 	}
 	capCase := at(105, labID(610), factoryd.CaseSessionCap, 12*time.Minute, "#610 used its 3 sessions, and 2 findings are still open.")
-	capCase.Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, NeedEUR: 0.5, Buys: "one more session"}
+	capCase.Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, Buys: "one more session"}
 	s.cases = map[string][]factoryd.Case{
 		labID(603): {
 			at(101, labID(603), factoryd.CaseAgentEscalate, 95*time.Minute, "Which store keeps the nightly board snapshots?"),
@@ -2066,9 +2152,8 @@ func planSlotsScene(now time.Time) labScene {
 	p.Spec = &factoryd.Spec{Outcome: "A writer opens the feed beside the board and sees who did what, by which way and when, with a steer showing within a second of its row."}
 	s.plans[id][0].Plan, _ = json.Marshal(p)
 	s.asks = map[int64]factoryd.CaseAsk{}
-	for i, q := range s.questions[id+" 1"][:3] {
-		s.asks[int64(500+i)] = factoryd.CaseAsk{At: now.Add(-12 * time.Minute), Detail: map[string]any{
-			"recommendation": q.Recommended + ": " + q.Grounds, "recommended_by": "the planner"}}
+	for i := range 3 {
+		s.asks[int64(500+i)] = factoryd.CaseAsk{At: now.Add(-12 * time.Minute), Detail: map[string]any{}}
 	}
 	return s
 }

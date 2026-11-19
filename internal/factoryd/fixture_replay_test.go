@@ -553,14 +553,7 @@ func (g *replayRig) result(ctx context.Context) fixtureReplay {
 		}
 		atHuman := c.Status == CaseAtHuman || c.Status == CaseResolved && c.Resolution != nil && c.Resolution.Rung == 3
 		if c.Status == CaseAtHuman {
-			head, _ := c.Facts["head"].(string)
-			model, _ := c.Facts["model"].(string)
-			f, err := g.r.tripFacts(ctx, task, head, model)
-			if err != nil {
-				g.t.Fatal(err)
-			}
-			f.atCase(c)
-			face := CaseFace(c, desk.Steps[c.ID], f, desk.Asks[c.ID], nil)
+			face := CaseFace(c, task, desk.Asks[c.ID])
 			res.Face = &face
 		}
 		if atHuman {
@@ -991,7 +984,7 @@ func syntheticFixture() Fixture {
 		Sessions: []FixtureSession{{Attempt: 1, Outcome: "pushed", Commit: "c1", Pushed: true, CostEUR: 0.2, Calls: 10, AgentTimeS: 300, Summary: "pushed c1"}},
 		Gates:    []FixtureGate{{Head: "c1", Gate: "review", Verdict: "approve"}},
 		Checks:   []FixtureChecks{{Head: "c1", State: "success"}},
-		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "merge approval", Why: "The merge gate classes the change normal"}}, Rung2Turns: 1, Status: "in-review"},
+		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "Merge “a card of one session”?", Why: "The change is of normal risk, and the factory's rules let only a human merge it."}}, Rung2Turns: 1, Status: "in-review"},
 	}
 }
 
@@ -1030,7 +1023,7 @@ func rung2Fixture() Fixture {
 		Note:     "a human or the factory agent decides", Recommendation: RungRecommendation{Action: "extend", Grounds: "one session fixes it"}}
 	fx.Script.Rung2 = []FixtureRung2Answer{{CaseKind: "session_cap", Answer: FixtureTool{Tool: "answer",
 		Args: map[string]any{"action": "extend", "args": map[string]any{"sessions": 1}, "note": "one more session", "found": "the finding stands"}}}}
-	fx.Expect = &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 3, HumanCases: 1, Face: []FixtureFace{{Ask: "session cap"}}, Rung2Turns: 1}
+	fx.Expect = &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 3, HumanCases: 1, Face: []FixtureFace{{Ask: "How should it go on?"}}, Rung2Turns: 1}
 	return fx
 }
 
@@ -1057,7 +1050,7 @@ func migrationTwinFixture() Fixture {
 		},
 		Checks: []FixtureChecks{{Head: "c1", State: "success"}},
 		Expect: &FixtureExpect{ResolvedByRung: []int{0, ResolvedOpen}, Sessions: 2, HumanCases: 1,
-			Face: []FixtureFace{{Ask: "merge approval", Why: "migration"}}, Rung2Turns: 1},
+			Face: []FixtureFace{{Ask: "pull request?", Why: "The change alters the database"}}, Rung2Turns: 1},
 	}
 }
 
@@ -1077,7 +1070,7 @@ func TestReplayHarnessAssertsTheExpectExactly(t *testing.T) {
 		}},
 		"the migration twin": {migrationTwinFixture(), map[string]func(x *FixtureExpect){
 			"resolved at rung 1": func(x *FixtureExpect) { x.ResolvedByRung = []int{1, ResolvedOpen} },
-			"another class":      func(x *FixtureExpect) { x.Face = []FixtureFace{{Ask: "merge approval", Why: "normal"}} },
+			"another class":      func(x *FixtureExpect) { x.Face = []FixtureFace{{Ask: "pull request?", Why: "the normal risk class"}} },
 			"no human case":      func(x *FixtureExpect) { x.HumanCases, x.Face = 0, nil },
 		}},
 		"rung 1 resolves the cap": {capFixture(), map[string]func(x *FixtureExpect){
@@ -1163,7 +1156,7 @@ var replayCoverage = map[string]string{
 	"I4":  "internal/console TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered",
 	"I5":  "internal/factoryd/pg TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
-	"I7":  "TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney",
+	"I7":  "TestBudgetFloorWithFindingsAsksOnce",
 	"I8":  "TestVerifyReturnsTheAdoptedHead",
 	"I9":  "testdata/fixtures/1383.json",
 	"I10": "internal/console TestChatModelRefusal",
@@ -1194,7 +1187,7 @@ var replayCoverage = map[string]string{
 	"S15": "internal/factoryd/pg TestCountAdmittedFreesTheApprovalAndDependencyWaits",
 	"S16": "TestBoundedStartTakesNoSlotFromAFixForwardCard",
 	"S17": "internal/factoryd/pg TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
-	"S18": "internal/console TestOverruleTheReviewCarriesDropVerdicts",
+	"S18": "internal/console TestAFacePressAnswersAsItsAnswer",
 	"S19": "TestExtendAnswersACapAlone",
 	"S20": "TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop",
 	"S21": "TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask",

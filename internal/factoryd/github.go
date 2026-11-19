@@ -481,7 +481,7 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 	if err != nil {
 		return "", "", err
 	}
-	short, of := sha[:7], "GitHub's default branch of "+m.Remote
+	short, of := ShortSHA(sha), "GitHub's default branch of "+m.Remote
 	if sha == m.Synced {
 		return sha, of + " is still at " + short + ", which the last sync brought back: nothing to sync.", nil
 	}
@@ -514,8 +514,18 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 	}
 	// The pull request stands on the bot's fork: its card is filed there,
 	// where the workflow reads and merges it (roadmap 187).
-	r.fileSyncCard(ctx, p, fork, pr.Number, short, sha, by)
+	r.fileSyncCard(ctx, p, fork, pr.Number, sha, by)
 	return sha, fmt.Sprintf("Pull request #%d brings %s at %s to main: %s", pr.Number, of, short, pr.URL), nil
+}
+
+// GitHubSyncCard is the brief of the card of sync pull request pr, which
+// brings the default branch of repository's GitHub remote at sha back for
+// by.
+func GitHubSyncCard(repository, sha, by string, pr int64) BriefText {
+	b := SourceBriefs[SourceGitHubSync](BriefFacts{Name: repository})
+	b.Body = fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d. Merging this card merges that pull request.",
+		repository, sha, by, pr)
+	return b
 }
 
 // fileSyncCard files the card of the sync pull request pr (roadmap 187):
@@ -525,7 +535,7 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 // returned: the pull request stands open either way, and the next sync of
 // a newer SHA opens another card. Idempotent by repository and pull request,
 // so a sync whose pull request already has a card files none.
-func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr int64, short, sha, by string) {
+func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr int64, sha, by string) {
 	if r.Tasks == nil || pr == 0 {
 		return
 	}
@@ -540,11 +550,9 @@ func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr i
 	if r.Workflows == nil {
 		return
 	}
-	title := "Sync from GitHub " + short
-	body := fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d; merging this card merges that pull request.",
-		p.Repository, sha, by, pr)
-	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, nil,
-		Task{ID: id, Kind: "agent", Objective: title + "\n\n" + body, Author: by, Source: SourceGitHubSync}, pr); err != nil {
+	b := GitHubSyncCard(p.Repository, sha, by, pr)
+	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, b, nil,
+		Task{ID: id, Kind: "agent", Objective: IssueObjective(b.Title, b.Body), Author: by, Source: SourceGitHubSync}, pr); err != nil {
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
 	} else {
 		log.Printf("project %s: sync pull request %d filed as issue #%d", p.Name, pr, ref.Number)

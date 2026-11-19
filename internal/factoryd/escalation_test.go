@@ -145,6 +145,8 @@ type fakeSessions struct {
 	asks  []AgentAsk
 }
 
+func (f *fakeSessions) AdmitAsk(context.Context, Task, AgentAsk) error { return nil }
+
 func (f *fakeSessions) EscalateSession(_ context.Context, taskID string, a AgentAsk) error {
 	f.calls = append(f.calls, strings.Join([]string{taskID, a.Kind, a.Question, a.Reason, a.Recommendation, a.Tried, a.Needs}, "|"))
 	f.asks = append(f.asks, a)
@@ -258,6 +260,31 @@ func TestEscalationHandlerChoices(t *testing.T) {
 		`{"task_id":"t-run","kind":"info_request","question":"Which browser?","tried":"the steps","needs":"the version","choices":["Firefox","Chrome"]}`)))
 	if rec.Code != http.StatusAccepted || len(s.asks) != 1 || s.asks[0].Choices != nil || len(store.intakeEvents) != 1 {
 		t.Fatalf("info request = %d, delivered %+v, stored %+v; want no choices and one row", rec.Code, s.asks, store.intakeEvents)
+	}
+}
+
+// The agent's pick is the number of one of its choices: it rides the
+// reason as its own line, beside the question, and a number past the
+// choices is refused. A pick among dropped choices is dropped with them.
+func TestEscalationHandlerTakesTheAgentsPick(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
+	post := func(choices string, pick int) (*httptest.ResponseRecorder, *fakeSessions) {
+		s := &fakeSessions{}
+		rec := httptest.NewRecorder()
+		EscalationHandler(store, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(fmt.Sprintf(
+			`{"task_id":"t-run","kind":"escalation","question":"Which license?","reason":"none named","recommendation":"MIT","choices":%s,"choice":%d}`, choices, pick))))
+		return rec, s
+	}
+	rec, s := post(`["MIT","Apache-2.0"]`, 2)
+	if rec.Code != http.StatusAccepted || len(s.asks) != 1 || s.asks[0].reason() != AgentAsks+"Which license?\nChoice: 2 (Apache-2.0)\nWhy: none named\nRecommendation: MIT" {
+		t.Fatalf("pick 2 = %d, delivered %+v", rec.Code, s.asks)
+	}
+	if rec, s := post(`["MIT","Apache-2.0"]`, 3); rec.Code != http.StatusBadRequest || len(s.asks) != 0 || !strings.Contains(rec.Body.String(), "choice 3 names none of the 2 choices") {
+		t.Fatalf("pick 3 = %d %q, delivered %+v", rec.Code, rec.Body, s.asks)
+	}
+	if rec, s := post(`["yes"]`, 1); rec.Code != http.StatusAccepted || len(s.asks) != 1 || s.asks[0].Choice != 0 || strings.Contains(s.asks[0].reason(), "Choice:") {
+		t.Fatalf("a pick among dropped choices = %d, delivered %+v", rec.Code, s.asks)
 	}
 }
 
@@ -573,7 +600,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix main", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	refusal := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
+	refusal := "free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
 	capped := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: refusal}, At: time.Date(2026, 10, 14, 20, 43, 31, 0, time.UTC), Allowed: true}
 	store.capRefusals = map[string]CapRefusal{"t1": capped}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
@@ -584,10 +611,10 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	if res.Outcome != OutcomeDayCap || res.Capped == nil || res.Capped.Refusal != capped.Refusal || !res.Capped.At.Equal(capped.At) || !res.Capped.Allowed {
 		t.Fatalf("result = %+v, want day_cap with the refusal", res)
 	}
-	question := "the day cap is reached: the card resumes on its own once the day's free headroom " +
-		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml to resume it sooner, or close the card."
+	question := "the day cap is reached: the card resumes on its own once the money left under the day cap " +
+		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
 	run := &taskRun{}
-	reason, until := run.capReason(*res.Capped), run.capUntil(*res.Capped)
+	reason, until := CapRefusalReason(*res.Capped), run.capUntil(*res.Capped)
 	if want := question + "\nthe gateway refused this task's spend (refused_day_cap): " + refusal; reason != want || !until.Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("reason %q until %v, want %q until 2026-10-15 00:00 UTC", reason, until, want)
 	}
@@ -729,11 +756,11 @@ func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
 		want string
 	}{
 		"the output at its limit": {&OverHoldCall{Alias: "big", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576, OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745},
-			said + "; a model call on big crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
-				"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"},
+			said + ". A model call on big crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.13 EUR against a hold of 0.12 EUR. " +
+				"Its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"},
 		"the prompt over its price": {&OverHoldCall{Alias: "big", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576, HoldEUR: 0.131, CostEUR: 0.1392},
-			said + "; a model call on big crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
-				"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"},
+			said + ". A model call on big crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.14 EUR against a hold of 0.13 EUR. " +
+				"Its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"},
 		"no call crossed its hold": {nil, said},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -791,7 +818,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 func TestCloseIssueAsFactory(t *testing.T) {
 	ctx := context.Background()
 	card := Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5, Track: "direct"}
-	const comment = "factoryd: closing this issue."
+	const comment = "Closing this issue."
 	rig := func(failCall string) (*fakeStore, *planForgejo, *Forgejo) {
 		fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}, failCall: failCall}
 		return newFakeStore(), fj, &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
@@ -865,7 +892,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	}
 	check("comment failed", store, fj, nil, "open", false, "GET issues/5/dependencies", "POST issues/5/comments")
 	fj.calls = nil
-	if err := closeIssueAsFactory(ctx, store, f, card, "factoryd: closing this issue for another reason."); err != nil {
+	if err := closeIssueAsFactory(ctx, store, f, card, "Closing this issue for another reason."); err != nil {
 		t.Fatal(err)
 	}
 	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/dependencies", "GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5")
@@ -982,5 +1009,18 @@ func TestCloseIssueAsFactoryRefusedWhenARemovalFails(t *testing.T) {
 	var dr *DependencyRefusal
 	if !errors.As(err, &dr) || dr.Dep.Number != 6 || !strings.Contains(err.Error(), "remove its dependency on linkshort/linkshort#6") || !strings.Contains(err.Error(), "forgejo down") {
 		t.Fatalf("err = %v, want the refusal to name #6 and carry Forgejo's reason", err)
+	}
+}
+
+// An agent's recommendation names none of the factory's machinery where
+// the escalate tool files it: a name refuses the ask and is named.
+func TestAnEscalationsRecommendationNamesNoMachinery(t *testing.T) {
+	a := AgentAsk{Kind: AskEscalation, Question: "Which store keeps the snapshots?", Reason: "Both stores fit.", Recommendation: "Keep them in S3, as factory-chat found."}
+	if err := a.validate(); err == nil || !strings.Contains(err.Error(), `recommendation: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`) {
+		t.Errorf("a recommendation with a decider's name = %v, want the fault named", err)
+	}
+	a.Recommendation = "Keep them in S3."
+	if err := a.validate(); err != nil {
+		t.Errorf("a plain recommendation = %v", err)
 	}
 }

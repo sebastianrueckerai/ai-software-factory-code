@@ -15,7 +15,7 @@ import (
 const StepSizing = "sizing"
 
 // sizedSources are the sources of the cards a person or the chat files.
-var sizedSources = []string{"webhook", "api"}
+var sizedSources = []string{SourceWebhook, SourceAPI}
 
 // SizeResult is SizeCard's answer: ToPlan is the switch of a card that is
 // not small, nil when the card stays direct.

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -194,7 +195,7 @@ func TestInClusterKubeWire(t *testing.T) {
 	if err := k.CreatePod(ctx, "factory-agents-t1", "worker-s1", map[string]any{"spec": map[string]any{}}); err != nil {
 		t.Fatalf("CreatePod: %v", err)
 	}
-	phase, exit, err := k.PodStatus(ctx, "factory-agents-t1", "worker-s1")
+	phase, exit, _, err := k.PodStatus(ctx, "factory-agents-t1", "worker-s1")
 	if err != nil || phase != "Succeeded" || exit != 0 {
 		t.Fatalf("PodStatus = %q %d %v", phase, exit, err)
 	}
@@ -911,6 +912,41 @@ func TestInClusterKubeNewestPodEvent(t *testing.T) {
 	for _, sel := range selectors {
 		if !strings.Contains(sel, "involvedObject.kind=Pod") || !strings.Contains(sel, "involvedObject.name=p") {
 			t.Errorf("fieldSelector = %q, want the pod's kind and name", sel)
+		}
+	}
+}
+
+// PodStatus reads why a container waits, an init container's first, with
+// the pull's message.
+func TestPodStatusReadsAWaitingContainer(t *testing.T) {
+	pods := map[string]string{
+		"init": `{"status":{"phase":"Pending",
+			"initContainerStatuses":[{"state":{"waiting":{"reason":"ErrImagePull","message":"unauthorized: authentication required"}}}],
+			"containerStatuses":[{"state":{"waiting":{"reason":"PodInitializing"}}}]}}`,
+		"main": `{"status":{"phase":"Pending",
+			"initContainerStatuses":[{"state":{"terminated":{"exitCode":0}}}],
+			"containerStatuses":[{"state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}]}}`,
+		"runs": `{"status":{"phase":"Running","containerStatuses":[{"state":{"running":{}}}]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, pods[path.Base(r.URL.Path)])
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := SaDirForTest(dir)
+	t.Cleanup(func() { SaDirForTest(old) })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	for name, want := range map[string]PodWait{
+		"init": {Reason: "ErrImagePull", Message: "unauthorized: authentication required"},
+		"main": {Reason: "ImagePullBackOff", Message: "Back-off pulling image"},
+		"runs": {},
+	} {
+		phase, _, wait, err := k.PodStatus(context.Background(), "ns", name)
+		if err != nil || wait != want {
+			t.Errorf("%s: PodStatus = %q %+v %v, want the wait %+v", name, phase, wait, err, want)
 		}
 	}
 }

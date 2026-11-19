@@ -412,7 +412,7 @@ func (s *Supervisor) cheapCap(at time.Time) *Trip {
 	if s.cfg.CheapCap <= 0 || s.pushed || at.Sub(s.started) < s.cfg.CheapCap {
 		return nil
 	}
-	detail := fmt.Sprintf("the cheap rung's %s passed without a push", s.cfg.CheapCap)
+	detail := fmt.Sprintf("the cheap model's cap of %s passed without a push", s.cfg.CheapCap)
 	return s.trip(&Trip{Kind: TripCheapCap, Detail: detail, decided: &Decision{Action: ActionRetryStronger, Reason: detail}})
 }
 
@@ -429,8 +429,8 @@ func (s *Supervisor) Spent(spent, budget float64) *Trip {
 		return nil
 	}
 	s.spendTripped = true
-	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("this session spent %.2f EUR of the %.2f EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed",
-		own, left, 100*own/left, 100*s.cfg.NoPushSpend)})
+	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("this session spent %s EUR of the %s EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed",
+		textutil.EUR(own), textutil.EUR(left), 100*own/left, 100*s.cfg.NoPushSpend)})
 }
 
 // Climbed: the session switched to the stronger rung in place; the cheap
@@ -460,9 +460,9 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	kind, detail, action := TripAgentEscalation, "the agent called escalate", ActionEscalate
 	switch a.Kind {
 	case AskInfo:
-		kind, detail = TripAgentInfoRequest, "the agent called request_info"
+		kind, detail = TripAgentInfoRequest, "the agent asked for information"
 	case AskTool:
-		kind, detail = TripAgentToolRequest, "the agent called request_tool"
+		kind, detail = TripAgentToolRequest, "the agent asked for a tool"
 	case AskReplan:
 		kind, detail, action = TripReplan, "a person asked for the replan", ActionReplan
 	case AskCut:
@@ -508,7 +508,7 @@ func (s *Supervisor) NudgeSent(n Nudge) *Trip {
 // harness without messages gets the redirect with the nudge's text, decided
 // already; any other failure asks the supervisor.
 func (s *Supervisor) nudgeUndelivered(n Nudge, err error) *Trip {
-	t := &Trip{Kind: TripSameCall, key: n.key, Detail: fmt.Sprintf("%s: the same call %d times in a row; the nudge was not delivered: %v", n.Tool, n.Count, err)}
+	t := &Trip{Kind: TripSameCall, key: n.key, Detail: fmt.Sprintf("%s: the same call %d times in a row, and the nudge was not delivered: %v", n.Tool, n.Count, err)}
 	if errors.Is(err, harness.ErrNotSupported) {
 		t.decided = &Decision{Action: ActionRedirect, Guidance: n.Text()}
 	}
@@ -912,7 +912,7 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 		d.runs[gitRefusalKey] = run
 		if run.n >= d.cfg.SameFailure {
 			return &Trip{Kind: TripSameFailure, key: gitRefusalKey,
-				Detail: fmt.Sprintf("%d git commands were refused authentication (last: `%s`): the sandbox holds no git credential, so no edit can fix this — a card that carries an existing pull request names it on its issue (Carries line), which puts its head in the clone", run.n, CommandLine(cmd))}
+				Detail: fmt.Sprintf("%d git commands were refused authentication (last: `%s`): the sandbox holds no git credential, so no edit can fix this. A card that carries an existing pull request names it on its issue (Carries line), which puts its head in the clone", run.n, CommandLine(cmd))}
 		}
 		return nil
 	}

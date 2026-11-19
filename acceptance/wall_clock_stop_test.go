@@ -206,14 +206,14 @@ func (k *stopKube) DeletePod(_ context.Context, ns, name string) error {
 
 // PodStatus answers Running while the pod lives, not-found once deleted,
 // so the log follow ends when the stream does.
-func (k *stopKube) PodStatus(_ context.Context, ns, name string) (string, int32, error) {
+func (k *stopKube) PodStatus(_ context.Context, ns, name string) (string, int32, factoryd.PodWait, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	key := k.key(ns, name)
 	if _, ok := k.pods[key]; !ok || k.gone[key] {
-		return "", -1, factoryd.ErrNotFound
+		return "", -1, factoryd.PodWait{}, factoryd.ErrNotFound
 	}
-	return "Running", 0, nil
+	return "Running", 0, factoryd.PodWait{}, nil
 }
 
 // PodIP keeps answering loopback for a deleted pod: the stop's ask of the

@@ -111,7 +111,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 			for i, k := range open {
 				ids[i] = strconv.FormatInt(k.ID, 10)
 			}
-			return 0, ErrActRefused(fmt.Sprintf("case %d is not a case of this card: its open cases are %s", caseID, cmp.Or(textutil.AndList(ids), "none")))
+			return 0, agentRefused(fmt.Sprintf("`case_id` %d is no ask of this card. Its open asks, by `case_id`: %s.", caseID, cmp.Or(textutil.AndList(ids), "none")))
 		}
 		steps, err := r.store.CaseSteps(ctx, c.ID)
 		if err != nil {
@@ -186,7 +186,7 @@ func (r *Runner) rungTwoRecommends(ctx context.Context, t Task, c Case, rec stri
 		for i, o := range offers {
 			values[i] = o.Value
 		}
-		return ErrActRefused(fmt.Sprintf("%q is no choice of card %s: recommend one of %s", rec, cardName(t), textutil.AndList(values)))
+		return ErrActRefused(fmt.Sprintf("%q is no choice of card %s: recommend one of %s", rec, AgentName(t), textutil.AndList(values)))
 	}
 	switch c.Kind {
 	case CasePlanConfirmation:
@@ -195,7 +195,7 @@ func (r *Runner) rungTwoRecommends(ctx context.Context, t Task, c Case, rec stri
 		}
 		return nil
 	case CasePlanQuestion:
-		if choices := planQuestion(c).Labels(); len(choices) > 0 && !slices.Contains(choices, rec) {
+		if choices := factStrings(c, "choices"); len(choices) > 0 && !slices.Contains(choices, rec) {
 			return ErrActRefused(fmt.Sprintf("%q is no choice of this plan question: recommend one of %s", rec, textutil.AndList(choices)))
 		}
 		return nil

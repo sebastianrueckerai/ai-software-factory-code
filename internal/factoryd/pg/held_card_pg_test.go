@@ -44,7 +44,7 @@ func TestAHeldProductionAskIsDecidedOutOfSight(t *testing.T) {
 		t.Fatalf("pokes = %v, want none before the face", pokes)
 	}
 	_, err := h.r.Act(ctx, ActInput{TaskID: h.cardID, CaseID: h.caseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
-	want := "card " + h.cardID + "'s condition stands: a plan is open on main of demo-app/demo-app: hand it up with attach_analysis and hold_wait as the recommended action"
+	want := "card “Deploys of demo-app-demo-app to production wait for an open plan. How…” (" + h.cardID + ")'s condition stands: a plan is open on main of demo-app/demo-app: hand the case up (`hand_up`) with `hold_wait` as the recommendation"
 	if err == nil || err.Error() != want {
 		t.Fatalf("rung 2's wait = %v,\nwant %q", err, want)
 	}
@@ -132,7 +132,7 @@ func TestMainStillRedClimbsToItsFace(t *testing.T) {
 		t.Fatalf("steps = %+v, want rung 0's hand-up and rung 2 in progress", steps)
 	}
 	_, err := g.r.Act(ctx, ActInput{TaskID: card.ID, CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActClose, Note: "Fixed, close"}})
-	want := "card " + card.ID + "'s condition stands: main of demo-app/demo-app is red and its merge queue paused on it: hand it up with attach_analysis and close as the recommended action"
+	want := "card “main is still red at abcdef1 after the revert #12 merged: a person…” (" + card.ID + ")'s condition stands: main of demo-app/demo-app is red and its merge queue paused on it: hand the case up (`hand_up`) with `close` as the recommendation"
 	if err == nil || err.Error() != want {
 		t.Fatalf("rung 2's close = %v,\nwant %q", err, want)
 	}
@@ -144,8 +144,8 @@ func TestMainStillRedClimbsToItsFace(t *testing.T) {
 		t.Fatalf("card %s #%d, issues %q, comments %q; want waiting-human on the one issue filed, #31, with no comment", faced.Status, faced.IssueNumber, forge.issues, forge.comments)
 	}
 	if !strings.HasPrefix(forge.issues[0], "main is still red at abcdef1 after the revert #12 merged: a person decides.\n\n") ||
-		!strings.Contains(forge.issues[0], "The factory agent found: the revert merged and main's run 5 is red at abcdef1") ||
-		!strings.Contains(forge.issues[0], "Recommendation: close: fix main, then close") {
+		!strings.Contains(forge.issues[0], "The factory agent found:\n\n> the revert merged and main's run 5 is red at abcdef1") ||
+		!strings.Contains(forge.issues[0], "Recommendation: “End the card”: fix main, then close") {
 		t.Fatalf("the issue = %q, want the ask as its title and the factory agent's finding and recommendation in its body", forge.issues[0])
 	}
 	if got := caseByID(t, g.s, c.ID); got.Status != CaseAtHuman {
@@ -254,7 +254,7 @@ func TestOnlyAHumanHandsAHeldRoutineCardToAnAgent(t *testing.T) {
 	})
 	ctx := context.Background()
 	_, err := g.r.Act(ctx, ActInput{TaskID: card.ID, CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: AnswerGo, Note: "Have the factory do it"}})
-	want := "card t-bump's filer routed it to a human, so only a human hands it to an agent: hand it up with attach_analysis and go as the recommended action"
+	want := "card “Weekly bump of the pinned outside inputs” (t-bump)'s filer routed it to a human, so only a human hands it to an agent: hand the case up (`hand_up`) with `go` as the recommendation"
 	if err == nil || err.Error() != want {
 		t.Fatalf("rung 2's go = %v,\nwant %q", err, want)
 	}
@@ -311,8 +311,10 @@ func TestAFaceAfterRung2sRerunSaysTheCardStillWaits(t *testing.T) {
 	}
 	asks := taskRows(t, g.s, card.ID, EventQuestionAsked)
 	info, _ := asks[len(asks)-1].Detail["info"].(string)
-	if !strings.Contains(forge.issues[0], still) || !strings.Contains(info, still) || strings.Contains(forge.issues[0], "did not answer") || strings.Contains(info, "did not answer") {
-		t.Fatalf("the issue %q, the face's info %q; want %q and no \"did not answer\"", forge.issues[0], info, still)
+	// the face says it with the choice's label, as a human reads it
+	const seen = "The factory agent took “Run the chain again”, and the card still waits after 35m."
+	if !strings.Contains(forge.issues[0], seen) || !strings.Contains(info, seen) || strings.Contains(forge.issues[0], "did not answer") || strings.Contains(info, "did not answer") {
+		t.Fatalf("the issue %q, the face's info %q; want %q and no \"did not answer\"", forge.issues[0], info, seen)
 	}
 }
 

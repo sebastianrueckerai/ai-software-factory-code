@@ -1682,7 +1682,7 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		if ends != 1 {
 			t.Fatalf("ended %d times after tick %d past the merge, want once", ends, tick)
 		}
-		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 56"}) {
+		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by CI run 56"}) {
 			t.Fatalf("task_ended after tick %d = %q, want one naming the run's number 56", tick, got)
 		}
 		if len(store.alerts) != 0 {
@@ -1869,7 +1869,7 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 	}
 	card := cards[demoRepo][0]
 	for _, want := range []string{
-		"run 16 failure",
+		"CI run 16 failure",
 		"required context factory/roll: failure",
 		"/" + demoRepo + "/actions/runs/16",
 		"#77",
@@ -1992,9 +1992,9 @@ func tickAt(t *testing.T, p *ChainPoller, clock *time.Time, d time.Duration) {
 
 // stallChoices are the stall card's three answers.
 var stallChoices = []QuestionChoice{
-	{Value: AnswerRerunAgain, Label: "Re-run again"},
-	{Value: AnswerCheckAgain, Label: "Check again"},
-	{Value: AnswerDismiss, Label: "Dismiss"},
+	{Value: AnswerRerunAgain, Label: "Run the chain again"},
+	{Value: AnswerCheckAgain, Label: "Look again"},
+	{Value: AnswerDismiss, Label: "End the card"},
 }
 
 // askedQuestion is the question the newest ask of card id carries, as its
@@ -2054,7 +2054,7 @@ func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	if card.SHA != demoCommit {
 		t.Fatalf("stall card on %q, want the head's commit %s", card.SHA, demoCommit)
 	}
-	for _, want := range []string{"since 2026-10-20 09:00 UTC", "run 16 running", "https://git.example/" + demoRepo + "/actions/runs/16", "The stall holds #76, #77:"} {
+	for _, want := range []string{"since 2026-10-20 09:00 UTC", "CI run 16 running", "https://git.example/" + demoRepo + "/actions/runs/16", "The stall holds #76, #77:"} {
 		if !strings.Contains(card.Objective, want) {
 			t.Fatalf("the card misses %q:\n%s", want, card.Objective)
 		}
@@ -2196,7 +2196,7 @@ func TestARedHeadClosesTheStallCardAndRepairs(t *testing.T) {
 	if closes := factoryCloses(store, cards[0].ID); len(f.closed) != 0 || len(closes) != 1 {
 		t.Fatalf("closed %q, records %q; want the stall card's close recorded alone", f.closed, closes)
 	}
-	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "run 16 failure") {
+	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "CI run 16 failure") {
 		t.Fatalf("repair cards %+v, want the red head's", repairs)
 	}
 }
@@ -2580,12 +2580,13 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 0 {
 		t.Fatalf("started %v, want no workflow for a human card", started)
 	}
-	ask := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
+	ask := "Repair the deploy chain of sf/demo-app"
 	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
-		!strings.HasPrefix(q.Info, "The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
-		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
-		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
+		!strings.HasPrefix(q.Info, "The chain of sf/demo-app is red at commit "+ShortSHA(demoCommit)+": required context flux/platform: failure. The project runs no agents, so a human repairs it.\n\n"+
+			"The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
+		!strings.Contains(q.Info, "Closing it yourself dismisses the red at commit 9d9d9d9") ||
+		!slices.Equal(q.Choices, []QuestionChoice{{AnswerDone, "I did it"}, {AnswerPark, "Not now"}}) {
 		t.Fatalf("question %+v, objective %q; want the red head's ask, the run's link and the dismissal", q, card.Objective)
 	}
 	var asked []Event
@@ -2598,7 +2599,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 		asked[0].Detail["held"] != true || !slices.Equal(stringsOf(asked[0].Detail["labels"]), []string{"human"}) {
 		t.Fatalf("question_asked rows %+v, want the card's one, held, labelled human", asked)
 	}
-	if m, ok := pokeOf(asked[0], card); ok {
+	if m, ok := PokeOf(asked[0], card, Task{}); ok {
 		t.Fatalf("the poke = %+v, want none before the face", m)
 	}
 }
@@ -2619,7 +2620,7 @@ func TestTheHumanRepairCardNamesTheCarriedCards(t *testing.T) {
 	if len(cards) != 1 || cards[0].Kind != "human" {
 		t.Fatalf("repair cards %+v, want one human card", cards)
 	}
-	if q := askedQuestion(t, store, cards[0].ID); !strings.Contains(q.Info, "The head carries #77: merged, they wait for a green chain to cover them; this card is their repair.") {
+	if q := askedQuestion(t, store, cards[0].ID); !strings.Contains(q.Info, "The head carries #77: merged, they wait for a green chain to cover them. This card is their repair.") {
 		t.Fatalf("info %q, want the carried card #77 named", q.Info)
 	}
 }
@@ -2708,7 +2709,7 @@ func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
 func TestAHumanRepairCardTakesOnNoIssueAtItsFiling(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
-	title := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
+	title := "Repair the deploy chain of sf/demo-app"
 	f.open = map[string][]map[string]any{demoRepo: {
 		{"number": 7, "title": title, "user": map[string]any{"login": "someone"}},
 		{"number": 8, "title": title, "user": map[string]any{"login": "factory-agent"}},

@@ -464,8 +464,8 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 		t.Fatalf("asks = %+v, want the ask's one", store.askedRows(task.ID))
 	}
 	if e, q := store.askedRows(task.ID)[0], store.askedRows(task.ID)[0].Question; q == nil ||
-		q.Ask != "Needs a decision" || q.Why != "filed by sebastian into the human lane" || q.Info != "please look" ||
-		!slices.Equal(q.Labels(), []string{"Have the factory do it", "Done"}) {
+		q.Ask != "Needs a decision" || q.Why != "filed by sebastian for a human, so no agent works on it" || q.Info != "please look" ||
+		!slices.Equal(q.Labels(), []string{"I did it", "Have the factory do it", "Not now"}) {
 		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
 	}
 }
@@ -772,7 +772,7 @@ func TestIntakeIgnoresTheGatesApproval(t *testing.T) {
 	m, reader := testMetrics(t)
 	in.Metrics = m
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", PRNumber: 5}
-	body := reviewBody("factory/t1", GateUser, "pull_request_review_approved", "factoryd: the merge gate passed c1 on the project's merge rule auto")
+	body := reviewBody("factory/t1", GateUser, "pull_request_review_approved", "The merge gate passed c1 on the project's merge rule auto")
 	if rr := postWebhook(in, "pull_request_review_approved", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 	}
@@ -1880,7 +1880,7 @@ func TestAFailedCommentOfAPullRequestsCardIsPostedAgain(t *testing.T) {
 	}
 	g.post("pull_request", body, http.StatusOK)
 	g.ended("done", "pull request #5 merged by sebastian", EventQuestionAnswered, "sebastian", ViaWebhook)
-	if !slices.Equal(g.posted, []string{"factoryd: pull request #5 merged by sebastian; this card ends with it."}) {
+	if !slices.Equal(g.posted, []string{"Pull request #5 merged by sebastian. This card ends with it."}) {
 		t.Fatalf("comments %q, want the one", g.posted)
 	}
 }
@@ -1913,7 +1913,7 @@ func TestResyncEndsAPullRequestsHumanCard(t *testing.T) {
 	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {
 		t.Fatal(err)
 	}
-	g.ended("closed", "factoryd closed pull request #5: the heal pass found it closed by factoryd", EventQuestionWithdrawn, FactoryDecider, ViaFactoryd)
+	g.ended("closed", "the factory closed pull request #5: the heal pass found it closed by the factory", EventQuestionWithdrawn, FactoryDecider, ViaFactoryd)
 
 	g = newPRCardRig(t, `{"number":5,"state":"open","merged":false}`)
 	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {
@@ -2251,27 +2251,35 @@ func TestValidateReproCommand(t *testing.T) {
 	}
 }
 
-// The person's card of a refused reproduction command names the poster
-// and the sandbox rule, and asks for the issue again.
+// The person's card of a refused reproduction command says what to do,
+// names the issue, the poster and the sandbox rule its command breaks; an
+// issue title that would pass a why's length is left out of it.
 func TestReproQuestionText(t *testing.T) {
-	q := reproQuestion("A card", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
-	if want := "filed by sebastian: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"; q.Why != want {
-		t.Errorf("Why = %q, want %q", q.Why, want)
+	q := ReproQuestion("Gateway: the 429 retry loses the request id", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
+	want := HumanQuestion{Ask: "Write the reproduction command so the sandbox can run it, then file the issue again",
+		Why:      "The reproduction command sebastian wrote for \u201cGateway: the 429 retry loses the request id\u201d breaks the sandbox rule, so no agent works on the issue",
+		Happened: "The command runs cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place.",
+		Choices:  humanWorkChoices(false)}
+	if !reflect.DeepEqual(q, want) {
+		t.Errorf("ReproQuestion = %+v, want %+v", q, want)
 	}
-	if !strings.HasPrefix(q.Info, "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again") {
-		t.Errorf("Info = %q", q.Info)
+	if q := ReproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); q.Happened != "The command creates a git worktree: "+sandboxCheckoutRule+"." {
+		t.Errorf("worktree Happened = %q, want the sandbox rule named", q.Happened)
 	}
-	if q := reproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); !strings.Contains(q.Why, "creates a git worktree: "+sandboxCheckoutRule) {
-		t.Errorf("worktree Why = %q, want the sandbox rule named", q.Why)
+	for _, title := range []string{strings.Repeat("The gateway drops the request id ", 3), "Gateway \u2014 the retry loses the request id",
+		"Gateway; the retry loses the request id", "The retry fails. It loses the request id"} {
+		if q := ReproQuestion(title, "sebastian", ValidateReproCommand("cd /tmp/x && make repro")); q.Why != "The reproduction command sebastian wrote breaks the sandbox rule, so no agent works on the issue" {
+			t.Errorf("the why of title %q = %q, want the why without it, which a face shows", title, q.Why)
+		}
 	}
 }
 
-// A writer's agent issue whose repro block chains cd out of the worktree,
+// A writer's agent issue whose repro block runs cd out of the worktree,
 // or creates a git worktree, is refused at filing: no agent card, a
 // person's card whose ask names the sandbox rule, no coder workflow.
 func TestIntakeRefusesASandboxBreakingRepro(t *testing.T) {
 	for issue, tc := range map[int64]struct{ cmd, rule string }{
-		21: {"cd /tmp/x && make repro", "chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"},
+		21: {"cd /tmp/x && make repro", "runs cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"},
 		22: {"git worktree add /tmp/w HEAD", "creates a git worktree: the sandbox has one checkout, the command runs in place"},
 	} {
 		t.Run(tc.cmd, func(t *testing.T) {
@@ -2284,14 +2292,14 @@ func TestIntakeRefusesASandboxBreakingRepro(t *testing.T) {
 			if started := workflowsOf(in).started; len(started) != 0 {
 				t.Fatalf("started %q, want nothing", started)
 			}
-			var whys []string
+			var saw []string
 			for _, e := range store.askedRows(got.ID) {
 				if e.Question != nil {
-					whys = append(whys, e.Question.Why)
+					saw = append(saw, e.Question.Happened)
 				}
 			}
-			if want := "filed by sebastian: the reproduction command " + tc.rule; !slices.Equal(whys, []string{want}) {
-				t.Fatalf("asks %q, want %q", whys, want)
+			if want := "The command " + tc.rule + "."; !slices.Equal(saw, []string{want}) {
+				t.Fatalf("asks %q, want %q", saw, want)
 			}
 		})
 	}
@@ -2423,7 +2431,9 @@ func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
 
 // The resume rule: the issue author's comment is signalled as
 // information whatever their access (poster_comment), a stranger's is
-// only recorded, a writer's stays a human comment; the heal pass does not
+// only recorded, a writer's stays a human comment, the project agent's
+// too: the chat's answer to the request posts as factory-chat, which
+// writes the repository, and wakes the wait; the heal pass does not
 // record the author's comment a second time.
 func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	in, store, _ := newTestIntake(t)
@@ -2443,7 +2453,8 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	comment("stranger", 1)
 	comment("visitor", 2)
 	comment("sebastian", 3)
-	want := []string{"t-p poster_comment visitor #0 c2: Firefox 131", "t-p human_comment sebastian #0 c3: Firefox 131"}
+	comment(ChatUser, 4)
+	want := []string{"t-p poster_comment visitor #0 c2: Firefox 131", "t-p human_comment sebastian #0 c3: Firefox 131", "t-p human_comment factory-chat #0 c4: Firefox 131"}
 	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
 		t.Fatalf("signals = %q, want %q", got, want)
 	}
@@ -2451,12 +2462,13 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	for _, e := range store.intakeEvents {
 		kinds = append(kinds, fmt.Sprintf("%s %s trusted=%v", e.Kind, e.Author, e.Trusted))
 	}
-	if wantKinds := []string{"issue_comment stranger trusted=false", "poster_comment visitor trusted=false", "issue_comment sebastian trusted=true"}; !slices.Equal(kinds, wantKinds) {
+	if wantKinds := []string{"issue_comment stranger trusted=false", "poster_comment visitor trusted=false", "issue_comment sebastian trusted=true", "issue_comment factory-chat trusted=true"}; !slices.Equal(kinds, wantKinds) {
 		t.Fatalf("events = %q, want %q", kinds, wantKinds)
 	}
 	// the author's comment never counts as an ask's answer
-	if answers, _, _ := AnswersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}, nil); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
-		t.Fatalf("answers = %q, want only the writer's", answers)
+	if answers, _, _ := AnswersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}, nil); len(answers) != 2 || !strings.HasPrefix(answers[0], "sebastian ") ||
+		!strings.HasPrefix(answers[1], "the project agent factory-chat ") {
+		t.Fatalf("answers = %q, want only the writers'", answers)
 	}
 }
 
@@ -2594,8 +2606,8 @@ func TestIntakeBotCloseCountsOnlyWhenFactorydRecordedIt(t *testing.T) {
 func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 	none := seedProject("sf/ai-software-factory-code")
 	none.Agents = "none"
-	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian for an agent; the project runs no agents now", Info: "objective body",
-		Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}
+	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian for an agent, and the project runs no agents now", Info: "objective body",
+		Choices: []QuestionChoice{{Value: AnswerDone, Label: "I did it"}, {Value: AnswerPark, Label: "Not now"}}}
 	for _, via := range []string{"redelivery", "heal pass"} {
 		in, store, _ := newTestIntake(t)
 		in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: store, Store: store}
@@ -2616,7 +2628,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 		}
 		asks := store.askedRows("t-q")
 		if len(asks) != 1 || asks[0].Body != "Add the runner" || asks[0].Question == nil || !reflect.DeepEqual(*asks[0].Question, want) ||
-			!slices.Equal(asks[0].Choices, []string{"Done"}) {
+			!slices.Equal(asks[0].Choices, []string{"I did it", "Not now"}) {
 			t.Fatalf("%s: intake asks %+v, want the issue's title asked", via, asks)
 		}
 		var asked []Event
@@ -2626,8 +2638,8 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			}
 		}
 		if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != "Add the runner" ||
-			asked[0].Detail["why"] != "filed by sebastian for an agent; the project runs no agents now" || asked[0].Detail["source"] != "webhook" ||
-			fmt.Sprint(asked[0].Detail["choices"]) != "[Done]" {
+			asked[0].Detail["why"] != "filed by sebastian for an agent, and the project runs no agents now" || asked[0].Detail["source"] != "webhook" ||
+			fmt.Sprint(asked[0].Detail["choices"]) != "[I did it Not now]" {
 			t.Fatalf("%s: question_asked rows %+v", via, asked)
 		}
 	}
@@ -2893,8 +2905,8 @@ func TestIntakeFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 					asks = append(asks, *e.Question)
 				}
 			}
-			if len(asks) != 1 || !strings.Contains(asks[0].Why, "push rule refuses changes to workflow files") || !strings.Contains(asks[0].Info, "Fix the CI.") {
-				t.Fatalf("asks = %+v, want one that names the push rule and carries the brief", asks)
+			if len(asks) != 1 || !reflect.DeepEqual(asks[0], WorkflowQuestion("A card")) || !strings.Contains(got.Objective, "Fix the CI.") {
+				t.Fatalf("asks = %+v, objective %q; want the ask that names the push rule, and the brief in the card's text", asks, got.Objective)
 			}
 		})
 	}

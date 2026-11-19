@@ -56,7 +56,7 @@ func TestTokenStampsEveryDecisionEvent(t *testing.T) {
 			poolChatReload(r, 10)
 			return r, g
 		}, "sebastian", "sf/code"},
-		{"new_card", `{"title":"Cache metrics","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`,
+		{"new_card", `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`,
 			func(t *testing.T) (*rig, *chatGateway) {
 				r, _, g := newChatRig(t)
 				r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyManual, MergeRule: policy.MergeHuman}}
@@ -151,7 +151,7 @@ func TestTokenStampsChatRows(t *testing.T) {
 func TestCookieRowsCarryNoStamp(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyManual, MergeRule: policy.MergeHuman}}
-	args := `{"title":"Cache metrics","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
 	before := r.events.count()
 	proposeAndDo(t, r, g, "new_card", args)
 	rows := r.events.all()[before:]

@@ -147,7 +147,7 @@ func agentDocCompact(ctx context.Context, op *factoryd.OperatorModel, v policy.V
 		return nil, fmt.Errorf("the fixture thread folds into %d calls, want one", len(chunk))
 	}
 	return []agentdoc.Span{
-		{Name: "the summariser's rules", Symbol: "compactPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: compactPrompt},
+		{Name: "the summariser's rules", Symbol: "factoryd.CompactPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: factoryd.CompactPrompt},
 		{Name: "the compaction frame", Symbol: "(*turn).compact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: "The summary so far:\n(none yet)\n\nThe turns after it:\n"},
 		{Name: "the folded turns", Symbol: "transcript", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: chunk[0]},
@@ -255,6 +255,11 @@ type agentDocChat struct {
 	thread factoryd.ChatConversation
 	rows   []factoryd.ChatMessage
 	next   int64
+}
+
+// ChatIntake: the drives' project keeps its intake open.
+func (s *agentDocChat) ChatIntake(context.Context, string) (factoryd.IntakeRow, bool, error) {
+	return factoryd.IntakeRow{}, false, nil
 }
 
 func (s *agentDocChat) EnsureChatTask(context.Context, string, string, float64, time.Time) (factoryd.Task, error) {

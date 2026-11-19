@@ -3,6 +3,9 @@ package factoryd
 import (
 	"cmp"
 	"fmt"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +51,7 @@ func (d CardDigest) Render() string {
 	if h.ProofsWanted > 0 {
 		head = append(head, fmt.Sprintf("proofs %d of %d stored", h.ProofsStored, h.ProofsWanted))
 	}
-	head = append(head, fmt.Sprintf("budget %.2f spent %.2f holds %.2f EUR", h.BudgetEUR, h.SpentEUR, h.HoldsEUR))
+	head = append(head, fmt.Sprintf("budget %s spent %s holds %s EUR", textutil.EUR(h.BudgetEUR), textutil.EUR(h.SpentEUR), textutil.EUR(h.HoldsEUR)))
 	if h.SlotHeld {
 		head = append(head, "slot held")
 	}
@@ -69,6 +72,99 @@ func (d CardDigest) Render() string {
 	}
 	b.WriteString("flags: " + cmp.Or(flagsText(d.Flags), "none") + "\n")
 	return b.String()
+}
+
+// LifeLine is one step of a card's life as a human reads it: when it
+// came, what came of it, and the words a supervisor sent the session,
+// which are the supervisor's.
+type LifeLine struct {
+	At          time.Time
+	Text, Quote string
+}
+
+var (
+	// lifeIDs are the finding ids after the word that leads them
+	lifeIDs = regexp.MustCompile(`\b(findings|confirmed|dropped|remark)((?: [0-9a-f]{12})+)`)
+	// lifeHead is a commit's hash, with the "at" that leads it
+	lifeHead = regexp.MustCompile(` ?(?:\bat )?\b[0-9a-f]{7,40}\b:?`)
+	// lifeKind is the kind of an ask that opens its line
+	lifeKind = regexp.MustCompile(`^[a-z]+(?:_[a-z]+)+: `)
+)
+
+// lifeWriters are the kinds of steps whose outcome is a writer's words: a
+// session's handover and a human's answer.
+var lifeWriters = []string{"handover", "answer"}
+
+// lifeLeads are the kinds of steps as a human reads them.
+var lifeLeads = map[string]string{
+	"filed": "Filed", "session": "Session", "review": "The model review", "checkin": "The check-in", "checks": "The checks",
+	"audit": "The security audit", "proofs": "The proofs", "opened": "A proof", "ask": "It asked", "answer": "Answered",
+	"granted": "Granted", "funded": "Money added", "ceiling": "The spend limit", "extended": "More allowed",
+	"retried": "Tried again", "replanned": "Sent back to the planner", "replan": "Sent back to the planner",
+	"cut": "Cut into cards", "dependency": "Made to wait", "status": "Status", "approval": "Asked to approve", "merged": "Merged",
+	"ended": "Ended", "criteria": "The promises", "revision": "The plan", "handover": "Handed over", "judgement": "Judged",
+}
+
+// Life is the digest as a human reads it, one line per folded step: the
+// log Render gives the agents, in words, with a count for the finding
+// ids and no hash.
+func (d CardDigest) Life() []LifeLine {
+	var out []LifeLine
+	for _, s := range d.Folded() {
+		l := LifeLine{At: s.At, Text: lifeText(s), Quote: s.Message}
+		if slices.Contains(lifeWriters, s.Kind) && s.Outcome != "" {
+			l.Quote, s.Outcome = s.Outcome, ""
+			l.Text = strings.TrimSuffix(lifeText(s), ".") + ":"
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// lifeText is step s as a line of the card's life: its kind and who took
+// it, its outcome with a count for its finding ids and no hash, the run's
+// length and a session's cost and calls.
+func lifeText(s DigestStep) string {
+	words := func(w string) string { return strings.NewReplacer("_", " ", "-", " ").Replace(w) }
+	lead := cmp.Or(lifeLeads[s.Kind], capitalize(words(s.Kind)))
+	switch {
+	case s.Actor == "":
+	case s.Kind == "session":
+		attempt, model, _ := strings.Cut(s.Actor, " ")
+		lead += " " + attempt + " on " + model
+	case s.Kind == "checkin":
+		lead += " at the " + words(s.Actor)
+	default:
+		lead += " by " + words(DeciderWords(s.Actor))
+	}
+	outcome := lifeIDs.ReplaceAllStringFunc(s.Outcome, func(m string) string {
+		g := lifeIDs.FindStringSubmatch(m)
+		n := len(strings.Fields(g[2]))
+		if g[1] == "findings" {
+			return textutil.Plural(n, "finding", "findings")
+		}
+		return g[1] + " " + strconv.Itoa(n)
+	})
+	if s.state == string(OutcomePushed) {
+		outcome = "pushed its work"
+	}
+	outcome = lifeHead.ReplaceAllStringFunc(outcome, func(m string) string {
+		if strings.ContainsAny(m, "0123456789") {
+			return ""
+		}
+		return m
+	})
+	outcome = strings.TrimSpace(lifeKind.ReplaceAllString(strings.TrimSpace(outcome), ""))
+	if s.Count > 1 {
+		outcome += fmt.Sprintf(", %d times", s.Count)
+	}
+	if s.calls > 0 {
+		outcome += fmt.Sprintf(", %s EUR in %s", textutil.EUR(s.CostEUR), textutil.Plural(s.calls, "call", "calls"))
+	}
+	if outcome == "" {
+		return lead + "."
+	}
+	return endSentence(lead + ": " + outcome)
 }
 
 // DigestText is d rendered, or, when err stopped its read, one line that
@@ -97,9 +193,9 @@ func digestLine(s DigestStep) string {
 		outcome += fmt.Sprintf(" ×%d", s.Count)
 	}
 	if s.calls > 0 {
-		outcome += fmt.Sprintf(", %.2f EUR, %s", s.CostEUR, textutil.Plural(s.calls, "call", "calls"))
+		outcome += fmt.Sprintf(", %s EUR, %s", textutil.EUR(s.CostEUR), textutil.Plural(s.calls, "call", "calls"))
 	}
-	return fmt.Sprintf(" %3d %-6s  %-22s → %s\n", s.N, offsetText(s.Offset), label, outcome)
+	return fmt.Sprintf(" %3d %-6s  %-22s → %s\n", s.N, OffsetText(s.Offset), label, outcome)
 }
 
 // flagsText is flags by name, each with its detail in brackets.
@@ -122,7 +218,7 @@ func statusText(status, gate string) string {
 	return status + ", " + gate
 }
 
-// offsetText is d as +h:mm, the hours unbounded.
-func offsetText(d time.Duration) string {
+// OffsetText is d as +h:mm, the hours unbounded.
+func OffsetText(d time.Duration) string {
 	return fmt.Sprintf("+%d:%02d", int(d/time.Hour), int(d%time.Hour/time.Minute))
 }

@@ -113,11 +113,11 @@ func TestCapacityAlertRoutesToHuman(t *testing.T) {
 	if !ok {
 		t.Fatalf("the alert row names no task: %+v", row)
 	}
-	if want := "SigNoz fires the alert CI queue p95 above 5 minutes on service factoryd in demo-staging of demo-app since 2026-10-12T10:00:00Z: handle it, or wait for it to clear?"; !strings.HasPrefix(task.Objective, want+"\n") {
+	if want := "SigNoz fires the alert “CI queue p95 above 5 minutes” on factoryd"; !strings.HasPrefix(task.Objective, want+"\n") {
 		t.Fatalf("card\n%s\nwant the ask %q as its title", task.Objective, want)
 	}
-	if want := "Why: a capacity alert needs a person's evidence: a coding agent can only raise a limit"; !strings.Contains(task.Objective, want) {
-		t.Fatalf("card\n%s\nwant %q", task.Objective, want)
+	if want := "It may point at a fault on factoryd, and a capacity alert needs a human's evidence: a coding agent can only raise a limit."; task.Why != want {
+		t.Fatalf("the card's why line = %q, want %q", task.Why, want)
 	}
 	if task.Kind != "human" {
 		t.Errorf("task kind %q, want human", task.Kind)

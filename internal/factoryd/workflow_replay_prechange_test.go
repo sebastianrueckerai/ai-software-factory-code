@@ -263,8 +263,10 @@ func TestReplayHumanWaitQueueBefore(t *testing.T) {
 		t.Fatalf("the replay scheduled %q, the recording %q", got, calls)
 	}
 	for i := range got {
-		// a replay does not compare activity input; the gate's input ends in the checked head, empty on these runs
-		want := inputs[i]
+		// a replay does not compare activity input; the gate's input ends in the checked head, empty on these runs,
+		// and the workflow writes its lines on why a human decides in today's words
+		want := strings.NewReplacer("risk class normal is requires_approval", "risk class normal needs a human's approval",
+			"a strict improvement with no drawback: does what the brief asks", "a strict improvement with no drawback").Replace(inputs[i])
 		switch {
 		case got[i] == ActivityGateCriteria:
 			want += "\n\"\""

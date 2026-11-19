@@ -41,7 +41,7 @@ func TestApproveMergeAtRung3WithGreenChecksRunsAndResolves(t *testing.T) {
 			own = &s
 		}
 	}
-	if own == nil || own.Outcome != StepResolved || own.Grounds != "reads well" || len(own.Did) != 1 || own.Did[0].Result != "approve_merge" {
+	if own == nil || own.Outcome != StepResolved || own.Grounds != "reads well" || len(own.Did) != 1 || own.Did[0].Result != "“Merge it”" {
 		t.Fatalf("steps = %+v, want a resolved step that decided approve_merge with the console's result", g.steps(t, c.ID))
 	}
 }
@@ -92,8 +92,8 @@ func TestApproveMergeAtRung2NeedsTheGates(t *testing.T) {
 //
 // A done plan's criteria request is answered through Act (the ended-card
 // check lets the criteria's actions and the restart through): a verdict keeps
-// the case open where it stands; a grant, a confirmation and a denial each
-// resolve it under their own name; restart_plan resolves it too.
+// the case open where it stands; a grant and a confirmation each resolve it
+// under their own name; restart_plan resolves it too.
 func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 	for _, tc := range []struct {
 		action  string
@@ -105,7 +105,6 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 		{ActAnswerCriteria, map[string]any{"criterion": "c1", "verdict": "waive"}, "out of scope", CaseOpen, ""},
 		{ActGrantCriteria, nil, "", CaseResolved, ActGrantCriteria},
 		{ActConfirmCriteria, nil, "the cards deliver it", CaseResolved, ActConfirmCriteria},
-		{ActDenyCriteria, nil, "not now", CaseResolved, ActDenyCriteria},
 		{ActRestartPlan, nil, "split it in two", CaseResolved, ActRestartPlan},
 	} {
 		t.Run(tc.action, func(t *testing.T) {
@@ -138,13 +137,12 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 // criteria request too. The human's press takes each, and rung 2's grant,
 // which waives nothing, runs.
 func TestRung2SettlesNoCriteriaByWord(t *testing.T) {
-	const want = "settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria"
+	const want = "settling a plan's criteria by word is the human's: take `grant_criteria` for one more bounded card, or hand the case up (`hand_up`) with `answer_criteria` (waive) or `confirm_criteria` as the recommendation"
 	words := []struct {
 		name string
 		res  Resolution
 	}{
 		{"waive", Resolution{Action: ActAnswerCriteria, Args: map[string]any{"criterion": "c1", "verdict": "waive"}, Note: "out of scope"}},
-		{"deny", Resolution{Action: ActDenyCriteria, Note: "not now"}},
 		{"confirm", Resolution{Action: ActConfirmCriteria, Note: "main holds every page"}},
 	}
 	for _, w := range words {
@@ -346,7 +344,7 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 	if got := caseByID(t, g.s, c.ID); err != nil || got.Status != CaseAtHuman || task.Status != "in-review" {
 		t.Fatalf("case %s, card %s (%v); want the case at the human and the card in review", got.Status, task.Status, err)
 	}
-	if asks := g.asks(t); len(asks) != 1 || !strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: the migration adds a column with its default") {
+	if asks := g.asks(t); len(asks) != 1 || !strings.Contains(asks[0].Detail["info"].(string), "The factory agent found:\n\n> the migration adds a column with its default") {
 		t.Fatalf("asks = %+v, want one carrying rung 2's finding", asks)
 	}
 	if pokes := g.pokeRows(t); !slices.Equal(pokes, []string{EventQuestionAsked}) {
@@ -374,7 +372,7 @@ func TestRung2ApprovesAHeadOnce(t *testing.T) {
 		t.Fatalf("case 2 = %+v, want a new open case of case 1's key %s", second, first.StateKey)
 	}
 	_, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: second.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
-	want := fmt.Sprintf("rung 2 approved head h2 of pull request #9 on case %d and its merge did not land: hand_up with what the merge said", first.ID)
+	want := fmt.Sprintf("rung 2 approved head `h2` of pull request #9 on case %d and its merge did not land: hand the case up (`hand_up`) with what the merge said", first.ID)
 	var refused ErrActRefused
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
 		t.Fatalf("rung 2's approve on case 2 = %v, want the refusal %q", err, want)
@@ -426,7 +424,7 @@ func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *t
 		}
 		_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
 		want := "the classes that keep a human on a merge could not be read (" + strings.TrimPrefix(entry, "human_classes: ") +
-			"), so rung 2 cannot tell whether class standard keeps one: hand_up with approve_merge as the recommendation"
+			"), so the factory agent cannot tell whether class standard keeps one: hand it up (`hand_up`) with `approve_merge` as the recommendation"
 		var refused ErrActRefused
 		if !errors.As(err, &refused) || !strings.Contains(err.Error(), want) || strings.Count(err.Error(), "policy version") != 1 {
 			t.Fatalf("rung 2 Act = %v, want a refusal holding %q, naming the version once", err, want)

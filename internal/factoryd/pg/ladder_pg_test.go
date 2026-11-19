@@ -79,25 +79,30 @@ func TestTheWakePassLeavesATripsOwnCase(t *testing.T) {
 
 // A repository that names no project has no judgment budget to read: a
 // failed dependency's trip, which rung 1 never takes, gets no rung 2 step
-// either, and faces with the case's problem and its ask marked "not
-// judged, judgment budget unreadable", rung 0's step saying why. With no
-// project the card's configuration is unread, so rung 0 takes nothing.
+// either, and faces with the problem and the ask as the case's own and the
+// agent's view saying why no rung judged it, rung 0's step marked "not
+// judged, judgment budget unreadable". With no project the card's
+// configuration is unread, so rung 0 takes nothing.
 func TestATripOfNoProjectFacesMarkedUnreadable(t *testing.T) {
 	g := newTripRig(t, "success")
 	v := g.r.PgCfg().Policy()
 	v.Projects = maps.Clone(v.Projects)
 	delete(v.Projects, "demo-app")
 	g.r.PgSetPolicy(func() policy.Version { return v })
-	reason := depFailedReason(Dependency{Issue: 7, TaskID: "t-a", Status: "failed"})
+	reason := DepFailedReason(Dependency{Issue: 7, TaskID: "t-a", Status: "failed"})
 	out := g.trip(t, reason)
-	const mark = " (not judged, judgment budget unreadable)"
+	const seen = "The factory agent did not judge it: demo-app/demo-app names no project, so the factory cannot read its judgment budget."
 	c := caseByID(t, g.s, out.CaseID)
-	if out.Rung != 3 || c.Kind != CaseDependencyFailed || c.Status != CaseAtHuman || !strings.HasSuffix(c.Problem, mark) {
-		t.Fatalf("outcome %+v, case %s %s %q; want the failed dependency at the human, its problem ending %q", out, c.Kind, c.Status, c.Problem, mark)
+	if out.Rung != 3 || c.Kind != CaseDependencyFailed || c.Status != CaseAtHuman || strings.Contains(c.Problem, "not judged") {
+		t.Fatalf("outcome %+v, case %s %s %q; want the failed dependency at the human, its problem its own", out, c.Kind, c.Status, c.Problem)
 	}
 	asks := g.asks(t)
-	if ask, _ := asks[len(asks)-1].Detail["ask"].(string); len(asks) != 1 || len(g.forge.comments) != 1 || !strings.HasSuffix(ask, mark) {
-		t.Fatalf("asks %+v, comments %d; want one face whose ask ends %q", asks, len(g.forge.comments), mark)
+	if len(asks) != 1 || len(g.forge.comments) != 1 {
+		t.Fatalf("asks %+v, comments %d; want one face", asks, len(g.forge.comments))
+	}
+	info, _ := asks[0].Detail["info"].(string)
+	if ask, _ := asks[0].Detail["ask"].(string); strings.Contains(ask, "not judged") || !strings.Contains(info, seen) {
+		t.Fatalf("the face's ask %q, info %q; want the ask as the case's own and the view %q", ask, info, seen)
 	}
 	var found []string
 	for _, st := range caseStepsOf(t, g.s, c.ID) {
@@ -177,10 +182,10 @@ func TestOpenTripRepeatsAppendAndAskNothingNew(t *testing.T) {
 // The money and cap asks of 2026-11-14 fired bare while unresolved
 // review findings stood on the head (#1879 step 36, #1889 step 45,
 // #1899 case 3826). A cap ask whose head holds unresolved review or
-// audit findings now leads with them: the case's problem and the ask the
-// human answers name the findings first. The same stop on a head whose
-// findings a newer review resolved asks the bare cap ask.
-func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
+// audit findings counts them: the case's problem and the ask the human
+// answers say how many stand, and name none of them. The same stop on a
+// head whose findings a newer review resolved asks the bare cap ask.
+func TestACapAskCountsTheFindingsStandingOnTheHead(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
 	rung1Off(g.r)
@@ -194,26 +199,19 @@ func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
 	if out.Resolution != nil || out.Comment != 501 || out.Rung != 3 {
 		t.Fatalf("outcome = %+v, want the case at the human on comment 501", out)
 	}
-	card, _, _ := g.s.Task(ctx, "t1")
-	f, err := g.r.PgTripFacts(ctx, card, "h2", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lead := FindingsLead(CaseSessionCap, f)
-	if lead == "" {
-		t.Fatalf("facts = %+v, want the review and audit findings of h2 standing", f)
-	}
 	c := caseByID(t, g.s, out.CaseID)
-	if c.Kind != CaseSessionCap || !strings.HasPrefix(c.Problem, lead) {
-		t.Fatalf("case %q = %q, want the session cap led by %q", c.Kind, c.Problem, lead)
-	}
 	asks := g.asks(t)
 	if len(asks) != 1 {
 		t.Fatalf("asks = %d, want one", len(asks))
 	}
 	ask, _ := asks[0].Detail["ask"].(string)
-	if !strings.HasPrefix(ask, lead) || !strings.Contains(ask, "session cap of") {
-		t.Fatalf("ask = %q, want the findings leading the session cap ask", ask)
+	if c.Kind != CaseSessionCap || c.Problem != ask || !strings.HasPrefix(ask, "The card used all") || !strings.Contains(ask, " with 2 findings open.") {
+		t.Fatalf("case %q = %q, ask %q; want the session cap counting the 2 findings of h2", c.Kind, c.Problem, ask)
+	}
+	for _, text := range []string{"the flag is read where it is not checked", "the migration runs outside its transaction"} {
+		if strings.Contains(ask, text) {
+			t.Fatalf("ask = %q names the finding %q", ask, text)
+		}
 	}
 
 	// the same stop on a head whose findings a newer review resolved: the
@@ -235,11 +233,8 @@ func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
 		t.Fatalf("asks = %d, want one", len(asks2))
 	}
 	bare, _ := asks2[0].Detail["ask"].(string)
-	if !strings.Contains(bare, "session cap of") || strings.Contains(bare, "finding") {
+	if !strings.HasPrefix(bare, "The card used all") || strings.Contains(bare, "finding") {
 		t.Fatalf("ask = %q, want the bare session cap ask", bare)
-	}
-	if ask != lead+" "+bare {
-		t.Fatalf("ask = %q, want the findings leading the same ask %q", ask, bare)
 	}
 }
 
@@ -247,8 +242,8 @@ func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
 // h2 is green and approved, after Forgejo refused to merge main into h2 at
 // the merge queue's turn. Rung 0 routes nothing to the approval: its step
 // finds no resolver, and the case reaches the human with its facts holding
-// the conflict and its problem and ask led by it. On those facts rung 1 is
-// offered extend, and neither route_approval nor reverify.
+// the conflict and its face naming it in what is left. On those facts rung
+// 1 is offered extend, and neither route_approval nor reverify.
 func TestOpenTripAtAMergeConflictRoutesNothingToTheApproval(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
@@ -258,15 +253,14 @@ func TestOpenTripAtAMergeConflictRoutesNothingToTheApproval(t *testing.T) {
 	if err := g.r.PgTimeline().Append(ctx, "t1", "merge_conflict", map[string]any{"pr": 9, "commit": "h2", "refusal": refusal}); err != nil {
 		t.Fatal(err)
 	}
-	out := g.faced(t, timeCapReachedLadder+"\nlast: the pull request no longer merges into main")
+	out := g.faced(t, TimeCapReachedLadder+"\nlast: the pull request no longer merges into main")
 	if out.Resolution != nil || out.Comment != 501 || out.Rung != 3 {
 		t.Fatalf("outcome = %+v, want the case at the human on comment 501", out)
 	}
 	c := caseByID(t, g.s, out.CaseID)
-	lead := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
-		"Only a session that merges main into the branch clears it, and no gate rerun does."
-	if c.Kind != CaseAgentTimeCap || c.Facts["merge_conflict"] != refusal || !strings.HasPrefix(c.Problem, lead+" ") {
-		t.Fatalf("case %s, conflict %v, problem %q; want the agent-time cap holding the conflict, led by %q", c.Kind, c.Facts["merge_conflict"], c.Problem, lead)
+	const left = "No finding is open, and the checks are green. The pull request no longer merges into main. Only a session that merges main into its branch fixes that."
+	if c.Kind != CaseAgentTimeCap || c.Facts["merge_conflict"] != refusal {
+		t.Fatalf("case %s, conflict %v; want the agent-time cap holding the conflict", c.Kind, c.Facts["merge_conflict"])
 	}
 	if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 3 || steps[0].Rung != 0 || steps[0].Found != "no resolver fits" || steps[1].Rung != 2 {
 		t.Fatalf("steps = %+v, want rung 0 finding no resolver, rung 2's hand-up, then the human's", steps)
@@ -275,8 +269,8 @@ func TestOpenTripAtAMergeConflictRoutesNothingToTheApproval(t *testing.T) {
 	if len(asks) != 1 {
 		t.Fatalf("asks = %d, want one", len(asks))
 	}
-	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasPrefix(ask, lead+" ") {
-		t.Fatalf("ask = %q, want it led by %q", ask, lead)
+	if story, _ := asks[0].Detail["story"].(map[string]any); story["Left"] != left {
+		t.Fatalf("the face's story = %v, want what is left to say %q", asks[0].Detail["story"], left)
 	}
 	card, _, _ := g.s.Task(ctx, "t1")
 	f, err := g.r.FactsAtCase(ctx, card, c)
@@ -435,7 +429,8 @@ func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
 // A budget floor's case carries the money: 0.30 EUR an opening needs less
 // what a session may spend, the 0.15 left of 3 EUR with 2.85 spent less
 // the 0.40 gate reserve, -0.25, is 0.55 EUR, which buys one session on
-// the card's model.
+// the card's model. The issue comment names that amount under the question
+// and beside the answer that adds it.
 func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	g := newTripRig(t, "success")
 	rung1Off(g.r)
@@ -445,9 +440,13 @@ func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	out := g.faced(t, BudgetRefused+": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR")
 
 	c := caseByID(t, g.s, out.CaseID)
-	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.85, NeedEUR: 0.55, Buys: "one session on factory/small"}
+	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.85, Buys: "one session on factory/small"}
 	if c.Kind != CaseBudgetFloor || c.Money == nil || *c.Money != want || out.Comment != 501 {
 		t.Fatalf("case %+v, money %+v; want the budget floor at the human with %+v", c, c.Money, want)
+	}
+	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], "and the card needs 0.55 EUR more to pay its next session.") ||
+		!strings.Contains(g.forge.comments[0], "Press “Add money” (EUR to add: 0.55), “End the card” or “Not now” on the board") {
+		t.Fatalf("comments %q, want the face naming the 0.55 EUR to add", g.forge.comments)
 	}
 }
 
@@ -706,19 +705,21 @@ func onlyLiveCase(t *testing.T, s *PGStore, taskID string) Case {
 
 // The face's last line says what moves the card on, by the case's kind:
 // under the cases gate a reply at a cap or at a budget floor is a continue
-// that asks again, so the face names Extend or the Fund form and the
+// that asks again, so the face names every answer the card holds and the
 // chat; any other stop takes a reply. A run from before the gate grants
 // on a reply, and its face says so at a cap too.
 func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 	const reply = "Reply on this issue to start a new attempt"
-	extend := "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none."
-	fund := "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none."
+	const chat = " on the board, or tell the project chat how the card goes on. A reply alone starts no attempt."
+	extend := "Press “Allow more sessions”, “End the card” or “Not now”" + chat
+	// the rig's card has its whole budget left: the face holds no money answer
+	fund := "Press “End the card” or “Not now”" + chat
 	for _, tc := range []struct {
 		name, reason, want string
 		escalate           bool
 	}{
 		{"the session cap", tripCap, extend, false},
-		{"the agent time cap", timeCapReached + "\nlast: no session produced a result", extend, false},
+		{"the agent time cap", TimeCapReached + "\nlast: no session produced a result", extend, false},
 		{"the budget floor", BudgetRefused + ": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR", fund, false},
 		{"an agent's question", AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt", reply, false},
 		{"a run from before the gate at the session cap", tripCap, reply, true},
@@ -761,7 +762,7 @@ func TestOpenTripRestartWithNoLiveCaseAsksItsStopAgain(t *testing.T) {
 	if !slices.ContainsFunc(caseStepsOf(t, g.s, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == "asked again after a restart" }) {
 		t.Fatalf("steps = %+v, want the restart's step of rung 0", caseStepsOf(t, g.s, c.ID))
 	}
-	if extend := "Use Extend on the board, or ask the project chat to extend the card"; len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], extend) {
+	if extend := "Press “Allow more sessions”, “End the card” or “Not now” on the board, or tell the project chat how the card goes on"; len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], extend) {
 		t.Fatalf("faces = %q, want one naming Extend", g.forge.comments)
 	}
 	if raised, _ := g.extendOne(t, c.ID); raised != 1 {
@@ -807,8 +808,9 @@ func TestARestartsCaseClimbsBeforeItsFace(t *testing.T) {
 	asks := g.asks(t)
 	face := asks[len(asks)-1].Detail
 	info, _ := face["info"].(string)
-	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], HealedReason) || !strings.Contains(g.forge.comments[0], "Which file?") ||
-		face["ask"] != "Which file?" || !strings.Contains(info, "The check-in found: ") {
+	if len(g.forge.comments) != 1 ||
+		!strings.Contains(g.forge.comments[0], `The factory restarted while this card waited for a human. Its question on the board still stands.\n\nWhich file?`) ||
+		face["ask"] != "Which file?" || !strings.Contains(info, "The check-in found:\n\n> ") {
 		t.Fatalf("comments %q, face %+v; want one face asking the stop's own question with the check-in's finding", g.forge.comments, face)
 	}
 }
@@ -833,10 +835,15 @@ func TestARestartWithNoAskFacesRung2sAnalysis(t *testing.T) {
 	}
 	face := asks[0].Detail
 	info, _ := face["info"].(string)
-	if face["ask"] != "This card stopped and needs your decision: how should it go on?" || face["why"] != HealedReason ||
-		!strings.Contains(info, "The factory agent found: the restart lost the card's question") ||
-		face["recommendation"] != "close: the card's work is done on main" || face["recommended_by"] != "the factory agent" {
+	suggested, _ := face["preselected"].(map[string]any)
+	if face["ask"] != "This card waits for a human, but none of its questions is open. How should it go on?" ||
+		face["why"] != "The factory found the card waiting with nothing asked." ||
+		!strings.Contains(info, "The factory agent found:\n\n> the restart lost the card's question") ||
+		suggested["action"] != ActClose || face["recommendation"] != "the card's work is done on main" || face["recommended_by"] != "the factory agent" {
 		t.Fatalf("face %+v; want the decision with rung 2's finding and recommendation", face)
+	}
+	if strings.Contains(g.forge.comments[0], "still stands") {
+		t.Fatalf("the comment %q says a question still stands, and the card has none", g.forge.comments[0])
 	}
 }
 
@@ -976,9 +983,11 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 		t.Fatalf("desk = %+v, %v", d, err)
 	}
 	c := d.Cases[0]
-	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
-	first := CaseFace(c, nil, FactsOf(c), CaseAsk{Detail: asks[0].Detail}, nil)
-	if face.Info == "" || len(face.Choices) == 0 || face.Info != first.Info || len(face.Choices) != len(first.Choices) {
+	card, _, _ := g.s.Task(ctx, "t1")
+	face := CaseFace(c, card, d.Asks[c.ID])
+	first := CaseFace(c, card, CaseAsk{Detail: asks[0].Detail})
+	if face.Ask == "" || len(face.Offers) == 0 || face.Ask != first.Ask || face.Why != first.Why || face.Story != first.Story ||
+		face.Info != first.Info || !reflect.DeepEqual(face.Offers, first.Offers) {
 		t.Errorf("face after the restart = %+v, want the first ask's %+v", face, first)
 	}
 	if face.Recommendation != "extend: one more session fixes it" || face.Source != "the factory agent" || face.Preselected != ActExtend {
@@ -989,13 +998,16 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 	}
 }
 
-// A human card's ask and a plan question's reach the face with their info
-// and choices.
+// A human card's ask and a plan question's reach the face with their info,
+// their choices and the choice their asker recommends.
 func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	task := Task{ID: "t1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 12}
-	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Source: "the agent",
+	task := Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 51}
+	if err := g.s.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Recommended: "say:Postgres", Source: "the agent",
 		Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
 	if err := recordAsk(ctx, g.r.PgTimeline(), task, q, "factoryd", "chat", ViaFactoryd, "", nil); err != nil {
 		t.Fatal(err)
@@ -1005,8 +1017,9 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 		t.Fatalf("desk = %+v, %v", d, err)
 	}
 	c := d.Cases[0]
-	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
-	if face.Info != "Postgres is shared." || len(face.Choices) != 2 || face.Recommendation != "Postgres" || face.Source != "the agent" {
+	face := CaseFace(c, task, d.Asks[c.ID])
+	if face.Info != "Postgres is shared." || len(face.Offers) != 2 || face.Offers[0].Label != "Postgres" || face.Offers[1].Label != "SQLite" ||
+		face.Preselected != "choice:say:Postgres" || face.Recommendation != "Postgres" || face.Source != "the agent" {
 		t.Errorf("the human card's face = %+v", face)
 	}
 	rev, err := g.s.AddPlanRevision(ctx, "t1", json.RawMessage(`{"summary": "one"}`), "s1")
@@ -1014,8 +1027,12 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 		t.Fatal(err)
 	}
 	planTask, _, _ := g.r.PgTask(ctx, "t1")
-	if err := g.r.AskQuestions(ctx, planTask, rev, []PlanQuestion{{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"}}); err != nil {
+	changes := []string{"The service keeps its rows in the shared Postgres.", "The service keeps its rows in one SQLite file."}
+	if err := g.r.AskQuestions(ctx, planTask, rev, []PlanQuestion{{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Changes: changes, Recommended: "Postgres", Grounds: "it is shared"}}); err != nil {
 		t.Fatal(err)
+	}
+	if stored, err := g.s.PlanQuestions(ctx, "t1", rev); err != nil || len(stored) != 1 || !slices.Equal(stored[0].Changes, changes) {
+		t.Errorf("the stored question = %+v, %v; want its changes %q", stored, err, changes)
 	}
 	d, _ = g.s.CaseDesk(ctx, "demo-app/demo-app")
 	var plan Case
@@ -1027,8 +1044,11 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	if plan.ID == 0 {
 		t.Fatalf("no plan question case in %+v", d.Cases)
 	}
-	pf := CaseFace(plan, nil, FactsOf(plan), d.Asks[plan.ID], nil)
-	if len(pf.Choices) != 2 || pf.Recommendation != "Postgres: it is shared" || pf.Source != "the planner" {
+	pf := CaseFace(plan, planTask, d.Asks[plan.ID])
+	// the two choices, the human's own words, then Ask for changes
+	if len(pf.Offers) != 4 || pf.Offers[0].Value != "plan:Postgres" || pf.Offers[1].Value != "plan:SQLite" || pf.Offers[3].Label != "Ask for changes" ||
+		pf.Preselected != "plan:Postgres" || pf.Recommendation != "it is shared" || pf.Source != "the planner" ||
+		pf.Offers[0].Effect != changes[0] || pf.Offers[1].Effect != changes[1] {
 		t.Errorf("the plan question's face = %+v", pf)
 	}
 }
@@ -1105,20 +1125,22 @@ func TestRungTwoStatementOffersTheConfirmationWhereTheGuardPasses(t *testing.T) 
 			t.Errorf("revision %d with a hold-out undecided: statement %q", rev, text)
 		}
 		if i == 0 && !strings.Contains(text, "You may confirm this plan with the answer tool (revision 1, question 1, decision confirm)") ||
-			i == 1 && (strings.Contains(text, "You may confirm") || !strings.Contains(text, "takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with the plan's Confirm button.")) {
+			i == 1 && (strings.Contains(text, "You may confirm") || !strings.Contains(text, "takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with Confirm the plan on the plan's card.")) {
 			t.Errorf("revision %d (takes off main %v): statement %q", rev, takeOff, text)
 		}
 	}
 }
 
-// A rung's recommendation is empty without grounds and names its writer.
+// A rung's recommendation is its grounds, empty without them, and names
+// its writer: the face names the action by its answer's label, never by
+// the action's name.
 func TestRecommendationNeedsGroundsAndNamesItsWriter(t *testing.T) {
 	g := newTripRig(t, "success")
 	if got := g.r.PgRecommendation(Task{}, &HandUp{Action: ActClose, Grounds: "  "}); got != "" {
 		t.Errorf("a recommendation with no grounds = %q, want none", got)
 	}
-	if got := g.r.PgRecommendation(Task{}, &HandUp{Action: ActClose, Grounds: "done"}); got != "close: done" {
-		t.Errorf("recommendation = %q", got)
+	if got := g.r.PgRecommendation(Task{}, &HandUp{Action: ActClose, Grounds: "The work is on main."}); got != "The work is on main." {
+		t.Errorf("recommendation = %q, want the grounds alone", got)
 	}
 	if recommendedBy(&HandUp{ActionRung: 2}) != "the factory agent" || recommendedBy(&HandUp{ActionRung: 1}) != "the check-in" {
 		t.Error("the writers' names are not the factory agent's and the check-in's")
@@ -1175,6 +1197,203 @@ func TestTripCaseMakesAChatEscalatedHumanCardAHumanCard(t *testing.T) {
 	}
 }
 
+// The agent's request for information puts its case at the human: the card
+// that waits for its issue's author asks the request on the board, with
+// "Answer in my words", "Not now" and "End the card". The answer's press
+// posts the human's words as the issue comment the run reads, and ends the
+// case; an answer the author writes on the issue ends it too.
+func TestAnInformationRequestAsksTheHuman(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	question := "Which Hetzner location does the load test's server use, fsn1 or nbg1?"
+	reason := AgentAsk{Kind: AskInfo, Question: question, Tried: "both regions' price lists", Needs: "the location the server runs in"}.PgReason()
+	asked := func() (Case, CaseAsk) {
+		t.Helper()
+		cs, err := g.s.CasesOf(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(cs, func(c Case) bool { return c.Status == CaseAtHuman })
+		if i < 0 {
+			t.Fatalf("cases %+v, want one at the human", cs)
+		}
+		ask, ok := g.r.CaseAsk(ctx, cs[i])
+		if !ok {
+			t.Fatalf("case %d has no ask row", cs[i].ID)
+		}
+		return cs[i], ask
+	}
+	comment, err := g.r.RequestInfo(ctx, "t1", reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ask := asked()
+	face := CaseFace(c, Task{ID: "t1", Kind: "agent"}, ask)
+	var offers []string
+	for _, o := range face.Offers {
+		offers = append(offers, o.Label)
+	}
+	if c.Kind != CaseAgentRequestInfo || face.Ask != question || !slices.Equal(offers, []string{"Answer in my words", "Not now", "End the card"}) || c.CommentID != comment {
+		t.Fatalf("case %s by comment %d asks %q with %v; want the request asking %q with its three answers, by comment %d", c.Kind, c.CommentID, face.Ask, offers, question, comment)
+	}
+	var posted []string
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActContinue, Note: "fsn1"}, Post: func(context.Context) (int64, error) { posted = append(posted, "fsn1"); return comment + 1, nil }})
+	if err != nil {
+		t.Fatalf("the answer's press = %v", err)
+	}
+	if len(posted) != 1 || out.Comment != comment+1 || caseByID(t, g.s, c.ID).Status != CaseResolved {
+		t.Fatalf("posted %v, comment %d, case %s; want the human's words posted once as comment %d and the case resolved", posted, out.Comment, caseByID(t, g.s, c.ID).Status, comment+1)
+	}
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	comment, err = g.r.RequestInfo(ctx, "t1", reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ = asked()
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAnswered, Actor: "alice", Via: ViaWebhook,
+		Detail: map[string]any{"comment": comment + 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := caseByID(t, g.s, c.ID).Status; got != CaseResolved {
+		t.Fatalf("after the author's comment the request's case is %s, want it resolved", got)
+	}
+}
+
+// A card that waits on its issue's author without the request's case, one
+// that asked before the board did or whose ask failed to write, gets the
+// case from the request's anchor at the minute pass, once, and none while
+// the request itself still runs.
+func TestAWaitOnTheAuthorWithoutItsCaseGetsItAtTheMinutePass(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	question := "Which Hetzner location does the load test's server use, fsn1 or nbg1?"
+	reason := AgentAsk{Kind: AskInfo, Question: question, Tried: "both regions' price lists", Needs: "the location the server runs in"}.PgReason()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'waiting-poster' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: 41}); err != nil {
+		t.Fatal(err)
+	}
+	asked := func(when string) {
+		t.Helper()
+		cs, err := g.s.CasesOf(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cs) != 1 || cs[0].Kind != CaseAgentRequestInfo || cs[0].Status != CaseAtHuman || cs[0].CommentID != 41 {
+			t.Fatalf("%s: cases %+v, want the request's one case at the human by comment 41", when, cs)
+		}
+		steps, err := g.s.CaseSteps(ctx, cs[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ask, _ := g.r.CaseAsk(ctx, cs[0])
+		if face := CaseFace(cs[0], Task{ID: "t1", Kind: "agent"}, ask); len(steps) != 1 || face.Ask != question {
+			t.Fatalf("%s: %d steps asking %q, want the one ask of %q", when, len(steps), face.Ask, question)
+		}
+	}
+	lock := g.r.PgRequestLock("t1")
+	lock.Lock()
+	g.r.StoreMissedOffers(ctx)
+	if cs, _ := g.s.CasesOf(ctx, "t1"); len(cs) != 0 {
+		t.Fatalf("while the request runs, the pass opened %+v", cs)
+	}
+	lock.Unlock()
+	g.r.StoreMissedOffers(ctx)
+	asked("after one pass")
+	g.r.StoreMissedOffers(ctx)
+	asked("after another pass")
+}
+
+// A request knows itself across its activity's retries by the mark its
+// anchor stores, not by its words: an earlier request of the same words is
+// another request. A retry after the comment failed posts the request and
+// asks it; a retry after it finished posts nothing and asks nothing again.
+func TestARequestsRetryKnowsItsOwnRequest(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	question := "Which Hetzner location does the load test's server use, fsn1 or nbg1?"
+	reason := AgentAsk{Kind: AskInfo, Question: question, Tried: "both regions' price lists", Needs: "the location the server runs in"}.PgReason()
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: 41}); err != nil {
+		t.Fatal(err)
+	}
+	g.forge.failComment = true
+	if _, err := execActivity(t, g.r, ActivityRequestInfo, "t1", reason); err == nil {
+		t.Fatal("the request posted while its comment failed")
+	}
+	for _, attempt := range []string{"the retry", "a retry after it finished"} {
+		v, err := execActivity(t, g.r, ActivityRequestInfo, "t1", reason)
+		var id int64
+		if err == nil {
+			err = v.Get(&id)
+		}
+		if err != nil || id != 501 || len(g.forge.comments) != 1 {
+			t.Fatalf("%s = %d, %v, with %d comments posted; want comment 501, posted once", attempt, id, err, len(g.forge.comments))
+		}
+		cs, err := g.s.CasesOf(ctx, "t1")
+		if err != nil || len(cs) != 1 || cs[0].CommentID != 501 || cs[0].Status != CaseAtHuman {
+			t.Fatalf("%s: cases %+v, %v; want the request's one case at the human by comment 501", attempt, cs, err)
+		}
+		if steps, _ := g.s.CaseSteps(ctx, cs[0].ID); len(steps) != 1 {
+			t.Fatalf("%s: %d steps, want the one ask", attempt, len(steps))
+		}
+		if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "waiting-poster" {
+			t.Fatalf("%s: the card is %s, want waiting-poster", attempt, task.Status)
+		}
+	}
+}
+
+// The project agent answers the request in the chat: its press posts the
+// words on the issue once, as factory-chat, whose comment the wait hears as
+// a writer's; the press ends the case and tells the run the answer is whole.
+func TestTheChatAnswersAnInformationRequest(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	reason := AgentAsk{Kind: AskInfo, Question: "Which Hetzner location does the load test's server use, fsn1 or nbg1?",
+		Tried: "both regions' price lists", Needs: "the location the server runs in"}.PgReason()
+	comment, err := g.r.RequestInfo(ctx, "t1", reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := g.s.OpenCasesOf(ctx, "t1")
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("cases %+v, %v; want the request's one case", cs, err)
+	}
+	posted := 0
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: cs[0].ID, By: ChatUser, Via: ViaChat, Rung: 2,
+		Res: Resolution{Action: ActContinue, Note: "fsn1"}, Post: func(context.Context) (int64, error) { posted++; return comment + 1, nil }})
+	if err != nil || posted != 1 || out.Comment != comment+1 || caseByID(t, g.s, cs[0].ID).Status != CaseResolved {
+		t.Fatalf("the chat's press = %v, posted %d times as comment %d, case %s; want one post as comment %d and the case resolved",
+			err, posted, out.Comment, caseByID(t, g.s, cs[0].ID).Status, comment+1)
+	}
+	whole := slices.ContainsFunc(g.signals.got, func(c reopenCall) bool {
+		return c.signal == SignalAnswerWhole && c.sig.Comment == comment+1 && c.sig.Author == ChatUser
+	})
+	if !whole {
+		t.Fatalf("signals %+v, want the answer whole by %s at comment %d", g.signals.got, ChatUser, comment+1)
+	}
+}
+
+// A card that ended or moved on while its session ended asks its author
+// nothing: the request refuses before it posts.
+func TestARequestOfACardThatCannotWaitPostsNothing(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'closing' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	reason := AgentAsk{Kind: AskInfo, Question: "Which Hetzner location does the load test's server use, fsn1 or nbg1?"}.PgReason()
+	if _, err := g.r.RequestInfo(ctx, "t1", reason); !isTerminal(err) || len(g.forge.comments) != 0 {
+		t.Fatalf("the request of a closing card = %v with %d comments posted; want a terminal refusal and nothing posted", err, len(g.forge.comments))
+	}
+	if events, _ := g.s.IntakeEvents(ctx, "t1"); len(events) != 0 {
+		t.Fatalf("intake events %+v, want no anchor", events)
+	}
+}
+
 // downTimeline is an object store whose read of t1's timeline fails while
 // down is set.
 type downTimeline struct {
@@ -1191,16 +1410,17 @@ func (o *downTimeline) Get(ctx context.Context, key string) ([]byte, error) {
 
 // The human's buttons on a case that reached them while the card's
 // timeline could not be read are no final word: the face stores the
-// offers it could weigh and no refusals, so the offers pass weighs them
-// again, once the timeline reads, and Reverify comes back; a pass while
-// it still fails stores nothing.
+// offers it could weigh and the mark that it is unweighed, so the offers
+// pass weighs them again, once the timeline reads, and Reverify comes
+// back with the mark gone; a pass while it still fails stores nothing.
 func TestAFaceOnAnUnreadTimelineIsWeighedAgain(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
 	g.atHead(t, true)
 	objects := &downTimeline{ObjectStore: g.r.PgObjects(), down: true}
 	g.r.PgSetObjects(objects)
-	if _, err := g.r.PgFaceStop(ctx, "t1", tripCap, nil); err != nil {
+	// a gate stop's face offers Reverify, which the table refuses on an unread timeline
+	if _, err := g.r.PgFaceStop(ctx, "t1", GateStopped+ActivityModelReview+" after 3 tries: the review timed out", nil); err != nil {
 		t.Fatal(err)
 	}
 	offered := func() ([]string, bool) {
@@ -1213,19 +1433,19 @@ func TestAFaceOnAnUnreadTimelineIsWeighedAgain(t *testing.T) {
 				names = append(names, fmt.Sprint(m["value"]))
 			}
 		}
-		_, refused := detail["refusals"]
-		return names, refused
+		_, unweighed := detail["unweighed"]
+		return names, !unweighed
 	}
-	if names, refused := offered(); refused || slices.Contains(names, ActReverify) {
-		t.Fatalf("the face on an unread timeline offers %v, refusals stored %t; want no reverify and no refusals", names, refused)
+	if names, weighed := offered(); weighed || slices.Contains(names, ActReverify) {
+		t.Fatalf("the face on an unread timeline offers %v, weighed %t; want no reverify and the face unweighed", names, weighed)
 	}
 	g.r.StoreMissedOffers(ctx)
-	if names, refused := offered(); refused || slices.Contains(names, ActReverify) {
-		t.Fatalf("a pass on a still unread timeline stored %v, refusals %t; want nothing stored", names, refused)
+	if names, weighed := offered(); weighed || slices.Contains(names, ActReverify) {
+		t.Fatalf("a pass on a still unread timeline stored %v, weighed %t; want nothing stored", names, weighed)
 	}
 	objects.down = false
 	g.r.StoreMissedOffers(ctx)
-	if names, refused := offered(); !refused || !slices.Contains(names, ActReverify) {
-		t.Fatalf("the pass on a read timeline stored %v, refusals %t; want reverify and the refusals", names, refused)
+	if names, weighed := offered(); !weighed || !slices.Contains(names, ActReverify) {
+		t.Fatalf("the pass on a read timeline stored %v, weighed %t; want reverify on a weighed face", names, weighed)
 	}
 }

@@ -3,6 +3,8 @@ package pg
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -14,7 +16,7 @@ func askAgent(t *testing.T, s *PGStore, question string, comment int64) {
 	t.Helper()
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
 		"question": question, "ask": question, "comment": comment, "source": "agent",
-		"reason": AgentAsks + question, "why": "two files match", "info": plainInfo})
+		"reason": AgentAsks + question, "why": "two files match"})
 }
 
 // A question asked that names no case opens its case open at rung 0, due
@@ -93,19 +95,6 @@ func TestAHealedAskWithNoLiveAskOpensAnOtherCase(t *testing.T) {
 	}
 	if steps := caseStepsOf(t, s, c.ID); len(steps) != 0 {
 		t.Fatalf("steps = %+v; want none before its face", steps)
-	}
-}
-
-func TestAnAskWithNoWordsKeepsItsEventAndOpensNoCase(t *testing.T) {
-	ctx := context.Background()
-	s := caseEventStore(t)
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "agent", "comment": int64(27001)})
-
-	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 0 {
-		t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
-	}
-	if evs, err := s.TaskEvents(ctx, caseTask, 5); err != nil || len(evs) != 1 || evs[0].Kind != EventQuestionAsked {
-		t.Fatalf("TaskEvents = %+v, %v; want the ask", evs, err)
 	}
 }
 
@@ -278,7 +267,7 @@ func seededAsk(t *testing.T, s *PGStore, taskID string, issue int64, kind CaseKi
 	source, reason := "cap", CapReached
 	switch kind {
 	case CaseAgentTimeCap:
-		reason = timeCapReached
+		reason = TimeCapReached
 	case CaseDayCap:
 		source, reason = "day_cap", DayCapReached+" for 2026-11-02"
 	case CaseMonthCap:
@@ -310,7 +299,7 @@ func answerOn(t *testing.T, s *PGStore, taskID string, issue int64, kind, actor,
 }
 
 // The reply-alone contract, seeded as a table of all six kinds: a live
-// ask of every kind whose ladder line reads "A reply alone starts none" —
+// ask of every kind whose ladder line reads "A reply alone starts no attempt" —
 // the five caps and the budget floor — stays live under a
 // question_answered row that names no action, the webhook's copy of a
 // comment on the card's issue, and each card's newest live ask is
@@ -700,7 +689,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		facts          map[string]any
 	}{
 		{"cap", run.PgSessionCapCard(CapReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
-		{"cap", run.PgSessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
+		{"cap", run.PgSessionCapCard(TimeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.PgPlannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
@@ -796,16 +785,24 @@ func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 	}
 }
 
+// withRoom is an agent's ask row with the facts of a card that has room
+// for a session, so its answers can happen.
+func withRoom(detail map[string]any) map[string]any {
+	maps.Copy(detail, map[string]any{"attempts": 1, "session_cap": 3, "agent_time_cap_s": 7200.0, "session_least_s": 300.0,
+		"budget_eur": 2.0, "left_eur": 1.5, "floor_eur": 0.3})
+	return detail
+}
+
 // An ask that names no case still opens its case and is stamped with the
 // case's id, so the desk finds it; a proposal on one of two cases at the
-// human lands on its own case's face alone, and a recommendation shows
-// only with its writer.
+// human lands on its own case's face alone, and a recommendation's words
+// show only when it names an answer.
 func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which store?", "ask": "Which store?", "info": "Postgres is shared.",
-		"recommendation": "Postgres", "recommended_by": "the agent", "comment": int64(31), "source": "agent",
-		"offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, withRoom(map[string]any{"question": "Which store?", "ask": "Which store?", "info": "Postgres is shared.",
+		"recommendation": "Postgres is the one store", "recommended_by": "the agent", "preselected": map[string]any{"action": "say:Postgres"},
+		"comment": int64(31), "source": "agent", "choices": []string{"Postgres", "SQLite"}}))
 	cap, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "cap", Status: CaseOpen, Problem: "capped"})
 	if err != nil {
 		t.Fatal(err)
@@ -825,48 +822,26 @@ func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 			agent = c
 		}
 	}
-	face := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
-	if face.Info != "Postgres is shared." || len(face.Choices) != 1 || face.Choices[0].Value != "say:Postgres" || face.Recommendation != "Postgres" || face.Source != "the agent" {
+	face := CaseFace(agent, caseCard, d.Asks[agent.ID])
+	if face.Info != "Postgres is shared." || len(face.Offers) == 0 || face.Offers[0].Value != "say:Postgres" || face.Recommendation != "Postgres is the one store" ||
+		face.Source != "the agent" || face.Preselected != "say:Postgres" {
 		t.Errorf("the agent case's face = %+v, want its ask's info, offers and recommendation by the agent", face)
 	}
 	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.PgPreselected()
-	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, "extend: one session fixes it", "the factory agent", pre); err != nil {
+	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, "one session fixes it", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
 	d, _ = s.CaseDesk(ctx, "sf/r")
-	capFace := CaseFace(cap, nil, FactsOf(cap), d.Asks[cap.ID], nil)
-	agentFace := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
-	if capFace.Recommendation != "extend: one session fixes it" || capFace.Source != "the factory agent" || capFace.Preselected != ActExtend {
+	capFace := CaseFace(cap, caseCard, d.Asks[cap.ID])
+	agentFace := CaseFace(agent, caseCard, d.Asks[agent.ID])
+	if capFace.Recommendation != "one session fixes it" || capFace.Source != "the factory agent" || capFace.Preselected != ActExtend {
 		t.Errorf("the capped case's face = %+v, want the proposal", capFace)
 	}
-	if agentFace.Preselected != "" || agentFace.Recommendation != "Postgres" {
+	if agentFace.Preselected != "say:Postgres" || agentFace.Recommendation != "Postgres is the one store" {
 		t.Errorf("the agent case's face = %+v, want it untouched by the other case's proposal", agentFace)
 	}
-	if got := CaseFace(cap, nil, FactsOf(cap), CaseAsk{Detail: map[string]any{"recommendation": "x"}}, nil); got.Recommendation != "" {
+	if got := CaseFace(cap, caseCard, CaseAsk{Detail: map[string]any{"recommendation": "x"}}); got.Recommendation != "" {
 		t.Errorf("a recommendation with no writer shows: %+v", got)
-	}
-}
-
-// A human's answer, not a rung's, is the card's last answer.
-func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
-	ctx := context.Background()
-	s := caseEventStore(t)
-	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "p"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || len(d.Answered) != 0 {
-		t.Errorf("a rung's resolution counts as an answer: %v, %v", d.Answered, err)
-	}
-	c2, _, _ := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "p2"})
-	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
-		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
 	}
 }
 
@@ -882,14 +857,14 @@ func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
 	if err := s.ResolveCase(ctx, old.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": old.ID, "comment": int64(77), "question": "Which store?", "ask": "Which store?",
-		"info": "Postgres is shared.", "source": "agent", "offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, withRoom(map[string]any{"case_id": old.ID, "comment": int64(77), "question": "Which store?", "ask": "Which store?",
+		"info": "Postgres is shared.", "source": "agent", "choices": []string{"Postgres", "SQLite"}}))
 	d, err := s.CaseDesk(ctx, "sf/r")
 	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == old.ID {
 		t.Fatalf("desk = %+v, %v; want one new case", d, err)
 	}
-	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
-	if face.Info != "Postgres is shared." || len(face.Choices) != 1 {
+	face := CaseFace(d.Cases[0], caseCard, d.Asks[d.Cases[0].ID])
+	if face.Info != "Postgres is shared." || len(face.Offers) == 0 || face.Offers[0].Value != "say:Postgres" {
 		t.Errorf("the new case's face = %+v, want the ask's info and choice", face)
 	}
 }
@@ -899,13 +874,13 @@ func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
 func TestAnAskNamingNoCaseAtAllNamesTheNewOne(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": int64(99999), "comment": int64(78), "question": "Which port?", "ask": "Which port?",
-		"info": "8080 is free.", "source": "agent", "offers": []QuestionChoice{{Value: "say:8080", Label: "8080"}}})
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, withRoom(map[string]any{"case_id": int64(99999), "comment": int64(78), "question": "Which port?", "ask": "Which port?",
+		"info": "8080 is free.", "source": "agent", "choices": []string{"8080", "9090"}}))
 	d, err := s.CaseDesk(ctx, "sf/r")
 	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == 99999 {
 		t.Fatalf("desk = %+v, %v; want one real case", d, err)
 	}
-	if face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil); face.Info != "8080 is free." || len(face.Choices) != 1 {
+	if face := CaseFace(d.Cases[0], caseCard, d.Asks[d.Cases[0].ID]); face.Info != "8080 is free." || len(face.Offers) == 0 || face.Offers[0].Value != "say:8080" {
 		t.Errorf("the case's face = %+v, want the ask's info and choice", face)
 	}
 }
@@ -977,6 +952,105 @@ func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 	}
 	if evs, err := s.TaskEvents(ctx, "t-p1", 10); err != nil || len(evs) != 1 || evs[0].IssueNumber != 41 {
 		t.Fatalf("plan card events = %+v, %v; want its one ask on #41", evs, err)
+	}
+}
+
+// Every way a card comes to ask leaves it a live case: a human card filed
+// with its ask and an agent's ask by its words open one that climbs from
+// rung 0, an ask that names its case at a rung is its face and passes the
+// door only once rung 2 handed the case up, an ask by words that meets its
+// live case at a rung leaves it there, and so does a restart's ask again.
+// An ask with no words is refused, so no event stands for it and no card
+// is filed with it.
+func TestEveryAskingCardHoldsALiveCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	holds := func(name, taskID, status string) {
+		t.Helper()
+		cs, err := s.OpenCasesOf(ctx, taskID)
+		if err != nil || len(cs) != 1 || cs[0].Status != status || (status == CaseOpen) != (cs[0].OwnerRung != 3) {
+			t.Errorf("%s: live cases of %s = %+v, %v; want one, %s", name, taskID, cs, err, status)
+		}
+	}
+	card := func(id string, issue int64) {
+		t.Helper()
+		if err := s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Objective: "x", Repository: "sf/r", IssueNumber: issue, Track: "direct", BudgetEUR: 5}); err != nil {
+			t.Fatalf("CreateTask %s: %v", id, err)
+		}
+	}
+	ask := func(taskID string, detail map[string]any) error {
+		_, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: taskID, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail})
+		return err
+	}
+	atRung := func(taskID, key string) Case {
+		t.Helper()
+		c, _, err := s.OpenCase(ctx, Case{TaskID: taskID, Repository: "sf/r", Kind: CaseAgentEscalate, StateKey: key, Problem: "Which store?", Status: CaseOpen})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	if got, created, err := s.CreateHumanCard(ctx, Task{ID: "t-human", Kind: "human", Repository: "sf/r", BudgetEUR: 1, Objective: "Renew the certificate", Source: SourceWebhook},
+		HumanAsk{Q: IssueQuestion("Renew the certificate", "It expires Friday.", "alice", true), By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd}); err != nil || !created || got.Status != "waiting-agent" {
+		t.Fatalf("CreateHumanCard = %+v, %v, %v; want the card waiting for its face", got, created, err)
+	}
+	holds("a human card", "t-human", CaseOpen)
+
+	card("t-words", 62)
+	if err := ask("t-words", map[string]any{"ask": "Which store?", "question": "Which store?", "source": "agent", "reason": AgentAsks + "Which store?"}); err != nil {
+		t.Fatal(err)
+	}
+	holds("an agent's ask by its words", "t-words", CaseOpen)
+
+	card("t-named", 63)
+	named := atRung("t-named", "named")
+	face := map[string]any{"ask": "Which store?", "case_id": named.ID, "source": "agent"}
+	refusal := fmt.Sprintf("case %d (agent_escalate) has no rung 1 or rung 2 step and no exception: the case climbs first", named.ID)
+	if err := ask("t-named", face); err == nil || err.Error() != refusal {
+		t.Fatalf("the face of a case no rung judged = %v, want %q", err, refusal)
+	}
+	holds("a case whose face the door refused", "t-named", CaseOpen)
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: named.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ask("t-named", face); err != nil {
+		t.Fatal(err)
+	}
+	holds("an ask that names its case at a rung, handed up", "t-named", CaseAtHuman)
+
+	card("t-again", 64)
+	words := map[string]any{"ask": "Which store?", "question": "Which store?", "source": "agent", "reason": AgentAsks + "Which store?"}
+	probe, err := CaseFromAsk(Task{ID: "t-again", Kind: "agent", Repository: "sf/r"}, Event{Kind: EventQuestionAsked, Detail: words}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	atRung("t-again", probe.StateKey)
+	if err := ask("t-again", words); err != nil {
+		t.Fatal(err)
+	}
+	holds("an ask by words that meets its live case at a rung", "t-again", CaseOpen)
+
+	card("t-healed", 65)
+	atRung("t-healed", "healed")
+	if err := ask("t-healed", map[string]any{"ask": "Which store?", "question": "Which store?", "source": "agent", "reason": HealedReason}); err != nil {
+		t.Fatal(err)
+	}
+	holds("a restart's ask again", "t-healed", CaseOpen)
+
+	card("t-mute", 66)
+	if err := ask("t-mute", map[string]any{"source": "agent"}); err == nil {
+		t.Error("an ask with no words was recorded")
+	}
+	if evs, err := s.TaskEvents(ctx, "t-mute", 10); err != nil || len(evs) != 0 {
+		t.Errorf("events of the refused ask = %+v, %v; want none", evs, err)
+	}
+	if _, _, err := s.CreateHumanCard(ctx, Task{ID: "t-mute-human", Kind: "human", Repository: "sf/r", IssueNumber: 67, BudgetEUR: 1, Objective: "x"},
+		HumanAsk{Q: HumanQuestion{}, By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd}); err == nil {
+		t.Error("a human card was filed with an ask of no words")
+	}
+	if _, ok, err := s.Task(ctx, "t-mute-human"); err != nil || ok {
+		t.Errorf("the card of the refused ask stands: %v, %v", ok, err)
 	}
 }
 

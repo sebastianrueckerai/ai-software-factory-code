@@ -74,8 +74,8 @@ activities, each with a timeline step and a comment on the pull request:
    month cannot hold is priced on `big`, where the gateway serves it. When
    the card's free headroom cannot pay the estimate the review makes no
    call, and the note names the calls, the estimate and the headroom, and
-   what the approval card offers: read the diff, then Approve the merge or
-   Deny it (Close on a pull request factoryd opened). A call the gateway refuses for
+   what the approval card offers: read the diff, then “Merge it” or “Send
+   it back” (“Reject and close it” on a pull request the factory opened). A call the gateway refuses for
    headroom (the task's budget, the day's, the month's or the project's
    cap) is made again after the others, one at a time. An answer that does
    not parse — the model's JSON cut at its output bound, say — is asked
@@ -205,8 +205,9 @@ activities, each with a timeline step and a comment on the pull request:
    and the prompt's hash, and the `judgement` line goes on the timeline.
    A human criterion gets no row from the gate: the human settles it on
    the merge card (`console.md`).
-   The comment on the pull request reads "factoryd criteria gate on
-   <head>: <k> of <n> criteria met (human criteria ride the approval)",
+   The comment on the pull request reads "The criteria gate on <head>:
+   <k> of <n> criteria met. A human settles the human criteria at the
+   approval.",
    each criterion's line under it.
    From change id `blind-proofs` on, the gate's findings go back to the
    agent as the criteria stage's do, and to the card at the session cap.
@@ -281,7 +282,7 @@ activities, each with a timeline step and a comment on the pull request:
    image); on any other rule it
    hands the merge up with `approve_merge` or `deny_merge` as its
    recommendation. Only then does the request reach Needs you, the card's
-   drawer and the inbox, whose row offers Approve, or Re-run the checks on
+   drawer and the inbox, whose row offers “Merge it”, or “Run the failed checks again” on
    a factory pull request's red checks; until then the chat's merge tools
    refuse, naming the case and its rung. The face posts no comment and
    keeps the card in review.
@@ -296,11 +297,11 @@ decides (in a wake, or unconfirmed in a human's turn at full auto) is the
 factory's own, whoever is online: the console posts no review, and every
 approval request, plan answer and signal it decides names `factory-chat`.
 A merge card of a plan's integration or delta card holds a row per
-criterion, and Approve opens once every human row stands (`console.md`).
+criterion, and “Merge it” opens once every human row stands (`console.md`).
 `Merge` treats approver `factory-chat` as the merge gate's own
 decision: on the merge rule `auto` it approves the head as `factory-gate`
-with `factoryd: the project agent approved <head> on the project's merge
-rule auto`; on any other rule, or without a gate token, it refuses as
+with `The project agent approved <head> on the project's merge rule
+auto`; on any other rule, or without a gate token, it refuses as
 above. `Merge` then merges as the
 dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
 `factory/forgejo-merge`, on the factory's own repositories; a registered
@@ -582,12 +583,19 @@ order they were written), as `SessionInput.Answers` (worker env
 `ANSWERS`), each as `<author>, to "<the escalation's first line>":
 <answer>` (the answer cut to 4000 bytes; the issue keeps it whole, and
 the console refuses a longer answer, naming the bound and its length).
-Every worker env value that grows with its input (`OBJECTIVE`,
-`FINDINGS`, `ANSWERS`, `POSTER_INFO`, `DIRECTORIES`, `SPEC`,
-`REPORT_GUIDE`) stays within the 128 KiB Linux allows one environment
-string: a list leaves out its oldest whole entries first, a text is cut,
-and `LEFT_OUT` carries factoryd's note on each, which the brief says in
-factoryd's own words ahead of its sections, outside every quoted block.
+Every worker env value that grows with its input (`FINDINGS`,
+`ANSWERS`, `POSTER_INFO`, `DIRECTORIES`, `REPORT_GUIDE`) stays within
+the 128 KiB Linux allows one environment string: a list leaves out its
+oldest whole entries first, a text is cut, and `LEFT_OUT` carries
+factoryd's note on each, which the brief says in factoryd's own words
+ahead of its sections, outside every quoted block. The card's brief
+(`CardBrief.AgentText`) reaches the worker from the gateway's
+`GET /worker/brief` and is cut at the same 128 KiB, with its note.
+Before its run the worker stores the session's whole first message, the
+card's brief with the session's own parts around it, through the
+gateway's `POST /worker/session-brief` on the session's own token, as the
+session's number among the card's sessions (`Store.SessionBriefs`); a
+text the gateway cannot keep fails the start at step `brief`, transient.
 Escalate records its
 comment as an `escalation` intake event, and `Reconcile` rebuilds the
 answers from the intake events (every trusted issue comment newer than an
@@ -727,7 +735,8 @@ next revision (`plan_revisions`, timeline `plan_revision`), and
 `RequestPlan` asks its questions (and the confirmation of its spec and
 criteria, once). A revision with no question files its cards in the same
 step and no click (roadmap 225): `fileRevision` judges it again (a
-finding files nothing, comments `revision <n> files no cards: ...` once
+finding files nothing, comments `Revision <n> files no cards.` with the
+findings the planner was told, as a list, once
 and goes to the planner), then files each card in topological order,
 once however often it runs: a task row queued on the direct track at
 main's head (source `plan`, the plan's process, `plan_key`, the plan
@@ -760,10 +769,16 @@ the task `closed`. A planner that stops to ask a human (its
 and the answer goes to the next session; a session without a plan passes
 its last message on with the findings. Every session counts against
 `limits.sessions`; at the cap the card waits with the findings and a
-writer's comment buys one more. A card's sessions
-get the section "The spec and the plan" (the plan's issue and summary,
-the pod's `SPEC`) and the feature guide instead of the work guide
-(`CARD_ROLE`): build what this card's brief asks and only that, since
+writer's comment buys one more. A card's brief, which its session reads from the gateway's
+`GET /worker/brief` and its model review from the store, holds its place
+in the plan, the plan's outcome, glossary, summary and cards, the
+answers to the plan's questions, the plan's own brief and what the cards
+it depends on delivered (`CardBrief`); a successor, a retry's
+replacement and the agent card a human hands a plan's card to belong to
+the plan their card does, the last two in its place (`ReplaceCard`), and
+the issues show the waits each took over. Its sessions end with
+the feature guide instead of the work guide (`CARD_ROLE`): build what
+this card's brief asks and only that, since
 other agents build the plan's other cards, with a test per acceptance
 item on the inputs and numbers it gives and no probe tests, and the
 integration card's turns the spec's acceptance tests into Go tests under

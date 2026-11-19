@@ -121,9 +121,12 @@ type Tasks interface {
 	Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error)
 	// RollCarries are the cards the requests of roll task id carry.
 	RollCarries(ctx context.Context, id string) ([]factoryd.Task, error)
-	// SetHumanSummary is a writer's summary of task id; "" restores the
-	// generated title (the column back to NULL).
-	SetHumanSummary(ctx context.Context, id, summary string) error
+	// SetBrief stores task id's why line, summary and unchecked mark.
+	SetBrief(ctx context.Context, id, why, summary string, unchecked bool) error
+	// MarkChatFiled gives the card of repository's issue its chat
+	// filing's marks and why line once the card_filed row is recorded:
+	// the intake may have made the card before the row.
+	MarkChatFiled(ctx context.Context, repository string, issue int64, why string) error
 	// SetTaskAccent is a writer's colour label on task id; "" removes it.
 	SetTaskAccent(ctx context.Context, id, accent string) error
 	// SetObjective is task id's objective after a writer edited its issue.
@@ -256,11 +259,6 @@ type Config struct {
 	// replacement's issue (factoryd's Runner.RetryCard): a refusal is
 	// factoryd.ErrNoRetry.
 	RetryCard func(ctx context.Context, taskID, by string) (int64, error)
-	// RetryFreeze presses the retry switch on freeze card taskID for by,
-	// reaching the factory via (factoryd's RetrySwitch.RetryFreeze): the
-	// class's hold clears, its freeze cards close and its frozen cards call
-	// the provider again. A refusal is factoryd.ErrNoFreeze.
-	RetryFreeze func(ctx context.Context, taskID, by, via string) error
 	// GoCard files human card taskID's work as an agent card for by and
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
@@ -364,6 +362,9 @@ type Config struct {
 	// (factoryd's Runner.MessageSession); nil offers the project agent no
 	// steer.
 	Steer func(ctx context.Context, taskID, user, text string) error
+	// SessionBriefs are the texts each session of a card got (factoryd's
+	// Store.SessionBriefs); nil shows none.
+	SessionBriefs func(ctx context.Context, taskID string) ([]factoryd.SessionBrief, error)
 	// CardDigest is a card's digest (factoryd's Runner.CardDigest), which
 	// the card read leads with; CardStep one step of it in full, a step
 	// the digest lacks factoryd.ErrNoStep naming cardRead
@@ -417,8 +418,8 @@ type Config struct {
 	// none.
 	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by string) (int64, error)
 	// AttachAnalysis records what the chat agent found about card taskID's
-	// open ask inside the ask itself, and e, its analysis_attached row
-	// with the findings added (factoryd.PGStore.AttachAnalysis); nil: the
+	// open ask on the card, e its analysis_attached row with the findings
+	// added (factoryd.PGStore.AttachAnalysis); nil: the
 	// attach_analysis tool says the factory records none.
 	AttachAnalysis func(ctx context.Context, taskID, found, recommendation string, e factoryd.Event) error
 	// HandUpRung2 ends rung 2's step on a case of card taskID (caseID, or
@@ -492,6 +493,8 @@ type Console struct {
 	// ended closes as the console's server shuts down (EndStreams)
 	ended  chan struct{}
 	ending sync.Once
+	// faults are when logFault last logged each fault, under mu
+	faults map[string]time.Time
 }
 
 // writerLists are each project's writers by repository and the factory's
@@ -566,7 +569,6 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/metrics", c.projectMetrics, "", "a project's figures over the window and the one before: the page, and json for the seam"},
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
-		{"GET /approvals/{id}/criteria/{at}", c.criterionFragment, "", "the criteria card's page at one criterion: a fragment of the board page, whose tool is board"},
 		{"GET /projects/{name}/cards/{id}/cases/{case}", c.caseFragment, "", "a card's case in the Needs you column: a fragment of the board page, whose tool is board"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
 		{"GET /tasks/{id}/digest", c.cardLife, "", "the drawer's fold of a card's life: a fragment of the board page, whose tool is card"},
@@ -607,27 +609,13 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
 		{"POST /tasks/{id}/resolve", http.HandlerFunc(c.resolve), nil},
-		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
-		{"POST /tasks/{id}/extend", http.HandlerFunc(c.extendCard), nil},
-		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
-		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},
 		{"POST /tasks/{id}/plan/holdout", http.HandlerFunc(c.planHoldout), nil},
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
-		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
-		{"POST /tasks/{id}/retry-freeze", http.HandlerFunc(c.retryFreeze), nil},
-		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
-		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
-		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
-		{"POST /tasks/{id}/hold", http.HandlerFunc(c.holdCard), nil},
-		{"POST /tasks/{id}/release-hold", http.HandlerFunc(c.releaseHold), nil},
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
-		{"POST /approvals/{id}/criterion", http.HandlerFunc(c.decideCriterion), nil},
-		{"POST /approvals/{id}/confirm", http.HandlerFunc(c.confirm), nil},
-		{"POST /approvals/{id}/rerun", http.HandlerFunc(c.rerun), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},
 		{"POST /projects", http.HandlerFunc(c.createProject), nil},
@@ -712,8 +700,6 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no ConfirmDeliveredCriteria")
 	case cfg.RetryCard == nil:
 		return nil, errors.New("console: no RetryCard")
-	case cfg.RetryFreeze == nil:
-		return nil, errors.New("console: no RetryFreeze")
 	case cfg.GoCard == nil:
 		return nil, errors.New("console: no GoCard")
 	case cfg.HoldCard == nil || cfg.ReleaseCardHold == nil:
@@ -828,7 +814,7 @@ func (c *Console) auth(next http.HandlerFunc) http.Handler {
 				got = r.PostFormValue("csrf")
 			}
 			if subtle.ConstantTimeCompare([]byte(got), []byte(s.csrf)) != 1 {
-				http.Error(w, "missing or stale form token; reload the page", http.StatusForbidden)
+				http.Error(w, "The form's token is missing or stale. Reload the page.", http.StatusForbidden)
 				return
 			}
 		}

@@ -548,7 +548,7 @@ func TestPoolGatewayRig(t *testing.T) {
 				t.Errorf("%s = %f, want the hold's %f", what, got, want)
 			}
 		}
-		if row.Reason != "cost not reported, booked the hold "+strconv.FormatFloat(want, 'f', 6, 64)+" EUR" {
+		if row.Reason != "cost not reported, booked the hold "+strconv.FormatFloat(want, 'f', 2, 64)+" EUR" {
 			t.Errorf("the admitted call's audit reason = %q", row.Reason)
 		}
 	})
@@ -564,7 +564,7 @@ func TestPoolGatewayRig(t *testing.T) {
 		minter, stub := &accGatewayMinter{}, newAccStubLiteLLM(t)
 		h := gwGateway(store, minter, accGatewayPrices{price: gwPrice(bodyBytes)}, stub.URL)
 		req := gwRefused(t, "the day cap", h, body, store, minter, stub, head.ID, policy.RefusedDayCap,
-			"free headroom 0.500000 EUR (task 100.000000, day 0.500000, month 500.500000, project 100.000000) "+
+			"free headroom 0.50 EUR (task 100.00, day 0.50, month 500.50, project 100.00) "+
 				"fits 0 output tokens after a request of "+strconv.Itoa(bodyBytes)+" bytes (at most "+strconv.Itoa(bodyBytes)+" prompt tokens), "+
 				"below the minimum call of "+strconv.Itoa(policy.MinCallTokens))
 		gwHoldRequest(t, "the day cap", req, bodyBytes)

@@ -52,7 +52,7 @@ func TestAttachAnalysisTool(t *testing.T) {
 		return tool.run(trn, in)
 	}()
 	equal(t, "the tool's answer", []any{note, err},
-		[]any{"Recorded the analysis inside the ask of #13; the humans read it with the ask.", error(nil)})
+		[]any{"Recorded the analysis on the card #13; the humans read it beside its ask there.", error(nil)})
 	equal(t, "what it filed", calls, []filed{{"t-e", "The replica adds 12 ms of lag.", "Keep one replica",
 		factoryd.Event{Repository: "sf/code", Actor: "sebastian", Via: factoryd.ViaChat}}})
 	for _, tc := range []struct {
@@ -61,11 +61,13 @@ func TestAttachAnalysisTool(t *testing.T) {
 		want   string
 	}{
 		{&factoryd.AskSettledError{Word: "answered", By: "sebastian"}, http.StatusConflict,
-			"The question of #13 is answered by sebastian. A settled ask is done; escalate files a new one when you need a person."},
+			"The question of #13 is answered by sebastian. A settled ask is done. `escalate` files a new one when you need a human."},
 		{&factoryd.AskSettledError{Word: "moved on"}, http.StatusConflict,
-			"The question of #13 is moved on. A settled ask is done; escalate files a new one when you need a person."},
+			"The question of #13 is moved on. A settled ask is done. `escalate` files a new one when you need a human."},
 		{factoryd.ErrNoAsk, http.StatusNotFound,
-			"Card #13 asks nothing in the chat; escalate files an ask when you need a person."},
+			"Card #13 asks nothing in the chat. `escalate` files an ask when you need a human."},
+		{&factoryd.AskUnshownError{}, http.StatusConflict,
+			"The question of #13 holds no open ask, so no card shows an analysis of it. Tell the human in the chat, or `escalate` when a human must decide."},
 		{errors.New("the store is down"), http.StatusBadGateway,
 			"The analysis could not be recorded: the store is down. Attach the analysis again."},
 	} {
@@ -76,6 +78,35 @@ func TestAttachAnalysisTool(t *testing.T) {
 		var no *refusal
 		if !errors.As(got, &no) || no.status != tc.status || no.msg != tc.want {
 			t.Fatalf("the refusal = %v, want %d %q", got, tc.status, tc.want)
+		}
+	}
+}
+
+// The chat's doors that file a recommendation hold it to the check every
+// writer of grounds meets (factoryd.GroundsFaults): a name of the
+// factory's machinery is refused and named, so the agent writes it again,
+// and nothing is filed.
+func TestTheChatsRecommendationsNameNoMachinery(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error {
+		t.Error("an analysis with a faulty recommendation was filed")
+		return nil
+	}
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+		t.Error("an escalation with a faulty recommendation was filed")
+		return 0, nil
+	}
+	const want = `recommendation: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`
+	tool, _ := r.c.chatTool("attach_analysis")
+	_, _, analysis := tool.run(trn, toolInput{TaskID: "t-e", Found: "found", Recommendation: "Keep one replica, as factory-chat found."})
+	_, escalation := trn.escalate("Which store?", "Postgres runs out of connections at the peak.", "The counts say so.", "Postgres, as factory-chat found", "Postgres", []string{"Postgres", "SQLite"})
+	for door, err := range map[string]error{"attach_analysis": analysis, "escalate": escalation} {
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusBadRequest || no.msg != want {
+			t.Errorf("%s with a decider's name = %v, want 400 %q", door, err, want)
 		}
 	}
 }

@@ -548,8 +548,8 @@ func (k *fakeKube) NodeStorage(context.Context) ([]factoryd.NodeStorage, []int64
 
 func (k *fakeKube) DeletePod(context.Context, string, string) error { return factoryd.ErrNotFound }
 
-func (k *fakeKube) PodStatus(context.Context, string, string) (string, int32, error) {
-	return "", -1, factoryd.ErrNotFound
+func (k *fakeKube) PodStatus(context.Context, string, string) (string, int32, factoryd.PodWait, error) {
+	return "", -1, factoryd.PodWait{}, factoryd.ErrNotFound
 }
 
 func (k *fakeKube) PodIP(context.Context, string, string) (string, error) {

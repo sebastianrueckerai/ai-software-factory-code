@@ -525,7 +525,7 @@ func main() {
 	mux.Handle("/", health.Handler("factoryd", version))
 	mux.Handle("GET /versionz", health.Version(version))
 	mux.HandleFunc("GET /readyz", readyz(store.Ping, passes.Ages))
-	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, runner.Timeline(), policyLoader.Budget)))
+	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, runner.Timeline(), func() policy.Tree { return policyLoader.Current().Tree })))
 	mux.Handle("GET /policy", requireBearer(intakeToken, factoryd.PolicyHandler(store)))
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
@@ -535,7 +535,7 @@ func main() {
 	// the gateway's hand-over of an agent's delegate (roadmap 222, item 6)
 	mux.Handle("POST /internal/delegations", requireBearer(gatewayToken, factoryd.DelegationHandler(factoryd.DelegationDeps{
 		Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
-		Policy: func() policy.Tree { return policyLoader.Current().Tree }})))
+		Policy: func() policy.Tree { return policyLoader.Current().Tree }, Tries: runner.Briefs()})))
 	// the gateway's hand-over of an agent's deployment_health read
 	mux.Handle("POST /internal/deployment-health", requireBearer(gatewayToken, factoryd.DeploymentHealthHandler(store, kube, time.Now)))
 	// the gateway's hand-over of a planner's file_plan
@@ -549,6 +549,12 @@ func main() {
 	// the gateway's hand-over of a session's digest: the chat's Small
 	// digest, on the card's account
 	mux.Handle("POST /internal/digest", requireBearer(gatewayToken, runner.DigestHandler(operator)))
+	// the gateway's read of a session's card brief, which the worker's
+	// GET /worker/brief answers
+	mux.Handle("POST /internal/brief", requireBearer(gatewayToken, factoryd.CardBriefHandler(store)))
+	// the gateway's hand-over of the text a session's first model call got,
+	// which the worker's POST /worker/session-brief stores
+	mux.Handle("POST /internal/session-brief", requireBearer(gatewayToken, factoryd.SessionBriefHandler(store)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -682,7 +688,6 @@ func main() {
 		RetryCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.RetryCard(ctx, taskID, by)
 		},
-		RetryFreeze:  retrySwitch.RetryFreeze,
 		RequestImage: runner.RequestImage,
 		GoCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.Go(ctx, taskID, by)
@@ -718,6 +723,7 @@ func main() {
 		Kustomization:  kube.KustomizationState,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
+		SessionBriefs:  store.SessionBriefs,
 		CardDigest:     runner.CardDigest,
 		CardStep:       runner.CardStep,
 		BoardDigest:    runner.BoardDigest,
@@ -734,6 +740,9 @@ func main() {
 		Escalate: func(ctx context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
 			repo, err := factoryd.SplitRepo(repository)
 			if err != nil {
+				return 0, err
+			}
+			if ctx, err = factoryd.WithBriefDocs(ctx, policyLoader.Current().Tree, repository); err != nil {
 				return 0, err
 			}
 			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, repo, q, by, factoryd.Task{Source: factoryd.SourceChat})
@@ -920,12 +929,13 @@ type taskCreator interface {
 // createTaskHandler is the API task-filing path (task 42 brief item 3):
 // every task is a Forgejo issue, whatever its source, so this files the
 // issue — as the bot, title from the objective's first line, body the
-// objective plus "filed by factoryd intake" — and labels it agent and
+// objective plus "Filed by the factory's intake.", the brief a human's issue's
+// that the filing door refuses with 400 — and labels it agent and
 // state/queued before the task row ever exists; a row is created only once
 // the issue exists to back it. A repository no active project names, and a
 // project on agents none, are refused with 422. The base is always the default branch's
 // head: neither the branch nor the sha is a caller's choice.
-func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, tl *factoryd.Timeline, budget func() policy.Budget) http.HandlerFunc {
+func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, tl *factoryd.Timeline, current func() policy.Tree) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Objective  string  `json:"objective"`
@@ -968,7 +978,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			return
 		}
 		asked := in.BudgetEUR > 0
-		in.BudgetEUR = policy.CardBudget(budget(), p.Budget, "", false, in.BudgetEUR)
+		in.BudgetEUR = policy.CardBudget(current().Document.Budget, p.Budget, "", false, in.BudgetEUR)
 		if asked {
 			in.Objective += fmt.Sprintf("\n\nBudget: %g EUR", in.BudgetEUR)
 		}
@@ -978,16 +988,31 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			return
 		}
 		id := factoryd.NewTaskID()
-		issueBody := in.Objective + "\n\nfiled by factoryd intake"
+		issueBody := in.Objective + "\n\nFiled by the factory's intake."
 		if in.ReproCommand != "" {
 			issueBody += "\n\nReproduction, run against the pull request head before approval:\n\n```repro\n" + in.ReproCommand + "\n```"
 		}
-		task, ref, err := factoryd.FileAgentTask(r.Context(), store, forgejo, workflows, tl, p, factoryd.FirstLine(in.Objective), issueBody, []string{"agent"}, factoryd.Task{
+		_, rest, _ := strings.Cut(in.Objective, "\n")
+		b := factoryd.HumanIssueBrief(factoryd.FirstLine(in.Objective), rest)
+		b.Body = issueBody
+		// a human's issue, as the webhook files one: on the last try, marked
+		// when its brief fails
+		ctx, err := factoryd.WithBriefDocs(factoryd.WithBriefTry(r.Context(), factoryd.BriefTries), current(), p.Repository)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		task, ref, err := factoryd.FileAgentTask(ctx, store, forgejo, workflows, tl, p, b, []string{"agent"}, factoryd.Task{
 			ID: id, Priority: in.Priority, RiskClass: "standard", BudgetEUR: in.BudgetEUR,
-			Objective: in.Objective, SHA: sha, Source: "api", ReproCommand: in.ReproCommand,
+			Objective: in.Objective, SHA: sha, Source: factoryd.SourceAPI, ReproCommand: in.ReproCommand,
 			// the intake token's holder files as the bot, with a writer's standing
 			Author: forgejo.BotUser, AuthorWriter: true,
 		})
+		var no *factoryd.BriefRefusal
+		if errors.As(err, &no) {
+			http.Error(w, no.Error(), http.StatusBadRequest)
+			return
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -60,12 +60,12 @@
     "ceiling_eur": 10,
     "pool_left": {
      "sessions": 30,
-     "agent_time": 108000000000000,
+     "agent_time": "30h0m0s",
      "eur": 60
     },
     "card_draw_left": {
      "sessions": 2,
-     "agent_time": 3600000000000,
+     "agent_time": "1h0m0s",
      "eur": 4
     }
    },

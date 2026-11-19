@@ -300,7 +300,7 @@ func TestWorkflowRollConcernsWithoutFindingsIsARemark(t *testing.T) {
 // branch's diff against its merge base is over the card's line bound even
 // after the merge of main, so the card cannot fit its patch.
 func overBound(session string) SessionResult {
-	refusal := "push failed: push refused: over the card's line bound: the branch's diff against its merge base is 340 lines over the card's 300-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	refusal := "push failed: push refused: over the card's line bound: the branch's diff against its merge base is 340 lines over the card's 300-line bound. Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor"
 	return SessionResult{Outcome: OutcomeNoPush, SessionID: session, Summary: refusal,
 		Findings: []string{"previous session ended without a pushed commit: " + refusal}}
 }
@@ -347,7 +347,7 @@ func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
 	again := overBound("s1")
 	again.Outcome = OutcomeEscalate
 	again.Reason = "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
-		"640 changed lines against the card's 300-line bound, on factory/t1 at c7. Cut the work into cards that each fit the bound; no further successor is filed."
+		"640 changed lines against the card's 300-line bound, on factory/t1 at c7. Cut the work into cards that each fit the bound. No further successor is filed."
 	var steps []string
 	h.onVerify(&steps, []SessionResult{again})
 	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -361,52 +361,52 @@ func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
 	}
 }
 
-// The deadlock ask's successor exit runs the same close: the answer files
-// the successor with the work state instead of buying another session, and
-// the card finishes failed naming it.
-func TestDeadlockAnswerCloseIntoASuccessorRunsTheSamePath(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.taskConfig = askTaskConfig()
-	var steps []string
-	h.onVerify(&steps, []SessionResult{
-		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
-			Reason:   spentStop,
-			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
-			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
-			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
-			Reason:   spentStop,
-			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
-			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
-			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
-	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
-			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
-		})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
-	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: SuccessorChoice, Comment: 603})
-	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-
-	if final := h.run(t); final != "failed" {
-		t.Fatalf("final = %q, escalations %q", final, h.escalated)
-	}
-	if len(h.escalated) != 2 {
-		t.Fatalf("escalations = %q, want the stop and its deadlock ask", h.escalated)
-	}
-	if len(h.successions) != 1 || h.successions[0].PR != 9 {
-		t.Fatalf("the successor filings = %+v, want one carrying PR 9", h.successions)
-	}
-	for _, want := range []string{"the migration runs outside its transaction", "review: concerns"} {
-		if !strings.Contains(h.successions[0].Findings, want) {
-			t.Errorf("the successor's findings = %q, want %q", h.successions[0].Findings, want)
+// A typed answer that names the successor exit closes the card into its
+// successor only in a run from before versionNoTypedSuccessor: that run
+// files the successor with the work state instead of buying another
+// session, and finishes failed naming it. Since the gate the same answer
+// files no successor; the successor is an answer of the case's face.
+func TestATypedSuccessorAnswerClosesTheCardOnlyBeforeItsGate(t *testing.T) {
+	for _, before := range []bool{true, false} {
+		h := newWorkflowHarness(t)
+		if before {
+			h.env.OnGetVersion("no-typed-successor", workflow.DefaultVersion, versionNoTypedSuccessor).Return(workflow.DefaultVersion)
 		}
-	}
-	if reason := h.finals[0][1]; !strings.Contains(reason, "successor") {
-		t.Fatalf("the finish reason %q must name the successor", reason)
-	}
-	if n := len(h.sessions); n != 3 {
-		t.Fatalf("sessions = %d, want three: the answer closes the card instead of buying a fourth", n)
+		h.taskConfig = askTaskConfig()
+		var steps []string
+		stop := func(id, parent string) SessionResult {
+			return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
+				Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
+				Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+				Record:   &CheckInRecord{Moment: CheckInGate, Session: id, ParentSession: parent}})
+		}
+		h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2", "s1"), stop("s3", "s2")})
+		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+				return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+			})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "Close into a successor", Comment: 603})
+		h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		final := h.run(t)
+		if !before {
+			if len(h.successions) != 0 || final == "failed" {
+				t.Fatalf("since the gate: final %q, successions %+v; want the card on, no successor", final, h.successions)
+			}
+			continue
+		}
+		if final != "failed" || len(h.successions) != 1 || h.successions[0].PR != 9 || len(h.sessions) != 3 {
+			t.Fatalf("before the gate: final %q, successions %+v, sessions %d; want failed into one successor carrying PR 9, three sessions",
+				final, h.successions, len(h.sessions))
+		}
+		for _, want := range []string{"the migration runs outside its transaction", "review: concerns"} {
+			if !strings.Contains(h.successions[0].Findings, want) {
+				t.Errorf("before the gate: the successor's findings = %q, want %q", h.successions[0].Findings, want)
+			}
+		}
+		if reason := h.finals[0][1]; !strings.Contains(reason, "successor") {
+			t.Fatalf("before the gate: the finish reason %q must name the successor", reason)
+		}
 	}
 }
 
@@ -512,10 +512,12 @@ func TestSuccessorCarriesTheLineRaise(t *testing.T) {
 // A successor takes over the stuck card's edges: it waits on what the old
 // card waited on, and the card that waited on the old card waits on the
 // successor, so the old card's failed end leaves it waiting with no failed
-// dependency, and the successor's end wakes it and starts it.
+// dependency, and the successor's end wakes it and starts it. The issues
+// show the same waits.
 func TestSuccessorTakesOverTheDependents(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, _, _ := newRetryRig(t)
+	r, store, _, fj, _ := newRetryRig(t)
+	fj.issues[5].deps, fj.issues[6].deps = []int64{4}, []int64{5}
 	a := store.tasks["t-a"]
 	a.Status = "running"
 	store.tasks["t-a"] = a
@@ -528,6 +530,9 @@ func TestSuccessorTakesOverTheDependents(t *testing.T) {
 	}
 	if got := store.deps["t-b"]; !slices.Equal(got, []string{id}) {
 		t.Fatalf("t-b depends on %v, want the successor %s alone", got, id)
+	}
+	if !slices.Equal(fj.issues[9].deps, []int64{4}) || !slices.Equal(fj.issues[6].deps, []int64{9}) {
+		t.Fatalf("issue dependencies: the successor's #9 on %v, t-b's #6 on %v; want [4] and [9]", fj.issues[9].deps, fj.issues[6].deps)
 	}
 	a.Status = "failed"
 	store.tasks["t-a"] = a

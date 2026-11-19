@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	retryComment = "factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue."
-	retryHeld    = "factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts once no plan is open on main. Closing this issue."
+	retryComment = "A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts. This issue closes."
+	retryHeld    = "A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts once no plan is open on main. This issue closes."
 )
 
 // rollRetryRig is the failed-roll card t-hq (#51 on sf/code) on the real Act
@@ -115,7 +115,7 @@ func TestRetryTheRollResetsTheLadderThroughAct(t *testing.T) {
 		t.Fatalf("the console posted %q, want no comment of the human's", c)
 	}
 	rec := press()
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "the card has no live ask") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "This ask is no longer open, and the card asks nothing now") {
 		t.Fatalf("second press = %d %q, want 409 naming that the card has no live ask", rec.Code, rec.Body)
 	}
 	if got := len(calls()); got != 3 {

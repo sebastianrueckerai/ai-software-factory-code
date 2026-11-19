@@ -73,8 +73,8 @@ func TestChatReleasesAHoldOnlyOnTheHumansLine(t *testing.T) {
 		}
 	}
 	equal(t, "the wake's results", results, map[string]string{
-		"release_hold": "Refused: This turn runs on no line the human typed, so it releases no hold: only the human ends one. Give them the choice with ask, its press bound to release_hold, or let them press Release on the card's drawer.",
-		"hold_card":    "Refused: This turn runs on no line the human typed, so it sets no hold: a hold is the human's own. Give them the choice with ask, its press bound to hold_card, or let them press Hold on the card's drawer.",
+		"release_hold": "Refused: This turn runs on no line the human typed, so it releases no hold: only the human ends one. Give them the choice with ask, its press bound to release_hold, or let them press “Release the hold” on the opened card.",
+		"hold_card":    "Refused: This turn runs on no line the human typed, so it sets no hold: a hold is the human's own. Give them the choice with ask, its press bound to hold_card, or let them press “Put on hold” on the opened card.",
 		"close":        "Refused: Card #31 is on hold: after #33. Only the human releases, starts or closes a held card, and this turn runs on no line the human typed, so it takes no close: ask the human with ask, or let them close it on its card.",
 	})
 	if h := holdOf(r, "t-k1"); h == nil || holdOf(r, "t-k2") != nil || len(r.fg.patched) != 0 || r.events.count() != before {
@@ -114,7 +114,8 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	r.tasks.mu.Unlock()
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	rec := r.do(post("/tasks/t-k1/hold", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "release": {"#33"}, "reason": {"needs the lone card"}}), ck)
+	rec := r.do(post("/tasks/t-k1/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.AnswerHold},
+		"hold_card.release": {"#33"}, "hold_card.note": {"needs the lone card"}}), ck)
 	equal(t, "the Hold button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
 	equal(t, "the hold", *holdOf(r, "t-k1"), factoryd.CardHold{Reason: "needs the lone card", Release: "t-d", By: "sebastian"})
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardHeld, repo: "sf/code", taskID: "t-k1", detail: map[string]any{"reason": "needs the lone card", "release": int64(33)}})
@@ -129,8 +130,8 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 		want                string
 	}{
 		{"t-r", "", "x", http.StatusConflict,
-			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
-		{"t-adm", "", "x", http.StatusConflict, "Card #35 took a work slot and starts now, not a card that has not started: close it, or steer it once it runs."},
+			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."},
+		{"t-adm", "", "x", http.StatusConflict, "Card #35 took its turn and starts now, not a card that has not started: close it, or steer it once it runs."},
 		{"t-k2", "", "  ", http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
 		{"t-k2", "", strings.Repeat("ü", 301), http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
 		{"t-k2", "30", "x", http.StatusConflict,
@@ -153,14 +154,25 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	}
 	_, err := r.c.doReleaseHold(t.Context(), a, "t-k2")
 	var no *refusal
-	if want := "Card #32 is not on hold, so there is nothing to release: hold_card, or Hold on its drawer, puts a card that has not started on hold."; !errors.As(err, &no) || no.msg != want {
+	if want := "Card #32 is not on hold, so there is nothing to release: `hold_card` puts a card that has not started on hold."; !errors.As(err, &no) || no.msg != want {
 		t.Errorf("the release of a card on no hold = %v, want %q", err, want)
 	}
 	if holdOf(r, "t-k2") != nil || r.events.count() != before+1 {
 		t.Fatalf("a refused hold wrote: t-k2's hold %+v, %d rows", holdOf(r, "t-k2"), r.events.count()-before)
 	}
 
-	rec = r.do(post("/tasks/t-k1/release-hold", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	// the board names the answer that fits a held card by its label, and the
+	// agent's door by the key it types
+	rec = r.do(post("/tasks/t-k1/plan/changes", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "text": {"cut it"}}), ck)
+	equal(t, "the board's plan press on a held card", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
+		"Card #31 waits for a free work slot, in filing order, not a plan card: it is on hold until a human releases it with “Release the hold”.\n"})
+	held, _, _ := r.tasks.Task(t.Context(), "t-k1")
+	if err := wrongState(held, capFacts{}, "a running session"); !errors.As(err, &no) ||
+		no.msg != "Card #31 waits for a free work slot, in filing order, not a running session: it is on hold until a human releases it with `release_hold`." {
+		t.Errorf("the agent's door on a held card = %v", err)
+	}
+
+	rec = r.do(post("/tasks/t-k1/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.AnswerRelease}}), ck)
 	equal(t, "the Release button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
 	if h := holdOf(r, "t-k1"); h != nil {
 		t.Fatalf("the hold stands after the release: %+v", h)
@@ -177,7 +189,7 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	}
 	r.tasks.mu.Unlock()
 	if _, err := r.c.doReleaseHold(t.Context(), a, "t-d2"); !errors.As(err, &no) ||
-		no.msg != "Card #34 is not on hold, so there is nothing to release: hold_card, or Hold on its drawer, puts a card that has not started on hold." {
+		no.msg != "Card #34 is not on hold, so there is nothing to release: `hold_card` puts a card that has not started on hold." {
 		t.Errorf("the release of a closing card = %v, want the refusal", err)
 	}
 	// the reason counts characters, as the form's maxlength does
@@ -224,10 +236,10 @@ func TestAHoldWhoseRereadFailsSaysSo(t *testing.T) {
 	}
 }
 
-// The board's face shows a hold in the waiting chip, and a release card
-// that ended failed or closed in the blocked chip; the drawer of a card
-// that has not started offers its writer the Hold form, and of a held one
-// Release; a running card's drawer offers neither.
+// The board's face shows a hold in the card's waits line, and a release
+// card that ended failed or closed in the line's own words; the opened
+// card that has not started offers its writer Put on hold, and a held one
+// Release the hold and Hold again; a running card offers neither.
 func TestBoardShowsTheHoldAndTheDrawerOffersIt(t *testing.T) {
 	r, _ := newWritesRig(t)
 	withPlan(r)
@@ -239,30 +251,46 @@ func TestBoardShowsTheHoldAndTheDrawerOffersIt(t *testing.T) {
 		case "t-k1":
 			r.tasks.tasks[i].HoldView = factoryd.HoldView{Line: "on hold until #33 is merged or done: after #33"}
 		case "t-k2":
-			r.tasks.tasks[i].HoldView = factoryd.HoldView{Warn: true,
+			r.tasks.tasks[i].HoldView = factoryd.HoldView{
 				Line: "on hold: its release card #2062 (plan #1915) ended closed and releases nothing, so a human releases the hold or holds the card on another card: after #2062"}
 		}
 	}
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	for _, want := range []string{`<span class="chip waiting">on hold until #33 is merged or done: after #33</span>`,
-		`<span class="chip waiting blocked">on hold: its release card #2062 (plan #1915) ended closed and releases nothing, so a human releases the hold or holds the card on another card: after #2062</span>`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the board lacks %q", want)
+	lone := `<a class="ref-link" href="#card=t-d">#33</a> <span class="ref-of">(Add the lone card., queued)</span>`
+	for id, want := range map[string]string{
+		"t-k1": `<span class="it waits">on hold until ` + lone + ` is merged or done: after ` + lone + `</span>`,
+		"t-k2": `<span class="it waits">on hold: its release card #2062 (plan #1915) ended closed and releases nothing, so a human releases the hold or holds the card on another card: after #2062</span>`,
+	} {
+		if face := faceOf(t, body, id); !strings.Contains(face, want) {
+			t.Errorf("the face of %s lacks %q:\n%s", id, want, face)
 		}
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-k1/drawer", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-k1/release-hold"`, `action="/tasks/t-k1/hold"`, `name="release"`, `name="reason"`, ">Hold again</button>"} {
+	for _, want := range []string{`data-answer="release_hold"`, `data-answer="hold_card"`, `name="hold_card.release"`, `name="hold_card.note"`, "Release the hold", "Hold again"} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the held card's drawer lacks %q", want)
 		}
 	}
-	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-d/drawer", nil), ck).Body.String()
-	if !strings.Contains(drawer, `action="/tasks/t-d/hold"`) || strings.Contains(drawer, "release-hold") {
-		t.Errorf("a queued card's drawer offers the Hold form alone: %v %v", strings.Contains(drawer, `action="/tasks/t-d/hold"`), strings.Contains(drawer, "release-hold"))
+	if want := "The hold takes your new reason and the card you name in place of the ones it has."; !strings.Contains(drawer, want) ||
+		strings.Contains(drawer, "The card does not start until you release it") {
+		t.Errorf("Hold again on a held card says what Put on hold does, want %q", want)
 	}
-	if drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-r/drawer", nil), ck).Body.String(); strings.Contains(drawer, `action="/tasks/t-r/hold"`) || strings.Contains(drawer, "release-hold") {
+	// a held card that also asks keeps both: only a human releases a hold
+	r.openCases = map[string][]factoryd.Case{"t-k1": {{ID: 7, TaskID: "t-k1", Kind: factoryd.CaseDependencyFailed, StateKey: "t-d", Status: factoryd.CaseAtHuman}}}
+	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-k1/drawer", nil), ck).Body.String()
+	for _, want := range []string{`data-answer="release_hold"`, `data-answer="hold_card"`, "Release the hold", "Hold again"} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the held card that asks lacks %q in its drawer", want)
+		}
+	}
+	r.openCases = nil
+	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-d/drawer", nil), ck).Body.String()
+	if !strings.Contains(drawer, `data-answer="hold_card"`) || !strings.Contains(drawer, "Put on hold") || strings.Contains(drawer, "release_hold") {
+		t.Errorf("a queued card's drawer offers Put on hold alone: %v %v", strings.Contains(drawer, `data-answer="hold_card"`), strings.Contains(drawer, "release_hold"))
+	}
+	if drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-r/drawer", nil), ck).Body.String(); strings.Contains(drawer, `data-answer="hold_card"`) || strings.Contains(drawer, "release_hold") {
 		t.Error("a running card's drawer offers a hold")
 	}
 }

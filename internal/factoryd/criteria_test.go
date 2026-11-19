@@ -617,7 +617,7 @@ func TestGateCriteriaRunsOnASuccessorOfTheIntegrationCard(t *testing.T) {
 	if _, err := store.PutPlanProofs(ctx, "plan1", 1, blindRows()[:2]); err != nil {
 		t.Fatal(err)
 	}
-	p, err := r.filedPlan(ctx, "plan1", "t1")
+	p, _, err := planOfStore(ctx, r.store, "plan1", "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -888,7 +888,7 @@ func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
 			if tc.verdict == "met" {
 				met = "1"
 			}
-			if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "factoryd criteria gate on c1: "+met+" of 1 criteria met") {
+			if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "The criteria gate on c1: "+met+" of 1 criteria met") {
 				t.Fatalf("comments = %q, want the "+met+" of 1 line", hub.comments)
 			}
 		})
@@ -1047,7 +1047,7 @@ func TestGateCriteriaHoldsALateJudgementCriterion(t *testing.T) {
 		!slices.Equal(proofs, []gateProof{{ID: "late_calm", Kind: CriterionJudgement, Line: late}}) {
 		t.Fatalf("the line's proofs = %+v, %v; want late_calm's late line", proofs, err)
 	}
-	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "factoryd criteria gate on c1: no criterion ran.") || !strings.Contains(hub.comments[0], late) {
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "The criteria gate on c1: no criterion ran.") || !strings.Contains(hub.comments[0], late) {
 		t.Fatalf("comments = %q, want the one saying no criterion ran, with the late line", hub.comments)
 	}
 }
@@ -1193,7 +1193,7 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	if len(hub.comments) != 1 {
 		t.Fatalf("comments = %q", hub.comments)
 	}
-	for _, want := range append([]string{"factoryd criteria gate on c1: 2 of 6 criteria met (human criteria ride the approval)."}, lines...) {
+	for _, want := range append([]string{"The criteria gate on c1: 2 of 6 criteria met. A human settles the human criteria at the approval."}, lines...) {
 		if !strings.Contains(hub.comments[0], want) {
 			t.Fatalf("comment = %q, want it to contain %q", hub.comments[0], want)
 		}
@@ -1381,7 +1381,7 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 	if len(hub.comments) != 1 {
 		t.Fatalf("comments = %q, want one", hub.comments)
 	}
-	for _, want := range append([]string{"factoryd criteria gate on c1: 2 of 6 criteria met (human criteria ride the approval)."}, lines...) {
+	for _, want := range append([]string{"The criteria gate on c1: 2 of 6 criteria met. A human settles the human criteria at the approval."}, lines...) {
 		if !strings.Contains(hub.comments[0], want) {
 			t.Fatalf("comment = %q, want it to hold %q", hub.comments[0], want)
 		}

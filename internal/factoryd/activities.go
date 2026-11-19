@@ -58,6 +58,12 @@ const HeartbeatEvery = 10 * time.Second
 // is refused the same way, so only a human changing the wording helps.
 const ContentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
 
+// ContentFilterReason is the escalation of a session whose model call the
+// content filter refused with summary.
+func ContentFilterReason(summary string) string {
+	return ContentFilterRefusal + summary + ". Close this card and file it again with the wording changed, or answer to try once more."
+}
+
 // contentFiltered reports whether a failed session's summary carries z.ai's
 // refusal of filtered content: business code 1301, HTTP 400, "System detected
 // potentially unsafe or sensitive content in input or generation", which
@@ -262,7 +268,13 @@ func (r *Runner) docRepo(ctx context.Context, t Task, pin int64) (Repo, error) {
 	if err != nil {
 		return Repo{}, err
 	}
-	name, project, ok := v.ProjectOf(t.Repository)
+	return docsOf(v.Tree, t.Repository)
+}
+
+// docsOf is the document repository of repository's project under v
+// (chat.doc_repo); the zero Repo when it has none.
+func docsOf(v policy.Tree, repository string) (Repo, error) {
+	name, project, ok := v.ProjectOf(repository)
 	if !ok {
 		return Repo{}, nil
 	}
@@ -275,6 +287,29 @@ func (r *Runner) docRepo(ctx context.Context, t Task, pin int64) (Repo, error) {
 		return Repo{}, fmt.Errorf("project %s chat.doc_repo: %w", name, err)
 	}
 	return repo, nil
+}
+
+// admitCarry passes card t, which continues card old (a successor or a
+// retry), through the filing door: old's title, why line and summary over
+// t's text. No writer corrects them now, so a brief that fails files
+// marked unchecked.
+func admitCarry(t *Task, old Task) error {
+	_, body, _ := strings.Cut(t.Objective, "\n\n")
+	return admit(t, BriefText{Title: CardTitle(*t), Why: old.Why, Summary: old.Summary, Body: body}, nil, BriefTries)
+}
+
+// botRefsOf is the filing door's resolver of the briefs of repository's
+// cards under tree, reading as f's bot.
+func botRefsOf(ctx context.Context, f *Forgejo, tree policy.Tree, repository string) (*botRefs, error) {
+	repo, err := SplitRepo(repository)
+	if err != nil {
+		return nil, err
+	}
+	docs, err := docsOf(tree, repository)
+	if err != nil {
+		return nil, err
+	}
+	return &botRefs{ctx: ctx, f: f, repo: repo, docs: docs}, nil
 }
 
 func (r *Runner) task(ctx context.Context, id string) (Task, Repo, error) {
@@ -439,6 +474,29 @@ const SourceSuccessor = "successor"
 // successorFindings heads the findings a successor's objective carries.
 const successorFindings = "Findings so far:"
 
+// SuccessorObjective is the objective of the successor of card old: old's
+// title, its text opening with "Continues #N." (ContinuesBody), then the
+// findings so far (findings, "\n- " lines), the pull request pr it
+// carries, old's size and its budget, and with onBranch the line that it
+// starts from old's work on its branch (workLine), masked by mask.
+func SuccessorObjective(old Task, findings string, pr int64, onBranch bool, mask func(string) string) string {
+	var lines []string
+	if findings != "" {
+		lines = append(lines, successorFindings+findings)
+	}
+	if pr > 0 {
+		lines = append(lines, fmt.Sprintf("Carries: #%d", pr))
+	}
+	if old.Size != "" {
+		lines = append(lines, "Size: "+old.Size)
+	}
+	lines = append(lines, fmt.Sprintf("Budget: %s EUR", textutil.EUR(old.BudgetEUR)))
+	if onBranch {
+		lines = append(lines, workLine(old))
+	}
+	return IssueObjective(CardTitle(old), ContinuesBody(old)) + "\n\n" + mask(strings.Join(lines, "\n"))
+}
+
 // continuesOverBoundWork: t is a successor in a line where a card already
 // closed on work over its line bound, as factoryd's note, the first
 // finding that close carried, says. One successor per line takes such
@@ -468,7 +526,7 @@ func overBoundAgain(t Task, res SessionResult, overBound string) string {
 		where += " at " + res.Commit
 	}
 	return fmt.Sprintf("This card continues work an earlier card left over its line bound, and its session ended over the bound again: %s, %s. "+
-		"Cut the work into cards that each fit the bound; no further successor is filed.", measure, where)
+		"Cut the work into cards that each fit the bound. No further successor is filed.", measure, where)
 }
 
 // SuccessorID is the id of card id's successor, so a filing that stopped
@@ -520,24 +578,13 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if err != nil && !errors.Is(err, ErrNoBranch) {
 			return "", err
 		}
-		var lines []string
-		if in.Findings != "" {
-			lines = append(lines, successorFindings+in.Findings)
-		}
-		if pr > 0 {
-			lines = append(lines, fmt.Sprintf("Carries: #%d", pr))
-		}
-		if old.Size != "" {
-			lines = append(lines, "Size: "+old.Size)
-		}
-		lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
-		if head != "" {
-			lines = append(lines, workLine(old))
-		}
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
-			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
+			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: SuccessorObjective(old, in.Findings, pr, head != "", func(s string) string { return r.untrusted(old, s) }),
 			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, PlanRevision: old.PlanRevision, Rung: old.Rung,
-			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
+			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr, ToolImage: old.ToolImage}); err != nil {
+			return "", err
+		}
+		if err := admitCarry(&t, old); err != nil {
 			return "", err
 		}
 		// fileEntry gives a fresh intake card the project's process; the
@@ -565,7 +612,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		}); i >= 0 {
 			t.IssueNumber = all[i].Index
 		} else {
-			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, IssueText(BriefText{Why: t.Why, Summary: t.Summary, Body: body})+"\n\n"+marker)
 			if err != nil {
 				return "", fmt.Errorf("the successor of %s: file its issue: %w", old.ID, err)
 			}
@@ -580,6 +627,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
 		r.recordInherited(ctx, old, t)
 	}
+	r.showTakeOver(ctx, old, t)
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
 	}
@@ -787,39 +835,37 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	// stop names (fundFor) covers that part too
 	ceiling := policy.SessionHeadroom(own.Free(), req.ReserveEUR)
 	left := math.Floor(ceiling*1000+1e-6) / 1000
-	opens, state := BudgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
+	opens, state := BudgetRefused, fmt.Sprintf("%s EUR of the %s EUR budget remains", textutil.EUR(max(left, 0)), textutil.EUR(t.BudgetEUR))
 	if free.Reserve > 0 {
-		state = fmt.Sprintf("The card spent %.2f EUR of its %.2f EUR budget", own.Spent, t.BudgetEUR)
+		state = fmt.Sprintf("The card spent %s EUR of its %s EUR budget", textutil.EUR(own.Spent), textutil.EUR(t.BudgetEUR))
 	}
-	var fund string
-	act := "Raise the budget (Fund on the board) and answer, or close the card."
+	act := "Raise the budget and answer, or close the card."
 	switch refused.Decision {
 	case policy.RefusedDayCap:
-		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
-		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."
+		state = fmt.Sprintf("%s EUR of the day's %s EUR is free", textutil.EUR(max(free.Day, 0)), textutil.EUR(req.DayEUR))
+		act = "Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit."
 	case policy.RefusedMonthCap:
-		state = fmt.Sprintf("%.6f EUR of the month's %.2f EUR (budget.month_eur) is free", max(free.Month, 0), req.MonthEUR)
-		act = "Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
+		state = fmt.Sprintf("%s EUR of the month's %s EUR is free", textutil.EUR(max(free.Month, 0)), textutil.EUR(req.MonthEUR))
+		act = "Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
 	case policy.RefusedProjectCap:
 		file := "projects/" + req.Project + ".yaml"
-		state = fmt.Sprintf("%.6f EUR of the project's %.2f EUR month (budget.month_eur in %s) is free", max(free.Project, 0), req.ProjectEUR, file)
-		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
+		state = fmt.Sprintf("%s EUR of the project's %s EUR month in %s is free", textutil.EUR(max(free.Project, 0)), textutil.EUR(req.ProjectEUR), file)
+		act = "Raise the project's month cap in " + file + " by a commit and answer, or wait for the next UTC month and answer."
 	default:
 		if own.Holds > 0 {
 			if free.Reserve > 0 {
-				state += fmt.Sprintf("; %.3f EUR is held by calls in flight (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+				state += fmt.Sprintf(", %s EUR is held by calls in flight (%d, the earliest expiring %s)", textutil.EUR(own.Held), own.Holds, stamp(own.Expires))
 			} else {
-				state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+				state += fmt.Sprintf(" after outstanding holds of %s EUR (%d, the earliest expiring %s)", textutil.EUR(own.Held), own.Holds, stamp(own.Expires))
 			}
-			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
+			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget and answer."
 		}
 		if free.Reserve > 0 {
 			// the money stop: a session that reached its ceiling says
-			// what the card spent, what the review and the audit still
-			// keep of the reserve the ceiling held out and what they
-			// need, and what a fund that opens a session costs
-			state += fmt.Sprintf("; %.2f EUR is held for the review and the audit, which need %.2f EUR", free.Kept(), free.Reserve)
-			fund = fmt.Sprintf(", so a fund of %.2f EUR opens it", fundFor(need, ceiling))
+			// what the card spent, and what the review and the audit
+			// still keep of the reserve the ceiling held out and what
+			// they need; the board's ask names the amount to add
+			state += fmt.Sprintf(", %s EUR is held for the review and the audit, which need %s EUR", textutil.EUR(free.Kept()), textutil.EUR(free.Reserve))
 		}
 	}
 	if o, ok := capRefusals[refused.Decision]; ok {
@@ -827,7 +873,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	}
 	// the first line is the card's question row (escalationQuestion), cut
 	// at 300 characters: it carries the actions, the state follows
-	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s)%s; %s.", opens, act, state, n.call, need, n.measure, fund, n.then), nil
+	return fmt.Sprintf("%s: %s\n%s, and %s needs %s EUR (%s). %s.", opens, act, state, n.call, textutil.EUR(need), n.measure, capitalize(n.then)), nil
 }
 
 // attemptNeed is what an attempt of card t on model needs free to start,
@@ -900,7 +946,7 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 			if len(calls) > 1 {
 				what = fmt.Sprintf("%d calls at once: %s", len(calls), strings.Join(asked, ", "))
 			}
-			need, measure = eur, fmt.Sprintf("%s; the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
+			need, measure = eur, fmt.Sprintf("%s, the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
 		}
 		frontier := r.frontier(model)
 		if floor := v.Document.Budget.SessionFloor(frontier); floor > need {
@@ -908,7 +954,7 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 			if frontier {
 				key = "budget.session_floor_frontier_eur"
 			}
-			need, call, measure, then = floor, "a session on "+model, "the floor of its rung, "+key+" in policy.yaml",
+			need, call, measure, then = floor, "a session on "+model, "the session floor of its model, "+key+" in policy.yaml",
 				"a session started now would run out of money before its work is done"
 		}
 	}
@@ -1013,11 +1059,19 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
-	plan, spec, role, dirs, err := r.planOf(ctx, t)
-	if err != nil {
+	// the card's card in the plan its parent chain reaches gives the
+	// role, whose guide the brief ends with, and the directories, which the
+	// repository map lists; a plan's card the newest revision no longer
+	// holds still builds its part of the plan
+	pc, plan, planned, err := planCardOf(ctx, r.store, t)
+	switch {
+	case err != nil:
 		return SessionResult{}, named("plan card", err)
+	case planned:
+		s.cardRole, s.directories = pc.Role, pc.Directories
+	case t.PlanCard():
+		s.cardRole = RoleFeature
 	}
-	s.spec, s.cardRole, s.directories = spec, role, dirs
 	opened, err := r.openedProofs(ctx, t, plan)
 	if err != nil {
 		return SessionResult{}, named("opened proofs", err)
@@ -1036,12 +1090,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		t.Usage.ProofLines = lines
 	}
 	// a carry card's pull request: its head reaches the clone as branch
-	// pull/<n>, and the spec says so, because the sandbox holds no git
-	// credential to fetch it mid-session
-	if t.CarryPR != 0 {
-		s.pull = t.CarryPR
-		s.spec += fmt.Sprintf("\n\nThis card carries pull request #%[1]d: its head is in your clone as branch pull/%[1]d. The sandbox holds no git credential and cannot fetch it, so work from that branch.", t.CarryPR)
-	}
+	// pull/<n>, and the session's facts say so, because the sandbox holds
+	// no git credential to fetch it mid-session
+	s.pull = t.CarryPR
 	// a plan card's first session, its successor's too, pins the revision
 	// it runs against (piece 10); the merge refuses a card the plan has
 	// since passed
@@ -1057,7 +1108,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			t.PlanRevision = rev.Revision
 		}
 	}
-	if !t.PlanCard() && t.Standing() == harness.StandingWriter {
+	if !planned && t.Standing() == harness.StandingWriter {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")
 		s.directories = askedDirectories(body)
 	}
@@ -1105,7 +1156,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
 		return SessionResult{}, named("live session", err)
 	} else if ok {
-		phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod)
+		phase, _, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod)
 		switch {
 		case perr != nil && !errors.Is(perr, ErrNotFound):
 			// an unknown status is no dead pod: nothing is deleted or
@@ -1475,7 +1526,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session
-		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(thenAnswer), true
+		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(ThenAnswer), true
 		return res
 	}
 	// a session that finished and pushed goes to verification, even when a
@@ -1487,7 +1538,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 	// a session that finished with nothing new on top of the work in
 	// progress an earlier stop pushed: that work is its result
 	if out.result != nil && out.result.Success && out.commit == "" && out.wip == "" && s.startRef != "" && s.startRef != s.base && !s.startWip {
-		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
+		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, andSentence(out.result.Summary, "The branch already held "+s.startRef+".")
 		return res
 	}
 	res.LastMessage = textutil.Truncate(out.agentText, maxHandoverMessage)
@@ -1553,20 +1604,20 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if !out.result.Success && contentFiltered(res.Summary) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate
-			res.Reason = ContentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
+			res.Reason = ContentFilterReason(res.Summary)
 			return res
 		}
 	default:
 		res.Summary = out.noResult
 	}
 	if out.overHold != nil {
-		res.Summary = strings.TrimPrefix(res.Summary+"; "+out.overHold.state(), "; ")
+		res.Summary = andSentence(res.Summary, capitalize(out.overHold.state()))
 	}
 	res.Commit = cmp.Or(out.commit, out.wip)
 	if out.result != nil && out.result.Success && out.commit == "" && out.wip != "" && out.wip != s.startRef {
 		// the end carries nothing past the start, yet an interim push put
 		// work on the branch that the end no longer holds
-		res.Summary += "; the branch still holds the interim push " + out.wip + ", which the session's final tree no longer carries"
+		res.Summary = andSentence(res.Summary, "The branch still holds the interim push "+out.wip+", which the session's final tree no longer carries.")
 	}
 	ended := "previous session ended without a pushed commit: "
 	if res.Commit != "" {
@@ -1621,12 +1672,12 @@ type OverHoldCall struct {
 // an output that ran to its limit wants a shorter one; below it, the
 // prompt cost more than its hold, and a smaller context fits.
 func (c OverHoldCall) state() string {
-	s := fmt.Sprintf("a model call on %s crossed its cost hold: %d prompt tokens (%d cached) and %d output tokens cost %.6f EUR against a hold of %.6f EUR; ",
-		c.Alias, c.PromptTokens, c.CachedTokens, c.OutputTokens, c.CostEUR, c.HoldEUR)
+	s := fmt.Sprintf("a model call on %s crossed its cost hold: %d prompt tokens (%d cached) and %d output tokens cost %s EUR against a hold of %s EUR. ",
+		c.Alias, c.PromptTokens, c.CachedTokens, c.OutputTokens, textutil.EUR(c.CostEUR), textutil.EUR(c.HoldEUR))
 	if c.OutputLimit > 0 && c.OutputTokens >= c.OutputLimit {
-		return s + fmt.Sprintf("its output ran to the limit of %d tokens, so a shorter output fits: write the change in smaller pieces", c.OutputLimit)
+		return s + fmt.Sprintf("Its output ran to the limit of %d tokens, so a shorter output fits: write the change in smaller pieces", c.OutputLimit)
 	}
-	return s + "its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
+	return s + "Its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
 }
 
 // loopFinding is the next session's brief line on a loop: how the session
@@ -1669,44 +1720,134 @@ func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refu
 	return last.Tool, last.Err, true
 }
 
-// RequestInfo asks the issue's author for what the agent needs:
-// state waiting-poster, mirrored on the issue, and a comment with the
-// request that mentions the author and the project's notify list (the
-// project's approvers when it is empty), whose Forgejo bells ring; an
-// info_request alert. It returns the comment's id: only later comments
-// answer it.
+// RequestInfo asks the issue's author for what the agent needs: a comment
+// with the request that mentions the author and the project's notify list
+// (the project's approvers when it is empty), whose Forgejo bells ring;
+// its anchor; an info_request alert; then state waiting-poster, mirrored
+// on the issue, and the request's ask on the board. It returns the
+// comment's id: only later comments answer it. A retry of the activity
+// finds its own anchor by its mark and posts nothing again.
 func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64, error) {
+	lock := r.requestLock(taskID)
+	lock.Lock()
+	defer lock.Unlock()
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
+	// a card that ended or moved on asks its author nothing
+	if !slices.Contains([]string{"running", "in-review", "waiting-poster"}, t.Status) {
+		return 0, terminalError("task %s is %s, cannot wait for the issue's author", taskID, t.Status)
+	}
+	mark := requestMark(ctx)
+	a, err := r.markedRequest(ctx, taskID, mark)
+	if err != nil {
+		return 0, err
+	}
+	if a == nil {
+		notify := r.cfg.Policy().ApproversOf(t.Repository)
+		if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
+			return 0, err
+		} else if ok {
+			notify = p.NotifyOrApprovers(notify)
+		}
+		id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, infoRequestComment(t, r.untrusted(t, reason), notify))
+		if err != nil {
+			return 0, err
+		}
+		r.record(ctx, taskID, "info_requested", map[string]any{"reason": reason, "comment": id, "notify": notify})
+		// the durable anchor Reconcile rebuilds the wait from and the
+		// board's ask is written from
+		a = &IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id, DeliveryID: mark, CreatedAt: time.Now()}
+		if _, err := r.store.InsertIntakeEvent(ctx, *a); err != nil {
+			return 0, fmt.Errorf("record information request comment %d: %w", id, err)
+		}
+		if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: taskID,
+			Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000), "notify": notify}}); err != nil {
+			log.Printf("task %s: record the info_request alert: %v", taskID, err)
+		}
+	}
+	// the card waits once its anchor stands, so the minute pass, which
+	// asks a waiting card's newest anchor, never meets an earlier request's
 	if t.Status != "waiting-poster" {
 		if err := r.store.TransitionTask(ctx, taskID, []string{"running", "in-review"}, "waiting-poster"); err != nil {
 			return 0, terminalError("task %s is %s, cannot wait for the issue's author: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-poster")
 		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
+		t.Status = "waiting-poster"
 	}
-	notify := r.cfg.Policy().ApproversOf(t.Repository)
-	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
-		return 0, err
-	} else if ok {
-		notify = p.NotifyOrApprovers(notify)
+	return a.CommentID, r.askRequest(ctx, t, *a)
+}
+
+// requestMark names this request across its activity's retries: its run
+// and activity; "" outside an activity.
+func requestMark(ctx context.Context) string {
+	if !activity.IsActivity(ctx) {
+		return ""
 	}
-	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, infoRequestComment(t, r.untrusted(t, reason), notify))
+	info := activity.GetInfo(ctx)
+	return "info-request " + info.WorkflowExecution.RunID + "/" + info.ActivityID
+}
+
+// markedRequest is the anchor of task taskID's request mark, nil for none
+// or for no mark.
+func (r *Runner) markedRequest(ctx context.Context, taskID, mark string) (*IntakeEvent, error) {
+	if mark == "" {
+		return nil, nil
+	}
+	events, err := r.store.IntakeEvents(ctx, taskID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	r.record(ctx, taskID, "info_requested", map[string]any{"reason": reason, "comment": id, "notify": notify})
-	// the durable anchor Reconcile rebuilds the wait from
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
-		log.Printf("task %s: record information request comment %d: %v", taskID, id, err)
+	i := slices.IndexFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeInfoRequest && e.DeliveryID == mark })
+	if i < 0 {
+		return nil, nil
 	}
-	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: taskID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000), "notify": notify}}); err != nil {
-		log.Printf("task %s: record the info_request alert: %v", taskID, err)
+	return &events[i], nil
+}
+
+// requestLock is task id's request lock: RequestInfo holds it from its
+// first read to its ask, and the minute pass asks no request while it is
+// held.
+func (r *Runner) requestLock(id string) *sync.Mutex {
+	lock, _ := r.requestLocks.LoadOrStore(id, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+// newestInfoRequest is the anchor of task taskID's newest information
+// request, nil for none.
+func (r *Runner) newestInfoRequest(ctx context.Context, taskID string) (*IntakeEvent, error) {
+	events, err := r.store.IntakeEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
 	}
-	return id, nil
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == IntakeInfoRequest {
+			return &events[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// askRequest asks information request a of card t on the board once: its
+// ask row opens the agent_request_info case at the human, whose answer
+// posts the human's words on the issue, where the wait reads them. A case
+// whose face is a's comment asked it already.
+func (r *Runner) askRequest(ctx context.Context, t Task, a IntakeEvent) error {
+	cases, err := r.store.CasesOf(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(cases, func(c Case) bool { return c.CommentID == a.CommentID }) {
+		return nil
+	}
+	f, err := r.tripFacts(ctx, t, "", "")
+	if err != nil {
+		return err
+	}
+	return r.timeline.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
+		InfoRequestRow(t, f, a.Body, a.CommentID, a.CreatedAt, func(s string) string { return r.untrusted(t, s) }, r.scrub))
 }
 
 // infoRequestComment is the information request on the issue: its author
@@ -1719,9 +1860,9 @@ func infoRequestComment(t Task, reason string, notify []string) string {
 			mentions = append(mentions, m)
 		}
 	}
-	return fmt.Sprintf("factoryd: task %s could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n%s\n\n"+
-		"Reply on this issue with what is asked; the task resumes with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\ncc %s",
-		t.ID, fenced(strings.TrimPrefix(reason, agentAsksAuthor)), strings.Join(mentions, " "))
+	return fmt.Sprintf("The agent could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n%s\n\n"+
+		"Reply on this issue with what is asked, and the card goes on with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\ncc %s",
+		fenced(strings.TrimPrefix(reason, agentAsksAuthor)), strings.Join(mentions, " "))
 }
 
 // CloseNotReproduced closes the task's issue, unanswered for 14 days, as
@@ -1734,8 +1875,8 @@ func (r *Runner) CloseNotReproduced(ctx context.Context, taskID string) error {
 	if closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil || closed {
 		return err
 	}
-	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, "factoryd: "+notReproducedClose+
-		". Closing this issue; a new issue with more detail starts a new task."); err != nil {
+	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, capitalize(notReproducedClose)+
+		". Closing this issue. A new issue with more detail starts a new task."); err != nil {
 		return err
 	}
 	r.record(ctx, taskID, "closed_not_reproduced", map[string]any{"issue": t.IssueNumber})
@@ -1845,7 +1986,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	}
 	if err := r.refuseWorkflowDirChange(ctx, t, repo, commit); err != nil {
 		if existing != nil && isTerminal(err) {
-			msg := "factoryd: closing this pull request: " + errMessage(err)
+			msg := "Closing this pull request: " + errMessage(err)
 			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, existing.Number, msg); err != nil {
 				return PullRequest{}, err
 			}
@@ -1860,7 +2001,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 		ref = *existing
 	} else {
 		objective := r.untrusted(t, t.Objective)
-		body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", objective, t.IssueNumber, t.ID)
+		body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by the factory for card #%d.", objective, t.IssueNumber, t.IssueNumber)
 		if ref, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(objective), body); err != nil {
 			return PullRequest{}, err
 		}
@@ -2121,7 +2262,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			st.Question, st.Choices = EscalationQuestion(reason), choices
 			if d := capWaitDecision(reason); d != "" {
 				// a cap's stop also ends at the turn of the cap's period
-				st.Cap, st.CapUntil = reason, capTurn(d, open.OpenedAt)
+				st.Cap, st.CapUntil = reason, CapTurn(d, open.OpenedAt)
 			}
 		}
 		return st, nil
@@ -2279,7 +2420,7 @@ func stageMemoryOf(tl []byte, st *RunState) {
 		switch step.Step {
 		case "stage_findings":
 			for _, f := range step.Findings {
-				st.History = append(st.History, historyLine(step.Stage, step.Round, step.Attempt, f))
+				st.History = append(st.History, HistoryLine(step.Stage, step.Round, step.Attempt, f))
 			}
 			st.Climbed = st.Climbed || step.To == "stronger"
 			if step.To == "agent" {
@@ -2629,7 +2770,11 @@ func (r *Runner) workHead(ctx context.Context, taskID string) (string, error) {
 }
 
 // branchHead is the task's branch head past the base, whoever pushed it.
+// A runner without a Forgejo client reads no branch.
 func (r *Runner) branchHead(ctx context.Context, t Task, repo Repo) (string, error) {
+	if r.forgejo == nil {
+		return "", nil
+	}
 	fork := r.forgejo.Fork(repo)
 	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(t))
 	switch {
@@ -2663,7 +2808,7 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 	}
 	if head == sha {
 		if head, err = f.CommitFiles(ctx, fork.Owner, fork.Name, branch, "",
-			Attribution{Role: "checks", Task: t.ID, Human: t.Author}, "factoryd: run the checks of "+sha+" again", nil); err != nil {
+			Attribution{Role: "checks", Task: t.ID, Human: t.Author}, "Run the checks of "+sha+" again", nil); err != nil {
 			return "", fmt.Errorf("empty commit: %w", err)
 		}
 	}
@@ -2694,6 +2839,11 @@ func (r *Runner) headBranch(ctx context.Context, t Task, repo Repo) (*Forgejo, R
 	}
 	return nil, Repo{}, "", terminalError("pull request #%d's head is on %s, a fork factoryd does not write: its checks run again from Forgejo's run page", t.PRNumber, pr.HeadRepo)
 }
+
+// ChecksGreen says combined status cs reads green as the gates read it: a
+// head that reports no statuses is still pending, and warning and skipped
+// count as green.
+func ChecksGreen(cs CombinedStatus) bool { return checksResult(cs, "", nil).State == ChecksSuccess }
 
 // checksResult maps a combined status onto a verdict; empty means still
 // pending (no status reported yet counts as pending, not as success). For
@@ -2947,7 +3097,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 // chain, covers it. The chain poller's reconciler calls it every tick, so
 // a card already done is a no-op.
 func (r *Runner) EndCovered(ctx context.Context, taskID string, run int64) error {
-	return r.finish(ctx, taskID, "done", fmt.Sprintf("live: covered by run %d", run), true)
+	return r.finish(ctx, taskID, "done", fmt.Sprintf("live: covered by CI run %d", run), true)
 }
 
 // CloseMerged ends merged card taskID closed on closer's close of its
@@ -2993,11 +3143,11 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	}
 	r.forgetNamespace(ctx, taskID)
 	why := r.untrusted(t, reason)
-	msg := "factoryd: task " + taskID + " failed: " + why
+	msg := "This card failed: " + why
 	if repoErr == nil {
 		if final != "done" {
 			if final == "closed" {
-				msg = "factoryd: task " + taskID + " closed: " + why
+				msg = "This card closed: " + why
 			}
 			if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, msg)); err != nil {
 				return err
@@ -3007,9 +3157,9 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 			closing := msg
 			switch {
 			case final == "done" && merged:
-				closing = fmt.Sprintf("factoryd: pull request #%d merged; this card ends with it.", t.PRNumber)
+				closing = fmt.Sprintf("Pull request #%d merged, and this card ends with it.", t.PRNumber)
 			case final == "done":
-				closing = "factoryd: " + why + "; this card ends with it."
+				closing = capitalize(why) + ". This card ends with it."
 			}
 			if err := cleanup(taskID, "close its issue", r.closeTaskIssue(ctx, repo, t, closing)); err != nil {
 				return err
@@ -3164,4 +3314,17 @@ func (r *Runner) closeTaskPullRequest(ctx context.Context, repo Repo, t Task, ms
 		log.Printf("task %s: comment failure reason on pull request #%d: %v", t.ID, pr.Number, err)
 	}
 	return nil
+}
+
+// andSentence is text with sentence after it, text ended as a sentence
+// first, and sentence alone for no text.
+func andSentence(text, sentence string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return sentence
+	}
+	if !strings.ContainsAny(text[len(text)-1:], ".!?") {
+		text += "."
+	}
+	return text + " " + sentence
 }

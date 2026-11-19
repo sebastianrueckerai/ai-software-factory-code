@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,6 +17,14 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
+
+// threeOpenHeld is what the issue of criteriaPlan's plan hears while it is
+// held with its three promises open and none met on main.
+const threeOpenHeld = "Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
+	"A human closed the plan while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
+	"The answers on the board:\n" +
+	"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+	"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."
 
 // lastRoundCriteriaPlan is a done plan in its last round with the criteria
 // of criteriaPlan and its integration card merged, on store s as task id.
@@ -66,7 +76,7 @@ func TestDonePlanForgejoCloseKeepsTheHold(t *testing.T) {
 			t.Fatalf("%s: status %d", tc.name, rr.Code)
 		}
 		reopened := slices.Contains(*requests, "close /api/v1/repos/sf/ai-software-factory-code/issues/4")
-		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+holdComment(3, 3))
+		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+threeOpenHeld)
 		if got := store.tasks["t-plan"].Status; got != tc.after || reopened != tc.reopen || commented != tc.reopen {
 			t.Errorf("webhook, %s: status %q, reopened %t, commented %t; want %q, %t, %t", tc.name, got, reopened, commented, tc.after, tc.reopen, tc.reopen)
 		}
@@ -88,7 +98,11 @@ func TestRoundCheckHoldsAPlanWhoseOpenCriteriaAWriterClosed(t *testing.T) {
 		comments     []string
 	}{
 		{name: "a writer's close, criteria open", closer: "sebastian", after: "done", reopened: 1, comments: []string{
-			"factoryd: this plan still holds production with 3 open criteria. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan."}},
+			"Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
+				"A human closed the plan while these promises were open:\n- A link made through the API is kept.\n- A short link sends its visitor on.\n- The existing tests stay green.\n\n" +
+				"The answers on the board:\n" +
+				"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+				"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."}},
 		{name: "a writer's close, criteria waived", closer: "sebastian", waived: true, after: "closed"},
 		{name: "the bot's recorded close, criteria waived", closer: "factory-agent", botRecorded: true, waived: true, after: "done"},
 		{name: "an open issue", after: "done"},
@@ -136,10 +150,20 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 		waived   int
 	}{
 		{"the gate met two of three", false,
-			"factoryd: this plan still holds production with 3 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met 2 of them, so an approver's Close with a note on the console waives only 1 and ends the plan.",
+			"Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
+				"A human closed the plan while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
+				"The last run of the plan's tests on main met 2 of them, so closing drops only the other 1.\n\n" +
+				"The answers on the board:\n" +
+				"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+				"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it.",
 			ErrNotApprover, "sebastian", "moved on", true, 1},
 		{"the gate met every open one", true,
-			"factoryd: this plan still holds production with 2 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met them, so a Close on the console waives none, needs no note and ends the plan.",
+			"Close this plan now? Until it closes, the plan holds production deploys.\n\n" +
+				"A human closed the plan while these promises were open:\n- A link is stored.\n- The tests in ./... stay green.\n\n" +
+				"The last run of the plan's tests on main met all of them, so closing drops none.\n\n" +
+				"The answers on the board:\n" +
+				"- Close the plan now: Closes the plan now, so production deploys go on.\n" +
+				"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it.",
 			nil, "mallory", "", false, 0},
 	} {
 		for _, path := range []string{"issue close", "close check"} {
@@ -172,7 +196,7 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 				fj.comments = nil
 				reopened := []int64{7}
 				if path == "issue close" {
-					if err := endDonePlan(ctx, s, r.forgejo, s.tasks["t-plan"]); err != nil {
+					if err := r.planHolder().endDonePlan(ctx, s.tasks["t-plan"]); err != nil {
 						t.Fatal(err)
 					}
 				} else {
@@ -230,7 +254,7 @@ func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
 		}
 		setStatus(s, "card-2", "done")
 		r.planCloseCheck(ctx, "t-plan")
-		want := []string{"#1 factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+		want := []string{"#1 The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 		if got := commentBodies(fj); closeRows(s) != 1 || !slices.Equal(got, want) {
 			t.Errorf("comments %q, plan_closed rows %d; want %q and 1", got, closeRows(s), want)
 		}
@@ -303,20 +327,35 @@ func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 
 // A plan card closed by an older path (a writer's close of a failed plan,
 // or of a plan under a replan) with criteria open and merged cards keeps its
-// hold: the close check records no plan_closed and says so once, until an
-// approver's Close with a note waives them, which also takes a plan at
-// rest in any status.
+// hold: the close check records no plan_closed, until an approver's Close
+// with a note waives them, which also takes a plan at rest in any status.
+// A closed plan asks on the board, once per set of open promises, to close
+// and drop them or to stay open, and its issue hears the same words once;
+// the Close ends the ask as its drop.
 func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 	ctx := context.Background()
+	words := "Close this plan and drop its 10 open promises? Until it closes, the plan holds production deploys.\n\n" +
+		"A human closed the plan while these promises were open:\n" + strings.Repeat("- The tests in ./... stay green.\n", 10) + "\n" +
+		"The answers on the board:\n" +
+		"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+		"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."
+	held := func(s *fakeStore) []Case {
+		var out []Case
+		for _, c := range s.cases {
+			if c.TaskID == "t-plan" && c.Kind == CasePlanHeld {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
 	for _, status := range []string{"closed", "failed"} {
 		r, s, fj := tenCriteriaPlan(t, "done")
 		setStatus(s, "t-plan", status)
 		for range 2 {
 			r.planCloseCheck(ctx, "t-plan")
 		}
-		hold := "#1 " + holdComment(10, 10)
-		if got := commentBodies(fj); status == "closed" && (closeRows(s) != 0 || !slices.Equal(got, []string{hold})) {
-			t.Fatalf("closed plan: comments %q, plan_closed rows %d; want the hold said once and no row", got, closeRows(s))
+		if got := commentBodies(fj); status == "closed" && (closeRows(s) != 0 || !slices.Equal(got, []string{"#1 " + words}) || len(held(s)) != 1 || held(s)[0].Status != CaseAtHuman) {
+			t.Fatalf("closed plan: comments %q, plan_closed rows %d, asks %+v; want the ask once, said once, and no row", got, closeRows(s), held(s))
 		}
 		if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 			t.Fatalf("%s plan, a writer's Close: %v, want ErrNotApprover", status, err)
@@ -324,6 +363,58 @@ func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 		if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != 10 || closeRows(s) != 1 {
 			t.Fatalf("%s plan, an approver's Close = %d, %v, plan_closed rows %d; want 10, no error, 1", status, n, err, closeRows(s))
 		}
+		if status == "closed" {
+			if k := held(s)[0]; k.Status != CaseResolved || k.Resolution == nil || k.Resolution.Action != AnswerDropAndEnd {
+				t.Fatalf("the Close left the ask %s %+v, want it resolved as the drop", k.Status, k.Resolution)
+			}
+		}
+	}
+}
+
+// Keep the plan open settles the held plan's ask and leaves the hold: the
+// close check asks again only once the set of open promises changes.
+func TestKeepThePlanOpenSettlesTheAsk(t *testing.T) {
+	ctx := context.Background()
+	r, s, fj := tenCriteriaPlan(t, "done")
+	setStatus(s, "t-plan", "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	var c Case
+	for _, k := range s.cases {
+		if k.Kind == CasePlanHeld {
+			c = k
+		}
+	}
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-plan", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActSettle}}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	asks := 0
+	for _, k := range s.cases {
+		if k.Kind == CasePlanHeld {
+			asks++
+		}
+	}
+	said := 0
+	for _, body := range commentBodies(fj) {
+		if strings.Contains(body, "Close this plan and drop") {
+			said++
+		}
+	}
+	if k, _ := s.CaseByID(ctx, c.ID); k.Status != CaseResolved || asks != 1 || said != 1 || closeRows(s) != 0 {
+		t.Fatalf("the ask is %s with %d asks, %d comments and %d plan_closed rows; want it settled, asked once, said once, the plan held: %q", k.Status, asks, len(commentBodies(fj)), closeRows(s), commentBodies(fj))
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "k1", Verdict: "waived", Evidence: "moved", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	asks = 0
+	for _, k := range s.cases {
+		if k.Kind == CasePlanHeld && k.Status == CaseAtHuman && len(factStrings(k, "open")) == 9 {
+			asks++
+		}
+	}
+	if asks != 1 {
+		t.Fatalf("a changed set of open promises asks %d times, want once", asks)
 	}
 }
 
@@ -360,9 +451,11 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 	ctx := context.Background()
 	stub := &issueStub{commentsStatus: http.StatusInternalServerError}
 	f := stub.forgejo(t)
-	plan := Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 4, Status: "done", Track: policy.TrackPlan}
-	if err := holdDonePlan(ctx, f, plan, 3, 3); err == nil || len(stub.writes) != 0 {
-		t.Fatalf("holdDonePlan with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
+	held := newFakeStore()
+	lastRoundCriteriaPlan(t, held, "t-plan", "sf/code", 4)
+	holder := planHolder{store: held, forgejo: f, untrusted: func(_ Task, s string) string { return s }}
+	if err := holder.endDonePlan(ctx, held.tasks["t-plan"]); err == nil || len(stub.writes) != 0 {
+		t.Fatalf("the hold of a done plan's issue with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
 	}
 	r, s, _ := tenCriteriaPlan(t, "done")
 	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
@@ -535,5 +628,174 @@ func TestCheckClosePlanAgreesWithCloseHeldPlan(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A closed plan's ask reaches the inbox as every case at the human does:
+// one ask row naming its case, whose message says the card's why, and
+// open on the closed card until the plan's close answers it.
+func TestAHeldPlansAskReachesTheInbox(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done")
+	setStatus(s, "t-plan", "closed")
+	for range 2 {
+		r.planCloseCheck(ctx, "t-plan")
+	}
+	var asks []Event
+	for _, e := range s.events {
+		if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked {
+			asks = append(asks, e)
+		}
+	}
+	if len(asks) != 1 || asks[0].Detail["case_kind"] != string(CasePlanHeld) {
+		t.Fatalf("the plan's ask rows %+v, want one naming the held plan's case", asks)
+	}
+	plan := s.tasks["t-plan"]
+	m, ok := PokeOf(asks[0], plan, Task{})
+	if !ok || m.Content != "#1 needs you. Until it closes, the plan holds production deploys." {
+		t.Fatalf("the inbox's message = %q, %v", m.Content, ok)
+	}
+	// the plan's events as the store reads them: numbered, a minute apart
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	read := func() []Event {
+		var out []Event
+		for i, e := range s.events {
+			if e.TaskID == "t-plan" {
+				e.ID, e.At = int64(i+1), at.Add(time.Duration(i)*time.Minute)
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	events := read()
+	m.At = events[len(events)-1].At.Add(time.Second)
+	if st := SettleOf(m, events, plan.Status, false); !st.Open {
+		t.Fatalf("the message on the closed plan reads %+v, want it open", st)
+	}
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+		t.Fatal(err)
+	}
+	if st := SettleOf(m, read(), plan.Status, false); st.Open || st.Word != "answered" || st.By != "sebastian" {
+		t.Fatalf("after the Close the message reads %+v, want it answered by sebastian", st)
+	}
+}
+
+// A closed plan asks again once its ask was withdrawn, and a changed set
+// of open promises takes the place of the live ask of the older set: one
+// ask stands at a time, and Close ends it.
+func TestAHeldPlanAsksAgainAfterAWithdrawalAndOnANewSet(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done")
+	setStatus(s, "t-plan", "closed")
+	held := func() (live []Case, all int) {
+		for _, c := range s.cases {
+			if c.Kind == CasePlanHeld {
+				all++
+				if c.Status == CaseAtHuman {
+					live = append(live, c)
+				}
+			}
+		}
+		return live, all
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	first, _ := held()
+	if err := s.WithdrawCase(ctx, first[0].ID, "card ended closed"); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	if live, all := held(); len(live) != 1 || all != 2 || live[0].ID == first[0].ID {
+		t.Fatalf("after a withdrawal: live %+v of %d asks, want a new one of 2", live, all)
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "k1", Verdict: "waived", Evidence: "moved", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	live, all := held()
+	if len(live) != 1 || all != 3 || len(factStrings(live[0], "open")) != 9 {
+		t.Fatalf("after a waiver: live %+v of %d asks, want the one of 9 open promises of 3", live, all)
+	}
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+		t.Fatal(err)
+	}
+	if live, _ := held(); len(live) != 0 {
+		t.Fatalf("after the Close %d asks stand, want none", len(live))
+	}
+}
+
+// A held plan whose last open promise gets its verdict without the Close,
+// by Drop this promise or by a gate run's rows, closes by the factory's
+// own close check, and that close ends the held ask: the factory
+// withdraws it, as every promise is settled, and none stands at the
+// human on the closed plan.
+func TestTheFactorysCloseEndsTheHeldAsk(t *testing.T) {
+	ctx := context.Background()
+	for _, path := range []string{"drop", "gate rows"} {
+		t.Run(path, func(t *testing.T) {
+			r, s, _ := tenCriteriaPlan(t, "done")
+			setStatus(s, "t-plan", "closed")
+			r.planCloseCheck(ctx, "t-plan")
+			i := slices.IndexFunc(s.cases, func(c Case) bool { return c.Kind == CasePlanHeld })
+			if i < 0 || s.cases[i].Status != CaseAtHuman || slices.ContainsFunc(s.cases[i+1:], func(c Case) bool { return c.Kind == CasePlanHeld }) {
+				t.Fatalf("the held plan's cases = %+v, want one held ask at the human", s.cases)
+			}
+			heldID := s.cases[i].ID
+			var settle []CriterionVerdict
+			for i := 1; i <= 10; i++ {
+				id := fmt.Sprintf("k%d", i)
+				if path == "drop" {
+					if err := DecideCriterion(ctx, s, "t-plan", id, "waived", "sebastian", "the suite moved to another plan"); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
+				settle = append(settle, CriterionVerdict{Criterion: id, Verdict: "met", Evidence: "suite ./... passed", Kind: CriterionInvariant})
+			}
+			if path == "gate rows" {
+				if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceGate, FactoryDecider, settle); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.planCloseCheck(ctx, "t-plan")
+			if closeRows(s) != 1 {
+				t.Fatalf("plan_closed rows %d, want the factory's close", closeRows(s))
+			}
+			for _, c := range s.cases {
+				if c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+					t.Fatalf("the held ask %d stands %s on the closed plan", c.ID, c.Status)
+				}
+			}
+			ended := s.cases[slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == heldID })]
+			if want := (CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "every promise of the plan is settled, and the plan closed"}); ended.Status != CaseWithdrawn ||
+				ended.Resolution == nil || !reflect.DeepEqual(*ended.Resolution, want) {
+				t.Fatalf("the held ask ended %s by %+v, want withdrawn by %+v", ended.Status, ended.Resolution, want)
+			}
+		})
+	}
+}
+
+// A held plan's comment names its open promises, which the planner wrote,
+// and posts them through the outbound sanitiser: no mention and no link
+// to an outside host reaches the issue as the factory's words.
+func TestAHeldPlansCommentSanitisesThePromises(t *testing.T) {
+	ctx := context.Background()
+	r, s, _, fj := planWithoutCriteria(t, "done")
+	p := Plan{Summary: "the plan", Cards: []PlanCard{{Key: "card-1", Role: RoleIntegration, Title: "Integration", Directories: []string{"a"}}},
+		Criteria: []PlanCriterion{{ID: "k1", Kind: CriterionInvariant, Suite: "./...", Promise: "@mallory says the export works, see https://evil.test/x"}}}
+	newRevision(t, s, "t-plan", p)
+	plan := s.tasks["t-plan"]
+	plan.Track = policy.TrackPlan
+	s.tasks["t-plan"] = plan
+	mergeCard(s, "card-1")
+	setStatus(s, "t-plan", "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	var held string
+	for _, c := range fj.comments {
+		if strings.Contains(c.body, "mallory") {
+			held = c.body
+		}
+	}
+	if held == "" || strings.Contains(held, "@mallory") || strings.Contains(held, "https://evil.test") {
+		t.Fatalf("the held plan's comment = %q, want the promise with its mention and outside link made harmless", held)
 	}
 }

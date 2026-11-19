@@ -118,7 +118,31 @@ type fakeForgejo struct {
 	// rawAt are files at refs other than main, "<ref> <escaped path>" to
 	// the content
 	rawAt map[string]string
+	// issueReads answer the reads of these issue paths in place of the
+	// rig's issues, a pull request among them
+	issueReads map[string]map[string]any
+	// merged are the merges of sf/code's pull requests, "path head", the
+	// head the merge pinned; a pinned head other than the pull request's
+	// own in issueReads is refused 409, as Forgejo refuses it
+	merged []string
 }
+
+// setPullHead makes the pull request at path read with head sha.
+func (f *fakeForgejo) setPullHead(path, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.issueReads == nil {
+		f.issueReads = map[string]map[string]any{}
+	}
+	f.issueReads[path] = map[string]any{"head": map[string]any{"sha": sha}}
+}
+
+// briefHead opens the issue body of a card the tests file with the why
+// line "The board needs it." and its summary.
+const briefHead = "Why: The board needs it.\n\nSummary: It builds what the title names. A test checks it.\n\n---\n\n"
+
+// rigIssue is the path of an issue under 900 of a repository of the rig.
+var rigIssue = regexp.MustCompile(`^/api/v1/repos/[^/]+/[^/]+/issues/[1-8]?[0-9]?[0-9]$`)
 
 // asset is an upload as Forgejo's asset endpoints read it: the query's name
 // and the file of the form field attachment.
@@ -358,7 +382,12 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	case r.Method == http.MethodPatch && len(f.deps[r.URL.Path+"/dependencies"]) > 0:
 		http.Error(w, `{"message":"cannot close this issue because it still has open dependencies"}`, http.StatusPreconditionFailed)
-	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
+	case r.Method == http.MethodGet && f.issueReads[r.URL.Path] != nil:
+		json.NewEncoder(w).Encode(f.issueReads[r.URL.Path])
+	case r.Method == http.MethodGet && rigIssue.MatchString(r.URL.Path):
+		// the rig's cards' issues, as filed: an issue of 900 or more is none
+		json.NewEncoder(w).Encode(map[string]any{"title": "Fix the cache", "body": "It drops entries.", "state": "open"})
+	case r.Method == http.MethodPatch && (strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/") || rigIssue.MatchString(r.URL.Path)):
 		// the issue as it stands after the edit: the rig's issues are titled
 		// "Fix the cache" with the body "It drops entries." until edited
 		if f.failEdit {
@@ -371,6 +400,18 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(raw, &body)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"title": cmp.Or(body["title"], "Fix the cache"), "body": cmp.Or(body["body"], "It drops entries.")})
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
+		var body struct {
+			Head string `json:"head_commit_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		pull := strings.TrimSuffix(r.URL.Path, "/merge")
+		if read, ok := f.issueReads[pull]["head"].(map[string]any); ok && body.Head != "" && read["sha"] != body.Head {
+			http.Error(w, `{"message":"head out of date"}`, http.StatusConflict)
+			return
+		}
+		f.merged = append(f.merged, pull+" "+body.Head)
+		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
@@ -433,7 +474,14 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 type fakeTasks struct {
 	mu    sync.Mutex
 	tasks []factoryd.BoardTask
-	plans map[string][]factoryd.PlanRevision // by task, oldest first
+	// offBoard are cards the store holds beside a test's own: the card of
+	// the rig's pending merge request, which every request has
+	offBoard []factoryd.BoardTask
+	// marked are the issues MarkChatFiled was asked for, "repo#n why"
+	marked []string
+	// byIssue are the TaskByIssue reads, "repo#n"
+	byIssue []string
+	plans   map[string][]factoryd.PlanRevision // by task, oldest first
 	// questions are the plans' questions by "task revision"
 	questions map[string][]factoryd.PlanQuestion
 	// proofs are the plans' proof rows by task, idx order
@@ -453,6 +501,8 @@ type fakeTasks struct {
 	refusals map[string][]factoryd.IntakeRefusal
 	chain    map[string]factoryd.ChainFacts
 	read     func(s *fakeTasks, id string)
+	// boardReads are the BoardTask reads, by id
+	boardReads []string
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -488,12 +538,24 @@ func (s *fakeTasks) Dependencies(_ context.Context, id string) ([]factoryd.Depen
 	return append(open, done...), nil
 }
 
+// stored are the store's cards: the test's, and those of offBoard the test
+// names none of. The caller holds the lock.
+func (s *fakeTasks) stored() []factoryd.BoardTask {
+	out := slices.Clone(s.tasks)
+	for _, t := range s.offBoard {
+		if !slices.ContainsFunc(s.tasks, func(o factoryd.BoardTask) bool { return o.ID == t.ID }) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func (s *fakeTasks) TaskStatuses(_ context.Context, ids []string) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]string{}
 	for _, id := range ids {
-		for _, t := range s.tasks {
+		for _, t := range s.stored() {
 			if t.ID == id {
 				out[id] = t.Status
 			}
@@ -725,7 +787,7 @@ func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, err
 	if s.read != nil {
 		s.read(s, id)
 	}
-	for _, t := range s.tasks {
+	for _, t := range s.stored() {
 		if t.ID == id {
 			return t.Task, true, nil
 		}
@@ -750,21 +812,14 @@ func (s *fakeTasks) RollCarries(_ context.Context, id string) ([]factoryd.Task, 
 func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.byIssue = append(s.byIssue, fmt.Sprintf("%s#%d", repository, issue))
 	var held []factoryd.Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issue {
 			held = append(held, t.Task)
 		}
 	}
-	slices.SortFunc(held, func(a, b factoryd.Task) int {
-		if da, db := factoryd.Final(a.Status), factoryd.Final(b.Status); da != db {
-			if da {
-				return 1
-			}
-			return -1
-		}
-		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
-	})
+	slices.SortFunc(held, factoryd.IssueCardOrder)
 	if len(held) == 0 {
 		return factoryd.Task{}, false, nil
 	}
@@ -772,13 +827,17 @@ func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int6
 }
 
 // BoardTasks lists repository's open cards, as the store does, in its
-// order: a chat task is none, and every final card is gone.
+// order: a chat task and a helper task are none, every final card is
+// gone, and each card holds its live helpers.
 func (s *fakeTasks) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status) || t.Report()
 	})
+	for i := range cards {
+		cards[i].Helpers = factoryd.HelpersOf(s.tasks, cards[i].ID)
+	}
 	factoryd.SortBoardTasks(cards)
 	return cards, nil
 }
@@ -810,11 +869,15 @@ func (s *fakeTasks) setHold(id string, h *factoryd.CardHold) bool {
 func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
+	s.boardReads = append(s.boardReads, id)
+	all := s.stored()
+	i := slices.IndexFunc(all, func(t factoryd.BoardTask) bool { return t.ID == id })
 	if i < 0 {
 		return factoryd.BoardTask{}, false, nil
 	}
-	return s.tasks[i], true, nil
+	bt := all[i]
+	bt.Helpers = factoryd.HelpersOf(s.tasks, id)
+	return bt, true, nil
 }
 
 // set replaces the tasks; the escalated ones carry reason. ChainLive is
@@ -860,18 +923,25 @@ func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	}
 }
 
-// SetHumanSummary stores task id's human summary; "" restores the
-// generated title (the column back to NULL).
-func (s *fakeTasks) SetHumanSummary(_ context.Context, id, summary string) error {
+// SetBrief stores task id's why line, summary and unchecked mark.
+func (s *fakeTasks) SetBrief(_ context.Context, id, why, summary string, unchecked bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.tasks {
 		if s.tasks[i].ID == id {
-			s.tasks[i].HumanSummary = summary
+			s.tasks[i].Why, s.tasks[i].Summary, s.tasks[i].BriefUnchecked = why, summary, unchecked
 			return nil
 		}
 	}
 	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
+// MarkChatFiled notes the issue whose card a chat filing marks.
+func (s *fakeTasks) MarkChatFiled(_ context.Context, repository string, issue int64, why string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.marked = append(s.marked, fmt.Sprintf("%s#%d %s", repository, issue, why))
+	return nil
 }
 
 // SetObjective stores task id's objective.
@@ -1239,9 +1309,10 @@ type rig struct {
 	openCases    map[string][]factoryd.Case
 	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
-	// caseAsks are the newest ask of each case by id, caseAnswered when a human last answered a card
-	caseAsks     map[int64]factoryd.CaseAsk
-	caseAnswered map[string]time.Time
+	// caseAsks are the newest ask of each case by id
+	caseAsks map[int64]factoryd.CaseAsk
+	// briefs are the texts each card's sessions got, by task id
+	briefs map[string][]factoryd.SessionBrief
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1259,8 +1330,6 @@ type rig struct {
 	signalErr   error
 	retried     []string // "task by user" per RetryCard
 	retryErr    error
-	unfrozen    []string // "task by user via way" per RetryFreeze
-	unfreezeErr error
 	handed      []string // "task by user" per GoCard
 	goErr       error
 	metrics     *sdkmetric.ManualReader
@@ -1287,12 +1356,10 @@ type rig struct {
 	// refusal of the nth answer; the fake has a case-resolving answer's
 	// Post post its comment, as Act does, and actDid says what an answer
 	// ran
-	acted  []factoryd.ActInput
-	actErr error
-	// noStoredOffers leaves the cases' asks as seated: no offers stored on them
-	noStoredOffers bool
-	actErrs        map[int]error
-	actDid         func(factoryd.ActInput) []factoryd.CaseAction
+	acted   []factoryd.ActInput
+	actErr  error
+	actErrs map[int]error
+	actDid  func(factoryd.ActInput) []factoryd.CaseAction
 	// actProposes makes Act answer a proposal: nothing ran
 	actProposes bool
 	// drawn is PoolDrawn's answer, drawnErr its failure
@@ -1337,20 +1404,21 @@ func (r *rig) forgetWriters() {
 	r.c.mu.Unlock()
 }
 
-// ownCasesOf are the cases the rig holds for a task: those a test seats, else
-// the one live case of a card waiting on a human.
 // liveCasesOf are card taskID's live cases: its own, and its pending
 // requests' cases, at the human, where none of its own holds the request.
 func (r *rig) liveCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	base, err := r.ownCasesOf(ctx, taskID)
 	for _, q := range r.requestCases(ctx, taskID) {
-		if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+		if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q.req, k) }) {
 			base = append(base, q.c)
 		}
 	}
 	return base, err
 }
 
+// ownCasesOf are the cases the rig holds for a task: those a test seats, else
+// the one live case of a card waiting on a human, of the kind its stop
+// opens in production.
 func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	if r.openCases != nil {
 		return r.openCases[taskID], nil
@@ -1382,14 +1450,34 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 			}
 		}
 	}
-	kind := factoryd.CaseOther
+	kind, facts := factoryd.CaseOther, map[string]any(nil)
+	var money *factoryd.CaseMoney
 	switch {
 	case k.Kind == "human":
+		// the question rides on its case, as the ask that opens it stores it
 		kind = factoryd.CaseHumanCard
+		if q := bt.Question; q != nil {
+			facts = factoryd.HumanAsk{Q: *q, Asker: "agent", Via: factoryd.ViaChat}.Event(k).Detail
+		}
 	case k.Track == policy.TrackPlan:
 		kind = factoryd.CasePlanQuestion
+	case strings.HasPrefix(bt.Escalation, factoryd.AgentAsks):
+		// an agent's question opens its own kind, its reason and offered
+		// answers the case's facts, on a card with room for a session
+		kind, facts = factoryd.CaseAgentEscalate, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts = 1 })
+		facts["reason"], facts["choices"] = bt.Escalation, bt.Choices
+	default:
+		// any other stop opens the kind its reason names, on the card's
+		// facts, as the trip opens it
+		v, _ := r.c.inForce(ctx)
+		trip, err := factoryd.TripCase(k, factoryd.CardFacts(k, v, ""), factoryd.TripInput{TaskID: k.ID, Reason: bt.Escalation, Choices: bt.Choices},
+			func(s string) string { return s })
+		if err != nil {
+			return nil, err
+		}
+		kind, facts, money = trip.Kind, trip.Facts, trip.Money
 	}
-	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, StateKey: key, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, StateKey: key, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment, Facts: facts, Money: money}}, nil
 }
 
 // planCases are the cases of a plan's newest revision at the human, one for
@@ -1443,8 +1531,13 @@ func (r *rig) requestCases(_ context.Context, taskID string) []requestCase {
 		kind := map[string]factoryd.CaseKind{factoryd.ApprovalMerge: factoryd.CaseMergeApproval,
 			factoryd.ApprovalCriteria: factoryd.CasePlanCriteria, factoryd.ApprovalCriteriaRerun: factoryd.CasePlanCriteria}[q.Kind]
 		if q.TaskID == taskID && kind != "" {
-			out = append(out, requestCase{q, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: kind, Status: factoryd.CaseAtHuman,
-				Facts: map[string]any{"approval": q.ID}}})
+			// the case the request opens, as openRequestCase opens it
+			k, err := factoryd.RequestCase(q)
+			if err != nil {
+				k = factoryd.Case{TaskID: taskID, Repository: q.Project, Kind: kind, Facts: map[string]any{"approval": q.ID}}
+			}
+			k.ID, k.Status, k.OpenedAt = 7000+q.ID, factoryd.CaseAtHuman, q.CreatedAt
+			out = append(out, requestCase{q, k})
 		}
 	}
 	return out
@@ -1458,7 +1551,8 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	repoWriters := map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}
-	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{by: repoWriters}, objects: fakeObjects{}, ledger: &fakeLedger{files: map[string]policy.ProjectConfig{}, processes: testProcesses()},
+	reviewed := factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}}
+	r := &rig{fg: fg, tasks: &fakeTasks{offBoard: []factoryd.BoardTask{reviewed}}, writers: &fakeWriters{by: repoWriters}, objects: fakeObjects{}, ledger: &fakeLedger{files: map[string]policy.ProjectConfig{}, processes: testProcesses()},
 		approvals: &fakeApprovals{rows: []factoryd.ApprovalRequest{
 			{ID: 3, Kind: "resource", TaskID: "t-res", Project: "sf/code", Status: "pending", MonthlyEUR: &monthly,
 				Reason: "load test (beyond the envelope: a lease of 300 minutes exceeds the envelope's 4 h)",
@@ -1520,6 +1614,9 @@ func newRig(t *testing.T) *rig {
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
 		},
+		SessionBriefs: func(_ context.Context, taskID string) ([]factoryd.SessionBrief, error) {
+			return r.briefs[taskID], nil
+		},
 		OpenCasesOf: r.liveCasesOf,
 		CaseByID: func(ctx context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
@@ -1544,36 +1641,25 @@ func newRig(t *testing.T) *rig {
 				return t.Repository != repository
 			})
 			r.tasks.mu.Unlock()
-			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: map[int64]factoryd.CaseAsk{}, Answered: r.caseAnswered}
+			d := factoryd.CaseDesk{Asks: map[int64]factoryd.CaseAsk{}}
 			for id, ask := range r.caseAsks {
 				d.Asks[id] = ask
 			}
-			// a pending request's case is on the desk, its card on the board or not
+			// a pending merge request's case is on the desk, its card on the board or not
 			for _, a := range r.approvals.rows {
-				if a.Project == repository && !slices.ContainsFunc(tasks, func(bt factoryd.BoardTask) bool { return bt.ID == a.TaskID }) {
+				if a.Project == repository && a.Kind == factoryd.ApprovalMerge && !slices.ContainsFunc(tasks, func(bt factoryd.BoardTask) bool { return bt.ID == a.TaskID }) {
 					tasks = append(tasks, factoryd.BoardTask{Task: factoryd.Task{ID: a.TaskID, Repository: repository}})
 				}
 			}
 			for _, bt := range tasks {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
 				for _, q := range r.requestCases(ctx, bt.ID) {
-					if !slices.ContainsFunc(open, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+					if q.c.Kind == factoryd.CaseMergeApproval && !slices.ContainsFunc(open, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q.req, k) }) {
 						open = append(open, q.c)
 					}
 				}
 				for _, k := range open {
 					d.Cases = append(d.Cases, k)
-					// a case reaches the human with its offers stored on its ask, as the Runner's passes write them
-					if ask, ok := d.Asks[k.ID]; !r.noStoredOffers && (!ok || ask.Detail["offers"] == nil) {
-						detail := map[string]any{}
-						if ok && ask.Detail != nil {
-							detail = ask.Detail
-						}
-						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k) {
-							detail["offers"], detail["refusals"] = offers, refusals
-						}
-						d.Asks[k.ID] = factoryd.CaseAsk{At: ask.At, Detail: detail}
-					}
 				}
 			}
 			return d, err
@@ -1740,10 +1826,6 @@ func newRig(t *testing.T) *rig {
 		RetryCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)
 			return 9, r.retryErr
-		},
-		RetryFreeze: func(_ context.Context, taskID, by, via string) error {
-			r.unfrozen = append(r.unfrozen, taskID+" by "+by+" via "+via)
-			return r.unfreezeErr
 		},
 		GoCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.handed = append(r.handed, taskID+" by "+by)
@@ -2139,43 +2221,44 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 		{ID: "t-h", Kind: "human", Status: "waiting-human", Objective: "human work", Repository: "sf/code", IssueNumber: 14},
 		{ID: "t-hd", Kind: "human", Status: "done", Objective: "finished human work", Repository: "sf/code"},
 	}...)
+	withRequestCards(r)
 	// the reason comes from the task's row; the board reads no timeline
 	r.objects["sessions/t-e/timeline.jsonl"] = []byte(`{"step":"escalated","reason":"old reason","comment":4}
 `)
-	// the state columns are the wide view's
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET / = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	cols := []string{"Queued", "Running", "Waiting on a human", "In review", "Done", "Failed"}
-	objs := []string{"queued work", "closing work", "stuck work", "review work", "done work", "failed work"}
-	for i, col := range cols {
-		start := strings.Index(body, ">"+col+" <span")
-		if start < 0 {
-			t.Fatalf("column %q missing", col)
-		}
-		end := strings.Index(body[start:], "</section>")
-		if !strings.Contains(body[start:start+end], objs[i]) {
-			t.Errorf("column %q lacks %q", col, objs[i])
+	// a card in Needs you shows its ask in its title's place
+	for title, objs := range map[string][]string{
+		"Needs you": {`data-card="t-e"`, `data-card="t-h"`}, "Queued": {"queued work"},
+		"In progress": {"closing work", "review work"}, "Done": {"done work", "failed work"},
+	} {
+		for _, obj := range objs {
+			if !strings.Contains(col(t, body, title), obj) {
+				t.Errorf("column %q lacks %q", title, obj)
+			}
 		}
 	}
 	for _, want := range []string{
-		`href="https://git.example/sf/code/pulls/12"`,
-		"cannot reach the database", `action="/tasks/t-e/resolve"`, `name="csrf" value="` + s.csrf + `"`,
-		"human work", "load test", "8.9900 EUR per month",
+		"cannot reach the database", `name="csrf" value="` + s.csrf + `"`, "load test",
 		`data-project="ai-software-factory-code"`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
 		}
 	}
-	// the issue, the timeline and the spend under 80 percent live in the drawer
+	// the issue, the pull request, the timeline, the spend under 80
+	// percent, the request's money and the answers live in the drawer
 	for id, wants := range map[string][]string{
-		"t-q": {`href="https://git.example/sf/code/issues/11"`, `href="/tasks/t-q/timeline"`},
-		"t-r": {"€1.23 of €5.00"},
+		"t-q":   {`href="https://git.example/sf/code/issues/11"`, `href="/tasks/t-q/timeline"`},
+		"t-r":   {"1.23 of 5.00 EUR", `href="https://git.example/sf/code/pulls/12"`},
+		"t-e":   {`action="/tasks/t-e/resolve"`},
+		"t-h":   {`action="/tasks/t-h/answer"`},
+		"t-res": {"8.99 EUR a month"},
 	} {
-		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer", nil), ck).Body.String()
+		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
 		for _, want := range wants {
 			if !strings.Contains(drawer, want) {
 				t.Errorf("the drawer of %s lacks %q:\n%s", id, want, drawer)
@@ -2185,12 +2268,8 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	if strings.Contains(body, "old reason") || strings.Contains(body, "finished human work") {
 		t.Error("board shows a superseded escalation or a finished human task")
 	}
-	// each card that holds a case at the human answers from its row: the escalated agent task and the human task
-	if got := regexp.MustCompile(`action="/tasks/([^"]*)/(?:answer|resolve)"`).FindAllStringSubmatch(body, -1); len(got) != 2 || got[0][1] != "t-e" || got[1][1] != "t-h" {
-		t.Errorf("answer forms = %v, want t-e's and t-h's rows", got)
-	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
-	if !strings.HasPrefix(frag, `<div id="board"`) || strings.Contains(frag, "<html") || !strings.Contains(frag, "stuck work") {
+	if !strings.HasPrefix(frag, `<div id="board"`) || strings.Contains(frag, "<html") || !strings.Contains(frag, `data-card="t-e"`) {
 		t.Fatalf("/board is not the bare board fragment: %.200s", frag)
 	}
 }
@@ -2393,7 +2472,7 @@ func TestBoardShowsTheConfigVersion(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	line := `<a class="lchip" href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory" target="_blank" rel="noopener" data-tip="version 4 · c9d98bb0aa11">config</a>`
-	for _, path := range []string{"/", "/?view=wide", "/board"} {
+	for _, path := range []string{"/", "/board"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
 		if !strings.Contains(body, line) {
 			t.Errorf("%s lacks the configuration version line", path)
@@ -2591,7 +2670,7 @@ func TestAnswerRefusedOverMaxAnswer(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("cannot reach the database", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {strings.Repeat("ä", 2000) + "a"}}), ck)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "an answer of 1 to 4000 bytes is required; this one has 4001") {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "An answer of 1 to 4000 bytes is required, and this one has 4001.") {
 		t.Fatalf("an answer of 4001 bytes = %d: %s", rec.Code, rec.Body)
 	}
 	if len(r.fg.comments) != 0 {
@@ -2614,8 +2693,8 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
 	}...)
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) {
-		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
-			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
+		return "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" +
+			"0.01 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
 	}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
 		t.Fatalf("answer at the day cap = %d %s, %d comments; want it taken", rec.Code, rec.Body, len(r.fg.comments))
@@ -2626,10 +2705,10 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 // the project's, is taken the same way: the cap resets on its own.
 func TestAnswerTakenAtAMonthCap(t *testing.T) {
 	for _, why := range []string{
-		"the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free",
-		"the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
+		"the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the month's 50.00 EUR (budget.month_eur) is free",
+		"the project's month cap cannot fund a call: Raise the project's month cap in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
 	} {
 		r := newRig(t)
 		ck, s := r.loggedIn(t)
@@ -2784,13 +2863,13 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"<strong>€3.7500</strong> of the €20.0000 day cap",
-		"<th scope=\"row\">" + today + "</th><td class=\"num\">1.2500</td><td class=\"num\">0.0000</td><td class=\"num\">2.0000</td><td class=\"num\">0.5000</td><td class=\"num\">3.7500</td>",
-		"<th scope=\"row\">2026-09-20</th><td class=\"num\">0.5000</td>",
-		`<a href="/tasks/t-big/timeline">t-big</a></th><td class="num">3.2500</td>`,
-		`<tr class="line"><td>model small</td><td class="num">3.1250</td></tr>`,
-		`<tr class="line"><td>model review/big</td><td class="num">0.1250</td></tr>`,
-		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td class="num">0.0005</td>`,
+		"<strong>3.75 EUR</strong> of the 20.00 EUR day cap",
+		"<th scope=\"row\">" + today + "</th><td class=\"num\">1.25</td><td class=\"num\">0.00</td><td class=\"num\">2.00</td><td class=\"num\">0.50</td><td class=\"num\">3.75</td>",
+		"<th scope=\"row\">2026-09-20</th><td class=\"num\">0.50</td>",
+		`<a href="/tasks/t-big/timeline">t-big</a></th><td class="num">3.25</td>`,
+		`<tr class="line"><td>model small</td><td class="num">3.12</td></tr>`,
+		`<tr class="line"><td>model review/big</td><td class="num">0.12</td></tr>`,
+		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td class="num">less than 0.01</td>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/costs lacks %q", want)
@@ -2835,78 +2914,85 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21})
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
-	// the human lane's approvals column is the wide view's, its cards as
-	// brief as the narrow view's: each title opens its task's drawer,
-	// which holds the facts in full. A merge request, faced, is its case's
-	// row among the escalations, which hosts it
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	column := func(id string) string {
-		start := strings.Index(body, `id="`+id+`"`)
-		return body[start : start+strings.Index(body[start:], "</section>")]
-	}
-	lane, escalations := column("col-approvals"), column("col-escalations")
-	for _, want := range []string{
-		// the resource request: type, purpose, lease, monthly cost, project, the task
-		`<article class="card approval" data-card="t-res"`,
-		`<a href="#card=t-res" class="open">Resource request</a>`,
-		`<p class="need-line"><b>cx33</b> · load test</p>`,
-		`<p class="need-line">5 h · 8.9900 EUR per month, this lease 0.0720 EUR · sf/code</p>`,
-		"a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
-		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, `<div class="info"><p>Approves the one request of this task; a wider envelope for the project changes its file in Git.</p>`,
-		// the resource face's five-part ask: the ask with its numbers, the
-		// why, each offer's effect one line
-		`<p class="ask">Commission a cx33 for load test? 8.9900 EUR per month, this lease 0.0720 EUR.</p>`,
-		`<p class="why">a lease of 300 minutes exceeds the envelope&#39;s 4 h</p>`,
-		`<span class="effect">commissions the server for this lease; the project&#39;s envelope is its file&#39;s</span>`,
-		`<span class="effect">refuses the request; the agent is told your reason</span>`,
+	// the requests stand in Needs you, their small cards the register's
+	// asks; each opens its card, which holds the facts and the one decide
+	// in full. The merge, which its model review approved, holds that pick
+	// as its one button; the resource request, which no one suggests,
+	// holds none
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	lane := col(t, body, "Needs you")
+	for id, ask := range map[string]string{
+		"t-res": `<strong class="title">Rent a cx33 server for 5 hours at about 0.07 EUR?</strong> <span class="why">The card says what the server is for: load test.</span>`,
+		"t-m": `<strong class="title">Merge this card&#39;s pull request?</strong> ` +
+			`<span class="why">The change is high risk, and the factory&#39;s rules let only a human merge it.</span>`,
 	} {
-		if !strings.Contains(lane, want) {
-			t.Errorf("approval lane lacks %q", want)
+		if face := faceOf(t, lane, id); !strings.Contains(face, ask) {
+			t.Errorf("Needs you's %s card lacks its ask %q:\n%s", id, ask, face)
+		}
+	}
+	if face := faceOf(t, lane, "t-res"); strings.Contains(face, "<form") || strings.Contains(face, `class="by"`) {
+		t.Errorf("the resource card, which no one suggests, holds a pick:\n%s", face)
+	}
+	face := faceOf(t, lane, "t-m")
+	for _, want := range []string{`action="/tasks/t-m/resolve" hx-post="/tasks/t-m/resolve" class="press" data-to="in-review">`,
+		`<input type="hidden" name="action" value="approve_merge"><button type="submit" class="pick">Merge it</button></form>`,
+		`<span class="by">model review&#39;s pick</span>`} {
+		if !strings.Contains(face, want) {
+			t.Errorf("the merge card lacks %q:\n%s", want, face)
+		}
+	}
+	res, merge := requestOf(t, r, ck, "t-res", 3), requestOf(t, r, ck, "t-m", 4)
+	for _, want := range []string{
+		// the resource request's ask: the server and its price, why the
+		// card needs it, each answer's effect one line; its facts in the
+		// full brief
+		`<p class="o-question">Rent a cx33 server for 5 hours at about 0.07 EUR?</p>`,
+		`<p class="o-askwhy">The card says what the server is for: load test.</p>`,
+		`<span class="effect">Rents a cx33 server for 5 hours at about 0.07 EUR.</span>`,
+		`<span class="effect">The card goes on without the resource.</span>`,
+		`action="/approvals/3/approve"`,
+		`<h4>The server</h4><p>cx33, for load test. 5 h, 8.99 EUR a month, 0.07 EUR for this lease.</p>`,
+		"a lease of 300 minutes exceeds the envelope&#39;s 4 h",
+	} {
+		if !strings.Contains(res, want) {
+			t.Errorf("the resource request lacks %q:\n%s", want, res)
 		}
 	}
 	for _, want := range []string{
-		// the merge request: the PR, the chips and the one decide block;
-		// the whole text lives in the drawer
-		`<article class="card approval" data-card="t-m"`,
-		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a>`,
-		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
-		`<a href="#card=t-m:reviews" class="details">Details</a>`,
-		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
-		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
-		`<div class="info"><p>Model review: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation (the model review): Adds the column; merge it.</p>`,
-		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
-		`sends the pull request back to its agent with your note`,
-		`name="csrf" value="` + s.csrf + `"`, `<label for="note-t-m">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`, `<textarea id="note-t-m" name="note"`,
+		// the merge request's ask, the review's pick and the answers; the
+		// facts, the review, the recommendation and why a human in the
+		// full brief
+		`<p class="o-question">Merge this card&#39;s pull request?</p>`,
+		`<p class="o-askwhy">The change is high risk, and the factory&#39;s rules let only a human merge it.</p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">It approved the change with no finding, and the security audit raised 2 findings.</span></p>`,
+		`<input type="hidden" name="action" value="approve_merge">`, `<input type="hidden" name="action" value="deny_merge">`,
+		`<span class="effect">Returns the pull request to its agent with your note.</span>`,
+		`name="csrf" value="` + s.csrf + `"`, `action="/tasks/t-m/resolve"`,
+		`<dt>Migration</dt><dd>yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code></dd>`,
+		`<dt>Model review</dt><dd>It approves the change. <span class="quote">adds the column safely</span>`,
+		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
+		`<dt>Why a human</dt><dd><ul><li>the project&#39;s merge rule is human</li><li>risk class high is requires_approval</li></ul></dd>`,
+		`<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`,
 	} {
-		if !strings.Contains(escalations, want) {
-			t.Errorf("the merge's case row lacks %q", want)
+		if !strings.Contains(merge, want) {
+			t.Errorf("the merge request lacks %q:\n%s", want, merge)
 		}
 	}
-	// each asking face holds exactly one decide: one send, one fund
-	// control, one note box (the one-face contract)
-	for id, kard := range map[string]string{"t-res": approvalFaceOf(t, lane, "t-res"), "t-m": hostedFaceOf(t, escalations, "t-m")} {
-		for what, want := range map[string]int{`<form`: 1, `class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
-			if got := strings.Count(kard, what); got != want {
-				t.Errorf("the %s card's decide carries %s %d times, want %d:\n%s", id, what, got, want, kard)
-			}
-		}
-	}
-	// the drawer carries the merge request's five-part ask: why a
-	// human, the model review's verdict and summary, the recommendation
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, `<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`} {
-		if !strings.Contains(drawer, want) {
-			t.Errorf("the merge drawer lacks %q", want)
+	// each answer is a send of its own, its note its own field, no fund
+	// beside it
+	for id, want := range map[string][2]int{"t-res": {2, 1}, "t-m": {3, 2}} {
+		ask := askBlockOf(t, drawer(t, r, ck, id, "overview"))
+		if forms, notes := strings.Count(ask, "<form "), strings.Count(ask, "<textarea"); forms != want[0] || notes != want[1] || strings.Contains(ask, "fund") {
+			t.Errorf("the %s ask holds %d forms and %d notes, want %d and %d, and no fund:\n%s", id, forms, notes, want[0], want[1], ask)
 		}
 	}
 	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
-		if strings.Contains(lane+escalations, wall) {
-			t.Errorf("the wide approval card shows the facts wall %q", wall)
+		if strings.Contains(lane, wall) {
+			t.Errorf("a request's small card shows the facts wall %q", wall)
 		}
 	}
-	if strings.Contains(lane+escalations, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">1</span>`) {
-		t.Error("the lane shows a decided request")
+	if strings.Contains(lane, "/approvals/5/") || !strings.Contains(lane, `Needs you <span class="count">2</span>`) {
+		t.Errorf("Needs you shows a decided request:\n%s", lane)
 	}
 }
 
@@ -2916,7 +3002,7 @@ func TestMergeApproveReviewsThenSignals(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
 		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
 	}
@@ -2933,7 +3019,7 @@ func TestMergeApproveSignalsNothingWhenTheReviewFails(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.fg.calls, r.fg.failReview = nil, true
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("approve with a refused review = %d", rec.Code)
 	}
@@ -2944,7 +3030,7 @@ func TestMergeApproveSignalsNothingWhenTheReviewFails(t *testing.T) {
 	}
 	// the review went through but the signal did not: say so
 	r.fg.failReview, r.signalErr = false, errors.New("temporal unavailable")
-	rec = r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	rec = r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "review is on the pull request") {
 		t.Fatalf("approve with a failed signal = %d: %s", rec.Code, rec.Body)
 	}
@@ -2955,18 +3041,17 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.fg.calls = nil
 	for name, f := range map[string]url.Values{
-		"no reason":  {"action": {"request_changes"}, "note": {"  "}},
-		"bad action": {"action": {"merge-anyway"}, "note": {"x"}},
+		"no reason":  askForm(s.csrf, 4, factoryd.ActDenyMerge, "note", "  "),
+		"bad action": askForm(s.csrf, 4, factoryd.ActDenyMerge+"/merge-anyway", "note", "x"),
 	} {
-		f.Set("csrf", s.csrf)
-		if rec := r.do(post("/approvals/4/deny", f), ck); rec.Code != http.StatusBadRequest {
+		if rec := r.do(post("/tasks/t-m/resolve", f), ck); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d, want 400", name, rec.Code)
 		}
 	}
 	if len(r.fg.calls) != 0 || r.approvals.get(4).Status != "pending" {
 		t.Fatalf("a refused deny acted: %q", r.fg.calls)
 	}
-	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split the migration"}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge, "note", "split the migration")), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("request changes = %d: %s", rec.Code, rec.Body)
 	}
@@ -2977,13 +3062,13 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	if a := r.approvals.get(4); a.Status != "denied" || a.DecidedBy != "sebastian" || a.DecisionNote != "changes requested: split the migration" {
 		t.Fatalf("request = %+v", a)
 	}
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"x"}}), ck); rec.Code != http.StatusConflict {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "x")), ck); rec.Code != http.StatusConflict {
 		t.Fatalf("deny of a decided request = %d, want 409", rec.Code)
 	}
 
 	r.approvals.rows[1].Status = "pending"
 	r.fg.calls = nil
-	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"not wanted"}}), ck)
+	rec = r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "not wanted")), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject = %d: %s", rec.Code, rec.Body)
 	}
@@ -2997,13 +3082,46 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	}
 }
 
+// askForm is the press of answer key on the case of approval request id, as
+// its card's ask posts it; fields are the answer's fields, name then value.
+func askForm(csrf string, request int64, key string, fields ...string) url.Values {
+	v := url.Values{"csrf": {csrf}, "case_id": {strconv.FormatInt(7000+request, 10)}, "action": {key}}
+	for i := 0; i+1 < len(fields); i += 2 {
+		v.Set(key+"."+fields[i], fields[i+1])
+	}
+	return v
+}
+
+// withRequestCards files the cards of the rig's two pending requests: the
+// resource request's t-res and the merge request's t-m, whose opened
+// cards decide them.
+func withRequestCards(r *rig) {
+	r.tasks.mu.Lock()
+	defer r.tasks.mu.Unlock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
+}
+
+// requestOf is the ask and the full brief of card task's opened card,
+// whose answers decide request id and whose brief holds its evidence.
+func requestOf(t *testing.T, r *rig, ck *http.Cookie, task string, id int64) string {
+	t.Helper()
+	body := drawer(t, r, ck, task, "overview")
+	// a merge request asks on its case's page, a resource request on its own
+	if !strings.Contains(body, fmt.Sprintf(`action="/approvals/%d/`, id)) && !strings.Contains(body, fmt.Sprintf(`name="case_id" value="%d"`, 7000+id)) {
+		t.Fatalf("the opened card of %s shows no answer of request %d:\n%s", task, id, body)
+	}
+	return approvalFaceOf(t, body, task)
+}
+
 // A factory pull request card's approval offers what fits its head
 // (roadmap 264): on red checks a re-run and a close, no Approve, and an
 // approve refuses naming them; on green Approve and a close, and a re-run
-// refuses. The close is the deny box without a choice of action: no agent
-// works on the pull request, so the member's words go to its workflow,
-// which closes the card and the pull request with them, whatever branch
-// the pull request has; no review is posted.
+// refuses. The close is the one deny: no agent works on the pull request,
+// so the human's words go to its workflow, which closes the card and the
+// pull request with them, whatever branch the pull request has; no review
+// is posted.
 func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -3012,89 +3130,75 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		r.approvals.mu.Lock()
 		defer r.approvals.mu.Unlock()
 		r.approvals.rows[1].Spec = json.RawMessage(fmt.Sprintf(`{"risk_class":"standard","head_sha":"abc123","factory":true,"red_checks":%t,`+
-			`"why_human":["factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"]}`, red))
+			`"why_human":["the factory opened this pull request and no agent works on it, so the findings meant for an agent go to a human"]}`, red))
 	}
 	item := func() string {
 		t.Helper()
-		body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-		start := strings.Index(body, `action="/approvals/4/`)
-		if start < 0 {
-			t.Fatalf("the board shows no form of request 4:\n%s", body)
-		}
-		start = strings.LastIndex(body[:start], "<article")
-		return body[start : start+strings.Index(body[start:], "</article>")]
+		return requestOf(t, r, ck, "t-m", 4)
 	}
 
 	factory(true)
 	got := item()
-	for _, want := range []string{`action="/approvals/4/rerun"`, `aria-label="Re-run the checks of PR #9 of t-m">Re-run the checks</button>`,
-		`aria-controls="deny-4">Close</button>`, `<label for="note-4">Why it closes, posted on its issue and pull request</label>`,
-		`aria-label="Close PR #9 of t-m and its card">Close</button>`} {
+	for _, want := range []string{`name="action" value="rerun_checks"`, `<button type="submit" class="pick">Run the failed checks again</button>`,
+		`<input type="hidden" name="action" value="deny_merge/reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red factory request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/approve"`, `name="action"`, ">Deny</button>", "Only the project&#39;s approvers may approve."} {
+	for _, not := range []string{`name="action" value="approve_merge"`, "Send it back", `class="o-who"`} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red factory request shows %q:\n%s", not, got)
 		}
 	}
 	r.fg.calls = nil
-	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
 	}
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"the template's CI file is not ours"}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "the template's CI file is not ours")), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
 
 	factory(false)
 	got = item()
-	for _, want := range []string{`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`,
-		`<button type="submit" name="action" value="deny" class="secondary" aria-label="Close PR #9 of t-m and its card">Close</button>`,
-		`closes PR #9 and its card with your note: no agent works on a pull request factoryd opened`} {
+	for _, want := range []string{`<input type="hidden" name="action" value="approve_merge">` + "\n" + `<button type="submit" class="pick">Merge it</button>`,
+		`data-press="deny_merge/reject">Reject and close it</button> <span class="effect">Closes the pull request. The card ends.</span>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the green factory request lacks %q:\n%s", want, got)
 		}
 	}
-	// the one decide: one send, one fund control, one note box
-	for what, want := range map[string]int{`class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
-		if n := strings.Count(got, what); n != want {
-			t.Errorf("the green factory request carries %s %d times, want %d:\n%s", what, n, want, got)
-		}
+	if strings.Contains(got, `name="action" value="rerun_checks"`) || strings.Contains(got, "Send it back") || strings.Contains(got, "fund") {
+		t.Errorf("the green factory request offers a re-run, a return or a fund:\n%s", got)
 	}
-	if strings.Contains(got, `action="/approvals/4/rerun"`) {
-		t.Errorf("the green factory request offers a re-run:\n%s", got)
-	}
+	// Act reads the head's checks and refuses a re-run on a green head (its
+	// own test holds the sentence): the press shows Act's words with the
+	// answers' labels, and nothing runs
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are green: approve it to merge (approve_merge) or close it (deny_merge).") ||
+	r.actErr = factoryd.ErrActRefused("the checks on the head are green, so there is nothing to run again, and the human may take `approve_merge` or `deny_merge` with `reject`")
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "the checks on the head are green, so there is nothing to run again, and the human may take “Merge it” or “Reject and close it”") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run on green = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}
+	r.actErr = nil
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"high","head_sha":"abc123"}`)
-	rec = r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "approval request 4 is no merge request of a pull request factoryd opened") ||
+	rec = r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "The factory did not open pull request #9, so it runs no checks again. Its checks run again when its author pushes, and “Merge it” or “Send it back” decides it.") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run of an agent's pull request = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}
-	// the one send: the answer, the fund and the note ride one POST to the
-	// approve endpoint, and land together as one row on the card
+	// Merge it is one press to the approve endpoint, which lands as one
+	// row on the card
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","factory":true}`)
+	merge := answerForm(t, drawer(t, r, ck, "t-m", "overview"), factoryd.ActApproveMerge)
 	before := r.events.count()
-	note := "the factory's own pull request, closed by its human"
-	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"action": {"approve"}, "fund_eur": {"1.50"}, "note": {note}}), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("the one send = %d: %s", rec.Code, rec.Body)
+	if rec := r.do(post(merge.Action, merge.Values), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the merge = %d: %s", rec.Code, rec.Body)
 	}
 	if a := r.approvals.get(4); a.Status != "approved" || a.DecidedBy != "sebastian" {
 		t.Errorf("the request = %q by %q, want approved by sebastian", a.Status, a.DecidedBy)
 	}
-	if k, ok, _ := r.tasks.Task(t.Context(), "t-m"); !ok || k.BudgetEUR != 1.5 {
-		t.Errorf("t-m's budget = %v (ok %v), want the 1.50 the one send carried", k.BudgetEUR, ok)
-	}
-	checkRows(t, r.events, before,
-		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m",
-			detail: map[string]any{"pr": int64(9), "approval": int64(4), "fund_eur": 1.5, "reason": note}})
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m", detail: map[string]any{"pr": int64(9)}})
 }
 
 // An agent card's merge request on red checks (#838: the cap reached, the sync
@@ -3102,31 +3206,29 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 // the agent and the close, no Approve, and an approve refuses naming both.
 func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
+	withRequestCards(r)
+	ck, _ := r.loggedIn(t)
 	r.approvals.mu.Lock()
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
 	r.approvals.mu.Unlock()
 
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	start := strings.Index(body, `action="/approvals/4/`)
-	if start < 0 {
-		t.Fatalf("the board shows no form of request 4:\n%s", body)
-	}
-	start = strings.LastIndex(body[:start], "<article")
-	got := body[start : start+strings.Index(body[start:], "</article>")]
-	for _, want := range []string{`action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, "return it to the agent",
-		`name="action" value="reject"`, "close it (closes the pull request)", `aria-label="Return or close PR #9 of t-m">Send</button>`} {
+	page := drawer(t, r, ck, "t-m", "overview")
+	got := requestOf(t, r, ck, "t-m", 4)
+	for _, want := range []string{`<input type="hidden" name="action" value="deny_merge">`, `data-press="deny_merge">Send it back</button>`,
+		`<input type="hidden" name="action" value="deny_merge/reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red agent request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/approve"`, `action="/approvals/4/rerun"`, ">Deny</button>", `aria-controls="deny-4"`, `id="deny-4" hidden`} {
+	for _, not := range []string{`name="action" value="approve_merge"`, `name="action" value="rerun_checks"`, "Run the failed checks again"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red agent request shows %q:\n%s", not, got)
 		}
 	}
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
+	back := answerForm(t, page, factoryd.ActDenyMerge)
+	back.Values.Set("deny_merge.note", "make the stub match the interface")
+	rec := r.do(post(back.Action, back.Values), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("return = %d: %s", rec.Code, rec.Body)
 	}
@@ -3162,42 +3264,38 @@ func TestHeadChecksGreenCountsSkippedAsGreen(t *testing.T) {
 // head, the return and the close.
 func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	r := newRig(t)
+	withRequestCards(r)
 	ck, _ := r.loggedIn(t)
 	r.approvals.mu.Lock()
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
 	r.approvals.mu.Unlock()
 	item := func() string {
 		t.Helper()
-		body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-		start := strings.Index(body, `action="/approvals/4/`)
-		if start < 0 {
-			t.Fatalf("the board shows no form of request 4:\n%s", body)
-		}
-		start = strings.LastIndex(body[:start], "<article")
-		return body[start : start+strings.Index(body[start:], "</article>")]
+		return requestOf(t, r, ck, "t-m", 4)
 	}
 
 	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
-	if got := item(); strings.Contains(got, `action="/approvals/4/approve"`) || strings.Contains(got, "checks healed after a re-run") {
+	if got := item(); strings.Contains(got, `name="action" value="approve_merge"`) || strings.Contains(got, "healed") {
 		t.Errorf("the still-red card offers an approve or says the checks healed:\n%s", got)
 	}
 
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	r.fg.calls = nil
 	got := item()
-	for _, want := range []string{`action="/approvals/4/approve"`, "checks healed after a re-run"} {
+	for _, want := range []string{`<input type="hidden" name="action" value="approve_merge">`, "<li>The checks healed after a re-run.</li>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the healed card lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/rerun"`, `aria-controls="deny-4">Return or close</button>`} {
+	for _, not := range []string{`name="action" value="rerun_checks"`, "are red"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the healed card shows %q:\n%s", not, got)
 		}
 	}
 	// the button path reads the head's current checks as the viewer who
-	// asked for the board (#1013), the one forge call the read makes
-	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
+	// asked for the board (#1013), the one forge call a read makes: the
+	// opened card reads the request once, for its brief and its case's page
+	equal(t, "the head's reads", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
 }
 
 // A merge request is about the one head it recorded (#1091): when the
@@ -3207,6 +3305,7 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 // recorded head's red checks (factoryd's TestAMergeCaseIsAboutOneHead).
 func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 	r := newRig(t)
+	withRequestCards(r)
 	ck, _ := r.loggedIn(t)
 	r.approvals.mu.Lock()
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
@@ -3215,13 +3314,14 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 	r.fg.statuses = map[string]string{
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "branch moved on") {
+	body := drawer(t, r, ck, "t-m", "overview")
+	if strings.Contains(body, `name="action" value="approve_merge"`) || strings.Contains(body, "healed") {
 		t.Error("a moved green branch head offers an approve on the red recorded head")
 	}
 
 	// a moved head still red: no approve, the return and the close stand
 	r2 := newRig(t)
+	withRequestCards(r2)
 	ck2, _ := r2.loggedIn(t)
 	r2.approvals.mu.Lock()
 	r2.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
@@ -3230,11 +3330,11 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 	r2.fg.statuses = map[string]string{
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
-	body = r2.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck2).Body.String()
-	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "checks green at def456") {
-		t.Errorf("the still-red moved head offers an approve or a healed chip")
+	body = drawer(t, r2, ck2, "t-m", "overview")
+	if strings.Contains(body, `name="action" value="approve_merge"`) || strings.Contains(body, "healed") {
+		t.Errorf("the still-red moved head offers an approve or a healed line")
 	}
-	if !strings.Contains(body, `action="/approvals/4/deny"`) || strings.Contains(body, `id="deny-4" hidden`) {
+	if !strings.Contains(body, `name="action" value="deny_merge"`) || !strings.Contains(body, `name="action" value="deny_merge/reject"`) {
 		t.Errorf("the still-red moved head lost its return and close")
 	}
 }
@@ -3244,16 +3344,17 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 // names it instead of failing silently.
 func TestUnreadHealedHeadKeepsTheRedFaceAndSaysSo(t *testing.T) {
 	r := newRig(t)
+	withRequestCards(r)
 	ck, _ := r.loggedIn(t)
 	r.approvals.mu.Lock()
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
 	r.approvals.mu.Unlock()
 	r.fg.failAPI = true
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	body := drawer(t, r, ck, "t-m", "overview")
 	if !strings.Contains(body, "The head's current checks could not be read") {
 		t.Errorf("the card does not say the head's checks were unread:\n%s", body)
 	}
-	if strings.Contains(body, "checks healed after a re-run") || strings.Contains(body, `action="/approvals/4/approve"`) {
+	if strings.Contains(body, "healed") || strings.Contains(body, `name="action" value="approve"`) {
 		t.Errorf("the unread card offers an approve or says the checks healed:\n%s", body)
 	}
 }
@@ -3271,13 +3372,15 @@ func TestNilActorRedChecksBoard(t *testing.T) {
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	r.fg.calls = nil
 	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, &session{}))
-	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code", View: viewWide}, actor{})
+	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code"}, actor{})
 	if err != nil {
 		t.Fatalf("boardOf through a sessionless actor: %v", err)
 	}
-	i := slices.IndexFunc(d.Approvals, func(k approvalCard) bool { return k.ID == 4 })
-	if i < 0 || !d.Approvals[i].HeadUnread || d.Approvals[i].Healed {
-		t.Fatalf("the merge card = %+v: want the head unread, not healed", d.Approvals)
+	needs := d.Columns[colNeedsYou].Needs
+	// the request rides on its case's row of its card
+	i := slices.IndexFunc(needs, func(n need) bool { return n.Case != nil && n.Case.Approval != nil && n.Case.Approval.ID == 4 })
+	if i < 0 || !needs[i].Case.Approval.HeadUnread || needs[i].Case.Approval.Healed {
+		t.Fatalf("the merge card = %+v: want the head unread, not healed", needs)
 	}
 	if len(r.fg.calls) != 0 {
 		t.Fatalf("the sessionless read asked Forgejo as a member: %q", r.fg.calls)
@@ -3293,19 +3396,19 @@ func TestFittingAFactoryPullRequest(t *testing.T) {
 		return []factoryd.ApprovalRequest{{TaskID: "t-f", Kind: factoryd.ApprovalMerge,
 			Spec: json.RawMessage(fmt.Sprintf(`{"head_sha":"c1","factory":true,"red_checks":%t}`, red))}}
 	}
-	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", nil, request(true))),
-		"rerun_checks runs its red checks again, or deny_merge closes it with your words")
-	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", nil, request(false))), "approve_merge or deny_merge decide its merge request")
+	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", request(true))),
+		"`rerun_checks` runs its red checks again, or `deny_merge` closes it with your words")
+	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "`approve_merge` or `deny_merge` decides its merge request")
 }
 
 // An agent pull request's merge request on red checks fits its return and
 // its close, not an approval.
 func TestFittingAnAgentPullRequestOnRedChecks(t *testing.T) {
-	const want = "deny_merge with request_changes returns it to the agent, or with reject closes it"
+	const want = "`deny_merge` with `request_changes` returns it to the agent, or `deny_merge` with `reject` closes it"
 	req := []factoryd.ApprovalRequest{{TaskID: "t-a", Kind: factoryd.ApprovalMerge, Spec: json.RawMessage(`{"head_sha":"c1","red_checks":true}`)}}
 	for _, status := range []string{"in-review", "waiting-human"} {
 		card := factoryd.Task{ID: "t-a", Status: status, IssueNumber: 37}
-		equal(t, status, fitting(card, capFactsFrom(card, 0, "", nil, req)), want)
+		equal(t, status, fitting(card, capFactsFrom(card, 0, "", req)), want)
 	}
 }
 
@@ -3366,19 +3469,19 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	for _, want := range []string{
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-demo-app/demo-app">demo-app/demo-app</h3>`, `<h3 id="project-sf/infra">sf/infra</h3>`,
 		"<td>cx33</td>", "<td>203.0.113.9</td>", `<td title="` + at + `">in 1 h</td>`, `<tr class="closed">`, `<tr class="standing">`,
-		`<td title="` + atEnded + ` · released by sebastian">2 h ago</td>`, "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.0288</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
+		`<td title="` + atEnded + ` · released by sebastian">2 h ago</td>`, "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.03</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
 		"none: standing (made standing by alice)", "released by sebastian", "<td><i class=\"lamp\" aria-hidden=\"true\"></i>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
-		`<span id="promote-11" class="meta">standing, about €10.1340 a month against the standing block&#39;s €0.00 (€0.0000 standing now)</span>`,
+		`<span id="promote-11" class="meta">standing, about 10.13 EUR a month against the standing block&#39;s 0.00 EUR (0.00 EUR standing now)</span>`,
 		// sf/code is in no file of this configuration: the policy's default
 		"No project file names this repository: the policy's envelope_default applies.",
-		"task block €10.00 a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month €0.0000 used or reserved, 0 servers open",
+		"task block 10.00 EUR a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month 0.00 EUR used or reserved, 0 servers open",
 		// demo-app's file, read-only, linked at the version's commit
 		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml" target="_blank" rel="noopener">change it in Git</a>.`,
-		"task block €30.00 a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
-		"this month €1.5000 used or reserved, 1 server open",
+		"task block 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
+		"this month 1.50 EUR used or reserved, 1 server open",
 		// the standing monthly line
-		"standing block €12.00 a month, types cx23, 2 servers · standing now 1 server, €5.9900 a month",
+		"standing block 12.00 EUR a month, types cx23, 2 servers · standing now 1 server, 5.99 EUR a month",
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources" aria-current="page">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -3441,17 +3544,18 @@ func serverState(c *Console) int {
 // those buttons, get 403, and may still deny and release.
 func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	r := newRig(t)
+	withRequestCards(r)
 	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
 	r.forgetWriters()
 	ck, s := r.loggedIn(t)
 	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
 		LeaseExpires: time.Now().Add(time.Hour)}}
 	// alice writes the code project, no other: she asks for it
-	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	if strings.Contains(board, "/approve\"") || !strings.Contains(board, `action="/approvals/3/deny"`) ||
-		!strings.Contains(board, "Only the project's approvers may approve.") {
-		t.Fatalf("board for a non-approver: approve buttons %v, deny %v", strings.Contains(board, "/approve\""),
-			strings.Contains(board, "/deny\""))
+	opened := drawer(t, r, ck, "t-res", "overview")
+	if strings.Contains(opened, "/approve\"") || !strings.Contains(opened, `action="/approvals/3/deny"`) ||
+		!strings.Contains(opened, `<p class="o-who">Only the project&#39;s approvers may choose Approve it.</p>`) {
+		t.Fatalf("the opened card for a non-approver: approve buttons %v, deny %v", strings.Contains(opened, "/approve\""),
+			strings.Contains(opened, "/deny\""))
 	}
 	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
 	if strings.Contains(page, "/promote\"") || !strings.Contains(page, "/resources/11/release\"") {
@@ -3460,7 +3564,7 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	r.fg.calls = nil
 	for _, req := range []*http.Request{
 		post("/approvals/3/approve", url.Values{"csrf": {s.csrf}}),
-		post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}),
+		post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)),
 		post("/resources/11/promote", url.Values{"csrf": {s.csrf}}),
 	} {
 		if rec := r.do(req, ck); rec.Code != http.StatusForbidden {
@@ -3479,12 +3583,13 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	}
 }
 
-// A merge Forgejo refused after the approve says so on its card.
+// A merge Forgejo refused after the approve says so on its opened card.
 func TestMergeCardShowsWhyItHasNotMerged(t *testing.T) {
 	r := newRig(t)
+	withRequestCards(r)
 	ck, _ := r.loggedIn(t)
 	r.approvals.rows[1].DecisionNote = "waiting: Forgejo refused the merge after sebastian's approval: status 405"
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := drawer(t, r, ck, "t-m", "overview")
 	if !strings.Contains(body, `<p class="problem" role="status">waiting: Forgejo refused the merge after sebastian&#39;s approval: status 405</p>`) {
 		t.Fatal("the card does not show the refusal")
 	}
@@ -3503,7 +3608,7 @@ func TestStoreErrorRefusalNamesTheErrorAndMasksTokens(t *testing.T) {
 	}
 	// beyond the standing block: the human sees which bound and raises it first
 	rec = r.do(post("/resources/420/promote", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "server type cx53 is not in the standing types [cx23]; raise the standing block in the project's file first") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "server type cx53 is not in the standing types [cx23]. Raise the standing block in the project's file first.") {
 		t.Fatalf("promote beyond the standing block = %d: %s", rec.Code, rec.Body)
 	}
 	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
@@ -3519,22 +3624,16 @@ func TestStoreErrorRefusalNamesTheErrorAndMasksTokens(t *testing.T) {
 	}
 }
 
-// Each repeated button names its row for screen readers.
+// Each repeated button names its row for screen readers: the resources
+// page's rows. An opened card's answers are its one card's, under its
+// title.
 func TestRepeatedButtonsNameTheirRow(t *testing.T) {
 	r := newRig(t)
+	withRequestCards(r)
 	ck, _ := r.loggedIn(t)
 	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
 		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
-	for _, want := range []string{
-		`aria-label="Approve resource request 3 of t-res"`, `aria-label="Deny resource request 3 of t-res"`,
-		`aria-label="Approve merge PR #9 of t-m"`, `aria-label="Deny merge PR #9 of t-m"`,
-	} {
-		if !strings.Contains(board, want) {
-			t.Errorf("board lacks %s", want)
-		}
-	}
 	for _, want := range []string{`aria-label="Promote cx33 server 11 of t-res"`, `aria-label="Release cx33 server 11 of t-res"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("/resources lacks %s", want)
@@ -3588,8 +3687,9 @@ func TestResponsesCarryHSTS(t *testing.T) {
 	}
 }
 
-// The board card shows how long the task has taken in all and the gate
-// it is in with the gate's age; a finished task its total only.
+// The small card's one time is the stage's age while the task is in a
+// stage and a finished task's total; the opened card's head names the
+// stage's age, and a quiet card's mark how long it has been on the card.
 func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -3601,46 +3701,50 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 		factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Objective: "done work", Repository: "sf/code",
 			CreatedAt: asked, FinishedAt: &finished})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<span class="elapsed">25 min</span>`, "47 min in all"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("board lacks %q", want)
+	for id, want := range map[string]string{
+		"t-c": `<span class="st st-review"><i class="dot" aria-hidden="true"></i>verifying</span> 25 min</span>`,
+		"t-d": `<span class="it st">done</span> <span class="it">47 min</span>`,
+	} {
+		if face := faceOf(t, body, id); !strings.Contains(face, want) {
+			t.Errorf("the face of %s lacks %q:\n%s", id, want, face)
 		}
 	}
-	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>verifying, 25 min, 2 h 5 min in all</dd>") {
-		t.Errorf("the drawer's Status lacks the stage's time and the total:\n%s", drawer)
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer", nil), ck).Body.String(); !strings.Contains(drawer,
+		`verifying</span></span> <span class="it">25 min</span> <span class="it flag">stale, no event yet, 2 h 5 min on the card</span>`) {
+		t.Errorf("the opened card's head lacks the stage's time and the time on the card:\n%s", drawer)
 	}
 	if strings.Count(body, `class="gate"`) != 0 {
 		t.Error("a card's face shows its gate")
 	}
 }
 
-// A card in waiting-deps sits in the wide view's Queued column and reads
-// the issues it waits on.
+// A card in waiting-deps sits in Queued and reads the issues it waits on.
 func TestBoardCardShowsWaitingOn(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Track: "direct", Objective: "links api",
 		Repository: "sf/code", IssueNumber: 7}, WaitingOn: "#3, #5"}}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if c := col(t, body, "Queued"); !strings.Contains(c, "links api") || !strings.Contains(c, `<span class="chip waiting">waiting on #3, #5</span>`) {
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	want := `<span class="it waits">waits for <a class="ref-link" href="https://git.example/sf/code/issues/3" target="_blank" rel="noopener">#3</a>`
+	if c := faceOf(t, col(t, body, "Queued"), "t-w"); !strings.Contains(c, "links api") || !strings.Contains(c, want) || !strings.Contains(c, `#5</a>`) {
 		t.Fatalf("Queued column = %s, want the card waiting on #3, #5", c)
 	}
 }
 
-// A card queued for a work slot reads how many wait ahead of it and the
-// live count.
+// A card queued for a work slot reads how many wait ahead of it and how
+// many run.
 func TestBoardCardShowsSlotWait(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-s", Kind: "agent", Status: "queued", Track: "direct", Objective: "waits for room",
-		Repository: "sf/code", IssueNumber: 7}, SlotWait: "waits for a slot, 2 ahead (7 live)"}}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if c := col(t, body, "Queued"); !strings.Contains(c, `<span class="chip waiting">waits for a slot, 2 ahead (7 live)</span>`) {
+		Repository: "sf/code", IssueNumber: 7}, SlotWait: "waits for its turn to start, 2 ahead (7 running)"}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if c := col(t, body, "Queued"); !strings.Contains(c, `<span class="it waits">waits for its turn to start, 2 ahead (7 running)</span>`) {
 		t.Fatalf("Queued column = %s, want the slot wait", c)
 	}
 }
 
-// A card waiting in its project's merge queue reads how many entries are
+// A card waiting in its project's merge queue reads how many cards are
 // ahead of it and since when it waits; a card held out of the queue
 // (QueueAhead -1) waits after the open plan.
 func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
@@ -3652,8 +3756,8 @@ func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 		ahead int
 		want  string
 	}{
-		{2, "<dd>verifying, 6 min, merge queue, 2 ahead, 6 min in all</dd>"},
-		{-1, "<dd>verifying, 6 min, merge queue, after the open plan, 6 min in all</dd>"},
+		{2, `verifying</span></span> <span class="it">6 min</span> <span class="it waits">waits to merge behind 2 cards</span>`},
+		{-1, `verifying</span></span> <span class="it">6 min</span> <span class="it waits">waits to merge after the open plan</span>`},
 	} {
 		r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
 			Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: c.ahead}}
@@ -3662,7 +3766,7 @@ func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 			t.Fatalf("%d ahead: the face names the merge queue:\n%s", c.ahead, faceOf(t, body, "t-q"))
 		}
 		if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, c.want) {
-			t.Fatalf("%d ahead: the drawer's Status lacks %s:\n%s", c.ahead, c.want, drawer)
+			t.Fatalf("%d ahead: the opened card's head lacks %s:\n%s", c.ahead, c.want, drawer)
 		}
 	}
 }
@@ -3908,7 +4012,7 @@ func TestBoardShowsARollLikeAnyCard(t *testing.T) {
 		}
 	}
 	needs := col(t, body, "Needs you")
-	if !strings.Contains(needs, `id="approval-4"`) {
+	if !strings.Contains(needs, `data-card="t-m"`) {
 		t.Errorf("the pending merge approval of roll c2c2c2c is not in needs you:\n%s", needs)
 	}
 	if strings.Contains(progress, "roll c2c2c2c") {
@@ -3948,17 +4052,17 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.fg.failReview = true
-	r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	r.fg.failReview = false
-	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve = %d", rec.Code)
 	}
 	r.approvals.rows[1].Status = "pending"
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split it"}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge, "note", "split it")), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("request changes = %d", rec.Code)
 	}
 	r.approvals.rows[1].Status = "pending"
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"not wanted"}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "not wanted")), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject = %d", rec.Code)
 	}
 	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusSeeOther {
@@ -3988,7 +4092,7 @@ func TestPoolReadContract(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("board = %d", rec.Code)
 	}
-	const words = "2 of 30 sessions, 30 min of 30 h agent time and €3.00 of €60.00 drawn this UTC month"
+	const words = "2 of 30 sessions, 30 min of 30 h agent time and 3.00 of 60.00 EUR drawn this UTC month"
 	if body := rec.Body.String(); !strings.Contains(body, "pool: "+words) {
 		t.Errorf("board HTML lacks %q", words)
 	}
@@ -4028,7 +4132,7 @@ func TestPoolReadMonth(t *testing.T) {
 	}
 	r.drawnErr = errors.New("the store is down")
 	pl = r.c.ProjectPool(t.Context(), v, p, nov)
-	if want := "the pool is 30 sessions, 30 h of agent time and €60.00 this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
+	if want := "the pool is 30 sessions, 30 h of agent time and 60.00 EUR this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
 		t.Errorf("unreadable = %+v; want %q", pl, want)
 	}
 }
@@ -4051,48 +4155,64 @@ func (s *fakeTasks) PlanMerged(_ context.Context, plan string) (bool, error) {
 	return false, nil
 }
 
-// A card waiting on a human is capped by its question's typed cap, whatever
-// the escalation's words; a question written before the field is capped by
-// the old text.
-func TestCapFactsTakeTheCapFromTheQuestionsField(t *testing.T) {
+// A card waiting on a human is capped by the cap its escalation's words
+// name: the ladder's wording and the old one a session cap, the time cap's
+// an agent time cap, a plain ask none.
+func TestCapFactsTakeTheCapFromTheEscalation(t *testing.T) {
 	card := factoryd.Task{ID: "t1", Status: "waiting-human"}
-	ladder := &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapSession}
-	if f := capFactsFrom(card, 3, "any words", ladder, nil); !f.capped || f.timeCap {
-		t.Errorf("session cap field: capped %v, timeCap %v; want capped, not time", f.capped, f.timeCap)
+	if f := capFactsFrom(card, 3, factoryd.CapReachedLadder+"\nlast: x", nil); !f.capped || f.timeCap {
+		t.Errorf("the ladder's wording: capped %v, timeCap %v; want capped, not time", f.capped, f.timeCap)
 	}
-	if f := capFactsFrom(card, 3, "any words", &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapTime}, nil); !f.capped || !f.timeCap {
-		t.Errorf("time cap field: capped %v, timeCap %v; want both", f.capped, f.timeCap)
+	if f := capFactsFrom(card, 3, factoryd.TimeCapReached+"\nlast: x", nil); !f.capped || !f.timeCap {
+		t.Errorf("the time cap: capped %v, timeCap %v; want both", f.capped, f.timeCap)
 	}
-	if f := capFactsFrom(card, 3, "the session cap is reached: every finding sent to the agent so far goes to a human", nil, nil); !f.capped {
-		t.Error("an old question's text is no longer read as a cap")
+	if f := capFactsFrom(card, 3, "the session cap is reached: every finding sent to the agent so far goes to a human", nil); !f.capped {
+		t.Error("the old wording is no longer read as a cap")
 	}
-	if f := capFactsFrom(card, 3, "a plain ask", &factoryd.HumanQuestion{Ask: "?"}, nil); f.capped {
+	if f := capFactsFrom(card, 3, "a plain ask", nil); f.capped {
 		t.Error("a plain ask is capped")
 	}
 }
 
-// A card face reads its cap from the question's typed field, through the
-// console's own read of the board task: a record of the new wording names no
-// cap in its escalation text, and an old record with no field is read by its
-// text.
-func TestCapFactsOfReadsTheTypedCapOfANewRecord(t *testing.T) {
+// A card face reads its cap through the console's own read of the board
+// task: an escalation naming a cap caps it, one naming none does not.
+func TestCapFactsOfReadsTheEscalationOfTheBoardTask(t *testing.T) {
 	r := newRig(t)
 	card := factoryd.Task{ID: "t-n", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13}
 	r.tasks.set("words that name no cap", card)
-	r.tasks.mu.Lock()
-	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapSession}
-	r.tasks.mu.Unlock()
-	if f := r.c.capFactsOf(context.Background(), card); !f.capped || f.timeCap {
-		t.Errorf("a new record: capped %v, timeCap %v; want a session cap read from the field", f.capped, f.timeCap)
-	}
-	r.tasks.mu.Lock()
-	r.tasks.tasks[0].Question = nil
-	r.tasks.mu.Unlock()
 	if f := r.c.capFactsOf(context.Background(), card); f.capped {
-		t.Error("an escalation naming no cap and no field is capped")
+		t.Error("an escalation naming no cap is capped")
 	}
-	r.tasks.set("the session cap is reached: every finding sent to the agent so far goes to a human\nlast: x", card)
-	if f := r.c.capFactsOf(context.Background(), card); !f.capped {
-		t.Error("an old record's text is no longer read as a cap")
+	r.tasks.set(factoryd.CapReachedLadder+"\nlast: x", card)
+	if f := r.c.capFactsOf(context.Background(), card); !f.capped || f.timeCap {
+		t.Errorf("the ladder's cap: capped %v, timeCap %v; want a session cap", f.capped, f.timeCap)
+	}
+}
+
+// The pulse's board text is read with no session. The card of a pending
+// merge request on red checks stands in that text, and the read asks Forgejo
+// nothing as a member, where the opened card of a logged-in human reads
+// the head's checks again.
+func TestThePulsesBoardTextShowsARedMergeRequestWithNoSession(t *testing.T) {
+	r := newRig(t)
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{
+		ID: 9, Kind: "merge", TaskID: "t-m", Project: "sf/code", PRNumber: 11, Status: "pending",
+		Spec: json.RawMessage(`{"risk_class":"normal","red_checks":true,"head_sha":"deadbeef",` +
+			`"verdict_summary":"the change is safe","recommendation":"Merge it.","why_human":["a human decides this merge"]}`),
+	})
+	req, rerr := http.NewRequestWithContext(context.WithValue(t.Context(), ctxKey{}, &session{}), http.MethodGet, "/", nil)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	text, err := r.c.boardText(req, projectRows()[0], actor{})
+	if err != nil {
+		t.Fatalf("the pulse's board read: %v", err)
+	}
+	// the request shows through its card, which stands in Needs you
+	if !strings.Contains(text, "Needs you (1):\n  #9 t-m \"\" in-review") {
+		t.Errorf("the pulse's board text lacks the card of the red merge request:\n%s", text)
+	}
+	if len(r.fg.calls) != 0 {
+		t.Errorf("the pulse's read asked Forgejo as a member: %v", r.fg.calls)
 	}
 }

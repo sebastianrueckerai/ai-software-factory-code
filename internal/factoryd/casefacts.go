@@ -130,14 +130,35 @@ type CaseFacts struct {
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
-	Pushed   bool `json:"pushed,omitempty"` // a session pushed a branch head
+	// ApprovalKind is the kind of the approval request a case of a plan's criteria or a merge holds
+	ApprovalKind string `json:"approval_kind,omitempty"`
+	// Runnable are the promises of a criteria request no verdict judged
+	// that a run of the factory checks: a test, an invariant or a
+	// judgement whose proof it holds
+	Runnable []string `json:"runnable,omitempty"`
+	// Settled: every promise a criteria request asks about stands met or
+	// dropped as its rows read now; Undelivered: a card of its plan is not
+	// delivered yet; ClosesItself: the close check then closes the plan by
+	// itself; ClosedCard: a card of its plan ended closed, so the work is
+	// enough only with the human's evidence. A request's page carries all
+	// four (CardPages).
+	Settled      bool `json:"settled,omitempty"`
+	Undelivered  bool `json:"undelivered,omitempty"`
+	ClosesItself bool `json:"closes_itself,omitempty"`
+	ClosedCard   bool `json:"closed_card,omitempty"`
+	Pushed       bool `json:"pushed,omitempty"` // a session pushed a branch head
 	// BranchRead: the card's branch on the fork was read. BranchHead is its
 	// head while main lacks it, "" when the fork holds no branch for the
 	// card past its base or main holds its head (workAhead).
 	BranchRead   bool      `json:"branch_read,omitempty"`
 	BranchHead   string    `json:"branch_head,omitempty"`
 	Dependencies []DepFact `json:"dependencies,omitempty"`
-	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	// Waiters counts the cards that wait for this one and have not ended
+	Waiters int `json:"waiters,omitempty"`
+	// answersFor is the rung a refusal lists a stop's answers for
+	// (stopAnswers), 0 for the card's whole list
+	answersFor int
+	Planner    bool `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	// PlannerRetry: the plan's automatic second session, topped up to half
 	// its agent time, is still to come (plannerTime).
 	PlannerRetry bool   `json:"planner_retry,omitempty"`
@@ -145,13 +166,17 @@ type CaseFacts struct {
 	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
 	// Siblings are its other keys' cards (PlanWaits), by issue; all empty
 	// for a direct card.
-	PlanIssue    int64         `json:"plan_issue,omitempty"`
-	PlanName     string        `json:"plan_name,omitempty"`
-	PlanStatus   string        `json:"plan_status,omitempty"`
-	Siblings     []SiblingFact `json:"siblings,omitempty"`
-	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
-	Autonomy     string        `json:"autonomy"`
-	OpenCriteria int           `json:"open_criteria,omitempty"` // the plan's criteria neither met nor waived, as its Close counts them (PlanOpenCriteria)
+	PlanIssue  int64         `json:"plan_issue,omitempty"`
+	PlanName   string        `json:"plan_name,omitempty"`
+	PlanStatus string        `json:"plan_status,omitempty"`
+	Siblings   []SiblingFact `json:"siblings,omitempty"`
+	Running    bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
+	// AtHuman: the case waits at the human. A rung's draw on an agent's
+	// question then comes from a human's thread, not from a rung working
+	// the case by itself.
+	AtHuman      bool   `json:"at_human,omitempty"`
+	Autonomy     string `json:"autonomy"`
+	OpenCriteria int    `json:"open_criteria,omitempty"` // the plan's criteria neither met nor waived, as its Close counts them (PlanOpenCriteria)
 	// Hold is the hold that keeps the card from starting, "card #N is " and
 	// its line (HoldView), "" for none; PlanHold is the same of a held card
 	// of its plan, read through the successors its cards were cut into.
@@ -167,6 +192,57 @@ type CaseFacts struct {
 	RunGone bool   `json:"run_gone,omitempty"`
 	// Killed is the memory kill that ended the session before the stop.
 	Killed *SessionKill `json:"killed,omitempty"`
+	// PosterGrant: the issue author's answer to an information request
+	// still buys the session it starts (grantPoster).
+	PosterGrant bool `json:"poster_grant,omitempty"`
+	// LastSession is the card's newest session as a stop's story tells it,
+	// nil when the timeline names none.
+	LastSession *LastSessionFacts `json:"last_session,omitempty"`
+	// DayCapEUR and MonthCapEUR are the factory's spending limits and
+	// ProjectCapEUR the project's for the month, as the policy in force
+	// sets them (0 for a project with none); SpendShare is the share of
+	// what a card had left at a session's start that the session may spend
+	// with nothing pushed before a human looks.
+	DayCapEUR     float64 `json:"day_cap_eur,omitempty"`
+	MonthCapEUR   float64 `json:"month_cap_eur,omitempty"`
+	ProjectCapEUR float64 `json:"project_cap_eur,omitempty"`
+	SpendShare    float64 `json:"spend_share,omitempty"`
+}
+
+// LastSessionFacts is what the card's newest session cost, whether it
+// pushed, the gates ("review", "audit") that judged the card's head, and,
+// when the session pushed that head, the review and the audit findings on
+// the head it started from.
+type LastSessionFacts struct {
+	CostEUR float64  `json:"cost_eur"`
+	Pushed  bool     `json:"pushed,omitempty"`
+	Judged  []string `json:"judged,omitempty"`
+	Review  []string `json:"review,omitempty"`
+	Audit   []string `json:"audit,omitempty"`
+}
+
+// lastSession is the newest of sessions at head, as the timeline's steps
+// read it, without its cost; nil for none.
+func lastSession(steps []DigestStep, sessions []*digestSession, head string) *LastSessionFacts {
+	if len(sessions) == 0 {
+		return nil
+	}
+	s := sessions[len(sessions)-1]
+	out := &LastSessionFacts{Pushed: s.commit != ""}
+	before := ""
+	for _, st := range steps {
+		switch {
+		case st.Kind != "review" && st.Kind != "audit" || st.commit == "":
+		case st.commit != head:
+			before = st.commit
+		case !slices.Contains(out.Judged, st.Kind):
+			out.Judged = append(out.Judged, st.Kind)
+		}
+	}
+	if s.commit != "" && s.commit == head && before != "" {
+		out.Review, out.Audit = newestOfKind(steps, before, "review").Findings, newestOfKind(steps, before, "audit").Findings
+	}
+	return out
 }
 
 // DrawFacts is a draw as the bought-nothing guard weighs it: its time, the
@@ -234,9 +310,14 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 	return "", true
 }
 
-// atCase weighs f for case c: its kind, and the gate a gate stop names.
+// atCase weighs f for case c: its kind, whether it waits at the human, and
+// the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
-	f.Kind, f.Gate = c.Kind, ""
+	f.Kind, f.Gate, f.AtHuman = c.Kind, "", c.Status == CaseAtHuman
+	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
+	if c.Facts["runnable"] != nil {
+		f.Runnable = factsOf(c).Runnable
+	}
 	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {
@@ -321,6 +402,7 @@ type DepFact struct {
 	Replaced string `json:"replaced,omitempty"` // the replacement's task id, if retried
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
 	Plan     bool   `json:"plan,omitempty"`     // the dependency is a plan card
+	Title    string `json:"title,omitempty"`    // the card's title, read for a plan's wait
 	// Since is when an open dependency took its status, or asked its
 	// question when it waits on a human; Ask is that question.
 	Since *time.Time `json:"since,omitempty"`
@@ -334,6 +416,31 @@ type SiblingFact struct {
 	Status string `json:"status"`
 }
 
+// CardFacts are the facts card t's own record holds under policy v, with
+// the next session on model, the card's own when "": its pull request,
+// stage, sessions, agent time, money and state, and none a reader of its
+// events, timeline or checks would add.
+func CardFacts(t Task, v policy.Version, model string) CaseFacts {
+	_, project, _ := v.ProjectOf(t.Repository)
+	f := CaseFacts{PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
+		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
+		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
+		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report(), Report: t.Report(),
+		PosterGrant: t.Usage.PosterAttempts < MaxPosterAttempts, DayCapEUR: v.Document.Budget.DayEUR, MonthCapEUR: v.Document.Budget.MonthEUR,
+		SpendShare: v.Document.Limits.NoPushShare()}
+	if _, eur := v.ProjectCap(t.Repository); !math.IsInf(eur, 1) {
+		f.ProjectCapEUR = eur
+	}
+	if Final(t.Status) {
+		f.Final = t.Status
+	}
+	if InPlan(t) {
+		f.Plan = GroupOf(t)
+	}
+	return f
+}
+
 // tripFacts reads every fact of card t on head, the head of the card's
 // newest gate_head row when head is "", with the next session on model,
 // the card's last session's when model is "", and names the readers that
@@ -341,21 +448,12 @@ type SiblingFact struct {
 // since facts read past that are no facts.
 func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (CaseFacts, error) {
 	v := r.cfg.Policy()
-	_, project, _ := v.ProjectOf(t.Repository)
-	f := CaseFacts{Head: head, PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
-		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
-		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
-		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report(), Report: t.Report()}
-	if Final(t.Status) {
-		f.Final = t.Status
-	}
-	if InPlan(t) {
-		f.Plan = GroupOf(t)
-	}
+	f := CardFacts(t, v, model)
+	f.Head = head
 	esc := v.EscalationOf(t.Repository)
 	var reran []string
 	var pushed string
+	var newest *digestSession
 	var refused lineMark
 	// the readers in order, each after the head the events name
 	readers := []struct {
@@ -372,7 +470,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		{partialTimeline, func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
-				lines, _ := lineSteps(r.Scrub, tl)
+				lines, sessions := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
 				review, audit := newestOfKind(lines, f.Head, "review"), newestOfKind(lines, f.Head, "audit")
@@ -382,7 +480,18 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				if f.PROpen {
 					f.MergeConflict = standingConflict(tl, f.Head)
 				}
+				if f.LastSession = lastSession(lines, sessions, f.Head); f.LastSession != nil {
+					newest = sessions[len(sessions)-1]
+				}
 			}
+			return err
+		}},
+		{"last session", func() error {
+			if newest == nil {
+				return nil
+			}
+			cost, _, err := r.store.SpendAndCallsBetween(ctx, t.ID, newest.start, cmp.Or(newest.end, r.Clock()))
+			f.LastSession.CostEUR = cost
 			return err
 		}},
 		{partialFreeze, func() error {
@@ -480,7 +589,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			why, err := r.SessionFunded(ctx, t.ID, m)
 			if d, ok := CapDecision(why); ok && err == nil {
 				_, state, _ := strings.Cut(why, "\n")
-				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, capTurn(d, r.Clock())), "\n")
+				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, CapTurn(d, r.Clock())), "\n")
 			}
 			return err
 		}},
@@ -516,7 +625,11 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return err
 		}},
 		{"dependencies", func() (err error) {
-			f.Dependencies, err = r.depFacts(ctx, t.ID)
+			if f.Dependencies, err = r.depFacts(ctx, t.ID); err != nil {
+				return err
+			}
+			waiters, err := r.store.Dependents(ctx, t.ID)
+			f.Waiters = LiveDependents(waiters)
 			return err
 		}},
 		{"cases", func() error {
@@ -911,7 +1024,7 @@ func (r *Runner) depFactOf(ctx context.Context, id string) (DepFact, error) {
 	if err != nil {
 		return DepFact{}, err
 	}
-	fact := DepFact{TaskID: t.ID, Issue: t.IssueNumber, Status: t.Status}
+	fact := DepFact{TaskID: t.ID, Issue: t.IssueNumber, Status: t.Status, Title: CardTitle(t)}
 	events, err := r.store.TaskEvents(ctx, id, cardDigestEvents)
 	if err != nil {
 		return DepFact{}, err
@@ -961,6 +1074,30 @@ func (r *Runner) runGone(ctx context.Context, t Task) bool {
 		return false
 	}
 	return !alive
+}
+
+// minutesWord says a duration in whole minutes, as a card's reader counts
+// agent time: whole hours in hours, and one under a minute in seconds.
+func minutesWord(d time.Duration) string {
+	if d < time.Minute {
+		return plural(int(d.Round(time.Second)/time.Second), "second")
+	}
+	m := int(d.Round(time.Minute) / time.Minute)
+	if m%60 == 0 {
+		return plural(m/60, "hour")
+	}
+	return plural(m, "minute")
+}
+
+// fundFor is the raise in EUR, rounded up to a cent, that lifts a session
+// ceiling of left, which is negative once the gates spent into the
+// reserve, to need; 0 when the ceiling already covers it. Both are read at
+// the micro-euro, as the admission compares them.
+func fundFor(need, left float64) float64 {
+	if left >= need {
+		return 0
+	}
+	return math.Ceil(policy.RoundMicro(need-left)*100-1e-6) / 100
 }
 
 // freezeCardOf is the freeze card of the provider freeze that holds card

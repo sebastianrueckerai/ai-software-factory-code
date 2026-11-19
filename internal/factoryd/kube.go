@@ -94,9 +94,9 @@ type Kube interface {
 	// holds yet come back as unplaced.
 	NodeStorage(ctx context.Context) (nodes []NodeStorage, unplaced []int64, err error)
 	DeletePod(ctx context.Context, namespace, name string) error
-	// PodStatus reports the pod phase and the container exit code (-1 while
-	// the container has not terminated).
-	PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, err error)
+	// PodStatus reports the pod phase, the container exit code of an ended
+	// pod and what a container waits in.
+	PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, wait PodWait, err error)
 	// PodIP is the running pod's address; ErrNotFound before it has one.
 	PodIP(ctx context.Context, namespace, name string) (string, error)
 	// PodEnv is the env values the pod's container was created with;
@@ -495,31 +495,44 @@ func (k *InClusterKube) DeletePod(ctx context.Context, namespace, name string) e
 	return err
 }
 
-// PodStatus reports the pod's phase and its first container's exit code,
-// -1 while it has not terminated. The log follower ends its stream on a
-// terminal phase, the session's reattach and the CI spawner's pod watch
-// read it.
-func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, err error) {
+// PodWait is what a pod's container waits in, the first that waits, init
+// containers first: the reason and its message as the kubelet states them.
+// The zero value: no container waits.
+type PodWait struct{ Reason, Message string }
+
+// PodStatus reports the pod's phase, its first container's exit code, read
+// on an ended pod (-1 before the pod has a container status), and what a
+// container waits in. The log follower ends its stream on a terminal
+// phase, the session's reattach and the CI spawner's pod watch read it.
+func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, wait PodWait, err error) {
+	type status struct {
+		State struct {
+			Waiting    *PodWait `json:"waiting"`
+			Terminated struct {
+				ExitCode int32 `json:"exitCode"`
+			} `json:"terminated"`
+		} `json:"state"`
+	}
 	var pod struct {
 		Status struct {
-			Phase             string `json:"phase"`
-			ContainerStatuses []struct {
-				State struct {
-					Terminated struct {
-						ExitCode int32 `json:"exitCode"`
-					} `json:"terminated"`
-				} `json:"state"`
-			} `json:"containerStatuses"`
+			Phase                 string   `json:"phase"`
+			InitContainerStatuses []status `json:"initContainerStatuses"`
+			ContainerStatuses     []status `json:"containerStatuses"`
 		} `json:"status"`
 	}
 	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
-		return "", -1, err
+		return "", -1, PodWait{}, err
 	}
 	exitCode = -1
 	if len(pod.Status.ContainerStatuses) > 0 {
 		exitCode = pod.Status.ContainerStatuses[0].State.Terminated.ExitCode
 	}
-	return pod.Status.Phase, exitCode, nil
+	for _, c := range slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses) {
+		if c.State.Waiting != nil {
+			return pod.Status.Phase, exitCode, *c.State.Waiting, nil
+		}
+	}
+	return pod.Status.Phase, exitCode, PodWait{}, nil
 }
 
 // errPodEnded is a pod whose phase is Succeeded or Failed: nothing serves

@@ -19,6 +19,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The gate supervisor's actions on a machine gate past its bound;
@@ -58,6 +59,9 @@ type GateDecision struct {
 	Action         SupervisorAction `json:"action"`
 	Diagnosis      string           `json:"diagnosis"`
 	Recommendation string           `json:"recommendation,omitempty"`
+	// Answer is the key of the human's answer the supervisor recommends, one
+	// the stop's face can hold (GateStopAnswers); empty for none.
+	Answer string `json:"answer,omitempty"`
 }
 
 // attemptEnded is the answer on a trip whose attempt ended before the
@@ -76,7 +80,7 @@ func (d GateDecision) verdict() string {
 
 // detail is the decision as its alert's detail.
 func (d GateDecision) detail() map[string]any {
-	return map[string]any{"action": string(d.Action), "diagnosis": d.Diagnosis, "recommendation": d.Recommendation}
+	return map[string]any{"action": string(d.Action), "diagnosis": d.Diagnosis, "recommendation": d.Recommendation, "answer": d.Answer}
 }
 
 // gateBundle is what the gate supervisor reads, assembled by factoryd with
@@ -93,6 +97,29 @@ type gateBundle struct {
 	State     map[string]any     `json:"state,omitempty"`
 	Cost      *CostState         `json:"cost,omitempty"` // the deterministic cost and state block, read from the store
 	Allowed   []SupervisorAction `json:"allowed_actions"`
+	// Answers are the answers a human gets when the activity's stop reaches
+	// them, each with what it does: the values of the decision's answer.
+	Answers []gateAnswerChoice `json:"human_answers"`
+}
+
+// gateAnswerChoice is one answer of a gate stop's face as the supervisor
+// reads it.
+type gateAnswerChoice struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Effect string `json:"effect"`
+}
+
+// gateAnswerChoices are the answers a stop of activity can hold, in the
+// vocabulary's words.
+func gateAnswerChoices(activity string) []gateAnswerChoice {
+	var out []gateAnswerChoice
+	for _, key := range GateStopAnswers(activity) {
+		if a, ok := AnswerOf(key); ok {
+			out = append(out, gateAnswerChoice{Key: key, Label: a.Label, Effect: a.Effect})
+		}
+	}
+	return out
 }
 
 const (
@@ -103,12 +130,12 @@ const (
 	bundleReads    = time.Minute
 )
 
-const gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's or the audit's last result when the timeline's tail does not hold it), and the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store. Then choose exactly one of allowed_actions:
+var gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's or the audit's last result when the timeline's tail does not hold it), and the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store. Then choose exactly one of allowed_actions:
 - "wait": the activity makes progress and needs more time (checks queued or running, a pod pulling its image). Its bound is extended once by its own length.
 - "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
 - "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
 - "escalate": a human must decide or act (access, infrastructure, a judgement). The task waits for a human with your diagnosis and recommendation.
-Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters.`
+Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "...", "answer": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters. answer is optional: the key of the one of human_answers you recommend.` + "\n\n" + writingguide.For(writingguide.JobFinding)
 
 // SuperviseGate asks the supervisor model what to do with a long gate's
 // attempt past its bound, acts on that attempt when it still runs here
@@ -150,7 +177,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
 				Recommendation: fmt.Sprintf("look at %s of task %s yourself", in.Trip.Activity, t.ID)}
 		} else {
-			d = parseGateDecision(content, bundle.Allowed)
+			d = parseGateDecision(content, bundle.Allowed, GateStopAnswers(in.Trip.Activity))
 		}
 		// the gate may have ended during the call: the answer
 		// is recorded and acts on nothing
@@ -248,13 +275,19 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 
 // withdrawQuestion is WithdrawQuestion of the question case c's face asked:
 // the question_withdrawn row names the case, which the events writer
-// withdraws with it and the inbox settles by.
+// withdraws with it and the inbox settles by. A card that holds another
+// live ask an answer on the card ends still waits on it and stays where
+// it is; a flag beside it holds no card.
 func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, c Case) (int64, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
-	if t.Status == "waiting-human" {
+	live, err := r.store.OpenCasesOf(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	if t.Status == "waiting-human" && !slices.ContainsFunc(live, func(o Case) bool { return o.ID != c.ID && AnsweredOnCard(o.Kind) }) {
 		if err := r.store.TransitionTask(ctx, taskID, []string{"waiting-human"}, "in-review"); err != nil {
 			return 0, err
 		}
@@ -262,7 +295,7 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 	}
 	var id int64
 	if t.IssueNumber != 0 {
-		body := fmt.Sprintf("factoryd: task %s withdraws its question above because %s. It needs no answer.", taskID, why)
+		body := fmt.Sprintf("This card withdraws its question above because %s. It needs no answer.", why)
 		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 			return 0, err
 		}
@@ -284,10 +317,15 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 // error in the bundle instead.
 func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision, pinned policy.Document) (gateBundle, []string) {
 	input, _ := json.Marshal(in.Input) // #nosec G104 -- the workflow's decoded arguments re-encode
-	objective := InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), AuthorStanding: t.Standing()}).Objective
+	objective := "unreadable: "
+	if brief, err := r.store.CardBrief(ctx, t.ID); err != nil {
+		objective += err.Error()
+	} else {
+		objective = InboundBrief(harness.TaskBrief{Objective: brief.AgentText(), AuthorStanding: t.Standing()}).Objective
+	}
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
 		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: objective,
-		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed()}
+		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed(), Answers: gateAnswerChoices(in.Trip.Activity)}
 	b.Cost = r.costState(ctx, t, 0)
 	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
@@ -422,8 +460,9 @@ func scrubbed(b gateBundle, s *redact.Scrubber) any {
 
 // parseGateDecision validates the answer: one JSON object, a known and
 // allowed action, a diagnosis, a recommendation for escalate. Anything
-// else escalates.
-func parseGateDecision(content string, allowed []SupervisorAction) GateDecision {
+// else escalates. A recommended answer the stop's face cannot hold is
+// dropped, and the recommendation stands as words.
+func parseGateDecision(content string, allowed []SupervisorAction, answers []string) GateDecision {
 	invalid := func(why string) GateDecision {
 		return GateDecision{Action: ActionEscalate, Diagnosis: "supervisor answer invalid (" + why + "): " + textutil.Truncate(content, 300),
 			Recommendation: "read the bundle on the alert's timeline and decide"}
@@ -434,6 +473,9 @@ func parseGateDecision(content string, allowed []SupervisorAction) GateDecision 
 	}
 	d.Diagnosis = textutil.Truncate(strings.TrimSpace(d.Diagnosis), maxDecisionText)
 	d.Recommendation = textutil.Truncate(strings.TrimSpace(d.Recommendation), maxDecisionText)
+	if d.Action != ActionEscalate || !slices.Contains(answers, d.Answer) {
+		d.Answer = ""
+	}
 	switch {
 	case !slices.Contains([]SupervisorAction{ActionWait, ActionRetry, ActionCancel, ActionEscalate}, d.Action):
 		return invalid(fmt.Sprintf("unknown action %q", d.Action))

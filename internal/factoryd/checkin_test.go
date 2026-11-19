@@ -19,6 +19,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 func TestEvidenceShape(t *testing.T) {
@@ -153,8 +154,7 @@ func TestCheckinStatement(t *testing.T) {
 	for _, want := range []string{
 		"at the gate moment",
 		"before the next session is bought",
-		"# The writing guide",
-		"No em dashes",
+		writingguide.For(writingguide.JobLine, writingguide.JobWhy),
 		"the finding is real and must be fixed",
 		"a file and line at a ref, or a command and its output",
 		"say it, block nothing",
@@ -757,7 +757,7 @@ func TestCheckinCardFactsLeadsWithTheDigest(t *testing.T) {
 		"   5 +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
 		"   6 +9:40   answer by sebastian    → Grant one session\n" +
 		"   7 +9:41   session 4 small        → no push ×2\n" +
-		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4)\n" +
+		"flags: grant_bought_nothing(session 4), session_no_push(session 4)\n" +
 		"\n" + facts
 	if out != want || cut || err != nil {
 		t.Fatalf("card_facts = (%v, %v)\n%s\nwant\n%s", cut, err, out, want)
@@ -909,7 +909,7 @@ func TestCheckinStatementMoments(t *testing.T) {
 		"Guidance delivered to the agent this session:\n- stop rewriting the table; write the test first",
 		"at most 2000 characters",
 		"The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.",
-		"# The writing guide",
+		writingguide.For(writingguide.JobLine, writingguide.JobWhy),
 	} {
 		if !strings.Contains(session, want) {
 			t.Errorf("session statement lacks %q:\n%s", want, session)
@@ -938,10 +938,8 @@ func TestCheckinStatementMoments(t *testing.T) {
 	if !strings.Contains(dead, "/workspace/.factory/sessions/s-dead-2.jsonl") {
 		t.Errorf("dead statement does not name the pushed parent record:\n%s", dead)
 	}
-	// the dead moment writes its note for the next session, not for a
-	// person, so it carries no writing guide
-	if strings.Contains(dead, "The writing guide") {
-		t.Errorf("dead statement carries the writing guide:\n%s", dead)
+	if !strings.Contains(dead, writingguide.For(writingguide.JobLine, writingguide.JobWhy)) {
+		t.Errorf("dead statement lacks the guide's forms of a finding and a why line:\n%s", dead)
 	}
 
 	for _, s := range []struct{ name, text string }{{"gate", gate}, {"session", session}, {"dead", dead}} {

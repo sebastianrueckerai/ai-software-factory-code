@@ -26,8 +26,9 @@ func seedAsk(t *testing.T, r *rig) {
 }
 
 // The card's door: POST makes the card's thread, its first row the ask's
-// five parts with the choices as its buttons, and an answer through the
-// thread settles the card as the inbox's buttons do, with no model call.
+// message as the inbox reads it (factoryd.PokeOf) with the choices as its
+// buttons, and an answer through the thread settles the card as the
+// inbox's buttons do, with no model call.
 func TestCardDoorOpensBoundThread(t *testing.T) {
 	r, _, g := newChatRig(t)
 	seedAsk(t, r)
@@ -55,11 +56,8 @@ func TestCardDoorOpensBoundThread(t *testing.T) {
 		t.Fatalf("the thread's rows = %+v, want the ask alone", answer.Messages)
 	}
 	m := answer.Messages[0]
-	for _, want := range []string{"#13 - Use a replica? needs you: use a replica?", "\nWhy: the shard costs more every month",
-		"\nInfo: the plan names one store", "\nRecommendation: a replica"} {
-		if !strings.Contains(m.Content, want) {
-			t.Fatalf("the ask's row =\n%s\nwant it to hold %q", m.Content, want)
-		}
+	if want := "#13 (Use a replica?) needs you. The shard costs more every month."; m.Content != want {
+		t.Fatalf("the ask's row = %q, want %q", m.Content, want)
 	}
 	if m.Role != "user" || m.Kind != factoryd.MessageEscalation || m.BirthKind != factoryd.EventQuestionAsked ||
 		m.TaskID != "t-e" || len(m.Choices) != 2 || m.Choices[0] != "a replica" || m.Choices[1] != "a shard" {
@@ -125,8 +123,8 @@ func TestCardDoorSeedsTheAskSentence(t *testing.T) {
 	if len(answer.Messages) != 1 {
 		t.Fatalf("the thread's rows = %+v, want the ask alone", answer.Messages)
 	}
-	if want := "#13 - Use a replica? needs you: use a replica?"; !strings.Contains(answer.Messages[0].Content, want) {
-		t.Fatalf("the ask's row = %q, want it to hold %q", answer.Messages[0].Content, want)
+	if want := "#13 (Use a replica?) needs you. Use a replica?"; answer.Messages[0].Content != want {
+		t.Fatalf("the ask's row = %q, want %q", answer.Messages[0].Content, want)
 	}
 }
 
@@ -137,7 +135,7 @@ func TestCardDoorSeedsTheCardsOwnAskNotAMonitors(t *testing.T) {
 	seedAsk(t, r)
 	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-e",
 		Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd,
-		Detail: map[string]any{"ask": "The monitor flagged this card: what should happen? Answer case 7 in the project chat.",
+		Detail: map[string]any{"ask": "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?",
 			"case_id": 7, "case_kind": string(factoryd.CaseMonitorFlag)}}); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +152,35 @@ func TestCardDoorSeedsTheCardsOwnAskNotAMonitors(t *testing.T) {
 	if err := json.Unmarshal(get.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
 	}
-	if len(answer.Messages) != 1 || !strings.Contains(answer.Messages[0].Content, "#13 - Use a replica? needs you: use a replica?") {
+	if len(answer.Messages) != 1 || answer.Messages[0].Content != "#13 (Use a replica?) needs you. The shard costs more every month." {
 		t.Fatalf("the thread's rows = %+v, want the card's own ask alone", answer.Messages)
+	}
+}
+
+// A card with no issue names itself by its title in its thread's first
+// row, never by its task id.
+func TestCardThreadNamesACardWithoutIssueByItsTitle(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-n", Kind: "agent", Status: "waiting-human", Repository: "sf/code", Objective: "Pick the store"})
+	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-n",
+		Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd,
+		Detail: map[string]any{"question": "use a replica?", "why": "the shard costs more every month"}}); err != nil {
+		t.Fatal(err)
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/cards/t-n/thread", url.Values{"csrf": {s.csrf}}), ck)
+	var door struct {
+		Conversation int64 `json:"conversation"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &door); err != nil || door.Conversation == 0 {
+		t.Fatalf("the door's answer = %d %s (%v), want a conversation number", rec.Code, rec.Body.String(), err)
+	}
+	get := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(door.Conversation, 10), nil), ck)
+	var answer chatGetAnswer
+	if err := json.Unmarshal(get.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if want := "“Pick the store” needs you. The shard costs more every month."; len(answer.Messages) != 1 || answer.Messages[0].Content != want {
+		t.Fatalf("the thread's rows = %+v, want the ask %q", answer.Messages, want)
 	}
 }

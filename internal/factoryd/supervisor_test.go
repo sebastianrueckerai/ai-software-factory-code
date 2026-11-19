@@ -67,7 +67,7 @@ func TestDigestCollectsCommandsFilesErrorsAndDiff(t *testing.T) {
 	if g.Diff.Files != 2 || g.Diff.Insertions != 7 || g.Diff.Deletions != 1 || !strings.Contains(g.Diff.Patch, "+x") {
 		t.Fatalf("diff = %+v", g.Diff)
 	}
-	want := "3 commands (2 failed), 2 files changed 3 times, 1 other tool calls, diff 2 files +7/-1; last error: `go test ./...` ×2"
+	want := "3 commands (2 failed), 2 files changed 3 times, 1 other tool calls, diff 2 files +7/-1, last error: `go test ./...` ×2"
 	if s := g.Summary(); s != want {
 		t.Fatalf("summary = %q\nwant      %q", s, want)
 	}

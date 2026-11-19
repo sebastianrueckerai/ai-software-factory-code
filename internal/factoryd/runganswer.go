@@ -17,21 +17,17 @@ import (
 // enums. All pure functions on CaseFacts; the conversation that asks and
 // the re-ask on a refusal are runRung's business.
 
-// caseKindNames are every case kind a case is opened as, in the kind
-// table's order.
-var caseKindNames = func() []string {
-	names := make([]string, len(caseKinds))
-	for i, row := range caseKinds {
-		names[i] = string(row.Kind)
-	}
-	return names
-}()
-
 // answerReasonKinds is the closed enum of an answer's reason_kind: every
 // case kind, then the check-in's reason constants, the shapes of a stop
 // only a human can act on; the policy class is a case kind and listed once.
-// A new kind joins caseKindNames and lands here with it; no free text does.
-var answerReasonKinds = slices.Concat(caseKindNames, []string{CheckGoalConflict, CheckSpend, CheckAccess})
+// A new kind joins CaseKinds and lands here with it; no free text does.
+var answerReasonKinds = func() []string {
+	var out []string
+	for _, k := range CaseKinds() {
+		out = append(out, string(k))
+	}
+	return append(out, CheckGoalConflict, CheckSpend, CheckAccess)
+}()
 
 // answerDecisions are the decision enum's values: the actions Offered
 // lists for rung on f, in table order.
@@ -406,6 +402,9 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	if j.Recommendation.Grounds == nil {
 		return RungAnswer{}, errors.New("the recommendation leaves grounds out")
 	}
+	if faults := GroundsFaults(*j.Recommendation.Grounds); len(faults) > 0 {
+		return RungAnswer{}, fmt.Errorf("the recommendation's grounds: %s", strings.Join(faults, " "))
+	}
 	if enumCheck("action", *j.Recommendation.Action, recommendable(f, rung, *j.Decision)) != nil {
 		if *j.Decision == RungHandUp {
 			return RungAnswer{}, fmt.Errorf("the recommended action %q is not an action for the rungs above: they answer with %s", *j.Recommendation.Action, offeredText(recommendable(f, rung, RungHandUp)))
@@ -419,7 +418,7 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 		return RungAnswer{}, errors.New("a handover leaves model out; it names the model of the next session: " + textutil.AndList(handoverModels))
 	}
 	if j.Draw != nil && (j.Draw.Sessions < 0 || j.Draw.AgentTimeS < 0 || j.Draw.EUR < 0) {
-		return RungAnswer{}, fmt.Errorf("a draw does not go below zero: sessions %d, agent_time_s %d, eur %.2f", j.Draw.Sessions, j.Draw.AgentTimeS, j.Draw.EUR)
+		return RungAnswer{}, fmt.Errorf("a draw does not go below zero: sessions %d, agent_time_s %d, eur %s", j.Draw.Sessions, j.Draw.AgentTimeS, textutil.EUR(j.Draw.EUR))
 	}
 	out := RungAnswer{
 		Decision:       *j.Decision,
@@ -438,8 +437,8 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	if a, ok := ActionByName(out.Decision); ok && out.Decision != ActExtend && slices.Contains(sessionActions, out.Decision) {
 		// a session's action the facts leave no room for is asked again, not
 		// handed up for Act to refuse
-		if why := a.refusal(f, rung, rungResolution(out, f)); why != "" {
-			return RungAnswer{}, fmt.Errorf("the answer %s is refused on these facts: %s", out.Decision, why)
+		if why := a.refusal(f.forRung(rung), rung, rungResolution(out, f)); why != "" {
+			return RungAnswer{}, fmt.Errorf("the answer %s is refused on these facts: %s; the rung answers with %s%s", out.Decision, why, offeredText(offered), handUpText(rung))
 		}
 	}
 	return out, nil

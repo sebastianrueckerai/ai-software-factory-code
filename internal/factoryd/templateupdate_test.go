@@ -397,7 +397,8 @@ func TestTemplateUpdateFilesCard(t *testing.T) {
 	if len(wf.started) != 1 || wf.started[0] != row.ID {
 		t.Fatalf("started %v, want the card's run", wf.started)
 	}
-	if len(fj.issues) != 1 || fj.issues[0].title != "Template update for ts-go" ||
+	if len(fj.issues) != 1 || fj.issues[0].title != "Update the project from its template ts-go" ||
+		!strings.HasPrefix(fj.issues[0].body, "Why: The template ts-go changed since the project took it, and the project lacks the changes.\n\n") ||
 		!strings.Contains(fj.issues[0].body, "factoryd opened pull request #1 (Template update) for template ts-go") ||
 		!strings.Contains(fj.issues[0].body, "The card's merge merges the pull request.") {
 		t.Fatalf("issues %+v", fj.issues)
@@ -514,7 +515,7 @@ func TestTemplateUpdateRefilesACardItsFailureClosed(t *testing.T) {
 	if !slices.Contains(fj.writes[writes:], "PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by basic factory-agent") {
 		t.Fatalf("writes %q, want the bot's reopen", fj.writes[writes:])
 	}
-	if fj.issues[0].state != "closed" || !slices.Contains(fj.comments, "#1 by basic factory-agent: factoryd: Filed again as #2.") ||
+	if fj.issues[0].state != "closed" || !slices.Contains(fj.comments, "#1 by basic factory-agent: Filed again as #2.") ||
 		!slices.ContainsFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.TaskID == first[0] && e.Kind == IntakeFactoryClosed }) {
 		t.Fatalf("issues %+v, comments %q, intake events %+v: want the failed card closed as factoryd's", fj.issues, fj.comments, tasks.intakeEvents)
 	}
@@ -595,7 +596,7 @@ func TestTemplateUpdateRefilesACardRefusedAsForbiddenToAgents(t *testing.T) {
 	if !slices.Contains(fj.writes[writes:], "PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by basic factory-agent") {
 		t.Fatalf("writes %q, want the bot's reopen", fj.writes[writes:])
 	}
-	if fj.issues[1].state != "closed" || !slices.Contains(fj.comments, "#2 by basic factory-agent: factoryd: Filed again as #3.") ||
+	if fj.issues[1].state != "closed" || !slices.Contains(fj.comments, "#2 by basic factory-agent: Filed again as #3.") ||
 		!slices.ContainsFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.TaskID == refused && e.Kind == IntakeFactoryClosed }) {
 		t.Fatalf("issues %+v, comments %q, intake events %+v: want the refused card closed as factoryd's", fj.issues, fj.comments, tasks.intakeEvents)
 	}
@@ -641,7 +642,7 @@ func TestTemplateUpdateNewPullRequestClosesTheRefusedCard(t *testing.T) {
 	if len(fj.prs) != 2 || fj.prs[1].state != "open" || len(cards) != 1 || len(fj.issues) != 2 {
 		t.Fatalf("pull requests %+v, cards of #1 %v, issues %d: want #2 open with its card on issue #2", fj.prs, cards, len(fj.issues))
 	}
-	if fj.issues[0].state != "closed" || !slices.Contains(fj.comments, "#1 by basic factory-agent: factoryd: Pull request #2 replaces #1; its card is #2.") ||
+	if fj.issues[0].state != "closed" || !slices.Contains(fj.comments, "#1 by basic factory-agent: Pull request #2 replaces #1. Its card is #2.") ||
 		!slices.ContainsFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.TaskID == refused && e.Kind == IntakeFactoryClosed }) {
 		t.Fatalf("issues %+v, comments %q, intake events %+v: want the refused card closed as factoryd's", fj.issues, fj.comments, tasks.intakeEvents)
 	}
@@ -713,8 +714,8 @@ func TestTemplateUpdateCloseClosesCard(t *testing.T) {
 	if !slices.Equal(fj.closedIssues, []int64{1}) || fj.issues[0].state != "closed" {
 		t.Fatalf("closed issues %v, issues %+v", fj.closedIssues, fj.issues)
 	}
-	comments := []string{"#1 by basic factory-agent: factoryd: closing pull request #1: main's files equal the template's; this card ends with it.",
-		"#1 by basic factory-agent: factoryd: closing this pull request: main's files equal the template's."}
+	comments := []string{"#1 by basic factory-agent: Closing pull request #1: main's files equal the template's. This card ends with it.",
+		"#1 by basic factory-agent: Closing this pull request: main's files equal the template's."}
 	if fj.prs[0].state != "closed" || !slices.Equal(fj.comments, comments) {
 		t.Fatalf("pull request %+v, comments %q; want %q", fj.prs[0], fj.comments, comments)
 	}
@@ -745,14 +746,14 @@ func TestTemplateUpdateCloseRecordsItsIntent(t *testing.T) {
 	for _, row := range tasks.tasks {
 		card = row
 	}
-	const comment = "factoryd: closing pull request #1: main's files equal the template's; this card ends with it."
+	const comment = "Closing pull request #1: main's files equal the template's. This card ends with it."
 	i := slices.IndexFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed })
 	if i < 0 || tasks.intakeEvents[i].TaskID != card.ID || tasks.intakeEvents[i].CommentID != 1 || tasks.intakeEvents[i].Body != comment ||
 		!tasks.confirmedCloses[[2]any{card.ID, int64(1)}] {
 		t.Fatalf("intake events %+v, confirmed %v; want card %s's close of #1 recorded with %q and confirmed", tasks.intakeEvents, tasks.confirmedCloses, card.ID, comment)
 	}
 	onIssue := func() []string {
-		return slices.DeleteFunc(slices.Clone(fj.comments), func(c string) bool { return !strings.Contains(c, "this card ends") })
+		return slices.DeleteFunc(slices.Clone(fj.comments), func(c string) bool { return !strings.Contains(c, "This card ends") })
 	}
 	if want := []string{"#1 by basic factory-agent: " + comment}; !slices.Equal(onIssue(), want) {
 		t.Fatalf("the issue's comments %q, want %q", onIssue(), want)
@@ -911,7 +912,7 @@ func TestTemplateUpdateClosesWhenMainEquals(t *testing.T) {
 	if fj.prs[0].state != "closed" || fj.branches[TemplateUpdateBranch] != nil {
 		t.Errorf("pull request %+v, branch %v", fj.prs[0], fj.branches[TemplateUpdateBranch])
 	}
-	if want := []string{"#1 by basic factory-agent: factoryd: closing this pull request: main's files equal the template's."}; !slices.Equal(fj.comments, want) {
+	if want := []string{"#1 by basic factory-agent: Closing this pull request: main's files equal the template's."}; !slices.Equal(fj.comments, want) {
 		t.Errorf("comments %q", fj.comments)
 	}
 	if !strings.Contains(logs.String(), "project demo-app: template update: closed pull request #1: main's files equal the template's\n") {
@@ -929,7 +930,7 @@ func TestTemplateUpdateStartsAnew(t *testing.T) {
 	reg.TemplateUpdates(ctx)
 	fj.main[".forgejo/workflows/ci.yml"] = "image: by hand\n"
 	reg.TemplateUpdates(ctx)
-	if want := []string{"#1 by basic factory-agent: factoryd: closing this pull request: main conflicts with its branch; the next pass opens it anew from main."}; fj.prs[0].state != "closed" || len(fj.prs) != 1 || fj.branches[TemplateUpdateBranch] != nil || !slices.Equal(fj.comments, want) {
+	if want := []string{"#1 by basic factory-agent: Closing this pull request: main conflicts with its branch, and the next pass opens it anew from main."}; fj.prs[0].state != "closed" || len(fj.prs) != 1 || fj.branches[TemplateUpdateBranch] != nil || !slices.Equal(fj.comments, want) {
 		t.Fatalf("pull requests %+v, comments %q", fj.prs, fj.comments)
 	}
 	reg.TemplateUpdates(ctx)

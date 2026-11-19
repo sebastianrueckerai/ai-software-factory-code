@@ -119,7 +119,7 @@ var chatView = (function () {
       (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") +
       (m.thread ? " <button type=\"button\" class=\"chip linkbtn\" data-open-thread=\"" + esc(m.thread) + "\"" +
         (m.thread_owner ? " data-thread-owner=\"" + esc(m.thread_owner) + "\"" : "") + ">thread ↗</button>" : "") + "</p>";
-    var body = saidHTML(m.content);
+    var body = m.short ? foldedHTML(m) : saidHTML(m.content);
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
     if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
     if (m.choices && m.choices.length && !esc1 && !m.settled) {
@@ -212,7 +212,7 @@ var chatView = (function () {
     var v = typeof eur === "number" ? eur : Number(eur);
     if (!isFinite(v)) v = Number(pool.eur);
     var to = pool.action === "top_up" ? Number(pool.from_eur) + v : v;
-    return "the pool would stand at €" + to.toFixed(2);
+    return "the pool would stand at " + to.toFixed(2) + " EUR";
   }
   // poolFormHTML is a set_pool proposal's own half: the operation, the
   // cent-precision amount the member may correct, the reason fixed at the
@@ -280,8 +280,8 @@ var chatView = (function () {
       }
       if (m.role === "user") {
         close();
-        if (/^wake/.test(m.birth_kind || "")) {
-          wake = {text: m.content, at: m.at, parts: []};
+        if (m.line) {
+          wake = {text: m.content, line: m.line, at: m.at, parts: []};
           return;
         }
         var ims = [], docs = [];
@@ -289,12 +289,15 @@ var chatView = (function () {
         out.push(userHTML(login, m.content, m.at, m.queued, ims, docs, m.token));
         return;
       }
+      // an ask of the agent's is for the human: it stands out of the
+      // wake's fold
+      if (wake && m.kind === "ask") close();
       var dst = wake ? wake.parts : parts;
       if (!dst) {
         parts = dst = [];
         at = m.at;
       }
-      if (m.content) dst.push(saidHTML(m.content));
+      if (m.content) dst.push(m.short ? foldedHTML(m) : saidHTML(m.content));
       if (m.cut) dst.push(stoppedMarkHTML);
       (m.tool_calls || []).forEach(function (c) {
         var state = c.proposal && states[c.proposal];
@@ -310,18 +313,20 @@ var chatView = (function () {
     close();
     return out.join("");
   }
-  // wakeHTML is one wake turn the factory started itself (the main agent
-  // concept): its rows fold to one line — wake, then the wake text's
-  // first line — and open on a click to the whole turn, the settled
-  // row's fold
+  // wakeHTML is one note of the factory's to the agent with the agent's
+  // reply (the main agent concept): they fold to the server's one quiet
+  // line and open on a click to the whole turn, the settled row's fold
   function wakeHTML(w) {
-    var first = String(w.text || "").split("\n")[0];
     return "<div class=\"msg agent wake\"><span class=\"av\" aria-hidden=\"true\"></span>" +
       whoHTML("the factory", w.at) +
       "<div class=\"wake-b\">" + saidHTML(w.text) + callsHTML(w.parts) + "</div>" +
       "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
-      "<span class=\"visually-hidden\">Wake: </span><span class=\"fw\">wake</span>" +
-      "<span class=\"ft\">" + esc(first) + "</span></p></div>";
+      "<span class=\"ft\">" + inline(esc(w.line)) + "</span></p></div>";
+  }
+  // foldedHTML is a long message's opening above a "more" fold that holds
+  // the rest (m.short, the server's cut)
+  function foldedHTML(m) {
+    return saidHTML(m.short) + "<details class=\"more\"><summary>more</summary>" + saidHTML(m.content.slice(m.short.length)) + "</details>";
   }
   // threadHTML is a thread's log: the rows Clear old swept from view name
   // their count in one line at the top; after a compaction its rows up to
@@ -483,22 +488,16 @@ var chatView = (function () {
   // the inbox takes no words, so only another thread offers them below.
   // A bound ask (its proposal token set) says in words that its buttons
   // alone answer it — a typed message resolves nothing.
-  // needs_reason names the one choice (factoryd's) a press of which needs
-  // the human's reason
   function answerHTML(m, inbox) {
-    var reason = m.needs_reason ?
-      "<input type=\"text\" data-reason maxlength=\"4000\" aria-label=\"your reason for overruling the review\" placeholder=\"reason for " + esc(m.needs_reason) + " (required)\">" : "";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
       return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
-    }).join("") + reason + (inbox ? "" : m.proposal ?
+    }).join("") + (inbox ? "" : m.proposal ?
       "<span class=\"answer-or\">a bound ask: your words below deliver a message but answer nothing — this ask answers by its buttons alone</span>" :
       "<span class=\"answer-or\">or in your words below</span>");
   }
-  // answerBody is the /answer post of a press of choice on ask row m; the
-  // reason field's words go as the reason of the choice that needs one
-  function answerBody(m, choice, reason, conversation, owner) {
-    return {conversation: conversation, message: m.id, choice: choice,
-      reason: m.needs_reason && choice === m.needs_reason ? reason : "", owner: owner};
+  // answerBody is the /answer post of a press of choice on ask row m
+  function answerBody(m, choice, conversation, owner) {
+    return {conversation: conversation, message: m.id, choice: choice, owner: owner};
   }
   // levelMenuHTML is the level control's menu (C14, C32): its head, then
   // the four states with their words, the current one checked
@@ -1361,12 +1360,6 @@ var chatView = (function () {
     if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || (keys && !keys.hidden) ||
       e.target.closest("input, textarea, select, [contenteditable]")) return;
     e.preventDefault();
-    // the wide view hides the chat: "/" brings it back
-    var screen = document.getElementById("screen");
-    if (screen && screen.classList.contains("wide")) {
-      document.getElementById("view-toggle").click();
-      return;
-    }
     if (!inboxOpen) input.focus();
   });
   // the stop button in the log: a press ends the open thread's turn, so
@@ -1662,8 +1655,8 @@ var chatView = (function () {
       pressAsk(ask.id, pick, log.lastElementChild || answerRow);
       return;
     }
-    var n = open, m = pending, choice = b.dataset.answer, why = answerRow.querySelector("[data-reason]");
-    var body = answerBody(m, choice, why ? why.value : "", n, openOwner);
+    var n = open, m = pending, choice = b.dataset.answer;
+    var body = chatView.answerBody(m, choice, n, openOwner);
     sending = true;
     answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
     // a canceled request lost no answer: send it again once, and only a

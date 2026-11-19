@@ -29,7 +29,7 @@ func TestGateReserveCeiling(t *testing.T) {
 	if _, err := TakeHold(ctx, db, session); !errors.As(err, &r) || r.Decision != RefusedBudget {
 		t.Fatalf("session call at the ceiling = %v, want refused_budget", err)
 	}
-	for _, want := range []string{"task 0.000000", "the card spent 4.60 EUR, and 0.40 EUR is held for the review and the audit"} {
+	for _, want := range []string{"task 0.00", "the card spent 4.60 EUR, and 0.40 EUR is held for the review and the audit"} {
 		if !strings.Contains(r.Reason, want) {
 			t.Errorf("session refusal = %q, want it to name %q", r.Reason, want)
 		}

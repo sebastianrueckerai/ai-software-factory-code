@@ -408,12 +408,12 @@ func TestARetryWaitsWhileAnOlderCommitsRollIsOpen(t *testing.T) {
 	}
 	cards := map[string]bool{}
 	for _, line := range strings.Split(asks[0], "\n") {
-		if strings.HasPrefix(line, "- run ") {
+		if strings.HasPrefix(line, "- roll ") {
 			_, card, _ := strings.Cut(line, "(card #")
 			cards[card] = true
 		}
 	}
-	if n := strings.Count(asks[0], "\n- run "); n != 3 || len(cards) != 3 {
+	if n := strings.Count(asks[0], "\n- roll "); n != 3 || len(cards) != 3 {
 		t.Fatalf("question lists %d attempts with %d distinct cards:\n%s", n, len(cards), asks[0])
 	}
 }

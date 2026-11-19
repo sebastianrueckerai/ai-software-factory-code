@@ -37,14 +37,14 @@ func TestPGStoreReplacesACardOutsideAPlan(t *testing.T) {
 	card := func(id string) Task {
 		return Task{ID: id, Status: "queued", Track: policy.TrackDirect, BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Source: "webhook"}
 	}
-	if ok, err := s.ReplaceFailedCard(ctx, "t-d", card("t-d2")); !ok || err != nil {
+	if ok, err := s.ReplaceCard(ctx, "t-d", "failed", card("t-d2")); !ok || err != nil {
 		t.Fatalf("first retry = %v, %v; want done", ok, err)
 	}
 	if err := s.SetTaskIssue(ctx, "t-d2", 9); err != nil {
 		t.Fatal(err)
 	}
 	for _, again := range []struct{ of, id string }{{"t-d", "t-d2"}, {"t-r", "t-r2"}} {
-		if ok, err := s.ReplaceFailedCard(ctx, again.of, card(again.id)); ok || err != nil {
+		if ok, err := s.ReplaceCard(ctx, again.of, "failed", card(again.id)); ok || err != nil {
 			t.Fatalf("retry of %s as %s = %v, %v; want refused", again.of, again.id, ok, err)
 		}
 	}
@@ -61,6 +61,64 @@ func TestPGStoreReplacesACardOutsideAPlan(t *testing.T) {
 	open, err := s.OpenDependencies(ctx, "t-w")
 	if err != nil || !slices.Equal(open, []Dependency{{TaskID: "t-d2", Issue: 9, Status: "queued"}}) {
 		t.Fatalf("t-w waits on %+v, %v; want the replacement #9", open, err)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A plan's
+// card waiting on a human is handed to an agent card in one transaction:
+// the human card lets go of its key, which the agent card holds under the
+// key's unique index, with the human card's dependency and dependent; a
+// card that does not wait on a human is not replaced as one.
+func TestPGStoreHandsAPlansCardOver(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_hand_over"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, tk := range []Task{
+		{ID: "t-plan", Status: "running", IssueNumber: 1, Kind: "agent", Track: policy.TrackPlan, Source: "webhook"},
+		{ID: "t-f", Status: "done", IssueNumber: 4, Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "t-plan", PlanKey: "foundation"},
+		{ID: "t-h", Status: "waiting-human", IssueNumber: 5, Kind: "human", Source: SourcePlan, Parent: "t-plan", PlanKey: "links-api"},
+		{ID: "t-b", Status: "waiting-deps", IssueNumber: 6, Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "t-plan", PlanKey: "redirects"},
+	} {
+		tk.BudgetEUR, tk.Repository = 1, "sf/r"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, deps := range map[string][]string{"t-h": {"t-f"}, "t-b": {"t-h"}} {
+		if err := s.AddTaskDeps(ctx, id, deps); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent := Task{ID: "t-a", Status: "queued", Kind: "agent", Track: policy.TrackDirect, BudgetEUR: 1, Repository: "sf/r", IssueNumber: 9,
+		Source: SourcePlan, Parent: "t-plan", PlanKey: "links-api"}
+	if ok, err := s.ReplaceCard(ctx, "t-h", "failed", agent); ok || err != nil {
+		t.Fatalf("a retry's replace of a card waiting on a human = %v, %v; want refused", ok, err)
+	}
+	if ok, err := s.ReplaceCard(ctx, "t-h", "waiting-human", agent); !ok || err != nil {
+		t.Fatalf("the hand-over = %v, %v; want done", ok, err)
+	}
+	if h, _, _ := s.Task(ctx, "t-h"); h.Status != "waiting-human" || h.PlanKey != "" {
+		t.Fatalf("t-h = %s with key %q, want waiting-human without a key", h.Status, h.PlanKey)
+	}
+	cards, err := s.PlanCards(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, c := range cards {
+		keys = append(keys, c.ID+":"+c.PlanKey)
+	}
+	if !slices.Equal(keys, []string{"t-a:links-api", "t-b:redirects", "t-f:foundation"}) {
+		t.Fatalf("the plan's cards = %q, want the agent card in t-h's place", keys)
+	}
+	if deps, err := s.Dependencies(ctx, "t-a"); err != nil || len(deps) != 1 || deps[0].TaskID != "t-f" {
+		t.Fatalf("t-a depends on %+v, %v; want t-f", deps, err)
+	}
+	if open, err := s.OpenDependencies(ctx, "t-b"); err != nil || len(open) != 1 || open[0].TaskID != "t-a" {
+		t.Fatalf("t-b waits on %+v, %v; want t-a", open, err)
 	}
 }
 

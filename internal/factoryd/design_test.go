@@ -113,9 +113,9 @@ func TestAskedCarry(t *testing.T) {
 
 // The Ships line is card data, not brief prose: every model brief drops
 // it with the other intake lines.
-func TestBriefObjectiveDropsTheShipsLine(t *testing.T) {
-	got := briefObjective("The band goes\n\nThe screen.\n\nShips: C20 clauses 1, 3\nSize: small", false)
-	if got != "The band goes\n\nThe screen." {
+func TestBriefBodyDropsTheShipsLine(t *testing.T) {
+	got := briefBody("The screen.\n\nShips: C20 clauses 1, 3\nSize: small")
+	if got != "The screen." {
 		t.Fatalf("brief = %q, want it without the Ships and Size lines", got)
 	}
 }
@@ -145,18 +145,18 @@ func TestAskedRoadmapItem(t *testing.T) {
 }
 
 // The Roadmap line is card data too: the brief drops it with the others.
-func TestBriefObjectiveDropsTheRoadmapLine(t *testing.T) {
-	got := briefObjective("The band goes\n\nThe screen.\n\nRoadmap: #276", false)
-	if got != "The band goes\n\nThe screen." {
+func TestBriefBodyDropsTheRoadmapLine(t *testing.T) {
+	got := briefBody("The screen.\n\nRoadmap: #276")
+	if got != "The screen." {
 		t.Fatalf("brief = %q, want it without the Roadmap line", got)
 	}
 }
 
 // The Carries line is card data too: the brief drops it with the others,
-// and the carry sentence says what the clone holds.
-func TestBriefObjectiveDropsTheCarriesLine(t *testing.T) {
-	got := briefObjective("The band goes\n\nThe screen.\n\nCarries: #9", false)
-	if got != "The band goes\n\nThe screen." {
+// and the session's facts say what the clone holds.
+func TestBriefBodyDropsTheCarriesLine(t *testing.T) {
+	got := briefBody("The screen.\n\nCarries: #9")
+	if got != "The screen." {
 		t.Fatalf("brief = %q, want it without the Carries line", got)
 	}
 }

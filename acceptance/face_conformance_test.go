@@ -125,7 +125,8 @@ func TestPlainCardsWhisper(t *testing.T) {
 			}
 			face := faceOf(t, r, ck, id)
 			artifact.WriteString("<section id=\"" + name + "\">\n" + face + "\n</section>\n")
-			near := strings.Contains(face, `class="spend near"`)
+			// the foot's mark, or the band's on a card in Needs you
+			near := strings.Contains(face, `class="it flag">⚠ near its budget</span>`) || strings.Contains(face, `<span class="flag">⚠ near its budget</span>`)
 			if s.prominent && !near {
 				t.Errorf("%s: the spend stays muted at 80 percent of budget", name)
 			}

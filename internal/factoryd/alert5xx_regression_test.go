@@ -212,7 +212,7 @@ func TestAlertIntakeHoldsAFailingCommentToNo5xxStorm(t *testing.T) {
 	if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds)); rr.Code != http.StatusOK {
 		t.Fatalf("the delivery after the blip: status %d: %s", rr.Code, rr.Body)
 	}
-	if want := []string{"#1 factoryd: the alert fired again at 2026-09-28T21:00:00Z.\n\n```\nvalue=14.29\n```"}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#1 The alert fired again at 2026-09-28T21:00:00Z.\n\n```\nvalue=14.29\n```"}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want %q once", r.fj.comments, want)
 	}
 	if got := r.store.alertRows()[0].Detail["starts_at"]; got != "2026-09-28T21:00:00Z" {
@@ -237,7 +237,7 @@ func TestAlertIntakeHoldsAFailingCommentToNo5xxStorm(t *testing.T) {
 	if err := r2.in.SweepSigNoz(context.Background(), at(resolvedAt)); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"#1 factoryd: resolved at " + resolvedAt}; !slices.Equal(r2.fj.comments, want) {
+	if want := []string{"#1 Resolved at " + resolvedAt}; !slices.Equal(r2.fj.comments, want) {
 		t.Fatalf("comments %q, want %q once", r2.fj.comments, want)
 	}
 	if _, firing := firingSince(r2.store.alertRows()[0]); firing {

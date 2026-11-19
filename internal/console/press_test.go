@@ -87,7 +87,7 @@ func TestPressWiringConstruction(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, line := range strings.Split(string(b), "\n") {
-			if !strings.Contains(line, "hx-post=") || strings.Contains(line, "hx-select=") || strings.Contains(line, "routine-act-target") {
+			if !strings.Contains(line, "hx-post=") || strings.Contains(line, "hx-select=") {
 				continue
 			}
 			if strings.Contains(line, "hx-target=") && !strings.Contains(line, `hx-target="#drawer"`) {
@@ -102,8 +102,14 @@ func TestPressWiringConstruction(t *testing.T) {
 	if !strings.Contains(string(board), `hx-trigger="board-refresh from:body"`) || !strings.Contains(string(board), `hx-get="/board{{.Query}}"`) {
 		t.Errorf("FIX MISSING: the board div carries no board-refresh trigger with its GET")
 	}
-	if !strings.Contains(string(board), `{{define "routine-act-target"}}{{if .Drawer}} hx-target="#drawer" hx-swap="innerHTML"{{end}}{{end}}`) {
-		t.Errorf("FIX MISSING: a routine act targets the drawer from the drawer and nothing else")
+	opened, err := os.ReadFile("templates/opened.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the routine's opened card names the drawer (TestRoutineCardMeetsTheContract),
+	// and no card's opened card does (checkOpenedCard)
+	if !strings.Contains(string(opened), `hx-post="{{.Post}}"{{with .Target}} hx-target="{{.}}" hx-swap="innerHTML"{{end}}`) {
+		t.Errorf("FIX MISSING: an answer targets the drawer only where a routine's opened card names it")
 	}
 	for _, want := range []string{`<form class="find"`, `class="menu-pop auto-submit" hx-get="/"`} {
 		if !strings.Contains(string(board), want) {

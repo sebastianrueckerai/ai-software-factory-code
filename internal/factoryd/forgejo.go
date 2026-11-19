@@ -1899,6 +1899,23 @@ func (f *Forgejo) IssueClosed(ctx context.Context, owner, repo string, number in
 	return res.State == "closed", nil
 }
 
+// Issue is issue or pull request number of owner/repo: its title and
+// state, ok false when there is none.
+func (f *Forgejo) Issue(ctx context.Context, owner, repo string, number int64) (title, state string, ok bool, err error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", owner, repo, number), nil, http.StatusOK)
+	if errors.Is(err, ErrNotFound) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	var res struct{ Title, State string }
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", "", false, fmt.Errorf("forgejo issue %s/%s #%d: %w", owner, repo, number, err)
+	}
+	return res.Title, res.State, true, nil
+}
+
 // errNoCloser is a closed issue whose timeline names no one who closed it.
 var errNoCloser = errors.New("closed with no close event on its timeline")
 

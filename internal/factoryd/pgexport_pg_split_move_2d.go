@@ -76,9 +76,3 @@ func (r *Runner) PgTimeline() *Timeline { return r.timeline }
 // PgSetPrices sets the runner's unexported cfg's price book, for the moved
 // rung rig that prices its check-in model's alias.
 func (r *Runner) PgSetPrices(p Pricer) { r.cfg.Prices = p }
-
-// PgMonthCapCardQuestion is the moved monthCapCardQuestion: the question a
-// month cap's human card asks at its limit.
-func PgMonthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
-	return monthCapCardQuestion(limit, month, eur, link, refusal)
-}

@@ -287,7 +287,8 @@ type groupRevertRig struct {
 func newGroupRevertRig(t *testing.T) *groupRevertRig {
 	t.Helper()
 	g := &groupRevertRig{fj: &groupForgejo{}, wf: &fakeWorkflows{}, answer: func() (string, error) { return "", nil }}
-	g.plan = Task{ID: "p", Kind: "agent", Track: policy.TrackPlan, Source: "webhook", Repository: "sf/repo", IssueNumber: 10, Status: "running"}
+	g.plan = Task{ID: "p", Kind: "agent", Track: policy.TrackPlan, Source: "webhook", Repository: "sf/repo", IssueNumber: 10, Status: "running",
+		PlanName: "link API"}
 	g.r, _, g.store = newTestRunner(t, g.plan, newFakeKube(), &fakeObjectStore{})
 	g.r.forgejo = &Forgejo{BaseURL: g.fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	g.r.cfg.Workflows = g.wf
@@ -349,8 +350,8 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 		t.Errorf("groupRevertBranch calls = %q, want %q", g.calls, want)
 	}
 	body := "Takes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\nWhy: asked by sebastian: the api is wrong\n\n" +
-		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
-	title := "Revert plan #10: 2 merges, newest first"
+		"The merge queue of sf/repo waits for this revert. A salvage branch of the bot's fork keeps main as it stood before the plan's first revert."
+	title := "Revert plan link API from main"
 	if want := []string{"factory-agent:factory/" + id + " " + title + "\n\n" + body}; !slices.Equal(g.fj.pulls, want) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}
@@ -381,7 +382,8 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 	}
 	objective := "Take plan #10's cards off main: revert these merge commits, newest first, with git revert -m 1 for a merge commit: m2 (#15), m1 (#14). " +
 		"The plain revert stopped at m1: resolve each conflict so the later changes on main stay and main builds green. Change nothing else."
-	if want := []string{title + "\n\n" + objective}; len(g.fj.pulls) != 0 || !slices.Equal(g.fj.issues, want) {
+	if want := []string{title + "\n\n" + "Why: The plan's merges left main broken, so its cards come off main together.\n\n" +
+		"Summary: It reverts the plan's merge commits from main, newest first, and changes nothing else. The project's checks run on the revert before it merges.\n\n---\n\n" + objective}; len(g.fj.pulls) != 0 || !slices.Equal(g.fj.issues, want) {
 		t.Errorf("pull requests %q, issues %q; want no pull request and the issue %q", g.fj.pulls, g.fj.issues, want)
 	}
 	card = g.store.tasks[id]
@@ -405,8 +407,8 @@ func TestRevertGroupOfOneCard(t *testing.T) {
 		t.Fatalf("RevertGroup = %q, %v; want %q", note, err, want)
 	}
 	id := g.store.pauses["sf/repo"].RevertTask
-	want := "factory-agent:factory/" + id + " Revert plan #10: 1 merge, newest first\n\nTakes plan #10's merged cards off main, newest first: #14 m1.\n\n" +
-		"Why: plan revision 3 drops it\n\nThe merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
+	want := "factory-agent:factory/" + id + " Revert plan link API from main\n\nTakes plan #10's merged cards off main, newest first: #14 m1.\n\n" +
+		"Why: plan revision 3 drops it\n\nThe merge queue of sf/repo waits for this revert. A salvage branch of the bot's fork keeps main as it stood before the plan's first revert."
 	if !slices.Equal(g.fj.pulls, []string{want}) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}
@@ -733,7 +735,7 @@ func TestClosedRevertLeavesTheCardsOnMain(t *testing.T) {
 	if p := g.store.tasks["p"]; p.Status != "queued" || !reflect.DeepEqual(g.wf.reopens, []reopenCall{{taskID: "p"}}) {
 		t.Errorf("plan %s, reopens %+v; want it queued and its run reopened", p.Status, g.wf.reopens)
 	}
-	want := []string{"factoryd: the revert of plan #10 did not land (card #20 ended closed): its cards stay on main."}
+	want := []string{"The revert of plan #10 did not land (card #20 ended closed): its cards stay on main."}
 	if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
 		t.Errorf("plan comments %q, want %q", c, want)
 	}
@@ -811,7 +813,7 @@ func TestRevertPausePassHeals(t *testing.T) {
 	rv.FinishedAt = finishedAgo(2 * time.Minute)
 	g.store.tasks["t-rv"] = rv
 	g.r.RevertPausePass(ctx)
-	want := []string{"factoryd: the revert of plan #10 did not land (card #20 ended failed): its cards stay on main."}
+	want := []string{"The revert of plan #10 did not land (card #20 ended failed): its cards stay on main."}
 	if _, ok := g.store.pauses["sf/repo"]; ok || !slices.Equal(g.fj.commentsOn(10), want) || g.store.tasks["c1"].RevertedAt != nil {
 		t.Errorf("paused %t, plan comments %q, c1 reverted at %v; want the pause gone, %q, no mark", ok, g.fj.commentsOn(10), g.store.tasks["c1"].RevertedAt, want)
 	}
@@ -858,9 +860,9 @@ func TestRevertPausePassFilesALostRevertCard(t *testing.T) {
 	if want := []string{`sf/repo ["m1" "m2"] salvage/p false factory/t-lost, paused for t-lost: true`}; !slices.Equal(g.calls, want) {
 		t.Errorf("groupRevertBranch calls = %q, want %q", g.calls, want)
 	}
-	want := "factory-agent:factory/t-lost Revert plan #10: 2 merges, newest first\n\nTakes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\n" +
+	want := "factory-agent:factory/t-lost Revert plan link API from main\n\nTakes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\n" +
 		"Why: factoryd files the revert's card again: its first filing did not finish\n\n" +
-		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
+		"The merge queue of sf/repo waits for this revert. A salvage branch of the bot's fork keeps main as it stood before the plan's first revert."
 	if !slices.Equal(g.fj.pulls, []string{want}) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}
@@ -957,5 +959,22 @@ func TestRevertGroupRunsOneAtATimePerProject(t *testing.T) {
 	}
 	if len(g.calls) != 1 || len(g.fj.pulls) != 1 || len(g.fj.issues) != 1 || len(g.wf.started) != 1 {
 		t.Errorf("reverts %q, pull requests %q, issues %q, started %q; want one of each", g.calls, g.fj.pulls, g.fj.issues, g.wf.started)
+	}
+}
+
+// The plan's name is text an agent wrote: the revert's title carries it
+// cleaned, on the pull request and on the agent card.
+func TestRevertTitleCarriesThePlansNameCleaned(t *testing.T) {
+	g := newGroupRevertRig(t)
+	g.plan.PlanName = "link API @mallory https://evil.example/x"
+	const title = "Revert plan link API ＠mallory hxxps://evil[.]example/x from main"
+	if _, err := g.revert(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.fj.pulls) != 1 || !strings.Contains(g.fj.pulls[0], " "+title+"\n\n") {
+		t.Errorf("pull requests = %q, want the one titled %q", g.fj.pulls, title)
+	}
+	if got := GroupRevertBrief(g.plan, g.cards, "").Title; got != title {
+		t.Errorf("the agent card's title = %q, want %q", got, title)
 	}
 }

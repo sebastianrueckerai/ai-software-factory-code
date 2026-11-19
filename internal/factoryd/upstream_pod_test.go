@@ -207,20 +207,20 @@ func (k *copyPodKube) DeleteNamespace(ctx context.Context, name string) error {
 	return k.fakeKube.DeleteNamespace(ctx, name)
 }
 
-func (k *copyPodKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {
+func (k *copyPodKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, PodWait, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.pending {
-		return "Pending", -1, nil
+		return "Pending", -1, PodWait{}, nil
 	}
 	exit, ok := k.status[namespace]
 	if !ok {
-		return "", -1, ErrNotFound
+		return "", -1, PodWait{}, ErrNotFound
 	}
 	if exit != 0 {
-		return "Failed", exit, nil
+		return "Failed", exit, PodWait{}, nil
 	}
-	return "Succeeded", 0, nil
+	return "Succeeded", 0, PodWait{}, nil
 }
 
 func (k *copyPodKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {

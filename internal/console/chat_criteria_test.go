@@ -161,7 +161,7 @@ func TestChatGrantsNoCriteriaCardThroughAnswerCriteria(t *testing.T) {
 	args := `{"task_id":"t-plan","action":"grant"}`
 	g.replies = [][]string{{call(1, "answer_criteria", args)}, {say("No.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more bounded card"}})
-	refused := "Refused: The action must be waive, confirm, met or not_met; a grant answers the plan's criteria case with answer and grant_criteria."
+	refused := "Refused: The action must be `waive`, `confirm`, `met` or `not_met`; a grant answers the plan's criteria case with `answer` and `grant_criteria`."
 	equal(t, "stream", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer_criteria","result":"` + refused + `"}`, `text {"text":"No."}`, `done {}`})
 }
@@ -229,8 +229,8 @@ func TestChatMetOnACriteriaRerunNamesConfirmAndWaive(t *testing.T) {
 // doors.
 func TestChatAnswersCriteriaOnlyOnTheHumansLine(t *testing.T) {
 	for _, tc := range []struct{ birth, want string }{
-		{"case_climbed", "Refused: Settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria."},
-		{"wake_timer", "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."},
+		{"case_climbed", "Refused: Settling a plan's criteria by word is the human's: take `grant_criteria` for one more bounded card, or hand the case up (`hand_up`) with `answer_criteria` (waive) or `confirm_criteria` as the recommendation."},
+		{"wake_timer", "Refused: This turn runs on no line the human typed, so their word decides no promise: give them choices with `ask`, or let them answer on the board's card, and `answer_criteria` runs on their word."},
 	} {
 		t.Run(tc.birth, func(t *testing.T) {
 			r, chat, g := newChatRig(t)
@@ -305,7 +305,7 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 			}
 		}
 	}
-	want := "Refused: Settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria."
+	want := "Refused: Settling a plan's criteria by word is the human's: take `grant_criteria` for one more bounded card, or hand the case up (`hand_up`) with `answer_criteria` (waive) or `confirm_criteria` as the recommendation."
 	if refusal != want {
 		t.Errorf("the wake's tool result = %q\nwant %q", refusal, want)
 	}
@@ -502,7 +502,7 @@ func TestACardAnswerInWordsDecidesCriteriaOnItsRow(t *testing.T) {
 	r.tasks.mu.Unlock()
 	_, s := r.loggedIn(t)
 	words := "the pages read well: confirm them"
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", words, "", "", 0); err != nil {
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", words, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, "the turn's last answer", func() bool {

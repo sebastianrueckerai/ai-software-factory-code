@@ -123,7 +123,7 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.store.enforced = policy.Enforced{Day: 12.4, Month: 544}
 
 	want := "cards 6 live · slots 1 of 3 · queue 3\n" +
-		"#1410  in-review, approval   9h40m          flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings\n" +
+		"#1410  in-review, approval   9h40m          flags finding_confirmed_twice(" + idA + ")\n" +
 		"#1452  waiting-deps          3h02m          flags dependency_failed(#1451)\n" +
 		"#1472  running, session      0h12m    slot\n" +
 		"queue:\n" +
@@ -282,6 +282,26 @@ func TestBoardDigestPlanLineCountsTheProofs(t *testing.T) {
 		t.Fatalf("Plans = %+v, want one plan with proofs 1 of 4", b.Plans)
 	}
 	if want := "\nplans:\n#1344 session-metrics  done 1 · proofs 1 of 4 stored\ncaps:\n"; !strings.Contains(b.Render(), want) {
+		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+}
+
+// A plan's line names its live prover, a step of the plan and no card of
+// the digest: a done plan whose prover runs stands on no card line.
+func TestBoardDigestPlanLineNamesItsLiveProver(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	g.card("t1440", 1440, "done", "", 1, child("k1440"))
+	g.card("t-prove1", 0, "done", "", 2, func(t *Task) { t.Source, t.Parent = SourceProver, "t1344" })
+	g.card("t-prove2", 0, "running", "session", 3, func(t *Task) { t.Source, t.Parent = SourceProver, "t1344" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(proverPlan()), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	b := g.digest(t)
+	if len(b.Cards) != 0 {
+		t.Errorf("Cards = %+v, want none: the prover is a step of its plan", b.Cards)
+	}
+	if want := "\nplans:\n#1344 session-metrics  done 1 · proofs 0 of 3 stored · prover running, session\ncaps:\n"; !strings.Contains(b.Render(), want) {
 		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
 	}
 }

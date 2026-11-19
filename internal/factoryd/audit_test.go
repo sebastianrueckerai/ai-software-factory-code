@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // auditVersion is testPolicyVersion with big as the coder
@@ -302,6 +303,28 @@ func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
 	}
 	if len(res.Confirmed) != 1 || res.Confirmed["secrets at internal/x/x_test.go"].By != "sebastian" {
 		t.Fatalf("confirmed = %+v, want the one confirmation beside the verdict", res.Confirmed)
+	}
+}
+
+// A confirmation covers its own finding alone: one of the finding in
+// x_test.go leaves the finding in x_test.go.orig, whose text it begins, to
+// hold the verdict.
+func TestGateAuditConfirmationCoversItsFindingAlone(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n--- a/internal/x/x_test.go\n+++ b/internal/x/x_test.go\n@@ -1 +1,2 @@\n package x\n+var rig = 1\n" +
+		"diff --git a/internal/x/x_test.go.orig b/internal/x/x_test.go.orig\n--- a/internal/x/x_test.go.orig\n+++ b/internal/x/x_test.go.orig\n@@ -1 +1,2 @@\n package x\n+var key = 1\n"}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` +
+		`{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
+		`{"item":1,"file":"internal/x/x_test.go.orig","line":41,"why":"a real credential"}]}`}
+	r, _ := newAuditRunner(t, fj, ll, true)
+	if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed,
+		map[string]any{"finding": "secrets at internal/x/x_test.go", "by": "sebastian", "why": "test rig fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: "secrets", File: "internal/x/x_test.go.orig", Line: 41, Why: "a real credential"}}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
+		t.Fatalf("audit = %+v, want the finding in x_test.go.orig holding the verdict", res)
 	}
 }
 
@@ -671,8 +694,8 @@ func TestGateAuditReadsABigFileInPieces(t *testing.T) {
 // Every audit call reads the whole checklist: no call sees another's.
 func TestAuditPromptsCarryTheChecklist(t *testing.T) {
 	for name, prompt := range map[string]string{"first": auditPrompt, "part": auditPartPrompt} {
-		if !strings.HasSuffix(prompt, auditChecklist) || !strings.Contains(auditChecklist, "\n6. sandbox contract: ") {
-			t.Errorf("the %s prompt does not end with the checklist", name)
+		if !strings.HasSuffix(prompt, auditChecklist+"\n\n"+writingguide.For(writingguide.JobFinding)) || !strings.Contains(auditChecklist, "\n6. sandbox contract: ") {
+			t.Errorf("the %s prompt does not end with the checklist and the finding form", name)
 		}
 	}
 }

@@ -75,8 +75,8 @@ buildctl fetches the VM's registry tokens. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
 PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
 moves on its own: the code project's routine `weekly-bump` files a
-human card on this repository every Monday 06:00, "Weekly bump of the
-pinned outside inputs", and holds while one is open (its project file and
+human card on this repository every Monday 06:00, "Update the fixed
+versions of outside software every week", and holds while one is open (its project file and
 brief `routines/weekly-bump.md` in the configuration,
 `internal/factoryd/routine_run.go`), naming the list,
 the snapshot, the PostgreSQL versions, the Go patch and the downloaded
@@ -120,7 +120,12 @@ the `buildctl` session) and the build cache on tcp 5000; nothing else, `169.254.
 the covert channel named above, accepted as the price of a usable Go
 toolchain). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
-45-minute deadline passes. Idempotency is the Forgejo job id on the
+60-minute deadline passes. A pod that cannot pull its image
+(`ErrImagePull` or `ImagePullBackOff` for more than 3 minutes since the
+spawner first saw it) is torn down too, so its storage frees, and its job
+gets a new pod with a new copy of the pull secret; after 3 such pods the
+job gets one more pod every 15 minutes, and each poll between logs the
+pull's failure and when the next try comes. Idempotency is the Forgejo job id on the
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,

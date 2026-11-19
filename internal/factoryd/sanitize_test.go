@@ -45,7 +45,7 @@ func TestPostedTextIsSanitised(t *testing.T) {
 		if _, err := r.PgFaceStop(context.Background(), "t1", hostile, nil); err != nil {
 			t.Fatal(err)
 		}
-		if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "```\n"+hostileOut+"\n```") {
+		if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], hostileOut) || strings.Contains(fj.comments[0], "@mallory") || strings.Contains(fj.comments[0], "https://evil.test") {
 			t.Fatalf("comment = %q", fj.comments)
 		}
 	})
@@ -58,7 +58,7 @@ func TestPostedTextIsSanitised(t *testing.T) {
 		if _, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1"); err != nil {
 			t.Fatal(err)
 		}
-		if body := fj.created[0]["body"]; body != "Fix the slug ＠bob\n\n"+hostileOut+"\n\nCloses #4\n\nOpened by factoryd for task t1." || fj.created[0]["title"] != "Fix the slug ＠bob" {
+		if body := fj.created[0]["body"]; body != "Fix the slug ＠bob\n\n"+hostileOut+"\n\nCloses #4\n\nOpened by the factory for card #4." || fj.created[0]["title"] != "Fix the slug ＠bob" {
 			t.Fatalf("title %q, body %q", fj.created[0]["title"], body)
 		}
 	})
@@ -84,7 +84,7 @@ func TestPostedTextIsSanitised(t *testing.T) {
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "escalation: "+hostile); err != nil {
 			t.Fatal(err)
 		}
-		if len(fj.comments) != 1 || fj.comments[0] != "factoryd: task t1 failed: escalation: "+hostileOut {
+		if len(fj.comments) != 1 || fj.comments[0] != "This card failed: escalation: "+hostileOut {
 			t.Fatalf("comments = %q", fj.comments)
 		}
 	})

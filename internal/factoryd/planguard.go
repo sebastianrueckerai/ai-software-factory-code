@@ -8,7 +8,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-const planAgentStep = " Record your analysis and recommended option with attach_analysis."
+const planAgentStep = " Record your analysis and the option you recommend (`attach_analysis`)."
 
 // PlanAnswerRefusal is the one rule for who answers a plan's questions and
 // confirms its revision. rung is who decides: 3 the human, who always
@@ -23,15 +23,15 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 	case rung == 3:
 		return ""
 	case rung != 2:
-		return fmt.Sprintf("Rung %d decides no plan answer: it is rung 2's at full auto, or the human's, made on the plan's card.", rung)
+		return capitalize(who(rung)) + " decides no plan answer: it is the factory agent's at full auto, or the human's, made on the plan's card."
 	case autonomy == "":
-		return "The project's autonomy level could not be read, so a plan's answer stays the human's, made on the plan's card with its choices, Confirm or Request changes." + planAgentStep
+		return "The project's autonomy level could not be read, so a plan's answer stays the human's, made on the plan's card with its choices, Confirm the plan or Ask for changes." + planAgentStep
 	case autonomy != policy.AutonomyFullAuto && confirming:
-		return "A plan confirmation below full auto is the human's, made with the plan's Confirm button." + planAgentStep
+		return "A plan confirmation below full auto is the human's, made with Confirm the plan on the plan's card." + planAgentStep
 	case autonomy != policy.AutonomyFullAuto:
-		return "A plan's answer below full auto is the human's, made on the plan's card with its choices or its Request changes button." + planAgentStep
+		return "A plan's answer below full auto is the human's, made on the plan's card with its choices or its Ask for changes." + planAgentStep
 	case confirming && takesOffMain:
-		return "This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with the plan's Confirm button." + planAgentStep
+		return "This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with Confirm the plan on the plan's card." + planAgentStep
 	}
 	return ""
 }
@@ -40,7 +40,7 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 // work off main: only the human takes it, at every level, as a confirmation
 // of a revision that takes work off main is only the human's. "" for rung 3.
 func OffMainReplanRefusal(rung int) string {
-	return offMainRefusal(rung, "A replan that takes merged work off main is the human's, made with the Replan button's off-main box.")
+	return offMainRefusal(rung, "A replan that takes merged work off main is the human's, made with the off-main box of the card's Send back to the planner.")
 }
 
 // OffMainChoiceRefusal is OffMainReplanRefusal for the held-production ask's

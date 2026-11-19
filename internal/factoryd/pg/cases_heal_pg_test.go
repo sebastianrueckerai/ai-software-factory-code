@@ -185,17 +185,48 @@ func TestReconcileCasesOpensTheCaseOfAPendingMergeWithNone(t *testing.T) {
 	reconcile(t, s, CaseHealReport{})
 }
 
-// A pending request on an ended card opens nothing: the ended rule would
-// withdraw its case the next minute.
-func TestReconcileCasesOpensNoMergeCaseOnAnEndedCard(t *testing.T) {
-	s := cardCaseStore(t, "cases_heal")
-	setCaseTaskStatus(t, s, "done")
-	agedMerge(t, s, "2 minutes")
-
-	reconcile(t, s, CaseHealReport{})
-	if cs, err := s.CasesOf(context.Background(), caseTask); err != nil || len(cs) != 0 {
-		t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+// A pending merge request on an ended card, which the card's end did not
+// deny, is denied by the heal within one pass, as the end denies it: no
+// case opens for it, and the live case of one is withdrawn in the same
+// pass. No page shows a request of an ended card.
+func TestReconcileCasesDeniesAPendingMergeOfAnEndedCard(t *testing.T) {
+	ctx := context.Background()
+	decided := func(t *testing.T, s *PGStore, id int64) {
+		t.Helper()
+		var status, by, note string
+		if err := s.DB().QueryRowContext(ctx, `SELECT status, decided_by, decision_note FROM approval_requests WHERE id = $1`, id).Scan(&status, &by, &note); err != nil {
+			t.Fatal(err)
+		}
+		if status != "denied" || by != FactoryDecider || note != "the card ended done" {
+			t.Fatalf("request %d = %s by %q, note %q; want denied by the factory, the card ended done", id, status, by, note)
+		}
 	}
+	t.Run("with no case", func(t *testing.T) {
+		s := cardCaseStore(t, "cases_heal")
+		setCaseTaskStatus(t, s, "done")
+		id := agedMerge(t, s, "2 minutes")
+
+		reconcile(t, s, CaseHealReport{Denied: 1})
+		decided(t, s, id)
+		if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 0 {
+			t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+		}
+		reconcile(t, s, CaseHealReport{})
+	})
+	t.Run("with its live case", func(t *testing.T) {
+		s := cardCaseStore(t, "cases_heal")
+		id := openMerge(t, s, "abc1479")
+		c := onlyOpenCase(t, s)
+		setCaseTaskStatus(t, s, "done")
+
+		reconcile(t, s, CaseHealReport{Denied: 1, Withdrawn: 1})
+		decided(t, s, id)
+		want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "the card ended done"}
+		if got := caseByID(t, s, c.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) {
+			t.Fatalf("case = %+v, resolution %+v; want withdrawn %+v", got, got.Resolution, want)
+		}
+		reconcile(t, s, CaseHealReport{})
+	})
 }
 
 func TestReconcileCasesWithdrawsThePlanQuestionsANewerRevisionReplaced(t *testing.T) {
@@ -336,4 +367,49 @@ func TestReconcileCasesLeavesACaseARungHoldsToTheSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcile(t, s, CaseHealReport{Moved: 1})
+}
+
+// A closed plan's ask to close it stands on its closed card: the heal
+// leaves it at the human, as the plan's close alone ends it.
+func TestReconcileCasesLeavesAClosedPlansAsk(t *testing.T) {
+	s := cardCaseStore(t, "cases_heal")
+	held, _, err := openAtHuman(context.Background(), s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CasePlanHeld, StateKey: "held:a,b",
+		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": []string{"a", "b"}, "promises": []string{"A holds.", "B holds."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCaseTaskStatus(t, s, "closed")
+	reconcile(t, s, CaseHealReport{})
+	if got := caseByID(t, s, held.ID); got.Status != CaseAtHuman {
+		t.Fatalf("the closed plan's ask = %s, want it at the human", got.Status)
+	}
+}
+
+// A plan's close ends its held ask in the transaction that writes its
+// plan_closed row, whoever closes it: the factory's close, every promise
+// settled, withdraws it; a human's Close resolves it as their drop with
+// the close's words.
+func TestThePlanClosedRowEndsTheHeldAsk(t *testing.T) {
+	const words = "Closed by sebastian: the panels moved to the next plan."
+	for _, tc := range []struct {
+		by, via, status string
+		want            CaseResolution
+	}{
+		{FactoryDecider, ViaFactoryd, CaseWithdrawn, CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: HeldPlanSettled}},
+		{"sebastian", ViaConsole, CaseResolved, CaseResolution{By: "sebastian", Rung: 3, Action: AnswerDropAndEnd, Reason: words}},
+	} {
+		t.Run(tc.by, func(t *testing.T) {
+			s := cardCaseStore(t, "cases_heal")
+			held, _, err := openAtHuman(context.Background(), s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CasePlanHeld, StateKey: "held:a",
+				Problem: "the plan holds production with open promises", Facts: map[string]any{"open": []string{"a"}, "promises": []string{"A holds."}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			setCaseTaskStatus(t, s, "closed")
+			recordCaseEvent(t, s, EventPlanClosed, tc.by, tc.via, map[string]any{"criteria": 1, "words": words})
+			if got := caseByID(t, s, held.ID); got.Status != tc.status || !reflect.DeepEqual(got.Resolution, &tc.want) {
+				t.Fatalf("the held ask = %s %+v, want %s %+v", got.Status, got.Resolution, tc.status, tc.want)
+			}
+		})
+	}
 }

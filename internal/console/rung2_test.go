@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -115,7 +117,7 @@ func TestAttachAnalysisHandsUpACaseRungTwoHolds(t *testing.T) {
 
 	own, handErr = false, nil
 	note, _, err = tool.run(trn, toolInput{TaskID: "t-e", Found: "found"})
-	if err != nil || attached != 1 || note != "Recorded the analysis inside the ask of #13; the humans read it with the ask." {
+	if err != nil || attached != 1 || note != "Recorded the analysis on the card #13; the humans read it beside its ask there." {
 		t.Fatalf("note %q, err %v, attached %d; want the old behaviour on a case no rung 2 holds", note, err, attached)
 	}
 }
@@ -207,11 +209,11 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 	trn.noteRead("card_facts", `{"task_id":"13"}`, 10)
 	a := trn.a
 	a.decider = "agent"
-	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActSuccessor, Note: "x"}, nil); err != nil {
+	if _, err := r.c.callActWork(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActSuccessor, Note: "x"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	a.decider = "member"
-	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "y"}, nil); err != nil {
+	if _, err := r.c.callActWork(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "y"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	reads := []factoryd.CaseRead{{Tool: "card_facts", Args: `{"task_id":"13"}`, Bytes: 10}}
@@ -353,9 +355,19 @@ func TestAHeldHumanCardTakesOnlyRungTwosAnswerBeforeItsFace(t *testing.T) {
 	_, s := r.loggedIn(t)
 	human := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: policy.AutonomyAutonomous}
 	_, err := r.c.doAnswerCase(t.Context(), human, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0)
-	want := "Card t-stall waits on its case 51, open at rung 2: rung 2 decides it or hands it up, and only then is it the human's, in Needs you."
+	want := "Card “needs you: the chain of sf/code has been pending” waits for the factory agent, which decides it or hands it to you: answer it once it stands in Needs you."
 	if err == nil || err.Error() != want || len(r.acted) != 0 || len(r.closed) != 0 {
 		t.Fatalf("the human's press = %v, Act calls %+v, closed %v; want %q and nothing done", err, r.acted, r.closed, want)
+	}
+	if strings.Contains(err.Error(), "t-stall") {
+		t.Fatalf("the human's refusal names the task id: %v", err)
+	}
+	// the chat's agent outside rung 2's turn reads the title and the id its tools take
+	chat := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous}
+	_, err = r.c.doAnswerCase(t.Context(), chat, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0)
+	want = "Card “needs you: the chain of sf/code has been pending” (t-stall) waits on its case 51, open at rung 2: rung 2 decides it or hands it up, and only then is it the human's, in Needs you."
+	if err == nil || err.Error() != want || len(r.acted) != 0 || len(r.closed) != 0 {
+		t.Fatalf("the agent's answer = %v, Act calls %+v, closed %v; want %q and nothing done", err, r.acted, r.closed, want)
 	}
 	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous, wake: true, birth: factoryd.EventCaseClimbed}
 	if _, err := r.c.doAnswerCase(t.Context(), agent, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0); err != nil {
@@ -487,5 +499,146 @@ func TestAThreadsWakeBookSettlesOnTheTurnThatEndsIt(t *testing.T) {
 	spend(false)
 	if len(booked) != 2 || booked[7] < 0.249 || booked[7] > 0.251 || booked[8] < 0.249 || booked[8] > 0.251 {
 		t.Fatalf("booked %v, want 0.25 on each of cases 7 and 8 (0.30 and 0.20 shared)", booked)
+	}
+}
+
+// A wake's turn that the refused-rounds stop ends hands its case to the
+// human at once, as a rung that did not answer does: the factory agent
+// held the case, Act refused its answer five times, and the turn stopped.
+// Rung 2's step ends handed up, saying the agent did not answer, the case
+// is at the human, and its face says so in the factory's own words.
+func TestAWakesStopHandsItsCaseToTheHuman(t *testing.T) {
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceProductionHeld, raHeldQuestion(), policy.AutonomyAutonomous)
+	ctx := t.Context()
+	// the case as it climbs, before any face
+	if _, err := ra.pg.DB().ExecContext(ctx, `UPDATE cases SET status = 'open', owner_rung = 0 WHERE id = $1`, ra.caseID); err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().Add(35 * time.Minute)
+	if _, err := ra.pg.StartRungStep(ctx, factoryd.CaseStep{CaseID: ra.caseID, Rung: 2, Actor: factoryd.ChatUser, Outcome: factoryd.StepInProgress, DueAt: &due}); err != nil {
+		t.Fatal(err)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseOpen || k.OwnerRung != 2 {
+		t.Fatalf("case = %+v, want open and the factory agent's before the wake", k)
+	}
+
+	r, chat, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman}}
+	r.tasks.tasks = append(r.tasks.tasks, holdAsk())
+	r.c.cfg.CaseByID, r.c.cfg.HandUpRung2 = ra.pg.CaseByID, ra.runner.HandUpRung2
+	no := factoryd.ErrActRefused(`the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`)
+	r.actErrs = map[int]error{}
+	for i := 1; i <= 6; i++ {
+		r.actErrs[i] = no
+		g.replies = append(g.replies, []string{call(i, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)})
+	}
+	conv, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.StartWake(ctx, "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent.", ra.caseID); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+
+	g.mu.Lock()
+	asked := len(g.requests)
+	g.mu.Unlock()
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", conv, 20)
+	const stopped = "The turn stopped: every action of its last 5 rounds was refused. Send a message to go on."
+	if asked != 5 || len(rows) == 0 || rows[len(rows)-1].Content != stopped {
+		t.Fatalf("the model was asked %d times and the thread ends %+v; want 5 times and the stop's words", asked, rows[max(len(rows)-1, 0):])
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || k.OwnerRung != 3 {
+		t.Fatalf("case = %+v, want it at the human", k)
+	}
+	steps, err := ra.pg.CaseSteps(ctx, ra.caseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const said = "The factory agent did not answer: the factory refused every action it tried."
+	own := slices.DeleteFunc(slices.Clone(steps), func(s factoryd.CaseStep) bool { return s.Rung != 2 })
+	if len(own) != 1 || own[0].Outcome != factoryd.StepHandedUp || own[0].Found != said {
+		t.Fatalf("steps = %+v, want the factory agent's one step handed up as not answered", steps)
+	}
+	if lead, found := factoryd.StepWords(own[0]); lead != said || found != "" {
+		t.Errorf("the step reads %q and %q on the card's life, want %q alone", lead, found, said)
+	}
+	if info, _ := ra.face(t, "t-hq")["info"].(string); !strings.Contains(info, said) || strings.Contains(info, "found:") {
+		t.Errorf("the face's view %q, want it to say %q as the factory's words, no finding", info, said)
+	}
+	if faults := facefixtures.HumanFaults(said); len(faults) > 0 {
+		t.Errorf("%q: %v", said, faults)
+	}
+}
+
+// A human's turn that the refused rounds stop is not the wake's: the case a
+// wake queued behind it named stays with the factory agent, whose own turn
+// runs next.
+func TestAHumansStopLeavesAQueuedWakesCase(t *testing.T) {
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceProductionHeld, raHeldQuestion(), policy.AutonomyAutonomous)
+	ctx := t.Context()
+	// the case as it climbs, before any face
+	if _, err := ra.pg.DB().ExecContext(ctx, `UPDATE cases SET status = 'open', owner_rung = 0 WHERE id = $1`, ra.caseID); err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().Add(35 * time.Minute)
+	if _, err := ra.pg.StartRungStep(ctx, factoryd.CaseStep{CaseID: ra.caseID, Rung: 2, Actor: factoryd.ChatUser, Outcome: factoryd.StepInProgress, DueAt: &due}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman}}
+	r.tasks.tasks = append(r.tasks.tasks, holdAsk())
+	r.c.cfg.CaseByID, r.c.cfg.HandUpRung2 = ra.pg.CaseByID, ra.runner.HandUpRung2
+	no := factoryd.ErrActRefused(`the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`)
+	r.actErrs = map[int]error{}
+	for i := 1; i <= 5; i++ {
+		r.actErrs[i] = no
+		g.replies = append(g.replies, []string{call(i, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)})
+	}
+	g.replies = append(g.replies, []string{say("the wake's answer")})
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if code, _, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"deploy it"}}); err != nil || code != 200 {
+			t.Errorf("the human's turn = %d %v", code, err)
+		}
+	}()
+	<-g.arrived
+	wakeDone := make(chan error, 1)
+	go func() {
+		wakeDone <- r.c.StartWake(ctx, "ai-software-factory-code", "sebastian", 1, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent.", ra.caseID)
+	}()
+	if !waitFor(t, time.Second, func() bool {
+		rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", 1, 10)
+		return len(rows) == 2 && rows[1].Queued && rows[1].BirthKind == factoryd.EventCaseClimbed
+	}) {
+		t.Fatal("the wake's row did not land queued while the human's turn ran")
+	}
+	close(g.hold)
+	if err := <-wakeDone; err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	wg.Wait()
+
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", 1, 40)
+	const stopped = "The turn stopped: every action of its last 5 rounds was refused. Send a message to go on."
+	var stops, wakes int
+	for _, m := range rows {
+		if m.Role == "assistant" && m.Content == stopped {
+			stops++
+		}
+		if m.Role == "assistant" && m.Content == "the wake's answer" {
+			wakes++
+		}
+	}
+	if stops != 1 || wakes != 1 {
+		t.Fatalf("the thread holds %d stops and %d answers of the wake, want one of each: %+v", stops, wakes, rows)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseOpen || k.OwnerRung != 2 {
+		t.Fatalf("case = %+v, want it open with the factory agent", k)
 	}
 }

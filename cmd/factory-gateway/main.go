@@ -108,6 +108,7 @@ func main() {
 		DeploymentReader: factoryd,
 		ImageLooker:      factoryd,
 		Digester:         factoryd,
+		Briefs:           factoryd,
 		Cloud:            cloud,
 		Telemetry:        tel,
 		FactorydToken:    cfg.FactorydToken,

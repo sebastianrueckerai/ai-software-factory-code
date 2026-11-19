@@ -42,8 +42,9 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
-	heads           map[string][2]string // each repository's chain head row: its commit and status
-	pending         []PendingSignal      // the case signals no send delivered
+	faces           map[int64]map[string]any // the face keys SetCaseFace stored last, by case
+	heads           map[string][2]string     // each repository's chain head row: its commit and status
+	pending         []PendingSignal          // the case signals no send delivered
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
@@ -131,6 +132,11 @@ type fakeStore struct {
 	overHolds map[string]OverHoldCall
 	// createFails fails that many CreateTask calls
 	createFails int
+	// caseFactsFails fails that many SetCaseFacts calls
+	caseFactsFails int
+	// askRowFails fails that many SetAskFace calls at their last write,
+	// the ask row's, so the transaction writes nothing
+	askRowFails int
 	// sizeFails fails that many SetTaskSizeBudget calls
 	sizeFails int
 	// createCalls counts every CreateTask call, failed or not
@@ -231,9 +237,9 @@ func (s *fakeStore) Dependents(ctx context.Context, id string) ([]Dependency, er
 	return out, nil
 }
 
-func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
+func (s *fakeStore) ReplaceCard(ctx context.Context, id, status string, t Task) (bool, error) {
 	old := s.tasks[id]
-	if _, exists := s.tasks[t.ID]; exists || old.Status != "failed" || old.PlanKey != t.PlanKey {
+	if _, exists := s.tasks[t.ID]; exists || old.Status != status || old.PlanKey != t.PlanKey {
 		return false, nil
 	}
 	old.PlanKey = ""
@@ -632,7 +638,7 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 		g := groups[c.Parent]
 		if g == nil {
 			p := s.tasks[c.Parent]
-			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Repository: p.Repository, Children: map[string]int{}}
+			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Name: planName(p), Repository: p.Repository, Children: map[string]int{}}
 			groups[c.Parent] = g
 		}
 		key := [2]string{c.Parent, c.PlanKey}
@@ -878,6 +884,15 @@ func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id string, card Tas
 	return nil
 }
 
+func (s *fakeStore) CardBrief(ctx context.Context, taskID string) (CardBrief, error) {
+	return ReadCardBrief(ctx, s, taskID)
+}
+
+// SessionBriefs: a fake card's sessions stored no text.
+func (s *fakeStore) SessionBriefs(context.Context, string) ([]SessionBrief, error) {
+	return nil, nil
+}
+
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	t, ok := s.tasks[id]
 	return t, ok, nil
@@ -885,13 +900,28 @@ func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 
 // FiledFor reads the console's card_filed row of the issue among the
 // events, as PGStore.FiledFor does.
-func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) (string, bool, error) {
+func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) (Filing, bool, error) {
 	for _, e := range s.events {
 		if e.Kind == EventCardFiled && e.Repository == repository && e.IssueNumber == issue {
-			return e.Actor, true, nil
+			unchecked, _ := e.Detail["brief_unchecked"].(bool)
+			return Filing{By: e.Actor, Unchecked: unchecked, Chat: e.Via == ViaChat}, true, nil
 		}
 	}
-	return "", false, nil
+	return Filing{}, false, nil
+}
+
+func (s *fakeStore) MarkChatFiled(ctx context.Context, repository string, issue int64, why string) error {
+	f, ok, _ := s.FiledFor(ctx, repository, issue)
+	if !ok || !f.Chat {
+		return nil
+	}
+	for id, t := range s.tasks {
+		if t.Repository == repository && t.IssueNumber == issue && !t.ChatFiled {
+			t.ChatFiled, t.BriefUnchecked, t.Why = true, f.Unchecked, why
+			s.tasks[id] = t
+		}
+	}
+	return nil
 }
 
 // TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
@@ -922,15 +952,7 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 			held = append(held, t)
 		}
 	}
-	slices.SortFunc(held, func(a, b Task) int {
-		if da, db := factorydFinal(a.Status), factorydFinal(b.Status); da != db {
-			if da {
-				return 1
-			}
-			return -1
-		}
-		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
-	})
+	slices.SortFunc(held, IssueCardOrder)
 	if len(held) == 0 {
 		return Task{}, false, nil
 	}
@@ -986,9 +1008,9 @@ func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentI
 	return nil
 }
 
-func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
+func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, source, info string) error {
 	for i := len(s.events) - 1; i >= 0; i-- {
-		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && e.Detail["source"] == SourceProductionHeld {
+		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && e.Detail["source"] == source {
 			detail := maps.Clone(e.Detail)
 			detail["info"] = info
 			s.events[i].Detail = detail
@@ -1566,6 +1588,13 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	if e.IdentityKey != "" && slices.ContainsFunc(s.events, func(have Event) bool { return have.IdentityKey == e.IdentityKey }) {
 		return 0, nil
 	}
+	if t, ok := s.tasks[e.TaskID]; ok && e.Kind == EventQuestionAsked {
+		if id, _ := toInt(e.Detail["case_id"]); id == 0 {
+			if _, err := CaseFromAsk(t, e, ""); err != nil {
+				return 0, err
+			}
+		}
+	}
 	s.events = append(s.events, e)
 	if e.Kind == EventQuestionAsked {
 		id, _ := toInt(e.Detail["case_id"])
@@ -1592,6 +1621,17 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
 		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
+		// the close ends the plan's held ask, as endHoldCase does
+		for _, c := range s.cases {
+			if c.TaskID == e.TaskID && c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+				words, _ := e.Detail["words"].(string)
+				if e.Actor == FactoryDecider {
+					_ = s.WithdrawCase(ctx, c.ID, HeldPlanSettled)
+				} else {
+					_ = s.ResolveCase(ctx, c.ID, CaseResolution{By: e.Actor, Action: AnswerDropAndEnd, Reason: words}, nil, nil, nil)
+				}
+			}
+		}
 	}
 	return int64(len(s.events)), nil
 }
@@ -1708,15 +1748,22 @@ func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment str
 // ReopenFreezeCard opens the fake's done freeze card t again as the
 // store's transaction does: the row, its face, the close's record off the
 // issue and confirmed, and the owed reopen, which carries the comment of a
-// close that was not confirmed.
-func (s *fakeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string) (string, error) {
-	c, ok := s.tasks[t.ID]
-	if !ok || c.Status != "done" || c.Source != SourceFreezeCard {
+// close that was not confirmed. The card's ask is recorded with it: an
+// ask the store refuses leaves the card done under its old face.
+func (s *fakeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string, ask HumanAsk) (string, error) {
+	was, ok := s.tasks[t.ID]
+	if !ok || was.Status != "done" || was.Source != SourceFreezeCard {
 		return "", fmt.Errorf("freeze card %s: %w (not done, cannot open again)", t.ID, ErrNotFound)
 	}
+	c := was
 	c.Objective = face
 	s.tasks[t.ID] = c
 	if err := s.TransitionTask(ctx, t.ID, []string{"done"}, "waiting-human"); err != nil {
+		s.tasks[t.ID] = was
+		return "", err
+	}
+	if _, err := s.Record(ctx, ask.Event(t)); err != nil {
+		s.tasks[t.ID] = was
 		return "", err
 	}
 	if s.confirmedCloses == nil {
@@ -1738,6 +1785,36 @@ func (s *fakeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment 
 	s.intakeEvents = append(s.intakeEvents, IntakeEvent{ID: s.nextIntakeID(), TaskID: t.ID, Kind: IntakeFactoryReopened,
 		Author: FactoryDecider, CommentID: t.IssueNumber, Body: comment, CreatedAt: s.clock()})
 	return comment, nil
+}
+
+// FaceFreezeCard writes face on the fake's freeze card and info on its
+// newest ask, as the store's transaction does.
+func (s *fakeStore) FaceFreezeCard(ctx context.Context, taskID, face, info string) error {
+	if s.tasks[taskID].Source != SourceFreezeCard {
+		return fmt.Errorf("freeze card %s: %w", taskID, ErrNotFound)
+	}
+	if err := s.SetObjective(ctx, taskID, face); err != nil {
+		return err
+	}
+	return s.SetAskInfo(ctx, taskID, SourceFreezeCard, info)
+}
+
+// AskFreezeCard writes face on the fake's freeze card t and records ask,
+// as the store's transaction does: an ask the store refuses leaves the
+// face as it was.
+func (s *fakeStore) AskFreezeCard(ctx context.Context, t Task, face string, ask HumanAsk) error {
+	was, ok := s.tasks[t.ID]
+	if !ok || was.Source != SourceFreezeCard {
+		return fmt.Errorf("freeze card %s: %w", t.ID, ErrNotFound)
+	}
+	if err := s.SetObjective(ctx, t.ID, face); err != nil {
+		return err
+	}
+	if _, err := s.Record(ctx, ask.Event(t)); err != nil {
+		s.tasks[t.ID] = was
+		return err
+	}
+	return nil
 }
 
 // OwedFreezeReopens lists the fake's owed reopens, oldest first.
@@ -2001,6 +2078,10 @@ func (s *fakeStore) SetCaseFact(ctx context.Context, id int64, key, value string
 }
 
 func (s *fakeStore) SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error {
+	if s.caseFactsFails > 0 {
+		s.caseFactsFails--
+		return errors.New("the store is away")
+	}
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
 	if i < 0 {
 		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
@@ -2252,28 +2333,21 @@ func (s *fakeStore) StartRung1Step(ctx context.Context, taskID string, limit int
 	return id, false, err
 }
 
-func (s *fakeStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
-	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
-	if i < 0 {
-		return fmt.Errorf("case %d: %w", id, ErrNotFound)
-	}
-	if !strings.HasSuffix(s.cases[i].Problem, suffix) {
-		s.cases[i].Problem += suffix
-	}
-	return nil
-}
-
 func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
 	return s.caseSteps[caseID], nil
 }
 
 // BoardTasks are repository's live cards as BoardTasks reads them, by
-// priority and id; a chat task is no card.
+// priority and id; a chat task and a helper task are no card, and each
+// card holds its live helpers.
 func (s *fakeStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
-	var out []BoardTask
+	var all, out []BoardTask
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) {
-			b := BoardTask{Task: t}
+		all = append(all, BoardTask{Task: t})
+	}
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) && !t.Report() {
+			b := BoardTask{Task: t, Helpers: HelpersOf(all, t.ID)}
 			if t.Held() {
 				v, err := holdView(ctx, s, t)
 				if err != nil {
@@ -2405,8 +2479,7 @@ func (s *fakeStore) ParkImage(ctx context.Context, p ImagePark, waits bool) (Ima
 func (s *fakeStore) OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error) {
 	var newest Task
 	for _, t := range s.tasks {
-		title, _, _ := strings.Cut(t.Objective, "\n")
-		if t.Source != SourceToolRequest || t.Repository != repository || !strings.HasPrefix(title, "Add ") || !strings.HasSuffix(title, " to image "+target) ||
+		if t.Repository != repository || t.ToolImage != target ||
 			Final(t.Status) || t.Status == "merged" || t.CreatedAt.Before(newest.CreatedAt) {
 			continue
 		}
@@ -2976,6 +3049,27 @@ func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, b
 		}
 	}
 	return fmt.Errorf("open gate_bound alert: %w", ErrNotFound)
+}
+
+func (s *fakeStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts, face map[string]any) error {
+	cur, ok := s.tasks[t.ID]
+	if !ok || !slices.ContainsFunc(s.cases, func(c Case) bool {
+		return c.ID == caseID && c.TaskID == t.ID && (c.Status == CaseOpen || c.Status == CaseAtHuman)
+	}) {
+		return fmt.Errorf("task %s or case %d: %w", t.ID, caseID, ErrNotFound)
+	}
+	// a failed write leaves the card, the case and the row as they were,
+	// as the store's one transaction does
+	if s.askRowFails > 0 {
+		s.askRowFails--
+		return errors.New("the ask row: the store did not answer")
+	}
+	if err := s.SetCaseFacts(ctx, caseID, facts); err != nil {
+		return err
+	}
+	cur.Objective, cur.Why = t.Objective, t.Why
+	s.tasks[t.ID] = cur
+	return s.SetCaseFace(ctx, caseID, face)
 }
 
 func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
@@ -6450,7 +6544,21 @@ func TestPGStoreTasksByParent(t *testing.T) {
 	}
 }
 
-func (s *fakeStore) SetCaseOffers(context.Context, int64, []AskOffer, []ActionRefusal) error {
+func (s *fakeStore) SetCaseFace(_ context.Context, caseID int64, keys map[string]any) error {
+	if s.faces == nil {
+		s.faces = map[int64]map[string]any{}
+	}
+	s.faces[caseID] = keys
+	// the newest ask row of the case takes the face, as the store's merge
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if e := s.events[i]; e.Kind == EventQuestionAsked && fmt.Sprint(e.Detail["case_id"]) == fmt.Sprint(caseID) {
+			for _, k := range []string{"preselected", "recommended_by", "recommendation"} {
+				delete(e.Detail, k)
+			}
+			maps.Copy(e.Detail, keys)
+			break
+		}
+	}
 	return nil
 }
 

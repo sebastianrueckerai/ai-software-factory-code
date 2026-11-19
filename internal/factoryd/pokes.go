@@ -1,15 +1,19 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Pokes (roadmap 239): factoryd's own turns in the inbox thread of each
@@ -40,17 +44,10 @@ const (
 	MessageStop       = "stop"
 )
 
-// ChoiceRerun is the inbox's answer that runs a factory pull request's red
-// checks again (roadmap 264).
-const ChoiceRerun = "Re-run the checks"
-
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
 	EventPullRequestMerged, EventCardHoldStranded}
-
-// budgetSources are the escalation sources of a card stopped by money.
-var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap"}
 
 // agentVerbs are the agent's own actions a poke tells, by event kind.
 var agentVerbs = map[string]string{EventCardFiled: "filed", EventCardRetried: "retried", EventSessionGranted: "granted"}
@@ -158,7 +155,13 @@ func (p *Poker) Pass(ctx context.Context) error {
 				}
 				e.Detail["chain"], e.Detail["repair"], e.Detail["covered"] = state, float64(repair), covered
 			}
-			m, ok := pokeOf(e, t)
+			var parent Task
+			if HelperStep(t.Source) != "" && t.Parent != "" {
+				if parent, _, err = p.Store.Task(ctx, t.Parent); err != nil {
+					return err
+				}
+			}
+			m, ok := PokeOf(e, t, parent)
 			var to []string
 			if ok {
 				to = pokeTo(tree, e.Repository)
@@ -241,10 +244,21 @@ func pokeTo(tree policy.Tree, repository string) []string {
 	return tree.ApproversOf(repository)
 }
 
-// pokeOf is event e's poke, t the card it names, false for an event that
-// pokes nobody.
-func pokeOf(e Event, t Task) (ChatMessage, bool) {
-	ref := cardRef(e, t)
+// PokeOf is event e's poke, t the card it names, false for an event that
+// pokes nobody. A message about a card's ask is its face's words
+// (askMessage), with the ask of a merge's, a plan's or a criteria request,
+// whose case's face asks for it; a notice is one line of at most noticeMax
+// runes. A helper
+// task's message names its step on parent, the card the step stands on:
+// its ask is the parent's, and says which step asks.
+func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
+	name, step := inboxName(e, t), ""
+	if s := HelperStep(t.Source); s != "" && parent.ID != "" {
+		name = s + " of " + inboxName(e, parent)
+		if e.Kind == EventQuestionAsked {
+			name, step = inboxName(e, parent), capitalize(s)+" asks."
+		}
+	}
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
 	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
 	bl := func(k string) bool { v, _ := e.Detail[k].(bool); return v }
@@ -261,14 +275,21 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			return m, false
 		}
 		m.Kind = MessageEscalation
-		m.Content = TitledRef(ref, t) + " needs you: " + str("question")
+		why := str("why")
+		if q := cmp.Or(str("question"), str("ask")); why == "" && !strings.Contains(q, "\n") && utf8.RuneCountInString(name+q) <= askLead {
+			// an ask whose row stores no why says its question where it fits
+			why = q
+		}
+		suggested := suggestion(e.Detail, offersOf(e.Detail["offers"]))
+		switch e.Detail["case_kind"] {
+		case string(CasePlanCriteria), string(CasePlanQuestion), string(CasePlanConfirmation):
+			// the face of a request's case says the request's ask
+			step = str("ask")
+		case string(CaseMergeApproval):
+			step, why, suggested, m.Choices = mergePoke(e, t)
+		}
+		m.Content = askMessage(name, step, why, suggested)
 		m.Decider = str("decider_line")
-		if slices.Contains(budgetSources, str("source")) {
-			m.Content = TitledRef(ref, t) + " is stopped by its budget: " + str("question")
-		}
-		if why := str("why"); why != "" {
-			m.Content += "\nWhy: " + textutil.Truncate(why, 300)
-		}
 		if cs, ok := e.Detail["choices"].([]any); ok {
 			for _, c := range cs {
 				if s, ok := c.(string); ok {
@@ -283,14 +304,11 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		if bl("held") {
 			return m, false
 		}
-		who := ref
+		who := capitalize(name)
 		if e.Detail["case_kind"] == string(CaseMonitorFlag) {
-			who = "The flag on " + TitledRef(ref, t)
-			if problem := str("problem"); problem != "" {
-				who += " (" + problem + ")"
-			}
+			who = "The flag on " + name
 		}
-		m.Content = who + " needs you no more: its question is withdrawn because " + str("reason") + "."
+		m.Content = notice(who+" needs you no more: "+strings.TrimSuffix(str("reason"), ".")+".", who+" needs you no more.")
 	case EventPullRequestMerged:
 		// a card still merged informs once at its merge, its words the
 		// chain's facts as this poke reads them (chain, repair and covered
@@ -299,61 +317,69 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		if t.Status != "merged" || bl("covered") {
 			return m, false
 		}
-		m.Content = ref + " merged; the chain is running."
+		m.Content = NothingForYou + " " + name + " is merged. The checks on main run now."
 		if repair := num("repair"); str("chain") == "failure" || repair > 0 {
-			m.Content = ref + " merged; the chain failed"
+			m.Content = NothingForYou + " " + name + " is merged, and the checks on main failed."
 			if repair > 0 {
-				m.Content += fmt.Sprintf("; repair #%d is on it", repair)
+				m.Content = notice(m.Content+fmt.Sprintf(" #%d repairs them.", repair), m.Content)
 			}
-			m.Content += "."
 		}
 	case EventTaskEnded:
 		switch {
 		case t.Kind != "agent":
 			return m, false
 		case str("state") == "failed":
-			m.Content = fmt.Sprintf("%s failed: %s.", ref, strings.TrimSuffix(FirstLine(str("reason")), "."))
-			m.Choices = []string{"Retry", "Leave it"}
+			reason := FirstLine(str("reason"))
+			if code, rest, ok := strings.Cut(reason, ": "); ok && reasonCode.MatchString(code) {
+				// the gate's code word leads a machine's reason, not a human's line
+				reason = rest
+			}
+			m.Content = notice(capitalize(name)+" failed: "+strings.TrimSuffix(reason, ".")+".", capitalize(name)+" failed.")
+			if !t.Report() {
+				// a helper's report is no work card: no retry files it again
+				m.Choices = []string{LabelOf(ActRetry), LabelOf(ActNote)}
+			}
 		case str("state") == "done" && t.Parent == "":
-			m.Content = fmt.Sprintf("%s is done and live: %s. €%.2f in all.", ref, CardTitle(t), t.SpentEUR)
+			m.Content = fmt.Sprintf("%s %s is done and live. It cost %s EUR.", NothingForYou, name, textutil.EUR(t.SpentEUR))
 		default:
 			return m, false
 		}
 	case EventAllChildrenDone:
-		m.Content = fmt.Sprintf("Plan %s is done: all %d cards.", ref, num("cards"))
+		m.Content = fmt.Sprintf("%s The plan %s is done: all %d cards.", NothingForYou, name, num("cards"))
 	case EventCardHoldStranded:
 		// a hold the human released, or one a retry's card took over,
 		// before the pass strands nothing
 		if !t.Held() || t.Hold.Release != str("release_task") {
 			return m, false
 		}
-		fit := "Release the hold, or hold it again with another release card."
+		ended, fit := "was closed", "Release the hold or hold it again."
 		if str("status") == "failed" {
 			// a retry of the release card takes the hold over (takeOverEdges)
-			fit = fmt.Sprintf("Retry #%d, whose retry takes the hold over, or release the hold, or hold it again with another release card.", num("release_issue"))
+			ended, fit = "failed", fmt.Sprintf("Retry #%d or release the hold.", num("release_issue"))
 		}
-		m.Content = fmt.Sprintf("%s stays on hold: its release card %s ended %s and releases nothing. %s", TitledRef(ref, t), str("release"), str("status"), fit)
+		held := capitalize(name) + " stays on hold: its release card "
+		m.Content = notice(held+str("release")+" "+ended+". "+fit, held+ended+". "+fit)
 	case EventChatBudgetSpent:
 		// the chat's own task is no card
 		m.TaskID = ""
 		budget, _ := e.Detail["budget_eur"].(float64)
 		spent, _ := e.Detail["spent_eur"].(float64)
-		m.Content = fmt.Sprintf("The judgment budget for this month is used up: €%.2f of €%.2f spent, and the chat's turns stand until it is funded or the month turns. "+
-			"Fund it from this row or the board's status panel, and the stopped turns go on.", spent, budget)
+		m.Content = fmt.Sprintf("The chat's budget for this month is used up: %s of %s EUR spent. Its turns wait until it is funded or the month turns.",
+			textutil.EUR(spent), textutil.EUR(budget))
 	case EventRoutineRan:
 		if str("poke") == "" {
 			return m, false
 		}
 		m.Content = str("poke")
-		m.Decider = routineDecider(str("routine"), int(num("run")), str("schedule"))
+		m.Decider = RoutineDecider(str("routine"), int(num("run")), str("schedule"))
 	case EventAutonomyChanged:
 		m.TaskID = ""
 		from, to := str("from"), str("to")
 		switch {
 		case from != to:
-			m.Content = fmt.Sprintf("%s set the autonomy from %s to %s: %s.", e.Actor, from, to, policy.AutonomyMeaning[to])
+			m.Content = fmt.Sprintf("%s %s set the autonomy from %s to %s.", NothingForYou, e.Actor, from, to)
 		case num("queue_cap") > 0:
-			m.Content = fmt.Sprintf("%s set the queue cap to %d.", e.Actor, num("queue_cap"))
+			m.Content = fmt.Sprintf("%s %s set the queue cap to %d.", NothingForYou, e.Actor, num("queue_cap"))
 		default:
 			return m, false
 		}
@@ -365,27 +391,195 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		if level == policy.AutonomyAutonomous && str("merge_rule") == policy.MergeAuto {
 			level = policy.AutonomyFullAuto
 		}
-		title := fmt.Sprintf("%s %q", ref, CardTitle(t))
 		switch e.Kind {
 		case EventCardFiled:
-			m.Content = "Filed " + title + "."
+			m.Content = NothingForYou + " The agent filed " + name + "."
 		case EventCardRetried:
-			m.Content = "Retried " + title + "."
+			m.Content = NothingForYou + " The agent tried " + name + " again."
 		case EventSessionGranted:
-			m.Content = "Granted " + title + " a session."
+			m.Content = NothingForYou + " The agent gave " + name + " one more session."
 		}
 		m.Decider = level + " level · " + verb + " by the agent"
 	}
 	return m, true
 }
 
-// routineDecider is the decider line of a poke run n of routine makes,
+// NothingForYou opens every inbox message that needs nothing from the
+// human.
+const NothingForYou = "Nothing for you."
+
+// reasonCode is the code word a gate's reason opens with ("checks").
+var reasonCode = regexp.MustCompile(`^[a-z][a-z_]*$`)
+
+// noticeMax bounds a notice, messageMax an ask's message, in runes;
+// askLead a question's card and the question where its row stores no why,
+// so its suggestion fits beside.
+const (
+	noticeMax  = 160
+	messageMax = 280
+	askLead    = 200
+)
+
+// notice is line, or short where line runs past noticeMax: a notice drops
+// its detail rather than cut it.
+func notice(line, short string) string {
+	if utf8.RuneCountInString(line) > noticeMax {
+		return short
+	}
+	return line
+}
+
+// askMessage is the inbox's message about a card's ask, the one source
+// its face is: the card by its name, which links it, a request's ask (a
+// question's stands on its card), why it asks, and the suggested answer
+// with who suggests it. A why that would take the message past messageMax
+// stays on the card, which holds the rest.
+func askMessage(name, ask, why, suggested string) string {
+	head, tail := name+" needs you."+then(ask), then(suggested)
+	if full := head + then(capitalize(why)) + tail; utf8.RuneCountInString(full) <= messageMax {
+		return full
+	}
+	return head + tail
+}
+
+// then is s as the next sentence of a message, "" for none.
+func then(s string) string {
+	if s = sentence(s); s != "" {
+		return " " + s
+	}
+	return ""
+}
+
+// suggestion is the line of an ask row's suggested answer, offers its
+// answers: who suggests which label, "" for none.
+func suggestion(detail map[string]any, offers []AskOffer) string {
+	r := RecommendationOf(detail)
+	if r.Action == "" {
+		return ""
+	}
+	label := ""
+	for _, o := range offers {
+		if o.Value == r.Action || choicePrefix+o.Value == r.Action {
+			label = o.Label
+		}
+	}
+	if label == "" {
+		a, ok := AnswerOf(r.Action)
+		if !ok {
+			return ""
+		}
+		label = a.Label
+	}
+	return capitalize(r.By) + " suggests “" + label + "”."
+}
+
+// offersOf are the answers an ask row stores under offers.
+func offersOf(raw any) []AskOffer {
+	var out []AskOffer
+	if b, err := json.Marshal(raw); err == nil {
+		_ = json.Unmarshal(b, &out)
+	}
+	return out
+}
+
+// LabelOf is action's label in the vocabulary.
+func LabelOf(action string) string {
+	a, _ := AnswerOf(action)
+	return a.Label
+}
+
+var (
+	// keySpan is an answer's key in a code span, with the variant an agent
+	// passes beside it: "`deny_merge` with `reject`"
+	keySpan = regexp.MustCompile("`([a-z_]+)`(?: with `([a-z_]+)`)?")
+	// paramSpan is the names or values of a field an agent passes, in
+	// brackets: " (`depends_on`)", " (`met`, `not_met` or `waived`)"
+	paramSpan = regexp.MustCompile(" \\((?:`[^`]+`(?:, | or | and )?)+\\)")
+)
+
+// ForHuman is refusal s as a human reads it: s names each answer by the
+// key an agent types, in a code span, and a human reads its label; s
+// names in brackets the field an agent passes, which a human's form
+// fills, and a human reads no name of it.
+func ForHuman(s string) string {
+	s = keySpan.ReplaceAllStringFunc(s, func(m string) string {
+		g := keySpan.FindStringSubmatch(m)
+		label := cmp.Or(LabelOf(g[1]+"/"+g[2]), LabelOf(g[1]))
+		if label == "" {
+			return m
+		}
+		return "“" + label + "”"
+	})
+	return paramSpan.ReplaceAllString(s, "")
+}
+
+// RoutineDecider is the decider line of a poke run n of routine makes,
 // schedule its schedule in words.
-func routineDecider(routine string, n int, schedule string) string {
+func RoutineDecider(routine string, n int, schedule string) string {
 	return fmt.Sprintf("routine %s · run %d · %s", routine, n, schedule)
 }
 
-// cardRef is how a poke names e's card: its issue, else its task id.
+// mergePoke is what the inbox says of the face row e of a merge case on
+// card t: the face's ask and why, the answer a rung or the face suggests,
+// and the answer the inbox can press. A merge whose promises a human
+// judges first opens on the first one's page, as its card does, and
+// offers no press.
+func mergePoke(e Event, t Task) (ask, why, suggested string, choices []string) {
+	c := Case{TaskID: e.TaskID, Repository: e.Repository, Status: CaseAtHuman, Kind: CaseMergeApproval, Facts: e.Detail}
+	if open := factStrings(c, "open"); len(open) > 0 {
+		c = OnPromise(c, PromiseFact{ID: open[0], Kind: CriterionHuman})
+		face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t})
+		return face.Ask, face.Why, "", nil
+	}
+	offers := offersOf(e.Detail["offers"])
+	for _, o := range offers {
+		if o.Value == ActApproveMerge || o.Value == ActRerunChecks {
+			choices = []string{o.Label}
+		}
+	}
+	ask, _ = e.Detail["ask"].(string)
+	why, _ = e.Detail["why"].(string)
+	return ask, why, suggestion(e.Detail, offers), choices
+}
+
+// inboxName is how the inbox names e's card (CardName), "A card" for a
+// card with neither issue nor title.
+func inboxName(e Event, t Task) string {
+	return cmp.Or(CardName(t, e.IssueNumber), "A card")
+}
+
+// nameTitleMax bounds the title a line names a card by, in runes.
+const nameTitleMax = 70
+
+// CardName is how a line names card t: its issue, which links it, and its
+// title cut at a word to nameTitleMax runes; the title alone, quoted, for
+// a card with no issue; "" for neither. issue stands in for a card with
+// no issue of its own.
+func CardName(t Task, issue int64) string {
+	if t.IssueNumber != 0 {
+		issue = t.IssueNumber
+	}
+	title := CardTitle(t)
+	if r := []rune(title); len(r) > nameTitleMax {
+		cut := string(r[:nameTitleMax])
+		if i := strings.LastIndex(cut, " "); i > 0 {
+			cut = cut[:i]
+		}
+		title = strings.TrimRight(cut, " ,;:.") + "…"
+	}
+	switch {
+	case issue != 0 && title != "":
+		return fmt.Sprintf("#%d (%s)", issue, title)
+	case issue != 0:
+		return fmt.Sprintf("#%d", issue)
+	case title != "":
+		return "“" + title + "”"
+	}
+	return ""
+}
+
+// cardRef is how the agent's wake names e's card: its issue, else its
+// task id.
 func cardRef(e Event, t Task) string {
 	switch {
 	case t.IssueNumber != 0:

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // chatAnswer answers POST /projects/{name}/chat/answer: a choice of an
@@ -39,7 +40,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	id, _ := strconv.ParseInt(r.PostFormValue("message"), 10, 64)
-	choice, reason := r.PostFormValue("choice"), r.PostFormValue("reason")
+	choice := r.PostFormValue("choice")
 	rows, err := c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, chatHistory)
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
@@ -64,7 +65,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	a := button(r)
 	a.repository = t.p.Repository
-	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, reason, rows[i])
+	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, rows[i])
 	if err != nil {
 		note = "The answer did not land: " + t.sentence(err)
 	}
@@ -144,7 +145,7 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 	case errors.Is(err, factoryd.ErrUsedProposal):
 		// the press's own words, not fail's plain 404: the plan pins the
 		// used binding's answer on the ask row's button
-		http.Error(w, "There is no such proposal or undo; it may have expired.", http.StatusNotFound)
+		http.Error(w, "There is no such proposal or undo. It may have expired.", http.StatusNotFound)
 		return
 	case !gone:
 		c.fail(w, r, err)
@@ -185,24 +186,20 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 }
 
 // resolveChoice decides card id with choice as its state asks: a pending
-// merge approves on Approve, or runs a factory pull request's red checks
-// again on Re-run the checks, each under the role its board button and
-// chat tool need, a waiting
-// question takes the choice as the member's answer (its park, close or
-// fund acting as the board's button does), a choice card (the stall
-// card, the failed roll card) acts on it, another human-lane
-// escalation closes with it, and a plan's wait on its failed card takes
-// the choice on its ended plan; reason is the press's words, an overrule's
-// reason. A card settled since
-// its escalation row m asked, by an answer, the question's withdrawal or
-// the wait guard, says so: the first answer wins.
-func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice, reason string, m factoryd.ChatMessage) (string, error) {
+// merge approves on its merge's label, or runs a factory pull request's
+// red checks again on the rerun's, each under the role its board button and
+// chat tool need; a human card's question takes the choice as its
+// answer, and an agent card's ask takes it as the human's words
+// (doAnswerValue). A card settled since its escalation row m asked, by an
+// answer, the question's withdrawal or the wait guard, says so: the first
+// answer wins.
+func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string, m factoryd.ChatMessage) (string, error) {
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	switch {
 	case err != nil:
 		return "", refuse(http.StatusInternalServerError, "cannot read the card")
 	case !ok:
-		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
+		return "", refuse(http.StatusNotFound, "This card is gone from the project.")
 	}
 	events, err := c.cfg.Events.TaskEvents(ctx, id, startEvents)
 	if err != nil {
@@ -224,13 +221,13 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice, reason
 	for _, q := range pending {
 		switch {
 		case q.TaskID != id:
-		case q.Kind == factoryd.ApprovalMerge && choice == "Approve":
-			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "task "+id); err != nil {
+		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.LabelOf(factoryd.ActApproveMerge):
+			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "card "+cardRef(a, t)); err != nil {
 				return "", err
 			}
-			return c.doApprove(ctx, a, q.ID, "", 0)
-		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.ChoiceRerun:
-			if err := c.admit(ctx, accessTable["rerun_checks"], a, t.Repository, "task "+id); err != nil {
+			return c.doApprove(ctx, a, q.ID)
+		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.LabelOf(factoryd.ActRerunChecks):
+			if err := c.admit(ctx, accessTable["rerun_checks"], a, t.Repository, "card "+cardRef(a, t)); err != nil {
 				return "", err
 			}
 			return c.doRerun(ctx, a, q.ID)
@@ -239,12 +236,12 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice, reason
 	if t.Status != "waiting-human" && !factoryd.PlanWaitAsk(m, events, t) {
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
 	}
-	return c.doAnswerValue(ctx, a, id, choice, "", reason, 0)
+	return c.doAnswerValue(ctx, a, id, choice, "", "")
 }
 
 // inboxAskRefusal answers an ask without choices in the inbox, where no
 // human types an answer.
-const inboxAskRefusal = "The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+const inboxAskRefusal = "The inbox takes buttons only: give choices, or record what you found with `attach_analysis`."
 
 // askMember is the ask tool: the question kept in this thread as an ask
 // row, its choices offered as presses. The row rides the answer's own
@@ -262,7 +259,7 @@ func (t *turn) askMember(in toolInput) (string, error) {
 			return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
 		}
 		if th.Inbox {
-			return "", refuse(http.StatusBadRequest, inboxAskRefusal)
+			return "", refuseAgent(http.StatusBadRequest, inboxAskRefusal)
 		}
 	}
 	question := strings.TrimSpace(in.Ask)
@@ -274,8 +271,13 @@ func (t *turn) askMember(in toolInput) (string, error) {
 	case question == "" || len(question) > 2000:
 		return "", refuse(http.StatusBadRequest, "question: the question of 1 to 2000 characters")
 	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||
-		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
+		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > writingguide.MaxChoice }):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, writingguide.MaxChoice))
+	}
+	for _, c := range choices {
+		if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: %q: %s", c, strings.Join(faults, " ")))
+		}
 	}
 	token, desc, err := t.askBinding(in.Tool, in.Args, in.Choice, choices)
 	if err != nil {
@@ -312,7 +314,7 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 		return "", "", refuse(http.StatusBadRequest, "tool: there is no tool "+name)
 	}
 	if !tool.write {
-		return "", "", refuse(http.StatusBadRequest, "tool: "+name+" reads; a bound tool writes")
+		return "", "", refuse(http.StatusBadRequest, "`tool`: "+name+" reads, and a bound tool writes")
 	}
 	var in toolInput
 	raw := cmp.Or(string(args), "{}")
@@ -340,7 +342,7 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 		Tool: name, Args: json.RawMessage(raw), Description: desc, Conversation: t.conv, Pool: t.pool})
 	t.pool = nil
 	if token == "" {
-		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored; nothing runs.")
+		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored, so nothing runs.")
 	}
 	// the park covers the tool at once: a later call of this same answer
 	// meets the refusal, not only the next turn's
@@ -353,45 +355,63 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 // escalate is the escalate tool: the question and its five parts (the
 // question format) filed as a human-lane card in Needs you, which the
 // inbox's poke carries to the project's humans. The ask is the card's
-// title, so it is one short sentence. Each choice sits in the "say:" value
-// namespace, so no label the agent writes equals a factory control value.
-// A wake on a case refuses it: the case reaches the human by its hand-up.
-func (t *turn) escalate(ask, why, info, recommendation string, choices []string) (string, error) {
+// title and why its why line, which the filing door checks on the turn's
+// try. Each choice sits in the "say:" value namespace, so no label the
+// agent writes equals a factory control value. A wake on a case refuses
+// it: the case reaches the human by its hand-up.
+func (t *turn) escalate(ask, why, info, recommendation, choice string, choices []string) (string, error) {
 	if cases := t.c.books.cases(t.key()); t.a.caseWake() && len(cases) > 0 {
 		ids := make([]string, len(cases))
 		for i, id := range cases {
 			ids[i] = strconv.FormatInt(id, 10)
 		}
-		return "", refuse(http.StatusConflict, fmt.Sprintf("You hold case %s: hand it up with attach_analysis, its case_id and your recommendation, and it reaches the human with your analysis; a second card would ask twice.",
+		return "", refuse(http.StatusConflict, fmt.Sprintf("You hold case %s: hand it up with `attach_analysis`, its `case_id` and your recommendation, and it reaches the human with your analysis; a second card would ask twice.",
 			textutil.AndList(ids)))
 	}
 	ask, why, info = strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info)
-	recommendation = strings.TrimSpace(recommendation)
+	recommendation, choice = strings.TrimSpace(recommendation), strings.TrimSpace(choice)
 	for i := range choices {
 		choices[i] = strings.TrimSpace(choices[i])
 	}
 	switch {
 	case t.c.cfg.Escalate == nil:
 		return "", refuse(http.StatusConflict, "this factory files no escalation from the chat")
-	case ask == "" || len(ask) > factoryd.MaxAsk || strings.ContainsAny(ask, "\r\n"):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("ask: one sentence of 1 to %d bytes, without a line break; this one has %d", factoryd.MaxAsk, len(ask)))
-	case why == "" || len(why) > 2000:
-		return "", refuse(http.StatusBadRequest, "why: why the card cannot go on without a person, 1 to 2000 characters")
+	case ask == "" || utf8.RuneCountInString(ask) > 255:
+		return "", refuse(http.StatusBadRequest, "ask: 1 to 255 characters, as the card's title")
 	case info == "" || len(info) > 2000:
-		return "", refuse(http.StatusBadRequest, "info: what a person should know to answer well, 1 to 2000 characters")
+		return "", refuse(http.StatusBadRequest, "info: what a human should know to answer well, 1 to 2000 characters")
 	case recommendation == "" || len(recommendation) > 2000:
 		return "", refuse(http.StatusBadRequest, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters")
-	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||
-		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
+	case len(choices) < 2 || len(choices) > factoryd.MaxChoices:
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, writingguide.MaxChoice))
 	case repeats(choices):
 		return "", refuse(http.StatusBadRequest, "choices: each answer once")
+	case choice != "" && !slices.Contains(choices, choice):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("`choice`: the one of `choices` you would pick, as written there. %q is none of them.", choice))
+	}
+	for _, c := range choices {
+		if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: %q: %s", c, strings.Join(faults, " ")))
+		}
+	}
+	if err := groundsRefusal(recommendation); err != nil {
+		return "", err
 	}
 	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the project agent"}
 	for _, c := range choices {
 		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: "say:" + c, Label: c})
 	}
-	n, err := t.c.cfg.Escalate(t.r.Context(), t.p.Repository, q, t.a.s.user)
+	if choice != "" {
+		q.Recommended = "say:" + choice
+	}
+	n, err := t.c.cfg.Escalate(factoryd.WithBriefTry(t.r.Context(), t.briefTry("escalate")), t.p.Repository, q, t.a.s.user)
+	var no *factoryd.BriefRefusal
+	if errors.As(err, &no) {
+		err = refuseBrief(no.Lines)
+	}
+	if t.briefDone("escalate", err); errors.As(err, new(*briefRefusal)) {
+		return "", err
+	}
 	if err != nil {
 		log.Printf("console: the escalation of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, "The escalation could not be filed: "+errText(err)+". Try again, or post the question on the card's issue.")

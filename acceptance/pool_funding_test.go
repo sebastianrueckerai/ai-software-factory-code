@@ -160,7 +160,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	args := `{"action":"set","eur":12,"reason":"the review findings cost money"}`
 	token := proposePool(t, r, path, ck, csrf, args)
 	r.OnReload(func() { r.SetLoadedPool(12) })
-	answer := "The pool of " + accProjectName + " is €12.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it."
+	answer := "The pool of " + accProjectName + " is 12.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it."
 	code, body := pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusOK {
 		t.Fatalf("Do it = %d:\n%s", code, body)
@@ -192,7 +192,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	card, _, _ := r.Task(t.Context(), "t-e")
 	equal(t, "the card's budget", card.BudgetEUR, 3.0)
 	equal(t, "the pool line after the agent's fund", poolLineOf(t, r, now), []any{12.0, 4.0, true, false,
-		"0 of 30 sessions, 0 h of 30 h agent time and €4.00 of €12.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 4.00 of 12.00 EUR drawn this UTC month"})
 
 	// anna's confirmed fund of 2 EUR: the same answer on rung 3, a pool
 	// draw as well
@@ -234,8 +234,8 @@ func TestPoolDrawnRigMonth(t *testing.T) {
 // the human: the agent's fund past the month's pool, which the store
 // refuses through Act, reaches the agent whole as a 409, moves no budget
 // and writes no row, and the agent's analysis of two verified findings
-// lands inside the card's open ask, where the human reads it with the
-// question.
+// lands on the card's spine, which the card shows beside its ask; the
+// inbox's ask stays as written.
 func TestPoolEscalationFallback(t *testing.T) {
 	r, path, ck, csrf := fundRig(t)
 	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
@@ -243,7 +243,7 @@ func TestPoolEscalationFallback(t *testing.T) {
 		Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: fund?", TaskID: "t-e"}); err != nil {
 		t.Fatal(err)
 	}
-	const spent = "the escalation pool leaves 30 sessions, 1800 minutes of agent time and 0.50 EUR this month: only the human draws more. " +
+	const spent = "the escalation pool leaves 30 sessions, 30 hours of agent time and 0.50 EUR this month: only the human draws more. " +
 		"This draw does not fit in EUR (asked 1.00, left 0.50). The largest draw that fits is 0 sessions, 0 seconds of agent time and 0.50 EUR: ask for that"
 	if got := (&factoryd.DrawBoundError{Want: policy.Draw{EUR: 1}, Left: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 0.5}, Fit: policy.Draw{EUR: 0.5}}).Error(); got != spent {
 		t.Fatalf("the store's refusal reads %q, want %q", got, spent)
@@ -264,19 +264,18 @@ func TestPoolEscalationFallback(t *testing.T) {
 	}
 	r.RefuseActs("")
 
-	// the analysis of two verified findings, retained inside the ask
+	// the analysis of two verified findings, on the card
 	found := "Two verified findings: the replica doubles the p99 latency, and the escalation pool is spent."
 	analysis := `{"task_id":"t-e","found":"` + found + `","recommendation":"Grant one sizing exception"}`
 	equal(t, "the attach_analysis turn", agentCall(t, r, path, ck, csrf, "attach_analysis", analysis, "analysis attached"), []string{
-		`tool {"arguments":` + analysis + `,"duration_ms":0,"name":"attach_analysis","result":"Recorded the analysis inside the ask of #13; the humans read it with the ask."}`,
-		`applied {"result":"Recorded the analysis inside the ask of #13; the humans read it with the ask.","tool":"attach_analysis"}`,
+		`tool {"arguments":` + analysis + `,"duration_ms":0,"name":"attach_analysis","result":"Recorded the analysis on the card #13; the humans read it beside its ask there."}`,
+		`applied {"result":"Recorded the analysis on the card #13; the humans read it beside its ask there.","tool":"attach_analysis"}`,
 		`text {"text":"analysis attached"}`, `done {}`})
 	asks, err := r.ChatAsks(t.Context(), "sf/code", "sebastian")
 	if err != nil || len(asks) != 1 {
 		t.Fatalf("the asks = %d, %v; want the card's one", len(asks), err)
 	}
-	equal(t, "the ask with its findings", asks[0].Content,
-		"#13 needs you: fund?\nAnalysis: "+found+"\nRecommendation: Grant one sizing exception")
+	equal(t, "the ask as written", asks[0].Content, "#13 needs you: fund?")
 	var notes []factoryd.Event
 	for _, e := range r.Events() {
 		if e.Kind == factoryd.EventAnalysisAttached {
@@ -315,7 +314,7 @@ func TestPoolReadouts(t *testing.T) {
 			}
 		}
 	}
-	policys := "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
+	policys := "0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month"
 	readAll("the policy's pool", policys)
 	for _, tool := range []string{"settings", "policy"} {
 		if read := chatRead(t, r, path, ck, csrf, "sebastian", tool); !strings.Contains(read, policys) {
@@ -339,7 +338,7 @@ func TestPoolReadouts(t *testing.T) {
 	seedRow(t, r, "sf/code", factoryd.EventCardFunded, map[string]any{"amount_eur": 4.0}, now)                // no pool draw
 	seedFundRow(t, r, 9, lastMonth)                                                                           // another month
 	r.SetProjectSpend(factoryd.ProjectSpend{EUR: 42, ChatEUR: 41})                                            // the model spend, never a draw
-	drawn := "2 of 30 sessions, 1 h 20 min of 30 h agent time and €3.00 of €10.00 drawn this UTC month"
+	drawn := "2 of 30 sessions, 1 h 20 min of 30 h agent time and 3.00 of 10.00 EUR drawn this UTC month"
 	readAll("the file's pool", drawn)
 	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, "pool: "+drawn) {
 		t.Fatalf("the face's pool cell:\n%s", face)
@@ -356,10 +355,10 @@ func TestPoolReadouts(t *testing.T) {
 
 	// the read's failure never becomes a zero
 	r.FailPoolReads(errors.New("the spine is down"))
-	unreadable := "the pool is 30 sessions, 30 h of agent time and €10.00 this UTC month, but what its cards drew could not be read"
+	unreadable := "the pool is 30 sessions, 30 h of agent time and 10.00 EUR this UTC month, but what its cards drew could not be read"
 	readAll("the unreadable draws", unreadable)
 	for name, p := range pages {
-		if body := pageGET(t, r, ck, p); strings.Contains(body, "€0.00 of €10.00") {
+		if body := pageGET(t, r, ck, p); strings.Contains(body, "0.00 of 10.00 EUR") {
 			t.Fatalf("%s reads the failed read as zero:\n%s", name, body)
 		}
 	}
@@ -391,7 +390,7 @@ func TestPoolReadouts(t *testing.T) {
 		return []any{pl.Pool.EUR, pl.Drawn.EUR, pl.Month, pl.Words}
 	}
 	equal(t, "November's readout", readout(nov), []any{10.0, 2.0, "2026-11",
-		"0 of 30 sessions, 0 h of 30 h agent time and €2.00 of €10.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 2.00 of 10.00 EUR drawn this UTC month"})
 	equal(t, "December's readout", readout(dec), []any{10.0, 0.0, "2026-12",
-		"0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €10.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 10.00 EUR drawn this UTC month"})
 }

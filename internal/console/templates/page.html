@@ -1,6 +1,6 @@
 {{template "head" .}}
 {{if .Status.Project}}<details id="status-line" class="status" aria-label="Status">{{template "status" .}}</details>
-{{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}{{if eq .View "wide"}} wide{{end}}">
+{{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}">
 <button type="button" class="edge-tab" data-tip="The board back; Esc also works">board</button>
 {{template "chat" .}}{{if .Chat}}<div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0" data-tip="Drag to resize; the arrow keys step it"><span class="grip" aria-hidden="true">⤥</span></div>
 {{end}}{{template "board" .}}
@@ -43,7 +43,6 @@
 <div class="overlay-box">
 <h2 id="keys-title">Keys</h2>
 <dl>
-<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>
 <dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, or this list</dd>
 <dt><kbd>?</kbd></dt><dd>this list</dd>
 <dt><kbd>f</kbd></dt><dd>find on the board: a word or a ref, or <code>plan:558</code>, <code>stage:verifying</code>, <code>is:failed</code> (blocked, stale, provider, near), <code>by:sebastian</code>, <code>model:coding-cheap</code>; <kbd>Escape</kbd> in the box clears it</dd>

@@ -341,7 +341,7 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 				rep.findings = append(rep.findings, finding)
 			}
 		case res.absent:
-			g.Line = fmt.Sprintf("%s: its open proof is not at %s in %s", c.label(), c.stored.Path, head[:min(7, len(head))])
+			g.Line = fmt.Sprintf("%s: its open proof is not at %s in %s", c.label(), c.stored.Path, ShortSHA(head))
 			rep.findings = append(rep.findings, g.Line+": commit the test below there.\n"+c.name+" in "+c.suite+":\n"+fenced(c.stored.Code))
 		default:
 			if !ok {
@@ -357,7 +357,7 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 			}
 			switch {
 			case c.kind == CriterionJudgement || c.kind == CriterionHuman:
-				name, at := c.stored.Artifact, head[:min(7, len(head))]
+				name, at := c.stored.Artifact, ShortSHA(head)
 				content, wrote := res.artifacts[name]
 				g.Met = false
 				switch {
@@ -432,7 +432,7 @@ func claimText(p Plan, c criterionRun) string {
 // why, where to commit its test and what to do, its claim, its code and
 // the output of its run.
 func openedFinding(o openedProof, head string) string {
-	at := head[:min(7, len(head))]
+	at := ShortSHA(head)
 	why := map[string]string{
 		proofFailed:     "its blind proof ran red at " + at,
 		proofMissing:    "its blind proof ran no test of its name at " + at,
@@ -490,6 +490,21 @@ func criterionLine(r criterionRun, res gateResult) string {
 		s += ": " + ev
 	}
 	return r.label() + ": " + s
+}
+
+// GateEvidence is the evidence of criterion id's row in its parts, as
+// gateRows and criterionLine write it: its state, blind or open ("" for
+// none), and its line without the state and the "criterion <id>: " it
+// leads with. A row of another writer is its line whole.
+func GateEvidence(id, evidence string) (state, line string) {
+	line = evidence
+	for _, s := range []string{proofBlind, proofOpen} {
+		if rest, ok := strings.CutPrefix(line, s+": "); ok {
+			state, line = s, rest
+			break
+		}
+	}
+	return state, strings.TrimPrefix(line, "criterion "+id+": ")
 }
 
 // gateRows are the gate's verdict rows, one per criterion of kind test
@@ -585,7 +600,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": "no plan filed"}))
 		return CriteriaResult{Skipped: "no plan filed"}, nil
 	}
-	p, err := r.filedPlan(ctx, t.Parent, t.ID)
+	p, _, err := planOfStore(ctx, r.store, t.Parent, t.ID)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
@@ -743,7 +758,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, rep.met+met, of, rep.lines)))
 	case len(all) > 0:
 		// nothing ran: an empty plan
-		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
+		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("The criteria gate on %s: no criterion ran.\n\n%s",
 			commit, fenced(strings.Join(all, "\n")))))
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
@@ -775,6 +790,9 @@ func (r *Runner) criteriaStand(ctx context.Context, home string, p Plan) (*Crite
 	}
 	for _, c := range openCriteria(p, rows) {
 		s.Open = append(s.Open, c.ID)
+		if _, ok := StandingRow(rows, c); !ok && c.Kind == CriterionHuman {
+			s.Human = append(s.Human, c.ID)
+		}
 	}
 	return s, nil
 }
@@ -828,6 +846,6 @@ func (r *Runner) proofsPending(ctx context.Context, t Task, rows []PlanProof, p 
 // many of the gate's of criteria it met, the judgement's among them, and
 // its lines.
 func criteriaComment(commit string, met, of int, lines []string) string {
-	return fmt.Sprintf("factoryd criteria gate on %s: %d of %d criteria met (human criteria ride the approval).\n\n%s",
+	return fmt.Sprintf("The criteria gate on %s: %d of %d criteria met. A human settles the human criteria at the approval.\n\n%s",
 		commit, met, of, fenced(strings.Join(lines, "\n")))
 }

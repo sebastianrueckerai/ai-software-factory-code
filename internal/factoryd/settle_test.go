@@ -108,7 +108,7 @@ func TestSettleOfByCase(t *testing.T) {
 	ev := func(id int64, sec int, kind, actor string, detail map[string]any) Event {
 		return Event{ID: id, At: at.Add(time.Duration(sec) * time.Second), Kind: kind, Actor: actor, TaskID: "t-e", Detail: detail}
 	}
-	const flagged = "The monitor flagged this card: what should happen? Answer case 12 in the project chat."
+	const flagged = "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?"
 	ownAsk := ev(20, 0, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?"})
 	ownAsk5 := ev(20, 0, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?", "case_id": float64(5)})
 	monAsk := ev(21, 1, EventQuestionAsked, FactoryDecider, map[string]any{"question": flagged, "case_id": float64(12), "case_kind": string(CaseMonitorFlag)})
@@ -140,7 +140,7 @@ func TestSettleOfByCase(t *testing.T) {
 			Content: "#13 needs you: " + question}
 	}
 	// the monitor's ask on an ended card whose issue is open
-	issueAsk := ev(44, 600, EventQuestionAsked, FactoryDecider, map[string]any{"question": "The monitor flagged this card: what should happen? Answer case 14 in the project chat.",
+	issueAsk := ev(44, 600, EventQuestionAsked, FactoryDecider, map[string]any{"question": "This card ended, and its issue is still open. Close the issue?",
 		"case_id": float64(14), "case_kind": string(CaseMonitorFlag), "flag": "issue_open_after_end"})
 	issueRow := ChatMessage{At: issueAsk.At, Kind: MessageEscalation, BirthKind: EventQuestionAsked}
 	issueClosed := ev(45, 700, EventQuestionWithdrawn, FactoryDecider, map[string]any{"case_id": float64(14), "reason": "the issue is closed"})
@@ -220,6 +220,55 @@ func TestAPlansWaitAskStaysOpenUntilItsCaseEnds(t *testing.T) {
 	}
 	if s := SettleOf(dm, []Event{direct}, "waiting-deps", false); s.Open || s.Word != "moved on" {
 		t.Fatalf("the direct card's ask on its wait = %+v, want it moved on", s)
+	}
+}
+
+// A card's message holds its ask's why, not its question (askMessage):
+// the row finds its own ask by that why, though a monitor's ask on the
+// same card came after it, and stays open on its case while the card
+// runs, until a row names that case.
+func TestAMessageFindsItsAskByItsWhy(t *testing.T) {
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	flag := Event{ID: 1, Kind: EventQuestionAsked, TaskID: "t-1", At: at, Actor: FactoryDecider,
+		Detail: map[string]any{"question": "Close the card's issue?", "why": "the card ended while its issue stays open", "case_id": float64(7),
+			"case_kind": string(CaseMonitorFlag), "flag": "issue_open_after_end"}}
+	own := Event{ID: 2, Kind: EventQuestionAsked, TaskID: "t-1", At: at, Actor: FactoryDecider,
+		Detail: map[string]any{"question": "Allow more sessions?", "why": "its work is not done, and it has no session left", "case_id": float64(8)}}
+	m, ok := PokeOf(flag, Task{ID: "t-1", IssueNumber: 4}, Task{})
+	if !ok || m.Content != "#4 needs you. The card ended while its issue stays open." {
+		t.Fatalf("the flag's message = %q, %v", m.Content, ok)
+	}
+	m.At = at.Add(time.Second)
+	if s := SettleOf(m, []Event{flag, own}, "running", false); !s.Open {
+		t.Fatalf("the flag's message while the card runs = %+v, want it open on its case", s)
+	}
+}
+
+// TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal: the factory's
+// close of a card or a plan withdraws the ask, while an ask the factory
+// answers, a rung-0 press or a plan question's confirmation, reads as
+// answered by the factory.
+func TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal(t *testing.T) {
+	at := time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)
+	settle := func(kind, by string) PokeSettle {
+		return PokeSettle{Word: SettleWord(kind), By: by, At: at, Event: Event{Kind: kind, Actor: by}}
+	}
+	for _, c := range []struct {
+		s    PokeSettle
+		want string
+	}{
+		{settle(EventCardClosed, FactoryDecider), "withdrawn · 09:30"},
+		{settle(EventPlanClosed, FactoryDecider), "withdrawn · 09:30"},
+		{settle(EventQuestionWithdrawn, FactoryDecider), "withdrawn · 09:30"},
+		{settle(EventQuestionAnswered, FactoryDecider), "answered by the factory · 09:30"},
+		{settle(EventPlanQuestionAnswered, FactoryDecider), "answered by the factory · 09:30"},
+		{settle(EventTaskEnded, FactoryDecider), "moved on · 09:30"},
+		{settle(EventCardClosed, "sebastian"), "answered by sebastian · 09:30"},
+		{settle(EventQuestionAnswered, ChatUser), "answered by the factory agent · 09:30"},
+	} {
+		if got := ReasonLine(c.s); got != c.want {
+			t.Errorf("ReasonLine(%s by %s) = %q, want %q", c.s.Event.Kind, c.s.By, got, c.want)
+		}
 	}
 }
 

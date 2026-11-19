@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // humanOnlyReasons are the reason kinds of a check-in's hand to the human
@@ -41,11 +42,12 @@ func humanOnly(c Case, f CaseFacts) (bool, string) {
 			return true, "only a commit fixes the door"
 		}
 	case CaseBudgetFloor:
-		if c.Money != nil && slices.Contains(f.Partial, "pool") {
+		if slices.Contains(f.Partial, "pool") {
 			return true, "the pool could not be read, so the card's need of money cannot be weighed against it"
 		}
-		if c.Money != nil && Cents(c.Money.NeedEUR) > Cents(f.PoolLeft.EUR) {
-			return true, fmt.Sprintf("the card needs %.2f EUR and the pool holds %.2f EUR", c.Money.NeedEUR, f.PoolLeft.EUR)
+		// the board's ask on the live facts, whatever the case stored
+		if need := shortfall(f); Cents(need) > Cents(f.PoolLeft.EUR) {
+			return true, fmt.Sprintf("the card needs %s EUR and the pool holds %s EUR", textutil.EUR(need), textutil.EUR(f.PoolLeft.EUR))
 		}
 	}
 	return false, ""
@@ -81,8 +83,13 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	if c.Kind == CaseRollHeld {
 		rollHeldLines(c, line)
 	}
-	line("Money: budget %.2f, spent %.2f, left %.2f EUR, ceiling %.2f EUR; card draw left %s; pool left %s.",
-		f.BudgetEUR, f.SpentEUR, f.LeftEUR, f.CeilingEUR, drawText(f.CardDrawLeft), drawText(f.PoolLeft))
+	var need string
+	if eur := shortfall(f); eur > 0 {
+		// the board's amount: a session like the last one, past what the card may spend
+		need = fmt.Sprintf("; the next session needs %s EUR more", textutil.EUR(eur))
+	}
+	line("Money: budget %s, spent %s, left %s EUR, ceiling %s EUR; card draw left %s; pool left %s%s.",
+		textutil.EUR(f.BudgetEUR), textutil.EUR(f.SpentEUR), textutil.EUR(f.LeftEUR), textutil.EUR(f.CeilingEUR), drawText(f.CardDrawLeft), drawText(f.PoolLeft), need)
 	line("%s", r.Scrub.String(digest))
 	if f.Killed != nil {
 		line("The sandbox killed the last session for its memory (%s, exit code %d) while it ran: %s", cut(f.Killed.Reason), f.Killed.ExitCode, cut(f.Killed.Command))
@@ -125,11 +132,11 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 		}
 		return b.String()
 	}
-	for _, a := range orderedActions(f) {
+	for _, a := range Actions {
 		if !a.Rungs[rung] {
 			continue
 		}
-		if why := a.offerRefusal(f, rung); why != "" {
+		if why := a.offerRefusal(f.forRung(rung), rung); why != "" {
 			line("- %s: not offered: %s", a.Name, why)
 		} else if a.handoverNeedsDraw(f, rung) {
 			line("- %s, with a draw of at least one session: the cap is reached", a.Name)
@@ -154,12 +161,19 @@ func planAsk(c Case) bool {
 // caseAsk is the newest question_asked of case c, read through the events
 // the face reads its ask from; false when it has none.
 func (r *Runner) CaseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
-	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
+	return caseAskIn(ctx, r.store, c)
+}
+
+// caseAskIn is case c's ask row among the asks events holds.
+func caseAskIn(ctx context.Context, events interface {
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+}, c Case) (CaseAsk, bool) {
+	rows, err := events.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
 	if err != nil {
 		log.Printf("case %d: its ask: %v", c.ID, err)
 		return CaseAsk{}, false
 	}
-	for _, e := range events {
+	for _, e := range rows {
 		if id, _ := toInt(e.Detail["case_id"]); int64(id) == c.ID {
 			return CaseAsk{At: e.At, Detail: e.Detail}, true
 		}
@@ -315,6 +329,10 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
 
 const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head), grep (git grep at head or main for a fixed string as a whole word)."
+
+// rungPrompt is rung 1's system prompt: the check-in on a case, its
+// tools, and the guide's forms of its grounds and its reason to hand up.
+var rungPrompt = rungSystem + " " + rungToolsLine + "\n\n" + writingguide.For(writingguide.JobLine, writingguide.JobWhy)
 
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
@@ -742,7 +760,7 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	tools := &CaseTools{r: r, t: t, c: c, f: f, repo: repo}
 	defer tools.close()
 	limits := v.Document.Limits
-	out := r.runRung(forCard(ctx, t), r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
+	out := r.runRung(forCard(ctx, t), r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungPrompt, statement,
 		CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
 	for i := range out.Read {
 		out.Read[i].Args = r.scrub(out.Read[i].Args)

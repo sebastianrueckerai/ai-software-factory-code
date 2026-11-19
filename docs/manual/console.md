@@ -42,22 +42,24 @@ decimals: a task's model calls cost fractions of a cent.
   main stays the merge authority.
 - `/`: the board (done and failed for 7 days, at most 300 tasks, open
   ones first) in four columns: Needs you, Queued (`queued`,
-  `waiting-deps`, `waiting-image`), In progress and Done. `?view=wide`
-  shows one column per task state instead: Queued, Running, Waiting on a
-  human, Waiting for image, Waiting on the author, In review, Merged,
-  Done, Failed, Closed. `?project=<name>` (a select at the top) shows one
+  `waiting-deps`, `waiting-image`), In progress and Done; they are the one
+  board. `?project=<name>` (a select at the top) shows one
   project. Needs you holds approval requests, escalations with their
   reason, read from the escalation's intake event, and an answer box,
-  human tasks, and cards waiting on their author. htmx
+  human tasks, and cards waiting on their author. A helper task (a card's
+  screening or sizing, a plan's proof writing) is no card: while it runs
+  its card's state reads screening, sizing or writing the proofs, its ask
+  is a page of its card's asks in Needs you, and the card's life lists
+  it with its result. A finished helper task is in no column. htmx
   polls `/board` every 10 s. Above the columns the board names the
   configuration version factoryd runs with its commit, linked to the
   commit's tree in the infra repository, as `/policy` shows it. A card
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan child's drawer has a Plan row: the plan's `#n`, its name and the card's key.
-  factoryd's own human card sits in In progress (Running in the wide
-  view) while it is `waiting-agent`, and counts as working, not in Needs
-  you: its case climbs to the project agent first. An answer on it is
+  factoryd's own human card sits in In progress while it is
+  `waiting-agent`, reads “with the factory agent” and counts as working,
+  not in Needs you: its case climbs to the project agent first. An answer on it is
   refused, naming its case, until its face moves it to `waiting-human`;
   rung 2's own turn on the case answers it.
 - The production hold: while a plan's group is open on the project's main,
@@ -118,15 +120,16 @@ decimals: a task's model calls cost fractions of a cent.
   the chat's answer to a climbing question refuses, naming the case and
   its rung. The plan's own comment on its issue is the revision's record;
   the face posts one more comment per revision, edited at each later
-  face, naming the questions at the human with their recommendations and
-  that a reply asks the planner for a new revision. The card shows the
+  face, naming the questions at the human with the answer each face
+  suggests and that a reply asks the planner for a new revision. The card shows the
   spec's first lines, the summary, the cards (key, role, title, size,
   depends on, factoryd's edges included) and each open question with its
   choices and a free answer, posted on the issue as the human. The
   answers go to the planner, and its next revision with no open question
   files the cards, `queued` on the direct track, and the plan card ends
   done. A stale revision shows `the plan changed to revision <m>; reload`
-  on the card. "Request changes" posts a comment as the human, which the
+  on the card. Each question's page and the confirmation's page offer
+  “Ask for changes”, which posts a comment as the human, which the
   planner revises the plan with, and ends the revision's cases with that
   revise. A done plan lists its cards by issue and state. A done plan
   with rounds shows `round <k>: <n> cards, <d> done.` and what is still
@@ -162,20 +165,21 @@ decimals: a task's model calls cost fractions of a cent.
   checks, run a stopped checks wait again (no agent time), give it more
   sessions, agent time or lines, fund it, raise its ceiling,
   file a successor, retry or replan a failed dependency, close it, or note
-  a step and keep waiting. An extend answers a cap, or the owner exits
+  a step while the card waits (“Not now”). An extend answers a cap, or the owner exits
   of a gate stop and of findings that repeat, never a question, and a
   stop on money takes a fund. At the month cap a fund waits for a raise
   of budget.month_eur or the month's turn. An extend grants one more
   check-in share at a time, and an extend of lines or a share draws
-  nothing. The Grant button buys what the stop asks for: one session at
+  nothing. “Allow more sessions” buys what the stop asks for: one session at
   a session cap, the card draw's agent time at an agent time cap, one
   more check-in share at the check-in's share stop, one session at its
   call or time cap, and at a stop that asked a question it goes on. A
   fund can also go beside another action and draws its money with it. A
   fund, an extend or a raise of the ceiling on a card that ended is
-  refused. The Fund form's ceiling field raises the card's ceiling
-  first, for a fund that would pass it. Words on a card at its session
-  or agent time cap grant. Once the answer passes, its words are posted
+  refused. “Raise the spend limit” raises the card's spend limit first
+  and adds the money beside it, for an “Add money” that would pass the
+  limit. Words on a card at its session or agent time cap allow one more
+  session. Once the answer passes, its words are posted
   on the issue as the human. A human card's choice does its own work
   first, and its case takes the comment that work posted. A card that
   waits with no open case refuses the answer until the heal pass opens
@@ -185,7 +189,7 @@ decimals: a task's model calls cost fractions of a cent.
   beside it. Every answer meets the same gates first: a running card's
   words steer its session, and an action on a card no answer fits is
   refused.
-- Approval cards in the human lane, from `approval_requests`. Each opens
+- Approval cards in Needs you, from `approval_requests`. Each opens
   with its brief, one factoryd call (purpose `brief`) a moment after the
   request files. A brief the card's own budget refuses (`refused_budget`)
   says so in its place, and an approver's Fund there (`POST
@@ -199,22 +203,27 @@ decimals: a task's model calls cost fractions of a cent.
   of a plan's integration or delta card holds a row per criterion under
   them, its legend `<id> (<kind>): <verdict>`, and on a gate row blind or
   open beside the verdict. A human row shows its artifact, or its
-  evidence, and the buttons Met, Not met and Waive (`POST
-  /approvals/{id}/criterion`, verbs `met`, `not_met`, `waived`), a gate
-  row Waive alone. Not met sends the card back with the human's words.
-  Approve stays off until every human row stands. The drawer shows an
-  opened proof's original beside the pull request's version. Approve submits
-  an APPROVED review at the gated head as the human, and only once Forgejo
-  took it calls `factoryd.ApproveMerge`; deny with a reason submits a
-  REQUEST_CHANGES review (the changes-requested path sends the task back)
-  or rejects: the reason is commented and the pull request closed as the
-  human, which fails the task. A merge Forgejo refuses (or that fails and
+  evidence, and the buttons “It is met”, “It is not met” and “Drop this
+  promise” (`POST /tasks/{id}/resolve` with the ask's `case_id` and the
+  action `answer_criteria`, `answer_criteria/not_met` or
+  `answer_criteria/waive`), a gate row “Drop this promise” alone. A merge,
+  a plan and a plan's promises take every answer at that door, the card's
+  ask; `POST /approvals/{id}/approve` and `/deny` take a resource request
+  alone. “It is not met” sends
+  the card back with the human's words. “Merge it” stays off until every
+  human row stands. The drawer shows an
+  opened proof's original beside the pull request's version. “Merge it”
+  submits an APPROVED review at the gated head as the human, and only once
+  Forgejo took it calls `factoryd.ApproveMerge`. “Send it back” with a
+  reason submits a REQUEST_CHANGES review (the changes-requested path
+  sends the task back). “Reject and close it” comments the reason and
+  closes the pull request as the human, which fails the task. A merge Forgejo refuses (or that fails and
   is retried) notes why on the pending request, and the card shows it. A
   pull request factoryd opened has no agent (roadmap 264): its card offers
-  Approve on green checks and Re-run the checks on red ones
-  (`POST /approvals/{id}/rerun`, an empty commit on its head, and the card
-  asks again once they settle), with Close beside either, the deny box
-  without a choice: the reason goes to its workflow as a change request,
+  “Merge it” on green checks and “Run the failed checks again” on red ones
+  (the answer `rerun_checks` at the case's door, an empty commit on its head, and the card
+  asks again once they settle), with “Reject and close it” beside either:
+  the reason goes to its workflow as a change request,
   which closes the card and its pull request and issue with it.
 - `/resources`: the agent project's commissions by project and task (open,
   or closed in the last 7 days) with type, IPv4, lease end, EUR/h, cost
@@ -258,7 +267,11 @@ decimals: a task's model calls cost fractions of a cent.
   approver Fund and go on under the row (`POST
   /projects/{name}/chat/budget`, `eur`): the budget rises and every
   stopped turn goes on. A factory cap's refusal names the cap and what
-  raises it. The resumed context leaves the `budget` rows out. Its tools (`policy.ChatTools`) are the reads `system` (the
+  raises it. The resumed context leaves the `budget` rows out. A turn
+  whose every tool call was refused in 5 rounds in a row ends on a row
+  that says so, and the next message goes on. When a wake's turn ends
+  this way, each ask the factory agent held goes to the human at once,
+  and its card says that the factory agent did not answer. Its tools (`policy.ChatTools`) are the reads `system` (the
   factory's manual, rendered from the code at call time; its states,
   gates and section on sandbox images come from `internal/manual`, which
   the workers' `manual` tool reads too), `board`,
@@ -291,8 +304,8 @@ decimals: a task's model calls cost fractions of a cent.
   one per console action,
   run as the human through `actions.go`, each refusing a card of another
   project; a tool the `chat.confirm` list names answers a proposal, which
-  `POST /projects/{name}/chat/proposals/{id}` runs, and `comment`,
-  `set_summary` and `set_accent` answer an undo token for
+  `POST /projects/{name}/chat/proposals/{id}` runs, and `comment` and
+  `set_accent` answer an undo token for
   `POST /projects/{name}/chat/undo/{token}`. `new_card` takes an `image`,
   a name the project pins in force (`default` names none), which reaches
   the issue as an `Image:` line among the field lines (`Size:`, `Rung:`)
@@ -323,7 +336,8 @@ decimals: a task's model calls cost fractions of a cent.
   row that answers it: the human's press or typed message, or another
   ask; a poke, an escalation, a budget row or a wake's row settles
   nothing. A poke settles once its thread is read past it, save a poke
-  with choices (a failed card's Retry and Leave it): its buttons stand
+  with choices (a failed card's “Try the failed card again” and “Not
+  now”): its buttons stand
   until the human's press or words answer it
   (`answered by <login> · 15:04`) or an event moves its card on, a
   status change, its end, a retry or a close, with that event's word,
@@ -346,7 +360,10 @@ decimals: a task's model calls cost fractions of a cent.
   `Chat`): it needs no login of the human and reads none. A wake's turn
   that fails, as a fund's resume or a card answer in words that fails,
   leaves `This turn failed: <why>` in its thread, since no human reads
-  its stream. Its chat rows
+  its stream; the wake's line in the inbox then says the turn failed and
+  that nothing was looked at, the error behind its fold. A wake whose
+  turn runs or waits its place says the agent is looking, and one whose
+  turn ended without a word says nothing was looked at. Its chat rows
   and events stay the woken human's, decided by the agent, and so do the
   cards it files (the intake reads the author of an issue `factory-chat`
   posted from the console's `card_filed` row; an issue with none is no
@@ -414,10 +431,11 @@ decimals: a task's model calls cost fractions of a cent.
   held card or of a plan at rest acts as the human only on a line they typed
   in that turn, and the close of a plan whose criteria stand open, which
   waives them, is a proposal at every autonomy level that only the human's
-  press runs), `edit` its title or body and the task's objective, which the
-  next session's brief reads, `grant_session` grants a card at a cap what
-  the cap asks for, is refused on a card at no cap (the Extend form raises
-  a running card), and the action table refuses it on a card that asked a
+  press runs), `edit` its brief: its title or body, which make the task's objective, and its why
+  line and summary, which the next session's brief reads; the brief passes
+  `factoryd.CheckBrief` first and its refusals come back whole (the drawer's Edit the brief form too), `grant_session` grants a card at a cap what
+  the cap asks for, is refused on a card at no cap (“Allow more sessions”
+  among the opened card's other actions raises a running card), and the action table refuses it on a card that asked a
   question, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
@@ -426,10 +444,10 @@ decimals: a task's model calls cost fractions of a cent.
   that has not started, with a reason and an optional release card of any
   plan of the project, not a plan itself and not one that waits on the
   held card, and `release_hold` ends a hold; both run only on a
-  line the human typed in that turn, or on their press, and the drawer's
-  Hold and Release do the same. A held card's face carries its hold in
-  the waiting chip, or in the blocked chip once its release card ended
-  failed or closed or became a plan. `set_pool` sets the money
+  line the human typed in that turn, or on their press, and "Put on hold"
+  and "Release the hold", among the opened card's other actions, do the
+  same. A held card's face carries its hold in its waits line, which says
+  so once its release card ended failed or closed or became a plan. `set_pool` sets the money
   of the project's escalation pool, or tops up the money its project file
   already sets, as `escalation.pool.eur` written through a pull request on
   that file. The OK is asked for it at every autonomy level. The

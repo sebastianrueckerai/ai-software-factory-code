@@ -180,8 +180,8 @@ func pageFixture(r *rig) {
 func TestPageReadToolsOverFixtures(t *testing.T) {
 	r, _, g := newChatRig(t)
 	pageFixture(r)
-	resources := "demo-app/demo-app:\n  12 volume live 1.0000 EUR/month, releasable\n" +
-		"sf/code:\n  14 firewall live 0.0000 EUR/month\n  11 server live 4.1616 EUR/month, promotable, releasable"
+	resources := "demo-app/demo-app:\n  12 volume live 1.00 EUR a month, releasable\n" +
+		"sf/code:\n  14 firewall live 0.00 EUR a month\n  11 server live 4.16 EUR a month, promotable, releasable"
 	equal(t, "the reads", reads(t, r, g, "alerts", `{}`, "alerts", `{"state":"all"}`, "resources", `{}`, "settings", `{}`, "policy", `{}`,
 		"costs", `{"by":"day"}`, "costs", `{"by":"card"}`, "costs", `{"by":"tier"}`), []string{
 		"Open alerts:\n7 escalation cap \"t-r\" since 2026-10-11 09:30 UTC, open",
@@ -193,17 +193,17 @@ func TestPageReadToolsOverFixtures(t *testing.T) {
 			"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none; " + defaultPoolRead() + "\n" +
 			"ready-app (ready/app): objects factory; process none; merge rule auto; ready since 2026-10-11 09:30 UTC; GitHub export acme/ready (mirror, mirrored); " + defaultPoolRead(),
 		"Policy version 4 (commit c9d98bb0aa11).\nLimits and budgets:\n" +
-			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n" +
+			"  task budget: 2.00 EUR default, 5.00 EUR maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n" +
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n" +
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n" +
-			"  day cap: €20.00\n  month cap: €50.00\n  project demo-app month cap: €25.00\n  project infra month cap: €10.00\n" +
+			"  day cap: 20.00 EUR\n  month cap: 50.00 EUR\n  project demo-app month cap: 25.00 EUR\n  project infra month cap: 10.00 EUR\n" +
 			"  project demo-app " + defaultPoolRead() + "\n  project infra " + defaultPoolRead() + "\n  project linkshort " + defaultPoolRead() + "\n" +
 			"Risk classes (most severe first, default normal):\n  high: requires_approval, migration\n  normal: auto\n" +
 			"  internal/factoryd/migrations/**, deploy/** -> high\n" +
 			"Approvers:\n  factory: sebastian\n  linkshort: alice",
-		"By day 2026-10-01 to 2026-10-11, EUR:\n  2026-10-11 1.7000 (model 1.5000, tool 0.2000)\n  2026-10-10 0.6000 (model 0.5000, tool 0.1000)\ntotal: 2.3000 EUR",
-		"By card 2026-10-01 to 2026-10-11, EUR:\n  t-r 1.5000\n  t-m 0.8000\ntotal: 2.3000 EUR",
-		"By tier 2026-10-01 to 2026-10-11, EUR:\n  big 1.5000\n  small 0.5000\n  tool 0.3000\ntotal: 2.3000 EUR",
+		"By day 2026-10-01 to 2026-10-11, EUR:\n  2026-10-11 1.70 (model 1.50, tool 0.20)\n  2026-10-10 0.60 (model 0.50, tool 0.10)\ntotal: 2.30 EUR",
+		"By card 2026-10-01 to 2026-10-11, EUR:\n  t-r 1.50\n  t-m 0.80\ntotal: 2.30 EUR",
+		"By tier 2026-10-01 to 2026-10-11, EUR:\n  big 1.50\n  small 0.50\n  tool 0.30\ntotal: 2.30 EUR",
 	})
 	equal(t, "the ledger's window", []string{r.ledger.from.Format(time.DateOnly), r.ledger.to.Format(time.DateOnly)},
 		[]string{time.Now().UTC().Format("2006-01") + "-01", time.Now().UTC().Format(time.DateOnly)})
@@ -318,7 +318,7 @@ func TestCostsToolWithCustomDateWindow(t *testing.T) {
 	// t-m's small 0.5 and search 0.1 on 2026-10-10: that day's
 	// card sum by hand is 1.5 + 0.8 = 2.3 EUR.
 	equal(t, "the day's cards", reads(t, r, g, "costs", `{"by":"card","from_date":"2026-10-11","to_date":"2026-10-11"}`),
-		[]string{"By card 2026-10-01 to 2026-10-11, EUR:\n  t-r 1.5000\n  t-m 0.8000\ntotal: 2.3000 EUR"})
+		[]string{"By card 2026-10-01 to 2026-10-11, EUR:\n  t-r 1.50\n  t-m 0.80\ntotal: 2.30 EUR"})
 	equal(t, "the store's window", []string{r.ledger.from.Format(time.DateOnly), r.ledger.to.Format(time.DateOnly)},
 		[]string{"2026-10-11", "2026-10-11"})
 }

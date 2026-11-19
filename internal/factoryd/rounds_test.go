@@ -254,7 +254,7 @@ func TestFilePlanRefusesAnEarlierRoundsKey(t *testing.T) {
 // replanFindings' which asks to drop a kept key the planner cannot drop.
 func TestFilePlanRefusesASettledKeyInTakeOffMain(t *testing.T) {
 	r, store, _, _ := roundTwoRig(t, nil)
-	want := []string{"plan: take_off_main names card links-api, settled in round 1: it stays on main as it is; a person's off-main replan can take it off main"}
+	want := []string{"plan: `take_off_main` names card links-api, settled in round 1: it stays on main as it is. A human's off-main replan can take it off main"}
 	for _, off := range [][]string{{"links-api"}, {"links-api", "links-api"}} {
 		answer := roundTwoAnswer()
 		answer.TakeOffMain = off
@@ -549,11 +549,11 @@ func TestFileRevisionFilesOnlyTheRound(t *testing.T) {
 		t.Fatalf("comments %+v, want the plan's comment", fj.comments)
 	}
 	want := "| # | key | role | title | size | depends on | issue | round |\n|---|---|---|---|---|---|---|---|\n" +
-		"| 1 | foundation | foundation | Foundation: layout, contract, schema | medium |  | #2 | 1 |\n" +
+		"| 1 | foundation | foundation | Foundation of layout, contract and schema | medium |  | #2 | 1 |\n" +
 		"| 2 | links-api | feature | Links API | small | foundation | #3 | 1 |\n" +
 		"| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 | 1 |\n" +
 		"| 4 | stats | feature | Click stats | small |  | #5 | 2 |\n" +
-		"| 5 | integration | integration | Integration: acceptance tests | medium | stats | #6 | 2 |\n"
+		"| 5 | integration | integration | Integration through acceptance tests | medium | stats | #6 | 2 |\n"
 	if !strings.Contains(fj.comments[0].body, want) {
 		t.Fatalf("the plan's comment lacks\n%s\nin\n%s", want, fj.comments[0].body)
 	}
@@ -607,7 +607,7 @@ func TestFileRevisionLeavesTheDeployOwnerToTheLastRound(t *testing.T) {
 		t.Fatalf("the last round over a settled deploy owner: %+v, want stats #5 and integration #6", res)
 	}
 	if want := "| # | key | role | title | size | depends on | issue | round | deploy |\n|---|---|---|---|---|---|---|---|---|\n" +
-		"| 1 | foundation | foundation | Foundation: layout, contract, schema | medium |  | #2 | 1 | deploy |\n"; len(fj.comments) != 1 || !strings.Contains(fj.comments[0].body, want) {
+		"| 1 | foundation | foundation | Foundation of layout, contract and schema | medium |  | #2 | 1 | deploy |\n"; len(fj.comments) != 1 || !strings.Contains(fj.comments[0].body, want) {
 		t.Fatalf("the plan's comment lacks\n%s\nin %+v", want, fj.comments)
 	}
 }
@@ -635,7 +635,7 @@ func TestPlanCommentNamesTheRound(t *testing.T) {
 	two := planComment(plan, 2, twoRounds(), nil)
 	if !strings.Contains(two, "- click: one redirect served\n\nRound 2, the last.\n\n"+
 		"| # | key | role | title | size | depends on | issue | round |\n|---|---|---|---|---|---|---|---|\n"+
-		"| 1 | foundation | foundation | Foundation: layout, contract, schema | medium |  |  | 1 |\n") ||
+		"| 1 | foundation | foundation | Foundation of layout, contract and schema | medium |  |  | 1 |\n") ||
 		!strings.Contains(two, "| 4 | stats | feature | Click stats | small |  |  | 2 |\n") ||
 		!slices.Equal(details(two), []string{"stats", "integration"}) {
 		t.Fatalf("round 2's comment:\n%s", two)
@@ -650,17 +650,17 @@ func TestPlanCommentNamesTheRound(t *testing.T) {
 // The confirmation names the parts later rounds plan; a plan without an
 // outline asks as before.
 func TestConfirmationNamesTheOutline(t *testing.T) {
-	if got := confirmationQuestion(1, roundOne()); !strings.HasSuffix(got,
+	if got := ConfirmationQuestion(1, roundOne()); !strings.HasSuffix(got,
 		".\nStill to plan, in later rounds: click stats; the acceptance tests.\nThe whole plan is in the plan's comment on this issue.") {
 		t.Fatalf("round 1's confirmation:\n%s", got)
 	}
-	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm fixes the spec and the criteria; " +
-		"Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
+	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm the plan fixes the spec and the criteria; " +
+		"Ask for changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
 		"Outcome: A link shortener: links with slugs that redirect and count clicks.\n" +
 		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
 		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +
 		"The whole plan is in the plan's comment on this issue."
-	if got := confirmationQuestion(1, testPlan()); got != want {
+	if got := ConfirmationQuestion(1, testPlan()); got != want {
 		t.Fatalf("a plan without an outline:\n%s\nwant\n%s", got, want)
 	}
 }
@@ -749,7 +749,7 @@ func deltaRig(t *testing.T, model *fakeLiteLLM, bound time.Duration, questions .
 // cap does not count it, and it waits for the cards of its round it names,
 // never for a merged card of an earlier round.
 func TestDeltaCardJoinsTheLastRound(t *testing.T) {
-	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", `+
+	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", `+
 		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`)
 	fix, filed := deltaCard(t, store)
 	if !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
@@ -773,7 +773,7 @@ func TestStoredPlanKeepsAQuestionOverTheBound(t *testing.T) {
 		t.Errorf("the stored revision 2: %+v, want stats #5 and integration #6 filed", res)
 	}
 
-	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", `+
+	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", `+
 		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`, long...)
 	if _, filed := deltaCard(t, store); !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
 		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
@@ -785,7 +785,7 @@ func TestStoredPlanKeepsAQuestionOverTheBound(t *testing.T) {
 // gap in acceptance tests, files a feature card that waits on nothing it
 // did not name.
 func TestDeltaCardIsAFeature(t *testing.T) {
-	store, tl := deltaRound(t, `{"card": {"key": "stats-proof", "role": "integration", "title": "Stats proof", "brief": "Prove each redirect counts once.", `+
+	store, tl := deltaRound(t, `{"card": {"key": "stats-proof", "role": "integration", "title": "Stats proof", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Prove each redirect counts once.", `+
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`)
 	card, filed := deltaCard(t, store)
 	if !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
@@ -803,9 +803,9 @@ func TestDeltaCardIsAFeature(t *testing.T) {
 // broke, and the corrected answer files: the grant holds through one
 // wrong answer.
 func TestDeltaRoundCorrectsABrokenRule(t *testing.T) {
-	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["nowhere"], ` +
+	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", "depends_on": ["nowhere"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
-	fixed := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
+	fixed := `{"card": {"key": "fix-stats", "title": "Fix the stats", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 	model := &fakeLiteLLM{contents: []string{broken, fixed}}
 	store, tl := deltaRoundOn(t, model)
@@ -823,7 +823,7 @@ func TestDeltaRoundCorrectsABrokenRule(t *testing.T) {
 // A model that breaks the plan rules on every attempt ends the grant
 // after three answers, naming the last rule broken.
 func TestDeltaRoundRefusesAfterThreeBrokenAnswers(t *testing.T) {
-	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["nowhere"], ` +
+	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", "depends_on": ["nowhere"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 	model := &fakeLiteLLM{content: broken}
 	store, tl := deltaRoundOn(t, model)
@@ -952,7 +952,7 @@ func TestDeltaPassRefusesATimedOutRoundOnceBeyondThePass(t *testing.T) {
 
 // deltaCardAnswer's key, "delta-911f3ad0", is the first 8 hex digits of
 // printf 't-plan\n1\nredirect_302 grant 9' | sha256sum.
-const deltaCardAnswer = `{"card": {"title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
+const deltaCardAnswer = `{"card": {"title": "Fix the stats", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
 	`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 
 // DeltaPass runs a due round: the card is filed under its deterministic
@@ -1260,7 +1260,7 @@ func TestRoundCheckEndsAPlanWhoseIssueIsClosed(t *testing.T) {
 		}
 		r.planCloseCheck(ctx, "p")
 		r.planCloseCheck(ctx, "p")
-		want := []string{"factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+		want := []string{"The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 		if n := len(stepsNamed(t, r, "p", "plan_closed")); n != 1 || !slices.Equal(fj.comments, want) {
 			t.Fatalf("step written %t: plan_closed %d times, comments %q; want 1 and %q", written, n, fj.comments, want)
 		}
@@ -1340,7 +1340,7 @@ func TestCriteriaPassClosesAClosedPlanBetweenRounds(t *testing.T) {
 		store.tasks[id] = k
 	}
 	setStatus(store, "p", "closed")
-	want := []string{"factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+	want := []string{"The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 	r.CriteriaPass(context.Background())
 	r.CriteriaPass(context.Background())
 	if n := len(stepsNamed(t, r, "p", "plan_closed")); n != 1 || !slices.Equal(fj.comments, want) {
@@ -1557,9 +1557,9 @@ func TestRecordReplanOfARound(t *testing.T) {
 		cards   []int64
 	}{
 		{"the last round", twoRounds(), map[string]int64{"stats": 21, "integration": 22},
-			"factoryd: round 2 planned at revision 3, 2 cards: #21, #22. It is the last round.", []int64{21, 22}},
+			"Round 2 planned at revision 3, 2 cards: #21, #22. It is the last round.", []int64{21, 22}},
 		{"the console still to plan", console, map[string]int64{"stats": 21, "extra-1": 22, "extra-0": 23},
-			"factoryd: round 2 planned at revision 3, 3 cards: #21, #22, #23. Still to plan: the console.", []int64{21, 22, 23}},
+			"Round 2 planned at revision 3, 3 cards: #21, #22, #23. Still to plan: the console.", []int64{21, 22, 23}},
 	} {
 		r, store, fj := roundRig(t)
 		if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}); err != nil {
@@ -1633,7 +1633,7 @@ func TestOneCardPlanTakesADeltaCard(t *testing.T) {
 	p.Round = 1
 	p.Cards = []PlanCard{p.Cards[3]}
 	p.Cards[0].Round = 1
-	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], "directories": ["internal/links"], ` +
+	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", "depends_on": ["integration"], "directories": ["internal/links"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestRedirect in internal/links: two redirects: clicks 2"}, ` +
 		`{"criterion": "links_crud", "text": "TestCreateLink in internal/links: POST /api/links: 201 and the row in the store"}], "size": "small"}}`
 	card, merged, why := judgeDelta(p, "delta-1", answer, testShape, testLimits, nil)

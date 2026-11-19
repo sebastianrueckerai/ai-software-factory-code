@@ -240,8 +240,8 @@ func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: oneSession})
 	var refused ErrActRefused
 	const pool = "the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"
-	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), pool+", and rung 2 may take ") {
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), pool+", and the factory agent may take ") {
 		t.Fatalf("rung 2's extend = %v, want the pool's refusal", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman {
@@ -280,7 +280,7 @@ func TestActSignalsTheRunAndPostsTheComment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"factoryd: sebastian answered with extend: 1 session from the pool."}; got.Comment != 501 || !reflect.DeepEqual(g.forge.comments, want) {
+	if want := []string{"sebastian answered with “Allow more sessions”: 1 session from the pool."}; got.Comment != 501 || !reflect.DeepEqual(g.forge.comments, want) {
 		t.Fatalf("comment %d, forgejo holds %q; want 501 and %q", got.Comment, g.forge.comments, want)
 	}
 	want := []reopenCall{
@@ -456,7 +456,7 @@ func TestActClosesTheIssueAsFactory(t *testing.T) {
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "not worth it"}}); err != nil {
 		t.Fatal(err)
 	}
-	if !g.forge.closed || len(g.forge.comments) != 1 || !strings.HasPrefix(g.forge.comments[0], "factoryd: sebastian answered with close.") ||
+	if !g.forge.closed || len(g.forge.comments) != 1 || !strings.HasPrefix(g.forge.comments[0], "sebastian answered with “End the card”.") ||
 		!strings.Contains(g.forge.comments[0], "not worth it") {
 		t.Fatalf("closed %v, comments %q; want the issue closed after one comment naming sebastian and the note", g.forge.closed, g.forge.comments)
 	}
@@ -697,7 +697,7 @@ func TestResolveCaseNamesNoFitWithoutTheNeed(t *testing.T) {
 		Need:  policy.Draw{AgentTime: time.Minute},
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
 	const want = "the escalation pool leaves 20 sessions, 0 seconds of agent time and 60.00 EUR this month: only the human draws more. " +
-		"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"
+		"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
 	err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil)
 	var spent *DrawBoundError
 	if !errors.As(err, &spent) || err.Error() != want {
@@ -722,8 +722,8 @@ func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
 	res := CaseResolution{By: FactoryDecider, Rung: 1, Action: ActExtend}
 	var bound *DrawBoundError
 	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil)
-	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation" {
+	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: the factory agent or the human may draw more. "+
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation" {
 		t.Fatalf("ResolveCase past the card's bound = %v, want the card's DrawBoundError", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 {
@@ -999,7 +999,7 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 	if !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("did = %+v, want %+v", got.Did, want)
 	}
-	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with extend: 1 session from the pool and 100 lines to its line bound.`; got.Text != text {
+	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with “Allow more sessions”: 1 session from the pool and 100 lines to its line bound.`; got.Text != text {
 		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 }

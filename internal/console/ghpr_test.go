@@ -25,7 +25,7 @@ func TestGithubPullRequestMode(t *testing.T) {
 	export := func(mode string) *httptest.ResponseRecorder {
 		return r.do(post("/projects/demo-app/export", url.Values{"csrf": {s.csrf}, "remote": {"acme/app"}, "username": {"u"}, "token": {ghToken}, "mode": {mode}}), ck)
 	}
-	if rec := export("pulls"); rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != "mode must be mirror or pull_requests" {
+	if rec := export("pulls"); rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != "Pick a mode: mirror, or pull requests." {
 		t.Fatalf("mode pulls = %d %q, want 400", rec.Code, rec.Body)
 	}
 	if rec := export(factoryd.ModePullRequests); rec.Code != http.StatusSeeOther {
@@ -108,8 +108,8 @@ func TestChatGithubSync(t *testing.T) {
 	equal(t, "syncs", r.synced, []string{"demo-app by sebastian"})
 }
 
-// A card shows its GitHub pull request's state on its face and in the
-// chat's card read, or why it has none.
+// A card shows its GitHub pull request's state on its opened card and in
+// the chat's card read, or why it has none.
 func TestCardGitHubPullRequest(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-x", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 99, PRNumber: 7,
@@ -118,11 +118,11 @@ func TestCardGitHubPullRequest(t *testing.T) {
 			GitHubPRState: "failed: GitHub refused the pull request: GitHub answered 422 Validation Failed"})
 	ck, _ := r.loggedIn(t)
 	for id, want := range map[string]string{
-		"t-x": `<span class="github">GitHub: <a href="https://github.com/acme/app/pull/12" target="_blank" rel="noopener">PR #12</a> merged</span>`,
-		"t-y": `<span class="github">GitHub: failed: GitHub refused the pull request: GitHub answered 422 Validation Failed</span>`,
+		"t-x": `<p class="provenance">on GitHub <a href="https://github.com/acme/app/pull/12" target="_blank" rel="noopener">pull request #12</a> merged</p>`,
+		"t-y": `<p class="provenance">on GitHub failed: GitHub refused the pull request: GitHub answered 422 Validation Failed</p>`,
 	} {
-		if face := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id, nil), ck).Body.String(); !strings.Contains(face, want) {
-			t.Errorf("%s's face lacks %s:\n%s", id, want, face)
+		if opened := drawer(t, r, ck, id, "overview"); !strings.Contains(opened, want) {
+			t.Errorf("%s's opened card lacks %s:\n%s", id, want, opened)
 		}
 	}
 	text := reads(t, r, g, "card", `{"task_id":"t-x"}`)[0]

@@ -139,8 +139,8 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	g.settle()
 	g.afterRung2(t, out.CaseID)
 
-	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: rung 2 or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation, ", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
+	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: the factory agent or the human may draw more. "+
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation, ", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
 	steps := g.steps(t, out.CaseID)
 	if len(steps) != 4 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1's answer extend was refused: "+refusal) ||
 		steps[1].Decision != "successor" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 2 || steps[3].Rung != 3 {
@@ -154,6 +154,38 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	}
 	if len(g.asks(t)) != 1 || len(g.forge.comments) != 1 {
 		t.Fatalf("asks %d, comments %d, want one face", len(g.asks(t)), len(g.forge.comments))
+	}
+}
+
+// Rung 1's fund on the agent's question is refused: a draw answers no
+// question, so the statement offers none and says to hand the case up.
+// Rung 1's fund is refused as an answer, its hand-up recommends the fund,
+// nothing is drawn, and the case climbs instead of waiting open with
+// nobody on it. The card's ceiling of 10 EUR leaves room for the fund.
+func TestRung1FundOnAnAgentsQuestionHandsItUp(t *testing.T) {
+	g := newRungRig(t, "success")
+	if _, err := g.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET ceiling_eur = 10 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	fund := map[string]any{"decision": "fund", "draw": map[string]any{"eur": 0.5}}
+	g.chat.answers = []CheckinResponse{g.answer(t, fund), g.answer(t, map[string]any{"decision": "hand_up", "draw": nil,
+		"recommendation": map[string]any{"action": "fund", "grounds": "the card needs money to answer"}})}
+	budget := g.budget(t)
+	out := g.trip(t, AgentAsks+"Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite")
+	g.settle()
+	refusal := "- fund: not offered: this ask is the agent's question, which a draw does not answer: answer it, or hand it up"
+	if len(g.chat.gots) == 0 || !strings.Contains(g.chat.gots[0].Input, refusal) {
+		t.Fatalf("rung 1's statement does not say %q", refusal)
+	}
+	own := g.stepsOfRung(t, out.CaseID, 1)
+	if len(own) != 1 || own[0].Outcome != StepHandedUp || own[0].Decision != ActFund {
+		t.Fatalf("rung 1 steps = %+v, want one handed up recommending the fund", own)
+	}
+	if got := g.budget(t); got != budget || poolRows(t, g) != 0 {
+		t.Fatalf("budget %.2f, pool rows %d; want %.2f and none: no fund was drawn", got, poolRows(t, g), budget)
+	}
+	if c := caseByID(t, g.s, out.CaseID); c.Status == CaseResolved {
+		t.Fatalf("case status = %s, want it climbing", c.Status)
 	}
 }
 
@@ -177,8 +209,8 @@ func TestRung1HandsUpRecommendation(t *testing.T) {
 	}
 	asks := g.asks(t)
 	if len(g.forge.comments) != 1 || len(asks) != 1 || asks[0].Detail["case_id"] != float64(out.CaseID) ||
-		!strings.Contains(fmt.Sprint(asks[0].Detail["recommendation"]), "the card's work is done on main") ||
-		!strings.Contains(fmt.Sprint(asks[0].Detail["recommendation"]), "close") {
+		asks[0].Detail["recommendation"] != "the card's work is done on main" ||
+		fmt.Sprint(asks[0].Detail["preselected"].(map[string]any)["action"]) != ActClose {
 		t.Fatalf("comments %q, asks %+v; want one comment and one ask of the case recommending close with the grounds", g.forge.comments, asks)
 	}
 	if len(g.signalsOf(SignalCaseResolved)) != 0 {
@@ -753,7 +785,7 @@ func TestFactsReadASessionRunningOnlyFromItsLiveRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, err = g.r.PgTripFacts(ctx, card, "", "")
-	if err != nil || !f.Running || sessionRoom(f) != "a session is running" {
+	if err != nil || !f.Running || sessionRoom(f) != "a session is running: wait for it to end, then answer again" {
 		t.Fatalf("running with a live row = %v (%v), room %q, want true and a session is running", f.Running, err, sessionRoom(f))
 	}
 }
@@ -762,7 +794,7 @@ func TestFactsReadASessionRunningOnlyFromItsLiveRow(t *testing.T) {
 func TestActRefusesTheCheckinOffRungOne(t *testing.T) {
 	for _, rung := range []int{0, 2, 3} {
 		_, err := (&Runner{}).Act(context.Background(), ActInput{TaskID: "t1", CaseID: 1, By: CheckinDecider, Rung: rung, Res: Resolution{Action: ActExtend}})
-		if _, ok := err.(ErrActRefused); !ok || rung != 0 && !strings.Contains(err.Error(), "the check-in answers on rung 1 alone") {
+		if _, ok := err.(ErrActRefused); !ok || rung != 0 && !strings.Contains(err.Error(), "The check-in answers as itself alone") {
 			t.Fatalf("rung %d: err = %v, want the check-in refused off rung 1", rung, err)
 		}
 	}
@@ -1066,8 +1098,8 @@ func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testin
 	if c.Status != CaseAtHuman || c.CommentID == 0 || len(faced) != 1 || faced[0].sig.Case.Comment != c.CommentID {
 		t.Fatalf("case %s with comment %d, signals %+v; want it at the human and one case_faced with that comment", c.Status, c.CommentID, faced)
 	}
-	if !strings.Contains(info, "The check-in found: the stop reads as gate_stop; finding") || strings.Contains(info, "no resolver fits") ||
-		!strings.Contains(recommendation, "close") || !strings.Contains(recommendation, "the card's work is done on main") {
+	if !strings.Contains(info, "The check-in found:\n\n> the stop reads as gate_stop; finding") || strings.Contains(info, "no resolver fits") ||
+		recommendation != "the card's work is done on main" {
 		t.Fatalf("info %q, recommendation %q; want rung 1's finding and recommendation", info, recommendation)
 	}
 }
@@ -1089,7 +1121,7 @@ func TestAMomentsFaceShowsItsReasonNotRungZeros(t *testing.T) {
 			info = fmt.Sprint(a.Detail["info"])
 		}
 	}
-	if !strings.Contains(info, "The check-in found: the objective conflicts with the guardrails") || strings.Contains(info, "no resolver fits") {
+	if !strings.Contains(info, "The check-in found:\n\n> the objective conflicts with the guardrails") || strings.Contains(info, "no resolver fits") {
 		t.Fatalf("info = %q, want the moment's reason as what the check-in found", info)
 	}
 }
@@ -1274,8 +1306,8 @@ func TestAHumansNoteIsCutAtTheCapAndFactorydsAdditionsAreItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	comment := posted.Body
-	if !strings.Contains(comment, "factoryd: sebastian answered with continue") || !strings.Contains(comment, strings.Repeat("h", 3000)) ||
-		!strings.Contains(comment, "factoryd added for the session:") || strings.Index(comment, tail) < strings.Index(comment, "factoryd added for the session:") {
+	if !strings.Contains(comment, "sebastian answered with “Go on with my note”") || !strings.Contains(comment, strings.Repeat("h", 3000)) ||
+		!strings.Contains(comment, "The factory added for the session:") || strings.Index(comment, tail) < strings.Index(comment, "The factory added for the session:") {
 		t.Fatalf("comment = %.200q, want the human's whole note under the human's name and the log under factoryd's", comment)
 	}
 }
@@ -1376,7 +1408,7 @@ func TestFactorydsAdditionsToANoteAreMasked(t *testing.T) {
 	if err := json.Unmarshal([]byte(g.forge.comments[len(g.forge.comments)-1]), &posted); err != nil {
 		t.Fatal(err)
 	}
-	added := posted.Body[strings.Index(posted.Body, "factoryd added for the session:"):]
+	added := posted.Body[strings.Index(posted.Body, "The factory added for the session:"):]
 	if !strings.Contains(added, "The sandbox killed the last session for its memory") {
 		t.Fatalf("comment = %q, want the kill line among factoryd's additions", posted.Body)
 	}

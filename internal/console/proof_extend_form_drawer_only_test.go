@@ -10,12 +10,12 @@ import (
 )
 
 // extend_form_drawer_only: a card that may extend shows no extend input on
-// its asking face, the escalation of a card with no case and the face of a
-// case whose ask stores no offers alike; the drawer's extend fold opens
-// for the asking card and holds the form's inputs.
+// its small card, the card with no case and the card whose case asks
+// alike; the opened card holds the one extend form with its inputs, among
+// the ask's answers where the case offers it, else among the other
+// actions.
 func TestProofExtendFormOffTheAskingFace(t *testing.T) {
 	r := newRig(t)
-	r.noStoredOffers = true
 	r.openCases = map[string][]factoryd.Case{}
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
@@ -25,22 +25,25 @@ func TestProofExtendFormOffTheAskingFace(t *testing.T) {
 	}
 	seatAsk(r, "t-g", factoryd.CaseSessionCap, roomyFacts(nil))
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	for id, face := range map[string]string{"t-q": escalationOf(t, body, "t-q"), "t-g": escalationOf(t, body, "t-g")} {
-		if strings.Contains(face, "/extend") || strings.Contains(face, `id="extend-`) {
-			t.Errorf("the asking face of %s holds the extend form:\n%s", id, face)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	for _, id := range []string{"t-q", "t-g"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "extend") || strings.Contains(face, "<input") {
+			t.Errorf("the small card of %s holds the extend form:\n%s", id, face)
 		}
 	}
-	for _, id := range []string{"t-q", "t-g"} {
-		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
-		_, fold, ok := strings.Cut(drawer, `<details class="sec" data-sec="extend"><summary>Extend</summary>`)
-		fold, _, _ = strings.Cut(fold, "</details>")
-		if !ok {
-			t.Fatalf("the drawer of %s holds no extend fold:\n%s", id, drawer)
+	for id, where := range map[string]func(string) string{
+		"t-q": func(opened string) string { return otherActionsOf(t, opened) },
+		"t-g": func(opened string) string { return askBlockOf(t, opened) },
+	} {
+		opened := drawer(t, r, ck, id, "overview")
+		if n := strings.Count(opened, `data-answer="extend"`); n != 1 || answerForm(t, opened, factoryd.ActExtend).Action != "/tasks/"+id+"/resolve" {
+			t.Fatalf("the opened card of %s holds %d extend forms, want the one that posts its answer:\n%s", id, n, opened)
 		}
-		for _, want := range []string{`action="/tasks/` + id + `/extend"`, `name="sessions"`, `name="lines"`, `name="minutes"`, `name="eur"`, `name="reason"`} {
-			if !strings.Contains(fold, want) {
-				t.Errorf("the drawer's extend fold of %s lacks %s:\n%s", id, want, fold)
+		_, form, _ := strings.Cut(where(opened), `data-answer="extend"`)
+		form, _, _ = strings.Cut(form, "</form>")
+		for _, want := range []string{`name="extend.sessions"`, `name="extend.lines"`, `name="extend.minutes"`} {
+			if !strings.Contains(form, want) {
+				t.Errorf("the extend form of %s lacks %s:\n%s", id, want, form)
 			}
 		}
 	}

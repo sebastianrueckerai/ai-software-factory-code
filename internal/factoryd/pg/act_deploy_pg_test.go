@@ -133,7 +133,7 @@ func TestRollHeldCaseHoldsThePlansStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `[{"issue":1580,"merged":2,"total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]}]`
+	const want = `[{"issue":1580,"merged":2,"name":"x","total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]}]`
 	if c.Kind != CaseRollHeld || string(got) != want || c.Facts["held_since"] != "2026-10-29T10:00:00Z" {
 		t.Errorf("case %s, plans %s, held_since %v; want roll_held, %s, 2026-10-29T10:00:00Z", c.Kind, got, c.Facts["held_since"], want)
 	}
@@ -156,7 +156,7 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `[{"issue":1580,"merged":2,"total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]},{"issue":1590,"merged":1,"total":1,"waits_on":[]}]`
+	const want = `[{"issue":1580,"merged":2,"name":"x","total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]},{"issue":1590,"merged":1,"name":"x","total":1,"waits_on":[]}]`
 	if string(got) != want {
 		t.Errorf("plans %s, want %s", got, want)
 	}
@@ -165,7 +165,7 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 		t.Errorf("held_since %v, source %v after the refresh; want the hold's start and the ask's own keys kept", c.Facts["held_since"], c.Facts["source"])
 	}
 	ask, _ := h.r.CaseAsk(context.Background(), caseByID(t, h.s, h.caseID))
-	if info, _ := ask.Detail["info"].(string); !strings.Contains(info, "- plan #1590: 1 of 1 cards merged; waits for the plan to close.") {
+	if info, _ := ask.Detail["info"].(string); !strings.Contains(info, "- plan “x” (#1590): 1 of 1 cards merged; waits for the plan to close.") {
 		t.Errorf("the ask's info %q; want plan #1590 named", info)
 	}
 	events, err := h.s.TaskEvents(context.Background(), h.cardID, 100)
@@ -174,7 +174,7 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 	}
 	named := false
 	for _, e := range events {
-		if info, _ := e.Detail["info"].(string); e.Kind == EventQuestionAsked && strings.Contains(info, "- plan #1590") {
+		if info, _ := e.Detail["info"].(string); e.Kind == EventQuestionAsked && strings.Contains(info, "- plan “x” (#1590)") {
 			named = true
 		}
 	}
@@ -224,7 +224,7 @@ func TestRollHeldStatementShowsThePlansAndTheOptions(t *testing.T) {
 	}
 	for _, want := range []string{"Production has been held since 2026-10-29T10:00:00Z.",
 		"Plan #1580: 2 of 5 cards merged; waits on #1609 running, #1610 queued, #1611 failed.",
-		"- hold_wait: Wait", "- deploy_now: Deploy anyway"} {
+		"- hold_wait: Not now", "- deploy_now: Deploy now"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the statement lacks %q:\n%s", want, text)
 		}
@@ -290,7 +290,7 @@ func TestRung2DeployNowRunsOrProposesByLevel(t *testing.T) {
 			if c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Rung != 2 || c.Resolution.By != ChatUser {
 				t.Errorf("case %s, resolution %+v; want resolved on rung 2 by %s", c.Status, c.Resolution, ChatUser)
 			}
-			if want := "Deploy now: main of demo-app/demo-app at 9d9d9d9 goes to production."; !strings.Contains(out.Text, want) {
+			if want := "Deploy now: main of demo-app/demo-app at commit 9d9d9d9 goes to production."; !strings.Contains(out.Text, want) {
 				t.Errorf("text %q lacks %q", out.Text, want)
 			}
 		})
@@ -311,7 +311,7 @@ func TestHumanDeployNowRunsTheSameAction(t *testing.T) {
 	}
 }
 
-const notRollHeld = "deploy_now releases a held production, and this case is no roll hold's"
+const notRollHeld = "`deploy_now` releases a held production, and this ask is no roll hold's"
 
 // deploy_now on a case that is no roll hold's is refused with the table's
 // words: on an agent card's session cap, and on a human card of another
@@ -366,7 +366,7 @@ func TestNoAnswerRunsOnAnEndedCard(t *testing.T) {
 						t.Fatal(err)
 					}
 					_, err := h.deployAct(rung, "sebastian")
-					if want := "ended " + status + ", so its case takes no deploy_now"; err == nil || !strings.Contains(err.Error(), want) {
+					if want := "ended " + status + ", so its ask takes no `deploy_now`"; err == nil || !strings.Contains(err.Error(), want) {
 						t.Fatalf("Act = %v, want a refusal with %q", err, want)
 					}
 					if len(h.stub.calls) != 0 {
@@ -399,7 +399,7 @@ func TestEndedCardTakesNoReplanButStillCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := h.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan}})
-	if want := "ended closed, so its case takes no replan"; err == nil || !strings.Contains(err.Error(), want) {
+	if want := "card #12 ended closed, so its ask takes no `replan`: an ended card does no more work, and a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("replan on a closed card = %v, want %q", err, want)
 	}
 	if card, _, _ := h.s.Task(ctx, "t1"); card.Status != "closed" {
@@ -443,7 +443,7 @@ func TestDeployNowFailures(t *testing.T) {
 		want string
 	}{
 		{"not held", ErrNotHeld, "production of demo-app/demo-app is not held: every merge goes to production on its own"},
-		{"main red", ErrMainRed{Commit: "abcdef0123456789"}, "main of demo-app/demo-app at abcdef0 is red: deploy_now waits for a green run on main"},
+		{"main red", ErrMainRed{Commit: "abcdef0123456789"}, "main of demo-app/demo-app at commit abcdef0 is red: `deploy_now` waits for a green run on main"},
 		{"unknown", errors.New("forgejo: " + leaky), "production of demo-app/demo-app could not be released: forgejo: see https://[redacted]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -475,11 +475,20 @@ func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 	if _, err := h.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
 		t.Fatal(err)
 	}
+	// the held card has no issue before its face, so a refusal names it by
+	// its title, cut at a word within 70 runes, and an agent's door adds the
+	// task id its tools take
+	const title = "“Deploys of demo-app-demo-app to production wait for an open plan. How…”"
+	const ended = " ended done, so `hold_wait` changes nothing: an ended card does no more work, and a new card carries the work on"
 	for _, rung := range []int{2, 3} {
 		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
-		if want := "ended done: its case closes on its own, so hold_wait changes nothing; a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
+		if want := "card " + title + " (" + h.cardID + ")" + ended; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("rung %d: Act = %v, want a refusal with %q", rung, err, want)
 		}
+	}
+	_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
+	if want := "card " + title + ended; err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), h.cardID) {
+		t.Errorf("a human's press: Act = %v, want a refusal with %q and no task id", err, want)
 	}
 }
 
@@ -489,7 +498,7 @@ func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyFullAuto)
 	ctx := context.Background()
-	h.r.PgTimeline().RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "info": "proposal info",
+	h.r.PgTimeline().RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "ask": "Close the card?", "info": "proposal info",
 		"recommendation": "close it", "preselected": map[string]any{"action": ActClose}})
 	xmins := func() string {
 		var out string
@@ -498,11 +507,11 @@ func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
 		}
 		return out
 	}
-	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+	if err := h.s.SetAskInfo(ctx, h.cardID, SourceProductionHeld, "new info"); err != nil {
 		t.Fatal(err)
 	}
 	after := xmins()
-	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+	if err := h.s.SetAskInfo(ctx, h.cardID, SourceProductionHeld, "new info"); err != nil {
 		t.Fatal(err)
 	}
 	if again := xmins(); again != after {

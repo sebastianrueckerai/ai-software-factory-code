@@ -129,7 +129,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, escalated = %q", final, h.escalated)
 		}
-		question := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings"
+		question := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
 		if !slices.Equal(h.escalated, []string{question}) {
 			t.Fatalf("escalations = %q, want the time card alone", h.escalated)
 		}
@@ -586,7 +586,7 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 			t.Fatalf("sessions = %d, conversations = %d; want the dead session without a conversation and the reader with one", len(l.sessions), l.chat.calls)
 		}
 		dead := l.results[0]
-		stop := "check-in: retry_stronger after cheap_cap: the cheap rung's 150ms passed without a push"
+		stop := "check-in: retry_stronger after cheap_cap: the cheap model's cap of 150ms passed without a push"
 		if dead.Outcome != OutcomeRetryStronger || dead.Trip != string(TripCheapCap) || dead.CheckIn != nil ||
 			dead.Commit != "" || dead.Summary != stop {
 			t.Fatalf("the dead session = %+v, want the cheap cap's stop with no check-in", dead)

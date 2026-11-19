@@ -201,7 +201,7 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 	}
 	switch {
 	case strings.TrimSpace(save.Text) == "":
-		return nil, refuse(http.StatusBadRequest, "the document would be empty; the editor does not delete documents")
+		return nil, refuse(http.StatusBadRequest, "The document would be empty, and the editor deletes no document.")
 	case len(save.Text) > docMax:
 		return nil, refuse(http.StatusBadRequest, fmt.Sprintf("the document would be %d bytes, over the cap of %d", len(save.Text), docMax))
 	}

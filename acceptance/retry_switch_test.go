@@ -28,18 +28,18 @@ import (
 // the first meets the provider's dated refusal and arms the class's hold,
 // the other is answered by the hold, and both wait to the reset beside
 // the one freeze card. From each entry point — the freeze card's Retry
-// now, and the chat's retry on a frozen card, which the runner finds held
+// now, an approver's answer on the card's ask, and the chat's retry on a frozen card, which the runner finds held
 // by the freeze card under the policy in force, or on the freeze card
 // itself — the press clears the hold, closes the card at once and wakes
 // both cards, whose next sessions start at the press. The first press's
 // probe meets a dated refusal naming a new reset: the hold re-arms, the
-// same card reopens and both cards wait to the new reset, with no case
-// and no question. The second press's probe succeeds: both cards reach
-// the provider and the card stays closed on class_resumed. Each press
-// closes the card with its own comment naming who pressed, and leaves its
-// freeze_retried row: who, how, the class, the card closed and both cards
-// woken. A freeze three days after the success, past the reset the card
-// held, files a new card.
+// same card reopens with a new ask and both cards wait to the new reset,
+// with no case and no question of their own. The second press's probe
+// succeeds: both cards reach the provider and the card stays closed on
+// class_resumed. Each press closes the card with its own comment naming
+// who pressed, and leaves its freeze_retried row: who, how, the class, the
+// card closed and both cards woken. A freeze three days after the success,
+// past the reset the card held, files a new card.
 // [retry_switch_ends_freeze]
 func TestRetrySwitchEndsFreeze(t *testing.T) {
 	for _, entry := range []struct {
@@ -149,8 +149,8 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 				return finals, nil
 			}, workflow.RegisterOptions{Name: "FrozenCards"})
 
-			// the member logs in once the freeze card stands, its Retry now
-			// form on the board
+			// the member logs in once the freeze card stands, Retry now an
+			// answer of its ask
 			var ck *http.Cookie
 			var csrf string
 			press := func(card string) {
@@ -162,8 +162,12 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 					card = cards[0]
 				}
 				if !entry.chat {
-					req := httptest.NewRequest(http.MethodPost, "/tasks/"+card+"/retry-freeze",
-						strings.NewReader(url.Values{"csrf": {csrf}, "project": {parkProject}}.Encode()))
+					asks, err := r.store.OpenCasesOf(ctx, card)
+					if err != nil || len(asks) != 1 {
+						t.Fatalf("the freeze card's open asks = %+v, %v; want its one ask", asks, err)
+					}
+					req := httptest.NewRequest(http.MethodPost, "/tasks/"+card+"/answer",
+						strings.NewReader(url.Values{"csrf": {csrf}, "case": {fmt.Sprint(asks[0].ID)}, "value": {factoryd.ActRetry}}.Encode()))
 					req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 					req.Header.Set("HX-Request", "true")
 					req.AddCookie(ck)
@@ -201,7 +205,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 				fc, ok := plFreezeCard(ctx, t, r.store)
 				names := "2 cards of the class wait"
 				if status == "done" {
-					names = parkMember + " cleared the class's hold."
+					names = parkMember + " ended the freeze of the " + policy.ClassCoder + " model class, and the waiting cards call the provider again."
 				}
 				if face := "The class resets at " + reset.Format(time.RFC3339); !ok || fc.Status != status || !strings.Contains(fc.Objective, face) ||
 					!strings.Contains(fc.Objective, names) || plFreezeCards(t, r.store.DB()) != 1 || len(fj.issues) != 1 {
@@ -264,7 +268,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			if calls := stub.calls(); len(calls) != 4 {
 				t.Errorf("provider calls %v, want the arm, the re-arm and both probes of the success", calls)
 			}
-			rows, err := r.store.DB().QueryContext(ctx, `SELECT kind, COALESCE(detail->>'reset', '') FROM events
+			rows, err := r.store.DB().QueryContext(ctx, `SELECT kind, CASE WHEN kind = $1 THEN COALESCE(task_id, '') ELSE COALESCE(detail->>'reset', '') END FROM events
 				WHERE kind IN ('class_frozen', 'class_resumed', $1) ORDER BY id`, factoryd.EventQuestionAsked)
 			if err != nil {
 				t.Fatal(err)
@@ -272,24 +276,25 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			defer rows.Close()
 			var spine []string
 			for rows.Next() {
-				var kind, reset string
-				if err := rows.Scan(&kind, &reset); err != nil {
+				var kind, of string
+				if err := rows.Scan(&kind, &of); err != nil {
 					t.Fatal(err)
 				}
-				spine = append(spine, kind+" "+reset)
+				spine = append(spine, kind+" "+of)
 			}
 			if err := rows.Err(); err != nil {
 				t.Fatal(err)
 			}
-			if want := []string{"class_frozen " + first.Format(time.RFC3339), "class_resumed " + first.Format(time.RFC3339),
-				"class_frozen " + renewed.Format(time.RFC3339), "class_resumed " + renewed.Format(time.RFC3339)}; !slices.Equal(spine, want) {
-				t.Errorf("the gateway's rows = %q, want %q: each press resumed the hold it cleared, and no question", spine, want)
+			asked := factoryd.EventQuestionAsked + " " + fc.ID
+			if want := []string{"class_frozen " + first.Format(time.RFC3339), asked, "class_resumed " + first.Format(time.RFC3339),
+				"class_frozen " + renewed.Format(time.RFC3339), asked, "class_resumed " + renewed.Format(time.RFC3339)}; !slices.Equal(spine, want) {
+				t.Errorf("the rows = %q, want %q: each press resumed the hold it cleared, and the freeze card alone asked, once for each hold", spine, want)
 			}
 
 			// each press closed the card with its own comment naming who
 			// pressed, and left its row: who, how, the class, the card it
 			// closed and the two cards it woke
-			pressSaid := fmt.Sprintf("#issues/%d factoryd: %s's retry press cleared the %s class's hold: the freeze card closes at once.", fc.IssueNumber, parkMember, policy.ClassCoder)
+			pressSaid := fmt.Sprintf("#issues/%d %s's retry press cleared the %s class's freeze: the freeze card closes at once.", fc.IssueNumber, parkMember, policy.ClassCoder)
 			if n := len(slices.DeleteFunc(slices.Clone(fj.comments), func(c string) bool { return c != pressSaid })); n != 2 {
 				t.Errorf("the card's comments %q hold %d press closes, want one per press: %q", fj.comments, n, pressSaid)
 			}

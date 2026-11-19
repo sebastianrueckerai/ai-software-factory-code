@@ -101,7 +101,7 @@ func TestRawErrorRefusalsAreScrubbed(t *testing.T) {
 	a := chatActorOf(t, r, s)
 	ctx := context.Background()
 	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error { return leakyError() }
-	_, err := r.c.doAnswerPlanQuestion(ctx, a, "t-p", 1, 1, "", "60 seconds", 0)
+	_, err := r.c.doAnswerPlanQuestion(ctx, a, "t-p", 1, 1, "", "60 seconds")
 	maskedLeak(t, "the answer refusal", err.Error())
 	r.c.cfg.AnswerPlanQuestions = func(context.Context, string, int, []factoryd.PlanAnswer, string) error { return leakyError() }
 	_, err = r.c.doAnswerPlanQuestions(ctx, a, "t-p", 1, []PlanAnswerInput{{Question: 1, Text: "60 seconds"}})
@@ -267,12 +267,13 @@ func TestRoutineDrawerDropsAHalfReadPolicy(t *testing.T) {
 	}
 }
 
-// A plan card whose revision is not recorded says so in words.
+// A plan card whose revision is not recorded says so in words on its
+// opened card.
 func TestApprovalPlanCardNamesAnUnrecordedRevision(t *testing.T) {
 	r, _ := batchAnswerRig(t)
 	ck, _ := r.loggedIn(t)
 	r.c.cfg.Tasks = failingPlans{r.c.cfg.Tasks, nil}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-p/drawer?tab=overview", nil), ck).Body.String()
 	want := "The plan could not be read: revision 1 of t-p is not recorded. Open the plan&#39;s approval again, or read the plan on its issue."
 	if !strings.Contains(body, want) {
 		t.Errorf("the approval card lacks %q:\n%s", want, body)
@@ -337,14 +338,15 @@ func TestMergePullReadRefusalIsScrubbed(t *testing.T) {
 	maskedLeak(t, "the merge's pull-request read", rec.Body.String())
 }
 
-// The board's head-checks problem is Forgejo's message, masked.
+// The opened card's head-checks problem is Forgejo's message, masked.
 func TestBoardHeadUnreadWhyIsScrubbed(t *testing.T) {
 	r := newRig(t)
+	withRequestCards(r)
 	ck, _ := r.loggedIn(t)
 	r.approvals.rows[1].Spec = specRedChecks()
 	r.c.cfg.HTTP = &http.Client{Transport: failStatus{http.DefaultTransport, "commits/abc123/status", http.StatusBadGateway,
 		leakMessage}}
-	body := html.UnescapeString(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
+	body := html.UnescapeString(r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String())
 	maskedLeak(t, "the board's head-checks problem", body)
 }
 

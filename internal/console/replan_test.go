@@ -14,8 +14,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// Replan is offered in the drawer of a card that may go back to the
-// planner, to its project's approvers only. The member's replan, by the
+// Send back to the planner is among the other actions of a card that may
+// go back to the planner, to its project's approvers only. The member's replan, by the
 // button or the confirmed replan, hands factoryd the card, the member and
 // the note; once factoryd accepts, the note goes on the issue as the
 // member in the words the replan step holds, card_replanned records it and
@@ -70,44 +70,49 @@ func TestReplanCard(t *testing.T) {
 		}
 		return rec.Body.String()
 	}
-	form := `<details class="sec" data-sec="replan"><summary>Replan</summary><div class="sec-body">` +
-		`<form method="post" action="/tasks/t-r/replan" hx-post="/tasks/t-r/replan">` +
-		`<input type="hidden" name="csrf" value="` + s.csrf + `">` +
-		`<label for="replan-t-r">Why it goes back to the planner, posted on the issue as you</label>` +
-		`<textarea id="replan-t-r" name="note" rows="2" maxlength="2000" required></textarea>` +
-		`<button type="submit" aria-label="Replan #11">Replan</button></form></div></details>`
-	if got := drawer("t-r"); !strings.Contains(got, form) {
-		t.Fatalf("the running direct card's drawer lacks the Replan form:\n%s", got)
+	for _, want := range []string{
+		`<form method="post" action="/tasks/t-r/resolve" hx-post="/tasks/t-r/resolve" class="answer" data-answer="replan">` +
+			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="action" value="replan">`,
+		`<textarea id="f-t-r-replan-note" name="replan.note" rows="2" maxlength="2000" placeholder="What the planner should do differently" required hx-preserve></textarea>`,
+	} {
+		if got := drawer("t-r"); !strings.Contains(got, want) {
+			t.Fatalf("the running direct card's drawer lacks %s:\n%s", want, got)
+		}
 	}
-	const box = `<input type="checkbox" name="off_main" value="on"> Take the plan's merged cards off main first`
+	const box = `<input type="checkbox" name="replan.off_main" value="yes"> Take the plan&#39;s merged cards off main first`
 	if strings.Contains(drawer("t-r"), box) {
 		t.Error("the direct card's drawer offers off main")
 	}
-	if got := drawer("t-ch"); !strings.Contains(got, `<label>`+box+`</label><button type="submit" aria-label="Replan #51">`) {
+	if got := drawer("t-ch"); !strings.Contains(got, `<label class="field">`+box+`</label>`) {
 		t.Errorf("the plan child's drawer lacks the off main box:\n%s", got)
 	}
 	for _, id := range []string{"t-mg", "t-roll"} {
-		if strings.Contains(drawer(id), `data-sec="replan"`) {
-			t.Errorf("the drawer of %s offers Replan", id)
+		if strings.Contains(drawer(id), `data-answer="replan"`) {
+			t.Errorf("the drawer of %s offers Send back to the planner", id)
 		}
 	}
 	r.ledger.approvers = []string{"alice"}
-	if strings.Contains(drawer("t-r"), `data-sec="replan"`) {
-		t.Error("the drawer offers Replan to a writer who is no approver")
+	if strings.Contains(drawer("t-r"), `data-answer="replan"`) {
+		t.Error("the drawer offers Send back to the planner to a writer who is no approver")
 	}
 	r.ledger.approvers = nil
 	tracks := r.projects.rows[0].Tracks
 	r.projects.rows[0].Tracks = testProcesses()["maintenance"].Tracks
-	if strings.Contains(drawer("t-r"), `data-sec="replan"`) {
-		t.Error("the drawer offers Replan on a direct card whose project has no plan track")
+	if strings.Contains(drawer("t-r"), `data-answer="replan"`) {
+		t.Error("the drawer offers Send back to the planner on a direct card whose project has no plan track")
 	}
 	r.projects.rows[0].Tracks = tracks
+	replan := func(id string, v url.Values) *http.Request {
+		v.Set("csrf", s.csrf)
+		v.Set("action", factoryd.ActReplan)
+		return post("/tasks/"+id+"/resolve", v)
+	}
 
 	const said = "Card #11 stops its session and goes to the planner."
 	const note = "The cache needs a plan, the reader apart from the writer."
 	const issue = "/api/v1/repos/sf/code/issues/11/comments"
 	before := r.events.count()
-	req := post("/tasks/t-r/replan", url.Values{"csrf": {s.csrf}, "note": {"  " + note + "\n"}})
+	req := replan("t-r", url.Values{"replan.note": {"  " + note + "\n"}})
 	req.Header.Set("HX-Request", "true")
 	rec := r.do(req, ck)
 	if !pressRefreshes(rec) {
@@ -127,7 +132,7 @@ func TestReplanCard(t *testing.T) {
 		{long, strings.Repeat("a", 2000) + "…"},
 	} {
 		before = r.events.count()
-		rec = r.do(post("/tasks/t-r/replan", url.Values{"csrf": {s.csrf}, "note": {c.note}}), ck)
+		rec = r.do(replan("t-r", url.Values{"replan.note": {c.note}}), ck)
 		equal(t, "the button's answer", rec.Code, http.StatusSeeOther)
 		bodies := r.fg.commentBodies(issue)
 		rows = r.events.all()[before:]
@@ -137,7 +142,7 @@ func TestReplanCard(t *testing.T) {
 
 	const empty = "A replan needs a comment saying why: the planner reads it."
 	calls, before := len(asked), r.events.count()
-	rec = r.do(post("/tasks/t-r/replan", url.Values{"csrf": {s.csrf}, "note": {" \n "}}), ck)
+	rec = r.do(replan("t-r", url.Values{"replan.note": {" \n "}}), ck)
 	equal(t, "the button without a note", []any{rec.Code, rec.Body.String()}, []any{http.StatusBadRequest, empty + "\n"})
 	for _, n := range []string{"", strings.Repeat("a", 64<<10+1), "<!-- only hidden text -->"} {
 		status, msg := refused(t, r, "replan", toolInput{TaskID: "t-r", Note: n})
@@ -161,7 +166,7 @@ func TestReplanCard(t *testing.T) {
 		return n
 	}
 	sent, before := posts(), r.events.count()
-	rec = r.do(post("/tasks/t-x/replan", url.Values{"csrf": {s.csrf}, "note": {note}}), ck)
+	rec = r.do(replan("t-x", url.Values{"replan.note": {note}}), ck)
 	rows = r.events.all()[before:]
 	equal(t, "the card without an issue", []any{rec.Code, asked[len(asked)-1], posts() - sent, len(rows), rows[0].TaskID, rows[0].Detail},
 		[]any{http.StatusSeeOther, "t-x by sebastian: " + note, 0, 1, "t-x", map[string]any{"comment": note}})
@@ -171,7 +176,7 @@ func TestReplanCard(t *testing.T) {
 	r.fg.failAPI = true
 	r.fg.mu.Unlock()
 	sent, before = posts(), r.events.count()
-	rec = r.do(post("/tasks/t-r/replan", url.Values{"csrf": {s.csrf}, "note": {note}}), ck)
+	rec = r.do(replan("t-r", url.Values{"replan.note": {note}}), ck)
 	r.fg.mu.Lock()
 	r.fg.failAPI = false
 	r.fg.mu.Unlock()
@@ -184,22 +189,22 @@ func TestReplanCard(t *testing.T) {
 		[]any{http.StatusInternalServerError, "Card t-y could not go back to the planner: the store is down. Try again in a moment, then replan it again."})
 
 	// a plan's child replans its plan, so the note goes on the plan's issue
-	rec = r.do(post("/tasks/t-ch/replan", url.Values{"csrf": {s.csrf}, "note": {note}}), ck)
+	rec = r.do(replan("t-ch", url.Values{"replan.note": {note}}), ck)
 	equal(t, "the child's replan", []any{rec.Code, asked[len(asked)-1], r.fg.commentBodies("/api/v1/repos/sf/code/issues/50/comments"),
 		len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"))},
 		[]any{http.StatusSeeOther, "t-ch by sebastian: " + note, []string{note}, 0})
 	// so does the successor that carries a plan card's key
-	rec = r.do(post("/tasks/t-chs/replan", url.Values{"csrf": {s.csrf}, "note": {note}}), ck)
+	rec = r.do(replan("t-chs", url.Values{"replan.note": {note}}), ck)
 	equal(t, "the successor's replan", []any{rec.Code, asked[len(asked)-1], r.fg.commentBodies("/api/v1/repos/sf/code/issues/50/comments"),
 		len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/52/comments"))},
 		[]any{http.StatusSeeOther, "t-chs by sebastian: " + note, []string{note, note}, 0})
 
 	// off main reaches factoryd from the button and the tool
-	rec = r.do(post("/tasks/t-ch/replan", url.Values{"csrf": {s.csrf}, "note": {note}, "off_main": {"on"}}), ck)
+	rec = r.do(replan("t-ch", url.Values{"replan.note": {note}, "replan.off_main": {"yes"}}), ck)
 	equal(t, "the off main button", []any{rec.Code, asked[len(asked)-1]}, []any{http.StatusSeeOther, "t-ch by sebastian: " + note + " (off main)"})
 	g.replies = [][]string{{call(1, "replan", `{"note":"`+note+`","off_main":true,"task_id":"t-ch"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #51 off main"}})
-	if !strings.Contains(events[0], `"description":"Replan a card, #51 t-ch \"api\", note `+note+`, off_main"`) {
+	if !strings.Contains(events[0], `"description":"Replan a card, #51 t-ch \"The plan's card.\", note `+note+`, off_main"`) {
 		t.Errorf("the proposal does not name off_main: %s", events[0])
 	}
 	calls = len(asked)
@@ -224,7 +229,7 @@ func TestReplanCard(t *testing.T) {
 // line carries it; a replan that takes nothing off main is not refused, and
 // a human's line decides an off-main replan.
 func TestAnAgentsOffMainReplanIsRefusedAtEveryLevel(t *testing.T) {
-	const refusal = "Refused: A replan that takes merged work off main is the human's, made with the Replan button's off-main box." + agentStep
+	const refusal = "Refused: A replan that takes merged work off main is the human's, made with the off-main box of the card's Send back to the planner." + agentStep
 	for _, c := range []struct {
 		name, level, args string
 		wake              bool

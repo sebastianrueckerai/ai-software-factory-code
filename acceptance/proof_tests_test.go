@@ -296,8 +296,10 @@ func TestFilingRefusesUncarriedTest(t *testing.T) {
 		Glossary: []string{"slug: the short key a link gets"}},
 		Summary: "The acceptance tests settle the feature.",
 		Criteria: []factoryd.PlanCriterion{{ID: "links_crud", Kind: factoryd.CriterionTest, Claim: "a link created through the API is stored",
-			Inputs: "POST /api/links with a url", Expected: "201 and the row in the store", Suite: "internal/links", Name: "TestCreateLink"}},
-		Cards: []factoryd.PlanCard{{Key: "integration", Role: factoryd.RoleIntegration, Title: "Integration: acceptance tests",
+			Promise: "A link made through the API is stored.", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store",
+			Suite: "internal/links", Name: "TestCreateLink"}},
+		Cards: []factoryd.PlanCard{{Key: "integration", Role: factoryd.RoleIntegration, Title: "Integrate the acceptance tests",
+			Why: "So the spec's criteria hold end to end.", Summary: "It turns the spec's criteria into acceptance tests. They pass against the built feature.",
 			Brief: "Turn the spec's criteria into acceptance/ tests.", Directories: []string{"acceptance/", "internal/stats"},
 			Acceptance: []factoryd.PlanItem{{Criterion: "links_crud", Text: "TestCreateLink in internal/links"}}, Size: "medium"}}}
 	raw, err := json.Marshal(plan)
@@ -387,7 +389,7 @@ func TestGateRunsCarriedTest(t *testing.T) {
 			comments := slices.Clone(fj.comments)
 			fj.mu.Unlock()
 			if !slices.ContainsFunc(comments, func(c string) bool {
-				return strings.Contains(c, "factoryd criteria gate on c1: "+met+" of 1 criteria met")
+				return strings.Contains(c, "The criteria gate on c1: "+met+" of 1 criteria met")
 			}) {
 				t.Fatalf("comments = %q; want the "+met+" of 1 line on the pull request", comments)
 			}

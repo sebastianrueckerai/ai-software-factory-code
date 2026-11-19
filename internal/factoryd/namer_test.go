@@ -142,44 +142,20 @@ func TestNamePlanSurvivesABadShape(t *testing.T) {
 	}
 }
 
-func TestNamePlanFallsBackToTheSlug(t *testing.T) {
+// Past three bad answers the plan stays unnamed, and the next start asks
+// again: no slug stands in for a name.
+func TestNamePlanLeavesThePlanUnnamed(t *testing.T) {
 	tooLong := `{"name":"way too long to be a plan name at all"}`
 	ll := &fakeLiteLLM{contents: []string{tooLong, tooLong, tooLong}}
 	n, store := newNamer(t, ll, nil)
-	if got := n.Name(context.Background(), nameTask(), "Fix the check!", "the check passes", "it fails on rerun"); got != "fix-the-check" {
-		t.Fatalf("name %q, want the slug %q", got, "fix-the-check")
+	if got := n.Name(context.Background(), nameTask(), "Fix the check!", "the check passes", "it fails on rerun"); got != "" {
+		t.Fatalf("name %q, want none", got)
 	}
 	if len(ll.chats) != 3 {
 		t.Fatalf("%d calls, want 3", len(ll.chats))
 	}
-	if store.names["p1"] != "fix-the-check" {
-		t.Fatalf("stored %q, want %q", store.names["p1"], "fix-the-check")
-	}
-}
-
-func TestNamePlanSlugEscapesCollisions(t *testing.T) {
-	tooLong := `{"name":"way too long to be a plan name at all"}`
-	ll := &fakeLiteLLM{contents: []string{tooLong, tooLong, tooLong}}
-	n, store := newNamer(t, ll, []string{"fix-the-check"})
-	if got := n.Name(context.Background(), nameTask(), "Fix the check!", "the check passes", "it fails on rerun"); !strings.HasSuffix(got, "-2") {
-		t.Fatalf("name %q, want one ending -2", got)
-	}
-	if store.names["p1"] != "fix-the-check-2" {
-		t.Fatalf("stored %q, want %q", store.names["p1"], "fix-the-check-2")
-	}
-}
-
-func TestNamePlanSuffixedSlugFitsTheBound(t *testing.T) {
-	tooLong := `{"name":"way too long to be a plan name at all"}`
-	ll := &fakeLiteLLM{contents: []string{tooLong, tooLong, tooLong}}
-	n, store := newNamer(t, ll, []string{"fix-the-check-that-keeps"})
-	// the title's slug is 24 runes; the number's room comes out of the
-	// base, at a word boundary, not on top of the bound
-	if got := n.Name(context.Background(), nameTask(), "Fix the check that keeps", "the check passes", "it fails on rerun"); got != "fix-the-check-that-2" {
-		t.Fatalf("name %q (%d runes), want %q", got, len([]rune(got)), "fix-the-check-that-2")
-	}
-	if store.names["p1"] != "fix-the-check-that-2" {
-		t.Fatalf("stored %q, want %q", store.names["p1"], "fix-the-check-that-2")
+	if name, ok := store.names["p1"]; ok {
+		t.Fatalf("stored %q, want nothing", name)
 	}
 }
 
@@ -205,22 +181,28 @@ func TestNamePlanAsksTheSmallModel(t *testing.T) {
 func TestNamePlanSurvivesAGatewayError(t *testing.T) {
 	ll := &fakeLiteLLM{status: http.StatusInternalServerError}
 	n, store := newNamer(t, ll, nil)
-	if got := n.Name(context.Background(), nameTask(), "Fix the check!", "the check passes", "it fails on rerun"); got != "fix-the-check" {
-		t.Fatalf("name %q, want the slug %q", got, "fix-the-check")
+	if got := n.Name(context.Background(), nameTask(), "Fix the check!", "the check passes", "it fails on rerun"); got != "" {
+		t.Fatalf("name %q, want none", got)
 	}
-	if store.names["p1"] != "fix-the-check" {
-		t.Fatalf("stored %q, want %q", store.names["p1"], "fix-the-check")
+	if name, ok := store.names["p1"]; ok {
+		t.Fatalf("stored %q, want nothing", name)
 	}
 	if len(ll.chats) != 1 {
 		t.Fatalf("%d calls, want 1: a failed ask is not retried", len(ll.chats))
 	}
+	store.plans = []Task{{ID: "p1", Repository: "o/r", Objective: "Fix the check!"}}
+	store.revs = map[string]PlanRevision{"p1": {Plan: []byte(`{"summary":"a"}`)}}
+	if got := n.NameOpenPlans(context.Background()); got != 0 {
+		t.Fatalf("NameOpenPlans named %d, want 0: the plan is still unnamed", got)
+	}
 }
 
-func TestNormalizePlanName(t *testing.T) {
+func TestPlanName(t *testing.T) {
 	for _, tt := range []struct {
-		in   string
-		want string
-		ok   bool
+		in    string
+		taken []string
+		want  string
+		ok    bool
 	}{{
 		in:   "  fix   prod latency ",
 		want: "fix prod latency",
@@ -237,10 +219,14 @@ func TestNormalizePlanName(t *testing.T) {
 		in:   "abcdefghijklmnopqrstuvwx", // 24 runes
 		want: "abcdefghijklmnopqrstuvwx",
 		ok:   true,
+	}, {
+		in:    " Fix  prod latency",
+		taken: []string{"Other plan", "fix prod LATENCY"},
+		want:  "Fix prod latency",
 	}} {
-		got, ok := normalizePlanName(tt.in)
+		got, ok := PlanName(tt.in, tt.taken)
 		if ok != tt.ok || got != tt.want {
-			t.Fatalf("normalizePlanName(%q) = %q, %v; want %q, %v", tt.in, got, ok, tt.want, tt.ok)
+			t.Fatalf("PlanName(%q, %q) = %q, %v; want %q, %v", tt.in, tt.taken, got, ok, tt.want, tt.ok)
 		}
 	}
 }
@@ -362,23 +348,6 @@ func (s *signalNameStore) released(t *testing.T) {
 	}
 	if s.heldTooLong.Load() {
 		t.Fatal("naming ran before the filing returned")
-	}
-}
-
-func TestPlanSlugStaysInsideTheBounds(t *testing.T) {
-	for _, tt := range []struct {
-		title string
-		taken []string
-		want  string
-	}{
-		{"Go", nil, "plan"},
-		{"Go", []string{"plan"}, "plan-2"},
-		{"Go!!", []string{"plan", "plan-2"}, "plan-3"},
-		{"Fix it", nil, "fix-it"},
-	} {
-		if got := planSlug(tt.title, tt.taken); got != tt.want {
-			t.Fatalf("planSlug(%q, %v) = %q, want %q", tt.title, tt.taken, got, tt.want)
-		}
 	}
 }
 

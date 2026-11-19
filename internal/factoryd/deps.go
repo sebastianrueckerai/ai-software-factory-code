@@ -95,6 +95,17 @@ func (s *PGStore) Dependencies(ctx context.Context, id string) ([]Dependency, er
 		WHERE d.task_id = $1 ORDER BY t.status = 'done', t.issue_number, t.id`, id)
 }
 
+// LiveDependents counts the cards of deps that have not ended.
+func LiveDependents(deps []Dependency) int {
+	n := 0
+	for _, d := range deps {
+		if !Final(d.Status) {
+			n++
+		}
+	}
+	return n
+}
+
 // Dependents are the cards that depend on task id.
 func (s *PGStore) Dependents(ctx context.Context, id string) ([]Dependency, error) {
 	return s.dependencies(ctx, `SELECT t.id, t.issue_number, COALESCE(t.plan_key, ''), t.status
@@ -139,15 +150,15 @@ func (s *PGStore) WaitingDependents(ctx context.Context, id string) ([]string, e
 	return out, rows.Err()
 }
 
-func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
+func (s *PGStore) ReplaceCard(ctx context.Context, id, status string, t Task) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
-	// the key's unique index holds at every statement: the failed card lets go first
-	res, err := tx.ExecContext(ctx, `UPDATE tasks SET plan_key = NULL WHERE id = $1 AND status = 'failed' AND plan_key IS NOT DISTINCT FROM NULLIF($2, '')`,
-		id, t.PlanKey)
+	// the key's unique index holds at every statement: the replaced card lets go first
+	res, err := tx.ExecContext(ctx, `UPDATE tasks SET plan_key = NULL WHERE id = $1 AND status = $3 AND plan_key IS NOT DISTINCT FROM NULLIF($2, '')`,
+		id, t.PlanKey, status)
 	if err != nil {
 		return false, err
 	}
@@ -197,6 +208,39 @@ func takeOverEdges(ctx context.Context, tx *sql.Tx, from, to string) error {
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE tasks SET hold_release = $2 WHERE hold_release = $1`, from, to)
 	return err
+}
+
+// showTakeOver shows on Forgejo the waits card to took over from card
+// from (takeOverEdges): to's issue depends on the issues of its
+// dependencies, and each issue that waited on from's waits on to's. A call
+// that fails is logged: the rows hold the waits, the issues show them.
+func (r *Runner) showTakeOver(ctx context.Context, from, to Task) {
+	repo, err := SplitRepo(to.Repository)
+	if err != nil {
+		log.Printf("task %s: the waits it took over from %s: %v", to.ID, from.ID, err)
+		return
+	}
+	deps, err := r.store.Dependencies(ctx, to.ID)
+	if err != nil {
+		log.Printf("task %s: the waits it took over from %s: %v", to.ID, from.ID, err)
+	}
+	for _, d := range deps {
+		if d.Issue == 0 {
+			continue
+		}
+		if err := r.forgejo.SetIssueDependency(ctx, repo, to.IssueNumber, d.Issue, false); err != nil {
+			log.Printf("%s: issue #%d on #%d: %v", repo, to.IssueNumber, d.Issue, err)
+		}
+	}
+	dependents, err := r.store.Dependents(ctx, to.ID)
+	if err != nil {
+		log.Printf("task %s: the waits it took over from %s: %v", to.ID, from.ID, err)
+	}
+	issues := make([]int64, len(dependents))
+	for i, d := range dependents {
+		issues[i] = d.Issue
+	}
+	r.repointIssues(ctx, repo, issues, from.IssueNumber, to.IssueNumber)
 }
 
 func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
@@ -301,15 +345,15 @@ func DepEndedReason(d Dependency) string {
 }
 
 // depFailed opens the question of a card whose dependency failed with no
-// replacement (versionCases), an ask of SourceDependencyFailed.
+// replacement (versionCases), an ask of source depFailedSource.
 const (
-	depFailed              = "A dependency failed: "
-	SourceDependencyFailed = "dependency_failed"
+	depFailed       = "A dependency failed: "
+	depFailedSource = "dependency_failed"
 )
 
-// depFailedReason is the card's question when dependency d failed and no
+// DepFailedReason is the card's question when dependency d failed and no
 // retry replaced it.
-func depFailedReason(d Dependency) string {
+func DepFailedReason(d Dependency) string {
 	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", depName(d), d.TaskID, d.Status)
 }
 
@@ -411,7 +455,7 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 		if d.Ended != nil || failed {
 			var reason string
 			if failed {
-				reason = depFailedReason(*d.Failed)
+				reason = DepFailedReason(*d.Failed)
 			} else {
 				reason = DepEndedReason(*d.Ended)
 			}
@@ -474,6 +518,13 @@ type ErrNoRetry string
 
 func (e ErrNoRetry) Error() string { return string(e) }
 
+// RetryObjective is the objective of the retry of failed card old: old's
+// title, its text opening with "Continues #N." (ContinuesBody), then the
+// line with reason, its final reason ("" for none), masked by mask.
+func RetryObjective(old Task, reason string, mask func(string) string) string {
+	return IssueObjective(CardTitle(old), ContinuesBody(old)) + "\n\n" + mask(fmt.Sprintf("It failed: %s", cmp.Or(reason, "the timeline records no reason")))
+}
+
 // RetryID is the id of failed card id's replacement, so a retry that
 // stopped part way finds it.
 func RetryID(id string) string {
@@ -491,13 +542,14 @@ func retryMarker(id string) string {
 // card on the direct track that a person, a routine or a plan filed, or
 // that carries a plan card's key (Task.PlanCard), and not cut into a
 // successor, which it names in its refusal. The
-// replacement keeps the card's source, its plan and its key, if any, and
-// its size, so it is not sized again. One transaction puts the
+// replacement keeps the card's source, its plan and its key, if any, its
+// rung and its size, so it is not sized again. One transaction puts the
 // replacement, by its deterministic id RetryID, in its place, once: the
 // key, the dependencies and the dependents; its base stays the failed
 // card's. Then the replacement gets its issue as fileChildren files a
 // card's and the failed card's branch, if any, to start from; the
-// dependents wake, and the failed card's issue closes as factoryd's
+// dependents wake, the issues show the waits it took over, and the failed
+// card's issue closes as factoryd's
 // recorded close. Each step after the transaction is safe to repeat: a
 // retry that stopped is finished by the next. The press holds the failed
 // card's retry lock from its first read to its end, so however many
@@ -522,7 +574,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is a plan: ask for changes to it, or replan it.", old.IssueNumber))
 	case old.Report():
 		return 0, ErrNoRetry(fmt.Sprintf("Task %s is the %s report of task %s, not a work card: retry that card if it failed.", old.ID, old.Source, old.Parent))
-	case old.Track != policy.TrackDirect || !(old.PlanCard() || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
+	case old.Track != policy.TrackDirect || !(old.PlanCard() || slices.Contains([]string{SourceWebhook, SourceAPI, SourceRoutine}, old.Source)):
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
 	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))
@@ -556,12 +608,15 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 			return 0, errNoTrack(p)
 		}
 		reason, _ := lastStep(tl, "final")["reason"].(string)
-		objective := old.Objective + "\n\n" + r.untrusted(old, fmt.Sprintf("Replaces #%d, which failed: %s", old.IssueNumber,
-			cmp.Or(reason, "the timeline records no reason")))
+		objective := RetryObjective(old, reason, func(s string) string { return r.untrusted(old, s) })
 		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{class}, Process: old.Process, Objective: objective, Repository: old.Repository,
-			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
-		switch ok, err := r.store.ReplaceFailedCard(ctx, old.ID, t); {
+			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter,
+			ToolImage: old.ToolImage, ChatFiled: old.ChatFiled}
+		if err := admitCarry(&t, old); err != nil {
+			return 0, err
+		}
+		switch ok, err := r.store.ReplaceCard(ctx, old.ID, "failed", t); {
 		case err != nil:
 			return 0, err
 		case !ok:
@@ -585,7 +640,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		}); i >= 0 {
 			t.IssueNumber = all[i].Index
 		} else {
-			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, IssueText(BriefText{Why: t.Why, Summary: t.Summary, Body: body})+"\n\n"+marker)
 			if err != nil {
 				return 0, stopped("filing its issue", err)
 			}
@@ -620,7 +675,8 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		log.Printf("task %s: start the replacement %s: %v", old.ID, t.ID, err)
 	}
 	signalDependents(ctx, r.store, r.cfg.Workflows, t.ID)
-	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, old, fmt.Sprintf("factoryd: Retried as #%d.", t.IssueNumber)); err != nil {
+	r.showTakeOver(ctx, old, t)
+	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, old, fmt.Sprintf("Retried as #%d.", t.IssueNumber)); err != nil {
 		return 0, stopped("closing the failed card's issue", err)
 	}
 	r.record(ctx, old.ID, "retried", map[string]any{"by": by, "as": t.ID, "issue": t.IssueNumber})
@@ -634,13 +690,18 @@ type ErrNoGo string
 func (e ErrNoGo) Error() string { return string(e) }
 
 // Go files human card taskID's work as an agent card (the go action) and
-// returns its issue: the card's own words become the agent's objective,
-// a routine's card with the skill it names and who handed it over, and
+// returns its issue: the card's own brief becomes the agent's, its text
+// opening with "Continues #N.", a routine's card with the skill it names
+// and who handed it over, and
 // the run's row moves to the new card, so the hold keeps holding and the
 // run ends with the card that ran the work. The hand-over is claimed
 // before the filing, so of two racing goes only the first files; a
 // filing that fails releases the claim for the retry. The card itself is
-// left as it was: the close that follows records the hand-over.
+// left as it was: the close that follows records the hand-over. A plan's
+// card's agent card takes its place in the plan (handOver), and the issues
+// show the waits it took over. A card whose
+// every directory is a workflow directory goes to no agent: the worker's
+// push refuses its changes.
 func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -648,9 +709,23 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	switch {
 	case t.Kind != "human":
-		return 0, ErrNoGo(fmt.Sprintf("Card %s is an agent card: the factory runs it.", cardName(t)))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s is an agent card: the factory runs it.", ShownName(t)))
 	case !slices.Contains(humanCardWaits, t.Status):
-		return 0, ErrNoGo(fmt.Sprintf("Card %s does not wait on you: it is %s.", cardName(t), t.Status))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s does not wait on you: it is %s.", ShownName(t), t.Status))
+	}
+	// the card's directories: its plan card's, else its text's line
+	pc, _, planned, err := planCardOf(ctx, r.store, t)
+	if err != nil {
+		return 0, err
+	}
+	_, body, _ := strings.Cut(t.Objective, "\n\n")
+	dirs := askedDirectories(body)
+	if planned {
+		dirs = pc.Directories
+	}
+	if workflowOnly(dirs) {
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d changes only files under a workflow directory (%s), and the factory's push refuses changes to workflow files: make the change yourself and press Done.",
+			t.IssueNumber, strings.Join(dirs, ", ")))
 	}
 	v := r.cfg.Policy()
 	run, filed, err := r.Routines.RoutineRunOfTask(ctx, taskID)
@@ -659,7 +734,7 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	// the run row left the card: the go already filed its hand-over
 	if t.Source == SourceRoutine && !filed {
-		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", cardName(t)))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", ShownName(t)))
 	}
 	name, labels := "", []string(nil)
 	if filed {
@@ -677,21 +752,39 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	if p.Agents == policy.AgentsNone {
 		return 0, ErrNoGo(fmt.Sprintf("project %s runs no agents: the factory cannot do this card; do it yourself and press Done", name))
 	}
-	title, body, _ := strings.Cut(t.Objective, "\n\n")
+	b := BriefText{Title: CardTitle(t), Why: t.Why, Summary: t.Summary, Body: ContinuesBody(t)}
 	if filed {
-		parts := make([]string, 0, 3)
+		// a card with no issue continues none, and its text may be empty
+		parts := slices.DeleteFunc([]string{b.Body}, func(s string) bool { return s == "" })
 		if rt, ok := v.Routine(run.Project, run.Routine); ok && rt.Skill != "" {
 			parts = append(parts, "Run the skill "+rt.Skill+".")
 		}
-		if body != "" {
-			parts = append(parts, body)
-		}
-		parts = append(parts, "handed over by "+by)
-		body = strings.Join(parts, "\n\n")
+		b.Body = strings.Join(append(parts, "handed over by "+by), "\n\n")
 	}
-	objective := title
-	if body != "" {
-		objective += "\n\n" + body
+	// the agent card keeps what a retry's replacement keeps: the work's
+	// priority, size and rung, and the author whose standing its text has.
+	// The factory's own cards outside a plan have none: the bot wrote their
+	// text, which no alert's telemetry fills. Its budget is the one its text
+	// asked for, else its size's
+	_, asked := askedBudget(t.Objective)
+	agent := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: t.RiskClass, BudgetEUR: policy.CardBudget(v.Document.Budget, p.Budget, t.Size, t.Rung == RungFrontier, asked),
+		Objective: IssueObjective(b.Title, b.Body), Source: t.Source, Rung: t.Rung, Size: t.Size, Image: t.Image, ToolImage: t.ToolImage, ChatFiled: t.ChatFiled}
+	inPlace := t.Source == SourcePlan && t.Parent != ""
+	if t.Author != r.forgejo.BotUser || inPlace || t.Source == SourceAlert {
+		agent.Author, agent.AuthorWriter = t.Author, t.AuthorWriter
+	}
+	var into interface {
+		CreateTask(ctx context.Context, t Task) error
+	} = r.store
+	if inPlace {
+		// a plan's card: the agent card takes its place, as a retry's
+		// replacement does, so the plan and its dependents wait on the work
+		plan, _, err := r.task(ctx, t.Parent)
+		if err != nil {
+			return 0, err
+		}
+		agent.Parent, agent.PlanKey = t.Parent, t.PlanKey
+		into = handOver{r.store, t, plan.Process}
 	}
 	claim, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeHandover, Author: by, Body: "handed to the factory"})
 	if err != nil {
@@ -699,10 +792,9 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	// the claim lost: another hand filed this card's hand-over already
 	if claim == 0 {
-		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", cardName(t)))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", ShownName(t)))
 	}
-	n, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, title, body, labels,
-		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: objective, Source: t.Source})
+	n, ref, err := FileAgentTask(ctx, into, r.forgejo, r.cfg.Workflows, r.timeline, p, b, labels, agent)
 	if err != nil {
 		if rerr := r.store.ReleaseHandover(context.WithoutCancel(ctx), taskID); rerr != nil {
 			log.Printf("factoryd: release the hand-over claim of %s: %v", taskID, rerr)
@@ -711,10 +803,34 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	// past the filing, a request whose client left must not leave the run on the card the close ends
 	ctx = context.WithoutCancel(ctx)
+	if inPlace {
+		r.showTakeOver(ctx, t, n)
+	}
 	if err := r.Routines.RepointRoutineRun(ctx, taskID, n.ID, ref.Number); err != nil {
 		return 0, fmt.Errorf("task %s: hand its routine run to %s: %w", taskID, n.ID, err)
 	}
 	return ref.Number, nil
+}
+
+// handOver files the agent card a human hands plan card card to the
+// factory with in card's place (ReplaceCard): its key, its dependencies
+// and its dependents. The agent card follows process, its plan's, as the
+// plan's other cards do; the project's when the plan names none.
+type handOver struct {
+	s       Store
+	card    Task
+	process string
+}
+
+func (h handOver) CreateTask(ctx context.Context, t Task) error {
+	t.Process = cmp.Or(h.process, t.Process)
+	switch ok, err := h.s.ReplaceCard(ctx, h.card.ID, "waiting-human", t); {
+	case err != nil:
+		return err
+	case !ok:
+		return ErrNoGo(fmt.Sprintf("Card #%d no longer waits on you in its plan's place.", h.card.IssueNumber))
+	}
+	return nil
 }
 
 // ErrNoBranch means the branch of the card to continue is gone.

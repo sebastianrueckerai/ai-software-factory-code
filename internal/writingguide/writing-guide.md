@@ -1,6 +1,6 @@
 # The writing guide
 
-The one guide for any text a person reads: check-in questions, chat answers, notifications, pokes, report lines. It rides in the context of every step that writes such text, by default. Not for progress lines, which stay very short. Not for output meant for other agents.
+The one guide for any text a person reads: check-in questions, chat answers, notifications, pokes, report lines. Each step that writes such text carries the form of its job (`writingguide.For`). Not for progress lines, which stay very short. Not for output meant for other agents.
 
 **Changes to this guide need the owner's OK.**
 
@@ -24,10 +24,12 @@ The one guide for any text a person reads: check-in questions, chat answers, not
 - No phrasal verbs: spin up, dive into, kick off, roll out.
 - British spelling: standardise, optimise, colour.
 - Avoid as self-praise: honest, robust, comprehensive, clean, etc.
+- No "honest note about X: ...". Say what you want to say.
 - Never as marketing: seamless, powerful, cutting-edge, effortless, world-class, next-generation, etc.
 - No intensifiers and no hollow claims. "significantly", "dramatically", "a significant impact" stand in for a number. Write the number. Not "the pricing was significantly higher", but "they charged $1,200 for a repair that needed a $5 chip".
 - No weasel words: "may potentially", "can help to", "might be able to". Either it happens or it does not. Say which.
 - Nothing "bites", "burns" or is "load-bearing". Write what happens.
+- No announcer fragments. Every sentence has a subject, a verb and a fact. Never announce content. Not "Three sources, each with its own failure mode. First, …", but "I would gather three data sources: the wearable, a morning questionnaire and app behaviour." No "First, Second, Third" in prose. Cut every clause that grades what follows ("with one catch", "and this is the point"). When the text needs structure, use a real heading or a list, never a fragment.
 
 ## Verbs
 
@@ -73,6 +75,13 @@ The one guide for any text a person reads: check-in questions, chat answers, not
 ## Questions
 
 When asking for a decision, give enough info for the reader to make an informed decision. Do not assume they already have all the context you have. Explain including the reason behind a needed decision.
+
+## Readers, references and titles
+
+- Write for a reader who dropped in cold. This reader did not follow the work and forgot how the process runs. Say what the text is about, why it exists and where it stands, with the facts of this card or this question, not a general account of the process. Give the context the reader needs and no more. A wall of text fails this reader as much as a missing reason does.
+- Explain each reference at its first use and link it. A card number, a plan, a pull request, a criterion, a term of the factory: give a few words on what it is, for example "#2011 (the plan's last card, closed without a merge)". Link a part of a document as [words](path#heading). Never write a bare label such as "Phase B", "requirement 1b", "fault 3", "step 2" or "task #2004".
+- Never name a thing that no reader can open: a branch name, a task id, a case number, a finding hash.
+- A title names the work in plain words, the verb first: "Narrow the close refusal to plans that hold criteria", not "The doClose refusal narrowed to plans that hold criteria: the review finding answered on branch card/2084". On a card that asks, the title is the ask: one question or one instruction.
 
 ## Guard
 

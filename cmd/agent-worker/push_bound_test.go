@@ -49,7 +49,7 @@ func TestPushFitsTheCardLineBound(t *testing.T) {
 	// the first session's pushed commit is the base of every second session;
 	// each case gets its own branch, so one case's push moves no other's
 	firstSession := func(branch string) string {
-		e1 := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "o", repoSHA: m0, branch: branch, repoURL: remote, pushURL: fork}
+		e1 := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", title: "o", repoSHA: m0, branch: branch, repoURL: remote, pushURL: fork}
 		first := filepath.Join(t.TempDir(), "first")
 		if err := cloneBase(e1, first); err != nil {
 			t.Fatal(err)
@@ -118,7 +118,7 @@ func TestPushFitsTheCardLineBound(t *testing.T) {
 			p1 := firstSession(branch)
 			tc.parents = strings.ReplaceAll(tc.parents, "p1", p1)
 			tc.parents = strings.ReplaceAll(tc.parents, "m1", m1)
-			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o",
+			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", title: "o",
 				repoSHA: p1, branch: branch, repoURL: remote, pushURL: fork, lineBound: lineBoundOf(tc.bound)}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
@@ -135,7 +135,7 @@ func TestPushFitsTheCardLineBound(t *testing.T) {
 				if err == nil || !errors.Is(err, errPushOverBound) {
 					t.Fatalf("commitAndPush = %q, %v; want the over-bound refusal", commit, err)
 				}
-				if !strings.Contains(err.Error(), "merge main") {
+				if !strings.Contains(err.Error(), "Merge main") {
 					t.Fatalf("refusal %q does not say to merge main", err)
 				}
 				if head := run("-C", fork, "rev-parse", "--verify", "-q", "refs/heads/"+branch); head != p1 {
@@ -178,7 +178,7 @@ func TestTheSyncMergeBillsMainToMain(t *testing.T) {
 	m0 := run("-C", seed, "rev-parse", "HEAD")
 
 	branch := "factory/t-bill"
-	e1 := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "o", repoSHA: m0, branch: branch, repoURL: remote, pushURL: fork}
+	e1 := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", title: "o", repoSHA: m0, branch: branch, repoURL: remote, pushURL: fork}
 	first := filepath.Join(t.TempDir(), "first")
 	if err := cloneBase(e1, first); err != nil {
 		t.Fatal(err)
@@ -202,7 +202,7 @@ func TestTheSyncMergeBillsMainToMain(t *testing.T) {
 	run("-C", seed, "push", "-q", fork, "main")
 	m1 := run("-C", seed, "rev-parse", "HEAD")
 
-	e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o",
+	e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", title: "o",
 		repoSHA: p1, branch: branch, repoURL: remote, pushURL: fork, lineBound: lineBoundOf(10)}
 	dir := filepath.Join(t.TempDir(), "repo")
 	if err := cloneBase(e, dir); err != nil {
@@ -250,7 +250,7 @@ func TestFirstPushOnMainsHeadFitsTheBound(t *testing.T) {
 	run("clone", "-q", "--bare", remote, fork)
 	m0 := run("-C", seed, "rev-parse", "HEAD")
 
-	e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "o", repoSHA: m0,
+	e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", title: "o", repoSHA: m0,
 		branch: "factory/t-first", repoURL: remote, pushURL: fork, lineBound: lineBoundOf(100)}
 	dir := filepath.Join(t.TempDir(), "repo")
 	if err := cloneBase(e, dir); err != nil {

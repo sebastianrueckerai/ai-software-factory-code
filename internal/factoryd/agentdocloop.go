@@ -37,7 +37,8 @@ func AgentDocLoopIDs() []string {
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
 // ran on; it is the provenance of every wire part that is opencode's own.
-const AgentDocOpencodeVersion = "opencode 1.18.32"
+// It is the sandbox image's OPENCODE_VERSION, the harness the agents run.
+const AgentDocOpencodeVersion = "opencode 1.19.5"
 
 // agentDocLoopRepo is the fixture task's repository: a project that is
 // no factory repository — no source names one — and says so, so the
@@ -97,7 +98,7 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	b := agentDocObjective()
 	b.IssueURL = "https://git.example/owner/name/issues/7"
 	b.Repository = agentDocLoopRepo
-	b.Tools = v.Document.Tools([]string{agentDocLoopClass(id)}, "github")
+	b.Tools = v.Document.Tools([]string{agentDocLoopClass(id)}, false)
 	b.PosterInfo, b.LeftOut = agentDocLoopPosters()
 	if id == "coding" || id == "message-responder" {
 		b.Facts = SessionFacts{BudgetEUR: 5, SpentEUR: 1.25, ReserveEUR: v.Document.Limits.GateReserve(), TimeLeft: 97 * time.Minute,
@@ -121,9 +122,10 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 
 // agentDocLoopSpans tiles the mode's brief — the session's first user
 // turn — with the builders that render it, every byte claiming one
-// provenance. The issue's text and its author's answers claim fixture:
-// they are the card's own data, not the factory's words. A briefText that
-// drifts fails to locate, which is the rot signal the map runs on.
+// provenance. The card's brief claims its builder, CardBrief.AgentText,
+// and its author's answers claim fixture: they are the card's own data,
+// not the factory's words. A briefText that drifts fails to locate, which
+// is the rot signal the map runs on.
 func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Span {
 	b = InboundBrief(b)
 	open, closing := "<<<ISSUE-"+tag, "ISSUE-"+tag+">>>"
@@ -166,8 +168,12 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 			Text: fmt.Sprintf("Issue: %s\n", b.IssueURL)},
 		{Name: "the author's standing", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: standing},
-		{Name: "the issue's text", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
-			Text: "\n" + open + "\n" + b.Objective + "\n" + closing},
+		{Name: "the brief's opening marker", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: "\n" + open + "\n"},
+		{Name: "the card's brief", Symbol: "CardBrief.AgentText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: b.Objective},
+		{Name: "the brief's closing marker", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: "\n" + closing},
 	}
 	if len(b.PosterInfo) > 0 {
 		s = append(s,
@@ -522,7 +528,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	brief := agentDocLoopBrief(id, v)
 	restoreTag := randomTag
 	randomTag = func() string { return agentDocLoopTag }
-	res := model.oc.Run(ctx, brief, func(harness.Event) {})
+	res := model.oc.Run(ctx, model.oc.Text(brief), func(harness.Event) {})
 	randomTag = restoreTag
 	if !res.Success {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: the session did not end well: %s", id, res.Summary)

@@ -37,7 +37,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	ctx := context.Background()
 	s := caseStore(t)
 	capped := Case{TaskID: "t1", Repository: "sf/r", Kind: CaseSessionCap, StateKey: "k1", Problem: "the session cap stopped the card",
-		Facts: map[string]any{"session": "s-1"}, Money: &CaseMoney{Kind: "session", BudgetEUR: 2.5, SpentEUR: 2.5, NeedEUR: 1}}
+		Facts: map[string]any{"session": "s-1"}, Money: &CaseMoney{Kind: "session", BudgetEUR: 2.5, SpentEUR: 2.5}}
 	a, opened, err := s.OpenCase(ctx, capped)
 	if err != nil || !opened || a.ID == 0 {
 		t.Fatalf("OpenCase k1 = %d, %v, %v; want a new case", a.ID, opened, err)
@@ -246,55 +246,54 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 	}
 }
 
-// The writer's read takes the live at_human cases without a brief, oldest
-// first: a case a failure once marked comes back unless the mark is
-// terminal; a briefed one, an open one and a resolved one do not. A filed
-// brief reads back whole and clears the mark; the last answer is the newest
-// case a human resolved.
-func TestBrieflessCasesAndTheLastAnswer(t *testing.T) {
+// The writer's read takes the live at_human cases of its kinds with no story
+// lines and no terminal mark: not an open case, a terminal one, a written
+// one, a resolved one, or a kind whose story comes from its facts, a gate
+// stop of any gate among them. A story reads back whole and clears the
+// mark.
+func TestBrieflessCases(t *testing.T) {
 	ctx := context.Background()
 	s := caseStore(t)
-	mk := func(key string, status string) int64 {
+	mk := func(key string, kind CaseKind, status string, facts map[string]any) int64 {
 		t.Helper()
 		open := s.OpenCase
 		if status == CaseAtHuman {
 			open = func(ctx context.Context, c Case) (Case, bool, error) { return openAtHuman(ctx, s, c) }
 		}
-		c, _, err := open(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseOther, StateKey: key, Problem: key})
+		c, _, err := open(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: kind, StateKey: key, Problem: key, Facts: facts})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return c.ID
 	}
-	fresh, open := mk("fresh", CaseAtHuman), mk("open", CaseOpen)
-	budget, terminal, briefed, answered := mk("budget", CaseAtHuman), mk("terminal", CaseAtHuman), mk("briefed", CaseAtHuman), mk("answered", CaseAtHuman)
+	fresh, open := mk("fresh", CaseOther, CaseAtHuman, nil), mk("open", CaseOther, CaseOpen, nil)
+	budget, terminal, briefed, answered := mk("budget", CaseOther, CaseAtHuman, nil), mk("terminal", CaseOther, CaseAtHuman, nil),
+		mk("briefed", CaseOther, CaseAtHuman, nil), mk("answered", CaseOther, CaseAtHuman, nil)
+	capped, checks := mk("capped", CaseSessionCap, CaseAtHuman, nil), mk("checks", CaseGateStop, CaseAtHuman, map[string]any{"gate": ActivityWaitChecks})
+	review := mk("review", CaseGateStop, CaseAtHuman, map[string]any{"gate": ActivityRerunChecks})
+	conflict := mk("conflict", CaseCheckinHuman, CaseAtHuman, nil)
 	for id, mark := range map[int64]string{budget: "refused_budget: spent", terminal: BriefTerminal + "no brief"} {
 		if err := s.SetCaseBriefError(ctx, id, mark); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SetCaseBrief(ctx, briefed, "background", "grounds"); err != nil {
+	if err := s.SetCaseBrief(ctx, briefed, "happened", "left"); err != nil {
 		t.Fatal(err)
-	}
-	if at, err := s.LastAnswerAt(ctx, "t1"); err != nil || at != nil {
-		t.Fatalf("LastAnswerAt before any answer = %v, %v; want none", at, err)
 	}
 	if err := s.ResolveCase(ctx, answered, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.BrieflessCases(ctx, 10)
-	if err != nil || !slices.Equal(caseIDs(got), []int64{fresh, budget}) {
-		t.Fatalf("BrieflessCases = %v, %v; want %v (not the open %d, the terminal %d, the briefed %d or the resolved %d)", caseIDs(got), err, []int64{fresh, budget}, open, terminal, briefed, answered)
+	if want := []int64{fresh, budget, conflict}; err != nil || !slices.Equal(caseIDs(got), want) {
+		t.Fatalf("BrieflessCases = %v, %v; want %v (not the open %d, the terminal %d, the briefed %d, the resolved %d, the session cap %d, the checks wait %d or the review's gate stop %d)",
+			caseIDs(got), err, want, open, terminal, briefed, answered, capped, checks, review)
 	}
 	if err := s.SetCaseBrief(ctx, budget, "b", "g"); err != nil {
 		t.Fatal(err)
 	}
 	read, err := s.CaseByID(ctx, budget)
 	if err != nil || read.Brief != "b" || read.BriefDetail != "g" || read.BriefError != "" {
-		t.Fatalf("the briefed case = %+v, %v; want its brief and no mark", read, err)
-	}
-	if at, err := s.LastAnswerAt(ctx, "t1"); err != nil || at == nil {
-		t.Fatalf("LastAnswerAt = %v, %v; want the resolution's time", at, err)
+		t.Fatalf("the written case = %+v, %v; want its story lines and no mark", read, err)
 	}
 }
 
@@ -369,7 +368,10 @@ func TestTheDoorMovesOnlyAClimbedExceptedOrUnjudgedCase(t *testing.T) {
 	}
 	atHuman("the judgment budget's case", budget.ID)
 
-	refused := open(CaseOther, "refused", "Which store? (not judged: the model provider refused)")
+	refused := open(CaseOther, "refused", "Which store?")
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: refused.ID, Rung: 0, Actor: FactoryDecider, Found: "not judged: the model provider refused: the model refused the call (400)", Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.ToHuman(ctx, refused.ID); err != nil {
 		t.Fatalf("ToHuman of a case the provider kept from every rung = %v", err)
 	}

@@ -376,7 +376,7 @@ func TestGateCriteriaJudgesTheArtifacts(t *testing.T) {
 			t.Fatalf("row %d is %s, want stored", pp.Idx, pp.State)
 		}
 	}
-	const head = "factoryd criteria gate on c1: 3 of 7 criteria met (human criteria ride the approval)."
+	const head = "The criteria gate on c1: 3 of 7 criteria met. A human settles the human criteria at the approval."
 	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], head) {
 		t.Fatalf("comments = %q, want one holding %q", hub.comments, head)
 	}

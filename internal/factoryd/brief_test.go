@@ -8,13 +8,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 func TestBriefAnswer(t *testing.T) {
@@ -71,16 +74,12 @@ type fakeBriefStore struct {
 	BriefStore
 	tasks     map[string]Task
 	rows      []ApprovalRequest
-	pending   []ApprovalRequest
-	revisions map[string]PlanRevision
-	verdicts  map[string][]CriterionVerdict
 	brief     map[int64][2]string
 	failed    map[int64]string
 	events    []Event
 	taskErr   error
 	cases     []Case
 	steps     map[int64][]CaseStep
-	answered  *time.Time
 	chat      []string
 	chatSpent float64
 	chatRaise float64
@@ -115,29 +114,6 @@ func (f *fakeBriefStore) SetApprovalBriefError(ctx context.Context, id int64, e 
 	return nil
 }
 
-func (f *fakeBriefStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
-	rev, ok := f.revisions[id]
-	return rev, ok, nil
-}
-
-func (f *fakeBriefStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error) {
-	return f.verdicts[taskID], nil
-}
-
-func (f *fakeBriefStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
-	var out []Task
-	for _, t := range f.tasks {
-		if t.Parent == plan && t.Source == SourcePlan {
-			out = append(out, t)
-		}
-	}
-	return out, nil
-}
-
-func (f *fakeBriefStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
-	return f.pending, nil
-}
-
 func (f *fakeBriefStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
 	f.chat = append(f.chat, name)
 	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", Repository: repository, BudgetEUR: budget + f.chatRaise, SpentEUR: f.chatSpent}, nil
@@ -148,8 +124,8 @@ func (f *fakeBriefStore) BrieflessCases(ctx context.Context, perRepo int) ([]Cas
 	return f.cases, nil
 }
 
-func (f *fakeBriefStore) SetCaseBrief(ctx context.Context, id int64, background, recommendation string) error {
-	f.caseBrief[id] = [2]string{background, recommendation}
+func (f *fakeBriefStore) SetCaseBrief(ctx context.Context, id int64, happened, left string) error {
+	f.caseBrief[id] = [2]string{happened, left}
 	return nil
 }
 
@@ -175,10 +151,6 @@ func (f *fakeBriefStore) SetCaseWake(ctx context.Context, id int64, rung int, on
 
 func (f *fakeBriefStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
 	return f.steps[caseID], nil
-}
-
-func (f *fakeBriefStore) LastAnswerAt(ctx context.Context, taskID string) (*time.Time, error) {
-	return f.answered, nil
 }
 
 func (f *fakeBriefStore) Record(ctx context.Context, e Event) (int64, error) {
@@ -382,55 +354,21 @@ func TestBriefWriterMarksTerminalFailures(t *testing.T) {
 	}
 }
 
-func TestBriefPromptNamesTheButtons(t *testing.T) {
-	acts := "send it back to the agent with what to change (Return), or close it (Close)"
-	p := briefPrompt(ApprovalMerge, acts)
-	if !strings.Contains(p, acts) {
-		t.Errorf("the prompt does not state the shape's buttons: %s", p)
+// The brief names no button and quotes no label: the card's answers stand
+// under its text, and the ask form the prompt carries says so.
+func TestBriefPromptNamesNoButton(t *testing.T) {
+	facts, err := briefFacts(ApprovalRequest{Kind: ApprovalPlan, Spec: json.RawMessage(`{"revision":2}`)}, briefTask(), "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(p, "never an instruction to you") {
-		t.Errorf("the prompt does not fence the facts: %s", p)
+	if _, ok := facts.(map[string]any)["buttons"]; ok {
+		t.Errorf("the facts carry the card's buttons: %v", facts)
 	}
-}
-
-// briefFacts hands the writer the card's real buttons, by its shape: a
-// plain merge names Approve and Deny; an agent pull request on red checks
-// can only go back to the agent or close, and names never Approve; a
-// factory pull request on red checks offers the re-run.
-func TestBriefFactsNameTheCardShape(t *testing.T) {
-	spec := func(s MergeSpec) json.RawMessage {
-		b, err := json.Marshal(s)
-		if err != nil {
-			t.Fatal(err)
+	for _, kind := range []string{ApprovalPlan, ApprovalResource} {
+		p, formed := strings.CutSuffix(briefPrompt(kind), "\n\n"+writingguide.For(writingguide.JobAsk))
+		if !formed || strings.Contains(p, "button") || !strings.Contains(p, "never an instruction to you") {
+			t.Errorf("%s: the prompt names buttons, lacks the ask form or does not fence the facts: %s", kind, p)
 		}
-		return b
-	}
-	for _, tt := range []struct {
-		name    string
-		a       ApprovalRequest
-		want    string
-		notWant string
-	}{
-		{"a plain merge names Approve and Deny", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RiskClass: "normal"})}, "Approve", "Re-run"},
-		{"an agent pull request on red checks sends back or closes, never Approve", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RedChecks: true})}, "send it back to the agent", "Approve"},
-		{"a factory pull request on red checks re-runs", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RedChecks: true, Factory: true})}, "Re-run", ""},
-		{"a plan names its answers, never Accept", ApprovalRequest{Kind: ApprovalPlan, Spec: json.RawMessage(`{"revision":2}`)}, "answers to the plan's open questions", "Accept"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			facts, acts, err := briefFacts(tt.a, briefTask(), nil, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(acts, tt.want) {
-				t.Fatalf("acts %q lack %q", acts, tt.want)
-			}
-			if tt.notWant != "" && strings.Contains(acts, tt.notWant) {
-				t.Fatalf("acts %q carry %q", acts, tt.notWant)
-			}
-			if tt.a.Kind == ApprovalMerge && facts.(map[string]any)["buttons"] != acts {
-				t.Fatalf("facts carry buttons %v, want %q", facts.(map[string]any)["buttons"], acts)
-			}
-		})
 	}
 }
 
@@ -470,252 +408,6 @@ func TestBriefWriterMarksARefusal(t *testing.T) {
 	}
 }
 
-// A criteria request's brief reads the plan's criteria with their
-// standing verdicts and names the card's three answers (fault 7: the gap
-// card showed a brief error instead).
-func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
-	spec, err := json.Marshal(CriteriaSpec{Task: "t-int"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code",
-		Spec: spec, Reason: "every card of the plan ended with a criterion unmet"}
-	criteria := []criterionFact{
-		{ID: "c1", Kind: "test", Text: "go test ./... is green", Verdict: "met", Evidence: "the review read the diff"},
-		{ID: "c2", Kind: "human", Text: "the feature reads well", Verdict: "open"},
-		{ID: "c3", Kind: "invariant", Text: "no endpoint times out", Verdict: "waived", Evidence: "the timeout is the provider's SLA"},
-	}
-	facts, acts, err := briefFacts(a, briefTask(), criteria, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := facts.(map[string]any)
-	if fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) {
-		t.Errorf("criteria = %v, want %v", m["criteria"], criteria)
-	}
-	for _, want := range []string{"Waive", "one more bounded card", "Confirm", "no final press"} {
-		if !strings.Contains(acts, want) {
-			t.Errorf("acts %q lack %q", acts, want)
-		}
-	}
-	if p := briefPrompt(a.Kind, acts); !strings.Contains(p, "criteria gap") {
-		t.Errorf("the prompt does not name the card: %s", p)
-	}
-}
-
-// A criteria_rerun request's brief reads the same criteria facts, the
-// writer fetching them itself, and names its answers, the grant among them.
-func TestBriefOfCriteriaNeverJudged(t *testing.T) {
-	spec, _ := json.Marshal(CriteriaSpec{Task: "t-int"})
-	a := ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: spec,
-		Reason: "criteria never judged: the review of card #1380 did not run (the review never ran): c1"}
-	criteria := []criterionFact{{ID: "c1", Kind: "test", Text: "a link is stored", Verdict: "open"}}
-	facts, acts, err := briefFacts(a, briefTask(), criteria, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m := facts.(map[string]any); fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) || m["verdict_rows_of"] != "t-int" {
-		t.Errorf("facts = %v, want the criteria and their rows' card", m)
-	}
-	for _, want := range []string{"Waive", "Approve grants one more bounded card", "Confirm"} {
-		if !strings.Contains(acts, want) {
-			t.Errorf("acts %q lack %q", acts, want)
-		}
-	}
-	if p := briefPrompt(a.Kind, acts); !strings.Contains(p, "criteria never judged card") {
-		t.Errorf("the prompt does not name the card: %s", p)
-	}
-	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"}}})
-	store := &fakeBriefStore{revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 3, Plan: plan}}, verdicts: map[string][]CriterionVerdict{}}
-	got, err := (&BriefWriter{Store: store}).criteriaFacts(context.Background(), a)
-	if err != nil || fmt.Sprint(got) != fmt.Sprint(criteria) {
-		t.Fatalf("the writer's criteria = %v (%v), want %v", got, err, criteria)
-	}
-}
-
-// The merge brief of the successor that carries the integration card's
-// key shows the plan's criteria with their standing rows on the
-// plan-filed integration card, as the card's own brief does.
-func TestMergeFactsOfASuccessorOfTheIntegrationCard(t *testing.T) {
-	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{
-		{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"},
-		{ID: "c2", Kind: "human", Claim: "the feature reads well"},
-	}, Cards: []PlanCard{{Key: "integration", Role: RoleIntegration}}})
-	store := &fakeBriefStore{revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 3, Plan: plan}},
-		tasks:    map[string]Task{"t-int": {ID: "t-int", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: "failed"}},
-		verdicts: map[string][]CriterionVerdict{"t-int": {{Criterion: "c1", Kind: "test", Verdict: "met", Evidence: "TestLink passed"}}}}
-	succ := Task{ID: "t-succ", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "integration"}
-	got, err := (&BriefWriter{Store: store}).mergeFacts(context.Background(), succ)
-	want := []criterionFact{{ID: "c1", Kind: "test", Text: "a link is stored", Verdict: "met", Evidence: "TestLink passed"},
-		{ID: "c2", Kind: "human", Text: "the feature reads well", Verdict: "open"}}
-	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("the successor's merge facts = %v (%v), want %v", got, err, want)
-	}
-}
-
-// The writer reads a criteria request's plan and verdict rows itself and
-// the model's brief lands on the row, with the criteria as the model
-// reads them (fault 7).
-func TestBriefWriterWritesTheCriteriaBrief(t *testing.T) {
-	spec, err := json.Marshal(CriteriaSpec{Task: "t-int"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := json.Marshal(Plan{Criteria: []PlanCriterion{
-		{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"},
-		{ID: "c2", Kind: "human", Claim: "the feature reads well"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sent string
-	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Messages []struct {
-				Content string `json:"content"`
-				Role    string `json:"role"`
-			} `json:"messages"`
-		}
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &req)
-		for _, m := range req.Messages {
-			if m.Role == "user" {
-				sent = m.Content
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"Two criteria wait on you.\", \"recommendation\": \"c1 is met\"}"}}]}`))
-	}))
-	defer gw.Close()
-	store := &fakeBriefStore{
-		tasks:   map[string]Task{"t-plan": {ID: "t-plan", Repository: "sf/code", RequiredCapabilities: []string{policy.ClassCoder}}},
-		pending: []ApprovalRequest{{ID: 11, Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Spec: spec, Reason: "a criterion unmet", CreatedAt: time.Unix(0, 0).UTC()}},
-		cases:   []Case{{ID: 4, TaskID: "t-plan", Repository: "sf/code", Kind: CasePlanCriteria, Status: CaseAtHuman, Facts: map[string]any{"approval": float64(11)}}},
-		brief:   map[int64][2]string{}, failed: map[int64]string{}, caseBrief: map[int64][2]string{}, caseFailed: map[int64]string{},
-		revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 3, Plan: plan}},
-		verdicts: map[string][]CriterionVerdict{"t-int": {
-			{Criterion: "c1", Verdict: "met", Evidence: "the review read the diff", Kind: "test", Source: "review"},
-		}},
-	}
-	w := briefCaseWriter(store, gw)
-	if err := w.Pass(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.caseBrief[4]; got[0] != "Two criteria wait on you." || got[1] != "c1 is met" {
-		t.Fatalf("the brief = %v", got)
-	}
-	for _, want := range []string{"the feature reads well", `"verdict":"open"`, `"verdict":"met"`} {
-		if !strings.Contains(sent, want) {
-			t.Errorf("the model's facts lack %q: %s", want, sent)
-		}
-	}
-}
-
-// The brief of the integration card's merge request reads the plan's
-// criteria with their standing rows and tells the human to settle each
-// row before Approve; a feature card's merge request carries no rows.
-func TestTheMergeBriefCarriesThePlansRows(t *testing.T) {
-	plan, err := json.Marshal(Plan{Criteria: []PlanCriterion{
-		{ID: "size_bound", Kind: CriterionTest, Claim: "every size row stays under its bound", Inputs: "GET /sizes", Expected: "3 rows"},
-		{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the sizes page reads calm", Prompt: "Judge whether the page names every size."},
-		{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."},
-		{ID: "pages_ok", Kind: CriterionHuman, Claim: "The pages read well", Evidence: "Open /sizes and /doors at 390 px"},
-		{ID: "page_links", Kind: CriterionHuman, Claim: "Every page links home", Evidence: "the links on /help"},
-	}, Cards: []PlanCard{{Key: "sizes", Role: RoleFeature}, {Key: "integration", Role: RoleIntegration}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sent []map[string]any
-	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Messages []struct {
-				Content string `json:"content"`
-				Role    string `json:"role"`
-			} `json:"messages"`
-		}
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &req)
-		for _, m := range req.Messages {
-			if m.Role == "user" {
-				var facts map[string]any
-				_ = json.Unmarshal([]byte(strings.TrimPrefix(m.Content, ChatInputLead)), &facts)
-				sent = append(sent, facts)
-			}
-		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"Two rows wait on you.\", \"recommendation\": \"\"}"}}]}`))
-	}))
-	defer gw.Close()
-	card := func(id, key string, issue int64) Task {
-		return Task{ID: id, Repository: "sf/code", IssueNumber: issue, Parent: "t-plan", Source: SourcePlan, PlanKey: key,
-			Status: "in-review", RequiredCapabilities: []string{policy.ClassCoder}}
-	}
-	spec := json.RawMessage(`{"risk_class":"standard","head_sha":"8e3a1b0c"}`)
-	store := &fakeBriefStore{
-		tasks: map[string]Task{"t-int": card("t-int", "integration", 5), "t-sizes": card("t-sizes", "sizes", 6)},
-		pending: []ApprovalRequest{
-			{ID: 31, Kind: ApprovalMerge, TaskID: "t-int", Project: "sf/code", PRNumber: 12, Spec: spec, CreatedAt: time.Unix(0, 0).UTC()},
-			{ID: 32, Kind: ApprovalMerge, TaskID: "t-sizes", Project: "sf/code", PRNumber: 13, Spec: spec, CreatedAt: time.Unix(0, 0).UTC()},
-		},
-		cases: []Case{
-			{ID: 1, TaskID: "t-int", Repository: "sf/code", Kind: CaseMergeApproval, Status: CaseAtHuman, Facts: map[string]any{"approval": float64(31)}},
-			{ID: 2, TaskID: "t-sizes", Repository: "sf/code", Kind: CaseMergeApproval, Status: CaseAtHuman, Facts: map[string]any{"approval": float64(32)}},
-		},
-		brief: map[int64][2]string{}, failed: map[int64]string{}, caseBrief: map[int64][2]string{}, caseFailed: map[int64]string{},
-		revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 1, Plan: plan}},
-		verdicts: map[string][]CriterionVerdict{"t-int": {
-			{Criterion: "size_bound", Verdict: "met", Evidence: "blind: criterion size_bound: TestSizeBound in ./proofs/size_bound passed", Kind: CriterionTest, Source: CriteriaSourceGate},
-			{Criterion: "reads_calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)", Kind: CriterionJudgement, Source: CriteriaSourceJudgement},
-			{Criterion: "all_green", Verdict: "unmet", Evidence: "criterion all_green: suite ./... failed: Failed boom", Kind: CriterionInvariant, Source: CriteriaSourceGate},
-		}},
-	}
-	w := briefCaseWriter(store, gw)
-	if err := w.Pass(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(sent) != 2 || len(store.caseFailed) != 0 {
-		t.Fatalf("the writer sent %d briefs' facts and marked %v, want two and none", len(sent), store.caseFailed)
-	}
-	for i := range sent {
-		sent[i], _ = sent[i]["approval_request"].(map[string]any)
-	}
-	want := []criterionFact{
-		{ID: "size_bound", Kind: CriterionTest, Text: "every size row stays under its bound", Verdict: "met", Evidence: "blind: criterion size_bound: TestSizeBound in ./proofs/size_bound passed"},
-		{ID: "reads_calm", Kind: CriterionJudgement, Text: "the sizes page reads calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)"},
-		{ID: "all_green", Kind: CriterionInvariant, Text: "./...", Verdict: "unmet", Evidence: "criterion all_green: suite ./... failed: Failed boom"},
-		{ID: "pages_ok", Kind: CriterionHuman, Text: "The pages read well", Verdict: "open"},
-		{ID: "page_links", Kind: CriterionHuman, Text: "Every page links home", Verdict: "open"},
-	}
-	var got []criterionFact
-	raw, _ := json.Marshal(sent[0]["criteria"])
-	if err := json.Unmarshal(raw, &got); err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("the merge brief's criteria = %s (%v)\nwant %v", raw, err, want)
-	}
-	if got := sent[0]["buttons"]; got != "Settle each human criterion row first: Met or Not met on a human criterion, Waive on any row. "+
-		"Approve opens once every human criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason." {
-		t.Errorf("the merge brief's buttons = %q", got)
-	}
-	if _, ok := sent[1]["criteria"]; ok || sent[1]["buttons"] != "Approve merges the pull request into main; Deny refuses it with the human's reason, posted on the pull request as them." {
-		t.Errorf("the feature card's merge brief = %v, want no criteria and the plain buttons", sent[1])
-	}
-}
-
-// A criterion as one line on a criteria card's brief: its claim, else
-// its suite, else its prompt.
-func TestCriterionText(t *testing.T) {
-	for _, tc := range []struct {
-		c    PlanCriterion
-		want string
-	}{
-		{PlanCriterion{Kind: CriterionInvariant, Suite: "./..."}, "./..."},
-		{PlanCriterion{Kind: CriterionTest, Claim: "c", Inputs: "i"}, "c"},
-		{PlanCriterion{Kind: CriterionJudgement, Prompt: "p"}, "p"},
-	} {
-		if got := criterionText(tc.c); got != tc.want {
-			t.Errorf("criterionText(%+v) = %q, want %q", tc.c, got, tc.want)
-		}
-	}
-}
-
 func briefCaseStore(c Case, steps ...CaseStep) *fakeBriefStore {
 	return &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()}, cases: []Case{c}, steps: map[int64][]CaseStep{c.ID: steps},
 		brief: map[int64][2]string{}, failed: map[int64]string{}, caseBrief: map[int64][2]string{}, caseFailed: map[int64]string{}}
@@ -726,14 +418,15 @@ func briefCaseWriter(store *fakeBriefStore, gw *httptest.Server) *BriefWriter {
 		Current: func() policy.Version { return briefVersion(gw.URL) }, Clock: func() time.Time { return time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC) }}
 }
 
-// A session-cap case at the human is briefed by one call booked on the
-// project's chat task, not the card; the facts carry both steps' findings
-// and the digest's head line, and the answer is cut at 4000 characters for
-// the background and 600 for the recommendation, marked.
+// A check-in's case at the human gets its two story lines from one call
+// booked on the project's chat task, not the card; the facts carry both
+// steps' findings and the digest's head line and no answer a human may
+// pick, and the lines are stored as written.
 func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	var body []byte
 	var task, purpose, card string
-	answer, _ := json.Marshal(map[string]any{"background": strings.Repeat("a", 4100), "recommendation": strings.Repeat("b", 700)})
+	happened, left := "The check-in found the change edits the importer, not the exporter it was asked to fix.", "The exporter still drops the accent on a round trip."
+	answer, _ := json.Marshal(map[string]any{"happened": happened, "left": left})
 	reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ = io.ReadAll(r.Body)
@@ -741,7 +434,7 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 		_, _ = w.Write(reply)
 	}))
 	defer gw.Close()
-	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman, Problem: "The session cap is spent."}
+	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman, Problem: "A check during the session stopped the card for your decision. How should it go on?"}
 	store := briefCaseStore(c,
 		CaseStep{ID: 1, Rung: 1, Actor: CheckinDecider, Found: "the check-in found a green build", Outcome: StepHandedUp},
 		CaseStep{ID: 2, Rung: 2, Actor: "factory agent", Found: "rung two found the last review approved", Decision: ActExtend, Grounds: "one more session ends it", Outcome: StepHandedUp})
@@ -752,17 +445,173 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 		t.Fatalf("the call's task %q purpose %q card %q, want the chat task t-chat-proj-2026-11, brief and the card's class coder", task, purpose, card)
 	}
 	for _, want := range []string{"the check-in found a green build", "rung two found the last review approved", "one more session ends it",
-		"#12 · budget 3.00 spent 0.40 holds 0.00 EUR · in-review, approval", "offered_actions"} {
+		"#12 · budget 3.00 spent 0.40 holds 0.00 EUR · in-review, approval"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("the facts lack %q: %s", want, body)
 		}
 	}
-	got := store.caseBrief[5]
-	if want := [2]string{strings.Repeat("a", 3999) + "…", strings.Repeat("b", 599) + "…"}; got != want {
-		t.Fatalf("the case's brief = %d and %d characters, want the background cut to 4000 and the recommendation to 600, marked", len([]rune(got[0])), len([]rune(got[1])))
+	for _, gone := range []string{"offered_actions", "last_answer_processed_at", `\"last_refusal\"`} {
+		if strings.Contains(string(body), gone) {
+			t.Errorf("the facts carry %s: %s", gone, body)
+		}
+	}
+	if got := store.caseBrief[5]; got != [2]string{happened, left} {
+		t.Fatalf("the case's story lines = %q, want %q and %q", got, happened, left)
 	}
 	if len(store.caseFailed) != 0 || len(store.events) != 0 {
 		t.Fatalf("a good call marked a failure: %v %v", store.caseFailed, store.events)
+	}
+}
+
+// The writer's prompt asks for the two story lines with the ask form of the
+// guide and each line's bound, and forbids naming a button.
+func TestCaseBriefPromptWritesTheStoryAndNamesNoButton(t *testing.T) {
+	for _, want := range []string{`{"happened": "...", "left": "..."}`, "happened: one sentence, at most 160 characters", "left: one sentence, at most 87 characters",
+		"Name no button, answer or action", writingguide.For(writingguide.JobAsk)} {
+		if !strings.Contains(caseBriefPrompt, want) {
+			t.Errorf("the prompt lacks %q", want)
+		}
+	}
+}
+
+// The writer's left line fits beside the longest left line the card
+// composes, so the face joins the two whole: 999 open findings, failed
+// checks, both gates unchecked and a price of 9999.99 EUR make 152 runes,
+// and 152 + 1 + 87 is the story's bound of 240. A longer composed clause
+// breaks this test, not a face.
+func TestTheWritersLeftFitsBesideTheLongestComposedLeft(t *testing.T) {
+	var ids []string
+	for i := range 999 {
+		ids = append(ids, FindingID(fmt.Sprint(i)))
+	}
+	f := Facts{CaseFacts: CaseFacts{Attempts: 9, Head: "h2", Checks: "red", Findings: ids, ReviewFindings: ids,
+		LastSession: &LastSessionFacts{CostEUR: 9999.99, Pushed: true, Audit: ids[:1]}}}
+	longest := leftLine(f)
+	if n := utf8.RuneCountInString(longest); n != 152 || n+1+writerLeftMax > StoryMax {
+		t.Errorf("the longest composed left %q has %d runes; with the writer's %d and a space it passes %d", longest, n, writerLeftMax, StoryMax)
+	}
+	left := strings.Repeat("a", 87)
+	if _, got, err := parseCaseBrief(fmt.Sprintf(`{"happened": "The check-in found a fault.", "left": %q}`, left)); err != nil || got != left {
+		t.Errorf("an 87-rune left = %q, %v; want it taken", got, err)
+	}
+	if _, _, err := parseCaseBrief(fmt.Sprintf(`{"happened": "The check-in found a fault.", "left": %q}`, left+"a")); err == nil ||
+		!strings.Contains(err.Error(), "left has 88 characters, at most 87") {
+		t.Errorf("an 88-rune left = %v, want the door's refusal naming its bound", err)
+	}
+}
+
+// A story line past 160 characters refuses the answer: nothing is stored, so the template's story stands, the mark
+// names each fault, and the next call reads the refusal and its answer is
+// stored.
+func TestBriefWriterRefusesAStoryLinePastItsBound(t *testing.T) {
+	var bodies []string
+	answers := []string{
+		fmt.Sprintf(`{"happened": %q, "left": "The tests are left."}`, strings.Repeat("The check-in found a fault. ", 9)),
+		`{"happened": "The check-in found a fault in the importer.", "left": "The tests of the importer are left."}`,
+	}
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": answers[len(bodies)-1]}}}})
+		_, _ = w.Write(reply)
+	}))
+	defer gw.Close()
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman})
+	w := briefCaseWriter(store, gw)
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mark := store.caseFailed[5]
+	if len(store.caseBrief) != 0 || !strings.HasPrefix(mark, noBriefMark) || !strings.Contains(mark, "happened has 251 characters, at most 160") {
+		t.Fatalf("story %v, mark %q; want none stored and the mark naming the long line", store.caseBrief, mark)
+	}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[1], `\"last_refusal\"`) || !strings.Contains(bodies[1], "happened has 251 characters") {
+		t.Fatalf("the second call's facts lack the refusal: %v", bodies)
+	}
+	if got := store.caseBrief[5]; got != [2]string{"The check-in found a fault in the importer.", "The tests of the importer are left."} {
+		t.Fatalf("the story after the second call = %q", got)
+	}
+}
+
+// A story line that names an answer's label, a button the card shows
+// below the story, is refused: nothing is stored, so the card's story
+// stays the one its template composes, and the mark names the label. The
+// next call reads the refusal, and its answer, whose ordinary words
+// ("keep it") name no button, is stored.
+func TestStoryNamesNoButton(t *testing.T) {
+	var bodies []string
+	happened, left := "The check-in stopped the card on an edit outside the exporter.", "The importer drops the accent, and the fix must keep it."
+	answers := []string{
+		`{"happened": "The check-in stopped the card, and Add money lets it go on.", "left": "The importer drops the accent."}`,
+		fmt.Sprintf(`{"happened": %q, "left": %q}`, happened, left),
+	}
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": answers[len(bodies)-1]}}}})
+		_, _ = w.Write(reply)
+	}))
+	defer gw.Close()
+	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman}
+	store := briefCaseStore(c)
+	w := briefCaseWriter(store, gw)
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const named = "happened names the answer “Add money”, which the card shows below the story"
+	if mark := store.caseFailed[5]; len(store.caseBrief) != 0 || !strings.Contains(mark, named) {
+		t.Fatalf("story %v, mark %q; want none stored and the mark naming the label", store.caseBrief, mark)
+	}
+	story := CaseFace(c, briefTask(), CaseAsk{}).Story
+	if story.Happened != "No session has run on this card. The check of the last session handed the card to a human." || strings.Contains(fmt.Sprint(story), "Add money") {
+		t.Fatalf("the card's story = %+v, want the template's", story)
+	}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[1], `\"last_refusal\"`) || !strings.Contains(bodies[1], "Add money") {
+		t.Fatalf("the second call's facts lack the refusal: %v", bodies)
+	}
+	if got := store.caseBrief[5]; got != [2]string{happened, left} {
+		t.Fatalf("the story after the second call = %q", got)
+	}
+}
+
+// A label that is a statement reads as ordinary words where it opens a
+// sentence, and names its button inside one or in quotes; a label that is
+// an order names its button wherever it stands. The vocabulary's
+// statements are the nine listed.
+func TestNamedLabel(t *testing.T) {
+	for line, want := range map[string]string{
+		"It is met by the new test of the export.":                    "",
+		"It is not met on the newest change.":                         "",
+		"The review ran twice. The work is enough for the first one.": "",
+		"Noted in the review, the fault of the importer stays open.":  "",
+		"Colour is missing from the export.":                          "",
+		"The importer drops the accent, and the fix must keep it.":    "",
+		"A human may pick It is met for the first promise.":           "It is met",
+		"The answer “It is not met” ends the card.":                   "It is not met",
+		"The check stopped the card: The work is enough goes on.":     "The work is enough",
+		"Add money lets the card go on.":                              "Add money",
+		"The check-in stopped the card, and Add money lets it go on.": "Add money",
+		"The card stopped. Merge it to go on.":                        "Merge it",
+	} {
+		if got := NamedLabel(line); got != want {
+			t.Errorf("NamedLabel(%q) = %q, want %q", line, got, want)
+		}
+	}
+	var statements []string
+	for _, a := range Vocabulary {
+		if statementLabel.MatchString(a.Label) && !slices.Contains(statements, a.Label) {
+			statements = append(statements, a.Label)
+		}
+	}
+	slices.Sort(statements)
+	if want := []string{"Colour", "I cannot do this", "I did it", "It is fine, go on", "It is met", "It is not met", "Not now", "Noted", "The work is enough"}; !slices.Equal(statements, want) {
+		t.Errorf("the vocabulary's statements = %q, want %q", statements, want)
 	}
 }
 
@@ -776,7 +625,7 @@ func TestBriefWriterMarksASpentJudgmentBudgetOnce(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"the chat's budget is spent"}}`))
 	}))
 	defer gw.Close()
-	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman})
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman})
 	w := briefCaseWriter(store, gw)
 	for range 2 {
 		if err := w.Pass(context.Background()); err != nil {
@@ -805,7 +654,7 @@ func TestBriefWriterMasksSecretsInTheCaseFacts(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"https://user:pass@host refused Authorization: Bearer abc123def456ghi789"}}`))
 	}))
 	defer gw.Close()
-	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman},
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman},
 		CaseStep{ID: 1, Rung: 1, Found: "cloned https://user:pass@host/r.git with Authorization: Bearer abc123def456ghi789", Outcome: StepHandedUp})
 	if err := briefCaseWriter(store, gw).Pass(context.Background()); err != nil {
 		t.Fatal(err)
@@ -831,10 +680,10 @@ func TestBriefWriterSkipsASpentProjectAndTakesItUpAgain(t *testing.T) {
 	calls := 0
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"All told.\", \"recommendation\": \"\"}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"happened\": \"All told.\", \"left\": \"\"}"}}]}`))
 	}))
 	defer gw.Close()
-	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman}
+	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman}
 	store := briefCaseStore(c)
 	store.chatSpent = 1e6
 	w := briefCaseWriter(store, gw)
@@ -846,7 +695,7 @@ func TestBriefWriterSkipsASpentProjectAndTakesItUpAgain(t *testing.T) {
 	if calls != 0 || store.caseFailed[5] != "judgment budget spent" || len(store.events) != 1 {
 		t.Fatalf("calls %d, mark %q, events %d; want no call, the mark once and one event", calls, store.caseFailed[5], len(store.events))
 	}
-	face := CaseFace(store.cases[0], nil, CaseFacts{}, CaseAsk{Detail: map[string]any{"info": "the digest's info"}}, nil)
+	face := CaseFace(store.cases[0], Task{}, CaseAsk{Detail: map[string]any{"info": "the digest's info"}})
 	if face.Info != "the digest's info" {
 		t.Fatalf("the face's info = %q, want the digest's", face.Info)
 	}
@@ -865,10 +714,10 @@ func TestBriefWriterRetriesANoBriefAnswerOnce(t *testing.T) {
 	calls := 0
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"cut mid"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"happened\": \"cut mid"}}]}`))
 	}))
 	defer gw.Close()
-	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman})
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman})
 	w := briefCaseWriter(store, gw)
 	var marks []string
 	for range 3 {
@@ -904,11 +753,11 @@ func TestBriefWriterMasksLineStartTokensAndQuotedHeaders(t *testing.T) {
 				user = m.Content
 			}
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"ok\", \"recommendation\": \"\"}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"happened\": \"ok\", \"left\": \"\"}"}}]}`))
 	}))
 	defer gw.Close()
 	const token, bearer = "0123456789abcdef0123456789abcdef01234567", "abc123def456ghi789"
-	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman},
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman},
 		CaseStep{ID: 1, Rung: 1, Found: "the request:\nAuthorization: token " + token + "\nBearer " + bearer + "\nend", Outcome: StepHandedUp},
 		CaseStep{ID: 2, Rung: 2, Found: `it ran curl -H "Authorization: Bearer ` + bearer + `" https://host/x`, Outcome: StepHandedUp})
 	if err := briefCaseWriter(store, gw).Pass(context.Background()); err != nil {
@@ -953,8 +802,8 @@ func TestBriefWriterMakesNoCallToARefusingBudgetUntilItGrows(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"free headroom 0.0001 EUR fits 2 output tokens"}}`))
 	}))
 	defer gw.Close()
-	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman})
-	store.cases = append(store.cases, Case{ID: 6, TaskID: "t1", Repository: "o/r", Kind: CaseDayCap, Status: CaseAtHuman})
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman})
+	store.cases = append(store.cases, Case{ID: 6, TaskID: "t1", Repository: "o/r", Kind: CasePolicyClass, Status: CaseAtHuman})
 	w := briefCaseWriter(store, gw)
 	for range 5 {
 		if err := w.Pass(context.Background()); err != nil {
@@ -1096,7 +945,8 @@ func TestBriefWakeAtReset(t *testing.T) {
 // card header.
 func TestBriefWriterBriefsAHumanCardAsThePolicysClassesBrief(t *testing.T) {
 	var model, card string
-	answer, _ := json.Marshal(map[string]any{"background": "bg", "recommendation": "rec"})
+	happened, left := "The card used its three sessions.", "The fix is half written."
+	answer, _ := json.Marshal(map[string]any{"happened": happened, "left": left})
 	reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -1124,7 +974,7 @@ func TestBriefWriterBriefsAHumanCardAsThePolicysClassesBrief(t *testing.T) {
 	if model != "bb" || card != "alpha,beta,coder" {
 		t.Fatalf("the call's model %q card %q, want bb and alpha,beta,coder", model, card)
 	}
-	if got := store.caseBrief[5]; got != [2]string{"bg", "rec"} || len(store.caseFailed) != 0 {
+	if got := store.caseBrief[5]; got != [2]string{happened, left} || len(store.caseFailed) != 0 {
 		t.Fatalf("brief %v failed %v, want it written", got, store.caseFailed)
 	}
 }

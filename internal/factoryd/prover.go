@@ -605,7 +605,7 @@ func proverGuide(p Plan, holdouts []PlanProof, foundation *PlanCard) string {
 // proverBrief is plan's prover guide: its filed plan, its okayed and filed
 // hold-outs and its first foundation card.
 func (r *Runner) proverBrief(ctx context.Context, plan Task) (string, error) {
-	p, err := r.filedPlan(ctx, plan.ID, plan.ID)
+	p, _, err := planOfStore(ctx, r.store, plan.ID, plan.ID)
 	if err != nil {
 		return "", err
 	}

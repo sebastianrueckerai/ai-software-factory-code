@@ -66,7 +66,7 @@ const s2Cost = "cost: big, 2 calls, prompt tokens per call median 70,000 max 111
 // trTotals is t-r's calls line: all six calls' tokens summed (350,374
 // prompt of which 301,000 cached, no output) and their 0.0492 EUR summed
 // (roadmap 206), the same line the card face shows beside its spend.
-const trTotals = "350,374 prompt · 301,000 cached · 0 output tokens · €0.0492 modeled to date\n"
+const trTotals = "350,374 prompt · 301,000 cached · 0 output tokens · 0.05 EUR modeled to date\n"
 
 // newSessionsRig is the chat rig with t-r #11's two sessions and their
 // transcripts.
@@ -132,7 +132,7 @@ func TestChatSessionRead(t *testing.T) {
 			"started 2026-10-11 10:13 UTC, took 27 min\n" +
 			"summary: added the p95\n" + s2Cost + trTotals + "files changed: stats.go (1)\ndiff: 2 files, +40 -8\n4 steps",
 		s1Summary + trTotals + "files changed: a.go (1)\ndiff: 1 file, +10 -2\n6 steps",
-		"Refused: Card #11 has no session 3; it has had 2 sessions.",
+		"Refused: Card #11 has no session 3. It has had 2 sessions.",
 		"Refused: Card #5 has had no session yet.",
 	})
 	status, _ := refused(t, r, "session", toolInput{TaskID: "t-r", N: 3})
@@ -360,7 +360,7 @@ func TestChatSessionTooLarge(t *testing.T) {
 		big.WriteString(filler)
 	}
 	r.objects["sessions/t-r/s1.jsonl"] = []byte(big.String())
-	const tooLarge = "session 1's transcript is 9.0 MiB; too large to read"
+	const tooLarge = "session 1's transcript is 9.0 MiB, too large to read"
 	equal(t, "the reads of a large transcript", reads(t, r, g, "session", `{"task_id":"t-r","n":1}`, "session_steps", `{"task_id":"t-r","n":1}`,
 		"session_search", `{"task_id":"t-r","query":"Needle-In"}`), []string{
 		s1Summary + trTotals + tooLarge,

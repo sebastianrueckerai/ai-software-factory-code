@@ -32,9 +32,10 @@ func questionsRig(r *rig) {
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": askedQuestions()}
 }
 
-// The plan card asks the plan's open questions above its
-// Request changes, one button per choice and a text box each, its meta
-// line counting the open ones, and offers no Accept; an answer posts "Answer <n>:
+// The plan card asks the plan's open questions, its small card the first
+// with their count, its opened card one answer per choice and the human's
+// own words, at the question's place among them, and offers no Accept; an
+// answer posts "Answer <n>:
 // <answer>" on the issue as the member, signals factoryd and shows on the
 // card; a second answer to it, one to a stale revision or to no question,
 // and an empty or long one are refused.
@@ -42,22 +43,40 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	r := newRig(t)
 	questionsRig(r)
 	ck, s := r.loggedIn(t)
-	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	// the small card asks the first open question of two; the opened card
+	// holds the forms
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); !strings.Contains(face, `<strong class="title">How often does the checker probe a site?</strong>`) ||
+		!strings.Contains(face, `<span class="pos" aria-live="polite">1 of 2</span>`) || strings.Contains(face, "<form") {
+		t.Errorf("the small card does not ask the first of two questions, or holds a form:\n%s", face)
 	}
+	// three choices, the human's own words and Ask for changes: the small
+	// card counts the five answers the opened card shows
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); !strings.Contains(face, `>5 answers ›</a>`) {
+		t.Errorf("the small card does not count the opened card's five answers:\n%s", face)
+	}
+	board := func() string { return approvalFaceOf(t, planDrawer(t, r, ck), "t-plan") }
 	card := board()
-	for _, want := range []string{`<p class="ask">How often does the checker probe a site?</p>`, `<span class="pos" aria-live="polite">1 of 2</span>`,
-		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`,
-		`<input type="radio" name="choice" value="2">`, `<input type="text" id="own-t-plan-1" name="own" maxlength="1000" hx-preserve>`,
-		`<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
+	for _, want := range []string{`<p class="o-label">Your call · 1 of 2`, `<p class="o-question">How often does the checker probe a site?</p>`,
+		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1"><input type="hidden" name="choice" value="2">` + "\n" +
+			`<button type="submit" class="pick">60 seconds</button>`,
+		`name="own" rows="2" maxlength="1000"`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)
 		}
 	}
-	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 1 || strings.Count(card, `<input type="radio"`) != 3 || strings.Contains(card, " checked>") ||
-		strings.Index(card, `action="/tasks/t-plan/plan/answer"`) > strings.Index(card, `action="/tasks/t-plan/plan/changes"`) || strings.Contains(card, "Accept plan") {
-		t.Errorf("want one answer form with 3 unchecked choices above Request changes, and no Accept:\n%s", card)
+	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 4 || strings.Contains(card, "suggested") || strings.Contains(card, "Accept plan") {
+		t.Errorf("want an answer per choice and the own words, none suggested, and no Accept:\n%s", card)
+	}
+	// the question has five answers, one more than a small card holds: the
+	// opened card shows Ask for changes with the other four, after them and
+	// above the folds, and not under the other actions
+	page := planDrawer(t, r, ck)
+	const changes = `action="/tasks/t-plan/plan/changes"`
+	ask, folds, _ := strings.Cut(page, `<div class="o-folds">`)
+	if strings.Count(page, changes) != 1 || strings.LastIndex(ask, `action="/tasks/t-plan/plan/answer"`) > strings.Index(ask, changes) ||
+		!strings.Contains(ask, changes) || !strings.Contains(ask, "Ask for changes") || !strings.Contains(ask, `name="text"`) || strings.Contains(folds, "Ask for changes") {
+		t.Errorf("want one Ask for changes form with its note field among the question's answers, below the other four and under no fold:\n%s", page)
 	}
 	const comments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
 	answer := func(revision, index, text string) *httptest.ResponseRecorder {
@@ -69,9 +88,13 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		!slices.Contains(r.fg.calls, "POST "+comments+" Bearer access-1") {
 		t.Fatalf("answer: %d to %q %s; comment %q, calls %v", rec.Code, rec.Header().Get("Location"), rec.Body, r.fg.comments[comments], r.fg.calls)
 	}
-	if card := board(); strings.Contains(card, "How often does the checker probe a site?") || !strings.Contains(card, `<p class="ask">How long are the results kept?</p>`) ||
-		!strings.Contains(card, `<p class="meta">1 question open. The answers go to the planner`) || strings.Count(card, `<input type="radio"`) != 2 || strings.Contains(card, `class="carousel"`) {
+	if card := board(); strings.Contains(card, `<p class="o-question">How often does the checker probe a site?</p>`) || !strings.Contains(card, `<p class="o-question">How long are the results kept?</p>`) ||
+		!strings.Contains(card, `<p class="answered">How often does the checker probe a site?: 60 seconds (sebastian)</p>`) || strings.Count(card, `name="choice"`) != 2 {
 		t.Errorf("the card after one answer:\n%s", card)
+	}
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); strings.Contains(face, `class="carousel"`) ||
+		!strings.Contains(face, `<strong class="title">How long are the results kept?</strong>`) {
+		t.Errorf("the small card after one answer:\n%s", face)
 	}
 	r.fg.calls = nil
 	for _, tc := range []struct {
@@ -93,8 +116,16 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	if rec := answer("2", "2", " 30\n days "); rec.Code != http.StatusSeeOther || r.fg.comments[comments] != "Answer 2: 30 days" {
 		t.Fatalf("the second answer: %d, comment %q", rec.Code, r.fg.comments[comments])
 	}
-	if card := board(); strings.Contains(card, " open. ") || !strings.Contains(card, `<p class="meta">The answers go to the planner;`) || strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) {
+	// with every question answered no case of the revision is at the human:
+	// the card asks nothing more
+	if card := planDrawer(t, r, ck); strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) || strings.Contains(card, `<section class="o-ask"`) ||
+		!strings.Contains(card, `<p class="answered">How long are the results kept?: 30 days (sebastian)</p>`) {
 		t.Errorf("the card once answered:\n%s", card)
+	}
+	// and the small card agrees: it shows no question and no way to answers
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); strings.Contains(face, `class="ask-row"`) ||
+		strings.Contains(face, "answers ›") || strings.Contains(face, "The planner has a question") || strings.Contains(face, `class="sent"`) {
+		t.Errorf("the small card asks though the opened card asks nothing:\n%s", face)
 	}
 	// an answer stored whose signal failed: 502, the answer recorded,
 	// request_changes the way on
@@ -102,7 +133,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		return fmt.Errorf("%w: temporal down", factoryd.ErrAnswerUnsignalled)
 	}
 	if rec := answer("2", "1", "5 minutes"); rec.Code != http.StatusBadGateway || rec.Body.String() !=
-		"The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.\n" ||
+		"The answer is recorded, but the factory could not pass it to the plan. “Ask for changes” sends the plan to the planner with the answers.\n" ||
 		r.fg.comments[comments] != "Answer 2: 30 days" {
 		t.Errorf("an unsignalled answer: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments[comments])
 	}
@@ -158,7 +189,7 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	for _, in := range []toolInput{{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"}, {TaskID: "t-p", Decision: factoryd.DecisionConfirm, Text: "fine"}} {
 		status, msg := refused(t, r, "answer", in)
 		equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
-			"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner."})
+			"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer). Its next revision with none files the cards, and a change request sends it back to the planner (`request_changes`)."})
 	}
 }
 
@@ -351,13 +382,12 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 	}
 }
 
-// The confirmation question is the one decide block's two controls, not a
-// choice list and not a free-text form: a Confirm press stores the
-// decision, carries the revision's cards to the gate with no planner
-// session and names it; its button carries formnovalidate, so the bare
-// press posts without the words the form's answer box requires.
-// Request changes takes required words to the next planner round, and
-// bare text names the two controls and stores nothing.
+// The confirmation question is two answers, not a choice list and not a
+// free-text form: a Confirm press stores the decision, carries the
+// revision's cards to the gate with no planner session and names it, one
+// press with no words. Ask for changes takes required words, bounded as
+// the plan takes them, to the next planner round, and bare text names the
+// two controls and stores nothing.
 // While the confirmation is open its Request changes is the card's only
 // one. The answered line shows the decision with its findings, and the
 // night's words ride a confirm as findings.
@@ -367,9 +397,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
 		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
 	ck, s := r.loggedIn(t)
-	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	}
+	board := func() string { return approvalFaceOf(t, planDrawer(t, r, ck), "t-plan") }
 	press := func(kv ...string) *httptest.ResponseRecorder {
 		v := url.Values{"csrf": {s.csrf}, "project": {"linkshort"}}
 		for i := 0; i+1 < len(kv); i += 2 {
@@ -381,32 +409,30 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	night := "okay — confirmed. Revision 15 is fine."
 	card := board()
 	for _, want := range []string{
-		`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`,
-		`<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>Confirm</button>`,
-		`<button type="submit" name="decision" value="revise" class="secondary">Request changes</button>`,
-		"Request changes: your words go to the next planner round",
-		`name="answer" maxlength="1000" required`,
-		"<p class=\"meta\">1 question open. The answers go to the planner",
+		`<p class="o-question">Confirm plan “Link shortener” with 3 cards?</p>`,
+		`<input type="hidden" name="decision" value="confirm">` + "\n" + `<button type="submit" class="pick">Confirm the plan</button>`,
+		`<input type="hidden" name="decision" value="revise">` + "\n" + `<button type="button" class="pick" aria-expanded="false" aria-controls="f-t-plan-500-revise-note-set" data-press="revise">Ask for changes</button>`,
+		`name="answer" rows="2" maxlength="1000" placeholder="What the plan should do differently" required`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the card lacks %q:\n%s", want, card)
 		}
 	}
-	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 1 || strings.Contains(card, `name="choice"`) {
-		t.Errorf("the confirmation is one decide form, no choice buttons:\n%s", card)
+	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 2 || strings.Contains(card, `name="choice"`) {
+		t.Errorf("the confirmation is its two answers, no choice buttons:\n%s", card)
 	}
 	if strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
 		t.Errorf("the open confirmation's Request changes is the card's only one:\n%s", card)
 	}
 	// Request changes without words: refused by name, nothing stored
 	if rec := press("revision", "2", "index", "1", "decision", "revise"); rec.Code != http.StatusBadRequest ||
-		rec.Body.String() != "Request changes needs its words: they go to the next planner round.\n" ||
+		rec.Body.String() != "Ask for changes needs your words: they go to the next planner round.\n" ||
 		slices.Contains(r.fg.calls, "SIGNAL plan_answered t-plan 2 1 by sebastian") || len(r.fg.comments) != 0 {
 		t.Fatalf("words-less revise: %d %q, calls %v", rec.Code, rec.Body, r.fg.calls)
 	}
 	// bare text names the controls
 	if rec := press("revision", "2", "index", "1", "answer", "It does"); rec.Code != http.StatusConflict || rec.Body.String() !=
-		"Question 1 of plan #1 is its confirmation: Confirm fixes the spec and the criteria, Request changes sends your words to the planner.\n" {
+		"Question 1 of plan #1 is its confirmation: Confirm the plan fixes the spec and the criteria, Ask for changes sends your words to the planner.\n" {
 		t.Fatalf("bare text: %d %q", rec.Code, rec.Body)
 	}
 	// the night's answer: confirm with the words as findings
@@ -415,10 +441,9 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 		r.fg.comments[comments] != "Answer 1: confirm · "+night {
 		t.Fatalf("the night's confirm: %d %q, calls %v, comment %q", rec.Code, rec.Body, r.fg.calls, r.fg.comments[comments])
 	}
-	if card = board(); strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) || !strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
-		t.Errorf("the card after the confirm:\n%s", card)
-	}
-	if d := planDrawer(t, r, ck); !strings.Contains(d, `<p class="answered">Does the plan match the spec?: confirm · `+night+` (sebastian)</p>`) {
+	// the confirmed revision holds no case at the human: the card asks nothing
+	if d := planDrawer(t, r, ck); strings.Contains(d, `action="/tasks/t-plan/plan/answer"`) || strings.Contains(d, `<section class="o-ask"`) ||
+		!strings.Contains(d, `<p class="answered">Does the plan match the spec?: confirm · `+night+` (sebastian)</p>`) {
 		t.Errorf("the drawer after the confirm lacks the answered line:\n%s", d)
 	}
 	// Request changes with words, on a fresh round
@@ -479,9 +504,9 @@ func TestChatDecidesTheConfirmation(t *testing.T) {
 		want []any
 	}{
 		{toolInput{TaskID: "t-p", Revision: 1, Question: 1, Text: "It does"}, []any{http.StatusConflict,
-			"Question 1 of plan #20 is its confirmation: Confirm fixes the spec and the criteria, Request changes sends your words to the planner."}},
+			"Question 1 of plan #20 is its confirmation: Confirm the plan fixes the spec and the criteria, Ask for changes sends your words to the planner."}},
 		{toolInput{TaskID: "t-p", Revision: 1, Question: 1, Decision: factoryd.DecisionRevise}, []any{http.StatusBadRequest,
-			"Request changes needs its words: they go to the next planner round."}},
+			"Ask for changes needs your words: they go to the next planner round."}},
 	} {
 		status, msg := refused(t, r, "answer", tc.in)
 		equal(t, "the confirmation answered wrong", []any{status, msg}, tc.want)
@@ -512,6 +537,33 @@ func TestConfirmBesideRealQuestions(t *testing.T) {
 	if err != nil || note != "Answered question 1: 7 days, question 2: confirm of plan #1." ||
 		r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"] != "Answer 2: confirm" {
 		t.Fatalf("the batch with a bare confirm: %q, %v, comment %q", note, err, r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"])
+	}
+}
+
+// The confirmation's page of a revision that asked a real question says
+// what its Confirm does, whether the question is open or answered: the
+// answers go to the next planner round, and nothing comes off main yet.
+func TestTheConfirmBesideRealQuestionsSaysWhereTheAnswersGo(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first.", TakeOffMain: []string{"k2"},
+		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	r.tasks.plans["t-plan"][1].Plan = plan
+	for _, t := range planTasks() {
+		if t.Parent == "t-plan" && t.PlanKey == "k2" {
+			r.tasks.tasks = append(r.tasks.tasks, t)
+		}
+	}
+	ck, _ := r.loggedIn(t)
+	const want = `<button type="submit" class="pick">Confirm the plan</button> <span class="effect">The answers go to the next <span class="term">planner</span> round.</span>`
+	for name, answer := range map[string]string{"open": "", "answered": "30 days"} {
+		r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
+			{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Answer: answer},
+			{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+		page := getAs(r, ck, "/cards/t-plan/drawer?tab=overview&case=t-plan:501", false).Body.String()
+		if !strings.Contains(page, want) || strings.Contains(page, "Reverts") {
+			t.Errorf("%s: the confirmation's page lacks %q, or names a revert:\n%s", name, want, page)
+		}
 	}
 }
 
@@ -556,15 +608,15 @@ func TestTheConfirmationNamesTheOpenHoldouts(t *testing.T) {
 		return r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
 			"decision": {"confirm"}}), ck)
 	}
-	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "2 hold-outs wait for your okay or drop below.\n" {
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "2 extra promises of plan #1 wait for Keep it or Drop it on their pages before the confirmation.\n" {
 		t.Errorf("the press with two waiting: %d %q", rec.Code, rec.Body)
 	}
 	r.tasks.proofs["t-plan"][1].State = factoryd.ProofDropped
-	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "1 hold-out waits for your okay or drop below.\n" {
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "1 extra promise of plan #1 waits for Keep it or Drop it on its page before the confirmation.\n" {
 		t.Errorf("the press with one waiting: %d %q", rec.Code, rec.Body)
 	}
 	r.tasks.proofs["t-plan"][3].State = factoryd.ProofDropped
-	const none = "The hold-outs of plan #1 wait for your okay or drop below."
+	const none = "The extra promises of plan #1 wait for Keep it or Drop it on their pages before the confirmation."
 	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != none+"\n" {
 		t.Errorf("the press with none the count reads: %d %q", rec.Code, rec.Body)
 	}
@@ -599,10 +651,10 @@ func planGuardRig(t *testing.T, confirmation bool, takeOff ...string) (*rig, *tu
 }
 
 const (
-	refusedOffMain = "Refused: This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with the plan's Confirm button."
-	refusedBelowC  = "Refused: A plan confirmation below full auto is the human's, made with the plan's Confirm button."
-	refusedBelowA  = "Refused: A plan's answer below full auto is the human's, made on the plan's card with its choices or its Request changes button."
-	agentStep      = " Record your analysis and recommended option with attach_analysis."
+	refusedOffMain = "Refused: This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with Confirm the plan on the plan's card."
+	refusedBelowC  = "Refused: A plan confirmation below full auto is the human's, made with Confirm the plan on the plan's card."
+	refusedBelowA  = "Refused: A plan's answer below full auto is the human's, made on the plan's card with its choices or its Ask for changes."
+	agentStep      = " Record your analysis and the option you recommend (`attach_analysis`)."
 )
 
 // By hand: with answer off the confirm list a wake's answer runs at once
@@ -843,7 +895,7 @@ func humanTurn(t *testing.T, r *rig, trn *turn, absorbed bool) {
 // at full auto as below it, in a wake and on the human's own line alike,
 // and nothing is posted.
 func TestTheAgentsCommentOnAPlanIsAChangeRequest(t *testing.T) {
-	const want = "Refused: A comment on plan #20 is a change request its planner reads: ask for one with request_changes, or send the plan back with replan."
+	const want = "Refused: A comment on plan #20 is a change request its planner reads: ask for one with `request_changes`, or send the plan back with `replan`."
 	for _, c := range []struct {
 		name, level string
 		wake        bool
@@ -964,7 +1016,7 @@ func TestAnUnreadableRevisionIsNotConfirmedByTheAgent(t *testing.T) {
 	r.tasks.plans = map[string][]factoryd.PlanRevision{}
 	r.tasks.mu.Unlock()
 	a := actor{s: trn.a.s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto}
-	_, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine", 0)
+	_, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine")
 	refusedAs(t, err, http.StatusConflict, strings.TrimPrefix(refusedOffMain, "Refused: ")+agentStep)
 }
 
@@ -976,7 +1028,7 @@ func TestAPlanButtonPressPassesTheGuard(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/tasks/t-p/plan/answer", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, trn.a.s))
 	a := button(req)
-	if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine", 0); err != nil {
+	if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine"); err != nil {
 		t.Errorf("the Confirm button: %v", err)
 	}
 	if _, err := r.c.doRequestChanges(t.Context(), a, "t-p", "split the API card"); err != nil {
@@ -1050,7 +1102,7 @@ func TestRung2ConfirmsAPlanOnceItsHoldoutsAreDecided(t *testing.T) {
 	r.tasks.proofs = map[string][]factoryd.PlanProof{"t-p": {{Idx: 1, Round: 1, ID: "door_state", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed}}}
 	r.tasks.mu.Unlock()
 	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.EventCaseClimbed
-	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); res != "Refused: 1 hold-out waits for your okay or drop below." ||
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); res != "Refused: 1 extra promise of plan #20 waits for Keep it or Drop it on its page before the confirmation." ||
 		slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") }) {
 		t.Fatalf("with a hold-out waiting: result %q, calls %v", res, r.fg.calls)
 	}

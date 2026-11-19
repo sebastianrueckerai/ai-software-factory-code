@@ -69,12 +69,13 @@ var writeCases = []writeCase{
 		},
 		result: "Resource 3 is released; the collector deletes it.", event: factoryd.EventResourceReleased, calls: []string{"release 3 by sebastian"}},
 	{name: "new_card", tool: "new_card",
-		args:    `{"title":"Cache the board","track":"direct","track_reason":"one file","acceptance":["The board is cached"]}`,
+		args: `{"title":"Cache the board","why":"So the board loads at once.","summary":"It caches the board's query. A test reads the board twice.",` +
+			`"track":"direct","track_reason":"one file","acceptance":["The board is cached"]}`,
 		confirm: true,
 		result:  "Filed sf/code#51 on track direct.", event: factoryd.EventCardFiled, calls: []string{"POST /api/v1/repos/sf/code/issues"}},
 	{name: "request_image", tool: "request_image", args: `{"tool":"jq","need":"the cards parse JSON"}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
-			r.ws.seatImageCard(factoryd.Task{ID: "t-img", Repository: "sf/code", IssueNumber: 60, HumanSummary: "Add jq to the default image"})
+			r.ws.seatImageCard(factoryd.Task{ID: "t-img", Repository: "sf/code", IssueNumber: 60, Objective: "Add jq to the default image"})
 		},
 		result: `Filed tool card #60 t-img "Add jq to the default image". After it merges, the factory builds, signs and pins the image; cards can then name it in image.`,
 		event:  factoryd.EventCardFiled, calls: []string{"image sf/code jq for the cards parse JSON by sebastian"}},
@@ -142,8 +143,6 @@ var writeCases = []writeCase{
 		},
 		result: "Confirmed 1 criteria met on the delivered cards; the request closes on the next sweep.", event: factoryd.EventCriterionDecided,
 		calls: []string{"confirm t-pl by sebastian: do it"}},
-	{name: "set_summary", tool: "set_summary", args: `{"task_id":"t-m","summary":"Fix the cache"}`,
-		result: "The summary of #5 is set.", undo: true, undoResult: `The summary of #5 is back to "".`, event: factoryd.EventSummarySet},
 	{name: "set_accent", tool: "set_accent", args: `{"task_id":"t-m","accent":"blue"}`,
 		result: "The accent of #5 is set.", undo: true, undoResult: `The accent of #5 is back to "".`, event: factoryd.EventAccentSet},
 	{name: "invite", tool: "invite", args: `{"login":"anna-b"}`, confirm: true,
@@ -169,8 +168,8 @@ var writeCases = []writeCase{
 	{name: "close", tool: "close", args: `{"task_id":"t-m","note":"Not needed."}`, confirm: true,
 		result: "Closed #5; factoryd ends the card.", event: factoryd.EventCardClosed,
 		calls: []string{"POST /api/v1/repos/sf/code/issues/5/comments", "PATCH /api/v1/repos/sf/code/issues/5"}},
-	{name: "edit", tool: "edit", args: `{"task_id":"t-m","title":"Fix the cache and the TTL"}`, confirm: true,
-		result: "Edited #5; the card's next session reads the edit.", event: factoryd.EventCardEdited,
+	{name: "edit", tool: "edit", args: `{"task_id":"t-m","title":"Fix the cache and the TTL","why":"So the board loads at once.","summary":"The cache keeps its entries for one TTL. A test reads them back."}`, confirm: true,
+		result: "Edited #5. The card's next session reads the edit.", event: factoryd.EventCardEdited,
 		calls: []string{"PATCH /api/v1/repos/sf/code/issues/5"}},
 	{name: "grant_session", tool: "grant_session", args: `{"task_id":"t-e","text":"One more session."}`, confirm: true,
 		result: "Case 1 took " + factoryd.ActExtend + ".", event: factoryd.EventCardExtended,
@@ -207,7 +206,7 @@ var writeCases = []writeCase{
 			r.PutInfraFile(accInfraFile, accPoolHead)
 			r.OnReload(func() { r.SetLoadedPool(12) })
 		},
-		result: "The pool of " + accProjectName + " is €12.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it.",
+		result: "The pool of " + accProjectName + " is 12.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it.",
 		check: func(t *testing.T, r *AcceptanceRig, _ *AccDocs) {
 			equal(t, "the pool file after the change", r.InfraFiles()[accInfraFile], accPoolLanded)
 		}},
@@ -261,7 +260,7 @@ var writeCases = []writeCase{
 		calls:  []string{`escalate sf/code "Move the cache to Redis?" by sebastian`}},
 	{name: "attach_analysis", tool: "attach_analysis", args: `{"task_id":"t-e","found":"The replica lags 2 s.","recommendation":"Use it."}`,
 		setup:  func(r *AcceptanceRig) { r.SeatAsk("t-e", "Use a replica?") },
-		result: "Recorded the analysis inside the ask of #13; the humans read it with the ask.", event: factoryd.EventAnalysisAttached},
+		result: "Recorded the analysis on the card #13; the humans read it beside its ask there.", event: factoryd.EventAnalysisAttached},
 }
 
 func planCard() factoryd.Task {
@@ -493,7 +492,7 @@ func firstTask(args string) string {
 var (
 	writeTools = []string{"promote_resource", "release_resource", "new_card", "request_image", "answer", "comment",
 		"tell_card", "steer", "retry", "request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria",
-		"set_summary", "set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
+		"set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
 		"set_dependency", "hold_card", "release_hold", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",
 		"routine_skip", "notes_write", "escalate", "attach_analysis"}
 	// readTools are the tools that change nothing; with writeTools they

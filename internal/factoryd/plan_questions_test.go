@@ -20,8 +20,10 @@ import (
 func questionPlan() Plan {
 	p := testPlan()
 	p.Questions = []PlanQuestion{
-		{Text: "How often does the checker probe a site?", Choices: []string{"30 seconds", "60 seconds", "5 minutes"}, Recommended: "60 seconds", Grounds: "a minute catches an outage soon enough"},
-		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Recommended: "30 days", Grounds: "a month covers a billing cycle"},
+		{Text: "How often does the checker probe a site?", Choices: []string{"30 seconds", "60 seconds", "5 minutes"}, Recommended: "60 seconds", Grounds: "a minute catches an outage soon enough",
+			Changes: []string{"The checker probes twice a minute.", "The checker probes once a minute.", "The checker probes every five minutes."}},
+		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Recommended: "30 days", Grounds: "a month covers a billing cycle",
+			Changes: []string{"The results go after a week.", "The results stay a month."}},
 	}
 	return p
 }
@@ -50,9 +52,9 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		want []string
 	}{
 		"five questions":    {change(func(p *Plan) { p.Questions = slices.Repeat(p.Questions[:1], 5) }), nil},
-		"six questions":     {change(func(p *Plan) { p.Questions = slices.Repeat(p.Questions[:1], 6) }), []string{"plan: 6 questions; want 0 to 5"}},
-		"one choice":        {change(func(p *Plan) { p.Questions[0].Choices = []string{"60 seconds"} }), []string{"plan: question 1: 1 choices; want 2 to 5"}},
-		"six choices":       {change(func(p *Plan) { p.Questions[1].Choices = []string{"a", "b", "c", "d", "e", "f"} }), []string{"plan: question 2: 6 choices; want 2 to 5"}},
+		"six questions":     {change(func(p *Plan) { p.Questions = slices.Repeat(p.Questions[:1], 6) }), []string{"plan: 6 questions, want 0 to 5"}},
+		"one choice":        {change(func(p *Plan) { p.Questions[0].Choices = []string{"60 seconds"} }), []string{"plan: question 1: 1 choices, want 2 to 5"}},
+		"six choices":       {change(func(p *Plan) { p.Questions[1].Choices = []string{"a", "b", "c", "d", "e", "f"} }), []string{"plan: question 2: 6 choices, want 2 to 5"}},
 		"choice at the cap": {change(func(p *Plan) { p.Questions[1].Choices[1] = strings.Repeat("c", 60) }), nil},
 		"long choice":       {change(func(p *Plan) { p.Questions[1].Choices[1] = strings.Repeat("c", 61) }), []string{"plan: question 2: choice 2 is over 60 characters"}},
 		"empty choice":      {change(func(p *Plan) { p.Questions[0].Choices[0] = "" }), []string{"plan: question 1: choice 1 is empty"}},
@@ -68,8 +70,8 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	}
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'
 	// findings, pinned by the table above, not the prose (roadmap 186).
-	g := planGuide(testShape, testLimits, nil, nil)
-	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `) ||
+	g, formed := strings.CutSuffix(planGuide(testShape, testLimits, nil, nil), "\n\n"+planForms)
+	if !formed || !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "changes": ["what the first choice changes in the plan, one short line", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `) ||
 		!strings.Contains(g, "questions: open points the spec leaves to the human; their answers come back to you with your last plan, "+
 			"and a plan with open questions waits for their answers, while a plan with none files its cards at once.") || strings.Count(g, "question") != 5 {
 		t.Fatalf("planGuide names questions %d times, want 5 (the format's key, the attack sentence's one, the sentence's two, the two plans' one):\n%s", strings.Count(g, "question"), g)
@@ -80,7 +82,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 // the bound and files again before the card fills the column.
 func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	q := func(text string) []PlanQuestion {
-		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}, Recommended: "7 days", Grounds: "g"}}
+		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}, Recommended: "7 days", Grounds: "g", Changes: []string{"A week.", "A month."}}}
 	}
 	if got, want := questionBounds(q(strings.Repeat("q", 301))), []string{"plan: question 1: text is over 300 characters"}; !slices.Equal(got, want) {
 		t.Errorf("301 runes: findings %q, want %q", got, want)
@@ -93,13 +95,13 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 		"recommended off": {func(q *PlanQuestion) { q.Recommended = "both" }, []string{`plan: question 1: recommended "both" is not one of its choices`}},
 		"no grounds":      {func(q *PlanQuestion) { q.Grounds = "" }, []string{"plan: question 1: grounds empty"}},
 	} {
-		qs := []PlanQuestion{{Text: "t", Choices: []string{"one", "two"}, Recommended: "two", Grounds: "g"}}
+		qs := []PlanQuestion{{Text: "t", Choices: []string{"one", "two"}, Recommended: "two", Grounds: "g", Changes: []string{"One.", "Two."}}}
 		tc.edit(&qs[0])
 		if got := questionBounds(qs); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: findings %q, want %q", name, got, tc.want)
 		}
 	}
-	long := []PlanQuestion{{Text: "t", Choices: []string{"a", "b"}, Recommended: "a", Grounds: strings.Repeat("g", 301)}}
+	long := []PlanQuestion{{Text: "t", Choices: []string{"a", "b"}, Recommended: "a", Grounds: strings.Repeat("g", 301), Changes: []string{"A.", "B."}}}
 	if got, want := questionBounds(long), []string{"plan: question 1: grounds is over 300 characters"}; !slices.Equal(got, want) {
 		t.Errorf("301 runes of grounds: findings %q, want %q", got, want)
 	}
@@ -109,6 +111,16 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	}
 	if got := questionBounds(q(strings.Repeat("ü", 300))); len(got) != 0 {
 		t.Errorf("300 runes of ü (600 bytes): findings %q, want none", got)
+	}
+}
+
+// A plan question's choice is a button a human presses: file_plan refuses
+// one in the planner's own voice.
+func TestQuestionBoundsRefuseAChoiceInTheFirstPerson(t *testing.T) {
+	qs := []PlanQuestion{{Text: "t", Choices: []string{"Keep 7 days", "I keep 30 days; it is safer"}, Recommended: "Keep 7 days", Grounds: "g", Changes: []string{"A week.", "A month."}}}
+	want := []string{`plan: question 1: choice "I keep 30 days; it is safer": The answer says "I". Name what happens, for example "Send the new pins to the agent".`}
+	if got := questionBounds(qs); !slices.Equal(got, want) {
+		t.Errorf("findings %q, want %q", got, want)
 	}
 }
 
@@ -334,8 +346,8 @@ func TestRequestPlanAsksTheConfirmation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm fixes the spec and the criteria; " +
-		"Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
+	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm the plan fixes the spec and the criteria; " +
+		"Ask for changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
 		"Outcome: A link shortener: links with slugs that redirect and count clicks.\n" +
 		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
 		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +
@@ -862,3 +874,13 @@ func (w *signalLog) Terminate(context.Context, string, string, string) error { r
 
 func (w *signalLog) Alive(context.Context, string) (bool, error)       { return true, nil }
 func (w *signalLog) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
+
+// A question's grounds name none of the factory's machinery where the
+// planner files them: a name is a finding that names it.
+func TestQuestionBoundsRefuseGroundsThatNameMachinery(t *testing.T) {
+	q := []PlanQuestion{{Text: "Which rows does the feed read?", Choices: []string{"The 500 newest rows", "Every row"}, Recommended: "The 500 newest rows",
+		Grounds: "The feed reads one table, as factory-chat found.", Changes: []string{"The feed reads 500 rows.", "The feed reads every row."}}}
+	if got, want := questionBounds(q), []string{`plan: question 1: grounds: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`}; !slices.Equal(got, want) {
+		t.Errorf("questionBounds = %q, want %q", got, want)
+	}
+}

@@ -79,12 +79,12 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	if open, ok, err := r.Routines.OpenRoutineTask(ctx, in.Project, in.Routine); err != nil {
 		return RoutineRunResult{}, err
 	} else if ok && rt.WhileOpenRule() == policy.WhileOpenHold {
-		return end("held", fmt.Sprintf("held: %s is still open", cardName(open)), "")
+		return end("held", fmt.Sprintf("held: %s is still open", ShownName(open)), "")
 	}
 
 	brief, _ := v.Brief(rt.Brief)
 	brief = strings.TrimSpace(brief)
-	provenance := fmt.Sprintf("%s%s · run %d", RoutineProvenance, rt.Name, run.Run)
+	provenance := RoutineProvenanceLine(rt.Name, run.Run)
 	told := func(text string) string {
 		if !tell {
 			return ""
@@ -101,8 +101,8 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	}
 	switch files {
 	case policy.FilesHuman:
-		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), routineQuestion(rt, brief, provenance, p.Agents != policy.AgentsNone), []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
-			RiskClass: "standard", Source: SourceRoutine, Author: r.forgejo.BotUser}, routineDecider(in.Routine, run.Run, rt.Words()))
+		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), RoutineQuestion(rt, brief, provenance, p.Agents != policy.AgentsNone), []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
+			RiskClass: "standard", Source: SourceRoutine, Author: r.forgejo.BotUser}, RoutineDecider(in.Routine, run.Run, rt.Words()))
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
@@ -112,16 +112,15 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack
 		// maps skills (roadmap 226)
-		body := strings.TrimSpace(brief)
-		if rt.Skill != "" {
-			body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + body)
-		}
-		t, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, rt.Title, body+"\n\n"+provenance, []string{"routine"},
-			Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: rt.Title + "\n\n" + body, Source: SourceRoutine})
+		b := RoutineCard(rt, brief)
+		objective := IssueObjective(b.Title, b.Body)
+		b.Body += "\n\n" + provenance
+		t, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, b, []string{"routine"},
+			Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: objective, Source: SourceRoutine})
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
-		return filed(t.ID, ref.Number, told(fmt.Sprintf("Filed #%d %q.", ref.Number, rt.Title)))
+		return filed(t.ID, ref.Number, told(fmt.Sprintf("%s Filed #%d %q.", NothingForYou, ref.Number, rt.Title)))
 	case policy.FilesPullRequest:
 		cards, err := r.TemplatePass(ctx)
 		if err != nil {
@@ -134,7 +133,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		if cards == 1 {
 			note = "1 card"
 		}
-		return end("filed", note, told(rt.Title+": "+note+"."))
+		return end("filed", note, told(NothingForYou+" "+rt.Title+": "+note+"."))
 	default: // a report: a poke and no card
 		if rt.Pass == policy.PassLongWaits {
 			list, note, err := r.longWaits(ctx, p, in, run, loc)
@@ -209,6 +208,32 @@ func (r *Runner) longWaits(ctx context.Context, p Project, in RoutineRunInput, r
 		lines[i] = w.line
 	}
 	return strings.Join(lines, "\n"), "no card has waited on a human for more than a day", nil
+}
+
+// RoutineProvenanceLine is the line that ends the body of the card run
+// of routine name files.
+func RoutineProvenanceLine(name string, run int) string {
+	return fmt.Sprintf("%s%s · run %d", RoutineProvenance, name, run)
+}
+
+// RoutineBrief is the brief of the cards routine rt files: its title, and
+// the why line its file holds, else the line that says the routine files
+// the card.
+func RoutineBrief(rt policy.Routine) BriefText {
+	return SourceBriefs[SourceRoutine](BriefFacts{Name: oneLine(rt.Title), Of: rt.Name, Why: rt.Why})
+}
+
+// RoutineCard is the brief of the agent card routine rt files with
+// brief: the routine's brief (RoutineBrief), and as its text its skill's
+// line first, until the prompt pack maps skills (roadmap 226), then the
+// brief.
+func RoutineCard(rt policy.Routine, brief string) BriefText {
+	b := RoutineBrief(rt)
+	b.Body = strings.TrimSpace(brief)
+	if rt.Skill != "" {
+		b.Body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + b.Body)
+	}
+	return b
 }
 
 // RoutineProvenance starts the line that ends the body of a routine's

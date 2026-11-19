@@ -39,8 +39,8 @@ func (k *accReproKube) PodDiagnosis(context.Context, string, string) (factoryd.P
 	return factoryd.PodDiagnosis{Phase: "Running"}, nil
 }
 
-func (k *accReproKube) PodStatus(context.Context, string, string) (string, int32, error) {
-	return "Succeeded", 0, nil
+func (k *accReproKube) PodStatus(context.Context, string, string) (string, int32, factoryd.PodWait, error) {
+	return "Succeeded", 0, factoryd.PodWait{}, nil
 }
 
 func (k *accReproKube) PodLog(_ context.Context, _, name string) (io.ReadCloser, error) {

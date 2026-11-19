@@ -97,7 +97,7 @@ func (t *turn) inboxText(in toolInput) (string, error) {
 			}
 			card = " " + issueRef(m.TaskID, n)
 		}
-		fmt.Fprintf(&b, "%d %s %s%s: %s%s\n", m.ID, m.At.UTC().Format("01-02 15:04Z"), inboxKind(m), card,
+		fmt.Fprintf(&b, "%d %s %s%s: %s%s\n", m.ID, m.At.UTC().Format("01-02 15:04Z"), rowWriter(m), card,
 			textutil.Truncate(inboxSaid(m), excerptSide), inboxState(m))
 	}
 	if len(rest) > len(shown) {
@@ -108,9 +108,9 @@ func (t *turn) inboxText(in toolInput) (string, error) {
 	return b.String(), nil
 }
 
-// inboxKind is what wrote row m: the factory's kind of row, a wake
+// rowWriter is what wrote row m: the factory's kind of row, a wake
 // turn's note, else its role.
-func inboxKind(m factoryd.ChatMessage) string {
+func rowWriter(m factoryd.ChatMessage) string {
 	switch {
 	case m.Kind != "":
 		return m.Kind

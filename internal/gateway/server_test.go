@@ -655,7 +655,7 @@ func TestChatCompletions(t *testing.T) {
 				headers: map[string]string{"x-litellm-response-cost": "0.25"}},
 			wantStatus:      http.StatusInternalServerError,
 			wantDecision:    "error_upstream",
-			wantOverHold:    "COST OVER HOLD: model small cost 0.250000 EUR against a hold of 0.131197 EUR; booked in full",
+			wantOverHold:    "COST OVER HOLD: model small cost 0.25 EUR against a hold of 0.13 EUR; booked in full",
 			wantSpent:       ptr(2.25),
 			wantUpstreamHit: 1,
 		},
@@ -667,7 +667,7 @@ func TestChatCompletions(t *testing.T) {
 			// 132 input tokens at 1e-6 and 32768 output tokens at 4e-6
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
-			wantReason:      "cost not reported, booked the hold 0.131197 EUR",
+			wantReason:      "cost not reported, booked the hold 0.13 EUR",
 			wantSpent:       ptr(2.131197),
 			wantUpstreamHit: 1,
 		},
@@ -745,7 +745,7 @@ func TestChatCompletions(t *testing.T) {
 			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
-			wantOverHold:    "COST OVER HOLD: model small cost 0.500000 EUR against a hold of 0.131197 EUR; booked in full",
+			wantOverHold:    "COST OVER HOLD: model small cost 0.50 EUR against a hold of 0.13 EUR; booked in full",
 			wantSpent:       ptr(2.5),
 			wantUpstreamHit: 1,
 		},
@@ -1517,7 +1517,7 @@ func TestAgentCallsOnlyItsSessionAlias(t *testing.T) {
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices})
 	rr := doChat(t, s.Routes("test"), chatBody("big"))
 	_, bodies, _ := stub.seen()
-	want := `model "big" is not the model "small" of the task's session (tasks.model_alias); a stronger model comes only by the climb`
+	want := "model \"big\" is not the model \"small\" of the task's session (`tasks.model_alias`). A stronger model comes only by the climb"
 	if a := store.auditRows(); rr.Code != http.StatusForbidden || len(a) != 1 || a[0].Decision != "refused_capability" || a[0].Reason != want ||
 		len(store.reqs) != 0 || len(bodies) != 0 {
 		t.Fatalf("big = %d %s, audit %+v, %d holds, %d upstream calls; want 403 refused_capability: %s", rr.Code, rr.Body.String(), a, len(store.reqs), len(bodies), want)
@@ -1632,7 +1632,7 @@ func TestDayCapAcrossTasks(t *testing.T) {
 	}
 	for _, task := range []string{"a", "b"} {
 		rr := call(task, "0.1")
-		if rr.Code != http.StatusPaymentRequired || !strings.Contains(rr.Body.String(), "day -0.125000") {
+		if rr.Code != http.StatusPaymentRequired || !strings.Contains(rr.Body.String(), "day -0.12") {
 			t.Fatalf("%s after the day's 1.125 = %d %s, want 402 naming the day's headroom", task, rr.Code, rr.Body.String())
 		}
 	}
@@ -1684,7 +1684,7 @@ func TestProjectCapAcrossTasks(t *testing.T) {
 	for _, task := range []string{"a", "b"} {
 		rr := call(task, "0.1")
 		if rr.Code != http.StatusPaymentRequired || rr.Header().Get(HeaderDecision) != policy.RefusedProjectCap ||
-			!strings.Contains(rr.Body.String(), "project -0.125000) fits 0 output tokens") ||
+			!strings.Contains(rr.Body.String(), "project -0.12) fits 0 output tokens") ||
 			!strings.Contains(rr.Body.String(), "; the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit") {
 			t.Fatalf("%s after the project's 1.125 = %d %s %s, want 402 refused_project_cap naming projects/linkshort.yaml", task, rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
 		}
@@ -2261,7 +2261,7 @@ func TestCanceledCallIsPricedFromTheSpendLog(t *testing.T) {
 			}
 			audits := store.auditRows()
 			last := audits[len(audits)-1]
-			if last.Decision != "client_canceled" || last.Reason != "caller left; priced from LiteLLM's spend log: 0.050000 EUR" {
+			if last.Decision != "client_canceled" || last.Reason != "caller left; priced from LiteLLM's spend log: 0.05 EUR" {
 				t.Fatalf("audit = %+v", last)
 			}
 			if n := store.openHolds(); n != 0 {
@@ -2295,7 +2295,7 @@ func TestCanceledCallWithAnUnreadableSpendLogBooksTheHold(t *testing.T) {
 		t.Fatalf("spent = (%v, %v), want (2.131197, true): the hold of 132 input tokens at 1e-6 and 32768 output tokens at 4e-6", got, ok)
 	}
 	audits := store.auditRows()
-	want := "caller left; spend log unreadable (litellm down): cost not reported, booked the hold 0.131197 EUR"
+	want := "caller left; spend log unreadable (litellm down): cost not reported, booked the hold 0.13 EUR"
 	if last := audits[len(audits)-1]; last.Reason != want {
 		t.Fatalf("reason = %q, want %q", last.Reason, want)
 	}
@@ -2313,7 +2313,7 @@ func TestCanceledCallWithNoSpendLogBooksTheHoldAtOnce(t *testing.T) {
 		t.Fatalf("spent = (%v, %v), want (2.131197, true)", got, ok)
 	}
 	audits := store.auditRows()
-	want := "caller left; spend log unreadable (no spend log configured): cost not reported, booked the hold 0.131197 EUR"
+	want := "caller left; spend log unreadable (no spend log configured): cost not reported, booked the hold 0.13 EUR"
 	if last := audits[len(audits)-1]; last.Reason != want {
 		t.Fatalf("reason = %q, want %q", last.Reason, want)
 	}
@@ -2681,7 +2681,7 @@ func TestPremiumCapThenBigRefused(t *testing.T) {
 	}
 	audits := store.auditRows()
 	last := audits[len(audits)-1]
-	if last.Decision != policy.RefusedBudget || !strings.Contains(last.Reason, "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big, which refused it: free headroom 0.001000 EUR") {
+	if last.Decision != policy.RefusedBudget || !strings.Contains(last.Reason, "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big, which refused it: free headroom less than 0.01 EUR") {
 		t.Errorf("audit row %s %q, want refused_budget naming the premium cap first", last.Decision, last.Reason)
 	}
 }

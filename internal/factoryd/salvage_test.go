@@ -81,11 +81,11 @@ func TestSalvageRefusals(t *testing.T) {
 	store.cases = []Case{quietFlag(), {ID: 4, TaskID: "t-b", Kind: CaseSessionCap, Status: CaseAtHuman}}
 	var refused ErrActRefused
 	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Rung: 2, Res: Resolution{Action: ActSalvage}})
-	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "rung 2 may not pick salvage: the human may") {
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "the factory agent may not pick `salvage`: the human may") {
 		t.Errorf("rung 2's salvage = %v, want the rung's refusal", err)
 	}
 	_, err = r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 4, By: "alice", Rung: 3, Res: Resolution{Action: ActSalvage}})
-	want := "salvage ends a run that neither moves nor answers: the monitor's run_quiet flag, or a live card whose workflow is gone, opens it"
+	want := "`salvage` answers only a run that neither moves nor answers, or one the review keeps failing on the same finding: the monitor's flag of a quiet run or of a finding confirmed twice, or a live card whose run is gone, and the human may take "
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("salvage on a session cap = %v, want %q", err, want)
 	}
@@ -106,12 +106,16 @@ func TestSalvageRefusals(t *testing.T) {
 	}
 }
 
-// The human's stored offers hold the salvage only while the run is gone.
+// salvageOn says the face of a session cap on facts f holds the salvage,
+// among its answers or the others.
+func salvageOn(f CaseFacts) bool {
+	face := FaceOf(Case{Kind: CaseSessionCap}, Facts{CaseFacts: f})
+	return slices.ContainsFunc(slices.Concat(face.Answers, face.Over, face.More), func(a Answer) bool { return a.Action == ActSalvage })
+}
+
+// The human's face holds the salvage only while the run is gone.
 func TestSalvageIsOfferedWhileTheRunIsGone(t *testing.T) {
-	has := func(f CaseFacts) bool {
-		offers, _ := OffersFor(f)
-		return slices.ContainsFunc(offers, func(o AskOffer) bool { return o.Value == ActSalvage })
-	}
+	has := salvageOn
 	if !has(CaseFacts{Kind: CaseSessionCap, RunGone: true}) {
 		t.Error("a gone run's case does not offer salvage")
 	}
@@ -266,7 +270,7 @@ func TestAnAliveReadThatFailsLeavesTheFactsWholeAndOffersNoSalvage(t *testing.T)
 	if slices.Contains(f.Partial, "run") || f.RunGone {
 		t.Fatalf("partial %v, gone %v; want whole facts and no run verdict", f.Partial, f.RunGone)
 	}
-	if offers, _ := OffersFor(f); slices.ContainsFunc(offers, func(o AskOffer) bool { return o.Value == ActSalvage }) {
+	if salvageOn(f) {
 		t.Error("an unread workflow offers the salvage")
 	}
 }

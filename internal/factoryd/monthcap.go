@@ -15,6 +15,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // SourceMonthCap is the source of the human-lane task filed when the month
@@ -90,34 +91,39 @@ func monthTurn(at time.Time) time.Time {
 	return time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
 }
 
-// capTurn is when the cap decision refused resets on its own after at.
-func capTurn(decision string, at time.Time) time.Time {
+// CapTurn is when the cap decision refused resets on its own after at.
+func CapTurn(decision string, at time.Time) time.Time {
 	if decision == policy.RefusedDayCap {
 		return dayTurn(at)
 	}
 	return monthTurn(at)
 }
 
+// ProjectFilePattern matches the path of a project's file in the factory's
+// configuration, as a cap's words name it and the console links it: a
+// project's name holds lower-case letters, digits and hyphens.
+const ProjectFilePattern = `projects/[a-z0-9-]+\.yaml`
+
 // projectFile matches the project file a state names.
-var projectFile = regexp.MustCompile(`projects/[^\s/]+\.yaml`)
+var projectFile = regexp.MustCompile(ProjectFilePattern)
 
 // capWaitReason is the reason of a card by (capGateway, capFloor) refused
 // at the cap decision, which resets at until: its first line is the card's
 // question row (escalationQuestion), with the actions; the second names by
 // and its state.
 func CapWaitReason(decision, by, state string, until time.Time) string {
-	var what, key, file string
+	var what, cap, file string
 	switch decision {
 	case policy.RefusedDayCap:
-		what, key, file = "the day's free headroom", "budget.day_eur", "policy.yaml"
+		what, cap, file = "the money left under the day cap", "the day cap", "policy.yaml"
 	case policy.RefusedMonthCap:
-		what, key, file = "the month's free headroom", "budget.month_eur", "policy.yaml"
+		what, cap, file = "the money left under the month cap", "the month cap", "policy.yaml"
 	default:
-		what, key, file = "the project's free month headroom", "budget.month_eur", cmp.Or(projectFile.FindString(state), "the project's file")
+		what, cap, file = "the money left under the project's month cap", "the project's month cap", cmp.Or(projectFile.FindString(state), "the project's file")
 	}
 	o := capOpenings[decision]
 	return fmt.Sprintf("%s once %s funds a session, at the latest when the UTC %s turns at %s. "+
-		"Raise %s in %s to resume it sooner, or close the card.\n%s: %s", o.resumes, what, o.period, stamp(until), key, file, by, state)
+		"Raise %s in %s to resume it sooner, or close the card.\n%s: %s", o.resumes, what, o.period, stamp(until), cap, file, by, state)
 }
 
 // capWaitDecision is the decision whose resumes opening reason starts
@@ -139,7 +145,7 @@ func capWaitOf(asks []AskAnchor) (reason string, until time.Time) {
 	}
 	last := asks[len(asks)-1]
 	if d := capWaitDecision(last.Body); d != "" {
-		return last.Body, capTurn(d, last.Asked)
+		return last.Body, CapTurn(d, last.Asked)
 	}
 	return "", time.Time{}
 }
@@ -250,7 +256,7 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 				Verdict: VerdictReal, ResolvedBy: "factoryd", Detail: detail}); err != nil {
 				return errors.Join(err, closeErr)
 			}
-			log.Printf("month cap: %s spent %.2f EUR of %.2f EUR, %d percent alert", m.Month, m.EUR, limit, pct)
+			log.Printf("month cap: %s spent %s EUR of %s EUR, %d percent alert", m.Month, textutil.EUR(m.EUR), textutil.EUR(limit), pct)
 		}
 		if pct == 100 && row.TaskID == "" && row.ID != 0 {
 			if err := a.file(ctx, v, m, row.ID); err != nil {
@@ -287,9 +293,9 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 		var msg string
 		switch {
 		case month < m.Month:
-			msg = fmt.Sprintf("The UTC month %s ended: the cap card closes.", month)
+			msg = fmt.Sprintf("The UTC month %s ended, so the cap card closes.", month)
 		case month == m.Month && limit > capEUR:
-			msg = fmt.Sprintf("budget.month_eur is %s in policy version %d: the cap card closes.", strconv.FormatFloat(limit, 'f', -1, 64), v.ID)
+			msg = fmt.Sprintf("The month cap is %s EUR in policy version %d, so the cap card closes.", textutil.EUR(limit), v.ID)
 		default:
 			continue
 		}
@@ -331,7 +337,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		link = fmt.Sprintf("%s/%s/src/commit/%s/k8s/platform/litellm/helmrelease.yaml", a.Forgejo.PublicURL, a.Repo, v.Commit)
 	}
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: v.Commit, Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, monthCapCardQuestion(limit, m.Month, m.EUR, link, m.Refusal), nil, t, "")
+	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, MonthCapCardQuestion(limit, m.Month, m.EUR, link, m.Refusal), nil, t, "")
 	if err != nil {
 		return err
 	}
@@ -344,11 +350,10 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 // for a card that waits for its face. The card records card_created and
 // its ask on tl, decider its poke's decider line ("" for none).
 func fileHumanTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
-	title := askTitle(q)
-	body := questionBody(q, factorydFooter(t.Source))
-	t.Objective = title + "\n\n" + body
+	b := HumanCardText(q, "", false)
+	t.Objective = IssueObjective(b.Title, b.Body)
 	ask := HumanAsk{Q: q, By: t.Source, Asker: t.Source, Via: ViaFactoryd, Decider: decider}
-	t, ref, err := FileHumanCard(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, ask)
+	t, ref, err := FileHumanCard(ctx, store, forgejo, repo, b, append([]string{"human"}, labels...), t, ask)
 	if err != nil {
 		return Task{}, 0, err
 	}
@@ -392,4 +397,10 @@ func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
 	}
 	log.Printf("config: version %d loaded, %d cap waits woken", v.ID, woken)
 	return errors.Join(errs...)
+}
+
+// outerGuardRefused reports whether refusal is LiteLLM's outer guard firing
+// while the ledger eur is below the cap limit.
+func outerGuardRefused(refusal string, eur, limit float64) bool {
+	return strings.HasPrefix(refusal, gateway.ProxyBudgetRefusal) && eur < limit
 }

@@ -93,16 +93,54 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 	}
 }
 
-// refusals is stored as a list, never null, so the offers pass finds a face's
-// offers stored and leaves them.
-func TestAnAskStoresItsRefusalsAsAList(t *testing.T) {
+// The case writer tells the story after the ask stored the face: its lines
+// stand beside the composed numbers on the stored face from then on.
+func TestTheWritersStoryShowsOnTheStoredFace(t *testing.T) {
 	g := newTripRig(t, "success")
-	if _, err := g.r.PgFaceStop(context.Background(), "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	ctx := context.Background()
+	if _, err := g.r.PgFaceStop(ctx, "t1", "the importer cannot read the snapshot", nil); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := g.asks(t)[0].Detail["refusals"].([]any)
-	if !ok || got == nil {
-		t.Fatalf("refusals = %#v, want an empty list", g.asks(t)[0].Detail["refusals"])
+	cases, _ := g.s.OpenCasesOf(ctx, "t1")
+	if len(cases) != 1 || cases[0].Kind != CaseOther {
+		t.Fatalf("cases %+v, want one case of kind other", cases)
+	}
+	happened, left := "The session found that the importer drops the accent.", "A fix of the importer is left."
+	if err := g.s.SetCaseBrief(ctx, cases[0].ID, happened, left); err != nil {
+		t.Fatal(err)
+	}
+	c := caseByID(t, g.s, cases[0].ID)
+	ask, _ := g.r.CaseAsk(ctx, c)
+	if _, stored := ask.Detail["story"]; !stored {
+		t.Fatalf("the ask stored no face: %+v", ask.Detail)
+	}
+	got := CaseFace(c, Task{ID: "t1"}, ask).Story
+	if want := "No session has run on its 3.00 EUR budget yet. " + happened; got.Happened != want {
+		t.Errorf("happened %q, want %q", got.Happened, want)
+	}
+	if want := left + " All of its work is still to do."; got.Left != want {
+		t.Errorf("left %q, want %q", got.Left, want)
+	}
+}
+
+// An ask stores the face's story, so the offers pass finds the face stored
+// and leaves it.
+func TestAnAskStoresItsStorySoTheOffersPassLeavesIt(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.asks(t)[0].Detail["story"].(map[string]any); !ok {
+		t.Fatalf("story = %#v, want the face's story stored", g.asks(t)[0].Detail["story"])
+	}
+	cases, _ := g.s.OpenCasesOf(ctx, "t1")
+	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{{Value: ActNote, Label: "Not now", Effect: "marker"}}}); err != nil {
+		t.Fatal(err)
+	}
+	g.r.StoreMissedOffers(ctx)
+	if got := offerValues(storedOffers(t, g.asks(t)[0].Detail)); !slices.Equal(got, []string{ActNote}) {
+		t.Fatalf("offers after the pass = %v, want the stored face left as it is", got)
 	}
 }
 
@@ -139,8 +177,8 @@ func TestTheRedChecksRefusalNamesTheCardsOwnRemedies(t *testing.T) {
 		factory bool
 		want    string
 	}{
-		{false, "the checks on h2 are red, not green: approve_merge waits for green checks on the head, and the human may return it to the agent with what to change (deny_merge with request_changes) or close it (deny_merge with reject)"},
-		{true, "the checks on h2 are red, not green: approve_merge waits for green checks on the head, and the human may run them again (rerun_checks) or close it with your words (deny_merge)"},
+		{false, "the checks on h2 are red, not green: `approve_merge` waits for green checks on the head, and the human may return it to the agent with what to change (`deny_merge` with `request_changes`) or close it (`deny_merge` with `reject`)"},
+		{true, "the checks on h2 are red, not green: `approve_merge` waits for green checks on the head, and the human may run them again (`rerun_checks`) or close it with your words (`deny_merge` with `reject`)"},
 	} {
 		g := newRungRig(t, "failure")
 		ctx := context.Background()
@@ -178,8 +216,8 @@ func TestActGrantsCriteriaNeverJudged(t *testing.T) {
 	}
 }
 
-// SetCaseOffers writes to the newest ask that names the case.
-func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
+// SetCaseFace writes to the newest ask that names the case.
+func TestSetCaseFaceTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
 	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
@@ -189,7 +227,7 @@ func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	if _, err := g.r.PgFaceStop(ctx, "t1", HealedReason, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.s.SetCaseOffers(ctx, cases[0].ID, []AskOffer{{Value: ActNote, Label: "Note", Effect: "marker"}}, nil); err != nil {
+	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{{Value: ActNote, Label: "Not now", Effect: "marker"}}}); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -201,8 +239,34 @@ func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	}
 }
 
+// SetCaseFace replaces the suggestion the ask held: a face that suggests
+// nothing leaves no stale preselected answer, writer or grounds behind.
+func TestSetCaseFaceDropsTheSuggestionItNoLongerHolds(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+		t.Fatal(err)
+	}
+	cases, _ := g.s.OpenCasesOf(ctx, "t1")
+	if err := g.s.SetQuestionProposal(ctx, "t1", cases[0].ID, "one session fixes it", "the factory agent", map[string]any{"action": ActExtend}); err != nil {
+		t.Fatal(err)
+	}
+	if asks := g.asks(t); len(asks) != 1 || asks[0].Detail["preselected"] == nil {
+		t.Fatalf("asks %+v, want one that preselects an answer", asks)
+	}
+	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{{Value: ActNote, Label: "Not now", Effect: "marker"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"preselected", "recommended_by", "recommendation"} {
+		if v, ok := g.asks(t)[0].Detail[key]; ok {
+			t.Errorf("the ask keeps %s = %v after a face that suggests nothing", key, v)
+		}
+	}
+}
+
 // Free words alone answer no card whose question offers choices: Act refuses
-// them naming the choices, and a choice takes the note beside it.
+// them naming the choices, the card's "Not now" born beside the lone "Done",
+// and a choice takes the note beside it.
 func TestActRefusesFreeWordsOnAChoiceCard(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
@@ -216,7 +280,7 @@ func TestActRefusesFreeWordsOnAChoiceCard(t *testing.T) {
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "h1")
 	_, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: cases[0].ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActNote, Note: "retry it next week"}})
-	if want := "card #51 takes one of its choices, with your note beside it: Done (close)"; err == nil || err.Error() != want {
+	if want := "card #51 takes one of its choices, with your note beside it: Done (close), Not now (park)"; err == nil || err.Error() != want {
 		t.Fatalf("free words = %v, want %q", err, want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: cases[0].ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: AnswerClose, Note: "retry it next week"}}); err != nil {
@@ -238,7 +302,7 @@ func TestThePendingChecksRefusalSaysToWait(t *testing.T) {
 	stub := &boardStub{s: g.s, approval: id}
 	c := g.liveCase(t, CaseMergeApproval)
 	_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge}})
-	const want = "the checks on h2 are pending, not green: approve_merge waits for green checks on the head, and the human may wait for them to settle or close it (deny_merge)"
+	const want = "the checks on h2 are pending, not green: `approve_merge` waits for green checks on the head, and the human may wait for them to settle or close it (`deny_merge` with `reject`)"
 	if err == nil || err.Error() != want {
 		t.Fatalf("approve on pending checks = %v, want %q", err, want)
 	}

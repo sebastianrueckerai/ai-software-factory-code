@@ -217,12 +217,12 @@ func TestQueueOneAtATime(t *testing.T) {
 		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
 			t.Fatal(err)
 		}
-		for _, id := range []string{"a1", "a2", "b1", "c9"} {
+		for id, issue := range map[string]int64{"a1": 101, "a2": 102, "b1": 201, "c9": 109} {
 			repo := "linkshort/linkshort"
 			if id == "b1" {
 				repo = "sf/other"
 			}
-			if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo, Track: "direct"}); err != nil {
+			if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo, Track: "direct", IssueNumber: issue}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -246,19 +246,23 @@ func TestQueueOneAtATime(t *testing.T) {
 		// merging the boards observes the same values one board over
 		// every project's cards would: a2 stays behind a1, b1's own
 		// queue stays empty ahead of it, and c9, never in the queue, holds
-		// no place
-		ahead := map[string]int{}
+		// no place; MergeBehind names the issue of the card that holds the
+		// turn, #101 for a2 and none at the front or outside the queue
+		ahead, behind := map[string]int{}, map[string]int64{}
 		for _, repo := range []string{"linkshort/linkshort", "sf/other"} {
 			board, err := s.BoardTasks(ctx, repo)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, b := range board {
-				ahead[b.ID] = b.QueueAhead
+				ahead[b.ID], behind[b.ID] = b.QueueAhead, b.MergeBehind
 			}
 		}
 		if want := map[string]int{"a1": 0, "a2": 1, "b1": 0, "c9": -1}; fmt.Sprint(ahead) != fmt.Sprint(want) {
 			t.Fatalf("board's queue ahead = %v, want %v", ahead, want)
+		}
+		if want := map[string]int64{"a1": 0, "a2": 101, "b1": 0, "c9": 0}; fmt.Sprint(behind) != fmt.Sprint(want) {
+			t.Fatalf("board's merge behind = %v, want %v", behind, want)
 		}
 		if head, ok, err := s.QueueHead(ctx, "linkshort/linkshort"); head != "a1" || !ok || err != nil {
 			t.Fatalf("QueueHead = %q %v %v", head, ok, err)

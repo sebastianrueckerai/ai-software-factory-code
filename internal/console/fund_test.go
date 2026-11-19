@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -12,16 +11,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// Roadmap 210: a card that outlives its budget has an operator path — an
-// approver's Fund action on the capped card (the same cards the
-// unfunded answer refuses), which raises budget_eur by the stated amount
-// and lands in the event spine as its own row. The answer box stays
-// beside it: Fund posts its note as the answer, so the card resumes at
-// once, now with headroom.
+// Roadmap 210: a card that outlives its budget has a human's path: an
+// approver's "Add money" on the card, which raises budget_eur by the
+// stated amount through Act and lands in the event spine as its own row;
+// on the card's case its press is the answer, so the card resumes at once.
 
 // budgetRefusal is what the floor answers for a card whose remaining
 // budget cannot fund a call (factoryd's Runner.SessionFunded).
-const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
+const budgetRefusal = "the remaining budget cannot fund a call: 0.17 EUR of the 2.00 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 
 // cappedCard is a waiting card of sf/code whose remaining budget of 2 EUR
 // cannot fund a call, with both floors refusing it until a raise.
@@ -42,57 +39,52 @@ func (r *rig) raisedFloor(ctx context.Context, id, raised string) string {
 }
 
 // Card #704 (roadmap 243): its remaining budget cannot fund a session's
-// opening calls, so the answer box stays and the Fund action is offered
-// beside it, and a press is a fund through Act on the card's case, the
-// human's on rung 3 with its note the answer.
+// opening calls, so its opened card offers "Add money", and a press is a
+// fund through Act on the card's case, the human's on rung 3, which posts
+// its answer.
 func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
+	ck, _ := r.loggedIn(t)
 	cappedCard(r, t)
 	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="action" value="fund"`, `name="fund_eur"`, `name="note"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the card's escalation lacks %s", want)
-		}
+	fund := answerForm(t, drawer(t, r, ck, "t-e", "overview"), factoryd.ActFund)
+	if fund.Action != "/tasks/t-e/resolve" || fund.Label != "Add money" || !fund.Values.Has("fund.eur") {
+		t.Fatalf("the card's fund is %+v, want Add money with its amount on the case's resolve", fund)
 	}
-	rec := r.do(htmxPost("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"eur": {"0.5"}, "reason": {"a session cannot start"}}), ck)
+	fund.Values.Set("fund.eur", "0.5")
+	rec := r.do(htmxPost(fund.Action, fund.Values), ck)
 	if !pressRefreshes(rec) {
 		t.Fatalf("fund by htmx = %d (%q): %s", rec.Code, rec.Header().Get("HX-Trigger"), rec.Body)
 	}
 	got, posts := actedOnce(t, r)
-	equal(t, "the fund", []any{got, posts}, []any{fundOf(0.5, "a session cannot start", 3, factoryd.ViaButton), true})
-	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a session cannot start" {
-		t.Fatalf("issue comment = %q, want the note as the answer", got)
+	equal(t, "the fund", []any{got, posts}, []any{fundOf(0.5, "", 3, factoryd.ViaButton), true})
+	if got, want := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "“Add money”: 0.50 EUR from the pool"; got != want {
+		t.Fatalf("the fund posted %q on the issue, want the answer in its words %q", got, want)
 	}
 }
 
 // A fund on a card that waits on no case, as a running one, draws on no
-// case; a bad amount or an empty reason never reaches Act, and no card is
-// 404.
+// case; a bad amount never reaches Act, and no card is 404.
 func TestFundOnARunningCardDrawsOnNoCase(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Repository: "sf/code",
 		IssueNumber: 14, Objective: "Speed up the board.", BudgetEUR: 2, ModelAlias: "factory/small"})
-	if rec := r.do(post("/tasks/t-r/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"go on"}}), ck); rec.Code != http.StatusSeeOther {
+	fund := answerForm(t, drawer(t, r, ck, "t-r", "overview"), factoryd.ActFund)
+	fund.Values.Set("fund.eur", "0.5")
+	if rec := r.do(post(fund.Action, fund.Values), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
 	}
 	got, _ := actedOnce(t, r)
-	if got.TaskID != "t-r" || got.CaseID != 0 || got.Res.Action != factoryd.ActFund {
+	if got.TaskID != "t-r" || got.CaseID != 0 || got.Res.Action != factoryd.ActFund || got.Res.Args["eur"] != 0.5 {
 		t.Fatalf("Act took %+v, want a fund of t-r on no case", got)
 	}
-	if rec := r.do(post("/tasks/t-missing/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"x"}}), ck); rec.Code != http.StatusNotFound {
+	if rec := r.do(post("/tasks/t-missing/resolve", url.Values{"csrf": {s.csrf}, "action": {factoryd.ActFund}, "fund.eur": {"0.5"}}), ck); rec.Code != http.StatusNotFound {
 		t.Fatalf("fund of no card = %d: %s", rec.Code, rec.Body)
 	}
-	for _, form := range []url.Values{
-		{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {" "}},
-		{"csrf": {s.csrf}, "eur": {"half"}, "reason": {"go on"}},
-		{"csrf": {s.csrf}, "eur": {"0"}, "reason": {"go on"}},
-	} {
-		if rec := r.do(post("/tasks/t-r/fund", form), ck); rec.Code != http.StatusBadRequest {
-			t.Fatalf("fund with %v = %d: %s", form, rec.Code, rec.Body)
+	for _, eur := range []string{"half", "0"} {
+		if rec := r.do(post("/tasks/t-r/resolve", url.Values{"csrf": {s.csrf}, "action": {factoryd.ActFund}, "fund.eur": {eur}}), ck); rec.Code != http.StatusBadRequest {
+			t.Fatalf("fund of %q = %d: %s", eur, rec.Code, rec.Body)
 		}
 	}
 	if len(r.acted) != 1 {
@@ -100,44 +92,15 @@ func TestFundOnARunningCardDrawsOnNoCase(t *testing.T) {
 	}
 }
 
-// Fund takes a note and resumes the card in one step (plan A): Act has the
-// note posted on the issue as the human's answer, so a fund is the answer
-// and no second form is owed. A note over the answer bound is refused
-// before Act.
-func TestFundIsTheAnswer(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	cappedCard(r, t)
-	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
-	// the note is bounded on the board as the answer box is
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `name="note" rows="2" maxlength="4000" hx-preserve>`) {
-		t.Errorf("the fund note is not bounded at the answer's 4000 bytes:\n%s", body)
-	}
-	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded; the fix is in store.go"}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
-	}
-	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "funded; the fix is in store.go" {
-		t.Fatalf("issue comment = %q, want the note as the answer", got)
-	}
-
-	r = newRig(t)
-	ck, s = r.loggedIn(t)
-	cappedCard(r, t)
-	rec = r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {strings.Repeat("x", factoryd.MaxAnswer+1)}}), ck)
-	if rec.Code != http.StatusBadRequest || len(r.acted) != 0 || len(r.fg.comments) != 0 {
-		t.Fatalf("fund with a long note = %d, %d Act calls, %d comments; want 400, none, none", rec.Code, len(r.acted), len(r.fg.comments))
-	}
-}
-
-// Forgejo refusing the note answers 502 naming the post: Act stops there,
-// before its case ends and its draw is written.
+// Forgejo refusing the answer's post answers 502 naming the post: Act
+// stops there, before its case ends and its draw is written.
 func TestFundWhoseNoteForgejoRefusesAnswers502(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
+	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
 	r.fg.failAPI = true
-	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded"}}), ck)
+	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {factoryd.ActFund}, "fund.eur": {"0.5"}}), ck)
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "Forgejo refused to post the answer") {
 		t.Fatalf("fund = %d: %s, want 502 naming the post", rec.Code, rec.Body)
 	}
@@ -146,21 +109,19 @@ func TestFundWhoseNoteForgejoRefusesAnswers502(t *testing.T) {
 	}
 }
 
-// An approver's Fund on a merge card is a fund through Act on no case, the
-// merge case aside: it neither answers nor moves the card.
+// A fund on a merge card is a fund through Act on no case, the merge case
+// aside: it neither answers nor moves the card.
 func TestFundOnAMergeCardLeavesItsCaseOpen(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
+	_, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10,
 		BudgetEUR: 2, SpentEUR: 1.99})
 	r.openCases = map[string][]factoryd.Case{"t-m": {{ID: 4, TaskID: "t-m", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Facts: map[string]any{"approval": 6.0}}}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-m", Project: "sf/code",
 		PRNumber: 10, Status: "pending",
 		Spec: json.RawMessage(`{"risk_class":"normal"}`)})
-	rec := r.do(htmxPost("/tasks/t-m/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"eur": {"0.5"}, "reason": {"for the brief"}}), ck)
-	if !pressRefreshes(rec) {
-		t.Fatalf("fund by htmx = %d: %s", rec.Code, rec.Body)
+	if _, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-m", 0.5, "for the brief", 0); err != nil {
+		t.Fatalf("fund: %v", err)
 	}
 	got, _ := actedOnce(t, r)
 	equal(t, "the fund", got, factoryd.ActInput{TaskID: "t-m", By: "sebastian", Via: factoryd.ViaButton, Rung: 3,

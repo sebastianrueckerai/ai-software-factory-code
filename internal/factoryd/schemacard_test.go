@@ -310,8 +310,10 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	if card.BudgetEUR != 2 || card.RiskClass != "standard" {
 		t.Fatalf("card = %+v, want the policy's task default of 2 EUR", card)
 	}
-	if card.Repository != cardUpstream || card.SHA != "0123456789ab" || card.Objective != "Schema copies for 0123456789ab" {
-		t.Fatalf("card = %+v, want it on %s named for this build", card, cardUpstream)
+	if card.Repository != cardUpstream || card.SHA != "0123456789ab" ||
+		!strings.HasPrefix(card.Objective, "Copy the changed schemas to "+cardUpstream+"\n\nThe factory opened pull request [#1]") ||
+		!strings.Contains(card.Objective, "what build 0123456789ab generates") {
+		t.Fatalf("card = %+v, want it on %s naming this build", card, cardUpstream)
 	}
 	if !slices.Equal(wf.started, []string{card.ID}) {
 		t.Fatalf("started %v, want the card's workflow once", wf.started)
@@ -320,7 +322,9 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	if len(prs) != 1 || len(issues) != 1 {
 		t.Fatalf("pull requests %v, issues %v: want the one and its card", prs, issues)
 	}
-	wantBody := "factoryd opened pull request [#1](https://git.example/sf/ai-software-factory-infra/pulls/1) on sf/ai-software-factory-infra: " +
+	wantBody := "Why: A new build changed the configuration schemas, and their copies in sf/ai-software-factory-infra no longer match.\n\n" +
+		"Summary: A pull request that writes the changed schemas into their copies. The policy check runs on it, and its merge makes the copies match the build.\n\n---\n\n" +
+		"The factory opened pull request [#1](https://git.example/sf/ai-software-factory-infra/pulls/1) on sf/ai-software-factory-infra: " +
 		"main's copies of the generated schemas differ from what build 0123456789ab generates.\n\n" +
 		"Files: factory/schema/policy.schema.json\n\n"
 	if !strings.HasPrefix(issues[0].body, wantBody) {
@@ -358,12 +362,12 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 		card.Repository != cardUpstream || card.SHA != "0123456789ab" || card.Author != "factory-agent" || len(wf.started) != 0 {
 		t.Fatalf("card %+v, started %v; want a human card on pull request #1 with no workflow", card, wf.started)
 	}
-	const ask = "Schema copies for 0123456789ab: merge pull request #1 on sf/ai-software-factory-infra?"
+	const ask = "Copy the changed schemas to sf/ai-software-factory-infra"
 	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
-		!strings.HasPrefix(q.Info, "The pull request: https://git.example/sf/ai-software-factory-infra/pulls/1\n\n") ||
-		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
-		t.Fatalf("question %+v, objective %q; want the merge ask, the pull request's link and the close", q, card.Objective)
+		!strings.Contains(q.Info, "The pull request: https://git.example/sf/ai-software-factory-infra/pulls/1\n\n") ||
+		!slices.Equal(q.Choices, []QuestionChoice{{ActApproveMerge, "Merge it"}, {ActDenyMerge, "Reject and close it"}}) {
+		t.Fatalf("question %+v, objective %q; want the merge ask, the pull request's link, the merge and the rejection", q, card.Objective)
 	}
 	issues, _, _, prs := fj.snapshot()
 	if len(prs) != 1 || len(issues) != 0 || !slices.Equal(heldLabels(store, card.ID), []string{"human"}) {
@@ -378,7 +382,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["source"] != SourceSchemaCopy {
 		t.Fatalf("question_asked rows %+v, want the card's one", asked)
 	}
-	if m, ok := pokeOf(asked[0], card); ok {
+	if m, ok := PokeOf(asked[0], card, Task{}); ok {
 		t.Fatalf("the poke = %+v; want none before the face", m)
 	}
 }
@@ -409,7 +413,7 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	if err := c.SyncOnce(ctx, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	const reason = "factoryd closed pull request #1: the copies on main equal the schemas of factoryd 0123456789ab"
+	const reason = "the factory closed pull request #1: the copies on main equal the factory's schemas of build 0123456"
 	if got := store.tasks[card.ID]; got.Status != "closed" {
 		t.Fatalf("card %+v, want closed", got)
 	}
@@ -430,13 +434,13 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	if len(withdrawn) != 1 || withdrawn[0].Actor != FactoryDecider || withdrawn[0].Via != ViaFactoryd || withdrawn[0].Detail["reason"] != reason {
 		t.Fatalf("question_withdrawn %+v, want factoryd's one", withdrawn)
 	}
-	if m, ok := pokeOf(withdrawn[0], store.tasks[card.ID]); ok {
+	if m, ok := PokeOf(withdrawn[0], store.tasks[card.ID], Task{}); ok {
 		t.Fatalf("the poke %+v; want none for a held card", m)
 	}
 	fj.mu.Lock()
 	defer fj.mu.Unlock()
-	if want := []string{"factoryd: " + reason + "; this card ends with it."}; !slices.Equal(factoryCloses(store, card.ID), want) ||
-		len(fj.closedIssues) != 0 || slices.ContainsFunc(fj.comments, func(c string) bool { return strings.Contains(c, "this card ends with it") }) {
+	if want := []string{"The " + strings.TrimPrefix(reason, "the ") + ". This card ends with it."}; !slices.Equal(factoryCloses(store, card.ID), want) ||
+		len(fj.closedIssues) != 0 || slices.ContainsFunc(fj.comments, func(c string) bool { return strings.Contains(c, "This card ends with it") }) {
 		t.Fatalf("factory closes %q, closed issues %v, comments %q; want %q recorded and no issue closed", factoryCloses(store, card.ID), fj.closedIssues, fj.comments, want)
 	}
 }

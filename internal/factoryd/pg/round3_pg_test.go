@@ -61,13 +61,13 @@ func TestAConfirmedCriteriaRequestGetsNoCaseFromTheHeal(t *testing.T) {
 // The factory's month cap card opens a factory_month_cap case, which the
 // door passes to the human at its opening by the kind's exception: no rung
 // step, rung 3 and no wake. Its question's choices answer it through the
-// real Act: "Decided, close" closes the card, "Let it stand" settles its
-// case and the card keeps its wait.
+// real Act: "Noted" closes the card, "Not now" keeps its case open and the
+// card keeps its wait.
 func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 	for _, tc := range []struct {
 		value  string
 		status string
-	}{{AnswerClose, CaseResolved}, {AnswerPark, CaseResolved}} {
+	}{{AnswerClose, CaseResolved}, {AnswerPark, CaseAtHuman}} {
 		t.Run(tc.value, func(t *testing.T) {
 			g := newTripRig(t, "success")
 			ctx := context.Background()
@@ -75,7 +75,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 				t.Fatal(err)
 			}
 			h, _, _ := g.r.PgTask(ctx, "h1")
-			if err := recordAsk(ctx, g.r.PgTimeline(), h, monthCapCardQuestion(100, "2026-11", 100, "", ""), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
+			if err := recordAsk(ctx, g.r.PgTimeline(), h, MonthCapCardQuestion(100, "2026-11", 100, "", ""), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
 				t.Fatal(err)
 			}
 			cases, _ := g.s.OpenCasesOf(ctx, "h1")
@@ -96,9 +96,9 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 	}
 }
 
-// The offers an ask stores are the live facts', not the case's stored ones:
+// The face an ask stores is the live facts', not the case's stored ones:
 // a case whose own facts have gone stale is faced anew on what is true now.
-func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
+func TestAnAskStoresTheFaceOfTheLiveFacts(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
 	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
@@ -115,21 +115,22 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	liveOffers, _ := OffersFor(live)
-	staleOffers, _ := OffersFor(FactsOf(stale))
-	if slices.Equal(offerValues(liveOffers), offerValues(staleOffers)) {
-		t.Fatalf("the live facts and the case's own offer the same %v: the test cannot tell them apart", offerValues(liveOffers))
+	liveFace, staleFace := FaceOf(stale, Facts{CaseFacts: live, Card: task}), FaceOf(stale, Facts{CaseFacts: FactsOf(stale), Card: task})
+	if liveFace.Ask == staleFace.Ask {
+		t.Fatalf("the live facts and the case's own ask the same %q: the test cannot tell them apart", liveFace.Ask)
 	}
 	if _, err := g.r.AskHuman(ctx, task, stale, CapReached, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
-	if got := offerValues(storedOffers(t, asks[len(asks)-1].Detail)); !slices.Equal(got, offerValues(liveOffers)) {
-		t.Fatalf("stored offers %v, want the live facts' %v (the stale case's own would be %v)", got, offerValues(liveOffers), offerValues(staleOffers))
+	d := asks[len(asks)-1].Detail
+	if d["ask"] != liveFace.Ask || !slices.Equal(offerValues(storedOffers(t, d)), offerValues(offersOfAnswers(liveFace.Answers))) {
+		t.Fatalf("stored ask %q with offers %v, want the live facts' %q with %v (the stale case's own would ask %q)",
+			d["ask"], offerValues(storedOffers(t, d)), liveFace.Ask, offerValues(offersOfAnswers(liveFace.Answers)), staleFace.Ask)
 	}
 }
 
-// An error from the answer's own work refreshes the stored offers as a
+// An error from the answer's own work refreshes the stored face as a
 // table refusal does: the face then shows what fits the state.
 func TestAFailedWorkRefreshesTheStoredOffers(t *testing.T) {
 	g := newTripRig(t, "success")
@@ -138,7 +139,7 @@ func TestAFailedWorkRefreshesTheStoredOffers(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
-	if err := g.s.SetCaseOffers(ctx, cases[0].ID, nil, nil); err != nil {
+	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{}}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: cases[0].ID, By: "sebastian", Via: ViaConsole, Rung: 3,

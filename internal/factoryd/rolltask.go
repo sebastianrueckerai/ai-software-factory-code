@@ -826,7 +826,7 @@ func (r *Roller) fluxApplied(ctx context.Context, runs []ActionRun, run ActionRu
 }
 
 // fluxRefusedNote is what a refused suspend notes on the hold's ask.
-const fluxRefusedNote = "factoryd: the factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
+const fluxRefusedNote = "The factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
 
 // noteFluxRefused notes a refused suspend once on the hold's ask, the code
 // repository's newest card of SourceProductionHeld while it waits. Before
@@ -895,17 +895,13 @@ const rollAttemptBound = 3
 const rollRetryBackoff = 10 * time.Minute
 
 // rollAskMarker names the roll ladder's question in the card it files,
-// so StandingQuestion recognises it while it waits. rollRetryLabel is
-// the retry choice's label.
-const (
-	rollAskMarker  = "rolls failed since the last one merged"
-	rollRetryLabel = "Retry the roll"
-)
+// so StandingQuestion recognises it while it waits.
+const rollAskMarker = "rolls failed since the last one merged"
 
 // escalateRolls is the roll ladder's end. A roll request settled failed
 // this poll (each settles once) and the failures since the last merged
-// roll at the bound: the five-part question reaches a person — retry the
-// roll, park it or close it — once per climb, never twice while the
+// roll at the bound: the question reaches a person (try the roll again,
+// not now, or end the card) once per climb, never twice while the
 // question stands. A failure that settles after the card closed climbs
 // again.
 func (r *Roller) escalateRolls(ctx context.Context) {
@@ -927,31 +923,62 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 		}
 		return
 	}
-	var facts []string
+	var failed []RollFailure
 	for _, req := range reqs {
 		title, _, _ := strings.Cut(req.Summary, "\n\n")
 		for _, id := range append(slices.Clone(req.FailedTasks), req.TaskID) {
-			fact := fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", req.RunID, title)
-			if t, ok, err := r.Store.Task(ctx, id); err == nil && ok && t.IssueNumber > 0 {
-				fact += fmt.Sprintf(" (card #%d)", t.IssueNumber)
+			f := RollFailure{Title: title}
+			if t, ok, err := r.Store.Task(ctx, id); err == nil && ok {
+				f.Issue = t.IssueNumber
 			}
-			facts = append(facts, fact)
+			failed = append(failed, f)
 		}
 	}
-	q := HumanQuestion{
-		Ask:            fmt.Sprintf("%d %s: main's newest images are not live. Retry the roll, park it or close it?", failures, rollAskMarker),
-		Why:            "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain.",
-		Info:           fmt.Sprintf("The failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
-		Recommendation: "Retry the roll, after reading the newest failed card's reason",
-		Source:         "the roller",
-		Choices: []QuestionChoice{
-			{Value: AnswerRetryRoll, Label: rollRetryLabel},
-			{Value: AnswerPark, Label: "Park"},
-			{Value: AnswerClose, Label: "Close"},
-		},
-	}
+	q := RollFailedQuestion(failed)
 	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Repo, q, "the roller", Task{Source: SourceRollFailed}); err != nil {
 		log.Printf("roller: escalate the failed rolls: %v", err)
+	}
+}
+
+// RollFailure is one failed roll task of the roll ladder's end: the roll's
+// title, which names its commit, and its card's issue, 0 for none.
+type RollFailure struct {
+	Title string
+	Issue int64
+}
+
+// RollFailedQuestion is the roll ladder's end's question over the failed
+// roll tasks, oldest first: try the roll again, not now, or end the card.
+func RollFailedQuestion(failed []RollFailure) HumanQuestion {
+	facts := make([]string, len(failed))
+	for i, f := range failed {
+		facts[i] = fmt.Sprintf("- %s — roll task failed: the change does not run live", f.Title)
+		if f.Issue > 0 {
+			facts[i] += fmt.Sprintf(" (card #%d)", f.Issue)
+		}
+	}
+	var cards []int64
+	for _, f := range failed {
+		if f.Issue > 0 {
+			cards = append(cards, f.Issue)
+		}
+	}
+	happened := ""
+	if len(cards) > 0 {
+		happened = "The failed roll cards: " + issueRefs(cards) + "."
+	}
+	b := SourceBriefs[SourceRollFailed](BriefFacts{Name: strconv.Itoa(len(failed))})
+	return HumanQuestion{
+		Ask: b.Title,
+		Why: b.Why,
+		Info: "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain." +
+			fmt.Sprintf("\n\nThe failed attempts, oldest first:\n%s\n\nTry the roll again starts one roll task of main's newest green images. Not now leaves this card waiting. End the card ends it, and the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
+		Recommendation: "Try the roll again, after reading the newest failed card's reason",
+		Recommended:    AnswerRetryRoll,
+		Source:         "the roller",
+		Choices:        choices(ActRetry+"/"+variantRoll, KeyPark, ActClose),
+		Happened:       happened,
+		Waits:          "Every card merged since the last roll waits for a green chain.",
 	}
 }
 
@@ -993,7 +1020,7 @@ func RetryRoll(ctx context.Context, store RollRetryStore, forgejo *Forgejo, t Ta
 	}
 	log.Printf("roller: the card's retry: %d failed attempts reset, the roll starts again%s", len(reqs), when)
 	return closeIssueAsFactory(ctx, store, forgejo, t,
-		"factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts"+when+". Closing this issue.")
+		"A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts"+when+". This issue closes.")
 }
 
 // judge decides one run of main whose image jobs are green: a skip, a roll
@@ -1024,7 +1051,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 	} else if held {
 		return false, r.judgedLive(ctx, run, runs, queued,
 			RollRequest{SHA: run.CommitSHA, Repository: r.Repo.String(), RunID: run.ID, State: RollSkipped},
-			"is older than the live pins ("+base[:7]+")", "nothing to roll: older than the live pins ("+base[:7]+")")
+			"is older than the live pins ("+ShortSHA(base)+")", "nothing to roll: older than the live pins ("+ShortSHA(base)+")")
 	}
 	commits, merged, err := r.carried(ctx, base, run.CommitSHA)
 	if err != nil {
@@ -1063,7 +1090,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 	}
 	// the run's build against main's pins, which its own files hold: what a
 	// roll cut at it pins
-	changes, refs, unsigned, err := r.changes(ctx, r.Repo, prBase, run.CommitSHA[:7])
+	changes, refs, unsigned, err := r.changes(ctx, r.Repo, prBase, ShortSHA(run.CommitSHA))
 	if err != nil {
 		return false, err
 	}
@@ -1250,6 +1277,16 @@ func (r *Roller) changes(ctx context.Context, repo Repo, ref, tag string) (chang
 	return changes, refs, unsigned, nil
 }
 
+// RollRefusal are the roll targets unsigned refuses, by name, and the line
+// of each: its name and why.
+func RollRefusal(unsigned map[string]string) (names, lines []string) {
+	names = rollNames(unsigned)
+	for _, name := range names {
+		lines = append(lines, name+": "+unsigned[name])
+	}
+	return names, lines
+}
+
 func rollNames(changes map[string]string) []string {
 	var names []string
 	for _, t := range RollTargets {
@@ -1260,20 +1297,9 @@ func rollNames(changes map[string]string) []string {
 	return names
 }
 
-// summary is the roll's text: its title line, the new references, the
-// commits since the last roll and the pull requests merged among them.
+// summary is the roll's text (RollSummary), the titles of the merged pull
+// requests read from Forgejo.
 func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []MergedPullRequest) (string, error) {
-	var b strings.Builder
-	// an open roll takes a run whose every image is main's: cut at it, the
-	// roll has nothing to roll (nothingToRoll)
-	fmt.Fprintf(&b, "roll %s: %s\n\nMain CI's push run %d published the images of %s. The digests under k8s/ that change:\n",
-		run.CommitSHA[:7], cmp.Or(strings.Join(rollNames(changes), ", "), "no image changed"), run.ID, run.CommitSHA)
-	for _, name := range rollNames(changes) {
-		fmt.Fprintf(&b, "\n- %s: %s", name, refs[name])
-	}
-	if len(changes) == 0 {
-		b.WriteString("\n- none: every image is main's")
-	}
 	// subjects and titles can be an agent's or an issue author's: the
 	// summary goes into the roll issue, comments and commit messages
 	hosts := []string{}
@@ -1283,26 +1309,73 @@ func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[s
 	if u, err := url.Parse(r.Forgejo.PublicURL); err == nil && u.Hostname() != "" {
 		hosts = append(hosts, u.Hostname())
 	}
+	prs := make([]RollPR, len(merged))
+	for i, p := range merged {
+		prs[i].Number = p.Number
+		pr, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, p.Number)
+		if err != nil {
+			log.Printf("roller: pull request #%d: title: %v", p.Number, err)
+			continue
+		}
+		prs[i].Title, prs[i].Read = pr.Title, true
+	}
+	return RollSummary(run, changes, refs, commits, prs, hosts), nil
+}
+
+// RollPR is a merged pull request a roll carries: its number, and its
+// title when Forgejo answered it (Read).
+type RollPR struct {
+	Number int64
+	Title  string
+	Read   bool
+}
+
+// RollSummary is the roll's text: its title line, the new references, the
+// commits since the last roll and the pull requests merged among them,
+// their subjects and titles masked to hosts.
+func RollSummary(run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []RollPR, hosts []string) string {
+	var b strings.Builder
+	// an open roll takes a run whose every image is main's: cut at it, the
+	// roll has nothing to roll (nothingToRoll)
+	// the run's number on the forge is the one a reader can open
+	ran := "Main's push run"
+	if run.Index > 0 {
+		ran = fmt.Sprintf("CI run %d on main", run.Index)
+	}
+	fmt.Fprintf(&b, "roll %s: %s\n\n%s published the images of commit %s. The digests under k8s/ that change:\n",
+		ShortSHA(run.CommitSHA), cmp.Or(strings.Join(rollNames(changes), ", "), "no image changed"), ran, run.CommitSHA)
+	for _, name := range rollNames(changes) {
+		fmt.Fprintf(&b, "\n- %s: %s", name, refs[name])
+	}
+	if len(changes) == 0 {
+		b.WriteString("\n- none: every image is main's")
+	}
 	b.WriteString("\n\nCommits it carries since the last roll:\n")
 	if len(commits) == 0 {
 		b.WriteString("\n- none found")
 	}
 	for _, c := range commits {
-		fmt.Fprintf(&b, "\n- %s %s", c.SHA[:min(7, len(c.SHA))], sanitize.Outbound(c.Subject, hosts))
+		fmt.Fprintf(&b, "\n- %s %s", ShortSHA(c.SHA), sanitize.Outbound(c.Subject, hosts))
 	}
 	if len(merged) > 0 {
 		b.WriteString("\n\nMerged pull requests it carries:\n")
 		for _, p := range merged {
 			fmt.Fprintf(&b, "\n- #%d", p.Number)
-			pr, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, p.Number)
-			if err != nil {
-				log.Printf("roller: pull request #%d: title: %v", p.Number, err)
-				continue
+			if p.Read {
+				fmt.Fprintf(&b, " %s", sanitize.Outbound(p.Title, hosts))
 			}
-			fmt.Fprintf(&b, " %s", sanitize.Outbound(pr.Title, hosts))
 		}
 	}
-	return b.String(), nil
+	return b.String()
+}
+
+// RollBrief is the brief of the roll task of summary, the roll's text
+// (RollSummary), which changes the images of changes: its text is the
+// summary's after the first line, which the roll's commit takes.
+func RollBrief(summary string, changes map[string]string) BriefText {
+	b := SourceBriefs[SourceRoll](BriefFacts{Name: strings.Join(rollNames(changes), ", ")})
+	_, b.Body, _ = strings.Cut(summary, "\n\n")
+	return b
 }
 
 // rollSubject is the first line of a commit RollCommit writes.
@@ -1367,10 +1440,10 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
 		return err
 	}
-	title, body, _ := strings.Cut(req.Summary, "\n\n")
-	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
+	b := RollBrief(req.Summary, req.Changes)
+	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, b, nil, Task{
 		ID: req.TaskID, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0),
-		Objective: req.Summary, SHA: req.SHA, Source: SourceRoll,
+		Objective: IssueObjective(b.Title, b.Body), SHA: req.SHA, Source: SourceRoll,
 	})
 	if err != nil {
 		return errors.Join(err, r.Store.ForgetRollRequest(ctx, req.SHA))
@@ -1378,7 +1451,7 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 	if err := r.Store.SetAgentSummary(ctx, t.ID, textutil.Truncate(req.Summary, maxAgentSummary)); err != nil {
 		log.Printf("roller: task %s: summary: %v", t.ID, err)
 	}
-	log.Printf("roller: %s (run %d): roll task %s, issue #%d: %s", req.SHA, req.RunID, t.ID, ref.Number, title)
+	log.Printf("roller: %s (run %d): roll task %s, issue #%d: %s", req.SHA, req.RunID, t.ID, ref.Number, b.Title)
 	r.rollStatus(ctx, req.SHA, "pending", "roll task "+t.ID+" is taking the change live")
 	return nil
 }
@@ -1388,12 +1461,8 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 // a crash before the card exists leaves a request the next settle
 // forgets. No roll task is filed and nothing is folded.
 func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, unsigned map[string]string) error {
-	var lines []string
-	for _, name := range rollNames(unsigned) {
-		lines = append(lines, name+": "+unsigned[name])
-	}
-	names := rollNames(unsigned)
-	q := rollRefusedQuestion(run.CommitSHA[:7], names, lines, fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index))
+	names, lines := RollRefusal(unsigned)
+	q := RollRefusedQuestion(ShortSHA(run.CommitSHA), names, lines, fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index))
 	title := askTitle(q)
 	req.State, req.TaskID, req.Summary = RollRefused, NewTaskID(), title
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
@@ -1419,7 +1488,7 @@ func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 		return err
 	}
 	title, _, _ := strings.Cut(req.Summary, "\n\n")
-	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, open.PRNumber, "factoryd: folded into this roll:\n\n"+req.Summary); err != nil {
+	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, open.PRNumber, "Folded into this roll:\n\n"+req.Summary); err != nil {
 		log.Printf("roller: task %s: comment the fold of %s: %v", open.ID, req.SHA, err)
 	}
 	if err := r.Workflows.Signal(ctx, open.ID, SignalRollFolded, TaskSignal{Author: r.Forgejo.BotUser, Body: title + " folded in", PR: open.PRNumber}); err != nil {
@@ -1553,7 +1622,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if cut.SHA == "" {
 		return "", r.endMoved(ctx, repo, t, reqs)
 	}
-	why := fmt.Sprintf("main's files changed since this commit, so the roll is cut at %s, before it: the next run that holds main's files rolls its change", short(cut.SHA))
+	why := fmt.Sprintf("main's files changed since this commit, so the roll is cut at %s, before it: the next run that holds main's files rolls its change", ShortSHA(cut.SHA))
 	// pending: a success would end the cards of the older commits the open
 	// roll carries, its run being newer than theirs
 	if err := r.takeBack(ctx, repo, t, dropped, "pending", why); err != nil {
@@ -1646,7 +1715,7 @@ func movedWhy(ctx context.Context, f *Forgejo, repo Repo, files []string) string
 			parts = append(parts, name)
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s %s)", name, short(sha), subject))
+		parts = append(parts, fmt.Sprintf("%s (%s %s)", name, ShortSHA(sha), subject))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1723,7 +1792,7 @@ func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollReq
 	if err != nil {
 		return err
 	}
-	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), short(t.SHA))
+	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), ShortSHA(t.SHA))
 	if err := r.takeBack(ctx, repo, t, reqs, "success", why); err != nil {
 		return err
 	}
@@ -1735,12 +1804,12 @@ func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollReq
 // and marks the requests the cut carries with the roll, so they settle live
 // when the task ends done (versionRollNothing), and answers nothing to roll.
 func (r *Runner) nothingToRoll(ctx context.Context, repo Repo, t Task, cut RollRequest, carried []RollRequest, head string) error {
-	why := fmt.Sprintf("nothing to roll: the images of %s are main's pins, every one", short(cut.SHA))
+	why := fmt.Sprintf("nothing to roll: the images of %s are main's pins, every one", ShortSHA(cut.SHA))
 	if t.PRNumber != 0 {
 		if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
 			return err
 		} else if st.State == "open" {
-			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, "factoryd: closing this roll: "+why); err != nil {
+			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, "Closing this roll: "+why); err != nil {
 				return err
 			}
 			if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
@@ -1755,7 +1824,8 @@ func (r *Runner) nothingToRoll(ctx context.Context, repo Repo, t Task, cut RollR
 	return nothingToRollError("%s", why)
 }
 
-func short(sha string) string {
+// ShortSHA is commit sha as a line names it, its first seven characters.
+func ShortSHA(sha string) string {
 	return sha[:min(len(sha), 7)]
 }
 
@@ -1775,7 +1845,7 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch str
 	if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
 		return "", err
 	} else if st.State == "open" {
-		note := "factoryd: closing this roll: a newer run joined this roll, so a fresh pull request is filed from a branch cut at " + cut.SHA
+		note := "Closing this roll: a newer run joined this roll, so a fresh pull request is filed from a branch cut at " + cut.SHA
 		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, note); err != nil {
 			return "", err
 		}
@@ -1795,7 +1865,7 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch str
 		return "", err
 	}
 	summary := r.untrusted(t, cut.Summary)
-	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", summary, t.IssueNumber, t.ID)
+	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by the factory for card #%d.", summary, t.IssueNumber, t.IssueNumber)
 	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(summary), body)
 	if err != nil {
 		return "", err
@@ -1803,7 +1873,7 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch str
 	if err := r.store.SetTaskPR(ctx, t.ID, fresh.Number); err != nil {
 		return "", err
 	}
-	card := fmt.Sprintf("factoryd: a newer run joined this roll and its branch is cut again at %s; pull request #%d is superseded by #%d: %s",
+	card := fmt.Sprintf("A newer run joined this roll and its branch is cut again at %s. Pull request #%d is superseded by #%d: %s",
 		cut.SHA, t.PRNumber, fresh.Number, fresh.URL)
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, card); err != nil {
 		log.Printf("roller: task %s: name the fresh pull request on the card: %v", t.ID, err)
@@ -2004,4 +2074,8 @@ func (r *Runner) rollRefAt(ctx context.Context, repo Repo, ref string, t RollTar
 		return "", fmt.Errorf("%s at %s: %w", t.File, ref, err)
 	}
 	return pinned, nil
+}
+
+func short(sha string) string {
+	return sha[:min(len(sha), 7)]
 }

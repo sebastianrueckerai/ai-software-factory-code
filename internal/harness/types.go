@@ -14,6 +14,9 @@ import (
 // by the control plane when it picks the sandbox and mints credentials.
 // Policy stays outside the LLM, so a harness cannot ask for capabilities.
 type TaskBrief struct {
+	// Objective is the card's part of the brief: factoryd's
+	// CardBrief.AgentText, which the worker reads from the gateway's GET
+	// /worker/brief and the model review from the store.
 	Objective  string   `json:"objective"`
 	Repository string   `json:"repository"`
 	SHA        string   `json:"sha"`
@@ -34,10 +37,8 @@ type TaskBrief struct {
 	// Report is a report session's guide: what to write in
 	// the last message instead of changing code; "" for a coding session.
 	Report string `json:"report,omitempty"`
-	// Spec is a plan's card's section "The spec and the plan": the plan
-	// issue's text and the plan's summary; CardRole the card's role in
-	// the plan, whose guide the brief ends with. Both "" for any other task.
-	Spec     string `json:"spec,omitempty"`
+	// CardRole is a plan's card's role in the plan, whose guide the brief
+	// ends with; "" for any other task.
 	CardRole string `json:"card_role,omitempty"`
 	// Tools are the gateway's tools the task's classes may call, sorted.
 	Tools []string `json:"tools,omitempty"`
@@ -196,7 +197,10 @@ type SandboxEnv struct {
 // (architecture 6.2).
 type Harness interface {
 	Prepare(ctx context.Context, env SandboxEnv, brief TaskBrief) error
-	Run(ctx context.Context, brief TaskBrief, emit func(Event)) Result
+	// Text is the session's first message, built from brief once: the
+	// worker stores it as what the session read, and Run prompts it.
+	Text(brief TaskBrief) string
+	Run(ctx context.Context, text string, emit func(Event)) Result
 	// Message puts text into the running session as the next user turn:
 	// ErrNotSupported from a harness without such a mode (factoryd then
 	// redirects to a fresh session with the text), ErrNotRunning when no

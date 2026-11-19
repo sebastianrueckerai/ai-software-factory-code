@@ -99,6 +99,7 @@ func (r ctxReader) Read([]byte) (int, error) {
 type fakePod struct {
 	ns, name string
 	phase    string
+	wait     PodWait // what its container waits in
 	// logEnded is a phase Succeeded set by the scripted log's end: that
 	// log ends at once, before the runner has handled its lines, while a
 	// live pod's container runs on as they are read, so PodIP still
@@ -338,17 +339,17 @@ func (k *fakeKube) PodInitFinished(ctx context.Context, namespace, name string) 
 	return at, ok, nil
 }
 
-func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {
+func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, PodWait, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if err, ok := k.statusErr[namespace+"/"+name]; ok {
-		return "", -1, err
+		return "", -1, PodWait{}, err
 	}
 	p, ok := k.pods[namespace+"/"+name]
 	if !ok {
-		return "", -1, ErrNotFound
+		return "", -1, PodWait{}, ErrNotFound
 	}
-	return p.phase, 0, nil
+	return p.phase, 0, p.wait, nil
 }
 
 // PodIP answers loopback for every existing pod that has not ended (as
@@ -1407,22 +1408,26 @@ func TestRunSessionPassesTheOpenTools(t *testing.T) {
 }
 
 // A tool card's session gets no request_tool: it declares tools its own
-// sandbox never gets.
+// sandbox never gets. A card that continues a tool card carries its image
+// and gets none either.
 func TestRunSessionGivesAToolCardNoRequestTool(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}, Source: SourceToolRequest, Track: "direct"}
-	kube := newFakeKube()
-	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	v := runner.cfg.Policy()
-	coder := v.Document.Classes["coder"]
-	coder.Tools = map[string]policy.ToolCap{policy.ToolRequestTool: {}, policy.ToolRequestInfo: {}}
-	v.Document.Classes["coder"] = coder
-	runner.cfg.Policy = func() policy.Version { return v }
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
-		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
-		t.Fatal(err)
-	}
-	if got := podEnv(kube.podAt(0))["TOOLS"]; got != `["request_info"]` {
-		t.Fatalf("TOOLS = %s, want request_info alone", got)
+	for _, tc := range []struct{ source, image string }{{policy.SourceToolRequest, ""}, {SourceSuccessor, "video"}} {
+		task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"},
+			Source: tc.source, ToolImage: tc.image, Track: "direct"}
+		kube := newFakeKube()
+		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		v := runner.cfg.Policy()
+		coder := v.Document.Classes["coder"]
+		coder.Tools = map[string]policy.ToolCap{policy.ToolRequestTool: {}, policy.ToolRequestInfo: {}}
+		v.Document.Classes["coder"] = coder
+		runner.cfg.Policy = func() policy.Version { return v }
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
+			pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+			t.Fatal(err)
+		}
+		if got := podEnv(kube.podAt(0))["TOOLS"]; got != `["request_info"]` {
+			t.Errorf("source %s, image %q: TOOLS = %s, want request_info alone", tc.source, tc.image, got)
+		}
 	}
 }
 
@@ -1445,11 +1450,10 @@ func TestReportSessionGetsNoRequestTool(t *testing.T) {
 
 // A writer's hand-filed card: the last line "Directories: <dir>, <dir>" of
 // its issue body, key in any case, names the directories of its brief's
-// map (the pod's DIRECTORIES), and the map lists them, so the brief's
-// objective (OBJECTIVE) holds no Directories line (roadmap 201); the
-// title is no line of the body. An outside account's or an alert's line,
-// or a card without one, names none, and its objective keeps every line.
-// Every objective leaves out the intake's Size, Budget and Rung lines.
+// map (the pod's DIRECTORIES); the title is no line of the body. An
+// outside account's or an alert's line, or a card without one, names
+// none. The card's brief keeps every line as the card shows it but the
+// intake's Size, Budget and Rung lines.
 func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 	line := "Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy\n"
 	kept := "Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy"
@@ -1458,8 +1462,9 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 		writer            bool
 		want, brief       string
 	}{
-		{line, "webhook", true, `["internal/console","internal/policy"]`, "Fix the drawer\n\nIt breaks."},
-		{"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone", "webhook", true, `["internal/console","internal/gone"]`, "Fix the drawer"},
+		{line, "webhook", true, `["internal/console","internal/policy"]`, kept},
+		{"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone", "webhook", true, `["internal/console","internal/gone"]`,
+			"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone"},
 		{"Fix the drawer\n\nThe directories: internal/x are no line of their own", "webhook", true, "", "Fix the drawer\n\nThe directories: internal/x are no line of their own"},
 		{"Directories: internal/console", "webhook", true, "", "Directories: internal/console"},
 		{"Directories: internal/console\n\nIt breaks.", "webhook", true, "", "Directories: internal/console\n\nIt breaks."},
@@ -1467,13 +1472,13 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 		{line, SourceAlert, true, "", kept},
 		{"fix it", "webhook", true, "", "fix it"},
 		{"Fix the drawer\n\nSize: medium\nDirectories: internal/console\n\nIt breaks.\nBudget: 3 EUR\n\nSize: small\nRung: cheap, a one-line fix", "webhook", true,
-			`["internal/console"]`, "Fix the drawer\n\nIt breaks."},
+			`["internal/console"]`, "Fix the drawer\n\nDirectories: internal/console\n\nIt breaks."},
 		{"Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon", "webhook", false, "", "Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon"},
 	} {
 		task := Task{ID: "t1", Status: "running", Objective: tc.objective, Repository: "sf/repo", SHA: "base", Source: tc.source,
 			Author: "sebastian", AuthorWriter: tc.writer, RequiredCapabilities: []string{"coder"}, Track: "direct"}
 		kube := newFakeKube()
-		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 			pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 			t.Fatal(err)
@@ -1482,8 +1487,12 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 		if got, ok := env["DIRECTORIES"]; got != tc.want || ok != (tc.want != "") {
 			t.Errorf("%q from %s (writer %v): DIRECTORIES = %q (set %v), want %q", tc.objective, tc.source, tc.writer, got, ok, tc.want)
 		}
-		if env["OBJECTIVE"] != tc.brief {
-			t.Errorf("%q from %s (writer %v): OBJECTIVE = %q, want %q", tc.objective, tc.source, tc.writer, env["OBJECTIVE"], tc.brief)
+		b, err := store.CardBrief(context.Background(), "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := b.AgentText(); got != tc.brief {
+			t.Errorf("%q from %s (writer %v): the card's brief = %q, want %q", tc.objective, tc.source, tc.writer, got, tc.brief)
 		}
 	}
 }
@@ -2307,15 +2316,15 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return v }
 	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
-	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
-		", and a session on factory/small needs 0.300000 EUR " +
-		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml), so a fund of 0.60 EUR opens it; a session started now would run out of money before its work is done."
+	why := "the remaining budget cannot fund a call: Raise the budget and answer, or close the card.\n" +
+		"The card spent 1.90 EUR of its 2.00 EUR budget, 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
+		", and a session on factory/small needs 0.30 EUR " +
+		"(the session floor of its model, budget.session_floor_cheap_eur in policy.yaml). A session started now would run out of money before its work is done."
 	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
 		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
 	}
-	if !strings.Contains(res.Reason, "(Fund on the board) and answer") {
-		t.Fatalf("reason = %q, want the Fund action", res.Reason)
+	if !strings.Contains(res.Reason, "Raise the budget and answer") {
+		t.Fatalf("reason = %q, want the raise of the budget", res.Reason)
 	}
 	if got := EscalationSource(res.Reason); got != "budget" {
 		t.Fatalf("escalation source = %q, want budget", got)
@@ -2574,7 +2583,7 @@ func TestSessionResultOfAPodThatNeverStarted(t *testing.T) {
 	if res.Outcome != OutcomeNotStarted || res.Summary != why || !slices.Equal(res.Findings, []string{"previous session ended without a pushed commit: " + why}) || res.StartFailed {
 		t.Fatalf("result %+v, want not_started with %q", res, why)
 	}
-	failed := &startFailure{step: stepImagePull, text: "start failed: image pull: not found"}
+	failed := &startFailure{step: StepImagePull, text: "start failed: image pull: not found"}
 	if res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: failed.Error(), start: failed}); res.Outcome != OutcomeEscalate || !res.StartFailed {
 		t.Fatalf("result %+v, want the start failure's escalation", res)
 	}
@@ -3312,7 +3321,7 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	done := &harness.Result{Success: true, Summary: "no changes to push"}
 	// resumed from the work in progress a stop pushed: that work is the result
 	res := sessionResult(sessionSpec{id: "s1", startRef: "wip", base: "main"}, sessionOutcome{result: done})
-	if res.Outcome != OutcomePushed || res.Commit != "wip" || res.Summary != "no changes to push; the branch already held wip" {
+	if res.Outcome != OutcomePushed || res.Commit != "wip" || res.Summary != "no changes to push. The branch already held wip." {
 		t.Fatalf("resumed session without new changes: %+v", res)
 	}
 	// resumed from an interim commit and changed nothing: the interim push is no finished work
@@ -3473,7 +3482,7 @@ func TestFollowPodLogReadsAheadWithoutLimit(t *testing.T) {
 	pl := followPodLog(ctx, kube, "ns", "p", "t1", nil)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if phase, _, _ := kube.PodStatus(ctx, "ns", "p"); phase == "Succeeded" {
+		if phase, _, _, _ := kube.PodStatus(ctx, "ns", "p"); phase == "Succeeded" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -3901,9 +3910,8 @@ func TestSandboxUIDIsThePodsAndTheImages(t *testing.T) {
 // ANSWERS (7) holds m = 55002 and POSTER_INFO (11) 54998. 21 answers, the
 // newest of 55003 bytes before 19 of 4000 and an old one, leave out the
 // old one by the cap and the oldest of 4000 by the bytes, in one note. A
-// text over its room is cut on a character with "…" (3
-// bytes) to fill the room: OBJECTIVE's is 131061 bytes, so "a" and 65531
-// two-byte "ä" (131063) keep 131057; REPORT_GUIDE's 131058, SPEC's 131066.
+// text over its room is cut on a character with "…" (3 bytes) to fill
+// the room: REPORT_GUIDE's is 131058 bytes.
 func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
 	env := func(task Task, s sessionSpec) map[string]string {
 		pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(task, s)
@@ -3946,13 +3954,8 @@ func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
 		{"DIRECTORIES whole", Task{}, sessionSpec{directories: slices.Concat(full, z(2959))}, "DIRECTORIES", jsonOf(slices.Concat(full, z(2959))), nil},
 		{"DIRECTORIES one byte over", Task{}, sessionSpec{directories: slices.Concat(full, z(2960))}, "DIRECTORIES", jsonOf(full),
 			[]string{"1 of the 33 directories, the last"}},
-		{"OBJECTIVE whole", Task{Objective: a("a", 131061)}, sessionSpec{}, "OBJECTIVE", a("a", 131061), nil},
-		{"OBJECTIVE cut on a character", Task{Objective: "a" + a("ä", 65531)}, sessionSpec{}, "OBJECTIVE", "a" + a("ä", 65528) + "…",
-			[]string{"the issue's text past its first 131057 of 131063 bytes"}},
 		{"REPORT_GUIDE cut", Task{}, sessionSpec{report: a("a", 131059)}, "REPORT_GUIDE", a("a", 131055) + "…",
 			[]string{"the report's guide past its first 131055 of 131059 bytes"}},
-		{"SPEC cut", Task{}, sessionSpec{spec: a("a", 131067), cardRole: "web"}, "SPEC", a("a", 131063) + "…",
-			[]string{"the spec and the plan past its first 131063 of 131067 bytes"}},
 	} {
 		tc.task.ID, tc.s.id = "t1", "s-1"
 		vars := env(tc.task, tc.s)
@@ -4011,7 +4014,7 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: this session continues on the stronger model, big: the cheap rung's 50ms passed without a push.") {
+	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: this session continues on the stronger model, big: the cheap model's cap of 50ms passed without a push.") {
 		t.Fatalf("worker got %q, want the brief and the climb's message", texts)
 	}
 	if store.tasks["t2"].ModelAlias != "big" {

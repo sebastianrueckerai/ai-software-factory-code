@@ -205,7 +205,7 @@ func TestPushRuleFitsOrRefusesTheCardBound(t *testing.T) {
 	if !errors.Is(err, ErrPushOverBound) {
 		t.Fatalf("FitBound = %v, want the over-bound refusal by name", err)
 	}
-	if !strings.Contains(err.Error(), "merge main") {
+	if !strings.Contains(err.Error(), "Merge main") {
 		t.Fatalf("refusal %q does not say to merge main", err)
 	}
 
@@ -1830,7 +1830,7 @@ func TestASessionThatRevertsItsWorkSaysWhatTheBranchHolds(t *testing.T) {
 				t.Fatal(err)
 			}
 			tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
-			if res.Outcome == OutcomePushed || res.Commit != tip || !strings.Contains(res.Summary, "the branch still holds the interim push "+tip) {
+			if res.Outcome == OutcomePushed || res.Commit != tip || !strings.Contains(res.Summary, "The branch still holds the interim push "+tip) {
 				t.Fatalf("result = %+v, want the interim head %s named as what the branch holds, not a pushed outcome", res, tip)
 			}
 		})
@@ -2272,7 +2272,7 @@ func TestSizeTripPushesWorkOverTheBoundInParts(t *testing.T) {
 	}
 	chat.mu.Lock()
 	defer chat.mu.Unlock()
-	want := "the card's diff is 370 changed lines (added plus deleted), over the 300 its size plans; the work is pushed as the branch's work in progress, its files by changed lines: a.txt 350, b.txt 20"
+	want := "the card's diff is 370 changed lines (added plus deleted), over the 300 its size plans, and the work is pushed as the branch's work in progress, its files by changed lines: a.txt 350, b.txt 20"
 	if len(chat.inputs) != 2 || !strings.Contains(chat.inputs[0], want) {
 		t.Fatalf("the ask = %q, want the stop naming the bound, the size and the parts: %q", chat.inputs, want)
 	}
@@ -2605,7 +2605,7 @@ func TestSecondOverBoundEndOpensACase(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
-			"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound; no further successor is filed."
+			"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound. No further successor is filed."
 		if res.Outcome != OutcomeEscalate || res.Reason != want {
 			t.Fatalf("result = %+v, want the escalation %q", res, want)
 		}
@@ -2623,7 +2623,7 @@ func TestSecondOverBoundEndOpensACase(t *testing.T) {
 		}
 		lead := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
 			"350 changed lines against the card's 300-line bound, but the work is not on factory/t2: it was not pushed (the ask of the pod failed: worker answered 500: "
-		tail := "). Cut the work into cards that each fit the bound; no further successor is filed."
+		tail := "). Cut the work into cards that each fit the bound. No further successor is filed."
 		if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, lead) || !strings.HasSuffix(res.Reason, tail) {
 			t.Fatalf("result = %+v, want the escalation %q…%q", res, lead, tail)
 		}
@@ -2640,8 +2640,8 @@ func TestSecondOverBoundEndOpensACase(t *testing.T) {
 // first such session already asks the human to cut the work, before any
 // session cap. The start is an interim commit, as the successor's is.
 func TestNothingNewOnAnOverBoundStartEndsInTheLineageCase(t *testing.T) {
-	summary := "no changes to push; " + ErrPushOverBound.Error() + ": the branch's diff against its merge base is 50 lines over the card's 300-line bound; " +
-		"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	summary := "no changes to push; " + ErrPushOverBound.Error() + ": the branch's diff against its merge base is 50 lines over the card's 300-line bound. " +
+		"Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor"
 	run := func(t *testing.T, objective string) (SessionResult, string) {
 		t.Helper()
 		runner, _, serve := wipRig(t, nil)
@@ -2665,7 +2665,7 @@ func TestNothingNewOnAnOverBoundStartEndsInTheLineageCase(t *testing.T) {
 	}
 	second, head := run(t, successorObjective(t, first.Findings))
 	want := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
-		"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound; no further successor is filed."
+		"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound. No further successor is filed."
 	if second.Outcome != OutcomeEscalate || second.Reason != want {
 		t.Fatalf("the successor's result = %+v, want the escalation %q", second, want)
 	}

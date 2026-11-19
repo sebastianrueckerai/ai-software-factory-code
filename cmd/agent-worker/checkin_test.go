@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,10 +20,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -246,10 +249,12 @@ func TestBriefWait(t *testing.T) {
 }
 
 // readyToStart sets the environment start() reads for a session on a
-// seeded repo.
-func readyToStart(t *testing.T) {
+// seeded repo, its gateway one that answers the card's brief and stores
+// the session's text; it returns that gateway.
+func readyToStart(t *testing.T) *sessionGateway {
 	t.Helper()
 	setRequiredEnv(t)
+	gw := briefGateway(t, http.StatusOK, `{"text":"Do it\n\nWhy: It is due."}`)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	// the seeded repo is its own base; an ambient REPO_SHA from the
 	// harness names a commit it does not carry
@@ -258,6 +263,197 @@ func readyToStart(t *testing.T) {
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+	return gw
+}
+
+// sessionGateway is the texts a session stored at its gateway, and the
+// status the gateway answers the next store.
+type sessionGateway struct {
+	mu     sync.Mutex
+	texts  []string
+	status int
+}
+
+func (g *sessionGateway) stored() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.texts)
+}
+
+// briefGateway is the session's gateway (GATEWAY_URL): GET /worker/brief
+// answers status and body, and POST /worker/session-brief stores the
+// session's text, to the bearer of the session's token file (TOKEN_FILE),
+// 401 to any other.
+func briefGateway(t *testing.T, status int, body string) *sessionGateway {
+	t.Helper()
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte("sa-jwt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gw := &sessionGateway{status: http.StatusNoContent}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Authorization") != "Bearer sa-jwt":
+			http.Error(w, "not the session's token", http.StatusUnauthorized)
+		case r.Method == http.MethodGet && r.URL.Path == "/worker/brief":
+			w.WriteHeader(status)
+			fmt.Fprint(w, body)
+		case r.Method == http.MethodPost && r.URL.Path == "/worker/session-brief":
+			text, _ := io.ReadAll(r.Body)
+			gw.mu.Lock()
+			defer gw.mu.Unlock()
+			gw.texts = append(gw.texts, string(text))
+			if gw.status != http.StatusNoContent {
+				http.Error(w, "the session's brief of t1: factoryd answered 503", gw.status)
+				return
+			}
+			w.WriteHeader(gw.status)
+		default:
+			http.Error(w, "no such route", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("GATEWAY_URL", srv.URL)
+	t.Setenv("TOKEN_FILE", token)
+	return gw
+}
+
+// The session stores the text it gives its first model call at the
+// gateway, on its own token, before its run starts: the card's text, the
+// repository map and the sandbox facts stand in it. A text the gateway
+// cannot store fails the start at the brief step, as a service that may
+// answer later does, and so does a gateway that holds the store past
+// briefWait: no session runs on a text nobody kept.
+func TestStartStoresTheSessionsText(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git binary")
+	}
+	loopbackPort(t)
+	old := checkinWait
+	t.Cleanup(func() { checkinWait = old })
+	checkinWait = 10 * time.Millisecond
+
+	gw := readyToStart(t)
+	t.Setenv("DIRECTORIES", `["docs"]`)
+	t.Setenv("FACTS", "FACTS: session 1 of 3")
+	s, err := start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.closeTelemetry()
+	s.stopMessages()
+	if got := gw.stored(); len(got) != 1 || got[0] != s.text {
+		t.Fatalf("stored %q, want the one text the run prompts, %q", got, s.text)
+	}
+	for _, part := range []string{"Do it\n\nWhy: It is due.", "docs/: not in the repository", "FACTS: session 1 of 3", factoryd.SandboxFacts(nil, nil)} {
+		if !strings.Contains(s.text, part) {
+			t.Errorf("the session's text lacks %q", part)
+		}
+	}
+
+	gw = readyToStart(t)
+	gw.status = http.StatusBadGateway
+	s, err = start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	s.closeTelemetry()
+	s.stopMessages()
+	if res := startFailed(err); res.Step != "brief" || !res.Transient || !strings.Contains(res.Summary, "status 502: the session's brief of t1: factoryd answered 503") {
+		t.Fatalf("start = %+v, want a transient failure at the brief step", res)
+	}
+
+	oldWait := briefWait
+	t.Cleanup(func() { briefWait = oldWait })
+	briefWait = 50 * time.Millisecond
+	readyToStart(t)
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, `{"text":"Do it"}`)
+			return
+		}
+		// the server sees the client leave once the body is read
+		io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hung.Close)
+	t.Setenv("GATEWAY_URL", hung.URL)
+	s, err = start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	s.closeTelemetry()
+	s.stopMessages()
+	if res := startFailed(err); res.Step != "brief" || !res.Transient || !strings.Contains(res.Summary, "context deadline exceeded") {
+		t.Fatalf("start = %+v, want a transient failure at the brief step past its bound", res)
+	}
+}
+
+// The session reads its card's brief from the gateway on its own token:
+// the brief's text stands between the session's own parts, and its title
+// is the commit's subject. A brief the gateway cannot give fails the
+// start at the brief step, as a service that may answer later does.
+func TestStartReadsTheCardsBriefFromTheGateway(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git binary")
+	}
+	loopbackPort(t)
+	old := checkinWait
+	t.Cleanup(func() { checkinWait = old })
+	checkinWait = 10 * time.Millisecond
+
+	readyToStart(t)
+	s, err := start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.closeTelemetry()
+	s.stopMessages()
+	if s.brief.Objective != "Do it\n\nWhy: It is due." || s.env.title != "Do it" {
+		t.Fatalf("brief %q, title %q, want the gateway's text and its first line", s.brief.Objective, s.env.title)
+	}
+
+	readyToStart(t)
+	briefGateway(t, http.StatusBadGateway, "the card's brief of t1: factoryd answered 503")
+	s, err = start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	s.closeTelemetry()
+	s.stopMessages()
+	if res := startFailed(err); res.Step != "brief" || !res.Transient || !strings.Contains(res.Summary, "status 502: the card's brief of t1: factoryd answered 503") {
+		t.Fatalf("start = %+v, want a transient failure at the brief step", res)
+	}
+}
+
+// A gateway that holds the brief's read past briefWait fails the start at
+// the brief step, as a service that may answer later does: the session
+// does not hang on it.
+func TestStartBoundsTheBriefsRead(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git binary")
+	}
+	loopbackPort(t)
+	old := briefWait
+	t.Cleanup(func() { briefWait = old })
+	briefWait = 50 * time.Millisecond
+	readyToStart(t)
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(hung.Close)
+	t.Setenv("GATEWAY_URL", hung.URL)
+	s, err := start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	s.closeTelemetry()
+	s.stopMessages()
+	if res := startFailed(err); res.Step != "brief" || !res.Transient || !strings.Contains(res.Summary, "context deadline exceeded") {
+		t.Fatalf("start = %+v, want a transient failure at the brief step past its bound", res)
+	}
+}
+
+// A card's brief past the bound is cut on a character, and the brief says
+// what the bound left out among factoryd's notes.
+func TestFitCardCutsTheBriefPastItsBound(t *testing.T) {
+	if card, left := fitCard("short", []string{"a note"}); card != "short" || !slices.Equal(left, []string{"a note"}) {
+		t.Fatalf("fitCard(short) = %q, %q", card, left)
+	}
+	long := "a" + strings.Repeat("ä", maxCard/2)
+	card, left := fitCard(long, nil)
+	if want := "a" + strings.Repeat("ä", maxCard/2-2) + "…"; card != want {
+		t.Fatalf("fitCard cut %d bytes, want %d", len(card), len(want))
+	}
+	if want := []string{fmt.Sprintf("the card's brief past its first %d of %d bytes", maxCard-3, maxCard+1)}; !slices.Equal(left, want) {
+		t.Fatalf("left out %q, want %q", left, want)
 	}
 }
 

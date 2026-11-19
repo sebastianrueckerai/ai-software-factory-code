@@ -104,13 +104,6 @@ func (t *turn) research(question string) (string, string, error) {
 	}
 }
 
-// researchRun is the research tool's run, set in init: the loop's tool
-// lookup reaches the tools table the entry itself lives in, a cycle Go
-// refuses at package init.
-var researchRun func(t *turn, in toolInput) (string, *inverse, error)
-
-func init() { researchRun = (*turn).researchTool }
-
 // researchTool is the chat's research tool: the question runs through
 // the bounded loop, the report answers, and the trail rides the turn to
 // the row beside the thread.

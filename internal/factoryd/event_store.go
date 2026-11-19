@@ -38,7 +38,6 @@ const (
 	EventResourceReleased     = "resource_released"
 	EventProjectFiled         = "project_filed"
 	EventProjectMerged        = "project_merged"
-	EventSummarySet           = "summary_set"
 	EventAccentSet            = "accent_set"
 	EventCardCommented        = "card_commented"
 	EventCommentDeleted       = "comment_deleted"
@@ -343,16 +342,42 @@ func (s *PGStore) ProjectEvents(ctx context.Context, repository string, after in
 		repository, after, limit)
 }
 
-// FiledFor is the actor of the console's card_filed row of repository's
-// issue: the member a chat filing was made for.
-func (s *PGStore) FiledFor(ctx context.Context, repository string, issue int64) (string, bool, error) {
-	var actor string
-	err := s.db.QueryRowContext(ctx, `SELECT actor FROM events WHERE repository = $1 AND issue_number = $2 AND kind = $3 ORDER BY id LIMIT 1`,
-		repository, issue, EventCardFiled).Scan(&actor)
+// Filing is the console's card_filed row of an issue as the intake reads
+// it: By, the human a chat filing was made for, Unchecked, a brief that
+// filed on its writer's last try with its refusals standing, and Chat,
+// the project agent wrote the card's text, whoever confirmed it.
+type Filing struct {
+	By        string
+	Unchecked bool
+	Chat      bool
+}
+
+// FiledFor is the console's card_filed row of repository's issue.
+func (s *PGStore) FiledFor(ctx context.Context, repository string, issue int64) (Filing, bool, error) {
+	var f Filing
+	err := s.db.QueryRowContext(ctx, `SELECT actor, COALESCE((detail->>'brief_unchecked')::boolean, false), via = $4 FROM events
+		WHERE repository = $1 AND issue_number = $2 AND kind = $3 ORDER BY id LIMIT 1`,
+		repository, issue, EventCardFiled, ViaChat).Scan(&f.By, &f.Unchecked, &f.Chat)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return Filing{}, false, nil
 	}
-	return actor, err == nil, err
+	return f, err == nil, err
+}
+
+// MarkChatFiled gives the card of repository's issue its chat filing's
+// marks, when the issue's card_filed row is a chat filing's: the card is
+// the project agent's, unchecked as the row says, and its why line the
+// filing's own, why, in place of the one a human's issue takes from its
+// text. The console records its row after it posts the issue, so the
+// intake may make the card first; both call it once the card or the row
+// is theirs, and whichever comes second marks the card.
+func (s *PGStore) MarkChatFiled(ctx context.Context, repository string, issue int64, why string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET chat_filed = true, brief_unchecked = f.unchecked, why = $5
+		FROM (SELECT via, COALESCE((detail->>'brief_unchecked')::boolean, false) AS unchecked FROM events
+			WHERE repository = $1 AND issue_number = $2 AND kind = $3 ORDER BY id LIMIT 1) f
+		WHERE f.via = $4 AND tasks.repository = $1 AND tasks.issue_number = $2 AND NOT tasks.chat_filed`,
+		repository, issue, EventCardFiled, ViaChat, why)
+	return err
 }
 
 func (s *PGStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event, error) {

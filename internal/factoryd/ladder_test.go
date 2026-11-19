@@ -43,7 +43,7 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 	ctx := context.Background()
 	r, store, fj := outsidePlanRig(t)
 	rung1Off(r)
-	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
+	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 
 	n.Status = "failed"
 	store.tasks[again] = n
-	second, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: again, Issue: n.IssueNumber, Status: "failed"})}, tripAttempt{N: 1})
+	second, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: again, Issue: n.IssueNumber, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 }
 
 // A trip's state key: the head for a stop at it, the dependency's id for a
-// dependency's, else the problem's words.
+// dependency's, else the first line of the stop's reason.
 func TestTripKeyByKind(t *testing.T) {
 	f := CaseFacts{Dependencies: []DepFact{{TaskID: "t-x", Status: "running"}, {TaskID: "t-c", Status: "closed"}, {TaskID: "t-r", Status: "failed", Replaced: "t-r2"},
 		{TaskID: "t-a", Status: "failed"}}}
@@ -172,6 +172,96 @@ func TestTripKeyByKind(t *testing.T) {
 		if got := tripKey(tc.kind, "the stop", tc.head, f); got != tc.want {
 			t.Errorf("tripKey(%s, %q) = %q, want %q", tc.kind, tc.head, got, tc.want)
 		}
+	}
+}
+
+// A trip names the case's own question as its problem: the agent's
+// question tripped in the card's last session is the question, though the
+// human's face is the session cap's until a session can run.
+func TestATripNamesTheQuestionNotItsCap(t *testing.T) {
+	card := Task{ID: "t1", Kind: "agent", IssueNumber: 4}
+	f := CaseFacts{Attempts: 3, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.3}
+	c, err := TripCase(card, f, TripInput{TaskID: card.ID, Reason: AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite"}, func(s string) string { return s })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != CaseAgentEscalate || c.Problem != "Which store keeps the snapshots?" {
+		t.Fatalf("the trip's case is %s with the problem %q, want the agent's question", c.Kind, c.Problem)
+	}
+	if face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card}); face.Ask != "The card used all 3 sessions. How should it go on?" {
+		t.Fatalf("the face asks %q, want the session cap's ask", face.Ask)
+	}
+}
+
+// A trip's key is the stop's, never its copy: a card out of money on one
+// head keys one case whether or not review findings change its ask, and
+// another head keys another.
+func TestATripKeyOutlivesACopyChange(t *testing.T) {
+	card := Task{ID: "t1", Kind: "agent", IssueNumber: 4}
+	trip := func(head string, f CaseFacts) Case {
+		t.Helper()
+		f.Head, f.BudgetEUR, f.SpentEUR, f.FloorEUR, f.CeilingEUR = head, 4, 4, 2, 18
+		c, err := TripCase(card, f, TripInput{TaskID: card.ID, Head: head, Reason: BudgetRefused + ": the card is out of money"}, func(s string) string { return s })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	before := trip("h1", CaseFacts{})
+	id := FindingID("secrets at rig_test.go:71")
+	after := trip("h1", CaseFacts{Findings: []string{id}, ReviewFindings: []string{id}, FindingTexts: map[string]string{id: "secrets at rig_test.go:71"}})
+	if before.Kind != CaseBudgetFloor || after.StateKey != before.StateKey || after.Problem == before.Problem {
+		t.Fatalf("before %q keyed %q, after %q keyed %q; want the same key and another ask", before.Problem, before.StateKey, after.Problem, after.StateKey)
+	}
+	if other := trip("h2", CaseFacts{}); other.StateKey == before.StateKey {
+		t.Fatalf("another head keys %q, the same case", other.StateKey)
+	}
+}
+
+// A stop the review keeps refusing offers its exits: the deadlock and a
+// gate stop whose review raised concerns each offer more sessions, the
+// overrule, a fresh card and the end; a plain gate stop offers a check of
+// the work instead.
+func TestAReviewDeadlockOffersTheExits(t *testing.T) {
+	f := CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeCapS: 3600, BudgetEUR: 5, SpentEUR: 1, LeftEUR: 4, FloorEUR: 0.3, CeilingEUR: 7, PROpen: true, Head: "c1", Checks: "green",
+		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
+	keys := func(c Case) []string {
+		var out []string
+		for _, a := range FaceOf(c, Facts{CaseFacts: f, Card: Task{ID: "t1", IssueNumber: 3}}).Answers {
+			out = append(out, a.Key())
+		}
+		return out
+	}
+	exits := []string{ActExtend, ActReverify + "/" + variantOverrule, ActSuccessor, ActClose}
+	for name, c := range map[string]Case{
+		"deadlock": {Kind: CaseFindingsRepeated},
+		"concerns": {Kind: CaseGateStop, Facts: map[string]any{"reason": "check-in: gate: the checks need a hand\n- " + reviewConcernsMark}},
+	} {
+		if got := keys(c); !slices.Equal(got, exits) {
+			t.Errorf("%s: answers %v, want the exits %v", name, got, exits)
+		}
+	}
+	if got, want := keys(Case{Kind: CaseGateStop, Facts: map[string]any{"reason": "check-in: gate: the checks need a hand"}}), []string{ActReverify, ActContinue, ActReplan, ActClose}; !slices.Equal(got, want) {
+		t.Errorf("a plain gate stop: answers %v, want %v", got, want)
+	}
+}
+
+// A moment's hand_up is a hand-up, not a recommendation: a face whose
+// newest rung step is one preselects nothing, while a rung's action it
+// handed up is the face's suggestion by that rung.
+func TestAMomentsHandUpRecommendsNothing(t *testing.T) {
+	c := Case{ID: 1, Kind: CaseOther, Problem: "p"}
+	same := func(s string) string { return s }
+	moment := []CaseStep{
+		{Rung: 2, Outcome: StepHandedUp, Decision: ActClose, Grounds: "g"},
+		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict"},
+	}
+	if row := FaceRow(c, Task{ID: "t1"}, CaseFacts{}, "", HandedUpBy(moment, 1, ""), same, same); row["preselected"] != nil || row["recommended_by"] != nil || row["recommendation"] != nil {
+		t.Fatalf("a moment's hand-up preselects %v by %v (%v), want no suggestion", row["preselected"], row["recommended_by"], row["recommendation"])
+	}
+	rung := FaceRow(c, Task{ID: "t1"}, CaseFacts{}, "", HandedUpBy(moment[:1], 1, ""), same, same)
+	if p, _ := rung["preselected"].(map[string]any); p["action"] != ActClose || rung["recommended_by"] != "the factory agent" || rung["recommendation"] != "g" {
+		t.Fatalf("a rung's hand-up = %v by %v (%v), want close by the factory agent", rung["preselected"], rung["recommended_by"], rung["recommendation"])
 	}
 }
 
@@ -197,7 +287,7 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
 	rung1Off(r)
 	fj.failCall = "PATCH issues/5"
-	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
+	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +305,7 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 func TestOpenTripRetriedAfterRungZeroCarriesItsResolution(t *testing.T) {
 	ctx := context.Background()
 	r, store, _ := outsidePlanRig(t)
-	in := TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}
+	in := TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}
 	first, err := r.OpenTrip(ctx, in, tripAttempt{ID: "run/7", N: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -292,77 +382,66 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 	})
 }
 
-// The lead of a money or cap ask names the review and audit findings
-// standing on the head, in the order the gates raised them, and stands
-// before no such finding: not for another kind, not for findings the
-// checks alone raised, and cut past the fifth finding.
-func TestFindingsLead(t *testing.T) {
-	f := CaseFacts{Head: "h2", Findings: []string{"r1", "a1", "c1"},
-		FindingTexts: map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
-		FindingOrder: []string{"c1", "r1", "a1"}, ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
-	if got := FindingsLead(CaseSessionCap, f); got != `The review or the audit left 2 findings unresolved on the head h2: "the review's finding"; "the audit's finding".` {
-		t.Fatalf("lead = %q", got)
+// A cap's ask counts the review's and the audit's findings standing on
+// the head, names the gate that raised them all, never names one, and
+// counts no finding the checks alone raised.
+func TestCapAskCountsTheReviewAndAuditFindings(t *testing.T) {
+	f := CaseFacts{Kind: CaseSessionCap, SessionCap: 3, Attempts: 3, Head: "h2", Findings: []string{"r1", "a1", "c1"},
+		FindingTexts:   map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
+		ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
+	c := Case{Kind: CaseSessionCap}
+	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions with 2 findings open. How should it go on?" {
+		t.Fatalf("ask = %q", got)
 	}
-	if got := FindingsLead(CaseGateStop, f); got != "" {
-		t.Fatalf("a gate stop leads %q, want nothing", got)
+	audit := f
+	audit.ReviewFindings, audit.AuditFindings = nil, []string{"r1", "a1"}
+	if got := FaceOf(c, Facts{CaseFacts: audit}).Ask; got != "The card used all 3 sessions with 2 audit findings open. How should it go on?" {
+		t.Fatalf("the audit's findings alone: ask = %q", got)
 	}
 	f.ReviewFindings, f.AuditFindings = nil, nil
-	if got := FindingsLead(CaseBudgetFloor, f); got != "" {
-		t.Fatalf("the checks' findings alone lead %q, want nothing", got)
-	}
-	f.ReviewFindings, f.AuditFindings = []string{"r1"}, []string{"a1"}
-	f.FindingOrder = nil
-	f.Findings = []string{"r1", "r2", "r3", "r4", "r5", "r6", "a1"}
-	for id, text := range map[string]string{"r2": "two", "r3": "three", "r4": "four", "r5": "five", "r6": "six"} {
-		f.FindingTexts[id] = text
-		f.ReviewFindings = append(f.ReviewFindings, id)
-	}
-	if got := FindingsLead(CaseAgentTimeCap, f); !strings.HasSuffix(got, `"five"; and 2 more.`) || !strings.HasPrefix(got, "The review or the audit left 7 findings unresolved on the head h2:") {
-		t.Fatalf("lead = %q, want the findings cut past the fifth", got)
+	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions. How should it go on?" {
+		t.Fatalf("the checks' findings alone: ask = %q", got)
 	}
 }
 
-// A stop at the head, or a repeat of the findings, leads with a merge
-// conflict standing on the head; a human card's ask and an agent's
-// question do not, nor does a head with no conflict.
-func TestConflictLead(t *testing.T) {
-	f := CaseFacts{Head: "h2", MergeConflict: "the branch conflicts with its base"}
-	want := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
-		"Only a session that merges main into the branch clears it, and no gate rerun does."
-	for _, kind := range []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseGateStop, CaseFindingsRepeated} {
-		if got := conflictLead(kind, f); got != want {
-			t.Errorf("%s leads %q, want %q", kind, got, want)
-		}
-	}
-	for _, kind := range []CaseKind{CaseHumanCard, CaseAgentEscalate} {
-		if got := conflictLead(kind, f); got != "" {
-			t.Errorf("%s leads %q, want nothing", kind, got)
-		}
-	}
-	if got := conflictLead(CaseSessionCap, CaseFacts{Head: "h2"}); got != "" {
-		t.Errorf("no conflict leads %q, want nothing", got)
-	}
-}
-
-// A session cap on a head that no longer merges into main and holds an
-// audit finding leads with the conflict, then the finding, then the cap's
-// own ask; the case stores that lead for the human's ask.
-func TestTripCaseLeadsWithTheConflictThenTheFindings(t *testing.T) {
-	g := newFactsRig(t)
-	f := CaseFacts{Head: "h2", PR: 9, PROpen: true, MergeConflict: "the branch conflicts with its base",
+// A stop at the head on a pull request that no longer merges into main
+// says so in what is left, after its open findings; a head with no
+// conflict says nothing of it.
+func TestAStopOnAConflictedHeadSaysWhatFixesIt(t *testing.T) {
+	f := CaseFacts{Kind: CaseSessionCap, Head: "h2", PR: 9, PROpen: true, Attempts: 3, SessionCap: 3, MergeConflict: "the branch conflicts with its base",
 		Findings: []string{"a1"}, AuditFindings: []string{"a1"}, FindingTexts: map[string]string{"a1": "the migration runs outside its transaction"}}
-	c, _, err := g.r.tripCase(context.Background(), g.store.tasks["t1"], f, TripInput{TaskID: "t1", Reason: CapReached + "\nlast: the pull request no longer merges into main"})
-	if err != nil {
-		t.Fatal(err)
+	c := Case{Kind: CaseSessionCap}
+	want := "1 finding is open. The pull request no longer merges into main. Only a session that merges main into its branch fixes that."
+	if got := FaceOf(c, Facts{CaseFacts: f}).Story.Left; got != want {
+		t.Errorf("left = %q, want %q", got, want)
 	}
-	lead := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
-		"Only a session that merges main into the branch clears it, and no gate rerun does. " +
-		`The review or the audit left one finding unresolved on the head h2: "the migration runs outside its transaction".`
-	if c.Kind != CaseSessionCap || !strings.HasPrefix(c.Problem, lead+" ") || len(c.Problem) == len(lead)+1 {
-		t.Fatalf("case %s problem = %q, want the session cap's ask led by %q", c.Kind, c.Problem, lead)
+	f.MergeConflict = ""
+	if got := FaceOf(c, Facts{CaseFacts: f}).Story.Left; got != "1 finding is open." {
+		t.Errorf("with no conflict, left = %q, want the finding alone", got)
 	}
-	if got := c.Facts["ask_lead"]; got != lead {
-		t.Fatalf("ask_lead = %v, want %q", got, lead)
+}
+
+// A budget floor after a session, on a card whose branch was read and
+// holds no work, says the work is lost and the next session starts again
+// from main. A branch with work on it, a branch never read (an older
+// stored case) and a card that ran no session lose nothing.
+func TestABudgetFloorSaysWhenTheWorkIsLost(t *testing.T) {
+	const lost = "The last session's work was not pushed and is lost. The next session starts again from main."
+	facts := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5, SpentEUR: 4.83, LeftEUR: 0.17, FloorEUR: 0.3, Attempts: 2, BranchRead: true}
+	c := Case{Kind: CaseBudgetFloor}
+	if left := FaceOf(c, Facts{CaseFacts: facts}).Story.Left; left != lost {
+		t.Errorf("left = %q, want %q", left, lost)
+	}
+	for name, change := range map[string]func(f *CaseFacts){
+		"a branch at c9":  func(f *CaseFacts) { f.BranchHead = "c9" },
+		"a branch unread": func(f *CaseFacts) { f.BranchRead = false },
+		"no session ran":  func(f *CaseFacts) { f.Attempts = 0 },
+	} {
+		f := facts
+		change(&f)
+		if left := FaceOf(c, Facts{CaseFacts: f}).Story.Left; strings.Contains(left, "is lost") {
+			t.Errorf("%s: left = %q, want nothing lost", name, left)
+		}
 	}
 }
 
@@ -440,11 +519,11 @@ func TestTheKindTableHoldsEveryKind(t *testing.T) {
 }
 
 // The door passes a case to the human when a rung 1 or rung 2 step stands
-// on it, when the kind table names its kind an exception, or when its
-// problem ends with a mark that says no rung could judge it, as notJudged
-// appends it; else it refuses, naming the case, its kind and the action that
+// on it, when the kind table names its kind an exception, or when rung 0's
+// step leads with a mark that says no rung could judge it, as notJudged
+// writes it; else it refuses, naming the case, its kind and the action that
 // fits. A mark inside other words, as an agent's own reason may carry, or
-// only its start, passes nothing.
+// only its start, passes nothing, and neither does a mark on the problem.
 func TestTheDoorPassesOnlyAClimbedExceptedOrUnjudgedCase(t *testing.T) {
 	rung0Only := []CaseStep{{Rung: 0, Actor: FactoryDecider, Outcome: StepHandedUp}}
 	handedUp := append(slices.Clone(rung0Only), CaseStep{Rung: 2, Actor: ChatUser, Outcome: StepHandedUp})
@@ -452,6 +531,9 @@ func TestTheDoorPassesOnlyAClimbedExceptedOrUnjudgedCase(t *testing.T) {
 	faced := append(slices.Clone(rung0Only), CaseStep{Rung: 3, Actor: FactoryDecider})
 	const refused = "case 5 (other) has no rung 1 or rung 2 step and no exception: the case climbs first"
 	other := func(problem string) Case { return Case{ID: 5, Kind: CaseOther, Problem: problem} }
+	marked := func(found string) []CaseStep {
+		return []CaseStep{{Rung: 0, Actor: FactoryDecider, Outcome: StepHandedUp, Found: found}}
+	}
 	for _, tc := range []struct {
 		name  string
 		c     Case
@@ -464,11 +546,12 @@ func TestTheDoorPassesOnlyAClimbedExceptedOrUnjudgedCase(t *testing.T) {
 		{"rung 1's hand-up", other("Which file?"), checkin, ""},
 		{"the judgment budget with no step", Case{ID: 6, Kind: CaseJudgmentBudget, Problem: "The judgment budget is spent: raise it?"}, nil, ""},
 		{"the factory's month cap with no step", Case{ID: 7, Kind: CaseFactoryMonthCap, Problem: "The month cap is reached: raise it?"}, nil, ""},
-		{"the provider refused", other("Which file? (not judged: the model provider refused)"), rung0Only, ""},
-		{"the judgment budget spent", other("Which file? (not judged, judgment budget spent)"), rung0Only, ""},
-		{"the judgment budget unreadable", other("Which file? (not judged, judgment budget unreadable)"), rung0Only, ""},
-		{"a mark inside other words", other("The agent asks: (not judged: the model provider refused) which file?"), rung0Only, refused},
-		{"a mark's start alone", other("Which file? (not judged"), rung0Only, refused},
+		{"the provider refused", other("Which file?"), marked("not judged: the model provider refused: the model refused the call (400)"), ""},
+		{"the judgment budget spent", other("Which file?"), marked("not judged, judgment budget spent: the chat task t-chat has 0.00 of 10.00 EUR left"), ""},
+		{"the judgment budget unreadable", other("Which file?"), marked("not judged, judgment budget unreadable: repository sf/r names no project"), ""},
+		{"a mark inside other words", other("Which file?"), marked("The agent asks: not judged: the model provider refused"), refused},
+		{"a mark's start alone", other("Which file?"), marked("not judged"), refused},
+		{"a mark on the problem", other("Which file? (not judged: the model provider refused)"), rung0Only, refused},
 	} {
 		got := ""
 		if err := doorRefusal(tc.c, climbed(tc.steps)); err != nil {

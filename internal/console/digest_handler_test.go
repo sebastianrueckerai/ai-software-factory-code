@@ -6,33 +6,42 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // The fold of a card's life answers a writer of the card's project with
-// the card's digest and then each open case under its kind, with its
-// steps in plain words, oldest first, and refuses anyone else with 403.
+// the card's digest as a human reads it, a line per step with a count for
+// the finding ids and a writer's words apart, then each open case under
+// its ask, with who weighed it and what came of it in plain words, oldest
+// first, and refuses anyone else with 404.
 func TestCardLifeFoldReadsTheDigestAndTheOpenCases(t *testing.T) {
 	r := newRig(t)
 	members(r)
+	at := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	r.c.cfg.CardDigest = func(context.Context, string) (factoryd.CardDigest, error) {
+		return factoryd.CardDigest{Steps: []factoryd.DigestStep{
+			{N: 1, At: at, Kind: "filed", Actor: factoryd.SourceWebhook, Outcome: "direct card", Count: 1},
+			{N: 2, At: at.Add(time.Hour), Kind: "review", Outcome: "concerns, findings 4285c299662c d095c64ba7a3", Findings: []string{"4285c299662c", "d095c64ba7a3"}, Count: 1},
+			{N: 3, At: at.Add(2 * time.Hour), Kind: "handover", Outcome: "Fix the vet finding first.", Count: 1},
+		}}, nil
+	}
 	r.openCases = map[string][]factoryd.Case{"t-c": {
 		{ID: 4, TaskID: "t-c", Kind: factoryd.CaseGateStop},
 		{ID: 9, TaskID: "t-c", Kind: factoryd.CaseSessionCap},
 		{ID: 11, TaskID: "t-c", Kind: factoryd.CaseBudgetFloor},
 	}}
 	r.caseSteps = map[int64][]factoryd.CaseStep{
-		4: {{Rung: 1, Actor: "checkin", Outcome: factoryd.StepHandedUp, Found: "the review & the tests disagree"}},
-		9: {{Rung: 2, Actor: "factory agent", Outcome: factoryd.StepHandedUp}, {Rung: 3, Actor: "sebastian", Outcome: factoryd.StepInProgress}},
+		4: {{Rung: 1, Actor: factoryd.CheckinDecider, Outcome: factoryd.StepHandedUp, Found: "the review & the tests disagree"}},
+		9: {{Rung: 2, Actor: factoryd.ChatUser, Outcome: factoryd.StepHandedUp}, {Rung: 3, Actor: "sebastian", Outcome: factoryd.StepInProgress}},
 	}
 	ak, _ := memberLogin(t, r, "alice")
 	rec := getPage(r, ak, "/tasks/t-c/digest")
-	want := `<pre class="digest">#5 · budget 0.00 spent 0.00 holds 0.00 EUR · queued
-flags: none
-</pre>
-<h4>Open case: gate stop</h4><ul><li>rung 1 by checkin → handed up: the review &amp; the tests disagree</li></ul>
-<h4>Open case: session cap</h4><ul><li>rung 2 by factory agent → handed up</li><li>rung 3 by sebastian → in progress</li></ul>
-<h4>Open case: budget floor</h4><p class="meta">No step yet.</p>
+	want := `<ol class="life-log"><li><time>18 Nov 10:00</time> Filed by webhook: direct card.</li><li><time>18 Nov 11:00</time> The model review: concerns, 2 findings.</li><li><time>18 Nov 12:00</time> Handed over: <span class="quote">Fix the vet finding first.</span></li></ol>
+<h4>The open ask: A step of the work ran past its time limit. How should the card go on?</h4><ul><li>The check-in passed it to the factory agent, and found: <span class="quote">the review &amp; the tests disagree</span></li></ul>
+<h4>The open ask: The card used all 0 sessions. How should it go on?</h4><ul><li>The factory agent passed it to a human.</li><li>sebastian is weighing it.</li></ul>
+<h4>The open ask: The card&#39;s money left does not pay its next session. How should it go on?</h4><p class="meta">Nobody has weighed this ask yet.</p>
 `
 	if rec.Code != http.StatusOK || rec.Body.String() != want {
 		t.Fatalf("the fold for alice = %d\n%s\nwant 200\n%s", rec.Code, rec.Body, want)
@@ -68,9 +77,11 @@ func TestDrawerFoldsTheCardsLifeLazily(t *testing.T) {
 		t.Fatalf("the board = %d", rec.Code)
 	}
 	drawer := getPage(r, ak, "/cards/t-c/drawer?tab=overview").Body.String()
-	if want := `<details class="sec" data-sec="life" hx-get="/tasks/t-c/digest" hx-trigger="toggle once" hx-target="find .sec-body">` +
-		`<summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>`; !strings.Contains(drawer, want) {
-		t.Fatalf("the drawer lacks the fold\n%s\nin\n%s", want, drawer)
+	for _, want := range []string{`<details class="fold" data-sec="life" hx-get="/tasks/t-c/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life`,
+		`<div class="sec-body"><p class="meta">Loading…</p></div></details>`} {
+		if !strings.Contains(drawer, want) {
+			t.Fatalf("the drawer lacks the fold\n%s\nin\n%s", want, drawer)
+		}
 	}
 	if strings.Contains(drawer, "revealed") {
 		t.Fatal("the drawer loads something once it is in view")

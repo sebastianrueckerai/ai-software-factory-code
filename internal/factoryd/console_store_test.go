@@ -300,8 +300,8 @@ func TestPGStoreBoardTasksOfRepository(t *testing.T) {
 	// cards all do, most urgent first; its finished and chat tasks do not
 	if got, err := s.BoardTasks(ctx, "sf/r"); err != nil || !slices.Equal(ids(got), []string{"mine-high", "mine-waits", "mine-low"}) {
 		t.Fatalf("BoardTasks(sf/r) = %v, %v; want mine-high, mine-waits, mine-low", ids(got), err)
-	} else if got[1].WaitingOn != "#9" || got[1].Dependencies != "#9" {
-		t.Fatalf("the waiting card reads %q, %q; want the other repository's #9 on both chips", got[1].WaitingOn, got[1].Dependencies)
+	} else if got[1].WaitingOn != "#9" || len(got[1].Dependencies) != 1 || got[1].Dependencies[0].Issue != 9 {
+		t.Fatalf("the waiting card reads %q, %v; want the other repository's #9 on both chips", got[1].WaitingOn, got[1].Dependencies)
 	}
 	if got, err := s.BoardTasks(ctx, "sf/other"); err != nil || !slices.Equal(ids(got), []string{"theirs"}) {
 		t.Fatalf("BoardTasks(sf/other) = %v, %v; want theirs", ids(got), err)
@@ -457,9 +457,12 @@ func TestPGStoreFinishedPages(t *testing.T) {
 	page(FinishedQuery{Limit: 2}, []string{"k", "a"}, 7)
 }
 
-// A writer's summary and accent land on the task row and read back on the
-// task and the board; "" stores NULL, which reads back as "".
-func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
+// A card's brief and accent land on the task row and read back on the
+// task and the board: the filing stores the why line, the summary, the
+// unchecked mark and the chat's filing, an edit stores a checked brief,
+// and an accent of ""
+// stores NULL, which reads back as "".
+func TestPGStoreBriefAndAccent(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
@@ -469,7 +472,8 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct",
+		Why: "So the board loads.", Summary: "The cache drops entries.", BriefUnchecked: true, ChatFiled: true}); err != nil {
 		t.Fatal(err)
 	}
 	read := func() (Task, BoardTask) {
@@ -484,30 +488,39 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 		}
 		return tk, board[0]
 	}
-	if tk, b := read(); tk.HumanSummary != "" || tk.Accent != "" || b.HumanSummary != "" || b.Accent != "" {
-		t.Fatalf("a new task has summary %q, accent %q", tk.HumanSummary, tk.Accent)
+	type brief struct {
+		Why, Summary, Accent string
+		Unchecked, Chat      bool
 	}
-	if err := s.SetHumanSummary(ctx, "t-s", "the cache, at last"); err != nil {
+	of := func(t Task) brief { return brief{t.Why, t.Summary, t.Accent, t.BriefUnchecked, t.ChatFiled} }
+	if tk, b := read(); of(tk) != (brief{"So the board loads.", "The cache drops entries.", "", true, true}) || of(b.Task) != of(tk) {
+		t.Fatalf("a new task has %+v, on the board %+v", of(tk), of(b.Task))
+	}
+	if err := s.SetBrief(ctx, "t-s", "So the board loads at once.", "The cache keeps its entries.", false); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskAccent(ctx, "t-s", "teal"); err != nil {
 		t.Fatal(err)
 	}
-	if tk, b := read(); tk.HumanSummary != "the cache, at last" || tk.Accent != "teal" || b.HumanSummary != "the cache, at last" || b.Accent != "teal" {
-		t.Fatalf("task %q %q, board %q %q; want the cache, at last and teal", tk.HumanSummary, tk.Accent, b.HumanSummary, b.Accent)
+	want := brief{"So the board loads at once.", "The cache keeps its entries.", "teal", false, true}
+	if tk, b := read(); of(tk) != want || of(b.Task) != want {
+		t.Fatalf("task %+v, board %+v; want %+v", of(tk), of(b.Task), want)
 	}
-	if err := s.SetHumanSummary(ctx, "t-s", ""); err != nil {
+	if err := s.SetBrief(ctx, "t-s", "So the board loads at once.", "The cache keeps its entries.", true); err != nil {
 		t.Fatal(err)
+	}
+	if tk, b := read(); !tk.BriefUnchecked || !b.Task.BriefUnchecked {
+		t.Fatalf("SetBrief with the mark: task %+v, board %+v; want it marked", of(tk), of(b.Task))
 	}
 	if err := s.SetTaskAccent(ctx, "t-s", ""); err != nil {
 		t.Fatal(err)
 	}
 	var cleared bool
-	if err := s.db.QueryRowContext(ctx, `SELECT human_summary IS NULL AND accent IS NULL FROM tasks WHERE id = 't-s'`).Scan(&cleared); err != nil || !cleared {
-		t.Fatalf("cleared = %v, %v; want both columns NULL", cleared, err)
+	if err := s.db.QueryRowContext(ctx, `SELECT accent IS NULL FROM tasks WHERE id = 't-s'`).Scan(&cleared); err != nil || !cleared {
+		t.Fatalf("cleared = %v, %v; want the accent NULL", cleared, err)
 	}
-	if tk, _ := read(); tk.HumanSummary != "" || tk.Accent != "" {
-		t.Fatalf("after clearing: summary %q, accent %q", tk.HumanSummary, tk.Accent)
+	if tk, _ := read(); tk.Accent != "" {
+		t.Fatalf("after clearing: accent %q", tk.Accent)
 	}
 	if err := s.SetObjective(ctx, "t-s", "Fix the cache eviction\n\nIt drops entries."); err != nil {
 		t.Fatal(err)
@@ -518,8 +531,8 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 	if err := s.SetObjective(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetObjective of no task = %v, want ErrNotFound", err)
 	}
-	if err := s.SetHumanSummary(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetHumanSummary of no task = %v, want ErrNotFound", err)
+	if err := s.SetBrief(ctx, "t-gone", "x", "y", false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetBrief of no task = %v, want ErrNotFound", err)
 	}
 	if err := s.SetTaskAccent(ctx, "t-gone", "red"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskAccent of no task = %v, want ErrNotFound", err)
@@ -739,6 +752,59 @@ func TestCloseClearedCardIsOneStep(t *testing.T) {
 		if evs, _ := s.TaskEvents(ctx, id, 10); len(evs) != 0 {
 			t.Fatalf("%s recorded %+v after a rolled-back close", id, evs)
 		}
+	}
+}
+
+// SetAskFace writes the card's title and why line, its live case's facts
+// and the face on the case's ask row together, or none of them: a case
+// that ended leaves the card, the case and the row as they were.
+func TestSetAskFaceIsOneStep(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, cases, events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 1,
+		Objective: "SigNoz fires the alert\n\nthe body", Why: "It fires."}); err != nil {
+		t.Fatal(err)
+	}
+	ask, _, err := openAtHuman(ctx, s, Case{TaskID: "t-h", Repository: "sf/r", Kind: CaseAgentEscalate, StateKey: "ask", Problem: "fires"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-h", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"ask": "SigNoz fires the alert", "case_id": ask.ID, "recommended_by": "the factory"}}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() (objective, why, said, row, pick string) {
+		t.Helper()
+		if err := s.db.QueryRowContext(ctx, `SELECT t.objective, t.why, coalesce(c.facts->>'ask', ''), e.detail->>'ask', coalesce(e.detail->>'recommended_by', '')
+			FROM tasks t, cases c, events e WHERE t.id = 't-h' AND c.id = $1 AND e.task_id = 't-h' AND e.kind = $2`, ask.ID, EventQuestionAsked).
+			Scan(&objective, &why, &said, &row, &pick); err != nil {
+			t.Fatal(err)
+		}
+		return objective, why, said, row, pick
+	}
+	card := Task{ID: "t-h", Objective: "SigNoz cleared the alert\n\nthe body", Why: "It may still be there."}
+	if err := s.SetAskFace(ctx, card, ask.ID, map[string]any{"ask": "SigNoz cleared the alert"}, map[string]any{"ask": "SigNoz cleared the alert"}); err != nil {
+		t.Fatal(err)
+	}
+	if o, w, a, r, p := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" || r != "SigNoz cleared the alert" || p != "" {
+		t.Fatalf("after the write: objective %q, why %q, ask %q, the row's ask %q and pick %q", o, w, a, r, p)
+	}
+	if err := s.WithdrawCase(ctx, ask.ID, "answered"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAskFace(ctx, Task{ID: "t-h", Objective: "SigNoz fires again", Why: "It fires again."}, ask.ID, map[string]any{"ask": "again"}, map[string]any{"ask": "again"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an ended case: err = %v, want ErrNotFound", err)
+	}
+	if o, w, a, r, _ := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" || r != "SigNoz cleared the alert" {
+		t.Fatalf("an ended case changed the card: objective %q, why %q, ask %q, the row's ask %q", o, w, a, r)
 	}
 }
 

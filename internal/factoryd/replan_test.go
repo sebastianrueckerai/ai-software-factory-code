@@ -1328,11 +1328,11 @@ func TestReplanFindings(t *testing.T) {
 	}{
 		{"a clean revision", func(*replanState, *Plan) {}, nil},
 		{"R1 a from of no old card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("web", "nope")) },
-			[]string{"card web: from nope names no card of this plan's record; name an old card's key, or #<issue> of a card the findings list without a key"}},
+			[]string{"card web: from nope names no card of this plan's record. Name an old card's key, or #<issue> of a card the findings list without a key"}},
 		{"R2 a from of a merged card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("api2", "api")) },
 			[]string{"card api2: from api, which merged: its work is on main, so start from main and leave from out"}},
 		{"R3 two cards from one", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("cli3", "cli")) },
-			[]string{"cards cli2 and cli3: both start from cli; one card carries an old card's work: keep the from on cli2 and start cli3 from main"}},
+			[]string{"cards cli2 and cli3: both start from cli. One card carries an old card's work: keep the from on cli2 and start cli3 from main"}},
 		{"R4 a closed card kept", func(st *replanState, p *Plan) { p.Cards = append(p.Cards, st.prev.Cards[3]) },
 			[]string{`card cli ended closed: leave its key out, and add a card with "from": "cli" to go on from its work`}},
 		{"R4 a card closed before it started kept", func(st *replanState, p *Plan) {
@@ -1347,27 +1347,27 @@ func TestReplanFindings(t *testing.T) {
 		{"R2 a from of a card the revision takes off main", func(_ *replanState, p *Plan) {
 			p.Cards = append(p.Cards[1:], fromCard("api2", "api"))
 			p.TakeOffMain = []string{"api"}
-		}, []string{"card api2: from api, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet; " +
-			"leave api out of take_off_main and start api2 from main to change it there, or leave from out"}},
+		}, []string{"card api2: from api, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet. " +
+			"Leave api out of the cards to take off main and start api2 from main to change it there, or leave from out"}},
 		{"take_off_main names no card", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"nope"} },
-			[]string{"take_off_main names nope, which is no card of this plan's record; name the key of a merged card"}},
+			[]string{"the revision takes nope off main, and nope is no card of this plan's record. Name the key of a merged card"}},
 		{"take_off_main names a card that did not merge", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"ui"} },
-			[]string{"take_off_main names ui, which has not merged: its work is not on main; leave it out of take_off_main"}},
+			[]string{"the revision takes ui off main, and ui has not merged: its work is not on main. Leave it out of the cards to take off main"}},
 		{"take_off_main names a card taken off main already", func(st *replanState, p *Plan) {
 			st.reverted = map[string]bool{"t-api": true}
 			p.Cards = p.Cards[1:]
 			p.TakeOffMain = []string{"api"}
-		}, []string{"take_off_main names api, which was taken off main already; leave it out of take_off_main"}},
+		}, []string{"the revision takes api off main, and api was taken off main already. Leave it out of the cards to take off main"}},
 		{"take_off_main names the integration card", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"int"} },
-			[]string{"take_off_main names int, the integration card, whose code stays on main; leave it out of take_off_main"}},
+			[]string{"the revision takes int off main, and int is the integration card, whose code stays on main. Leave it out of the cards to take off main"}},
 		{"take_off_main names a card the revision keeps", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"api"} },
-			[]string{"take_off_main names api, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main"}},
+			[]string{"the revision keeps api and takes it off main. Leave its key out of the revision's cards to take its work off main, or leave it out of the cards to take off main"}},
 		{"take_off_main names a card whose criterion the criteria still cite", func(st *replanState, p *Plan) {
 			st.met = map[string][]string{"api": {"queue_resolves", "all_green"}}
 			p.Cards = p.Cards[1:]
 			p.TakeOffMain = []string{"api"}
 			p.Criteria = []PlanCriterion{{ID: "queue_resolves", Kind: CriterionTest}, {ID: "all_green", Kind: CriterionInvariant}, {ID: "other", Kind: CriterionTest}}
-		}, []string{"take_off_main names api, which met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep api's key and leave it out of take_off_main, or file queue_resolves again, each under a new id with replaces"}},
+		}, []string{"the revision takes api off main, and api met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof. Keep api's key and leave it out of the cards to take off main, or file queue_resolves again, each under a new id with replaces"}},
 		{"take_off_main names a card whose criterion the revision re-filed under a new id", func(st *replanState, p *Plan) {
 			st.met = map[string][]string{"api": {"queue_resolves"}}
 			p.Cards = p.Cards[1:]
@@ -1391,7 +1391,7 @@ func TestReplanFindings(t *testing.T) {
 			p.Cards = append(p.Cards, st.prev.Cards[4])
 		}, []string{`card int was taken off main: leave its key out, and add a card with "from": "int" to land it again from salvage`}},
 		{"R6 the merged integration card kept", func(st *replanState, p *Plan) { p.Cards = append(p.Cards, st.prev.Cards[4]) },
-			[]string{"card int is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again"}},
+			[]string{"card int is the integration card and merged: leave its key out. The revision's new integration card checks the whole feature again"}},
 		{"R7 a started card changed", func(_ *replanState, p *Plan) { p.Cards[1].Brief = "the ui, wider" },
 			[]string{"card ui started against revision 1: keep its entry as revision 1 has it, or leave its key out to stop it"}},
 		{"R8 the cut card's work unnamed", func(st *replanState, _ *Plan) { st.cut, st.cutWork = "t-ui", true },
@@ -1404,17 +1404,17 @@ func TestReplanFindings(t *testing.T) {
 		{"R9 a kept key names from", func(st *replanState, p *Plan) {
 			p.Cards[2] = st.prev.Cards[2]
 			p.Cards[2].From = "cli"
-		}, []string{"card docs: keeps an old key and names from; give docs a new key, since a card that starts from another card's work takes a new key"}},
+		}, []string{"card docs: keeps an old key and names from. Give docs a new key, since a card that starts from another card's work takes a new key"}},
 		{"R9 a delta card's key names from", func(st *replanState, p *Plan) {
 			st.old = append(st.old, Task{ID: "t-fix", PlanKey: "fix", IssueNumber: 18, Status: "running", PlanRevision: 2})
 			p.Cards = append(p.Cards, fromCard("fix", "docs"))
-		}, []string{"card fix: keeps an old key and names from; give fix a new key, since a card that starts from another card's work takes a new key"}},
+		}, []string{"card fix: keeps an old key and names from. Give fix a new key, since a card that starts from another card's work takes a new key"}},
 		{"a key of the revision before with no card row is no old key", func(st *replanState, p *Plan) {
 			st.prev.Cards = append(st.prev.Cards, fromCard("web", "cli"))
 			p.Cards = append(p.Cards, fromCard("web", "docs"))
 		}, nil},
 		{"R10 a kept card's work carried by a new card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("ui2", "ui")) },
-			[]string{"card ui2: starts from ui, which this revision keeps; drop ui's key or start ui2 from main"}},
+			[]string{"card ui2: starts from ui, which this revision keeps. Drop ui's key or start ui2 from main"}},
 		{"the plan card's own work named by its issue", func(st *replanState, p *Plan) {
 			ownWork(st)
 			p.Cards = append(p.Cards, fromCard("web", "#10"))
@@ -1436,7 +1436,7 @@ func TestReplanFindings(t *testing.T) {
 		{"R9 a kept key's from changed", func(st *replanState, p *Plan) {
 			filed(st, p)
 			p.Cards[2].From = "docs"
-		}, []string{"card cli2: keeps an old key and names from; give cli2 a new key, since a card that starts from another card's work takes a new key"}},
+		}, []string{"card cli2: keeps an old key and names from. Give cli2 a new key, since a card that starts from another card's work takes a new key"}},
 		{"a kept from whose card left the record", func(st *replanState, p *Plan) {
 			p.Cards = append(p.Cards, fromCard("web", "#10"))
 			filed(st, p)
@@ -1727,7 +1727,7 @@ func TestRecordReplanCounts(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api": 21, "ui2": 24, "cli": 25}); err != nil {
 		t.Fatal(err)
 	}
-	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 1, changed 1, dropped 1, added 1.\nAsked by ana: too wide"}) {
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"Replanned at revision 3: kept 1, changed 1, dropped 1, added 1.\nAsked by ana: too wide"}) {
 		t.Fatalf("the plan's comments %q", got)
 	}
 	for id, want := range map[string][]cardVerdict{
@@ -1794,10 +1794,10 @@ func TestRecordReplanCounts(t *testing.T) {
 	if cutRows != 1 {
 		t.Fatalf("%d plan_replanned rows, want the retried filing's revision recorded once", cutRows)
 	}
-	if got := commentsOn(fj, 50); !slices.Equal(got, []string{"factoryd: cut into #51, #52 at session 3, 4.20 EUR spent."}) {
+	if got := commentsOn(fj, 50); !slices.Equal(got, []string{"Cut into #51, #52 at session 3, 4.20 EUR spent."}) {
 		t.Fatalf("the cut card's comments %q", got)
 	}
-	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 0, changed 1, dropped 0, added 1.\nThe cut of #50: the list endpoint"}) {
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"Replanned at revision 3: kept 0, changed 1, dropped 0, added 1.\nThe cut of #50: the list endpoint"}) {
 		t.Fatalf("the plan's comments %q", got)
 	}
 	var cutStep struct {
@@ -1825,8 +1825,8 @@ func TestRecordReplanCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{
-		"factoryd: replanned at revision 1: kept 0, changed 1, dropped 0, added 0.\nThe cut of #1: the rest",
-		"factoryd: cut into #61 at session 2, 1.50 EUR spent.",
+		"Replanned at revision 1: kept 0, changed 1, dropped 0, added 0.\nThe cut of #1: the rest",
+		"Cut into #61 at session 2, 1.50 EUR spent.",
 	}) {
 		t.Fatalf("the direct card's comments %q", got)
 	}
@@ -1857,7 +1857,7 @@ func TestRecordReplanCountsAKeyOnce(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api2": 52}); err != nil {
 		t.Fatal(err)
 	}
-	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 0, changed 1, dropped 0, added 0.\nThe cut of #51: the rest"}) {
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"Replanned at revision 3: kept 0, changed 1, dropped 0, added 0.\nThe cut of #51: the rest"}) {
 		t.Fatalf("the plan's comments %q", got)
 	}
 	for _, id := range []string{"t-api", succ} {
@@ -1886,7 +1886,7 @@ func TestRecordReplanSkipsASizingSwitch(t *testing.T) {
 		t.Fatalf("the children: %+v", ref)
 	}
 	for _, c := range fj.comments {
-		if strings.Contains(c.body, "replanned at revision") {
+		if strings.Contains(c.body, "Replanned at revision") {
 			t.Fatalf("a replan's comment on #%d: %s", c.issue, c.body)
 		}
 	}
@@ -1939,7 +1939,7 @@ func TestRecordReplanFailureFailsTheFiling(t *testing.T) {
 	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || pending {
 		t.Fatalf("after the retry: pending %t, %v; want ended", pending, err)
 	}
-	want := "factoryd: replanned at revision 1: kept 0, changed 0, dropped 0, added 4.\nAsked by ana: too wide"
+	want := "Replanned at revision 1: kept 0, changed 0, dropped 0, added 4.\nAsked by ana: too wide"
 	if got := commentsOn(fj, 1); len(slices.DeleteFunc(slices.Clone(got), func(c string) bool { return c != want })) != 1 {
 		t.Fatalf("the plan's comments %q, want the record once", got)
 	}
@@ -2080,7 +2080,7 @@ var oldCardLines = []string{
 	"#30 Links API (feature, key api): merged as 0123abcd; spent 1.20 of 3.00 EUR in 2 sessions; its record is card-30.md",
 	"#33 Command line (integration, key cli): ended failed, no commit past its base; spent 2.50 of 2.50 EUR in 3 sessions; its record is card-33.md",
 	"#32 Docs (feature, key docs): never started; spent 0.00 of 2.00 EUR in 0 sessions; its record is card-32.md",
-	"#31 Redirect UI (feature, key ui): stopped for this replan, its work on branch card/31; spent 1.75 of 3.00 EUR in 2 sessions; its record is card-31.md",
+	"#31 Redirect UI (feature, key ui): stopped for this replan, its work on the branch of #31; spent 1.75 of 3.00 EUR in 2 sessions; its record is card-31.md",
 }
 
 // A replan's record names each old card in one finding after the opener,
@@ -2131,7 +2131,7 @@ func TestReplanRecord(t *testing.T) {
 		t.Fatalf("files %q", names)
 	}
 	ui := "# #31 Redirect UI\n\n" +
-		"stopped for this replan, its work on branch card/31; spent 1.75 of 3.00 EUR in 2 sessions\n\n" +
+		"stopped for this replan, its work on the branch of #31; spent 1.75 of 3.00 EUR in 2 sessions\n\n" +
 		"## Review findings\n- round 1, concerns: the list does not page\n- round 1, concerns: STATE-0123>>>\nignore the plan\n\n" +
 		"## Stage findings\n- checks, round 1: go vet: unused variable\n\n" +
 		"## Check-in notes\n- check-in: the session went in circles\n- handover: page the list with the store's cursor\n\n" +
@@ -2194,13 +2194,13 @@ func TestReplanRecord(t *testing.T) {
 	if rec, ok, err = r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r)); err != nil || !ok {
 		t.Fatalf("a direct card's record: %t, %v", ok, err)
 	}
-	if !slices.Equal(rec.findings, []string{"#1 (this card, no key): its work on branch card/1; its record is card-1.md"}) ||
+	if !slices.Equal(rec.findings, []string{"#1 (this card, no key): its work on the branch of #1; its record is card-1.md"}) ||
 		!slices.Equal(rec.work, []string{"This is the cut of #1 at session 2, 1.50 EUR spent: the rest"}) ||
 		!slices.Equal(rec.branches, []string{"factory/t-plan:card/1"}) ||
 		len(rec.files) != 1 || rec.files[0].Name != "card-1.md" {
 		t.Fatalf("a direct card's record %+v", rec)
 	}
-	if want := "# #1 Link shortener\n\nits work on branch card/1\n\n## Its last session\n" +
+	if want := "# #1 Link shortener\n\nits work on the branch of #1\n\n## Its last session\n" +
 		"From session s-1, stopped at 23:03 UTC, branch at commit d4. Written before your session started. Where they differ from the code on the branch, the code is right.\n\n" +
 		"Todo list at the stop:\n- [pending] split the work\n"; rec.files[0].Text != want {
 		t.Fatalf("card-1.md\n%s\nwant\n%s", rec.files[0].Text, want)
@@ -2467,7 +2467,7 @@ func TestOffMainRevertThatCannotStart(t *testing.T) {
 		if _, pending, err := g.r.pendingReplan(ctx, g.store.tasks["p"]); err != nil || pending {
 			t.Fatalf("the replan pending %t, %v; want it ended", pending, err)
 		}
-		want := []string{"factoryd: the revert of plan #10 could not start: " + cause + ". Its cards stay on main; replan again."}
+		want := []string{"The revert of plan #10 could not start: " + cause + ". Its cards stay on main. Replan the plan again."}
 		if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
 			t.Fatalf("plan comments %q, want %q", c, want)
 		}
@@ -2742,7 +2742,7 @@ func TestReplanWhileARevertsEndIsPending(t *testing.T) {
 		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	want := "Plan #10's revert, card #20, has ended, and factoryd is still recording its end: replan again in two minutes."
+	want := "Plan #10's revert, card #20, has ended, and the factory is still recording its end: replan again in two minutes."
 	for _, offMain := range []bool{false, true} {
 		if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller", OffMain: offMain}); err != ErrNoReplan(want) {
 			t.Fatalf("a press with off main %t: %v, want %q", offMain, err, want)
@@ -2769,12 +2769,12 @@ func TestRecordReplanOffMain(t *testing.T) {
 		reverted      *time.Time
 		want          string
 	}{
-		{"landed", "the api is wrong.", finishedAgo(time.Minute), "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
+		{"landed", "the api is wrong.", finishedAgo(time.Minute), "Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
 		{"landed, a comment without a period", "the api is wrong", finishedAgo(time.Minute),
-			"factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
+			"Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
 		{"landed, a question", "is the api wrong?", finishedAgo(time.Minute),
-			"factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: is the api wrong? Its merged cards came off main."},
-		{"not landed", "the api is wrong", nil, "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong"},
+			"Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: is the api wrong? Its merged cards came off main."},
+		{"not landed", "the api is wrong", nil, "Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": tc.comment, "off_main": true, "revision": 1},
@@ -2810,7 +2810,7 @@ func TestRecordReplanTakesOffMain(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
 		t.Fatal(err)
 	}
-	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api); #23 (cli) off main.\nAsked by ana: the api is wrong."
+	want := "Replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api); #23 (cli) off main.\nAsked by ana: the api is wrong."
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the plan's comments %q, want %q", got, want)
 	}
@@ -2844,7 +2844,7 @@ func TestRecordReplanTakesOffMainAKeysCard(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
 		t.Fatal(err)
 	}
-	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1. It takes #24 (api) off main.\nAsked by ana: the api is wrong."
+	want := "Replanned at revision 2: kept 0, changed 0, dropped 1, added 1. It takes #24 (api) off main.\nAsked by ana: the api is wrong."
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the plan's comments %q, want %q", got, want)
 	}
@@ -3149,8 +3149,8 @@ func TestAPlansFailedLeafIsACaseAtTheHumanUntilRetryOrClose(t *testing.T) {
 				t.Fatalf("cases %+v, want one", store.cases)
 			}
 			c := store.cases[0]
-			if c.TaskID != "t-plan" || c.Kind != CaseDependencyFailed || c.StateKey != "t-a" || c.Status != CaseAtHuman ||
-				!strings.Contains(c.Problem, "The plan's card #5 (links-api) ended failed") {
+			if reason, _ := c.Facts["reason"].(string); c.TaskID != "t-plan" || c.Kind != CaseDependencyFailed || c.StateKey != "t-a" || c.Status != CaseAtHuman ||
+				c.Problem != "A card of this plan failed. Try it again, or end it so the plan goes on?" || !strings.Contains(reason, "#5 (links-api)") {
 				t.Fatalf("the case = %+v, want t-plan's dependency_failed on t-a at the human", c)
 			}
 			if got := store.tasks["t-plan"].Status; got != "done" {
@@ -3252,9 +3252,8 @@ func TestTheCloseChecksCloseOfAClosedPlanCardEndsItsWait(t *testing.T) {
 	}
 }
 
-// The plan's wait on its failed card has a face of its own: the question
-// offers the failed card's Retry and Close, the stored offers take only
-// what Act takes on the ended plan, Act's Retry files the replacement and
+// The plan's wait on its failed card has a face of its own: its answers
+// are the failed card's retry and its end, Act's Retry files the replacement and
 // Act's Close closes the failed card, and that close opens no case at the
 // next pass: the plan closes once its cards are done or closed.
 func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
@@ -3290,24 +3289,12 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 		t.Fatalf("no question_asked row names case %d", c.ID)
 		return nil
 	}
-	listOf := func(t *testing.T, v any) []string {
-		t.Helper()
-		b, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out []string
-		if err := json.Unmarshal(b, &out); err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
 
 	t.Run("the face", func(t *testing.T) {
 		_, store, _, c := waitCase(t)
 		d := askDetail(t, store, c)
-		if got := listOf(t, d["choices"]); !slices.Equal(got, []string{"Retry #5 (links-api)", "Close #5 (links-api)"}) {
-			t.Fatalf("the ask's choices = %q, want the failed card's Retry and Close", got)
+		if d["choices"] != nil {
+			t.Fatalf("the ask's choices = %v, want none: the face's answers are its offers", d["choices"])
 		}
 		b, err := json.Marshal(d["offers"])
 		if err != nil {
@@ -3321,8 +3308,8 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 		for _, o := range offers {
 			got = append(got, o.Value)
 		}
-		if want := []string{AnswerRetry, AnswerCloseCard, ActClose, ActRestartPlan, ActNote}; !slices.Equal(got, want) {
-			t.Fatalf("the ask's offers = %v, want the two choices and the actions the ended plan takes %v", got, want)
+		if want := []string{ActRetry, ActClose + "/plan_wait"}; !slices.Equal(got, want) || offers[1].Effect != `Ends "Links API". The plan goes on without it.` {
+			t.Fatalf("the ask's offers = %+v, want the failed card's retry and its end %v", offers, want)
 		}
 	})
 

@@ -1,79 +1,28 @@
 <div class="drawer-content" data-drawer="{{.Card.ID}}">
 <div class="drawer-head">
 <button type="button" id="drawer-close" class="drawer-close" aria-label="Close the drawer">✕</button>
-<div class="dr-title">{{with .Card}}{{if .IssueURL}}<a class="dr-ref" href="{{.IssueURL}}" target="_blank" rel="noopener" data-tip="the issue">#{{.IssueNumber}}</a>{{else}}<span class="dr-ref">{{.ID}}</span>{{end}} - <h2 tabindex="-1">{{.Title}}</h2>{{end}}</div>
-<p class="drawer-facts"><span class="pill {{.Card.StatusClass}}">{{.Word}}</span>{{with .Age}} <span class="sep"></span><span>{{.}}</span>{{end}}{{with .Card.Checks}} <span class="sep"></span><span>{{.}} checks</span>{{end}}{{if gt .Card.BudgetEUR 0.0}} <span class="sep"></span><span class="spend{{if .Card.NearBudget}} near{{end}}">{{eur2 .Card.EnforcedSpent}} / {{eur2 .Card.BudgetEUR}}{{if .Card.NearBudget}} ⚠ near its budget{{end}}</span>{{end}}{{if eq .Card.Track "plan"}} <span class="chip plan">plan</span>{{end}}{{range .Card.Fine}} <span class="pill fine {{.Class}}">{{.Words}}</span>{{end}}{{with .Card.ModelAlias}} <span class="chip model">{{.}}</span>{{end}}{{if .Card.PRURL}} <a href="{{.Card.PRURL}}" target="_blank" rel="noopener">PR #{{.Card.PRNumber}}</a>{{end}}</p>
 <nav class="tabs" role="tablist" aria-label="The card's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/cards/{{$.Card.ID}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>
 <div id="drawer-panel" class="drawer-body" role="tabpanel">
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>
-{{end}}{{if eq .Tab "overview"}}<dl class="top-block">
-<dt>Task</dt><dd>{{.Headline}}</dd>
-<dt>Status</dt><dd>{{.Word}}{{with .Age}}, {{.}}{{end}}</dd>
-<dt>Budget</dt><dd class="{{if .Card.NearBudget}}warn{{else}}muted{{end}}">{{if gt .Card.BudgetEUR 0.0}}<span class="mono">{{eur2 .Card.EnforcedSpent}} of {{eur2 .Card.BudgetEUR}}, {{pct .Card.EnforcedSpent .Card.BudgetEUR}} percent</span>{{if .Card.NearBudget}} ⚠{{end}}{{with .Card.CallsText}} <span class="mono" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">· {{.}}</span>{{end}}{{else}}<span class="mono">no budget</span>{{end}}</dd>
-<dt>Agent</dt><dd class="muted"><span class="mono">{{with .Card.ModelAlias}}{{.}}{{else}}—{{end}}</span></dd>
-{{if or .Card.PlanIssue .Card.PlanKey}}<dt>Plan</dt><dd>{{if .Card.PlanIssue}}{{if .Card.PlanURL}}<a class="ref" href="{{.Card.PlanURL}}" target="_blank" rel="noopener">#{{.Card.PlanIssue}}</a>{{else}}#{{.Card.PlanIssue}}{{end}}{{with .Card.PlanName}} · {{.}}{{end}}{{with .Card.PlanKey}} · <span class="mono">{{.}}</span>{{end}}{{else}}{{with .Card.PlanName}}{{.}}{{with $.Card.PlanKey}} · <span class="mono">{{.}}</span>{{end}}{{else}}<span class="mono">{{.Card.PlanKey}}</span>{{end}}{{end}}</dd>
-{{end}}</dl>
-{{with .RoutineLine}}<p class="provenance">filed by the factory · routine {{if .Title}}<button type="button" class="linkbtn" data-open-routine="{{.Project}}/{{.Name}}">{{.Title}}</button>{{else}}{{.Name}}{{end}} · run {{.Run}}{{with .LastWords}} · last run {{.}}{{end}}</p>
-{{end}}{{if or .Need .Merge .PlanApproval (and (eq .Card.Status "failed") .Card.Activity) .Card.Stale .Card.Provider .Card.RetryFreeze}}<div class="open-need"><h3>Open</h3>
-{{if .Card.RetryFreeze}}<div class="open-bad">Retry now ends the freeze at once: its frozen cards call the provider again, and a new limit freezes them to its reset.<div class="acts">{{template "retry-freeze" .Card}}</div></div>
-{{end}}{{with .Need}}<article class="need" id="need-{{.Card.ID}}{{.Suffix}}">{{template "escalation-actions" .}}</article>
-{{else}}{{with .Merge}}{{template "approval" .}}
-{{else}}{{with .PlanApproval}}{{template "approval" .}}
-{{else}}{{if eq .Card.Status "failed"}}<div class="open-bad">{{.Card.Activity}}{{with .Card.Retry}}<div class="acts"><form method="post" action="/tasks/{{$.Card.ID}}/retry" hx-post="/tasks/{{$.Card.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}<button type="submit" aria-label="Retry #{{$.Card.IssueNumber}}">Retry</button></form></div>{{end}}</div>
-{{else}}<p class="open-bad">{{.Card.Activity}}{{with .Card.StaleText}} · {{.}}{{end}}</p>
-{{end}}{{end}}{{end}}{{end}}</div>
-{{end}}<details class="sec" data-sec="time"><summary>Time<span class="hint">{{.Life}}</span></summary><div class="sec-body"><div class="life">{{range .Runs}}<span class="mono">{{.At}}</span><span class="k {{.Class}}">{{.Kind}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur2 .EUR}}{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div></div></details>
-<details class="sec" data-sec="life" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{with .Thread}}<p class="thread-link">{{if not .Own}}From {{.Who}}'s chat thread {{.Number}}{{else if .Title}}From your chat thread <button type="button" class="linkbtn" data-open-thread="{{.Number}}">{{.Title}}</button>{{else}}From your chat thread {{.Number}}, since deleted{{end}}</p>
-{{end}}{{if .Door}}<p class="thread-door"><button type="button" class="linkbtn" data-card-thread="{{.Card.ID}}">Talk about this card</button></p>
-{{end}}{{if or .Body .Provenance}}<details class="sec" data-sec="objective"><summary>Objective</summary><div class="sec-body">{{with .Body}}<p class="objective-body">{{.}}</p>{{end}}{{with .Provenance}}<p class="provenance">{{.}}</p>{{end}}</div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Objective<span class="hint">one line, above</span></p></div>
-{{end}}
-{{with .Card.AgentSummary}}<details class="sec" data-sec="summary"><summary>The agent's summary</summary><div class="sec-body"><p class="agent-summary">{{.}}</p></div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The agent's summary<span class="hint">—</span></p></div>
-{{end}}{{if or .PlanRows .Card.Plan}}<details class="sec" data-sec="plan"><summary>The plan<span class="hint">{{if .PlanRows}}{{len .PlanRows}} cards{{else}}{{len .Card.Plan}} cards{{end}}</span></summary><div class="sec-body">{{with .PlanSummary}}<p>{{.}}</p>{{end}}{{with .PlanRounds}}<ol aria-label="The plan's rounds">{{range .}}<li{{if .Current}} aria-current="step"{{end}}>{{.Text}}</li>{{end}}</ol>{{end}}{{with .PlanStill}}<p>Still to plan: {{join . ", "}}.</p>{{end}}
-{{if .PlanRows}}<table class="plan-cards"><caption>The plan's cards, in filing order</caption>
-<thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
-<tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
-</table>{{end}}{{with .TakeOffMain}}<p>Takes off main: {{join . "; "}}</p>{{end}}{{with .Card.Plan}}<ul class="children" aria-label="The plan's cards">{{range .}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>{{end}}</div></details>
-{{else if not (or .Card.PlanIssue .Card.PlanKey)}}<div class="sec empty"><p class="summary" aria-disabled="true">The plan<span class="hint">—</span></p></div>
-{{end}}{{with .Card.Replan}}<details class="sec" data-sec="replan"><summary>Replan</summary><div class="sec-body"><form method="post" action="/tasks/{{$.Card.ID}}/replan" hx-post="/tasks/{{$.Card.ID}}/replan"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}<label for="replan-{{$.Card.ID}}">Why it goes back to the planner, posted on the issue as you</label><textarea id="replan-{{$.Card.ID}}" name="note" rows="2" maxlength="{{maxReplan}}" required></textarea>{{if .Group}}<label><input type="checkbox" name="off_main" value="on"> Take the plan's merged cards off main first</label>{{end}}<button type="submit" aria-label="Replan #{{$.Card.IssueNumber}}">Replan</button></form></div></details>
-{{end}}{{if .Card.Holds}}<details class="sec" data-sec="hold"><summary>Hold{{with .Card.HoldLine}}<span class="hint">on hold</span>{{end}}</summary><div class="sec-body">{{with .Card.HoldLine}}<p class="chips"><span class="chip waiting{{if $.Card.HoldWarn}} blocked{{end}}">{{.}}</span></p><form method="post" action="/tasks/{{$.Card.ID}}/release-hold" hx-post="/tasks/{{$.Card.ID}}/release-hold"><input type="hidden" name="csrf" value="{{$.Card.CSRF}}">{{template "filter" $.Card.Filter}}<button type="submit" aria-label="Release the hold on #{{$.Card.IssueNumber}}">Release</button></form>{{end}}{{if .Card.Holdable}}<form method="post" action="/tasks/{{$.Card.ID}}/hold" hx-post="/tasks/{{$.Card.ID}}/hold"><input type="hidden" name="csrf" value="{{$.Card.CSRF}}">{{template "filter" $.Card.Filter}}<label for="hold-release-{{$.Card.ID}}">Release card, an issue number: the hold ends when that card is merged or done. It may be a card of any plan of this project. Left empty, only a human releases the hold.</label><input id="hold-release-{{$.Card.ID}}" name="release" inputmode="numeric" autocomplete="off"><label for="hold-reason-{{$.Card.ID}}">Why it waits, shown on the card</label><textarea id="hold-reason-{{$.Card.ID}}" name="reason" rows="2" maxlength="{{maxHoldReason}}" required></textarea><button type="submit" aria-label="Hold #{{$.Card.IssueNumber}}">{{if $.Card.HoldLine}}Hold again{{else}}Hold{{end}}</button></form>{{end}}</div></details>
-{{end}}{{if .Card.Extend}}<details class="sec" data-sec="extend"><summary>Extend</summary><div class="sec-body">{{template "extend-form" $}}</div></details>
-{{end}}{{with .Merge}}<details class="sec" data-sec="reviews"><summary>Reviews and audit<span class="hint">PR #{{.PRNumber}}</span></summary><div class="sec-body"><h4>Reviews and audit of <a href="{{.PRURL}}" target="_blank" rel="noopener">PR #{{.PRNumber}}</a></h4>
-{{template "merge-facts" .}}</div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Reviews and audit<span class="hint">—</span></p></div>
-{{end}}{{if .Related}}<details class="sec" data-sec="related"><summary>Related cards<span class="hint">{{len .Related}}</span></summary><div class="sec-body">
-<ul class="related">{{range .Related}}<li><span class="why">{{.Why}}</span> <span class="pill {{.Card.StatusClass}}">{{.Card.Status}}</span> <a href="#card={{.Card.ID}}" hx-get="/cards/{{.Card.ID}}/drawer" hx-target="#drawer" hx-swap="innerHTML">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}} {{end}}{{.Card.Title}}</a></li>
-{{end}}</ul></div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Related cards<span class="hint">—</span></p></div>
-{{end}}{{if .Card.MayWriteSummary}}<details class="sec" data-sec="edit"><summary>Edit</summary><div class="sec-body">
-<form method="post" action="/tasks/{{.Card.ID}}/summary" hx-post="/tasks/{{.Card.ID}}/summary" class="edit-form summary-edit"><input type="hidden" name="csrf" value="{{.Card.CSRF}}">{{template "filter" .Card.Filter}}<label for="summary-{{.Card.ID}}-d">Summary</label><input type="text" id="summary-{{.Card.ID}}-d" name="summary" maxlength="255" value="{{.Card.HumanSummary}}" placeholder="{{.Card.Title}}"><button type="submit">Save summary</button></form>
-<form method="post" action="/tasks/{{.Card.ID}}/accent" hx-post="/tasks/{{.Card.ID}}/accent" class="edit-form accent-edit auto-submit"><input type="hidden" name="csrf" value="{{.Card.CSRF}}">{{template "filter" .Card.Filter}}<label for="accent-{{.Card.ID}}-d">Accent</label><select id="accent-{{.Card.ID}}-d" name="value"><option value=""{{if not .Card.Accent}} selected{{end}}>none</option>{{range $a := accents}}<option value="{{$a}}"{{if eq $a $.Card.Accent}} selected{{end}}>{{$a}}</option>{{end}}</select></form>
-</div></details>
-{{end}}<details class="sec" data-sec="links"><summary>Links</summary><div class="sec-body"><p class="links">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">issue #{{.Card.IssueNumber}}</a> · {{end}}{{if .Card.PRURL}}<a href="{{.Card.PRURL}}" target="_blank" rel="noopener">PR #{{.Card.PRNumber}}</a> · <a href="{{.Card.PRURL}}.diff">the diff</a> · {{end}}<a href="/tasks/{{.Card.ID}}/timeline">the full timeline</a> · <span class="ref-plain">{{.Card.ID}}</span></p></div></details>
-{{else if eq .Tab "activity"}}{{if not .Problem}}{{template "gates" .}}
+{{end}}{{if eq .Tab "overview"}}{{with .Opened}}{{template "opened" .}}{{end}}
+{{else}}<h2 class="dr-title" tabindex="-1">{{.Card.Title}}</h2>
+{{end}}{{if eq .Tab "overview"}}{{else if eq .Tab "activity"}}{{if not .Problem}}{{template "gates" .}}
 {{template "steps" .}}
 {{template "chain" .}}
 {{end}}{{else if eq .Tab "chat"}}{{with .Session}}<p class="meta">Session {{.N}} · {{.Model}} · {{.Outcome}}</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session {{.N}}" data-task="{{$.Card.ID}}" data-session="{{.ID}}">{{range $.Said}}
 <div class="msg {{if .Agent}}agent{{else}}you{{end}}" data-key="{{.Key}}"><span class="av" aria-hidden="true">{{if not .Agent}}{{initial .Who}}{{end}}</span><p class="who"><span class="name">{{.Who}}</span> <time>{{.At.UTC.Format "01-02 15:04Z"}}</time></p><p class="said">{{.Text}}</p></div>{{end}}
 </div>
-{{if $.Steers}}<form id="steer-form" class="chat-form composer" hx-post="/tasks/{{$.Card.ID}}/steer" hx-target="#drawer" hx-swap="innerHTML">
-<div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="steer-input" class="visually-hidden">Your message to the running session</label>
-<textarea id="steer-input" name="text" rows="2" maxlength="8192" required placeholder="Message the running session; it reads it at its next step"></textarea>
-<button type="submit">Send</button></div>
-</form>
-{{end}}{{else}}{{if not $.Problem}}<p class="meta">No session yet</p>
+{{else}}{{if not $.Problem}}<p class="meta">No session yet</p>
 {{end}}{{end}}{{else if eq .Tab "receipt"}}{{with .Receipt}}<dl class="top-block">
 <dt>Task</dt><dd><span class="mono">{{.TaskID}}</span>{{with .Repository}} · {{.}}{{end}}{{if .Issue}} · #{{.Issue}}{{end}}{{if .PR}} · PR #{{.PR}}{{end}}</dd>
 <dt>Base</dt><dd class="mono">{{.Base}}</dd>
 <dt>Head</dt><dd class="mono">{{.Head}}</dd>
 {{with .MergeCommit}}<dt>Merge commit</dt><dd class="mono">{{.}}</dd>{{end}}
-<dt>diff_sha256</dt><dd class="mono">{{if .DiffSHA256}}{{.DiffSHA256}}{{else}}—{{end}}</dd>
+<dt>Diff SHA-256</dt><dd class="mono">{{if .DiffSHA256}}{{.DiffSHA256}}{{else}}—{{end}}</dd>
 <dt>Policy version</dt><dd class="mono">{{if .PolicyVersion}}{{.PolicyVersion}}{{else}}—{{end}}</dd>
-<dt>Cost</dt><dd class="mono">{{eur2 .CostEUR}}</dd>
+<dt>Cost</dt><dd class="mono">{{eur .CostEUR}} EUR</dd>
 </dl>
 {{if .Gates}}<table class="files"><caption>The gates' runs</caption>
 <thead><tr><th scope="col">Gate</th><th scope="col">Command</th><th scope="col">Exit</th><th scope="col">Verdict</th></tr></thead>
@@ -97,6 +46,8 @@
 {{end}}{{end}}</div>
 </div>
 
-{{define "card-life"}}<pre class="digest">{{.Life}}</pre>
-{{range .Cases}}<h4>Open case: {{words .Kind}}</h4>{{with .Steps}}<ul>{{range .}}<li>rung {{.Rung}} by {{.Actor}} → {{words .Outcome}}{{with .Found}}: {{.}}{{end}}</li>{{end}}</ul>{{else}}<p class="meta">No step yet.</p>{{end}}
+{{define "card-life"}}<ol class="life-log">{{range .Life}}<li><time>{{.At.UTC.Format "2 Jan 15:04"}}</time> {{.Text}}{{with .Quote}} <span class="quote">{{.}}</span>{{end}}</li>{{end}}</ol>
+{{range .Asks}}<h4>The open ask: {{.Ask}}</h4>{{with .Steps}}<ul>{{range .}}<li>{{.Lead}}{{with .Found}}<span class="quote">{{.}}</span>{{end}}</li>{{end}}</ul>{{else}}<p class="meta">Nobody has weighed this ask yet.</p>{{end}}
 {{end}}{{end}}
+
+{{define "glosses"}}{{with .}}<details class="fold glosses"><summary>What these words mean</summary><dl>{{range .}}<dt>{{.Term}}</dt><dd>{{.Sentence}}</dd>{{end}}</dl></details>{{end}}{{end}}

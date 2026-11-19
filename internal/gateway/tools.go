@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,6 +24,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // Escalator hands an agent's question to the running session's supervision.
@@ -37,10 +39,13 @@ type Delegator interface {
 	Delegate(ctx context.Context, taskID string, d Delegation) (Delegated, error)
 }
 
-// Delegation is a delegate call: the child card's title and brief.
+// Delegation is a delegate call: the child card's title, why line,
+// summary and brief.
 type Delegation struct {
-	Title string `json:"title"`
-	Brief string `json:"brief"`
+	Title   string `json:"title"`
+	Why     string `json:"why"`
+	Summary string `json:"summary"`
+	Brief   string `json:"brief"`
 }
 
 // Delegated is the child card factoryd filed.
@@ -49,10 +54,13 @@ type Delegated struct {
 	TaskID string `json:"task_id"`
 }
 
-// DelegateIn is the delegate tool's input.
+// DelegateIn is the delegate tool's input; its title, why and summary
+// carry the brief's field lines (withBriefLines).
 type DelegateIn struct {
-	Title string `json:"title" jsonschema:"the child card's title, one line"`
-	Brief string `json:"brief" jsonschema:"the brief a weaker model acts on alone: the files, the change, and an 'Acceptance:' section listing how the work is checked (one '- item' per test); factoryd refuses a brief without one"`
+	Title   string `json:"title"`
+	Why     string `json:"why"`
+	Summary string `json:"summary"`
+	Brief   string `json:"brief" jsonschema:"the brief a weaker model acts on alone: the files, the change, and an 'Acceptance:' section listing how the work is checked (one '- item' per test); factoryd refuses a brief without one"`
 }
 
 // maxDelegateBrief bounds a delegate call's brief.
@@ -110,6 +118,14 @@ type Digester interface {
 	Digest(ctx context.Context, taskID string, in DigestIn) (string, error)
 }
 
+// Briefer reads a session's card brief at factoryd (GET /worker/brief)
+// and stores there the text session session's first model call got (POST
+// /worker/session-brief). Implemented by Factoryd; tests substitute a fake.
+type Briefer interface {
+	Brief(ctx context.Context, taskID string) (string, error)
+	StoreSessionBrief(ctx context.Context, taskID, session, text string) error
+}
+
 // Escalation is what an agent asks: a human (escalate: the
 // question, why, what the agent would do and the answers it offers), the
 // issue's author (request_info: the question, what it tried, what it
@@ -121,11 +137,14 @@ type Escalation struct {
 	Reason         string   `json:"reason,omitempty"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
-	Tried          string   `json:"tried,omitempty"`
-	Needs          string   `json:"needs,omitempty"`
-	Tool           string   `json:"tool,omitempty"`
-	Need           string   `json:"need,omitempty"`
-	Parts          []string `json:"parts,omitempty"`
+	// Choice is the number from 1 of the choice the agent recommends, 0
+	// for none.
+	Choice int      `json:"choice,omitempty"`
+	Tried  string   `json:"tried,omitempty"`
+	Needs  string   `json:"needs,omitempty"`
+	Tool   string   `json:"tool,omitempty"`
+	Need   string   `json:"need,omitempty"`
+	Parts  []string `json:"parts,omitempty"`
 }
 
 // Escalation kinds.
@@ -143,6 +162,7 @@ var (
 	_ DeploymentReader = (*Factoryd)(nil)
 	_ ImageLooker      = (*Factoryd)(nil)
 	_ Digester         = (*Factoryd)(nil)
+	_ Briefer          = (*Factoryd)(nil)
 )
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
@@ -277,20 +297,35 @@ func (f *Factoryd) Digest(ctx context.Context, taskID string, in DigestIn) (stri
 	return factorydText(b, err)
 }
 
+// Brief returns factoryd's text of task taskID's card brief, which its
+// session's worker reads.
+func (f *Factoryd) Brief(ctx context.Context, taskID string) (string, error) {
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/brief",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+		}{taskID})
+	return factorydText(b, err)
+}
+
+// StoreSessionBrief stores at factoryd text, the first message of task
+// taskID's session session, which its worker built.
+func (f *Factoryd) StoreSessionBrief(ctx context.Context, taskID, session, text string) error {
+	_, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/session-brief",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID  string `json:"task_id"`
+			Session string `json:"session"`
+			Text    string `json:"text"`
+		}{taskID, session, text})
+	return factorydErr(err)
+}
+
 // factorydText is the text of factoryd's {"text"} answer b; a refusal is
-// factoryd's one sentence as the error.
+// factoryd's one sentence as the error (factorydErr).
 func factorydText(b []byte, err error) (string, error) {
-	var pe *providerError
-	if errors.As(err, &pe) {
-		// a refusal and factoryd's 502 (what it asked did not answer) are its
-		// sentences; another 5xx says nothing an agent can act on
-		if sentence := strings.TrimSpace(pe.body); sentence != "" && (pe.status < 500 || pe.status == http.StatusBadGateway) {
-			return "", errors.New(sentence)
-		}
-		return "", fmt.Errorf("factoryd answered %d", pe.status)
-	}
 	if err != nil {
-		return "", err
+		return "", factorydErr(err)
 	}
 	var res struct {
 		Text string `json:"text"`
@@ -299,6 +334,20 @@ func factorydText(b []byte, err error) (string, error) {
 		return "", err
 	}
 	return res.Text, nil
+}
+
+// factorydErr is err of a call to factoryd: a refusal and factoryd's 502
+// (what it asked did not answer) are its one sentence; another 5xx says
+// nothing an agent can act on.
+func factorydErr(err error) error {
+	var pe *providerError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	if sentence := strings.TrimSpace(pe.body); sentence != "" && (pe.status < 500 || pe.status == http.StatusBadGateway) {
+		return errors.New(sentence)
+	}
+	return fmt.Errorf("factoryd answered %d", pe.status)
 }
 
 // toolCaller is who an MCP request is for: the task, read per request,
@@ -372,11 +421,12 @@ type FalIn struct {
 
 type EscalateIn struct {
 	Question       string `json:"question" jsonschema:"what the human must answer or decide"`
-	Reason         string `json:"reason" jsonschema:"why the task cannot go on without it"`
+	Reason         string `json:"reason"`
 	Recommendation string `json:"recommendation" jsonschema:"what you would do and why, at most 2000 bytes"`
-	// factoryd checks the choices where it stores them: a list it cannot
-	// offer is dropped, never refused
-	Choices []string `json:"choices,omitempty" jsonschema:"offer 2 to 5 short answers the human can pick with one click; always leave free text possible"`
+	// a choice a button cannot carry is refused; a list factoryd cannot offer is
+	// dropped there
+	Choices []string `json:"choices,omitempty" jsonschema:"offer 2 to 5 short answers the human can pick with one click, each at most 60 characters in plain words; always leave free text possible"`
+	Choice  string   `json:"choice,omitempty" jsonschema:"the choice you recommend, by its label or its number from 1"`
 }
 
 type RequestInfoIn struct {
@@ -482,8 +532,25 @@ func plainArrays[T any]() *jsonschema.Schema {
 	return s
 }
 
+// withBriefLines is s with the schema text of a brief's fields, the same
+// three lines at every filing door.
+func withBriefLines(s *jsonschema.Schema) *jsonschema.Schema {
+	for name, line := range map[string]string{"title": writingguide.TitleLine, "why": writingguide.WhyLine, "summary": writingguide.SummaryLine} {
+		s.Properties[name].Description = line
+	}
+	return s
+}
+
+// withWhyLine is s with property why described by the brief's why line,
+// the reason an ask's door checks as its why line.
+func withWhyLine(s *jsonschema.Schema, why string) *jsonschema.Schema {
+	s.Properties[why].Description = writingguide.WhyLine
+	return s
+}
+
 var (
-	escalateSchema = plainArrays[EscalateIn]()
+	delegateSchema = withBriefLines(plainArrays[DelegateIn]())
+	escalateSchema = withWhyLine(plainArrays[EscalateIn](), "reason")
 	cutSchema      = plainArrays[RequestCutIn]()
 	proofsSchema   = plainArrays[ProofsIn]()
 )
@@ -548,8 +615,8 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 			return s.requestCut(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDelegate, Description: "File a small follow-up card on the cheap model rung that starts when this card has landed: " +
-		"routine, well-specified work this card need not do itself. Give it a title and a brief a weaker model acts on alone: the files, the change, how to check it. " +
-		"The card depends on this one and builds on its merge. Free."},
+		"routine, well-specified work this card need not do itself. Give it a title, a why line, a summary and a brief a weaker model acts on alone: the files, the change, how to check it. " +
+		"The card depends on this one and builds on its merge. Free.", InputSchema: delegateSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DelegateIn) (*mcp.CallToolResult, any, error) {
 			return s.delegate(ctx, c, in), nil, nil
 		})
@@ -613,7 +680,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 // deployment_health only where the project lists namespaces).
 func (c *toolCaller) allows(tool string) bool {
 	_, p, _ := c.pv.ProjectOf(c.task.Repository)
-	return c.pv.Document.AllowsSessionTool(c.task.Classes, c.task.Source, tool) && policy.OffersTool(tool, p.Namespaces)
+	return c.pv.Document.AllowsSessionTool(c.task.Classes, policy.ToolCard(c.task.Source, c.task.ToolImage), tool) && policy.OffersTool(tool, p.Namespaces)
 }
 
 // paidCall is one paid tool call. prepare validates the arguments and
@@ -693,7 +760,7 @@ func (s *Server) runPaid(ctx context.Context, c *toolCaller, tool string, toolCa
 	up.status = toolStatus(callErr)
 	decision, note := "allowed", ""
 	if cost == nil {
-		note = fmt.Sprintf("; cost not reported, booked the hold %.6f EUR", hold.EUR)
+		note = fmt.Sprintf("; cost not reported, booked the hold %s EUR", textutil.EUR(hold.EUR))
 	}
 	// the provider billed whether or not the agent is still listening; a
 	// cost past the hold (the arguments were bounded to it) is booked in
@@ -793,14 +860,14 @@ func (s *Server) handleChatTool(w http.ResponseWriter, r *http.Request) {
 	case policy.ToolWebSearch:
 		var in SearchIn
 		if json.Unmarshal(body, &in) != nil {
-			refuseArgs(`the body is not a web_search call: {"query": string, "limit": 1 to 10}`)
+			refuseArgs("the body is not a `web_search` call: `{\"query\": string, \"limit\": 1 to 10}`")
 			return
 		}
 		p = s.search(c, in)
 	case policy.ToolWebScrape:
 		var in ScrapeIn
 		if json.Unmarshal(body, &in) != nil {
-			refuseArgs(`the body is not a web_scrape call: {"url": string}`)
+			refuseArgs("the body is not a `web_scrape` call: `{\"url\": string}`")
 			return
 		}
 		p = s.scrape(c, in)
@@ -837,7 +904,15 @@ func toolError(msg string) *mcp.CallToolResult {
 func (s *Server) refuseTool(c *toolCaller, tool, decision, reason string) *mcp.CallToolResult {
 	s.auditTool(c, tool, decision, reason, &c.task.SpentEUR, nil)
 	return toolError("refused by the factory policy (" + decision + "): " + reason +
-		". The tool did not run; do not retry this call.")
+		". The tool did not run. Do not retry this call.")
+}
+
+// refuseBrief audits factoryd's refusal of a brief and hands its lines to
+// the agent whole: each names a fault and its fix, and the corrected call
+// files.
+func (s *Server) refuseBrief(c *toolCaller, tool, lines string) *mcp.CallToolResult {
+	s.auditTool(c, tool, RefusedBrief, lines, &c.task.SpentEUR, nil)
+	return toolError(lines)
 }
 
 func (s *Server) auditTool(c *toolCaller, tool, decision, reason string, spend, hold *float64) {
@@ -1073,14 +1148,50 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 	choices, size := in.Choices, 0
 	for _, ch := range choices {
 		size += len(ch)
+		// a choice is a button a human reads: the agent writes it again
+		if faults := writingguide.ChoiceFaults(ch); len(faults) > 0 {
+			return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
+				"choice %q: %s Each choice is a short answer in plain words, at most %d characters.", ch, strings.Join(faults, " "), writingguide.MaxChoice))
+		}
+	}
+	pick, refusal := pickOf(strings.TrimSpace(in.Choice), choices)
+	if refusal != "" {
+		return s.refuseTool(c, tool, "refused_arguments", refusal)
 	}
 	if len(choices) > maxChoices || size > maxChoicesBytes {
 		// factoryd's body cap would refuse the question with them
 		log.Printf("task %s: escalate's choices are dropped: more than %d, or over %d bytes in all", c.task.ID, maxChoices, maxChoicesBytes) // #nosec G706 -- the task id is the stored row's, found by the verified JWT
-		choices = nil
+		choices, pick = nil, 0
 	}
-	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: choices}, "escalated",
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: choices, Choice: pick}, "escalated",
 		"escalated; this session will end. Policy decides who answers; an ask nothing settles always reaches a human, and the task resumes with the answer. Stop working now.")
+}
+
+// pickOf is the number from 1 of the one of choices pick names, by its
+// label or its number; 0 for no pick, and a refusal naming the choices
+// for a pick that names none of them.
+func pickOf(pick string, choices []string) (int, string) {
+	if pick == "" {
+		return 0, ""
+	}
+	if n, err := strconv.Atoi(pick); err == nil && n >= 1 && n <= len(choices) {
+		return n, ""
+	}
+	if i := slices.IndexFunc(choices, func(c string) bool { return strings.TrimSpace(c) == pick }); i >= 0 {
+		return i + 1, ""
+	}
+	if len(choices) == 0 {
+		return 0, fmt.Sprintf("choice %q names none of your choices: you offered none.", pick)
+	}
+	named := make([]string, len(choices))
+	for i, c := range choices {
+		named[i] = fmt.Sprintf("%d %q", i+1, strings.TrimSpace(c))
+	}
+	list := named[len(named)-1]
+	if len(named) > 1 {
+		list = strings.Join(named[:len(named)-1], ", ") + " or " + list
+	}
+	return 0, fmt.Sprintf("choice %q names none of your choices: name one by its label or its number, %s.", pick, list)
 }
 
 // requestInfo hands the agent's information request to factoryd, which
@@ -1176,7 +1287,7 @@ func (s *Server) taskCosts(ctx context.Context, c *toolCaller, in TaskCostsIn) *
 			return ok && class.Session == policy.SessionPlan
 		}) {
 			return s.refuseTool(c, tool, "refused_capability",
-				"task_id is a read of the classes that supervise (a plan session): leave it out for the caller's own figures")
+				"`task_id` is a read of the classes that supervise (a plan session): leave it out for the caller's own figures")
 		}
 		named, ok, err := s.opts.Store.Task(ctx, id)
 		switch {
@@ -1257,11 +1368,11 @@ func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImag
 	in.Path, in.CardImage, in.Ask = strings.TrimSpace(in.Path), strings.TrimSpace(in.CardImage), strings.TrimSpace(in.Ask)
 	switch {
 	case (in.Path == "") == (in.CardImage == ""):
-		return s.refuseTool(c, tool, "refused_arguments", "name exactly one of path (a workspace file) and card_image (an image on the card's issue)")
+		return s.refuseTool(c, tool, "refused_arguments", "name exactly one of `path` (a workspace file) and `card_image` (an image on the card's issue)")
 	case len(in.Path) > maxImagePath:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("path is longer than %d bytes", maxImagePath))
 	case len(in.CardImage) > maxCardImage:
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("card_image is longer than %d bytes: name the image or paste its /attachments/ link", maxCardImage))
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("`card_image` is longer than %d bytes: name the image or paste its /attachments/ link", maxCardImage))
 	case utf8.RuneCountInString(in.Ask) > maxImageAsk:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("ask is longer than %d characters", maxImageAsk))
 	}
@@ -1367,7 +1478,7 @@ func (s *Server) fileProofs(ctx context.Context, c *toolCaller, in ProofsIn) *mc
 	case len(in.Proofs) == 0:
 		return s.refuseTool(c, tool, "refused_arguments", "proofs is required: one entry per criterion and hold-out your brief lists")
 	case code > maxProofsCall:
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("the proofs carry %d bytes of code; one call carries at most %d", code, maxProofsCall))
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("the proofs carry %d bytes of code, and one call carries at most %d", code, maxProofsCall))
 	case s.opts.ProofsFiler == nil:
 		return s.refuseTool(c, tool, "refused_capability", "no proofs hand-over is wired")
 	}
@@ -1380,7 +1491,7 @@ func (s *Server) fileProofs(ctx context.Context, c *toolCaller, in ProofsIn) *mc
 	}
 	if len(res.Findings) > 0 {
 		s.auditTool(c, tool, "proofs_refused", fmt.Sprintf("filing %d, %d findings", res.Filing, len(res.Findings)), &c.task.SpentEUR, nil)
-		next := fmt.Sprintf("correct it and file again in this session; filings left: %d", res.Left)
+		next := fmt.Sprintf("correct it and file again in this session. Filings left: %d", res.Left)
 		if res.Left == 0 {
 			next = "no filing is left: end the session"
 		}
@@ -1409,7 +1520,11 @@ func (s *Server) delegate(ctx context.Context, c *toolCaller, in DelegateIn) *mc
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
 	defer cancel()
-	res, err := s.opts.Delegator.Delegate(ctx, c.task.ID, Delegation{Title: title, Brief: brief})
+	res, err := s.opts.Delegator.Delegate(ctx, c.task.ID, Delegation{Title: in.Title, Why: in.Why, Summary: in.Summary, Brief: brief})
+	var pe *providerError
+	if errors.As(err, &pe) && pe.decision == RefusedBrief {
+		return s.refuseBrief(c, tool, strings.TrimSpace(pe.body))
+	}
 	if err != nil {
 		s.auditTool(c, tool, "error_delegate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the card did not reach factoryd: " + err.Error())
@@ -1428,8 +1543,11 @@ func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Esc
 		// factoryd refuses what this session cannot ask, as a report
 		// session's request_tool
 		var pe *providerError
-		if errors.As(err, &pe) && pe.status == http.StatusUnprocessableEntity {
+		switch {
+		case errors.As(err, &pe) && pe.status == http.StatusUnprocessableEntity:
 			return s.refuseTool(c, tool, "refused_session", strings.TrimSpace(pe.body))
+		case errors.As(err, &pe) && pe.decision == RefusedBrief:
+			return s.refuseBrief(c, tool, strings.TrimSpace(pe.body))
 		}
 		s.auditTool(c, tool, "error_escalate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the escalation did not reach factoryd: " + err.Error())

@@ -14,8 +14,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// answerRequest answers approval request q's case with res through Act.
+// answerRequest answers approval request q's case with res through Act: a
+// board action with its work, any other as Act runs it.
 func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.ApprovalRequest, res factoryd.Resolution) (string, error) {
+	if len(res.Note) > factoryd.MaxAnswer {
+		return "", answerFits(res.Note)
+	}
 	t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
 	if err != nil {
 		return "", refuse(http.StatusInternalServerError, "cannot read the task")
@@ -23,13 +27,24 @@ func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.Approva
 	t.ID, t.Repository = q.TaskID, cmpOr(t.Repository, q.Project)
 	open, err := c.cfg.OpenCasesOf(ctx, t.ID)
 	if err != nil {
-		return "", refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+		return "", refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was answered. Try again.")
 	}
-	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return approvalOf(q, k) })
+	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q, k) })
 	if i < 0 {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Approval request %d has no live case yet: reload the board.", q.ID))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Approval request %d has no live ask yet. Reload the board.", q.ID))
+	}
+	if !boardWorks(open[i], res) {
+		out, err := c.actOn(ctx, a, t, open[i].ID, res, nil)
+		return out.Text, err
 	}
 	return c.boardAct(ctx, a, t, open[i], res)
+}
+
+// boardWorks says the console's code does the work of answer res on case
+// k: a board action, and the re-run of a merge case's checks, which
+// decides the case's request.
+func boardWorks(k factoryd.Case, res factoryd.Resolution) bool {
+	return factoryd.IsBoardAction(res.Action) || res.Action == factoryd.ActRerunChecks && k.Kind == factoryd.CaseMergeApproval
 }
 
 // boardAct answers case k of card t with board action res through Act,
@@ -80,12 +95,14 @@ func approvalIDOf(k factoryd.Case) int64 {
 func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, res factoryd.Resolution) (string, error) {
 	arg := func(key string) string { s, _ := res.Args[key].(string); return s }
 	switch res.Action {
-	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria, factoryd.ActDenyCriteria:
+	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria, factoryd.ActRerunChecks:
 		q, err := c.pendingRequest(ctx, a, approvalIDOf(k))
 		if err != nil {
 			return "", err
 		}
 		switch res.Action {
+		case factoryd.ActRerunChecks:
+			return c.rerunChecks(ctx, a, q)
 		case factoryd.ActApproveMerge:
 			fund, _ := res.Args["fund_eur"].(float64)
 			return c.approveMerge(ctx, a, q, fund, res.Note)
@@ -95,8 +112,6 @@ func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k fac
 			return c.grantCriteria(ctx, a, q)
 		case factoryd.ActConfirmCriteria:
 			return c.confirmCriteria(ctx, a, q, res.Note)
-		case factoryd.ActDenyCriteria:
-			return c.denyCriteria(ctx, a, q, res.Note)
 		}
 		verb := arg("verdict")
 		for from, to := range criteriaVerdicts {
@@ -128,8 +143,11 @@ type uploadsKey struct{}
 
 // fileFromCase files the card of a root cause outside card t, whose case k it
 // names in the body, as the chat's new_card does: the args carry its title,
-// body, size, track (direct unless named), the reasons, image, carried pull
-// request and roadmap item.
+// why line, summary, body, size, track (direct unless named), the
+// reasons, image, carried pull request and roadmap item. The chat's
+// filing passes the door on the try ctx carries; a human's on its first,
+// or with as_written ticked on the last, which files a refused brief
+// marked unchecked, as the New task form's File as written does.
 func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, args map[string]any) (string, error) {
 	str := func(key string) string { s, _ := args[key].(string); return s }
 	num := func(key string) int64 {
@@ -137,13 +155,25 @@ func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k 
 		n, _ := strconv.ParseInt(string(b), 10, 64)
 		return n
 	}
-	from := "Filed from " + issueRef(t.ID, t.IssueNumber)
+	from := "Filed from " + factoryd.ShownName(t)
 	if k.ID != 0 {
 		from += fmt.Sprintf(", case %d (%s)", k.ID, k.Kind)
 	}
-	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, t.Repository), str("title"), strings.TrimSpace(str("body")+"\n\n"+from+"."),
+	try := 1
+	switch {
+	case a.via == factoryd.ViaChat:
+		try = factoryd.BriefTry(ctx)
+	case str(factoryd.AsWritten) == "yes":
+		try = factoryd.BriefTries
+	}
+	b := factoryd.BriefText{Title: str("title"), Why: str("why"), Summary: str("summary"), Body: strings.TrimSpace(str("body") + "\n\n" + from + ".")}
+	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, t.Repository), b, try,
 		cmpOr(str("track"), policy.TrackDirect), str("track_reason"), "", str("size"), str("rung"), str("rung_reason"), str("image"),
 		num("carry_pr"), int(num("roadmap_item")), num("refile_of"))
+	var no *briefRefusal
+	if errors.As(err, &no) && a.via != factoryd.ViaChat && try < factoryd.BriefTries {
+		return "", &briefRefusal{refusal{no.status, no.msg + " Rewrite it, or tick file as written and press File card again: the card files marked unchecked."}}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -155,7 +185,8 @@ func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k 
 }
 
 // restartPlan ends the plan of card t as its Close does and files its
-// objective anew as a plan, with note the shape to take.
+// brief anew as a plan that continues it, with note the shape to take:
+// the old plan's text, which no writer corrects now, files as it stands.
 func (c *Console) restartPlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	plan := t
 	if factoryd.InPlan(t) && t.Track != policy.TrackPlan {
@@ -168,9 +199,9 @@ func (c *Console) restartPlan(ctx context.Context, a actor, t factoryd.Task, not
 	if err != nil {
 		return "", err
 	}
-	title, body, _ := strings.Cut(plan.Objective, "\n\n")
-	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, plan.Repository), title,
-		strings.TrimSpace(body+"\n\nThis restarts plan "+issueRef(plan.ID, plan.IssueNumber)+", which was closed. The shape to take:\n\n"+note),
+	b := factoryd.BriefText{Title: factoryd.CardTitle(plan), Why: plan.Why, Summary: plan.Summary,
+		Body: factoryd.ContinuesBody(plan) + "\n\nIt restarts the plan, which was closed. The shape to take:\n\n" + note}
+	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, plan.Repository), b, factoryd.BriefTries,
 		policy.TrackPlan, "", "", "", "", "", "", 0, 0, 0)
 	if err != nil {
 		return closed + " The new plan could not be filed: " + strings.TrimSuffix(errText(err), ".") + ". File it again with the shape in your note.", nil

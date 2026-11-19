@@ -244,7 +244,7 @@ func cardGone(ctx context.Context, store Store, c Task) (string, error) {
 	case !ok:
 		return ReasonCardGone + c.Parent + " is not there", nil
 	case parent.Status == "closed" || parent.Status == "failed" && c.Source != SourceProver:
-		return ReasonCardGone + cardName(parent) + " ended " + parent.Status, nil
+		return ReasonCardGone + ShownName(parent) + " ended " + parent.Status, nil
 	}
 	return "", nil
 }
@@ -308,7 +308,7 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 	}
 	repo, err := SplitRepo(plan.Repository)
 	if err == nil {
-		_, err = forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, plan.IssueNumber, fmt.Sprintf("factoryd: all %d cards of this plan are done.", len(cards)))
+		_, err = forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, plan.IssueNumber, fmt.Sprintf("All %d cards of this plan are done.", len(cards)))
 	}
 	if err != nil {
 		log.Printf("task %s: comment all_children_done on plan %s: %v", t.ID, t.Parent, err)

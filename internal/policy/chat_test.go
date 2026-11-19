@@ -92,7 +92,7 @@ func TestClassListsDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !tree.Document.AllowsSessionTool([]string{"coder"}, "", ToolDigest) {
+	if !tree.Document.AllowsSessionTool([]string{"coder"}, false, ToolDigest) {
 		t.Fatal("coder does not allow digest")
 	}
 	if got := tree.Document.FactoryModel([]string{"coder"}, PurposeDigest); got != Small {

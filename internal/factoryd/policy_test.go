@@ -766,7 +766,7 @@ func TestConfigAlarm(t *testing.T) {
 	var task Task
 	for _, task = range store.tasks {
 	}
-	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.\n\n", "https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory",
+	for _, want := range []string{"Fix the rejected configuration in factory/ and push\n\n", "The commit c9c9c9c9c9 of factory/ was rejected. ", "https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory",
 		"Version 12 (commit c8c8c8c8c8c8) stays current.", "on_findings \"maybe\""} {
 		if !strings.Contains(task.Objective, want) {
 			t.Errorf("the card lacks %q:\n%s", want, task.Objective)
@@ -788,7 +788,7 @@ func TestConfigAlarm(t *testing.T) {
 		"attempts=0,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-infra,state=done,track=none": 1,
 	})
 	if closes := factoryCloses(store, task.ID); len(fj.closed) != 0 || len(fj.comments) != 0 ||
-		!slices.Equal(closes, []string{"factoryd loaded commit cacacacacaca (version 13); this rejection is resolved."}) {
+		!slices.Equal(closes, []string{"The factory loaded commit cacacac as version 13, so this rejection is resolved."}) {
 		t.Fatalf("closed %v, comments %q, records %q; want the card's close recorded alone", fj.closed, fj.comments, closes)
 	}
 	if got := store.tasks[task.ID]; got.Status != "done" || got.FinishedAt == nil {

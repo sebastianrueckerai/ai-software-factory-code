@@ -11,8 +11,6 @@ var (
 	errHeld              = factoryd.PgErrHeld
 	toInt                = factoryd.PgToInt
 	rung1Off             = factoryd.PgRung1Off
-	monthCapCardQuestion = factoryd.PgMonthCapCardQuestion
-	depFailedReason      = factoryd.PgDepFailedReason
 	planCardFailedReason = factoryd.PgPlanCardFailedReason
 )
 
@@ -22,35 +20,49 @@ const (
 	capReached = factoryd.PgCapReached
 	leftQueue  = factoryd.PgLeftQueue
 
-	monthCapReached      = factoryd.PgMonthCapReached
-	projectCapReached    = factoryd.PgProjectCapReached
-	noModelAnswer        = factoryd.PgNoModelAnswer
-	plainInfo            = factoryd.PgPlainInfo
-	podNeverStarted      = factoryd.PgPodNeverStarted
-	screeningAsks        = factoryd.PgScreeningAsks
-	staleQuiet           = factoryd.PgStaleQuiet
-	startRefused         = factoryd.PgStartRefused
-	stepReplan           = factoryd.PgStepReplan
-	providerRefused      = factoryd.PgProviderRefused
-	timeCapReached       = factoryd.PgTimeCapReached
-	timeCapReachedLadder = factoryd.PgTimeCapReachedLadder
-	GateStopped          = factoryd.GateStopped
+	monthCapReached   = factoryd.PgMonthCapReached
+	projectCapReached = factoryd.PgProjectCapReached
+	noModelAnswer     = factoryd.PgNoModelAnswer
+	podNeverStarted   = factoryd.PgPodNeverStarted
+	screeningAsks     = factoryd.PgScreeningAsks
+	staleQuiet        = factoryd.PgStaleQuiet
+	startRefused      = factoryd.PgStartRefused
+	stepReplan        = factoryd.PgStepReplan
+	providerRefused   = factoryd.PgProviderRefused
+	GateStopped       = factoryd.GateStopped
 
 	// Const aliases the moved files reach in their own const expressions:
 	// a var alias is no constant, so these carry the const-ness over.
-	CheckPolicyClass = factoryd.CheckPolicyClass
-	RungHandUp       = factoryd.RungHandUp
+	CheckPolicyClass     = factoryd.CheckPolicyClass
+	RungHandUp           = factoryd.RungHandUp
+	AskInfo              = factoryd.AskInfo
+	TimeCapReached       = factoryd.TimeCapReached
+	TimeCapReachedLadder = factoryd.TimeCapReachedLadder
+	SourceWebhook        = factoryd.SourceWebhook
+	IntakeInfoRequest    = factoryd.IntakeInfoRequest
+	CasePlanHeld         = factoryd.CasePlanHeld
+	CaseAgentRequestInfo = factoryd.CaseAgentRequestInfo
+	ActivityRequestInfo  = factoryd.ActivityRequestInfo
+	ActivityRerunChecks  = factoryd.ActivityRerunChecks
+	SourceScreening      = factoryd.SourceScreening
+	SourceProver         = factoryd.SourceProver
+	AnswerDropAndEnd     = factoryd.AnswerDropAndEnd
+	HeldPlanSettled      = factoryd.HeldPlanSettled
 )
 
 // Exported factoryd names the moved files use bare.
 var (
+	FaceOf                    = factoryd.FaceOf
+	RecommendationOf          = factoryd.RecommendationOf
+	MonthCapCardQuestion      = factoryd.MonthCapCardQuestion
+	DepFailedReason           = factoryd.DepFailedReason
+	IssueQuestion             = factoryd.IssueQuestion
 	ActAnswerCriteria         = factoryd.ActAnswerCriteria
 	ActApproveMerge           = factoryd.ActApproveMerge
 	ActClose                  = factoryd.ActClose
 	ActConfirmCriteria        = factoryd.ActConfirmCriteria
 	ActContinue               = factoryd.ActContinue
 	ActDeployNow              = factoryd.ActDeployNow
-	ActDenyCriteria           = factoryd.ActDenyCriteria
 	ActDenyMerge              = factoryd.ActDenyMerge
 	ActExtend                 = factoryd.ActExtend
 	ActFund                   = factoryd.ActFund
@@ -71,7 +83,6 @@ var (
 	AnswerDismiss             = factoryd.AnswerDismiss
 	AnswersByOffers           = factoryd.AnswersByOffers
 	AnswerCheckAgain          = factoryd.AnswerCheckAgain
-	AnswerFund                = factoryd.AnswerFund
 	AnswerGo                  = factoryd.AnswerGo
 	AnswerHoldWait            = factoryd.AnswerHoldWait
 	AnswerPark                = factoryd.AnswerPark
@@ -81,7 +92,6 @@ var (
 	AskOffers                 = factoryd.AskOffers
 	AsklessReason             = factoryd.AsklessReason
 	BriefTerminal             = factoryd.BriefTerminal
-	BudgetQuestion            = factoryd.BudgetQuestion
 	CapReached                = factoryd.CapReached
 	CaseMonthCap              = factoryd.CaseMonthCap
 	CaseFactoryMonthCap       = factoryd.CaseFactoryMonthCap
@@ -158,7 +168,6 @@ var (
 	IdentityKey               = factoryd.IdentityKey
 	LeaveCaseToAct            = factoryd.LeaveCaseToAct
 	NewEventBus               = factoryd.NewEventBus
-	OffersFor                 = factoryd.OffersFor
 	OpenStore                 = factoryd.OpenStore
 	PgRigRunner               = factoryd.PgRigRunner
 	PgRunner                  = factoryd.PgRunner
@@ -212,7 +221,6 @@ var (
 	EventQuestionWithdrawn    = factoryd.EventQuestionWithdrawn
 	FacedTries                = factoryd.FacedTries
 	FactCheckinMark           = factoryd.FactCheckinMark
-	FindingsLead              = factoryd.FindingsLead
 	ForcedToolChoice          = factoryd.ForcedToolChoice
 	HandedUpBy                = factoryd.HandedUpBy
 	HumanCardKind             = factoryd.HumanCardKind
@@ -265,7 +273,6 @@ var (
 	SourceConfig              = factoryd.SourceConfig
 	SourceRollRefused         = factoryd.SourceRollRefused
 	TripSize                  = factoryd.TripSize
-	orderedActions            = factoryd.PgOrderedActions
 	replanText                = factoryd.PgReplanText
 	replanClosers             = factoryd.PgReplanClosers
 	EventGateAudit            = factoryd.EventGateAudit
@@ -294,6 +301,8 @@ var (
 )
 
 type (
+	Facts            = factoryd.Facts
+	AgentAsk         = factoryd.AgentAsk
 	ActInput         = factoryd.ActInput
 	ActResult        = factoryd.ActResult
 	ApprovalRequest  = factoryd.ApprovalRequest

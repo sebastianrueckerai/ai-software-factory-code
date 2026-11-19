@@ -92,7 +92,6 @@ var accessTable = map[string]accessRule{
 	"GET /projects/{name}/metrics":                 rProject,
 	"GET /projects/{name}/events/stream":           rMember, // follows() judges the project's sight
 	"GET /cards/{id}":                              {need: writer, scope: scCard, hide: true},
-	"GET /approvals/{id}/criteria/{at}":            rMember, // criterionFragment judges the project's sight, as the board does
 	"GET /projects/{name}/cards/{id}/cases/{case}": rMember, // caseFragment judges the project's sight, as the board does
 	"GET /cards/{id}/drawer":                       rCard,
 	"GET /tasks/{id}/digest":                       rMember, // cardLife judges the project's sight, as the board does
@@ -115,27 +114,13 @@ var accessTable = map[string]accessRule{
 	"POST /tasks":                               rFactory,
 	"POST /tasks/{id}/answer":                   rCard,
 	"POST /tasks/{id}/resolve":                  rCard,
-	"POST /tasks/{id}/fund":                     {need: approver, scope: scCard, what: "fund a card"},
-	"POST /tasks/{id}/extend":                   {need: approver, scope: scCard, what: "extend a card"},
-	"POST /tasks/{id}/summary":                  rCard,
-	"POST /tasks/{id}/accent":                   rCard,
 	"POST /cards/{id}/thread":                   rCard,
 	"POST /tasks/{id}/plan/answer":              rCard,
 	"POST /tasks/{id}/plan/holdout":             rCard,
 	"POST /tasks/{id}/plan/changes":             rCard,
-	"POST /tasks/{id}/retry":                    {need: approver, scope: scCard, what: "retry a card"},
-	"POST /tasks/{id}/retry-freeze":             {need: approver, scope: scCard, what: "end a provider freeze"},
-	"POST /tasks/{id}/close":                    rCard,
-	"POST /tasks/{id}/steer":                    rCard,
-	"POST /tasks/{id}/replan":                   {need: approver, scope: scCard, what: "replan a card"},
-	"POST /tasks/{id}/hold":                     rCard,
-	"POST /tasks/{id}/release-hold":             rCard,
 	"POST /projects/{name}/deploy-now":          {need: approver, scope: scProject, what: "deploy a held production"},
 	"POST /approvals/{id}/approve":              {need: approver, scope: scApproval, what: "authorize spend"},
 	"POST /approvals/{id}/deny":                 {need: writer, scope: scApproval},
-	"POST /approvals/{id}/criterion":            {need: approver, scope: scApproval, what: "decide a criterion"},
-	"POST /approvals/{id}/confirm":              {need: approver, scope: scApproval, what: "confirm the delivered cards"},
-	"POST /approvals/{id}/rerun":                {need: writer, scope: scApproval},
 	"POST /resources/{id}/promote":              {need: factoryWriter | approver, scope: scFactory, what: "authorize spend"},
 	"POST /resources/{id}/release":              rFactory,
 	"POST /projects":                            {need: factoryWriter | approver, scope: scFactory, what: "add a project"},
@@ -188,7 +173,6 @@ var accessTable = map[string]accessRule{
 	"answer_criteria":  {need: approver, scope: scCard, what: "decide a plan's criteria"},
 	"deny_merge":       rCard,
 	"rerun_checks":     rCard,
-	"set_summary":      rCard,
 	"set_accent":       rCard,
 	"invite":           {need: approver, scope: scChat, what: "invite a human"},
 	"github_export":    {need: writer | approver, scope: scChat, what: "export it to GitHub"},
@@ -260,13 +244,18 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		return t.Repository, "task " + t.ID, nil
+		return t.Repository, "card " + cardRef(button(r), t), nil
 	case scApproval:
 		q, err := c.pendingRequest(ctx, button(r), pathID(r))
 		if err != nil {
 			return "", "", err
 		}
-		return q.Project, fmt.Sprintf("approval request %d", q.ID), nil
+		// the refusal names the request's card, not the request's number
+		subject := "the card of this request"
+		if t, ok, err := c.cfg.Tasks.Task(ctx, q.TaskID); err == nil && ok {
+			subject = "card " + cardRef(button(r), t)
+		}
+		return q.Project, subject, nil
 	case scTask:
 		t, ok, err := c.cfg.Tasks.Task(ctx, r.PathValue("id"))
 		switch {
@@ -274,9 +263,9 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 			log.Printf("console: task %s: %v", r.PathValue("id"), err)
 			return "", "", refuse(http.StatusInternalServerError, "cannot read the task")
 		case !ok:
-			return "", "", refuse(http.StatusNotFound, "There is no card "+r.PathValue("id")+" in this project.")
+			return "", "", refuse(http.StatusNotFound, "This project holds no such card.")
 		}
-		return t.Repository, "task " + t.ID, nil
+		return t.Repository, "card " + cardRef(button(r), t), nil
 	}
 	return "", "", nil
 }
@@ -303,7 +292,7 @@ func (c *Console) route(pattern string, handler http.Handler) http.Handler {
 		if err != nil && rule.hide {
 			var no *refusal
 			if errors.As(err, &no) && no.status == http.StatusForbidden {
-				err = refuse(http.StatusNotFound, "There is no card "+r.PathValue("id")+" in this project.")
+				err = refuse(http.StatusNotFound, "This project holds no such card.")
 			}
 		}
 		if err != nil {
@@ -396,7 +385,7 @@ func (t *turn) scopeOf(sc scope, in toolInput) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		return task.Repository, "task " + in.TaskID, nil
+		return task.Repository, "card " + cardRef(t.a, task), nil
 	}
 	return "", "", nil
 }

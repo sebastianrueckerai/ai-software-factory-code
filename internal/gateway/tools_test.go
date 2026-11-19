@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -357,7 +358,7 @@ func TestEscalateSchemaOffersChoices(t *testing.T) {
 	}
 	choices := schema.Properties["choices"]
 	if fmt.Sprint(choices.Type) != "array" || fmt.Sprint(choices.Items.Type) != "string" ||
-		choices.Description != "offer 2 to 5 short answers the human can pick with one click; always leave free text possible" {
+		choices.Description != "offer 2 to 5 short answers the human can pick with one click, each at most 60 characters in plain words; always leave free text possible" {
 		t.Fatalf("choices = %+v in %s", choices, b)
 	}
 	if !slices.Equal(schema.Required, []string{"question", "reason", "recommendation"}) {
@@ -618,7 +619,7 @@ func TestFalUnboundedUnitRefusedBeforeTheCall(t *testing.T) {
 func TestToolRefusedByClass(t *testing.T) {
 	e := newToolEnv(t, running("odd"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	text, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": "https://example.com"})
-	if !isErr || !strings.Contains(text, "refused_capability") || !strings.Contains(text, "do not retry") {
+	if !isErr || !strings.Contains(text, "refused_capability") || !strings.Contains(text, "Do not retry") {
 		t.Fatalf("result = %q", text)
 	}
 	if a := e.lastAudit(t); a.Decision != "refused_capability" || a.Tool != policy.ToolWebScrape || *a.PolicyVersion != 7 {
@@ -775,21 +776,22 @@ func TestEscalateToHuman(t *testing.T) {
 
 // A choice list of more than 5 entries or over 1 KiB is dropped before
 // factoryd, whose body cap would refuse the question with it: the question
-// is delivered without choices, never refused. 1024 bytes pass.
+// is delivered without choices. 1024 bytes pass.
 func TestEscalateDropsAnOversizedChoiceList(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	many := make([]string, 300)
 	for i := range many {
-		many[i] = strings.Repeat("x", 230)
+		many[i] = "x"
 	}
+	wide := strings.Repeat("😀", 60) // 240 bytes
 	for _, tc := range []struct {
 		name    string
 		choices []string
 		want    []string
 	}{
 		{"300 choices", many, nil},
-		{"1025 bytes", []string{strings.Repeat("a", 600), strings.Repeat("b", 425)}, nil},
-		{"1024 bytes", []string{strings.Repeat("a", 600), strings.Repeat("b", 424)}, []string{strings.Repeat("a", 600), strings.Repeat("b", 424)}},
+		{"1200 bytes", []string{wide, wide, wide, wide, wide}, nil},
+		{"960 bytes", []string{wide, wide, wide, wide}, []string{wide, wide, wide, wide}},
 	} {
 		before := len(e.escalator.calls)
 		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT", "choices": tc.choices})
@@ -797,6 +799,61 @@ func TestEscalateDropsAnOversizedChoiceList(t *testing.T) {
 			e.escalator.calls[before] != "42|escalation|Which license?|none named|MIT||" || !slices.Equal(e.escalator.choices[before], tc.want) {
 			t.Errorf("%s: %q, delivered %q with choices %q; want the question with %d", tc.name, text, e.escalator.calls[before:], e.escalator.choices[before:], len(tc.want))
 		}
+	}
+}
+
+// A choice is a button a human reads: one past 60 characters, empty, or
+// in the first person is refused, naming the fault, so the agent
+// writes it again; a refused call reaches no factoryd.
+func TestEscalateRefusesAChoiceTheGuideFaults(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for choice, want := range map[string]string{
+		strings.Repeat("a", 61): "The answer has 61 characters, at most 60.",
+		" ":                     "The answer is empty.",
+		"I use MIT":             `The answer says "I".`,
+	} {
+		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT",
+			"choices": []string{"MIT", choice}})
+		if !isErr || !strings.Contains(text, "refused_arguments") || !strings.Contains(text, want) {
+			t.Errorf("choice %q: %q, want a refusal naming %q", choice, text, want)
+		}
+	}
+	if len(e.escalator.calls) != 0 {
+		t.Fatalf("refused choices reached factoryd: %v", e.escalator.calls)
+	}
+}
+
+// The agent may pick one of its choices by its label or its number from 1:
+// factoryd gets the pick's number. A pick that names none of them is
+// refused with the choices it may name, and reaches no factoryd.
+func TestEscalateTakesTheAgentsPick(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for pick, want := range map[string]int{"Apache-2.0": 2, " MIT ": 1, "2": 2, "": 0} {
+		before := len(e.escalator.asks)
+		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT",
+			"choices": []string{"MIT", "Apache-2.0"}, "choice": pick})
+		if isErr || len(e.escalator.asks) != before+1 || e.escalator.asks[before].Choice != want {
+			t.Errorf("pick %q: %q, delivered %+v; want choice %d", pick, text, e.escalator.asks[before:], want)
+		}
+	}
+	before := len(e.escalator.asks)
+	for pick, args := range map[string]map[string]any{
+		"GPL-3.0": {"choices": []string{"MIT", "Apache-2.0"}},
+		"3":       {"choices": []string{"MIT", "Apache-2.0"}},
+		"MIT":     {},
+	} {
+		args["question"], args["reason"], args["recommendation"], args["choice"] = "Which license?", "none named", "MIT", pick
+		text, isErr := e.call(t, policy.ToolEscalate, args)
+		want := `choice "` + pick + `" names none of your choices: name one by its label or its number, 1 "MIT" or 2 "Apache-2.0".`
+		if args["choices"] == nil {
+			want = `choice "` + pick + `" names none of your choices: you offered none.`
+		}
+		if !isErr || !strings.Contains(text, "refused_arguments") || !strings.Contains(text, want) {
+			t.Errorf("pick %q: %q, want the refusal %q", pick, text, want)
+		}
+	}
+	if len(e.escalator.asks) != before {
+		t.Fatalf("refused picks reached factoryd: %+v", e.escalator.asks[before:])
 	}
 }
 
@@ -920,11 +977,29 @@ func TestRequestTool(t *testing.T) {
 	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this session cannot wait for a new image: finish with what the sandbox has\n"}
 	text, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"})
 	if want := "refused by the factory policy (refused_session): this session cannot wait for a new image: finish with what the sandbox has. " +
-		"The tool did not run; do not retry this call."; !isErr || text != want {
+		"The tool did not run. Do not retry this call."; !isErr || text != want {
 		t.Fatalf("a refused ask = %q, want %q", text, want)
 	}
 	if a := e.lastAudit(t); a.Decision != "refused_session" || a.Reason != "this session cannot wait for a new image: finish with what the sandbox has" {
 		t.Fatalf("audit = %+v", a)
+	}
+	// factoryd's filing door refuses an ask's text: the agent reads the
+	// lines whole and asks again
+	const lines = "The ask has 111 characters. Keep it under 110."
+	e.escalator.err = &providerError{status: http.StatusBadRequest, body: lines + "\n", decision: RefusedBrief}
+	if text, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"}); !isErr || text != lines {
+		t.Fatalf("a refused brief = %q, want %q", text, lines)
+	}
+	if a := e.lastAudit(t); a.Decision != RefusedBrief || a.Reason != lines {
+		t.Fatalf("audit = %+v", a)
+	}
+	// any other 400 is no door's refusal: its audit keeps the error label
+	e.escalator.err = &providerError{status: http.StatusBadRequest, body: "task_id is required\n"}
+	if _, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"}); !isErr {
+		t.Fatal("a 400 passed")
+	}
+	if a := e.lastAudit(t); a.Decision != "error_escalate" {
+		t.Fatalf("a validation 400's audit = %+v, want error_escalate", a)
 	}
 	e.escalator.err = nil
 	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
@@ -933,16 +1008,19 @@ func TestRequestTool(t *testing.T) {
 	if text, isErr := unlisted.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") {
 		t.Fatalf("unlisted = %q", text)
 	}
-	// a tool card declares tools its own sandbox never gets: no request_tool
-	card := running("coder")
-	card.Source = policy.SourceToolRequest
-	tc := newToolEnv(t, card, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	if res, err := tc.session.ListTools(context.Background(), nil); err != nil || slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolRequestTool }) {
-		t.Fatalf("a tool card's tools list request_tool: %v", err)
-	}
-	if text, isErr := tc.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") ||
-		!strings.Contains(text, "a tool card declares tools its own sandbox never gets") || len(tc.escalator.asks) != 0 {
-		t.Fatalf("a tool card's request_tool = %q", text)
+	// a tool card declares tools its own sandbox never gets: no request_tool,
+	// nor for a card that continues one and carries its image
+	for _, k := range []struct{ source, image string }{{policy.SourceToolRequest, ""}, {"successor", "video"}} {
+		card := running("coder")
+		card.Source, card.ToolImage = k.source, k.image
+		tc := newToolEnv(t, card, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+		if res, err := tc.session.ListTools(context.Background(), nil); err != nil || slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolRequestTool }) {
+			t.Fatalf("%s: a tool card's tools list request_tool: %v", k.source, err)
+		}
+		if text, isErr := tc.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") ||
+			!strings.Contains(text, "a tool card declares tools its own sandbox never gets") || len(tc.escalator.asks) != 0 {
+			t.Fatalf("%s: a tool card's request_tool = %q", k.source, text)
+		}
 	}
 }
 
@@ -1019,7 +1097,7 @@ func TestRequestCut(t *testing.T) {
 	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this card cannot be cut: finish it as it is, or escalate\n"}
 	text, isErr = e.call(t, policy.ToolRequestCut, map[string]any{"reason": "r", "parts": []string{"a", "b"}})
 	if want := "refused by the factory policy (refused_session): this card cannot be cut: finish it as it is, or escalate. " +
-		"The tool did not run; do not retry this call."; !isErr || text != want {
+		"The tool did not run. Do not retry this call."; !isErr || text != want {
 		t.Fatalf("a refused cut = %q, want %q", text, want)
 	}
 }
@@ -1216,7 +1294,7 @@ func TestFileProofsTool(t *testing.T) {
 	args := map[string]any{"proofs": []any{proofIn("size_bound", "package size_bound")}}
 	e.proofs.res = ProofsFiled{Filing: 1, Left: 2, Findings: []string{"file_proofs: no proof for size_bound"}}
 	text, isErr := e.call(t, policy.ToolFileProofs, args)
-	if want := "the filing was refused:\n- file_proofs: no proof for size_bound\ncorrect it and file again in this session; filings left: 2"; !isErr || text != want {
+	if want := "the filing was refused:\n- file_proofs: no proof for size_bound\ncorrect it and file again in this session. Filings left: 2"; !isErr || text != want {
 		t.Fatalf("refused = %q (%v), want %q", text, isErr, want)
 	}
 	if a := e.lastAudit(t); a.Decision != "proofs_refused" || a.Tool != policy.ToolFileProofs || a.Reason != "filing 1, 1 findings" {
@@ -1377,7 +1455,7 @@ func TestFalOverBoundResponseBooksTheRealCost(t *testing.T) {
 		t.Fatalf("ledger = %+v, want the real 0.25", l)
 	}
 	a := e.lastAudit(t)
-	if a.Decision != "allowed" || a.OverHold != "COST OVER HOLD: tool fal_run cost 0.250000 EUR against a hold of 0.100000 EUR; booked in full" ||
+	if a.Decision != "allowed" || a.OverHold != "COST OVER HOLD: tool fal_run cost 0.25 EUR against a hold of 0.10 EUR; booked in full" ||
 		!near6(*a.HoldEUR, 0.1) || !near6(*a.SpendEUR, 0.25) {
 		t.Fatalf("audit = %+v", a)
 	}
@@ -1607,7 +1685,7 @@ func TestTaskCostsTaskIDClass(t *testing.T) {
 	e.store.addTask(Task{ID: "43", BudgetEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/code"})
 	text, isErr := e.call(t, policy.ToolTaskCosts, map[string]any{"task_id": "43"})
 	if !isErr || !strings.Contains(text, "refused_capability") ||
-		!strings.Contains(text, "task_id is a read of the classes that supervise (a plan session)") {
+		!strings.Contains(text, "`task_id` is a read of the classes that supervise (a plan session)") {
 		t.Fatalf("coder with task_id = %q, want the refusal naming the parameter", text)
 	}
 	text, isErr = e.call(t, policy.ToolTaskCosts, nil)
@@ -1681,24 +1759,50 @@ func (f *fakeDelegator) Delegate(ctx context.Context, taskID string, d Delegatio
 	return Delegated{Issue: 77, TaskID: "t-child"}, f.err
 }
 
-// The delegate tool hands the child card to factoryd and tells the agent
-// where it went; the session goes on. A brief or title missing is refused
-// before the hand-over.
+// The delegate tool hands the child card's brief to factoryd and tells
+// the agent where it went; the session goes on. Its schema gives the
+// brief's fields the filing door's three lines. A brief missing is refused
+// before the hand-over, and factoryd's refusal of the brief comes back as
+// the tool's refusal, its lines whole.
 func TestDelegateTool(t *testing.T) {
-	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index", "brief": "In store.go add an index on tasks.rung; a test reads it."})
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 3, MaxEUR: 0.2}))
+	for field, line := range map[string]string{"title": "the work, verb first, plain words, under 70 characters",
+		"why": "one sentence, the reason this work exists", "summary": "what gets built, what it changes, how it is checked, under 600 characters"} {
+		if got := delegateSchema.Properties[field].Description; got != line {
+			t.Errorf("the schema's %s = %q, want %q", field, got, line)
+		}
+	}
+	in := map[string]any{"title": "Add the rung index", "why": "So the board reads cards by rung at once.",
+		"summary": "An index on tasks.rung. A test reads the plan.", "brief": "In store.go add an index on tasks.rung; a test reads it."}
+	text, isErr := e.call(t, policy.ToolDelegate, in)
 	if isErr || !strings.Contains(text, "issue #77 (card t-child) on the cheap rung") {
 		t.Fatalf("delegate = %q (%v)", text, isErr)
 	}
 	d := e.delegator
-	if len(d.calls) != 1 || d.calls[0].Title != "Add the index" || !strings.HasPrefix(d.calls[0].Brief, "In store.go") {
+	if len(d.calls) != 1 || d.calls[0] != (Delegation{Title: "Add the rung index", Why: "So the board reads cards by rung at once.",
+		Summary: "An index on tasks.rung. A test reads the plan.", Brief: "In store.go add an index on tasks.rung; a test reads it."}) {
 		t.Fatalf("hand-over = %+v", d.calls)
 	}
 	if a := e.lastAudit(t); a.Decision != "delegated" || a.Tool != policy.ToolDelegate {
 		t.Fatalf("audit = %+v", a)
 	}
-	if text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index"}); !isErr || len(d.calls) != 1 {
+	if text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index", "why": "w", "summary": "s"}); !isErr || len(d.calls) != 1 {
 		t.Fatalf("a delegate without a brief = %q (%v), calls %d; want refused", text, isErr, len(d.calls))
+	}
+	const lines = "The title has 103 characters. Keep it under 70."
+	d.err = &providerError{status: http.StatusBadRequest, body: lines + "\n", decision: RefusedBrief}
+	if text, isErr := e.call(t, policy.ToolDelegate, in); !isErr || text != lines {
+		t.Fatalf("factoryd's refusal of the brief = %q (%v), want %q", text, isErr, lines)
+	}
+	if a := e.lastAudit(t); a.Decision != RefusedBrief {
+		t.Fatalf("audit = %+v, want refused_brief", a)
+	}
+	d.err = &providerError{status: http.StatusBadRequest, body: "task_id, a title of 1 to 255 characters and a brief are required\n"}
+	if _, isErr := e.call(t, policy.ToolDelegate, in); !isErr {
+		t.Fatal("a 400 filed")
+	}
+	if a := e.lastAudit(t); a.Decision != "error_delegate" {
+		t.Fatalf("a validation 400's audit = %+v, want error_delegate", a)
 	}
 }
 
@@ -1716,9 +1820,20 @@ func TestFactorydDelegateClient(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
-	res, err := f.Delegate(context.Background(), "t-1", Delegation{Title: "x", Brief: "y"})
-	if err != nil || res.Issue != 77 || res.TaskID != "t-child" || body != `{"task_id":"t-1","title":"x","brief":"y"}` {
+	res, err := f.Delegate(context.Background(), "t-1", Delegation{Title: "x", Why: "w", Summary: "s", Brief: "y"})
+	if err != nil || res.Issue != 77 || res.TaskID != "t-child" || body != `{"task_id":"t-1","title":"x","why":"w","summary":"s","brief":"y"}` {
 		t.Fatalf("res %+v err %v body %s", res, err, body)
+	}
+	// the door's refusal names its decision, which the error carries
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(HeaderDecision, RefusedBrief)
+		http.Error(w, "The title is empty.", http.StatusBadRequest)
+	}))
+	defer refusing.Close()
+	_, err = (&Factoryd{BaseURL: refusing.URL, Token: "shared", HTTP: refusing.Client()}).Delegate(context.Background(), "t-1", Delegation{Brief: "y"})
+	var pe *providerError
+	if !errors.As(err, &pe) || pe.decision != RefusedBrief || pe.status != http.StatusBadRequest {
+		t.Fatalf("the refusal = %v, want a 400 with the door's decision", err)
 	}
 }
 
@@ -1966,7 +2081,7 @@ func TestDigestToolRefusesBadArguments(t *testing.T) {
 		{map[string]any{"path": strings.Repeat("a", 4097)}, "path is longer than 4096 bytes"},
 		{map[string]any{"path": "a.md", "ask": strings.Repeat("a", 2001)}, "ask is longer than 2000 characters: ask for the one thing you need from the file"},
 	} {
-		want := "refused by the factory policy (refused_arguments): " + tc.want + ". The tool did not run; do not retry this call."
+		want := "refused by the factory policy (refused_arguments): " + tc.want + ". The tool did not run. Do not retry this call."
 		if text, isErr := e.call(t, policy.ToolDigest, tc.args); !isErr || text != want {
 			t.Errorf("%.60v = %q, want %q", tc.args, text, want)
 		}
@@ -2058,5 +2173,177 @@ func TestFactorydImageLookClient(t *testing.T) {
 	status, reply = http.StatusInternalServerError, "boom"
 	if _, err := f.LookAtImage(context.Background(), "t-1", AnalyzeImageIn{CardImage: "img1"}); err == nil || err.Error() != "factoryd answered 500" {
 		t.Fatalf("5xx err = %v", err)
+	}
+}
+
+func TestFactorydBriefClient(t *testing.T) {
+	var method, path, auth, body string
+	status, reply := http.StatusOK, `{"text":"Fix the counter\n\nWhy: It undercounts."}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		method, path, auth, body = r.Method, r.URL.Path, r.Header.Get("Authorization"), string(b)
+		w.WriteHeader(status)
+		io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	text, err := f.Brief(context.Background(), "t-1")
+	if err != nil || text != "Fix the counter\n\nWhy: It undercounts." {
+		t.Fatalf("text %q err %v", text, err)
+	}
+	if method != http.MethodPost || path != "/internal/brief" || auth != "Bearer shared" || body != `{"task_id":"t-1"}` {
+		t.Fatalf("%s %s auth %q body %s", method, path, auth, body)
+	}
+	status, reply = http.StatusNotFound, "card t-1: not found\n"
+	if _, err := f.Brief(context.Background(), "t-1"); err == nil || err.Error() != "card t-1: not found" {
+		t.Fatalf("404: err = %v", err)
+	}
+}
+
+// bearerAuth identifies a bearer token it maps, as the JWT check
+// identifies a sandbox's token; any other bearer, factoryd's shared one
+// too, is no sandbox's.
+type bearerAuth map[string]Identity
+
+func (b bearerAuth) Authenticate(r *http.Request) (Identity, error) {
+	if id, ok := b[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]; ok {
+		return id, nil
+	}
+	return Identity{}, errors.New("not a JWT")
+}
+
+// fakeBriefer answers a card's brief and records whose it read, and
+// records each session's text it stored.
+type fakeBriefer struct {
+	read   []string
+	stored []string
+	err    error
+}
+
+func (f *fakeBriefer) Brief(_ context.Context, taskID string) (string, error) {
+	f.read = append(f.read, taskID)
+	return "the brief of " + taskID, f.err
+}
+
+func (f *fakeBriefer) StoreSessionBrief(_ context.Context, taskID, session, text string) error {
+	f.stored = append(f.stored, taskID+"/"+session+": "+text)
+	return f.err
+}
+
+func TestFactorydSessionBriefClient(t *testing.T) {
+	var method, path, auth, body string
+	status, reply := http.StatusNoContent, ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		method, path, auth, body = r.Method, r.URL.Path, r.Header.Get("Authorization"), string(b)
+		w.WriteHeader(status)
+		io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	if err := f.StoreSessionBrief(context.Background(), "t-1", "s-1", "Repository: sf/r\n<<<ISSUE-ab"); err != nil {
+		t.Fatal(err)
+	}
+	var sent map[string]string
+	if err := json.Unmarshal([]byte(body), &sent); err != nil || method != http.MethodPost || path != "/internal/session-brief" || auth != "Bearer shared" ||
+		!maps.Equal(sent, map[string]string{"task_id": "t-1", "session": "s-1", "text": "Repository: sf/r\n<<<ISSUE-ab"}) {
+		t.Fatalf("%s %s auth %q body %s", method, path, auth, body)
+	}
+	status, reply = http.StatusConflict, "session 2 of t-1 stored the text it got already\n"
+	if err := f.StoreSessionBrief(context.Background(), "t-1", "s-1", "x"); err == nil || err.Error() != "session 2 of t-1 stored the text it got already" {
+		t.Fatalf("409: err = %v", err)
+	}
+}
+
+// A session's worker stores the text it gave its first model call on its
+// ServiceAccount token: as the task and the session the token names,
+// whatever the request's headers say. A token of no session's pod,
+// factoryd's shared bearer and an unidentified call store none; a text
+// past the model call's bound is refused whole, and one factoryd refuses
+// answers 502 with its reason.
+func TestWorkerSessionBriefIsTheSessionsOwn(t *testing.T) {
+	old := maxBodyBytes
+	maxBodyBytes = 16
+	t.Cleanup(func() { maxBodyBytes = old })
+	for name, tc := range map[string]struct {
+		token, header, text string
+		err                 error
+		status              int
+		body                string
+		stored              []string
+	}{
+		"the session's token":           {token: "jwt-s1", text: "the text", status: 204, stored: []string{"t1/s1: the text"}},
+		"a header naming another card":  {token: "jwt-s1", header: "t2", text: "the text", status: 204, stored: []string{"t1/s1: the text"}},
+		"a token of no session's pod":   {token: "jwt-t1", text: "the text", status: 403, body: "a session's worker pod"},
+		"factoryd's bearer":             {token: testFactorydToken, header: "t2", text: "the text", status: 401, body: "not a JWT"},
+		"no token":                      {text: "the text", status: 401, body: "not a JWT"},
+		"no text":                       {token: "jwt-s1", status: 400, body: "no text"},
+		"a text past the bound":         {token: "jwt-s1", text: "seventeen bytes!!", status: 413, body: "over 16 bytes"},
+		"a text factoryd cannot store":  {token: "jwt-s1", text: "the text", err: errors.New("session 2 of t1 stored the text it got already"), status: 502, body: "the session's brief of t1: session 2 of t1 stored the text it got already", stored: []string{"t1/s1: the text"}},
+		"a text at the bound, verbatim": {token: "jwt-s1", text: "sixteen bytes!!!", status: 204, stored: []string{"t1/s1: sixteen bytes!!!"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			briefs := &fakeBriefer{err: tc.err}
+			s := NewServer(ServerOptions{Auth: bearerAuth{"jwt-t1": {TaskID: "t1"}, "jwt-s1": {TaskID: "t1", Session: "s1"}}, Store: newMemStore(), Minter: &fakeMinter{},
+				LiteLLMURL: "http://127.0.0.1:1", Briefs: briefs, FactorydToken: testFactorydToken})
+			r := httptest.NewRequest(http.MethodPost, "/worker/session-brief", strings.NewReader(tc.text))
+			if tc.token != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			if tc.header != "" {
+				r.Header.Set(HeaderFactoryTask, tc.header)
+				r.Header.Set(HeaderFactoryPurpose, policy.PurposeOperator)
+			}
+			rr := httptest.NewRecorder()
+			s.Routes("test").ServeHTTP(rr, r)
+			if rr.Code != tc.status || !strings.Contains(rr.Body.String(), tc.body) {
+				t.Fatalf("status %d body %q, want %d with %q", rr.Code, rr.Body.String(), tc.status, tc.body)
+			}
+			if !slices.Equal(briefs.stored, tc.stored) {
+				t.Fatalf("stored %q, want %q", briefs.stored, tc.stored)
+			}
+		})
+	}
+}
+
+// A session's worker reads its card's brief on its ServiceAccount token:
+// the brief of the task the token names, whatever the request's headers
+// say. factoryd's shared bearer and an unidentified call read none, and a
+// brief factoryd cannot give answers 502 with its reason.
+func TestWorkerBriefIsTheSessionsOwn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		token, header string
+		err           error
+		status        int
+		body          string
+		read          []string
+	}{
+		"the session's token":              {token: "jwt-t1", status: 200, body: `{"text":"the brief of t1"}`, read: []string{"t1"}},
+		"a header naming another card":     {token: "jwt-t1", header: "t2", status: 200, body: `{"text":"the brief of t1"}`, read: []string{"t1"}},
+		"factoryd's bearer":                {token: testFactorydToken, header: "t2", status: 401, body: "not a JWT"},
+		"no token":                         {status: 401, body: "not a JWT"},
+		"a brief factoryd cannot give out": {token: "jwt-t1", err: errors.New("card t1: not found"), status: 502, body: "the card's brief of t1: card t1: not found", read: []string{"t1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			briefs := &fakeBriefer{err: tc.err}
+			s := NewServer(ServerOptions{Auth: bearerAuth{"jwt-t1": {TaskID: "t1"}}, Store: newMemStore(), Minter: &fakeMinter{}, LiteLLMURL: "http://127.0.0.1:1",
+				Briefs: briefs, FactorydToken: testFactorydToken})
+			r := httptest.NewRequest(http.MethodGet, "/worker/brief", nil)
+			if tc.token != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			if tc.header != "" {
+				r.Header.Set(HeaderFactoryTask, tc.header)
+				r.Header.Set(HeaderFactoryPurpose, policy.PurposeOperator)
+			}
+			rr := httptest.NewRecorder()
+			s.Routes("test").ServeHTTP(rr, r)
+			if rr.Code != tc.status || !strings.Contains(rr.Body.String(), tc.body) {
+				t.Fatalf("status %d body %q, want %d with %q", rr.Code, rr.Body.String(), tc.status, tc.body)
+			}
+			if !slices.Equal(briefs.read, tc.read) {
+				t.Fatalf("read the briefs of %q, want %q", briefs.read, tc.read)
+			}
+		})
 	}
 }

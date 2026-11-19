@@ -73,7 +73,7 @@ func (p *Passes) once(ctx context.Context, name string, boundOf func() time.Dura
 	case <-run.Done():
 		if run.Err() == context.DeadlineExceeded {
 			p.setLate(name)
-			log.Printf("pass %s: still running at its bound of %s, so its context is cancelled", name, durationText(bound))
+			log.Printf("pass %s: still running at its bound of %s, so its context is cancelled", name, DurationText(bound))
 		}
 		err = <-done
 	}
@@ -84,7 +84,7 @@ func (p *Passes) once(ctx context.Context, name string, boundOf func() time.Dura
 	took := end.Sub(start)
 	late := took > bound || run.Err() == context.DeadlineExceeded
 	if late {
-		log.Printf("pass %s: ended %s over its bound of %s", name, (took - bound).Round(time.Millisecond), durationText(bound))
+		log.Printf("pass %s: ended %s over its bound of %s", name, (took - bound).Round(time.Millisecond), DurationText(bound))
 	}
 	p.mark(name, end, late)
 }

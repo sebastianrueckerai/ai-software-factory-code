@@ -145,8 +145,8 @@ func (r *Runner) CardDigest(ctx context.Context, taskID string) (CardDigest, err
 
 // cardRows are the rows a card's digest is read from: the task, its
 // events oldest first, its dependencies, its cases, the steps of its
-// live cases, its criteria verdicts and its timeline object, nil when
-// it has none; a plan task's proofs (planProofCounts) and since when
+// live cases, its criteria verdicts, its helper tasks and its timeline
+// object, nil when it has none; a plan task's proofs (planProofCounts) and since when
 // its prover is due: its foundation card's end done, or for a plan
 // without a foundation card its first card's filing, at its
 // confirmation; zero while the foundation is not done, no card is filed
@@ -158,10 +158,14 @@ type cardRows struct {
 	cases                      []Case
 	caseSteps                  []CaseStep
 	verdicts                   []CriterionVerdict
+	helpers                    []Task
 	timeline                   []byte
 	proofsStored, proofsWanted int
 	proverDue                  time.Time
 	criteria                   []PlanCriterion
+	// runnable are the promises of the plan of an integration card at its
+	// merge approval no verdict judged that a run of the factory checks
+	runnable []string
 }
 
 // readCard reads task taskID's rows; ErrNotFound when there is no such
@@ -195,24 +199,40 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 		}
 		rows.caseSteps = append(rows.caseSteps, steps...)
 	}
+	children, err := r.store.TasksByParent(ctx, taskID)
+	if err != nil {
+		return cardRows{}, err
+	}
+	for _, h := range children {
+		if h.Report() {
+			rows.helpers = append(rows.helpers, h)
+		}
+	}
 	if rows.timeline, err = r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl"); err != nil {
 		return cardRows{}, fmt.Errorf("read the timeline: %w", err)
 	}
 	home := taskID
+	var plan Plan
 	if t.PlanCard() {
-		p, _, err := planOfStore(ctx, r.store, t.Parent, taskID)
-		if err != nil {
+		if plan, _, err = planOfStore(ctx, r.store, t.Parent, taskID); err != nil {
 			return cardRows{}, err
 		}
-		if roleOf(p, t.PlanKey) == RoleIntegration {
-			rows.criteria = p.Criteria
+		if roleOf(plan, t.PlanKey) == RoleIntegration {
+			rows.criteria = plan.Criteria
 		}
-		if home, err = verdictHome(ctx, r.store, t, p); err != nil {
+		if home, err = verdictHome(ctx, r.store, t, plan); err != nil {
 			return cardRows{}, err
 		}
 	}
 	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, home); err != nil {
 		return cardRows{}, err
+	}
+	if rows.criteria != nil && t.Gate == GateApproval {
+		proofs, err := r.store.PlanProofs(ctx, t.Parent)
+		if err != nil {
+			return cardRows{}, err
+		}
+		rows.runnable = runIDs(runnableRuns(plan, proofs, rows.verdicts))
 	}
 	if t.Track != policy.TrackPlan {
 		return rows, nil
@@ -248,9 +268,10 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	head.ProofsStored, head.ProofsWanted = rows.proofsStored, rows.proofsWanted
 	head.Criteria = len(rows.criteria)
 	for _, c := range rows.criteria {
-		if v, ok := StandingRow(rows.verdicts, c); ok && v.Verdict == "met" && v.Source == CriteriaSourceGate &&
-			strings.HasPrefix(v.Evidence, proofBlind+": ") {
-			head.Blind++
+		if v, ok := StandingRow(rows.verdicts, c); ok && v.Verdict == "met" && v.Source == CriteriaSourceGate {
+			if state, _ := GateEvidence(c.ID, v.Evidence); state == proofBlind {
+				head.Blind++
+			}
 		}
 	}
 	lines, err := r.timelineSteps(ctx, t.ID, rows.timeline)
@@ -263,7 +284,8 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			return CardDigest{}, err
 		}
 	}
-	steps := slices.Concat([]DigestStep{filedStep(t, rows.deps)}, eventSteps(r.Scrub, t, rows.events, rows.cases, rows.deps), lines, criteriaSteps(rows.verdicts))
+	steps := slices.Concat([]DigestStep{filedStep(t, rows.deps)}, eventSteps(r.Scrub, t, rows.events, rows.cases, rows.deps), lines, criteriaSteps(rows.verdicts),
+		helperSteps(r.Scrub, rows.helpers))
 	slices.SortStableFunc(steps, func(a, b DigestStep) int { return a.At.Compare(b.At) })
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
@@ -284,13 +306,8 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 		}
 	}
 	d.freezes = freezeSpans(rows.timeline)
-	var unproven []string
-	if t.Gate == GateApproval {
-		for _, c := range neverJudged(Plan{Criteria: rows.criteria}, rows.verdicts) {
-			unproven = append(unproven, c.ID)
-		}
-	}
-	d.Flags = digestFlags(r.Scrub, d, rows, budget, unproven)
+	// a promise a human judges is asked on the merge's own pages
+	d.Flags = digestFlags(r.Scrub, d, rows, budget, rows.runnable)
 	return d, nil
 }
 
@@ -400,8 +417,9 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		}
 		switch e.Kind {
 		case EventQuestionAsked:
-			s.Kind, s.Actor, s.Outcome = "ask", "", askOutcome(scrub, t, e)
-			if i := askCaseIndex(t, e, cases); i >= 0 {
+			i := askCaseIndex(t, e, cases)
+			s.Kind, s.Actor, s.Outcome = "ask", "", askOutcome(scrub, t, e, cases, i)
+			if i >= 0 {
 				s.Ref.Case = strconv.FormatInt(cases[i].ID, 10)
 			}
 		case EventQuestionAnswered, EventPlanQuestionAnswered:
@@ -409,9 +427,9 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		case EventSessionGranted:
 			s.Kind, s.Outcome = "granted", "one more session"
 		case EventCardFunded:
-			s.Kind, s.Outcome = "funded", fmt.Sprintf("%.2f EUR", amount)
+			s.Kind, s.Outcome = "funded", fmt.Sprintf("%s EUR", textutil.EUR(amount))
 			if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok {
-				s.Kind, s.Outcome = "ceiling", fmt.Sprintf("raised to %.2f EUR", ceiling)
+				s.Kind, s.Outcome = "ceiling", fmt.Sprintf("raised to %s EUR", textutil.EUR(ceiling))
 			}
 		case EventCardExtended:
 			parts := []string{textutil.Plural(number("sessions"), "session", "sessions")}
@@ -421,12 +439,12 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 			parts = append(parts, textutil.Plural(number("lines"), "line", "lines"))
 			if from := word("inherited_from"); from != "" {
 				if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok && ceiling > 0 {
-					parts = append(parts, fmt.Sprintf("ceiling %.2f EUR", ceiling))
+					parts = append(parts, fmt.Sprintf("ceiling %s EUR", textutil.EUR(ceiling)))
 				}
 				s.Kind, s.Outcome = "extended", fmt.Sprintf("inherited from #%d: %s", number("inherited_issue"), strings.Join(parts, ", "))
 				break
 			}
-			s.Kind, s.Outcome = "extended", strings.Join(append(parts, fmt.Sprintf("%.2f EUR", amount)), ", ")
+			s.Kind, s.Outcome = "extended", strings.Join(append(parts, fmt.Sprintf("%s EUR", textutil.EUR(amount))), ", ")
 		case EventCardRetried:
 			s.Kind, s.Outcome = "retried", fmt.Sprintf("as #%d", number("replacement"))
 		case EventCardReplanned:
@@ -503,6 +521,43 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 	return out
 }
 
+// helperSteps are the card's helper tasks as steps of its life: each when
+// it was filed, by its source, with where it stands and what it spent, a
+// finished one with its result.
+func helperSteps(scrub *redact.Scrubber, helpers []Task) []DigestStep {
+	var out []DigestStep
+	for _, h := range helpers {
+		outcome := statusText(h.Status, h.Gate)
+		if h.SpentEUR > 0 {
+			outcome += fmt.Sprintf(", %s EUR", textutil.EUR(h.SpentEUR))
+		}
+		if result := helperResult(h); Final(h.Status) && result != "" {
+			outcome += ": " + result
+		}
+		out = append(out, DigestStep{At: h.CreatedAt, Kind: h.Source, Outcome: digestText(scrub, outcome)})
+	}
+	return out
+}
+
+// helperResult is helper task h's report on one line: a screening's
+// verdict with its first reason, a sizing's size with its reason, else
+// the report's first line; "" for none.
+func helperResult(h Task) string {
+	report := strings.TrimSpace(h.AgentSummary)
+	switch {
+	case report == "":
+		return ""
+	case h.Source == SourceScreening:
+		res := parseScreening(report)
+		return strings.Join(append([]string{res.Verdict}, res.Reasons...)[:min(2, len(res.Reasons)+1)], ": ")
+	case h.Source == SourceSizing:
+		if v, ok := parseSizing(report); ok {
+			return v.Size + ": " + v.Reason
+		}
+	}
+	return FirstLine(report)
+}
+
 // openedStep is a proof_opened event's step: the criterion that opened,
 // why, at the head the gate judged, its failure on one line.
 func openedStep(s DigestStep, e Event) DigestStep {
@@ -512,7 +567,7 @@ func openedStep(s DigestStep, e Event) DigestStep {
 		outcome = "red"
 	}
 	s.Kind, s.Actor = "opened", "gate"
-	s.Outcome = fmt.Sprintf("%s: %s at %s", word("criterion"), outcome, word("head")[:min(7, len(word("head")))])
+	s.Outcome = fmt.Sprintf("%s: %s at %s", word("criterion"), outcome, ShortSHA(word("head")))
 	if line := failureLine(word("message")); line != "" {
 		s.Outcome += ": " + line
 	}
@@ -620,9 +675,13 @@ func proofsEventStep(s DigestStep, e Event) DigestStep {
 	return s
 }
 
-// askOutcome is an ask's case kind and words, as the events writer files
-// its case (caseFromAsk).
-func askOutcome(scrub *redact.Scrubber, t Task, e Event) string {
+// askOutcome is an ask's case kind and what the case asks, its problem:
+// case i of cases when the ask names one that holds a problem, else the
+// case the events writer files for it (caseFromAsk).
+func askOutcome(scrub *redact.Scrubber, t Task, e Event, cases []Case, i int) string {
+	if i >= 0 && cases[i].Problem != "" {
+		return string(cases[i].Kind) + ": " + digestText(scrub, cases[i].Problem)
+	}
 	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return "an ask with no words"
@@ -673,13 +732,8 @@ func criteriaSteps(rows []CriterionVerdict) []DigestStep {
 			out[i].Outcome += ", "
 		}
 		word := cmp.Or(v.Verdict, "undecided")
-		if v.Verdict == "met" && v.Source == CriteriaSourceGate {
-			for _, state := range []string{proofBlind, proofOpen} {
-				if strings.HasPrefix(v.Evidence, state+": ") {
-					word += " (" + state + ")"
-					break
-				}
-			}
+		if state, _ := GateEvidence(v.Criterion, v.Evidence); v.Verdict == "met" && v.Source == CriteriaSourceGate && state != "" {
+			word += " (" + state + ")"
 		}
 		out[i].Outcome += v.Criterion + " " + word
 	}

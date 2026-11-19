@@ -95,6 +95,8 @@ func EscalationSource(reason string) string {
 	switch {
 	case strings.HasPrefix(reason, AgentAsks):
 		return "agent"
+	case strings.HasPrefix(reason, agentAsksAuthor):
+		return "author"
 	case AtSessionCap(reason), AtTimeStop(reason):
 		return "cap"
 	case strings.HasPrefix(reason, monthCapReached):
@@ -122,7 +124,7 @@ func EscalationSource(reason string) string {
 	case strings.HasPrefix(reason, staleQuiet):
 		return "stale"
 	case strings.HasPrefix(reason, depFailed):
-		return SourceDependencyFailed
+		return depFailedSource
 	}
 	return "supervisor"
 }
@@ -297,6 +299,38 @@ func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID st
 	}
 	s.recordStatus(ctx, events)
 	return nil
+}
+
+// SetAskFace writes card t's objective and why line, merges facts into
+// its live case caseID and stores face on the case's ask row, in one
+// transaction; oneRow answers ErrNotFound for an unknown card or a case
+// that ended.
+func (s *PGStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts, face map[string]any) error {
+	b, err := json.Marshal(facts)
+	if err != nil {
+		return err
+	}
+	k, err := json.Marshal(face)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	res, err := tx.ExecContext(ctx, `UPDATE tasks SET objective = $2, why = $3 WHERE id = $1`, t.ID, t.Objective, t.Why)
+	if err := oneRow(res, err, "task "+t.ID); err != nil {
+		return err
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE cases SET facts = facts || $3::jsonb WHERE id = $1 AND task_id = $2 AND `+caseLive, caseID, t.ID, string(b))
+	if err := oneRow(res, err, fmt.Sprintf("live case %d of task %s", caseID, t.ID)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, caseFaceSQL, caseID, k, EventQuestionAsked); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetAlertTask links alert id to the task filed for it, detail merged in.

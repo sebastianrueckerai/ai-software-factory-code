@@ -63,7 +63,7 @@ func TestClosedIntakeRefusesTheRoadmapPullsFilings(t *testing.T) {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
 	}
 	before := len(r.events.all())
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 276","track":"direct","track_reason":"the pull","roadmap_item":276}`)}, {say("Your intake is closed, so the roadmap was not pulled. Tell me what to file.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 276","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the pull","roadmap_item":276}`)}, {say("Your intake is closed, so the roadmap was not pulled. Tell me what to file.")}}
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestClosedIntakeRefusesTheRoadmapPullsFilings(t *testing.T) {
 		"The queue of ai-software-factory-code is below 6: read docs/roadmap.md of the project's doc repository, then end."); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
-	refused := "Refused: The intake of ai-software-factory-code is closed: the roadmap is not pulled. Tell the human what needs filing; an ask or a need still files."
+	refused := "Refused: The intake of ai-software-factory-code is closed: the roadmap is not pulled. Tell the human what needs filing. An ask or a need still files."
 	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestAClosedIntakeStillTakesAReactiveWakesFiling(t *testing.T) {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
 	}
 	before := len(r.events.all())
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Fix the flux","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"the timer's ask"}`)}, {say("Filed it.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Fix the flux","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"the timer's ask"}`)}, {say("Filed it.")}}
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
@@ -156,13 +156,13 @@ func TestMembersAskStillFilesAndStartsOnAClosedIntake(t *testing.T) {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
 	}
 	before := len(r.events.all())
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Fix the flux","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"one fix","size":"small","rung":"frontier","rung_reason":"touches the queue"}`)}, {say("Filed it for you.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Fix the flux","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"one fix","size":"small","rung":"frontier","rung_reason":"touches the queue"}`)}, {say("Filed it for you.")}}
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"the flux broke; file a direct card for it"}})
 	equal(t, "code", code, 200)
 	if !strings.Contains(events[1], `"result":"Filed sf/code#41 on track direct."`) {
 		t.Errorf("the member's new_card did not file on track direct: %v", events)
 	}
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
 	rows := r.events.all()[before:]
 	if len(rows) != 1 || rows[0].Kind != factoryd.EventCardFiled || rows[0].IssueNumber != 41 || rows[0].Detail["track"] != "direct" {
 		t.Errorf("the member's filing recorded %+v, want one card_filed row of #41 on track direct", rows)
@@ -176,23 +176,23 @@ func TestNewCardRefusesATakenRoadmapItem(t *testing.T) {
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
 	r.tasks.roadmap = map[string]factoryd.Task{"sf/code 276": {ID: "t-holder", Status: "running", IssueNumber: 12}}
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 276","body":"The plan's item.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":276}`)}, {say("It is taken.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 276","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The plan's item.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":276}`)}, {say("It is taken.")}}
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap item 276"}})
 	equal(t, "code", code, 200)
-	if !strings.Contains(events[0], `"result":"Refused: Card t-holder (#12, running) already builds roadmap item 276. Wait for it to end, or close it and file again with refile_of 12."`) {
+	if !strings.Contains(events[0], "\"result\":\"Refused: Card t-holder (#12, running) already builds roadmap item 276. Wait for it to end, or close it and file again with `refile_of` 12.\"") {
 		t.Errorf("the taken item's new_card = %v", events)
 	}
 	if len(r.fg.issues) != 0 {
 		t.Fatalf("the taken item filed %v", r.fg.issues)
 	}
 	// an item no card cites files, its issue carrying the Roadmap line
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 312","body":"The plan's item.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":312}`)}, {say("Filed it.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 312","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The plan's item.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":312}`)}, {say("Filed it.")}}
 	code, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap item 312"}})
 	equal(t, "code", code, 200)
 	if !strings.Contains(events[1], `"result":"Filed sf/code#41 on track direct."`) {
 		t.Errorf("the free item's new_card = %v", events)
 	}
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "The plan's item.\n\nAcceptance:\n- The pull files it\n\nRoadmap: #312")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"The plan's item.\n\nAcceptance:\n- The pull files it\n\nRoadmap: #312")
 	rows := r.events.all()
 	last := rows[len(rows)-1]
 	if last.Kind != factoryd.EventCardFiled || last.IssueNumber != 41 || last.Detail["roadmap_item"] != 312 {
@@ -204,11 +204,11 @@ func TestNewCardRefusesATakenRoadmapItem(t *testing.T) {
 // over, whole, by state.
 func TestRoadmapRefusalByHolderState(t *testing.T) {
 	for _, c := range []struct{ status, want string }{
-		{"running", "Card t-h (#1547, running) already builds roadmap item 66. Wait for it to end, or close it and file again with refile_of 1547."},
-		{"closed", "Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547."},
-		{"failed", "Card t-h (#1547, failed) still holds roadmap item 66. File again with refile_of 1547."},
-		{"done", "Card t-h (#1547, done) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
-		{"merged", "Card t-h (#1547, merged) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
+		{"running", "Card t-h (#1547, running) already builds roadmap item 66. Wait for it to end, or close it and file again with `refile_of` 1547."},
+		{"closed", "Card t-h (#1547, closed) still holds roadmap item 66. File again with `refile_of` 1547."},
+		{"failed", "Card t-h (#1547, failed) still holds roadmap item 66. File again with `refile_of` 1547."},
+		{"done", "Card t-h (#1547, done) already built roadmap item 66. Cite a new roadmap item, or file without `roadmap_item` and `refile_of`."},
+		{"merged", "Card t-h (#1547, merged) already built roadmap item 66. Cite a new roadmap item, or file without `roadmap_item` and `refile_of`."},
 	} {
 		got := roadmapRefusal(factoryd.Task{ID: "t-h", Status: c.status, IssueNumber: 1547}, 66)
 		equal(t, c.status, got, c.want)
@@ -221,14 +221,14 @@ func TestNewCardRefileOf(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","refile_of":1547}`)}, {say("Refused.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","refile_of":1547}`)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"refile"}})
-	if !strings.Contains(events[0], "refile_of needs roadmap_item") || len(r.fg.issues) != 0 {
+	if !strings.Contains(events[0], "`refile_of` needs `roadmap_item`") || len(r.fg.issues) != 0 {
 		t.Errorf("refile_of alone = %v, issues %v", events, r.fg.issues)
 	}
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":66,"refile_of":1547}`)}, {say("Filed.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":66,"refile_of":1547}`)}, {say("Filed.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"refile 66"}})
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "The plan again.\n\nAcceptance:\n- The pull files it\n\nRoadmap: #66\nRefile of #1547")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"The plan again.\n\nAcceptance:\n- The pull files it\n\nRoadmap: #66\nRefile of #1547")
 }
 
 // The check before filing reads the refile number the intake will read:
@@ -239,20 +239,25 @@ func TestNewCardRefileCheckReadsWhatTheIntakeReads(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
 	r.tasks.roadmap = map[string]factoryd.Task{"sf/code 66": {ID: "t-h", Status: "closed", IssueNumber: 1547}}
+	// the cards whose issues the bodies' refile lines name
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Status: "closed", Repository: "sf/code", IssueNumber: 1547}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Status: "closed", Repository: "sf/code", IssueNumber: 1546}})
+	r.tasks.mu.Unlock()
 	ck, s := r.loggedIn(t)
 	file := func(args string) []string {
 		g.replies = [][]string{{call(1, "new_card", args)}, {say("ok")}}
 		_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file"}})
 		return events
 	}
-	const head = `{"title":"Refile 66","track":"direct","track_reason":"the pull","roadmap_item":66,`
+	const head = `{"title":"Refile 66","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the pull","roadmap_item":66,`
 	wrong := file(head + `"body":"Again.\n\nAcceptance:\n- It files","refile_of":1546}`)
-	if !strings.Contains(wrong[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+	if !strings.Contains(wrong[0], "Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with `refile_of` 1547.") || len(r.fg.issues) != 0 {
 		t.Fatalf("a wrong refile_of = %v, issues %v", wrong, r.fg.issues)
 	}
 	// the last line is the one the intake reads: the field's, after a body line of another issue
 	own := file(head + `"body":"Again.\n\nRefile of #1547\n\nAcceptance:\n- It files","refile_of":1546}`)
-	if !strings.Contains(own[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+	if !strings.Contains(own[0], "Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with `refile_of` 1547.") || len(r.fg.issues) != 0 {
 		t.Fatalf("a body line of the right issue before a wrong field = %v, issues %v", own, r.fg.issues)
 	}
 	file(head + `"body":"Again.\n\nRefile of #1546\n\nAcceptance:\n- It files","refile_of":1547}`)

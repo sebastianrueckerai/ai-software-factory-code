@@ -23,6 +23,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -64,10 +65,13 @@ type Intake struct {
 	// Timeline records the events of the cards intake creates and moves;
 	// nil records none.
 	Timeline *Timeline
-	// Filings name the member an issue ChatUser posted was filed for: the
-	// console's card_filed row. nil: such an issue is no card.
+	// Filings are the console's card_filed rows: the human an issue
+	// ChatUser posted was filed for, whether the project agent wrote the
+	// card's text and whether its brief filed unchecked. nil: an issue
+	// ChatUser posted is no card.
 	Filings interface {
-		FiledFor(ctx context.Context, repository string, issue int64) (string, bool, error)
+		FiledFor(ctx context.Context, repository string, issue int64) (Filing, bool, error)
+		MarkChatFiled(ctx context.Context, repository string, issue int64, why string) error
 	}
 	// CloseMerged ends a merged card closed on closer's Close in the
 	// console (CloseCard): the runner's CloseMerged, its workflow having
@@ -360,8 +364,6 @@ func priorityFromLabels(names []string) int {
 	return best
 }
 
-func objectiveFromIssue(issue webhookIssue) string { return IssueObjective(issue.Title, issue.Body) }
-
 // IssueObjective is the objective of a card whose issue has title and
 // body: the title, then the body after a blank line.
 func IssueObjective(title, body string) string {
@@ -442,7 +444,7 @@ func ValidateReproCommand(cmd string) string {
 		}
 	}
 	if pending != 0 {
-		return "chains cd out of the checked-out worktree: " + sandboxCheckoutRule
+		return "runs cd out of the checked-out worktree: " + sandboxCheckoutRule
 	}
 	return ""
 }
@@ -451,15 +453,20 @@ func ValidateReproCommand(cmd string) string {
 // chain segments with: &&, ;, || and newlines.
 var reproChainOperators = []string{"&&", "||", ";"}
 
-// reproQuestion is the person's card of an issue whose reproduction
+// ReproQuestion is the person's card of issue title whose reproduction
 // command breaks the sandbox rule for reason: no agent card is filed on
 // it, and its poster files it again with a command that keeps the rule.
-func reproQuestion(title, poster, reason string) HumanQuestion {
+// Its why names the issue, unless a face could then not show it.
+func ReproQuestion(title, poster, reason string) HumanQuestion {
+	why := fmt.Sprintf("The reproduction command %s wrote for \u201c%s\u201d breaks the sandbox rule, so no agent works on the issue", poster, oneLine(title))
+	if whyOf(why) == "" {
+		why = "The reproduction command " + poster + " wrote breaks the sandbox rule, so no agent works on the issue"
+	}
 	return HumanQuestion{
-		Ask:     askOf(title, ""),
-		Why:     "filed by " + poster + ": the reproduction command " + reason,
-		Info:    "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again with a command that keeps it, then close this card.",
-		Choices: doneChoices(false),
+		Ask:      "Write the reproduction command so the sandbox can run it, then file the issue again",
+		Why:      why,
+		Happened: "The command " + reason + ".",
+		Choices:  humanWorkChoices(false),
 	}
 }
 
@@ -479,16 +486,27 @@ func workflowOnly(paths []string) bool {
 	return len(paths) > 0 && !slices.ContainsFunc(paths, func(p string) bool { return !workflowPath(p) })
 }
 
-// workflowQuestion is the person's card of a card whose files all sit
+// WorkflowQuestion is the person's card of a card whose files all sit
 // under a workflow directory: the factory's push rule refuses them, so a
-// human opens the pull request from the brief.
-func workflowQuestion(title, brief string) HumanQuestion {
+// human does the work its title names and its brief lists.
+func WorkflowQuestion(title string) HumanQuestion {
 	return HumanQuestion{
-		Ask:     askOf(title, ""),
-		Why:     "every file of this card sits under a workflow directory (" + strings.Join(WorkflowDirs, ", ") + "), and the factory's push rule refuses changes to workflow files",
-		Info:    "No agent session is bought for it. A human opens the pull request; the brief below says what to change, then close this card.\n\n" + brief,
-		Choices: doneChoices(false),
+		Ask:     oneLine(title),
+		Why:     "The factory's push rule keeps agents out of workflow files, so a human does this card",
+		Choices: humanWorkChoices(false),
 	}
+}
+
+// PlanHumanAsk is the ask of plan's work card for a human, titled title: a
+// workflow files card the plan waits for, which the human may hand back
+// to its planner.
+func PlanHumanAsk(plan Task, title string) HumanAsk {
+	q := WorkflowQuestion(title)
+	q.Why = fmt.Sprintf("The factory's push rule keeps agents out of workflow files, so a human does this card, and plan #%d waits for it", plan.IssueNumber)
+	q.Waits = "The plan waits for it."
+	q.Check = "The factory does not check this. The card closes, and the plan goes on."
+	q.Choices = choices(ActClose+"/"+variantDone, ActHandBack, KeyPark)
+	return HumanAsk{Q: q, By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd, Facts: map[string]any{"plan": plan.ID}}
 }
 
 // splitReproSegments cuts a reproduction command at its chain operators
@@ -703,28 +721,21 @@ func isRulingID(s string) bool {
 	return true
 }
 
-// briefObjective is objective as a model's brief carries it: its body
-// without the lines the intake reads into the card's fields (Size,
-// Budget, Rung, Ships, Carries, Roadmap), and when mapped, without the
-// card's directories line, which the brief's repository map lists
-// (roadmap 201). Every other line stands as its author wrote it.
-func briefObjective(objective string, mapped bool) string {
-	title, body, ok := strings.Cut(objective, "\n\n")
-	if !ok {
-		return objective
-	}
+// briefBody is a card's full text as its brief carries it: without the
+// lines the intake reads into the card's fields (Size, Budget, Rung,
+// Ships, Carries, Roadmap). Every other line stands as its author wrote
+// it.
+func briefBody(body string) string {
 	var kept strings.Builder
 	for l := range strings.Lines(body) {
 		size, eur := askedBudget(l)
 		rung, _ := askedRung(l)
 		ruling, _ := askedShips(l)
-		key, _, _ := strings.Cut(l, ":")
-		dirs := strings.EqualFold(strings.TrimSpace(key), "directories") || strings.TrimSpace(key) == cardDirectories
-		if size == "" && eur == 0 && rung == "" && ruling == "" && askedCarry(l) == 0 && askedRoadmapItem(l) == 0 && (!mapped || !dirs) {
+		if size == "" && eur == 0 && rung == "" && ruling == "" && askedCarry(l) == 0 && askedRoadmapItem(l) == 0 {
 			kept.WriteString(l)
 		}
 	}
-	return strings.TrimRight(title+"\n\n"+strings.TrimLeft(kept.String(), "\n"), "\n")
+	return strings.Trim(kept.String(), "\n")
 }
 
 // pushPayload is a push webhook's body: the ref, the repository and the
@@ -1054,20 +1065,25 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 
 	poster := issue.Poster.UserName
-	if poster == ChatUser {
-		// the project agent files for the member whose turn it was, who
-		// authors the card; the console's row names them
-		var ok bool
-		if in.Filings != nil {
-			if poster, ok, err = in.Filings.FiledFor(ctx, repo, issue.Index); err != nil {
-				return fmt.Errorf("the filing of #%d: %w", issue.Index, err)
-			}
+	why, summary, text := ParseIssueText(issue.Body)
+	// the console's row names the human a chat filing is for, who authors
+	// the card, and whether the project agent wrote its text, whoever
+	// posted it: its filing door checked such a brief as the agent's work
+	var filing Filing
+	var filed bool
+	if in.Filings != nil {
+		if filing, filed, err = in.Filings.FiledFor(ctx, repo, issue.Index); err != nil {
+			return fmt.Errorf("the filing of #%d: %w", issue.Index, err)
 		}
-		if !ok {
+	}
+	if poster == ChatUser {
+		if !filed {
 			log.Printf("%s: issue #%d on %s: %s posted it and the console recorded no filing of it (yet): no card", via, issue.Index, repo, ChatUser)
 			return nil
 		}
+		poster = filing.By
 	}
+	chat := filed && filing.Chat
 	writer, err := in.trusted(ctx, repo, poster)
 	if err != nil {
 		return err
@@ -1100,32 +1116,36 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			log.Printf("%s: issue #%d on %s: drop an outside account's writer labels: %v", via, issue.Index, repo, err)
 		}
 	}
-	size, eur := askedBudget(issue.Body)
-	rung := rungOf(issue.Body, size)
-	shipsRuling, shipsClauses := askedShips(issue.Body)
+	size, eur := askedBudget(text)
+	rung := rungOf(text, size)
+	shipsRuling, shipsClauses := askedShips(text)
 	task := Task{
-		ID:           NewTaskID(),
-		Priority:     priorityFromLabels(names),
-		RiskClass:    "standard",
-		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, rung == RungFrontier, eur),
-		Size:         size,
-		Rung:         rung,
-		ShipsRuling:  shipsRuling,
-		ShipsClauses: shipsClauses,
-		CarryPR:      askedCarry(issue.Body),
-		Objective:    objectiveFromIssue(issue),
-		Repository:   repo,
-		Kind:         "agent",
-		IssueNumber:  issue.Index,
-		Source:       "webhook",
-		CreatedAt:    issue.CreatedAt,
-		Author:       poster,
-		AuthorWriter: writer,
-		ReproCommand: ReproCommand(issue.Body),
+		ID:             NewTaskID(),
+		Priority:       priorityFromLabels(names),
+		RiskClass:      "standard",
+		BudgetEUR:      policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, rung == RungFrontier, eur),
+		Size:           size,
+		Rung:           rung,
+		ShipsRuling:    shipsRuling,
+		ShipsClauses:   shipsClauses,
+		CarryPR:        askedCarry(text),
+		Objective:      IssueObjective(issue.Title, text),
+		Why:            why,
+		Summary:        summary,
+		BriefUnchecked: chat && filing.Unchecked,
+		ChatFiled:      chat,
+		Repository:     repo,
+		Kind:           "agent",
+		IssueNumber:    issue.Index,
+		Source:         SourceWebhook,
+		CreatedAt:      issue.CreatedAt,
+		Author:         poster,
+		AuthorWriter:   writer,
+		ReproCommand:   ReproCommand(text),
 	}
 	if writer {
-		task.Image = askedImage(issue.Body, p.Images)
-		task.RoadmapItem = askedRoadmapItem(issue.Body)
+		task.Image = askedImage(text, p.Images)
+		task.RoadmapItem = askedRoadmapItem(text)
 	}
 	track := IssueTrack(names, p.Tracks)
 	if p.Agents == policy.AgentsNone {
@@ -1134,14 +1154,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if track == "" {
 		return nil // an interest, no commitment: a writer's track label files it
 	}
-	ask := issueQuestion(issue.Title, issue.Body, poster, p.Agents != policy.AgentsNone)
+	ask := IssueQuestion(issue.Title, text, poster, p.Agents != policy.AgentsNone)
 	if reason := ValidateReproCommand(task.ReproCommand); track != LabelHuman && reason != "" {
 		// the sandbox rule is known at filing: no session discovers it
 		// under GateReproduction, the poster fixes the issue
-		ask, track = reproQuestion(issue.Title, poster, reason), LabelHuman
+		ask, track = ReproQuestion(issue.Title, poster, reason), LabelHuman
 	}
-	if track != LabelHuman && workflowOnly(askedDirectories(issue.Body)) {
-		ask, track = workflowQuestion(issue.Title, issue.Body), LabelHuman
+	if track != LabelHuman && workflowOnly(askedDirectories(text)) {
+		ask, track = WorkflowQuestion(issue.Title), LabelHuman
 	}
 	if track == LabelHuman {
 		// no runner ever claims a person's card: closing its issue finishes
@@ -1158,10 +1178,23 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		}
 		task.Track, task.Process, task.Status, task.RequiredCapabilities, task.SHA = track, p.Process, "queued", []string{class}, sha
 	}
+	if !chat {
+		// a human's issue keeps its words: the door marks what fails
+		b := HumanIssueBrief(issue.Title, text)
+		b.Why, b.Summary = cmp.Or(why, b.Why), summary
+		docs, err := docsOf(in.Policy(), repo)
+		if err != nil {
+			return err
+		}
+		if task.BriefUnchecked, err = pass(b, BriefHumanIssue, &botRefs{ctx: ctx, f: in.Forgejo, repo: parts, docs: docs}, BriefTries); err != nil {
+			return err
+		}
+		task.Why = b.Why
+	}
 	var created error
 	if task.Kind == "human" {
 		var filed Task
-		filed, _, created = in.Store.CreateHumanCard(ctx, task, HumanAsk{Q: ask, By: "factoryd", Asker: "webhook", Via: ViaFactoryd})
+		filed, _, created = in.Store.CreateHumanCard(ctx, task, HumanAsk{Q: ask, By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd})
 		task.Status = filed.Status
 	} else {
 		created = in.Store.CreateTask(ctx, task)
@@ -1178,6 +1211,11 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			}
 		}
 		return fmt.Errorf("create task: %w", err)
+	}
+	if !chat && in.Filings != nil {
+		if err := in.Filings.MarkChatFiled(ctx, repo, issue.Index, why); err != nil {
+			log.Printf("%s: issue #%d on %s: mark the chat filing: %v", via, issue.Index, repo, err)
+		}
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, track, task.ID)
 	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index, "track": track, "budget_eur": task.BudgetEUR})
@@ -1211,8 +1249,7 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	}
 	poster := cmp.Or(t.Author, in.BotUser)
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
-	q := issueQuestion(title, body, poster, false)
-	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
+	q := MovedQuestion(title, body, poster)
 	t.Kind = "human"
 	if t, moved, err = in.Store.CreateHumanCard(ctx, t, HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd}); err != nil || !moved {
 		return moved, err
@@ -1233,6 +1270,14 @@ func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (stri
 	}
 	return sha, nil
 }
+
+// The sources of a card filed from outside: SourceWebhook an issue
+// labelled in Forgejo, by a human or the chat, SourceAPI the intake API's
+// POST /tasks.
+const (
+	SourceWebhook = "webhook"
+	SourceAPI     = "api"
+)
 
 // The sources of a pull request factoryd opened outside any card's
 // workflow (roadmap 187): each becomes a card of its own through
@@ -1261,34 +1306,38 @@ func mechanicalSource(source string) bool {
 	return source == SourceRoll || source == SourceRevert || source == SourceSchemaCopy || source == SourceTemplateUpdate
 }
 
-// FileTask files task t the way the API, the alert intake, the roller
-// and the configuration loader do (task 42): the issue on repo first, as
-// the bot, labelled labels and its state, then the task row linked to it.
+// FileTask files task t of brief b the way the API, the alert intake, the
+// roller and the configuration loader do (task 42): the issue on repo
+// first, as the bot, labelled labels and its state, then the task row
+// linked to it.
 // An agent task's goes through FileAgentTask; a human card is filed with
 // its ask by FileHumanCard alone. No row exists without its issue, and no
 // issue stands open without its row: a row the store refuses closes the
 // issue filed for it, best effort.
 func FileTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+}, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task) (Task, IssueRef, error) {
 	if t.Kind == "human" {
 		return Task{}, IssueRef{}, fmt.Errorf("task %s is a human card: FileHumanCard files it with its ask", t.ID)
 	}
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, 0, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
+	return fileOnIssue(ctx, forgejo, repo, b, labels, t, 0, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
 }
 
 // FileHumanCard is FileTask for human card t: it has no workflow, and its
 // row lands with ask's row, in one transaction. A card that waits for its
 // case's face (HumanCardStatus) is filed with no issue, ask carrying the
 // labels its face files the issue with. One that asks at once gets its
-// issue now: the bot's open issue of title that no task row holds is taken
-// on instead of a new one, for a filing whose row the store refused left
-// it open on purpose, so the retry, which has a new task id, finds it. A
-// card of t's id that stands already refuses the filing by name, and the
+// issue now: the bot's open issue of b's title that no task row holds is
+// taken on instead of a new one, for a filing whose row the store refused
+// left it open on purpose, so the retry, which has a new task id, finds it.
+// A card of t's id that stands already refuses the filing by name, and the
 // issue filed or taken on for it is closed with a comment naming that card.
-func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
+func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
 	t.Kind, t.Status = "human", HumanCardStatus(t.Source)
 	if t.Status == "waiting-agent" {
+		if err := admitFiling(ctx, forgejo, repo, &t, b); err != nil {
+			return Task{}, IssueRef{}, err
+		}
 		t.Repository, ask.Labels = repo.String(), labels
 		got, created, err := store.CreateHumanCard(ctx, t, ask)
 		if err == nil && !created {
@@ -1296,11 +1345,11 @@ func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 		}
 		return got, IssueRef{}, err
 	}
-	reuse, err := strandedIssue(ctx, store, forgejo, repo, title)
+	reuse, err := strandedIssue(ctx, store, forgejo, repo, b.Title)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, reuse, func(t Task) (Task, error) {
+	return fileOnIssue(ctx, forgejo, repo, b, labels, t, reuse, func(t Task) (Task, error) {
 		got, created, err := store.CreateHumanCard(ctx, t, ask)
 		if err != nil || created {
 			return got, err
@@ -1335,8 +1384,9 @@ func strandedIssue(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 }
 
 // cardStands refuses a second filing of human card got, which stands, on
-// issue: when issue is not the card's own, it says so there and closes it,
-// the card keeping its issue; an issue the card holds is left as it is.
+// issue: when issue is not the card's own, it says so there in words and
+// closes it, the card keeping its issue; an issue the card holds is left
+// as it is.
 func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issue int64) error {
 	if got.IssueNumber == issue {
 		return fmt.Errorf("card %s stands already (#%d, %s), so this second filing of it is refused: the card's ask is on #%d",
@@ -1344,7 +1394,8 @@ func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issu
 	}
 	why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
 		got.ID, got.IssueNumber, got.Status, issue, got.IssueNumber)
-	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, "factoryd: "+why); err != nil {
+	said := fmt.Sprintf("This card stands already as #%d, so this second filing of it is refused and this issue is closed. The card's ask is on #%d.", got.IssueNumber, got.IssueNumber)
+	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, said); err != nil {
 		log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", got.ID, issue, repo, err)
 	}
 	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, issue); err != nil {
@@ -1355,14 +1406,21 @@ func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issu
 
 // fileOnIssue files t's issue on repo as the bot, labelled labels and t's
 // state, then stores t's row linked to it through store; reuse, when set,
-// is an open issue taken on instead. A row store refuses closes the issue
+// is an open issue taken on instead. Brief b, the issue's title and body
+// with the card's why line and summary, passes the filing door first, on
+// the writer's try ctx carries, and the issue mirrors it (IssueText); a
+// card filed without an objective takes the brief's title and text. A
+// row store refuses closes the issue
 // filed for it, best effort, unless t is a human card: its issue stays open
 // for the retry to take on, and a human closes what no retry takes.
-func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
+func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
+	if err := admitFiling(ctx, forgejo, repo, &t, b); err != nil {
+		return Task{}, IssueRef{}, err
+	}
 	ref := IssueRef{Number: reuse}
 	if reuse == 0 {
 		var err error
-		if ref, err = forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body); err != nil {
+		if ref, err = forgejo.CreateIssue(ctx, repo.Owner, repo.Name, b.Title, IssueText(b)); err != nil {
 			return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
 		}
 	}
@@ -1382,18 +1440,35 @@ func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body s
 	return got, ref, nil
 }
 
+// admitFiling passes brief b of card t on repo through the filing door, on
+// the writer's try ctx carries; a card filed without an objective takes
+// the brief's title and text.
+func admitFiling(ctx context.Context, forgejo *Forgejo, repo Repo, t *Task, b BriefText) error {
+	try, writer := writerTry(ctx)
+	var refs RefResolver
+	if writer {
+		docs, _ := ctx.Value(briefDocsKey{}).(Repo)
+		refs = &botRefs{ctx: ctx, f: forgejo, repo: repo, docs: docs}
+	}
+	if err := admit(t, b, refs, try); err != nil {
+		return err
+	}
+	t.Objective = cmp.Or(t.Objective, IssueObjective(b.Title, b.Body))
+	return nil
+}
+
 // FileAgentTask files agent task t on project p's repository through
 // FileTask, queued on the direct track by fileEntry, and starts it under
 // the work bound (a failed start is logged and healed by the next
 // HealPass). tl records the card's events.
 func FileAgentTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, b BriefText, labels []string, t Task) (Task, IssueRef, error) {
 	t, err := fileEntry(p, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
+	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), b, labels, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
@@ -1418,13 +1493,13 @@ func FileAgentTask(ctx context.Context, store interface {
 // It runs no session, and its budget is its model gates': budget's task
 // default, at most p's card maximum and the task maximum (CardBudget).
 // On a project without agents no workflow runs: the card is a human card
-// through fileHumanTask, linked to the pull request, whose question asks
-// a person to merge it in Forgejo.
+// through fileHumanTask, linked to the pull request, whose question asks a
+// human to merge it or close it, on the card or in Forgejo.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, b BriefText, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
@@ -1432,11 +1507,11 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	if p.Agents == policy.AgentsNone {
 		t.Kind, t.RiskClass, t.Author = "human", "standard", cmp.Or(t.Author, forgejo.BotUser)
 		url := fmt.Sprintf("%s/%s/pulls/%d", forgejo.PublicURL, p.Repository, prNumber)
-		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), factoryPRQuestion(title, p.Repository, prNumber, url), labels, t, "")
+		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(b, prNumber, url), labels, t, "")
 		return t, IssueRef{Number: number}, err
 	}
 	t.BudgetEUR = policy.CardBudget(budget, p.Budget, "", false, 0)
-	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, title, body, labels, t)
+	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, b, labels, t)
 }
 
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {
@@ -1457,7 +1532,8 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
-// whether a merge closed it), a human-lane task is simply done, a failed
+// whether a merge closed it), a human-lane task ends as its answer recorded
+// (humanEndOf), done for a close no answer made, a failed
 // card ends closed, and so does a done plan (DonePlan) once its
 // production hold is gone (endDonePlan). A merged card is left as it is:
 // its own merge closes its issue (Closes #N), a close no webhook tells from a
@@ -1477,7 +1553,11 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 	case t.Kind == "human" && t.PRNumber != 0 && closer == in.BotUser:
 		return nil // endPRCard closed the issue and ends the card itself
 	case t.Kind == "human":
-		return in.finishHumanTask(ctx, t, "done", "", closer, nil)
+		final, err := humanEndOf(ctx, in.Store, t)
+		if err != nil {
+			return err
+		}
+		return in.finishHumanTask(ctx, t, final, "", closer, nil)
 	case t.Status == "failed":
 		return in.closeFailed(ctx, t.ID)
 	case t.Status == "merged":
@@ -1488,7 +1568,13 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 		if later, err := leavesRounds(ctx, in.Store, t.ID); closer == in.BotUser && (err != nil || !later) {
 			return err
 		}
-		return endDonePlan(ctx, in.Store, in.Forgejo, t)
+		return planHolder{store: in.Store, forgejo: in.Forgejo, timeline: in.Timeline, scrub: in.Scrub, untrusted: func(t Task, s string) string {
+			var tree policy.Tree
+			if in.Policy != nil {
+				tree = in.Policy()
+			}
+			return sanitize.Outbound(s, OutboundHosts(tree, in.Forgejo.PublicURL, t.Repository))
+		}}.endDonePlan(ctx, t)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
@@ -1583,8 +1669,9 @@ func (in *Intake) decide(ctx context.Context, taskID, kind, author string, numbe
 }
 
 // finishHumanTask ends human-lane task t, which has no workflow, as final
-// for why ("" for none): its closed issue ends it done, its pull request's
-// merge or close too (endPRCard). settle, when set, is the events row that
+// for why ("" for none): its closed issue ends it as its answer recorded
+// (humanEndOf), and its pull request's merge or close ends it as well
+// (endPRCard). settle, when set, is the events row that
 // settles the card's ask, written once, by the end that moved the card. A
 // card another end moved first is left as it is. A SigNoz alert's gets
 // its verdict from the close: noise when the issue carries
@@ -1652,7 +1739,7 @@ func (in *Intake) prDecided(ctx context.Context, t Task, pr int64, merged bool, 
 // ends closed. A held card's withdrawal is marked held: its ask reached
 // nobody.
 func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why string) error {
-	reason := fmt.Sprintf("factoryd closed pull request #%d: %s", pr, why)
+	reason := fmt.Sprintf("the factory closed pull request #%d: %s", pr, why)
 	detail := map[string]any{"reason": reason}
 	if t.Status == "waiting-agent" {
 		detail["held"] = true
@@ -1669,7 +1756,7 @@ func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, sett
 	if !slices.Contains(humanCardWaits, t.Status) {
 		return nil
 	}
-	if err := closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, "factoryd: "+why+"; this card ends with it."); err != nil {
+	if err := closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, capitalize(why)+". This card ends with it."); err != nil {
 		return err
 	}
 	return in.finishHumanTask(ctx, t, final, why, settle.Actor, settle)
@@ -1694,7 +1781,7 @@ func (in *Intake) resyncPRCard(ctx context.Context, t Task, repo Repo) (done boo
 	case err != nil:
 		return false, err
 	case closer == in.BotUser:
-		return true, in.WithdrawPRCard(ctx, t, t.PRNumber, "the heal pass found it closed by factoryd")
+		return true, in.WithdrawPRCard(ctx, t, t.PRNumber, "the heal pass found it closed by the factory")
 	}
 	return true, in.prDecided(ctx, t, t.PRNumber, false, closer, ViaFactoryd)
 }
@@ -2339,7 +2426,7 @@ func (in *Intake) refusalText(r *Refusal) string {
 	}
 	holder := fmt.Sprintf("#%d", r.HolderIssue)
 	state := strings.ReplaceAll(r.Status, "-", " ")
-	line := fmt.Sprintf("Add the line \"Refile of #%d\" to this issue's description; a comment does not count.", r.HolderIssue)
+	line := fmt.Sprintf("Add the line \"Refile of #%d\" to this issue's description. A comment does not count.", r.HolderIssue)
 	var text string
 	switch RoadmapHold(r.Status) {
 	case "open":

@@ -340,3 +340,16 @@ func TestRungCapAfterARefusalKeepsTheRefusal(t *testing.T) {
 		t.Fatalf("outcome = %+v, want found %q", out, want)
 	}
 }
+
+// A rung's grounds name none of the factory's machinery where the rung
+// files them: grounds with a name are refused with the name, for the
+// rung's one re-ask, and plain grounds pass.
+func TestARungsGroundsNameNoMachinery(t *testing.T) {
+	_, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, map[string]any{"recommendation": map[string]any{"action": "successor", "grounds": "The finding is dropped, and factory-chat agrees."}}))
+	if err == nil || !strings.Contains(err.Error(), `the recommendation's grounds: The text holds "factory-chat", a name of the factory's own machinery.`) {
+		t.Errorf("grounds with a decider's name = %v, want the fault named", err)
+	}
+	if _, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, map[string]any{"recommendation": map[string]any{"action": "successor", "grounds": "The finding is dropped."}})); err != nil {
+		t.Errorf("plain grounds = %v, want none", err)
+	}
+}

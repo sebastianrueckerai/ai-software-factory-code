@@ -144,8 +144,6 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalMerge, status, in.By, in.Res.Note)
 		case ActGrantCriteria:
 			return 0, b.s.DecideApproval(LeaveCaseToAct(ctx), b.approval, ApprovalCriteria, "approved", in.By, "one more bounded card")
-		case ActDenyCriteria:
-			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "denied", in.By, in.Res.Note)
 		case ActRestartPlan:
 			return 0, b.s.ClosePlanWithWaivers(LeaveCaseToAct(ctx), in.TaskID, in.By, func(context.Context) (PlanClose, error) {
 				return PlanClose{Home: in.TaskID, Words: "Closed by " + in.By + ": " + in.Res.Note}, nil
@@ -269,15 +267,16 @@ func criteriaRig(t *testing.T) (rungRig, *boardStub, Case) {
 }
 
 // criteriaFace is the words planCriteriaRig's request asks its face to post.
-const criteriaFace = "factoryd: every card of the plan has ended with a criterion still unmet.\n\n- k1 (test): the page k1 loads\n- k2 (test): the page k2 loads\n- k3 (test): the page k3 loads\n\nGrant one more bounded card, or waive a criterion with your reason."
+const criteriaFace = "Every card of the plan has ended with a criterion still unmet.\n\n- k1 (test): the page k1 loads\n- k2 (test): the page k2 loads\n- k3 (test): the page k3 loads\n\nGrant one more bounded card, or waive a criterion with your reason."
 
 // planCriteriaRig is the rung 2 rig whose card t1 is a done plan with three
 // test criteria, k1 to k3, which the gate rows of its integration card
 // t1-int, done at 09:00 on 17 November, found unmet, on a main whose head
 // is head. The gate's runs on record are one cut run at each of cuts,
 // attempt after attempt, for the cards as they stand. The plan's criteria
-// request waits with criteriaFace as its face's words, and its case is
-// open; the stub decides the request.
+// request waits, as the close check opens it, with the three promises it
+// asks about and criteriaFace as its face's words, and its case is open;
+// the stub decides the request.
 func planCriteriaRig(t *testing.T, head string, cuts ...string) (rungRig, *Waker, *fakeWakeStarter, *boardStub, Case) {
 	t.Helper()
 	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
@@ -319,7 +318,7 @@ func planCriteriaRig(t *testing.T, head string, cuts ...string) (rungRig, *Waker
 		g.record(t, EventCriteriaGateRun, map[string]any{"task": "t1-int", "pr": 0, "commit": commit, "outcome": "cut", "attempt": fmt.Sprint(i + 1),
 			"cards": "rev 1 t1-int:done@2026-11-17T09:00:00Z"})
 	}
-	spec, err := json.Marshal(map[string]any{"task": "t1-int", "criteria": ids, "face": criteriaFace})
+	spec, err := json.Marshal(CriteriaSpec{Task: "t1-int", Criteria: ids, Open: ids, Of: len(ids), Face: criteriaFace})
 	if err != nil {
 		t.Fatal(err)
 	}

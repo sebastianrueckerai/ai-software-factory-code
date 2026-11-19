@@ -9,11 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"maps"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -22,7 +20,8 @@ import (
 // what e does to its card's cases: an ask opens a case or appends a step
 // to it, an answer resolves the case it names or else the card's newest
 // live ask, a withdrawal withdraws it, a plan answer resolves its
-// question's case, and a merge request opens its merge case.
+// question's case, a merge request opens its merge case, and a plan's
+// close ends its held ask.
 func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error {
 	if e.TaskID == "" {
 		return nil
@@ -80,6 +79,8 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return caseEnded(withdrawCase(ctx, tx, c.ID, reason))
 	case EventPlanQuestionAnswered:
 		return resolvePlanCase(ctx, tx, e)
+	case EventPlanClosed:
+		return endHoldCase(ctx, tx, e)
 	case EventApprovalRequested:
 		id, _ := toInt(e.Detail["approval"])
 		_, err := openRequestCase(ctx, tx, int64(id))
@@ -140,9 +141,8 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	}
 	c, err := CaseFromAsk(t, e, head)
 	if err != nil {
-		// an ask with no words opens no case: its event stands
-		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
-		return false, nil
+		// a card that asks holds a case: an ask with no words is no ask
+		return false, err
 	}
 	comment, _ := toInt(e.Detail["comment"])
 	step := CaseStep{Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
@@ -276,9 +276,10 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 var caseSourceKinds = map[string]CaseKind{
 	"budget": CaseBudgetFloor, SourceMonthCap: CaseMonthCap, "project_cap": CaseProjectCap, "day_cap": CaseDayCap,
 	"provider": CaseProviderRefused, "queue": CaseGateStop, "capacity": CasePodNeverStarted, "no_answer": CaseNoAnswer,
-	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate,
-	"stale": CaseWaitExpired, SourceDependencyFailed: CaseDependencyFailed,
+	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate, "author": CaseAgentRequestInfo,
+	"stale": CaseWaitExpired, depFailedSource: CaseDependencyFailed,
 	SourceChatBudget: CaseJudgmentBudget, SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
+	SourceFreezeCard: CaseProviderFreeze,
 }
 
 // CaseKindOf maps the ask's source and reason prefixes to a CaseKind,
@@ -393,57 +394,112 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: "answer", Args: args}))
 }
 
-// openRequestCase opens the case of approval request id while it is
-// pending, open at rung 0 and due at the request's opening: a merge
-// request's merge case, its pull request at the head the gates passed, or
-// a plan's criteria request's plan_criteria case, with the words its face
-// posts. It tells whether it opened one.
-func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
-	var kind, reason string
-	var c Case
-	var pr int64
-	var raw []byte
-	var created time.Time
-	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason, created_at FROM approval_requests
-		WHERE id = $1 AND kind IN ($2, $3, $4) AND status = 'pending'`, id, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun).
-		Scan(&kind, &c.TaskID, &c.Repository, &pr, &raw, &reason, &created)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	c.Status, c.NextWakeAt = CaseOpen, &created
-	if kind == ApprovalMerge {
+// RequestCase is the case pending approval request a opens, open at rung 0
+// and due at the request's opening: a merge request's merge case, its pull
+// request at the head the gates passed, or a plan's criteria request's
+// plan_criteria case, with the words its face posts. A resource request's
+// holds the request's spec at the human and opens no row.
+func RequestCase(a ApprovalRequest) (Case, error) {
+	c := Case{TaskID: a.TaskID, Repository: a.Project, Status: CaseOpen, NextWakeAt: &a.CreatedAt}
+	if a.Kind == ApprovalMerge {
 		var spec MergeSpec
-		if err := json.Unmarshal(raw, &spec); err != nil {
-			return false, err
+		if err := json.Unmarshal(a.Spec, &spec); err != nil {
+			return Case{}, err
 		}
 		checks := "green"
 		if spec.RedChecks {
 			checks = "red"
 		}
 		c.Kind = CaseMergeApproval
-		c.StateKey = fmt.Sprintf("pr:%d@%s", pr, spec.HeadSHA)
-		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
-		c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
-			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks}
+		c.StateKey = fmt.Sprintf("pr:%d@%s", a.PRNumber, spec.HeadSHA)
+		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", a.PRNumber)
+		c.Facts = map[string]any{"approval": a.ID, "pr": a.PRNumber, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
+			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks,
+			"review_approved": spec.Review.Verdict == "approve" && spec.Review.Note == "", "review_findings": len(spec.Review.Findings)}
+		if spec.Review.Note == "" {
+			c.Facts["review_verdict"] = spec.Review.Verdict
+		}
+		if spec.Audit != nil && len(spec.Audit.Findings) > 0 {
+			c.Facts["audit_findings"] = len(spec.Audit.Findings)
+		}
+		var failed []string
+		for _, t := range spec.FailedTests {
+			if name := cmp.Or(t.Test, t.Job); name != "" && !slices.Contains(failed, name) && len(failed) < 3 {
+				failed = append(failed, name)
+			}
+		}
+		if len(failed) > 0 {
+			c.Facts["failed_checks"] = failed
+		}
 		if spec.Review.Note != "" {
 			_, why := namedReview("", spec.WhyHuman, spec.Review)
 			c.Facts["review_not_run"] = why[0]
 		}
-	} else {
-		var spec CriteriaSpec
-		if err := json.Unmarshal(raw, &spec); err != nil {
-			return false, err
+		if len(spec.HumanOpen) > 0 {
+			c = OnOpen(c, spec.HumanOpen, nil, 0)
 		}
-		c.Kind = CasePlanCriteria
-		c.StateKey = fmt.Sprintf("%s:%d", kind, id)
-		c.Problem = cmp.Or(reason, "The plan's criteria wait for a verdict")
-		c.Facts = map[string]any{"approval": id, "approval_kind": kind}
-		if spec.Face != "" {
-			c.Facts["face"] = spec.Face
+		return c, nil
+	}
+	if a.Kind == ApprovalResource {
+		// a resource request opens no case: its face is the request's own
+		c.Status, c.NextWakeAt = CaseAtHuman, nil
+		c.StateKey, c.Problem, c.Facts = fmt.Sprintf("%s:%d", a.Kind, a.ID), a.Reason, map[string]any{}
+		if err := json.Unmarshal(a.Spec, &c.Facts); err != nil {
+			return Case{}, err
 		}
+		c.Facts["approval"], c.Facts["approval_kind"] = a.ID, a.Kind
+		return c, nil
+	}
+	c.Kind = CasePlanCriteria
+	c.StateKey = fmt.Sprintf("%s:%d", a.Kind, a.ID)
+	c.Problem = cmp.Or(a.Reason, "The plan's criteria wait for a verdict")
+	c.Facts = map[string]any{"approval": a.ID, "approval_kind": a.Kind}
+	var spec CriteriaSpec
+	_ = json.Unmarshal(a.Spec, &spec)
+	if spec.Face != "" {
+		c.Facts["face"] = spec.Face
+	}
+	if spec.NotRun != "" {
+		c.Facts["not_run"] = spec.NotRun
+	}
+	if len(spec.Runnable) > 0 {
+		c.Facts["runnable"] = spec.Runnable
+	}
+	if len(spec.Open) > 0 {
+		c = OnOpen(c, spec.Open, spec.Unchecked, spec.Of)
+	}
+	return c, nil
+}
+
+// RequestRow is the approval_requested row of request a: its case's facts
+// (RequestCase) and its kind.
+func RequestRow(a ApprovalRequest) (map[string]any, error) {
+	c, err := RequestCase(a)
+	if err != nil {
+		return nil, err
+	}
+	c.Facts["kind"] = a.Kind
+	return c.Facts, nil
+}
+
+// openRequestCase opens the case of approval request id while it is
+// pending, as RequestCase makes it. It tells whether it opened one.
+func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
+	a := ApprovalRequest{ID: id}
+	var raw []byte
+	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason, created_at FROM approval_requests
+		WHERE id = $1 AND kind IN ($2, $3, $4) AND status = 'pending'`, id, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun).
+		Scan(&a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &raw, &a.Reason, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	a.Spec = raw
+	c, err := RequestCase(a)
+	if err != nil {
+		return false, err
 	}
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
 		return false, err
@@ -515,6 +571,30 @@ func endRequestCase(ctx context.Context, q rowQuerier, taskID, kind, status, by,
 	return caseEnded(err)
 }
 
+// endHoldCase ends the live held ask (CasePlanHeld) of the plan that
+// plan_closed row e closes, whoever closed it: a human's Close is the
+// ask's answer, their drop of the open promises with the close's words; the
+// factory's close found every promise settled, which withdraws it.
+func endHoldCase(ctx context.Context, q rowQuerier, e Event) error {
+	var id int64
+	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND `+caseLive+` ORDER BY id DESC LIMIT 1`, e.TaskID, CasePlanHeld).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if e.Actor == FactoryDecider {
+		return caseEnded(withdrawCase(ctx, q, id, HeldPlanSettled))
+	}
+	words, _ := e.Detail["words"].(string)
+	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: AnswerDropAndEnd, Reason: words}))
+}
+
+// HeldPlanSettled is why the factory's close of a held plan withdraws its
+// ask: no promise was left open.
+const HeldPlanSettled = "every promise of the plan is settled, and the plan closed"
+
 // revisePlanCases ends plan taskID's live question and confirmation cases
 // by by's request for changes, note: resolved with by's revise, or
 // withdrawn with note when the factory denied the request.
@@ -547,10 +627,6 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 		return CaseWithdrawn, withdrawCase(ctx, q, id, note)
 	}
 	action := ActAnswerCriteria
-	switch {
-	case kind == CasePlanCriteria && status == "denied":
-		action = ActDenyCriteria
-	}
 	if kind == CaseMergeApproval {
 		action = ActDenyMerge
 		if status == "approved" {
@@ -564,7 +640,7 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 // merge or a plan's criteria, which their request's decision ends, a plan question, which its own
 // answer ends, and a monitor flag, which sits beside the card's run and is
 // answered by its id. newestAskCase leaves them out.
-var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanCriteria, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
+var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanCriteria, CasePlanHeld, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
 
 // ownAnswerKindsSQL is ownAnswerKinds as an SQL list.
 var ownAnswerKindsSQL = func() string {

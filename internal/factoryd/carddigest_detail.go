@@ -97,7 +97,7 @@ func filedDetail(b *strings.Builder, by string, t Task, h DigestHead, deps []Dep
 			parts = append(parts, f[0]+" "+f[1])
 		}
 	}
-	fmt.Fprintf(b, "%s, budget %.2f EUR\n", strings.Join(parts, ", "), t.BudgetEUR)
+	fmt.Fprintf(b, "%s, budget %s EUR\n", strings.Join(parts, ", "), textutil.EUR(t.BudgetEUR))
 	var plan []string
 	if h.Plan > 0 {
 		plan = append(plan, strings.TrimSpace(fmt.Sprintf("plan #%d %s", h.Plan, h.PlanName)))
@@ -139,7 +139,7 @@ func sessionDetail(b *strings.Builder, id string, lines [][]byte, start time.Tim
 			continue
 		}
 		at, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(m["time"]))
-		text := fmt.Sprintf(" %-6s  line %d  %v", offsetText(at.Sub(start)), i+1, m["step"])
+		text := fmt.Sprintf(" %-6s  line %d  %v", OffsetText(at.Sub(start)), i+1, m["step"])
 		var fields []string
 		for _, k := range slices.Sorted(maps.Keys(m)) {
 			if k != "step" && k != "time" && k != "session" {
@@ -263,7 +263,7 @@ func checkinDetail(b *strings.Builder, raw []byte) {
 	}
 	fmt.Fprintf(b, "moment %s, decision %s", moment, cmp.Or(decision, "none"))
 	if l.Record != nil {
-		fmt.Fprintf(b, ", %s, %.2f EUR", textutil.Plural(rec.ToolCalls, "tool call", "tool calls"), rec.CostEUR)
+		fmt.Fprintf(b, ", %s, %s EUR", textutil.Plural(rec.ToolCalls, "tool call", "tool calls"), textutil.EUR(rec.CostEUR))
 	}
 	b.WriteString("\n")
 	if rec.Reason != "" {
@@ -359,7 +359,7 @@ func judgementDetail(b *strings.Builder, raw []byte) {
 		return
 	}
 	fmt.Fprintf(b, "criterion %s, artifact %s\n", l.Criterion, l.Artifact)
-	fmt.Fprintf(b, "model %s, prompt %s, cost %.2f EUR\n", aliasOf(l.Model), l.PromptHash, l.Cost)
+	fmt.Fprintf(b, "model %s, prompt %s, cost %s EUR\n", aliasOf(l.Model), l.PromptHash, textutil.EUR(l.Cost))
 	b.WriteString("reason: " + l.Reason + "\n")
 }
 

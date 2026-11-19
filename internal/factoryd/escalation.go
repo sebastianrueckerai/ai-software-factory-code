@@ -15,6 +15,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // EscalationStore is what the escalation endpoint reads and records.
@@ -27,6 +28,10 @@ type EscalationStore interface {
 // means the session took it.
 type SessionEscalator interface {
 	EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error
+	// AdmitAsk passes an escalation's question and reason on card t
+	// through the filing door as an ask: a *BriefRefusal goes back to the
+	// agent.
+	AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error
 }
 
 // AgentAsk is an agent's escalate (Kind AskEscalation: the
@@ -42,11 +47,14 @@ type AgentAsk struct {
 	Reason         string   `json:"reason"`
 	Recommendation string   `json:"recommendation"`
 	Choices        []string `json:"choices,omitempty"`
-	Tried          string   `json:"tried"`
-	Needs          string   `json:"needs"`
-	Tool           string   `json:"tool,omitempty"`
-	Need           string   `json:"need,omitempty"`
-	Parts          []string `json:"parts,omitempty"`
+	// Choice is the number from 1 of the choice the agent recommends, 0
+	// for none.
+	Choice int      `json:"choice,omitempty"`
+	Tried  string   `json:"tried"`
+	Needs  string   `json:"needs"`
+	Tool   string   `json:"tool,omitempty"`
+	Need   string   `json:"need,omitempty"`
+	Parts  []string `json:"parts,omitempty"`
 }
 
 // AgentAsk kinds. AskReplan is a person's stop of the running session
@@ -100,6 +108,9 @@ func (a AgentAsk) validate() error {
 			return fmt.Errorf("%s is required, at most %d bytes", name, limit)
 		}
 	}
+	if faults := GroundsFaults(a.Recommendation); len(faults) > 0 {
+		return fmt.Errorf("recommendation: %s", strings.Join(faults, " "))
+	}
 	return nil
 }
 
@@ -112,11 +123,21 @@ func (a AgentAsk) reason() string {
 	case AskReplan:
 		return a.Reason
 	case AskInfo:
-		return agentAsksAuthor + a.Question + "\nTried: " + a.Tried + "\nNeeds: " + a.Needs
+		return InfoRequestReason(a.Question, a.Tried, a.Needs)
 	case AskTool:
 		return AgentAsks + "a sandbox with " + a.Tool + "\nWhy: " + a.Need
 	}
-	return AgentAsks + a.Question + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
+	pick := ""
+	if a.Choice >= 1 && a.Choice <= len(a.Choices) {
+		pick = fmt.Sprintf("\nChoice: %d (%s)", a.Choice, a.Choices[a.Choice-1])
+	}
+	return AgentAsks + a.Question + pick + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
+}
+
+// InfoRequestReason is the reason of the agent's request for information:
+// its question to the issue's author, what it tried and what it needs.
+func InfoRequestReason(question, tried, needs string) string {
+	return agentAsksAuthor + question + "\nTried: " + tried + "\nNeeds: " + needs
 }
 
 // IntakeAgentEscalation is the intake event of an agent's escalate,
@@ -336,12 +357,9 @@ const (
 	maxRecommendation = 2000
 )
 
-// MaxChoices bounds the answers an agent may offer, MaxChoice the
-// characters of one.
-const (
-	MaxChoices = 5
-	MaxChoice  = 60
-)
+// MaxChoices bounds the answers an agent may offer; writingguide.MaxChoice
+// bounds the characters of one.
+const MaxChoices = 5
 
 // offeredChoices are the agent's choices as a card offers them, each
 // trimmed: 2 to 5, none empty or over 60 characters. Any other list is
@@ -354,9 +372,9 @@ func offeredChoices(taskID string, choices []string) []string {
 	for i, c := range choices {
 		out[i] = strings.TrimSpace(c)
 	}
-	if len(out) < 2 || len(out) > MaxChoices || slices.ContainsFunc(out, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > MaxChoice }) {
+	if len(out) < 2 || len(out) > MaxChoices || slices.ContainsFunc(out, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > writingguide.MaxChoice }) {
 		log.Printf("task %s: the agent's %d choices are dropped, the card offers 2 to %d of 1 to %d characters: %s",
-			taskID, len(choices), MaxChoices, MaxChoice, textutil.Truncate(fmt.Sprintf("%q", choices), 400))
+			taskID, len(choices), MaxChoices, writingguide.MaxChoice, textutil.Truncate(fmt.Sprintf("%q", choices), 400))
 		return nil
 	}
 	return out
@@ -397,6 +415,13 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		}
 		if ask.Kind == AskEscalation {
 			ask.Choices = offeredChoices(in.TaskID, ask.Choices)
+			switch {
+			case ask.Choices == nil:
+				ask.Choice = 0
+			case ask.Choice < 0 || ask.Choice > len(ask.Choices):
+				http.Error(w, fmt.Sprintf("choice %d names none of the %d choices", ask.Choice, len(ask.Choices)), http.StatusBadRequest)
+				return
+			}
 		} else {
 			ask.Choices = nil // no human picks: the issue's author answers on Forgejo, a tool request waits for its image, the check-in judges a cut
 		}
@@ -412,6 +437,16 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		if t.Status != "running" {
 			http.Error(w, "task "+in.TaskID+" is "+t.Status, http.StatusConflict)
 			return
+		}
+		if ask.Kind == AskEscalation {
+			var no *BriefRefusal
+			if err := sessions.AdmitAsk(r.Context(), t, ask); errors.As(err, &no) {
+				refuseBrief(w, no)
+				return
+			} else if err != nil {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
 		}
 		if err := sessions.EscalateSession(r.Context(), t.ID, ask); err != nil {
 			status := http.StatusServiceUnavailable

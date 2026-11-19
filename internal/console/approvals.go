@@ -7,16 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
@@ -32,23 +31,33 @@ type criterionRow struct {
 	Human    bool                   // Met and Not met are offered: a human criterion on a merge card
 }
 
+// Words are the row's promise as a face names it.
+func (r criterionRow) Words() string { return factoryd.PromiseOf(r.PlanCriterion) }
+
+// Detail is the row's claim beside a promise in other words, "" where the
+// promise is the claim.
+func (r criterionRow) Detail() string {
+	if r.Promise == "" {
+		return ""
+	}
+	return r.Claim
+}
+
 // maxCardArtifact is the most of an artifact a merge card shows.
 const maxCardArtifact = 8 << 10
 
-// approvalCard is a pending approval request with what its kind needs.
+// approvalCard is a pending approval request with its rows, as its kind's
+// card shows them. The request's Healed: a merge request opened on red
+// checks whose recorded head's checks are green now (#1013, a re-run), so
+// the card offers its Approve again and says so.
 type approvalCard struct {
-	factoryd.ApprovalRequest
+	factoryd.Request
 	IDSuffix string // on the item's ids: "-d" in the drawer, so the column's copy keeps its own
 	IssueURL string
 	Issue    int64
-	PlanName string // a plan approval: the plan's name
+	PlanName string // a plan approval: the plan's name, its title while it has none
 	PRURL    string
 	Monthly  float64
-	Merge    factoryd.MergeSpec
-	// Healed: a merge request opened on red checks whose recorded head's
-	// checks are green now (#1013, a re-run), so the card offers its Approve
-	// again and says so.
-	Healed bool
 	// HeadUnread: the head's current checks could not be read (#1013), so
 	// the card shows the face its frozen spec gives it, which may be
 	// stale; the card says so rather than fail silently.
@@ -57,30 +66,11 @@ type approvalCard struct {
 	// problem sentence.
 	HeadUnreadWhy string
 	Resource      cloudres.ResourceSpec
-	// a plan's criteria gap: the spec, the open criteria with their
-	// standing verdicts, whether every card of the plan is delivered
-	// (done, merged or closed), which the confirm button keys on, and whether a
-	// criterion is still open, which the grant answers
-	CriteriaSpec factoryd.CriteriaSpec
-	// Criteria are the card's rows the carousel pages (one-face 6b): one
-	// in view at a time, CriterionAt of CriterionOf, the arrows' reads at
-	// CriterionPrev and CriterionNext, 0 past either end. GateLines are
-	// the met gate rows that ask nothing, one line on the face each.
-	Criteria      []criterionRow
-	GateLines     []criterionRow
-	CriterionAt   int
-	CriterionOf   int
-	CriterionPrev int
-	CriterionNext int
-	Delivered     bool
-	Grantable     bool
-	// Unsettled: a merge card's human criteria with no verdict, which hold
-	// its Approve. A gate criterion without a row does not: the press
-	// reaches the workflow, which runs the gate again.
-	Unsettled []string
-	// a plan: its revision, the summary, the cards in filing order and the
-	// keys it takes off main
-	PlanSpec    factoryd.PlanSpec
+	// Criteria are the card's rows of the plan's promises; GateLines the
+	// met gate rows of a criteria request that ask nothing, one line each.
+	Criteria  []criterionRow
+	GateLines []criterionRow
+	// a plan: the summary and the cards in filing order
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
 	// PlanOutcome and PlanGlossary are the spec's, PlanStill what its later
@@ -89,18 +79,11 @@ type approvalCard struct {
 	PlanOutcome  string
 	PlanGlossary []string
 	PlanStill    []string
-	// TakeOffRefs are the cards the plan takes off main, each as the
-	// confirm button's line reads it: #its issue, else its key. TakeOffWhys
-	// are the reasons the plan gives, one line each, beside the button.
-	TakeOffRefs []string
-	TakeOffWhys []string
-	Questions   []planQuestion
-	Holdouts    []planHoldout
-	Open        string // "<n> questions open" while any waits for its answer
-	Asks        bool   // the card shows its questions' forms, as the drawer does
-	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
-	// Confirm is the waiting confirmation itself, hoisted above the card's
-	// other questions: the lead and the two forms answer it.
+	Questions    []planQuestion
+	Holdouts     []planHoldout
+	Open         string // "<n> questions open" while any waits for its answer
+	// Confirm is the waiting confirmation itself, which the plan's own
+	// confirmation answers.
 	Confirm *planQuestion
 	Problem string // why the human's last action on the card was refused
 	// TaskStatus is its task's, where the task's card stands once the
@@ -116,37 +99,14 @@ type approvalCard struct {
 	// Opened is the drawer copy of a plan card's merge card alone: the
 	// plan's opened proofs, each beside the pull request's version.
 	// OpenedUnread: they could not be read, and the card says so.
-	Opened       []openedView
+	Opened       []proofView
 	OpenedUnread bool
-	// Decide is the merge or resource face's decide view-model, built on
-	// the shared decide struct and its builder (decide.go): the partial
-	// case-decide renders it in the five-part shape, and its send POSTs
-	// the chosen action, the fund amount and the note to the approve
-	// endpoint in one request. Nil on every other kind and for a viewer
-	// who may not decide. Hosted: the card renders inside its case, whose
-	// own parts div already shows the ask, so the approval's copy does
-	// not repeat them.
-	Decide *decide
-	Hosted bool
-	// Face is the face of the case that holds a criteria request once it
-	// reached the human: the rungs' analysis and recommendation
-	Face *factoryd.Face
 }
 
-// faceOf gives criteria card k the face of its case held, at the human
-// among cs, its words masked as the case row masks them.
-func (k *approvalCard) faceOf(cs caseSet, held factoryd.Case, hosts []string) {
-	face := factoryd.CaseFace(held, cs.desk.Steps[held.ID], factoryd.FactsOf(held), cs.desk.Asks[held.ID], nil)
-	for _, s := range []*string{&face.Info, &face.Recommendation, &face.Source} {
-		*s = sanitize.Outbound(scrubText(*s), hosts)
-	}
-	k.Face = &face
-}
-
-// openedView is an opened proof as the drawer shows it: the original
+// proofView is an opened proof as the drawer shows it: the original
 // code, and the pull request's version at the request's head when it
 // differs. Missing: the pull request holds no file at the path.
-type openedView struct {
+type proofView struct {
 	Criterion, Path, Original, Repository string
 	Missing, Changed                      bool
 }
@@ -158,48 +118,6 @@ func (k approvalCard) Waiting() string {
 		return ""
 	}
 	return minutes(time.Since(k.CreatedAt))
-}
-
-// rowCard is one criterion row bound to the card that asks it, the
-// criteria-row template's argument: the row under Row, the card's own
-// facts (its id, its csrf, its filter) promoted beside it.
-type rowCard struct {
-	*approvalCard
-	Row criterionRow
-}
-
-// Row binds row to the card for the criteria-row template.
-func (k approvalCard) Row(row criterionRow) rowCard { return rowCard{approvalCard: &k, Row: row} }
-
-// InView is the criterion the card's carousel holds in view (one-face
-// 6b): the row at its place, none when the card pages no criterion.
-func (k approvalCard) InView() criterionRow {
-	if k.CriterionAt < 1 || k.CriterionAt > len(k.Criteria) {
-		return criterionRow{}
-	}
-	return k.Criteria[k.CriterionAt-1]
-}
-
-// CarouselQuery is the board's filter as the carousel's reads carry it
-// back, so a page keeps the board it came from.
-func (k approvalCard) CarouselQuery() string { return k.Filter.query() }
-
-// pageCriteria holds criterion at of the card's rows in view (one-face
-// 6b): the count and the arrows' places follow.
-func (k *approvalCard) pageCriteria(at int) {
-	k.CriterionPrev, k.CriterionNext = 0, 0
-	k.CriterionOf = len(k.Criteria)
-	if k.CriterionOf == 0 {
-		k.CriterionAt = 0
-		return
-	}
-	k.CriterionAt = min(max(at, 1), k.CriterionOf)
-	if k.CriterionAt > 1 {
-		k.CriterionPrev = k.CriterionAt - 1
-	}
-	if k.CriterionAt < k.CriterionOf {
-		k.CriterionNext = k.CriterionAt + 1
-	}
 }
 
 // Rerun: the card is a factory pull request's merge request on red
@@ -234,122 +152,75 @@ func (q planQuestion) ChoiceWords() string {
 	return strings.Join(labels, " / ")
 }
 
-// askDecide is the card's one waiting ask as the shared case-decide
-// partial renders it: the hoisted confirmation while it waits, else the
-// first unanswered question — the same ask the case face's slot decides —
-// with its five parts, one fund control, one note box and the one send
-// that applies all three. The planner's text is masked as the slot masks
-// it. nil while no ask waits.
-func (k approvalCard) AskDecide() *decide {
-	d := newDecide(k.TaskID, k.CSRF, k.IDSuffix, k.Filter, "")
-	d.IssueNumber, d.IssueURL = k.Issue, k.IssueURL
-	plan := fmt.Sprintf("Plan #%d, revision %d", k.Issue, k.PlanSpec.Revision)
-	if k.Confirm != nil {
-		d.Ask = "Confirm the spec and the criteria, or request changes."
-		d.Why = scrubText(plan + ": Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round.")
-		d.Plan = &planSlot{Revision: k.PlanSpec.Revision, Index: k.Confirm.Index, Confirm: true}
-		for _, why := range k.TakeOffWhys {
-			d.Plan.TakeOffWhys = append(d.Plan.TakeOffWhys, scrubText(why))
-		}
-		d.Plan.TakeOffRefs = k.TakeOffRefs
-		return d
-	}
-	open := 0
-	for _, q := range k.Questions {
-		if q.Kind != factoryd.QuestionConfirmation && !q.Answered() {
-			open++
-		}
-	}
-	for _, q := range k.Questions {
-		if q.Kind == factoryd.QuestionConfirmation || q.Answered() {
-			continue
-		}
-		d.Ask = scrubText(q.Text)
-		d.Why = scrubText(fmt.Sprintf("%s: %d %s open; the planner asks all of them in one turn, and the next revision starts once each is answered.",
-			plan, open, plural(open, "question")))
-		if q.Recommended != "" && q.Grounds != "" {
-			d.Recommendation, d.Source = scrubText(q.Recommended+": "+q.Grounds), "the planner"
-		}
-		d.Plan = &planSlot{Revision: k.PlanSpec.Revision, Index: q.Index}
-		for _, p := range q.Picks {
-			p.Checked = d.Recommendation != "" && p.Label == q.Recommended
-			d.Plan.Choices = append(d.Plan.Choices, p)
-		}
-		return d
-	}
-	return nil
-}
-
-// IsAsk says question n is the one ask the card's decide block renders;
-// the questions behind it list as rows without forms.
-func (k approvalCard) IsAsk(n int) bool {
-	d := k.AskDecide()
-	return d != nil && d.Plan != nil && !d.Plan.Confirm && d.Plan.Index == n
-}
-
 // planHoldout is a plan's hold-out as its card shows it: the claim with
-// its inputs and expected numbers, its state's one line, and whether its
-// okay and drop work (a proposal, the round's confirmation unanswered).
+// its inputs and expected numbers, its state's words, and whether it is
+// a page of its own (a proposal, the round's confirmation unanswered).
 type planHoldout struct {
-	Index int
-	factoryd.PlanProof
-	Blurb   string
-	Decides bool
+	factoryd.HoldoutRow
+	Blurb string
 }
 
-// holdoutBlurbs are the hold-out states' one lines.
-var holdoutBlurbs = map[string]string{
-	factoryd.ProofProposed: "proposed: okay keeps it out of the plan. The prover writes its test, hidden from the agent, unless it filed before the okay.",
-	factoryd.ProofOkayed:   "kept out: once the plan's foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent. A hold-out okayed after the prover files gets no test.",
-	factoryd.ProofDropped:  "dropped",
-}
+// holdoutBlurbs are the hold-out states' words.
+var holdoutBlurbs = map[string]string{factoryd.ProofProposed: "waits for your answer", factoryd.ProofOkayed: "kept", factoryd.ProofDropped: "dropped"}
 
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, act actor, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
-	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver, Grantable: true}
+	t, ok := tasks[a.TaskID]
+	r, err := factoryd.ReadRequest(ctx, requestReads{c.cfg.Tasks, c.cfg.Events}, a, t, func(ctx context.Context, project, sha string) (bool, error) {
+		return c.headChecksGreen(ctx, act, project, sha)
+	})
+	k := approvalCard{Request: r, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
 		k.Monthly = *a.MonthlyEUR
 	}
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + a.Project
-	t, ok := tasks[a.TaskID]
-	k.TaskStatus, k.PlanName = t.Status, t.PlanName
+	k.TaskStatus = t.Status
+	if t.Track == policy.TrackPlan {
+		k.PlanName = cmp.Or(t.PlanName, factoryd.CardTitle(t))
+	}
 	if ok && t.IssueNumber > 0 {
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}
-	var err error
+	if r.HeadErr != nil {
+		log.Printf("console: approval request %d: %v", a.ID, r.HeadErr)
+		k.HeadUnread, k.HeadUnreadWhy = true, forgejoCause(r.HeadErr)
+	}
 	switch a.Kind {
 	case factoryd.ApprovalMerge:
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
-		err = json.Unmarshal(a.Spec, &k.Merge)
-		// a red request whose recorded head's checks are green now (#1013)
-		// merges again; a read that fails leaves the red face, which says so
-		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" {
-			green, gerr := c.headChecksGreen(ctx, act, a.Project, k.Merge.HeadSHA)
-			if gerr != nil {
-				log.Printf("console: approval request %d: %v", a.ID, gerr)
-				k.HeadUnread, k.HeadUnreadWhy = true, forgejoCause(gerr)
-			} else {
-				k.Healed = green
-			}
+		if errors.Is(err, factoryd.ErrRequestSpec) {
+			k.Problem = "The console could not read the merge request: " + errText(err) + "."
+			break
 		}
-		if err == nil && !face {
-			if k.Opened, err = c.openedOf(ctx, act, t, a.Project, k.Merge.HeadSHA); err != nil {
+		if !face {
+			var oerr error
+			if k.Opened, oerr = c.openedProofsOf(ctx, act, t, a.Project, k.Merge.HeadSHA); oerr != nil {
+				log.Printf("console: approval request %d: %v", a.ID, oerr)
 				k.OpenedUnread = true
 			}
 		}
-		if rows, open, ok, rerr := c.planRows(ctx, t); rerr != nil {
-			log.Printf("console: approval request %d: %v", a.ID, rerr)
-			k.Problem = "The console could not read the criterion rows: " + errText(rerr) + ". Reload the board."
-		} else if ok {
-			k.Criteria, k.Unsettled = rows, open
+		if err == nil {
+			k.Criteria, err = c.promiseRows(ctx, r.Promises, r.Integration)
+		}
+		if err != nil {
+			k.Problem = "The console could not read the criterion rows: " + errText(err) + ". Reload the board."
 		}
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
-		if err = c.planOf(ctx, &k); err != nil {
+		if err != nil {
 			k.Problem = "The plan could not be read: " + errText(err) + ". Open the plan's approval again, or read the plan on its issue."
 		}
+		k.planOf()
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
-		err = c.criteriaOf(ctx, &k)
+		for _, p := range r.Promises {
+			row := evidenceRow(criterionRow{PlanCriterion: p.PlanCriterion, Verdict: p.Verdict, Evidence: p.Evidence})
+			if p.GateLine() {
+				// a gate row that asks nothing: one line
+				k.GateLines = append(k.GateLines, row)
+				continue
+			}
+			k.Criteria = append(k.Criteria, row)
+		}
 	}
 	if err != nil {
 		log.Printf("console: approval request %d: %v", a.ID, err)
@@ -374,73 +245,16 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	return k
 }
 
-// buildDecide sets the card's decide view-model on the fields its caller
-// has settled: the board's filter among them, whose hidden inputs the one
-// send carries so a press keeps the board it came from. Call it once the
-// card's Filter, Writer and IDSuffix stand; it leaves every other kind,
-// and a viewer who may not decide, without one.
-func (k *approvalCard) buildDecide() {
-	if (k.Kind == factoryd.ApprovalMerge || k.Kind == factoryd.ApprovalResource) && k.Approver && !k.Rerun() && !k.Returns() && len(k.Unsettled) == 0 {
-		k.Decide = approvalDecide(k)
-	}
+// requestReads are the console's reads a request's rows come from.
+type requestReads struct {
+	Tasks
+	Events
 }
 
-// approvalDecide builds merge or resource approval card k's decide
-// view-model on the shared decide struct and its builder (decide.go): the
-// five parts of the ask — the ask with its numbers, the why, what the call
-// needs, the recommendation with its source — and the answers it offers,
-// whose one send POSTs the chosen action, the fund amount and the note to
-// the approve endpoint in one request.
-func approvalDecide(k *approvalCard) *decide {
-	d := newDecide(k.TaskID, k.CSRF, k.IDSuffix, k.Filter, k.Waiting())
-	d.ApprovalID = k.ID
-	d.Action = fmt.Sprintf("/approvals/%d/approve", k.ID)
-	d.DataTo = k.TaskStatus
-	d.IssueNumber, d.IssueURL = k.Issue, k.IssueURL
-	switch k.Kind {
-	case factoryd.ApprovalMerge:
-		migration := ""
-		if k.Merge.Migration {
-			migration = " It carries a migration."
-		}
-		d.Ask = fmt.Sprintf("Merge PR #%d of %s? %s risk.%s", k.PRNumber, k.TaskID, k.Merge.RiskClass, migration)
-		d.Why = strings.Join(k.Merge.WhyHuman, "; ")
-		d.Info = "Model review: " + k.Merge.VerdictSummary
-		d.Recommendation, d.Source = k.Merge.Recommendation, "the model review"
-		// a factory pull request has no agent to send it back to: its one
-		// deny closes it and its card with the note; an agent's pull
-		// request goes back to its agent
-		deny := offer{Name: "deny", Label: "Deny", Effect: "sends the pull request back to its agent with your note",
-			Aria: fmt.Sprintf("Deny merge PR #%d of %s", k.PRNumber, k.TaskID)}
-		if k.Merge.Factory {
-			deny = offer{Name: "deny", Label: "Close",
-				Effect: fmt.Sprintf("closes PR #%d and its card with your note: no agent works on a pull request factoryd opened", k.PRNumber),
-				Aria:   fmt.Sprintf("Close PR #%d of %s and its card", k.PRNumber, k.TaskID)}
-		}
-		d.Offers = []offer{
-			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: true, By: "the model review",
-				Aria: fmt.Sprintf("Approve merge PR #%d of %s", k.PRNumber, k.TaskID)},
-			deny,
-		}
-	case factoryd.ApprovalResource:
-		d.Ask = fmt.Sprintf("Commission a %s for %s? %.4f EUR per month, this lease %.4f EUR.",
-			k.Resource.ServerType, k.Resource.Purpose, k.Monthly, k.Resource.ReservationEUR)
-		d.Why = strings.Join(k.Resource.BeyondEnvelope, "; ")
-		d.Info = "Approves the one request of this task; a wider envelope for the project changes its file in Git."
-		d.Offers = []offer{
-			{Name: "approve", Label: "Approve", Effect: "commissions the server for this lease; the project's envelope is its file's", Recommended: true,
-				Aria: fmt.Sprintf("Approve resource request %d of %s", k.ID, k.TaskID)},
-			{Name: "deny", Label: "Deny", Effect: "refuses the request; the agent is told your reason",
-				Aria: fmt.Sprintf("Deny resource request %d of %s", k.ID, k.TaskID)},
-		}
-	}
-	return d
-}
-
-// openedOf are the opened proofs of plan card t's plan (Task.PlanCard)
-// when t is its integration card or a delta card, each read at head in
-// project as a's human; nil for any other card.
-func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, project, head string) ([]openedView, error) {
+// openedProofsOf are the opened proofs of plan card t's plan (Task.PlanCard) when t is its
+// integration card or a delta card, each read at head in project as a's
+// human; nil for any other card.
+func (c *Console) openedProofsOf(ctx context.Context, a actor, t factoryd.Task, project, head string) ([]proofView, error) {
 	if !t.PlanCard() || head == "" {
 		return nil, nil
 	}
@@ -452,7 +266,7 @@ func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, projec
 	if err != nil {
 		return nil, fmt.Errorf("proofs of %s: %w", t.Parent, err)
 	}
-	var out []openedView
+	var out []proofView
 	for _, pp := range rows {
 		if pp.State != factoryd.ProofOpened {
 			continue
@@ -464,7 +278,7 @@ func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, projec
 		if err != nil {
 			return nil, err
 		}
-		v := openedView{Criterion: cmp.Or(pp.Criterion, pp.ID), Path: pp.Path, Original: pp.Code}
+		v := proofView{Criterion: cmp.Or(pp.Criterion, pp.ID), Path: pp.Path, Original: pp.Code}
 		var raw []byte
 		err = c.as(ctx, a.s, http.MethodGet, route, nil, http.StatusOK, &raw)
 		switch ae := (*apiError)(nil); {
@@ -480,129 +294,48 @@ func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, projec
 	return out, nil
 }
 
-// criteriaOf fills the criteria gap card k from its request's spec: the
-// plan's criteria with their standing verdicts (the approver's row over
-// the review's), the open ones the grant or a waiver answers.
-func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
-	if err := json.Unmarshal(k.Spec, &k.CriteriaSpec); err != nil {
-		return fmt.Errorf("spec: %w", err)
+// evidenceRow is row with its evidence read by factoryd.GateEvidence: a met
+// gate row's blind or open as its Word, and its line as the full brief
+// shows it, as the row names its promise already.
+func evidenceRow(row criterionRow) criterionRow {
+	state, line := factoryd.GateEvidence(row.ID, row.Evidence)
+	if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
+		row.Word = state
 	}
-	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.CriteriaSpec.Revision)
-	if err != nil {
-		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
-	}
-	if !ok {
-		return fmt.Errorf("revision %d of %s is not recorded", k.CriteriaSpec.Revision, k.TaskID)
-	}
-	var p factoryd.Plan
-	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
-	}
-	rows, err := c.cfg.Tasks.CriteriaVerdicts(ctx, k.CriteriaSpec.Task)
-	if err != nil {
-		return fmt.Errorf("verdicts of %s: %w", k.CriteriaSpec.Task, err)
-	}
-	if k.Delivered, _, err = c.cfg.Tasks.PlanDelivered(ctx, k.TaskID); err != nil {
-		return fmt.Errorf("the delivered cards of %s: %w", k.TaskID, err)
-	}
-	for _, c := range p.Criteria {
-		v, _ := factoryd.StandingRow(rows, c)
-		row := criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence}
-		// a met gate row's blind or open moved from its evidence to its
-		// Word, as the merge card's rows read it
-		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
-			for _, w := range []string{"blind", "open"} {
-				if rest, cut := strings.CutPrefix(row.Evidence, w+": "); cut {
-					row.Word, row.Evidence = w, rest
-				}
-			}
-		}
-		if row.Word != "" {
-			// a gate row that asks nothing: one line on the face, out of
-			// the carousel (one-face 6b)
-			k.GateLines = append(k.GateLines, row)
-			continue
-		}
-		k.Criteria = append(k.Criteria, row)
-	}
-	k.Grantable = slices.ContainsFunc(k.Criteria, func(c criterionRow) bool { return c.Verdict != "met" && c.Verdict != "waived" })
-	// the face opens on the first criterion still to settle (one-face 6b)
-	at := 1 + max(slices.IndexFunc(k.Criteria, func(c criterionRow) bool {
-		return c.Verdict != "met" && c.Verdict != "waived"
-	}), 0)
-	k.pageCriteria(at)
-	return nil
+	row.Evidence = line
+	return row
 }
 
-// planRows are planVerdicts' rows as the merge card shows them: a met
-// gate row's blind or open moved from its evidence to its Word, and each
-// human criterion's with its artifact, cut to maxCardArtifact bytes.
-func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, ok bool, err error) {
-	rows, open, home, ok, err := c.planVerdicts(ctx, t)
-	if err != nil || !ok {
-		return nil, nil, ok, err
-	}
-	for i, row := range rows {
-		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
-			for _, w := range []string{"blind", "open"} {
-				if rest, cut := strings.CutPrefix(row.Evidence, w+": "); cut {
-					rows[i].Word, rows[i].Evidence = w, rest
+// promiseRows are a merge card's rows of its plan's promises, standing on
+// the plan's integration card home, as the card shows them: a met gate
+// row's blind or open moved from its evidence to its Word, and each human
+// promise's with its artifact, cut to maxCardArtifact bytes.
+func (c *Console) promiseRows(ctx context.Context, promises []factoryd.PromiseRow, home string) ([]criterionRow, error) {
+	var rows []criterionRow
+	for _, p := range promises {
+		row := evidenceRow(criterionRow{PlanCriterion: p.PlanCriterion, Verdict: p.Verdict, Evidence: p.Evidence})
+		if p.Kind == factoryd.CriterionHuman {
+			row.Human = true
+			b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home, p.ID))
+			if err != nil {
+				return nil, fmt.Errorf("the artifact of %s: %w", p.ID, err)
+			}
+			if b != nil {
+				a := &factoryd.GateArtifact{}
+				if err := json.Unmarshal(b, a); err != nil {
+					return nil, fmt.Errorf("the artifact of %s: %w", p.ID, err)
 				}
+				row.Size = fmt.Sprintf("%d KiB", (len(a.Content)+1023)>>10)
+				if len(a.Content) > maxCardArtifact {
+					row.Size = fmt.Sprintf("the first %d KiB of %s", maxCardArtifact>>10, row.Size)
+					a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
+				}
+				row.Artifact = a
 			}
 		}
-		if row.Kind != factoryd.CriterionHuman {
-			continue
-		}
-		rows[i].Human = true
-		b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home, row.ID))
-		if err != nil {
-			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
-		}
-		if b == nil {
-			continue
-		}
-		a := &factoryd.GateArtifact{}
-		if err := json.Unmarshal(b, a); err != nil {
-			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
-		}
-		rows[i].Size = fmt.Sprintf("%d KiB", (len(a.Content)+1023)>>10)
-		if len(a.Content) > maxCardArtifact {
-			rows[i].Size = fmt.Sprintf("the first %d KiB of %s", maxCardArtifact>>10, rows[i].Size)
-			a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
-		}
-		rows[i].Artifact = a
+		rows = append(rows, row)
 	}
-	return rows, open, true, nil
-}
-
-// planVerdicts are plan card t's plan's criteria (Task.PlanCard) with
-// their standing rows on its integration card home, and open, the human
-// criteria with no verdict, which hold the card's Approve; ok false when
-// t is not the integration card or a delta card of a plan with criteria.
-func (c *Console) planVerdicts(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, home string, ok bool, err error) {
-	if !t.PlanCard() {
-		return nil, nil, "", false, nil
-	}
-	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
-	if err != nil || !ok || len(p.Criteria) == 0 || !factoryd.CriteriaCard(p, t.PlanKey) {
-		return nil, nil, "", false, err
-	}
-	integration, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, t.Parent, p)
-	if err != nil {
-		return nil, nil, "", false, err
-	}
-	verdicts, err := c.cfg.Tasks.CriteriaVerdicts(ctx, integration.ID)
-	if err != nil {
-		return nil, nil, "", false, fmt.Errorf("verdicts of %s: %w", integration.ID, err)
-	}
-	for _, pc := range p.Criteria {
-		v, _ := factoryd.StandingRow(verdicts, pc)
-		rows = append(rows, criterionRow{PlanCriterion: pc, Verdict: v.Verdict, Evidence: v.Evidence})
-		if v.Verdict == "" && pc.Kind == factoryd.CriterionHuman {
-			open = append(open, pc.ID)
-		}
-	}
-	return rows, open, integration.ID, true, nil
+	return rows, nil
 }
 
 // scrubLayers masks the model-written plan layers the drawer's copy holds
@@ -617,104 +350,63 @@ func (k *approvalCard) scrubLayers(hosts []string) {
 		k.PlanStill[i] = sanitize.Outbound(scrubText(s), hosts)
 	}
 	for i, row := range k.Criteria {
+		row.Promise = sanitize.Outbound(scrubText(row.Promise), hosts)
 		row.Claim = sanitize.Outbound(scrubText(row.Claim), hosts)
 		row.Suite = sanitize.Outbound(scrubText(row.Suite), hosts)
 		k.Criteria[i] = row
 	}
+	for i := range k.Questions {
+		q := &k.Questions[i]
+		q.Text, q.Answer = sanitize.Outbound(scrubText(q.Text), hosts), sanitize.Outbound(scrubText(q.Answer), hosts)
+	}
+	for i, w := range k.TakeOffWhys {
+		k.TakeOffWhys[i] = sanitize.Outbound(scrubText(w), hosts)
+	}
 }
 
-// planOf fills plan card k from its request's revision.
-func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
-	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
-		return fmt.Errorf("spec: %w", err)
-	}
-	_, p, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("revision %d of %s is not recorded", k.PlanSpec.Revision, k.TaskID)
-	}
-	k.PlanSummary, k.PlanRows = p.Summary, factoryd.PlanRows(p)
-	k.PlanStill = p.Outline
+// planOf fills plan card k from its request's revision: the plan's
+// layers, its promises as rows with no verdict, its questions and its
+// round's extra promises.
+func (k *approvalCard) planOf() {
+	p := k.Plan
+	k.PlanSummary, k.PlanRows, k.PlanStill = p.Summary, factoryd.PlanRows(p), p.Outline
 	if p.Spec != nil {
 		k.PlanOutcome, k.PlanGlossary = p.Spec.Outcome, p.Spec.Glossary
 	}
 	for _, c := range p.Criteria {
 		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c})
 	}
-	if k.TakeOffRefs, k.TakeOffWhys, err = c.takeOffOf(ctx, k.TaskID, p); err != nil {
-		return err
-	}
-	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)
-	if err != nil {
-		return fmt.Errorf("questions of revision %d of %s: %w", k.PlanSpec.Revision, k.TaskID, err)
-	}
-	confirming := false
 	confirmAt := -1
 	open := 0
-	for i, q := range qs {
+	for i, q := range k.PlanQuestions {
 		pq := planQuestion{Index: i + 1, PlanQuestion: q}
 		for j, ch := range q.Choices {
 			pq.Picks = append(pq.Picks, planChoice{Index: j + 1, Label: scrubText(ch)})
 		}
 		k.Questions = append(k.Questions, pq)
-		if q.Kind == factoryd.QuestionConfirmation {
-			confirming, confirmAt = !q.Answered(), i
+		if q.Kind == factoryd.QuestionConfirmation && !q.Answered() {
+			confirmAt = i
 		}
 		if !q.Answered() {
 			open++
 		}
 	}
-	k.Confirming = confirming
-	if confirming {
+	if confirmAt >= 0 {
 		k.Confirm = &k.Questions[confirmAt]
 	}
 	if open > 0 {
 		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
 	}
-	proofs, err := c.cfg.Tasks.PlanProofs(ctx, k.TaskID)
-	if err != nil {
-		return fmt.Errorf("hold-outs of %s: %w", k.TaskID, err)
+	for _, h := range k.HoldoutRows {
+		k.Holdouts = append(k.Holdouts, planHoldout{HoldoutRow: h, Blurb: holdoutBlurbs[h.State]})
 	}
-	i := 0
-	for _, ho := range proofs {
-		if ho.Origin != factoryd.ProofOriginHoldout || ho.Round != k.PlanSpec.Revision {
-			continue
-		}
-		i++
-		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, PlanProof: ho, Blurb: holdoutBlurbs[ho.State],
-			Decides: confirming && ho.State == factoryd.ProofProposed})
-	}
-	return nil
 }
 
-// takeOffOf are the cards plan p of task id takes off main, each key's
-// card (factoryd.PlanWaits) as the confirm button's line reads it (#its
-// issue, else its key), and the reason each gave.
-func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (refs, whys []string, err error) {
-	if len(p.TakeOffMain) == 0 {
-		return nil, nil, nil
-	}
-	cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, id)
-	if err != nil {
-		return nil, nil, fmt.Errorf("the cards of plan %s: %w", id, err)
-	}
-	issue := map[string]int64{}
-	for _, t := range cards {
-		issue[t.PlanKey] = t.IssueNumber
-	}
-	for _, key := range p.TakeOffMain {
-		ref := key
-		if n := issue[key]; n > 0 {
-			ref = fmt.Sprintf("#%d", n)
-		}
-		refs = append(refs, ref)
-		if why := p.TakeOffReason(key); why != "" {
-			whys = append(whys, ref+": "+why)
-		}
-	}
-	return refs, whys, nil
+// planReader is the store a plan's open criteria are read from: its cards
+// and rows on the tasks port, its criteria gate's runs on the events port.
+type planReader struct {
+	Tasks
+	Events
 }
 
 // waivesCriteria reports whether a close of card id waives criteria: it is
@@ -752,125 +444,44 @@ func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.Pla
 	return rev, p, true, nil
 }
 
-// approve decides the approval request the path names: the chosen action,
-// the fund amount and the note ride one POST (doApprove, doDeny).
+// approve approves the resource request the path names (doApprove); a
+// deny has its own door (deny), so an approve that names another action is
+// refused rather than approving.
 func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		var fund float64
-		if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
-			f, err := strconv.ParseFloat(v, 64)
-			if err != nil || !(f > 0) || math.IsInf(f, 0) {
-				return "", refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
-			}
-			fund = f
+		if action := r.PostFormValue("action"); action != "" && action != "approve" {
+			return "", refuse(http.StatusBadRequest, "The answer "+action+" is not one the card shows.")
 		}
-		note := r.PostFormValue("note")
-		switch action := r.PostFormValue("action"); action {
-		case "deny", "reject", "request_changes":
-			if fund > 0 {
-				return "", refuse(http.StatusBadRequest, "a deny takes no fund: clear the fund box, or approve")
-			}
-			if action == "deny" {
-				action = "request_changes" // the face's one deny sends the pull request back
-			}
-			return c.doDeny(ctx, a, id, action, note)
-		case "", "approve":
-			return c.doApprove(ctx, a, id, note, fund)
-		default:
-			return "", refuse(http.StatusBadRequest, "the action "+action+" is not one the face offers")
+		if err := c.resourceRequest(ctx, a, id); err != nil {
+			return "", err
 		}
+		return c.doApprove(ctx, a, id)
 	})
 }
 
-// deny denies the approval request the path names with the human's
+// deny denies the resource request the path names with the human's
 // reason (doDeny).
 func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
+		if err := c.resourceRequest(ctx, a, id); err != nil {
+			return "", err
+		}
 		return c.doDeny(ctx, a, id, r.PostFormValue("action"), r.PostFormValue("note"))
 	})
 }
 
-// decideCriterion answers POST /approvals/{id}/criterion: doDecide with
-// the form's criterion, verb and reason, through decideButton.
-func (c *Console) decideCriterion(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doDecide(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("verb"), r.PostFormValue("reason"))
-	})
-}
-
-// criterionFragment answers GET /approvals/{id}/criteria/{at}: the
-// criteria card with criterion at of its request in view (one-face 6b),
-// which htmx swaps in for the card's row, with its case's face; a request
-// whose case has not reached the human has no card yet.
-func (c *Console) criterionFragment(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	at, aerr := strconv.Atoi(r.PathValue("at"))
-	if err != nil || aerr != nil || at < 1 {
-		http.NotFound(w, r)
-		return
+// resourceRequest refuses pending request id unless it asks for a
+// resource: a merge's, a plan's and a criteria request's answer has one
+// door, its case's on the card.
+func (c *Console) resourceRequest(ctx context.Context, a actor, id int64) error {
+	q, err := c.pendingRequest(ctx, a, id)
+	if err != nil {
+		return err
 	}
-	f := urlFilter(r)
-	v, all, verr := c.viewOf(r, f)
-	if verr != nil {
-		log.Printf("console: the criteria of approval %d: %v", id, verr)
-		http.Error(w, "cannot read the card", http.StatusInternalServerError)
-		return
+	if q.Kind != factoryd.ApprovalResource {
+		return refuse(http.StatusConflict, "This request takes its answer on its card's ask, not here. Open the card and press the answer there.")
 	}
-	shown, _, writable, serr := c.shownProject(ctx, r, v, all, f)
-	if serr != nil {
-		http.NotFound(w, r)
-		return
-	}
-	v.writes = writable[shown.Name]
-	q, qerr := c.pendingRequest(ctx, button(r), id)
-	switch {
-	case qerr != nil:
-		log.Printf("console: approval request %d: %v", id, qerr)
-		http.Error(w, errText(qerr), http.StatusConflict)
-	case !slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, q.Kind) || q.Project != shown.Repository:
-		http.NotFound(w, r)
-	default:
-		cs, cerr := c.caseSetOf(ctx, shown.Repository)
-		if cerr != nil {
-			log.Printf("console: the cases of %s: %v", shown.Repository, cerr)
-			http.Error(w, "cannot read the cases", http.StatusInternalServerError)
-			return
-		}
-		held, faced := cs.faced(q)
-		if !faced {
-			http.NotFound(w, r)
-			return
-		}
-		if bt, ok, terr := c.cfg.Tasks.BoardTask(ctx, q.TaskID); terr == nil && ok {
-			v.byID[bt.ID] = bt.Task
-		} else if terr != nil {
-			log.Printf("console: card %s: %v", q.TaskID, terr)
-		}
-		k := c.approvalCard(ctx, q, button(r), v.byID, v.csrf, v.approves(shown.Repository), true)
-		k.faceOf(cs, held, v.policy.Document.LinkHosts)
-		k.Filter, k.Writer = v.filter, v.writes
-		if at > k.CriterionOf {
-			http.NotFound(w, r)
-			return
-		}
-		k.pageCriteria(at)
-		c.render(w, "approval", k)
-	}
-}
-
-// confirm records the human's confirmation that the plan's delivered
-// cards meet its criteria, their note the evidence (doConfirmCriteria).
-func (c *Console) confirm(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doConfirmCriteria(ctx, a, id, r.PostFormValue("note"))
-	})
-}
-
-// rerun runs the red checks of the factory pull request card whose merge
-// request the path names again (doRerun).
-func (c *Console) rerun(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, c.doRerun)
+	return nil
 }
 
 // decideButton runs a button's decision on the approval request the path
@@ -904,9 +515,8 @@ func (c *Console) review(ctx context.Context, a actor, q factoryd.ApprovalReques
 // same head's checks turn green (#1013: a re-run) and may merge then. An
 // actor that carries no session — the pulse's render, which no member
 // asked for — fails closed as unread instead of following the nil
-// session: a member session is not required to paint a card. Green
-// mirrors factoryd's checksResult: a head that reports no statuses
-// is still pending, and warning and skipped count as green.
+// session: a member session is not required to paint a card. Green is
+// factoryd.ChecksGreen.
 func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha string) (bool, error) {
 	if a.s == nil {
 		return false, &forgejoRefusal{what: "read the head's checks", err: errors.New("the actor carries no session, so the head's current checks were not read")}
@@ -920,5 +530,5 @@ func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha str
 	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &cs); err != nil {
 		return false, &forgejoRefusal{what: "read the head's checks", err: err}
 	}
-	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning" || cs.State == "skipped"), nil
+	return factoryd.ChecksGreen(cs), nil
 }

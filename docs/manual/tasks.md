@@ -82,19 +82,20 @@ to a person), and its project's month budget has headroom. Otherwise it
 stays queued, holding no slot.
 
 A human holds a card that has not started (queued and never admitted, or
-in `waiting-deps`) with the drawer's Hold or the chat's `hold_card`: a
+in `waiting-deps`) with "Put on hold", among the opened card's other
+actions, or the chat's `hold_card`: a
 reason the board shows, and an optional release card, any card of the
 same repository of any plan but not a plan itself, which is `done` once
 it files its cards, before their work lands. A release card that already
 waits on the held card, through its dependencies or another hold, is
 refused: both would wait for ever. The held card gets no work slot, and
-its dependency wait asks nothing, until the human releases it (Release,
+its dependency wait asks nothing, until the human releases it ("Release the hold",
 `release_hold`) or its release card is `merged` or `done`. The hold
 follows the release card's work into a retry or a successor, as a
 dependency edge does. A release card that ends `failed` or `closed`, or
 that a cut turns into a plan, releases nothing: the card stays held and
-its chip turns to the warning that names the release card, its plan, how
-it ended and the ways on. For a release card that failed, a retry of it
+its waits line names the release card, its plan, how it ended and the
+ways on. For a release card that failed, a retry of it
 comes first, since its retry takes the hold over. A release of the hold,
 or a hold on another release card, comes next. A closed one leaves these
 two. A release card's end `failed` or `closed` is told once too: its end
@@ -103,15 +104,15 @@ of each human the project tells gets one inform, at needs-you, naming
 the held card, the release card, its plan, how it ended and the same
 ways on. A hold released, or taken over by a retry's card, before the
 poke goes out tells nothing. It opens no case and asks no rung. A card that ends, or moves to the human lane, takes its
-hold with it, and its `card_hold_ended` row names the move. Release
-refuses a card that no hold holds.
+hold with it, and its `card_hold_ended` row names the move. "Release the
+hold" refuses a card that no hold holds.
 
 Every revision of a plan keeps the key of a held card, whoever asked for
 the replan, and the card takes the entry the revision gives that key. A
 revision that drops the key is refused at its filing, naming the hold
 and what fits: keep the key, and when the plan no longer needs the card,
-ask in a question of the revision that the human close it or release its
-hold on its drawer. Once the human closed it, the replan rules ask for
+ask in a question of the revision that the human close it or press
+"Release the hold" on the opened card. Once the human closed it, the replan rules ask for
 its key to be left out. The planner's record of the plan's cards shows
 each held card's hold.
 
@@ -200,14 +201,20 @@ agent, may take one of the card's choices, though it may end the card
 condition gone, and never park it out of sight. A card rung 2 decides
 ends with no issue. Otherwise its face files the issue (a card that has
 one gets a comment), moves the card to `waiting-human` and pokes. The
-chat's escalation, the month cap's card and the judgment budget's card
-ask a human at once: the escalation's filing is rung 2's step, and the two
-caps' cases (`factory_month_cap`, `judgment_budget`) are the kind table's
-exceptions, since no rung can run while they stand. Every case opens
-`open`, and only one door (`ToHuman`) moves a case to the human: it passes
-a case a rung 1 or rung 2 step stands on, an exception's kind, or a case
-marked not judged, and refuses any other, naming the case, its kind and
-that it climbs first. The monitor flags a case at the human that the door
+chat's escalation, the month cap's card, the judgment budget's card and
+the provider freeze's card ask a human at once: the escalation's filing is
+rung 2's step, and the cases of the two caps and of the freeze
+(`factory_month_cap`, `judgment_budget`, `provider_freeze`) are the kind
+table's exceptions, since no rung can run while a cap stands, and a
+provider's limit can hold the rungs' own model calls. The table names two
+more exceptions: an agent's request to its issue's author
+(`agent_request_info`), whose answer alone the card's wait takes, and the
+ask of a plan whose card a human closed with promises open (`plan_held`),
+which only a human settles. Every case opens `open`, and only one door
+(`ToHuman`) moves a case to the human: it passes a case a rung 1 or rung 2
+step stands on, an exception's kind, or a case whose rung 0 step marks it
+not judged, and refuses any other, naming the case, its kind and that it
+climbs first. The monitor flags a case at the human that the door
 would refuse (`faced_unjudged`), and that flag's case is the human's,
 since only a commit fixes the door.
 
@@ -333,10 +340,10 @@ from the session cap's stop, and a grant buys the next session a quarter
 of the cap. The used time and the attempts are recorded on the task row
 (`RecordUsage` after every session), so a new workflow run for the same
 task (a resubmitted issue, a run restarted by hand) resumes the count
-instead of starting a fresh cap. The console's Extend raises sessions and
-lines in columns the workflow never writes; the workflow reads them before
-each cap check and after every answer, so an Extend on a running or
-queued card stands. A stopping factoryd detaches from a running
+instead of starting a fresh cap. The console's “Allow more sessions”
+raises sessions and lines in columns the workflow never writes. The
+workflow reads them before each cap check and after every answer, so a
+raise on a running or queued card stands. A stopping factoryd detaches from a running
 `RunSession`: the pod runs on, and the next factoryd's retry reattaches to
 it, a pod that finished meanwhile included, and reads its log from where
 the old factoryd stopped. A pod that is gone starts the attempt over from

@@ -152,9 +152,12 @@ type Runner struct {
 	RetryFreeze func(ctx context.Context, cardID, by, via string) error
 	// gateQueue holds the plans whose criteria gate is due, which the
 	// close check fills under gateMu and CriteriaGatePass takes; gateRun
-	// is the plan whose gate runs now, which the close check leaves alone
+	// is the plan whose gate runs now, which the close check leaves alone;
+	// testRuns holds the plans whose untested promises a human's
+	// run_criteria asked to run
 	gateMu    sync.Mutex
 	gateQueue []string
+	testRuns  []string
 	gateRun   string
 	// criteriaGate replaces GateCriteria in the criteria gate pass; a
 	// test scripts it
@@ -195,6 +198,10 @@ type Runner struct {
 	// filed is what a running session's file_plan tool stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
+	// briefs counts each model writer's refused tries at a filing door:
+	// the planner's file_plan by its plan, an agent's escalate and its
+	// delegate by its card; a new session starts them anew
+	briefs BriefTally
 	// revertLocks holds a *sync.Mutex by project, so RevertGroup runs
 	// once at a time per project
 	revertLocks sync.Map
@@ -210,6 +217,10 @@ type Runner struct {
 	// failed card's replacement once at a time, however many presses
 	// race it (one factoryd replica)
 	retryLocks sync.Map
+	// requestLocks holds a *sync.Mutex by task id, so a card's request
+	// for information and the minute pass ask it once between them (one
+	// factoryd replica)
+	requestLocks sync.Map
 	// now and sleep are the runner's clock (clock, pause); nil is the
 	// wall clock
 	now   func() time.Time
@@ -331,6 +342,24 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 		}
 		return ctx.Err()
 	}
+}
+
+// AdmitAsk passes an agent's escalation on card t through the filing
+// door as an ask on the card: the question is the ask, the reason its why
+// line. A refusal goes back to the agent, until its BriefTries-th try,
+// which asks as it stands.
+func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
+	refs, err := botRefsOf(ctx, r.forgejo, r.cfg.Policy().Tree, t.Repository)
+	if err != nil {
+		return err
+	}
+	key := escalateBriefKey(t.ID)
+	if _, err := pass(BriefText{Title: ask.Question, Why: ask.Reason}, BriefAsk, refs, r.briefs.Try(key)); err != nil {
+		r.briefs.Refused(key)
+		return err
+	}
+	r.briefs.Reset(key)
+	return nil
 }
 
 // noteFiled holds the plan a running session filed through the file_plan
@@ -624,8 +653,8 @@ type sessionSpec struct {
 	// standing overrides the task's author standing: a report reads its
 	// parent's issue
 	standing string
-	// spec and cardRole are a plan's card's brief section and role
-	spec, cardRole string
+	// cardRole is a plan's card's role, whose guide its brief ends with
+	cardRole string
 	// directories are the card's, which the worker maps from its clone
 	directories []string
 	// pull is the pull request a carry card carries, whose head the clone
@@ -768,6 +797,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if live != nil {
 		recorder, err = ResumeSessionRecorder(ctx, r.store, r.objects, r.Scrub, t.ID, s.id)
 	} else {
+		r.newBriefSession(t.ID)
 		recorder, err = NewSessionRecorder(ctx, r.store, r.objects, r.Scrub, t.ID, s.id, s.parent, s.model)
 	}
 	if err != nil {
@@ -796,7 +826,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		s.messageToken = rand.Text()
 		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), ReserveEUR: s.policy.Limits.GateReserve(), TimeLeft: time.Until(deadline),
-			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
+			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage, Carries: s.pull}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
@@ -1262,7 +1292,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopPush()
 			out.wip = cmp.Or(wip.head, out.wip)
 			if trip.Kind == TripSize && wip.head != "" {
-				trip.Detail += "; the work is pushed as the branch's work in progress"
+				trip.Detail += ", and the work is pushed as the branch's work in progress"
 				if text := wip.parts.text(); text != "" {
 					trip.Detail += ", " + text
 				}
@@ -2375,7 +2405,7 @@ func exitedHow(plain string, d PodDiagnosis) string {
 // the card's own money cannot open, stepProofs a proofs worker that ran
 // no entry, which its closing line says as "proofs mode: <why>".
 const (
-	stepImagePull       = "image pull"
+	StepImagePull       = "image pull"
 	stepContainerConfig = "container config"
 	stepImagePin        = "image pin"
 	stepBudget          = "budget"
@@ -2398,10 +2428,10 @@ func startStep(c ContainerState) string {
 	}
 	switch c.Reason {
 	case "InvalidImageName":
-		return stepImagePull
+		return StepImagePull
 	case "ErrImagePull", "ImagePullBackOff":
 		if strings.Contains(c.Message, "code = NotFound") || strings.Contains(c.Message, "manifest unknown") {
-			return stepImagePull
+			return StepImagePull
 		}
 	case "CreateContainerConfigError":
 		return stepContainerConfig
@@ -2437,7 +2467,7 @@ const startRefused = "the sandbox cannot start at "
 
 // The ways on a start failure's escalation.
 const (
-	thenAnswer   = "then answer to start a session again, or close the card"
+	ThenAnswer   = "then answer to start a session again, or close the card"
 	thenRepro    = "then answer to run the reproduction again, or close the card"
 	thenCriteria = "then answer to run the criteria gate again, or close the card"
 )
@@ -2449,9 +2479,15 @@ func (f *startFailure) escalation(then string) string {
 	if f.step == stepBudget {
 		return f.text
 	}
+	return StartRefusedReason(f.step, then, f.text)
+}
+
+// StartRefusedReason is the escalation of a session that cannot start at
+// step: what fixes it, then the way on, then the failure's text.
+func StartRefusedReason(step, then, text string) string {
 	act := "fix the cause below"
-	switch f.step {
-	case stepImagePull:
+	switch step {
+	case StepImagePull:
 		act = "push the worker image or correct its reference"
 	case stepContainerConfig:
 		act = "correct the sandbox pod's configuration"
@@ -2460,7 +2496,7 @@ func (f *startFailure) escalation(then string) string {
 	case stepImagePin:
 		act = "see that " + imagesPath + " on main declares the image and that its build lands, so the factory pins it"
 	}
-	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, f.step, act, then, f.text)
+	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, step, act, then, text)
 }
 
 // setupNamespace builds the session's sandbox on t's image (taskImage),
@@ -2792,7 +2828,7 @@ func (f *envFit) text(name, s, what string) string {
 const workerContainer = "worker"
 
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
-	tools := s.policy.Tools(t.RequiredCapabilities, t.Source)
+	tools := s.policy.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage))
 	if s.report != "" {
 		// a report session's card restarts on no image
 		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestTool })
@@ -2805,7 +2841,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "SESSION_ID", "value": s.id},
-		{"name": "OBJECTIVE", "value": fit.text("OBJECTIVE", briefObjective(t.Objective, len(s.directories) > 0), "the issue's text")},
 		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": taskBranch(t)},
@@ -2884,8 +2919,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.facts != "" {
 		env = append(env, map[string]any{"name": "FACTS", "value": s.facts})
 	}
-	if s.spec != "" {
-		env = append(env, map[string]any{"name": "SPEC", "value": fit.text("SPEC", s.spec, "the spec and the plan")}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
+	if s.cardRole != "" {
+		env = append(env, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
 	}
 	if len(s.directories) > 0 {
 		env = append(env, map[string]any{"name": "DIRECTORIES", "value": fit.list("DIRECTORIES", s.directories, len(s.directories), false, "last", "directories")})

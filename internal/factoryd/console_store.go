@@ -15,9 +15,8 @@ import (
 // BoardTask is a task on the console's board with the reason of its live
 // ask case ("" when it asks none) and the Choices its agent offered with that
 // question, a card in waiting-deps the issues it waits on
-// (WaitingOn: "#3, #5"), in any status the issues of the
-// cards it depends on that are not done (Dependencies: "#3, #5", for the
-// face's "blocked by n" chip), and the entries ahead of it in its merge
+// (WaitingOn: "#3, #5"), in any status the cards it depends on that are
+// not done (Dependencies, as OpenDependencies reads them), and the entries ahead of it in its merge
 // queue (-1 when it holds no entry). Question is the ask's five-part
 // question when a template shaped it (nil on an unshaped ask); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
@@ -47,7 +46,7 @@ type BoardTask struct {
 	Choices      []string
 	AskCase      int64
 	WaitingOn    string
-	Dependencies string
+	Dependencies []DepFact
 	QueueAhead   int
 	// MergeBehind is the issue of the card that holds the turn of the
 	// merge queue this card waits in, 0 at the front or outside a queue.
@@ -55,7 +54,7 @@ type BoardTask struct {
 	// HeldFor is the issue of the open plan whose card this one waits
 	// behind in gate merge-queue without a queue row, 0 for none.
 	HeldFor int64
-	// SlotWait is the face's "waits for a slot, N ahead (L live)" of a card
+	// SlotWait is the face's "waits for its turn to start, N ahead (L running)" of a card
 	// queued for a work slot, "" for any other: the resumed cards come
 	// first, then the never-started ones by filing.
 	SlotWait string
@@ -74,6 +73,9 @@ type BoardTask struct {
 	// pull request in an opened or merged request; "" and 0 for none.
 	RollID    string
 	RollIssue int64
+	// Helpers are the card's helper tasks that have not ended, oldest
+	// first: steps of its life, which the board shows on the card.
+	Helpers []BoardTask
 	// HoldView is where a human's hold on the card stands; zero when none
 	// holds it.
 	HoldView HoldView
@@ -121,8 +123,8 @@ var boardTaskQuery = `SELECT ` + boardTaskColumns + boardTaskFrom
 var boardTaskColumns = taskColumns + `, esc.at, esc.ask, COALESCE(esc.case_id, 0),
 		        CASE WHEN status = 'waiting-deps' THEN COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '') ELSE '' END,
-		        COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
-		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), ''),
+		        COALESCE((SELECT json_agg(json_build_object('task_id', d.id, 'issue', d.issue_number, 'status', d.status) ORDER BY d.issue_number, d.id)
+		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '[]'),
 		        COALESCE((SELECT count(o.task_id) FROM merge_queue me LEFT JOIN merge_queue o ON o.project = me.project
 		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id GROUP BY me.task_id), -1),
 		        COALESCE(esc.comment_id, 0),
@@ -149,9 +151,9 @@ var boardTaskFrom = `
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var b BoardTask
 	var at, greenAt sql.NullTime
-	var ask []byte
+	var ask, deps []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &at, &ask, &b.AskCase, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
+		return scan(append(dest, &at, &ask, &b.AskCase, &b.WaitingOn, &deps, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
 			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
 	})
 	if err != nil {
@@ -159,6 +161,9 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	}
 	b.ChainGreenAt = greenAt.Time
 	b.Task, b.EscalatedAt = t, at.Time
+	if err := json.Unmarshal(deps, &b.Dependencies); err != nil {
+		return b, err
+	}
 	if len(ask) > 0 {
 		if err := json.Unmarshal(ask, &b.askRow); err != nil {
 			return b, err
@@ -192,21 +197,38 @@ func (s *PGStore) fillAsks(ctx context.Context, tasks []BoardTask) error {
 		if j < 0 {
 			continue
 		}
-		tasks[i].Escalation = askBody(cases[j])
-		tasks[i].Choices = askChoices(cases[j], tasks[i].askRow)
-		tasks[i].Question = questionOfAsk(tasks[i].askRow)
+		tasks[i].Escalation, tasks[i].Choices, tasks[i].Question = BoardAsk(cases[j], tasks[i].askRow)
 	}
 	return nil
 }
 
+// BoardAsk is what a board card shows of its live ask case c, whose newest
+// question_asked row is ask: the stop's words, the premade answers and the
+// question.
+func BoardAsk(c Case, ask map[string]any) (escalation string, choices []string, q *HumanQuestion) {
+	return askBody(c), askChoices(c, ask), questionOfAsk(ask)
+}
+
 // BoardTasks lists repository's open tasks for the console's board, most
-// urgent first; a chat task is no card. A merged task is open: its card
-// waits until the chain runs its change live. The escalation reason comes
-// from the escalation's intake event, so a poll reads no timeline object.
+// urgent first; a chat task and a helper task are no card. A merged task
+// is open: its card waits until the chain runs its change live. The
+// escalation reason comes from the escalation's intake event, so a poll
+// reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
-	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
-		 WHERE repository = $2 AND kind <> $1 AND status NOT IN ('done', 'failed', 'closed')
+	tasks, err := s.boardTasks(ctx, `
+		 WHERE repository = $2 AND kind <> $1 AND status NOT IN ('done', 'failed', 'closed') AND tasks.source NOT IN `+reportSourcesSQL+`
 		 ORDER BY priority DESC, finished_at DESC NULLS LAST, tasks.id`, KindChat, repository)
+	if err != nil {
+		return nil, err
+	}
+	setSlotWaits(tasks)
+	return tasks, s.fillCards(ctx, tasks)
+}
+
+// boardTasks reads the tasks where, the WHERE and ORDER BY of
+// boardTaskQuery with its args, names.
+func (s *PGStore) boardTasks(ctx context.Context, where string, args ...any) ([]BoardTask, error) {
+	rows, err := s.db.QueryContext(ctx, boardTaskQuery+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -219,12 +241,24 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		}
 		tasks = append(tasks, b)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	return tasks, rows.Err()
+}
+
+// liveHelper is the SQL test that the card has a helper task that has not
+// ended.
+var liveHelper = `EXISTS (SELECT 1 FROM tasks h WHERE h.parent_task = tasks.id AND h.source IN ` + reportSourcesSQL + `
+	AND h.status NOT IN ('done', 'failed', 'closed'))`
+
+// fillCards fills the merge queue places, the holds and the asks of the
+// cards in tasks and puts on each its helper tasks that have not ended,
+// oldest first, with their asks.
+func (s *PGStore) fillCards(ctx context.Context, tasks []BoardTask) error {
+	if len(tasks) == 0 {
+		return nil
 	}
 	places, err := s.MergeQueuePlaces(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var held []string
 	for i := range tasks {
@@ -237,13 +271,45 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		}
 	}
 	if err := s.fillHeldFor(ctx, tasks, held); err != nil {
-		return nil, err
+		return err
 	}
 	if err := s.fillHolds(ctx, tasks); err != nil {
-		return nil, err
+		return err
 	}
-	setSlotWaits(tasks)
-	return tasks, s.fillAsks(ctx, tasks)
+	if err := s.fillAsks(ctx, tasks); err != nil {
+		return err
+	}
+	ids := make([]string, len(tasks))
+	for i, b := range tasks {
+		ids[i] = b.ID
+	}
+	helpers, err := s.boardTasks(ctx, ` WHERE tasks.parent_task = ANY($1::text[]) AND tasks.source IN `+reportSourcesSQL+`
+		 AND tasks.status NOT IN ('done', 'failed', 'closed') ORDER BY tasks.created_at, tasks.id`, ids)
+	if err == nil {
+		err = s.fillAsks(ctx, helpers)
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		for _, h := range helpers {
+			if h.Parent == t.ID {
+				t.Helpers = append(t.Helpers, h)
+			}
+		}
+	}
+	return err
+}
+
+// HelpersOf are card id's helper tasks among tasks that have not ended,
+// oldest first, as the board's reads put them on the card (Helpers).
+func HelpersOf(tasks []BoardTask, id string) []BoardTask {
+	var out []BoardTask
+	for _, h := range tasks {
+		if h.Parent == id && h.Report() && !Final(h.Status) {
+			out = append(out, h)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b BoardTask) int { return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID)) })
+	return out
 }
 
 // fillHolds sets HoldView on the cards of tasks a human holds.
@@ -314,7 +380,7 @@ func setSlotWaits(tasks []BoardTask) {
 		return cmp.Or(x.CreatedAt.Compare(y.CreatedAt), cmp.Compare(x.IssueNumber, y.IssueNumber), strings.Compare(x.ID, y.ID))
 	})
 	for n, i := range slices.Concat(resumed, fresh) {
-		tasks[i].SlotWait = fmt.Sprintf("waits for a slot, %d ahead (%d live)", n, live)
+		tasks[i].SlotWait = fmt.Sprintf("waits for its turn to start, %d ahead (%d running)", n, live)
 	}
 }
 
@@ -373,13 +439,15 @@ func arrival(t Task) time.Time {
 
 // FinishedTasks lists the page q asks for, and how many cards the read
 // leaves from the page on, the page's own included; a chat task is no
-// card, nor a finished human task. A done card whose change is not live
-// yet is no finished card: it waits in the board's progress (roadmap 296).
+// card, nor a finished human task, nor a helper task. A done card whose
+// change is not live yet is no finished card: it waits in the board's
+// progress (roadmap 296). A card whose helper task has not ended stays
+// past the window, so the helper's ask has its card to stand on.
 func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTask, int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+boardTaskColumns+`, count(*) OVER ()`+boardTaskFrom+`
-		 WHERE repository = $1 AND status = ANY($2) AND kind NOT IN ($3, 'human')
+		 WHERE repository = $1 AND status = ANY($2) AND kind NOT IN ($3, 'human') AND tasks.source NOT IN `+reportSourcesSQL+`
 		   AND (finished_at > $4 OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
-		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps'))
+		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps') OR `+liveHelper+`)
 		   AND (status <> 'done' OR `+deployLive+`)
 		   AND ($6 = '' OR COALESCE(finished_at, created_at) = $5 AND tasks.id > $6
 		       OR CASE WHEN $7 THEN COALESCE(finished_at, created_at) > $5 ELSE COALESCE(finished_at, created_at) < $5 END)
@@ -402,7 +470,7 @@ func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTa
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
-	return tasks, rest, s.fillAsks(ctx, tasks)
+	return tasks, rest, s.fillCards(ctx, tasks)
 }
 
 // BoardTask is task id as BoardTasks reads it, whether or not the board
@@ -417,10 +485,7 @@ func (s *PGStore) BoardTask(ctx context.Context, id string) (BoardTask, bool, er
 		return b, false, err
 	}
 	one := []BoardTask{b}
-	if err := s.fillHolds(ctx, one); err != nil {
-		return b, false, err
-	}
-	err = s.fillAsks(ctx, one)
+	err = s.fillCards(ctx, one)
 	return one[0], err == nil, err
 }
 
@@ -499,7 +564,8 @@ func SortBoardTasks(tasks []BoardTask) {
 // which keep no dependencies: a card without a finish stamp is in the
 // window. A done card whose change is not live yet is no finished card, as
 // FinishedTasks reads it; the fakes model a chain row as the task's
-// ChainState at its arrival.
+// ChainState at its arrival. A helper task is no card, and a card whose
+// helper has not ended stays past the window with its helpers on it.
 func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	order := func(a, b Task) int {
 		by := arrival(b).Compare(arrival(a))
@@ -510,8 +576,9 @@ func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	}
 	var out []BoardTask
 	for _, t := range tasks {
-		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" &&
-			(t.FinishedAt == nil || t.FinishedAt.After(q.Since)) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) &&
+		t.Helpers = HelpersOf(tasks, t.ID)
+		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" && !t.Report() &&
+			(t.FinishedAt == nil || t.FinishedAt.After(q.Since) || len(t.Helpers) > 0) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) &&
 			(t.Status != "done" || DeployLive(tasks, t)) {
 			out = append(out, t)
 		}

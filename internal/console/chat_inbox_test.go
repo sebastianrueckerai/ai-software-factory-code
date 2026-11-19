@@ -15,6 +15,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
+// failedPoke is the inbox's row of card id, issue n, failed on its
+// checks, as the Poker writes it.
+func failedPoke(id string, n int64) factoryd.ChatMessage {
+	m, _ := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventTaskEnded, TaskID: id, Detail: map[string]any{"state": "failed", "reason": "checks: the checks failed on c1."}},
+		factoryd.Task{ID: id, Kind: "agent", IssueNumber: n}, factoryd.Task{})
+	return m
+}
+
 // inboxRows stores rows on login's inbox of the code repository, made
 // first, and answers their ids in order.
 func inboxRows(t *testing.T, chat *fakeChat, login string, rows ...factoryd.ChatMessage) []int64 {
@@ -143,28 +151,29 @@ func TestChatInboxAskStandsPastAPoke(t *testing.T) {
 	equal(t, "the ask after the press", ask().Settled, true)
 }
 
-// A failed card's Retry and Leave it stand while they still apply: the
-// thread read past the poke, a read again, the failure's events before
-// its row and a comment after it leave it open with its buttons, where
-// the poke without choices beside it reads seen, the inbox read lists it
-// open, and the switcher's badge counts it once as needing the human,
-// read or not, and its card as waiting. The human's press settles it at
-// the press's time, and so does the first event after it that moves the
-// card on, with its word, actor and time; the badge counts it no more.
+// A failed card's “Try the failed card again” and “Not now” stand while
+// they still apply: the thread read past the poke, a read again, the
+// failure's events before its row and a comment after it leave it open
+// with its buttons, where the poke without choices beside it reads seen,
+// the inbox read lists it open, and the switcher's badge counts it once
+// as needing the human, read or not, and its card as waiting. The human's
+// press settles it at the press's time, and so does the first event after
+// it that moves the card on, with its word, actor and time; the badge
+// counts it no more.
 func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 	moved := func(kind, actor string, min int) *factoryd.Event {
 		return &factoryd.Event{Kind: kind, Actor: actor, At: at.Add(time.Duration(min) * time.Minute)}
 	}
 	for _, c := range []struct {
 		name   string
-		move   *factoryd.Event // nil: the human presses Leave it at 09:50
+		move   *factoryd.Event // nil: the human presses Not now at 09:50
 		reason string
 	}{
-		{"a press of Leave it", nil, "answered by sebastian · 09:50"},
+		{"a press of Not now", nil, "answered by sebastian · 09:50"},
 		{"a retry from the drawer", moved(factoryd.EventCardRetried, "sebastian", 10), "moved on by sebastian · 09:40"},
 		{"a close", moved(factoryd.EventCardClosed, "sebastian", 15), "answered by sebastian · 09:45"},
-		{"a status change", moved(factoryd.EventTaskStatus, factoryd.FactoryDecider, 20), "moved on by factoryd · 09:50"},
-		{"the task's end", moved(factoryd.EventTaskEnded, factoryd.FactoryDecider, 25), "moved on by factoryd · 09:55"},
+		{"a status change", moved(factoryd.EventTaskStatus, factoryd.FactoryDecider, 20), "moved on · 09:50"},
+		{"the task's end", moved(factoryd.EventTaskEnded, factoryd.FactoryDecider, 25), "moved on · 09:55"},
 	} {
 		r, chat, g := newChatRig(t)
 		ck, s := r.loggedIn(t)
@@ -182,9 +191,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 		}
 		record(factoryd.Event{Kind: factoryd.EventTaskStatus, Actor: factoryd.FactoryDecider, At: at})
 		record(factoryd.Event{Kind: factoryd.EventTaskEnded, Actor: factoryd.FactoryDecider, At: at})
-		ids := inboxRows(t, chat, "sebastian", poke("#21 started.", "t-f"),
-			factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, TaskID: "t-f",
-				Content: "#21 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}})
+		ids := inboxRows(t, chat, "sebastian", poke("#21 started.", "t-f"), failedPoke("t-f", 21))
 		record(factoryd.Event{Kind: factoryd.EventCardCommented, Actor: "sebastian", At: at.Add(5 * time.Minute)})
 		inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 		if err != nil {
@@ -209,9 +216,9 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 		chatRead(t, r, ck, path)
 		msgs := chatRead(t, r, ck, path).Messages
 		equal(t, c.name+": the inbox read again", []any{msgs[0].Settled, msgs[0].Reason, msgs[1].Settled, msgs[1].Reason, msgs[1].Choices},
-			[]any{true, "seen", false, "", []string{"Retry", "Leave it"}})
+			[]any{true, "seen", false, "", []string{"Try the failed card again", "Not now"}})
 		equal(t, c.name+": the inbox tool", reads(t, r, g, "inbox", `{}`)[0], fmt.Sprintf("The inbox of sebastian on ai-software-factory-code:\n"+
-			"%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n"+
+			"%d 10-11 09:30Z poke #21: #21 failed: the checks failed on c1. (open)\n"+
 			"%d 10-11 09:30Z poke #21: #21 started. (seen)\n"+
 			"That is the whole window.", ids[1], ids[0]))
 		equal(t, c.name+": the read inbox's badge", badge(), []int64{1, 0, 1})
@@ -223,7 +230,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			chat.mu.Unlock()
 			g.replies = [][]string{{say("It stays failed.")}}
 			if code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
-				"message": {strconv.FormatInt(ids[1], 10)}, "choice": {"Leave it"}}); code != http.StatusOK {
+				"message": {strconv.FormatInt(ids[1], 10)}, "choice": {"Not now"}}); code != http.StatusOK {
 				t.Fatalf("%s: the press = %d %v", c.name, code, events)
 			}
 		}
@@ -277,7 +284,7 @@ func TestChatInboxFiltersByQuery(t *testing.T) {
 
 // A page holds 20 rows besides the open asks and names the id the next
 // one reads below; the last page says the window ends, and a page below
-// the oldest row is empty. A failed card's open Retry and Leave it, older
+// the oldest row is empty. A failed card's open answers, older
 // than 25 pokes, leads the first page as an open ask does and never shows
 // again. The open asks, 25 of them between 23 pokes, fill the first page
 // whole and never show again.
@@ -287,8 +294,7 @@ func TestChatInboxPagesWithBefore(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed",
 		Repository: "sf/code", IssueNumber: 21}})
 	r.tasks.mu.Unlock()
-	failed := inboxRows(t, chat, "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded,
-		TaskID: "t-f", Content: "#21 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}})[0]
+	failed := inboxRows(t, chat, "sebastian", failedPoke("t-f", 21))[0]
 	var rows []factoryd.ChatMessage
 	for i := range 25 {
 		rows = append(rows, poke(fmt.Sprintf("poke %d", i), ""))
@@ -304,7 +310,7 @@ func TestChatInboxPagesWithBefore(t *testing.T) {
 	}
 	head := "The inbox of sebastian on ai-software-factory-code:\n"
 	out := reads(t, r, g, "inbox", `{}`)
-	equal(t, "page one", out[0], head+fmt.Sprintf("%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n", failed)+
+	equal(t, "page one", out[0], head+fmt.Sprintf("%d 10-11 09:30Z poke #21: #21 failed: the checks failed on c1. (open)\n", failed)+
 		strings.Join(first, "\n")+fmt.Sprintf("\nbefore=%d reads on.", ids[5]))
 	out = reads(t, r, g, "inbox", fmt.Sprintf(`{"before":%d}`, ids[5]), "inbox", fmt.Sprintf(`{"before":%d}`, ids[0]))
 	equal(t, "page two", out[0], head+strings.Join(second, "\n")+"\nThat is the whole window.")
@@ -367,8 +373,9 @@ func TestChatAskFactsReadAnEndedCardsNewestRows(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 17}})
 	var rows []factoryd.ChatMessage
+	asks := map[string]string{"issue_open_after_end": "This card ended, and its issue is still open. Close the issue?", "checkin_cut": "This card's last session went unjudged because its check ended early."}
 	for i, flag := range []string{"issue_open_after_end", "checkin_cut"} {
-		question := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", 21+i)
+		question := asks[flag]
 		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-d", Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider,
 			Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"question": question, "case_id": float64(21 + i), "case_kind": string(factoryd.CaseMonitorFlag), "flag": flag}}); err != nil {
 			t.Fatal(err)
@@ -403,45 +410,4 @@ func TestChatInboxNamesEachRowsKind(t *testing.T) {
 		"%d 10-11 09:30Z assistant: called card, board\n"+
 		"%d 10-11 09:30Z wake turn: Cards moved: #13 waits on you.\n"+
 		"That is the whole window.", ids[3], strings.Repeat("x", 100), ids[2], ids[1], ids[0]))
-}
-
-// A row whose choices hold the review overrule names it as the one a
-// press of which needs the human's reason: the field rides on the row, so
-// the panel holds no copy of factoryd's label.
-func TestChatNamesTheChoiceThatNeedsAReason(t *testing.T) {
-	r, chat, _ := newChatRig(t)
-	ck, _ := r.loggedIn(t)
-	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	exits := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: No reply can change this",
-		TaskID: "t-e", Choices: []string{"Extend the card", factoryd.OverruleChoice, "End the card"}}
-	plain := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#5 needs you: use a replica?",
-		TaskID: "t-m", Choices: []string{"Yes", "No"}}
-	for i, m := range []factoryd.ChatMessage{exits, plain} {
-		m.Conversation = inbox
-		if id, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
-			t.Fatal(err)
-		} else if i == 0 {
-			exits.ID = id
-		} else {
-			plain.ID = id
-		}
-	}
-	msgs := chatRead(t, r, ck, chatPath+"?conversation="+strconv.FormatInt(inbox, 10)).Messages
-	row := func(id int64) factoryd.ChatMessage {
-		t.Helper()
-		i := slices.IndexFunc(msgs, func(m factoryd.ChatMessage) bool { return m.ID == id })
-		if i < 0 {
-			t.Fatalf("the read holds no row %d: %+v", id, msgs)
-		}
-		return msgs[i]
-	}
-	if got := row(exits.ID); got.NeedsReason != factoryd.OverruleChoice {
-		t.Errorf("the exits row names %q as the choice that needs a reason, want %q", got.NeedsReason, factoryd.OverruleChoice)
-	}
-	if got := row(plain.ID); got.NeedsReason != "" {
-		t.Errorf("a row with no overrule names %q as the choice that needs a reason", got.NeedsReason)
-	}
 }

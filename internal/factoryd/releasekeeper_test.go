@@ -23,17 +23,17 @@ func keeperAtPtr(h, m int) *time.Time {
 }
 
 const (
-	holdInfoTail = "Wait keeps production held and asks again in 6 hours. Deploy anyway sends main as it is to production, half-built plans included. " +
+	holdInfoTail = "Not now keeps production held, and this card waits for your answer. Deploy now sends main as it is to production, half-built plans included. " +
 		"Replan on top plans the rest again on top of what is merged. Take it off main and replan reverts the plan's merged cards first, so production goes ahead without them."
-	holdWhy = "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production, so a half-built feature never goes live. " +
-		"Production has waited since 2026-10-29 10:00 UTC."
+	holdWhy      = "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."
+	holdSince    = "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production. Production has waited since 2026-10-29 10:00 UTC."
 	holdPlanLine = "- plan #12: 2 of 4 cards merged; waits on #45 (failed), #46 (queued)."
-	holdEndNote  = "factoryd: no plan is open on main any more, so production goes ahead. Closing this issue."
+	holdEndNote  = "No plan is open on main any more, so production goes ahead. Closing this issue."
 )
 
 var holdChoices = []QuestionChoice{
-	{AnswerHoldWait, "Wait"},
-	{ActDeployNow, "Deploy anyway"},
+	{AnswerHoldWait, "Not now"},
+	{ActDeployNow, "Deploy now"},
 	{AnswerReplanOnTop + ":t-plan", "Replan plan #12 on top"},
 	{AnswerTakeOffMain + ":t-plan", "Take plan #12 off main and replan"},
 }
@@ -145,6 +145,29 @@ func TestReleaseKeeperStartsTheClockAtTheFirstMerge(t *testing.T) {
 	}
 }
 
+// The hold's ask names a plan that has a name by it, with its number: the
+// card is not the plan's own.
+func TestReleaseKeeperNamesThePlanItWaitsFor(t *testing.T) {
+	f := &chainForgejo{}
+	k, store, clock := newKeeper(t, f)
+	plan := store.tasks["t-plan"]
+	plan.PlanName = "members page"
+	store.tasks["t-plan"] = plan
+	*clock = keeperAt(16, 0)
+	keeperPass(t, k)
+	keeperPass(t, k)
+	_, q := askOfHold(t, store)
+	if want := "Production of sf-demo-app has waited 6 hours for plan “members page” (#12), which has 2 of 4 cards merged."; q.Happened != want {
+		t.Errorf("happened %q, want %q", q.Happened, want)
+	}
+	if want := "Production of sf-demo-app stays held while plan “members page” (#12) is open on main."; q.Waits != want {
+		t.Errorf("waits %q, want %q", q.Waits, want)
+	}
+	if want := "- plan “members page” (#12): 2 of 4 cards merged; waits on #45 (failed), #46 (queued)."; !strings.Contains(q.Info, want) {
+		t.Errorf("info %q lacks %q", q.Info, want)
+	}
+}
+
 // The hold's ask comes 6 hours into the hold, a card waiting for its face
 // with no issue, and again 6 hours after the last one closed.
 func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
@@ -163,10 +186,10 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		t.Fatalf("asks %+v at 16:00, want one", asks)
 	}
 	title, body, _ := strings.Cut(store.tasks[asks[0].TaskID].Objective, "\n\n")
-	if want := "Production of sf-demo-app has waited 6 hours: plan #12 is open on main. Wait, deploy anyway, or replan?"; title != want {
+	if want := "Deploys of sf-demo-app to production wait for an open plan. How should they go on?"; title != want {
 		t.Errorf("title %q, want %q", title, want)
 	}
-	for _, want := range []string{holdPlanLine, "Choices:\n- Wait\n- Deploy anyway\n- Replan plan #12 on top\n- Take plan #12 off main and replan\n"} {
+	for _, want := range []string{holdPlanLine, "Choices:\n- Not now\n- Deploy now\n- Replan plan #12 on top\n- Take plan #12 off main and replan\n"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body %q lacks %q", body, want)
 		}
@@ -176,10 +199,12 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		t.Errorf("ask card %+v, issues %q; want a human card waiting for its face with no issue", card, f.issues)
 	}
 	want := HumanQuestion{
-		Ask:     title,
-		Why:     holdWhy,
-		Info:    "The open plans and what each waits on:\n" + holdPlanLine + "\n\n" + holdInfoTail,
-		Choices: holdChoices,
+		Ask:      title,
+		Why:      holdWhy,
+		Info:     "Production of sf-demo-app has waited 6 hours: plan #12 is open on main. " + holdSince + "\n\nThe open plans and what each waits on:\n" + holdPlanLine + "\n\n" + holdInfoTail,
+		Choices:  holdChoices,
+		Happened: "Production of sf-demo-app has waited 6 hours for plan #12, which has 2 of 4 cards merged.",
+		Waits:    "Production of sf-demo-app stays held while plan #12 is open on main.",
 	}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("question\n%+v, want\n%+v", q, want)
@@ -223,11 +248,11 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if asks := holdAsks(store); len(asks) != 1 {
 		t.Fatalf("asks %+v, want the fix's ask at once", asks)
 	}
-	if title := holdAsks(store)[0].Detail["ask"]; title != "Fix #40 merged, but production of sf-demo-app is held: plan #12 is open on main. Deploy anyway, wait, or replan?" {
+	if title := holdAsks(store)[0].Detail["ask"]; title != "Deploys of sf-demo-app to production wait for an open plan. How should they go on?" {
 		t.Errorf("title %q", title)
 	}
-	if _, q := askOfHold(t, store); q.Why != "#40 fixes an alert. "+holdWhy {
-		t.Errorf("why %q", q.Why)
+	if _, q := askOfHold(t, store); q.Why != holdWhy || !strings.Contains(q.Info, "plan #12 is open on main. Fix #40 merged, but production is held. #40 fixes an alert. "+holdSince) {
+		t.Errorf("why %q, info %q", q.Why, q.Info)
 	}
 
 	// the standing ask waits for its face: it has no issue to say it on
@@ -260,12 +285,13 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if asks := holdAsks(store); len(asks) != 2 {
 		t.Fatalf("asks %+v, want a second ask", asks)
 	}
-	if title := holdAsks(store)[1].Detail["ask"]; title != "Fixes #42 and #44 merged, but production of sf-demo-app is held: plan #12 is open on main. Deploy anyway, wait, or replan?" {
+	if title := holdAsks(store)[1].Detail["ask"]; title != "Deploys of sf-demo-app to production wait for an open plan. How should they go on?" {
 		t.Errorf("title %q", title)
 	}
 	card, q := askOfHold(t, store)
-	if q.Why != "#42 fixes a red main. #44 fixes an alert. "+holdWhy {
-		t.Errorf("why %q", q.Why)
+	if q.Why != holdWhy ||
+		!strings.Contains(q.Info, "plan #12 is open on main. Fixes #42 and #44 merged, but production is held. #42 fixes a red main. #44 fixes an alert. "+holdSince) {
+		t.Errorf("why %q, info %q", q.Why, q.Info)
 	}
 	// its face filed issue #32: a standing ask that has one hears of each fix
 	card.Status, card.IssueNumber = "waiting-human", 32
@@ -274,7 +300,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	fix("t-fix6", SourceMainFix, 50, keeperAtPtr(11, 51))
 	*clock = keeperAt(11, 55)
 	keeperPass(t, k)
-	if got := f.comments[len(f.comments)-1]; got != demoRepo+"#32 factoryd: fixes #49 and #50 merged too and wait for production." {
+	if got := f.comments[len(f.comments)-1]; got != demoRepo+"#32 Fixes #49 and #50 merged too and wait for production." {
 		t.Errorf("comment %q", got)
 	}
 }
@@ -283,11 +309,10 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 // and the two replans of the plan that holds longest, the oldest first
 // merge; it names each other plan, to be replanned from its drawer.
 func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
-	why := "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production, so a half-built feature never goes live. " +
-		"Production has waited since 2026-10-29 09:50 UTC."
+	since := "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production. Production has waited since 2026-10-29 09:50 UTC."
 	choices := []QuestionChoice{
-		{AnswerHoldWait, "Wait"},
-		{ActDeployNow, "Deploy anyway"},
+		{AnswerHoldWait, "Not now"},
+		{ActDeployNow, "Deploy now"},
 		{AnswerReplanOnTop + ":t-zplan", "Replan plan #15 on top"},
 		{AnswerTakeOffMain + ":t-zplan", "Take plan #15 off main and replan"},
 	}
@@ -319,10 +344,13 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 			}
 			_, q := askOfHold(t, store)
 			want := HumanQuestion{
-				Ask:     "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main. Wait, deploy anyway, or replan?",
-				Why:     why,
-				Info:    "The open plans and what each waits on:\n" + c.lines + "\n\n" + holdInfoTail + "\n\n" + c.others,
-				Choices: choices,
+				Ask: "Deploys of sf-demo-app to production wait for an open plan. How should they go on?",
+				Why: holdWhy,
+				Info: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main. " + since + "\n\nThe open plans and what each waits on:\n" +
+					c.lines + "\n\n" + holdInfoTail + "\n\n" + c.others,
+				Choices:  choices,
+				Happened: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main.",
+				Waits:    "Production of sf-demo-app stays held while " + c.reason + " are open on main.",
 			}
 			if !reflect.DeepEqual(q, want) {
 				t.Errorf("question\n%+v, want\n%+v", q, want)
@@ -540,7 +568,7 @@ func TestReleaseKeeperClosesAnAskADeployNowOvertook(t *testing.T) {
 	k.Store = &deployNowAfterAsk{store}
 	*clock = keeperAt(16, 0)
 	keeperPass(t, k)
-	note := "factoryd: Deploy now sent main at 9d9d9d9 to production while this ask was filed. Closing this issue."
+	note := "Deploy now sent main at commit 9d9d9d9 to production while this ask was filed. Closing this issue."
 	asks := holdAsks(store)
 	if len(asks) != 1 || len(f.issues) != 0 || len(f.closed) != 0 || len(f.comments) != 0 || !slices.Equal(factoryCloses(store, asks[0].TaskID), []string{note}) {
 		t.Errorf("asks %d, issues %d, closed %q, comments %q; want the one ask's close recorded alone as %q", len(asks), len(f.issues), f.closed, f.comments, note)
@@ -810,7 +838,7 @@ func TestReleaseKeeperDeployNowByTheAgentSaysSo(t *testing.T) {
 	if _, err := k.DeployNow(context.Background(), demoRepo, "sebastian", ViaChat, "agent"); err != nil {
 		t.Fatal(err)
 	}
-	note := demoRepo + "#77 factoryd: the factory agent chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
+	note := demoRepo + "#77 The factory agent chose Deploy now: main at commit 9d9d9d9 goes to production. Closing this issue."
 	if !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("comments %q, want %q", f.comments, note)
 	}
@@ -828,7 +856,7 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(12, 0), ToldHeld: demoCommit, DeployNow: demoCommit}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row %+v, want %+v", got, want)
 	}
-	note := demoRepo + "#77 factoryd: sebastian chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
+	note := demoRepo + "#77 sebastian chose Deploy now: main at commit 9d9d9d9 goes to production. Closing this issue."
 	if !slices.Equal(f.closed, []string{demoRepo + "#77"}) || !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("closed %q, comments %q; want #77 closed with %q", f.closed, f.comments, note)
 	}

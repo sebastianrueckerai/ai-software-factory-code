@@ -93,7 +93,7 @@ func (c k3sCluster) notePod(t *testing.T, ns, name, claim, script string) {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(4 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
-		phase, _, err := c.PodStatus(ctx, ns, name)
+		phase, _, _, err := c.PodStatus(ctx, ns, name)
 		if err != nil {
 			t.Fatalf("pod %s/%s: %v", ns, name, err)
 		}

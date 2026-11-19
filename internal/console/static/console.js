@@ -1,12 +1,11 @@
 // busy: a form in el is being filled in (a field focused, text typed, a
-// choice changed) or a fold or a disclosure in it is open, so a swap of el
+// choice changed) or a fold in it is open, so a swap of el
 // would wipe or close it. The card drawer sits outside the board, so an
 // open drawer does not hold the board's swaps: the ages keep ticking. The
 // find's box holds none, focused or holding text: its text applies as you
 // type, and its form outlives every swap of the board (hx-preserve).
 function busy(el) {
   if (el.querySelector("details[open]")) return true;
-  if (el.querySelector('button.deny[aria-expanded="true"], button.own-toggle[aria-expanded="true"]')) return true;
   var a = document.activeElement;
   if (a && a.id !== "q" && el.contains(a) && a.matches("input, textarea, select")) return true;
   var fields = el.querySelectorAll("input, textarea");
@@ -77,29 +76,6 @@ function refused(e) {
 }
 document.addEventListener("htmx:responseError", refused);
 document.addEventListener("htmx:sendError", refused);
-// A refused press that names the hold-outs moves their zone into view: the
-// card the press came from scrolls to its own zone, and a card the page no
-// longer holds — its drawer closed while the answer travelled — loads the
-// drawer again and scrolls the zone it lands on.
-function holdoutsRefused(e) {
-  var xhr = e.detail.xhr;
-  if (!xhr || xhr.responseText.indexOf("okay or drop below") < 0) return;
-  var card = e.detail.elt && e.detail.elt.closest("[data-card]");
-  var zone = card && card.isConnected && card.querySelector('[id^="holdouts-"]');
-  if (zone) { zone.scrollIntoView({ block: "center" }); return; }
-  var id = card && card.dataset.card;
-  if (!id) return;
-  var settle = function (ev) {
-    if (!ev.target || ev.target.id !== "drawer") return;
-    document.removeEventListener("htmx:afterSettle", settle);
-    var z = document.getElementById("holdouts-" + id + "-d") || document.getElementById("holdouts-" + id);
-    if (z) z.scrollIntoView({ block: "center" });
-  };
-  document.addEventListener("htmx:afterSettle", settle);
-  if (location.hash === "#card=" + encodeURIComponent(id)) showDrawer();
-  else location.hash = "#card=" + encodeURIComponent(id);
-}
-document.addEventListener("htmx:responseError", holdoutsRefused);
 // An answer for a board that has left the page since it was asked for (a
 // find answered first) is not swapped: htmx would still run hx-preserve on
 // it and move the live find into the content it then throws away. Only the
@@ -399,14 +375,11 @@ document.addEventListener("DOMContentLoaded", offerTracks);
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].innerHTML = n; });
   }
   // chat loads the drawer's Chat again while it shows card id's session,
-  // any card's for "", the steer being typed kept
+  // any card's for ""
   function chat(id) {
-    var log = document.getElementById("session-log"), box = document.getElementById("steer-input"), typed = box && box.value;
+    var log = document.getElementById("session-log");
     if (!log || id && log.dataset.task !== id) return;
-    htmx.ajax("GET", "/cards/" + encodeURIComponent(log.dataset.task) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"}).then(function () {
-      var again = document.getElementById("steer-input");
-      if (typed && again) again.value = typed;
-    });
+    htmx.ajax("GET", "/cards/" + encodeURIComponent(log.dataset.task) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"});
   }
   // said adds the agent's text or a steer to the drawer's Chat while it
   // shows that card's session, once; another session's text loads the
@@ -479,7 +452,7 @@ document.addEventListener("DOMContentLoaded", offerTracks);
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
         if (e.kind === "card_steered") said(e);
-        // a new status may end the session, and its steer box with it
+        // a new status may end the session
         if (e.kind === "task_status") chat(e.task_id);
         swapCard(e.task_id);
       }
@@ -573,17 +546,26 @@ document.addEventListener("click", function (e) {
   });
 })();
 
-// A disclosure: a button with aria-controls reveals or hides the element it
-// names (the deny form, the own-answer box) and says so in aria-expanded.
+// An answer of the opened card whose press opens fields: the press opens
+// them under it with their Send and closes every other answer's, whose
+// fields then post nothing; a second press closes them again. An answer
+// without fields is a submit button and sends at once.
 document.addEventListener("click", function (e) {
-  var b = e.target.closest("button.deny[aria-controls], button.own-toggle[aria-controls]");
-  if (!b || b.type === "submit") return;
+  var b = e.target.closest("button.pick[aria-controls]");
+  if (!b) return;
   var box = document.getElementById(b.getAttribute("aria-controls"));
   if (!box) return;
+  var card = b.closest(".opened") || document;
+  card.querySelectorAll('button.pick[aria-expanded="true"]').forEach(function (o) {
+    if (o === b) return;
+    o.setAttribute("aria-expanded", "false");
+    var other = document.getElementById(o.getAttribute("aria-controls"));
+    if (other) other.hidden = true;
+  });
   var open = b.getAttribute("aria-expanded") !== "true";
   b.setAttribute("aria-expanded", String(open));
   box.hidden = !open;
-  if (open) { var f = box.querySelector("textarea, input, select"); if (f) f.focus(); }
+  if (open) { var f = box.querySelector("textarea, input:not([type=hidden]), select"); if (f) f.focus(); }
 });
 
 // A card's press acts at once (C31): the card moves to the column that
@@ -622,7 +604,7 @@ document.addEventListener("click", function (e) {
   function lockAll(a) {
     var q = CSS.escape(a.id);
     onBoard(a.id).forEach(function (el) { lock(a, el); });
-    document.querySelectorAll("#drawer [data-drawer=\"" + q + "\"] .open-need, #drawer [data-routine-drawer^=\"" + q + ":\"] .acts").forEach(function (el) { lock(a, el); });
+    document.querySelectorAll("#drawer [data-drawer=\"" + q + "\"] .o-answers, #drawer [data-routine-drawer^=\"" + q + ":\"] .o-answers").forEach(function (el) { lock(a, el); });
   }
   function glide(el, was) {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -671,7 +653,7 @@ document.addEventListener("click", function (e) {
   function landed(a) {
     free(a);
     var q = CSS.escape(a.id);
-    if (document.querySelector("#drawer [data-drawer=\"" + q + "\"] .open-need")) {
+    if (document.querySelector("#drawer [data-drawer=\"" + q + "\"] .o-ask")) {
       htmx.ajax("GET", "/cards/" + encodeURIComponent(a.id) + "/drawer", {target: "#drawer", swap: "innerHTML"});
     }
   }
@@ -738,7 +720,7 @@ document.addEventListener("click", function (e) {
 function drawer() { return document.getElementById("drawer"); }
 var drawerSettled;
 function showDrawer() {
-  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash),
+  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+)|:press=([a-z_\/]+))?$/.exec(location.hash),
     rt = /^#routine=([a-z0-9-]+\/[a-z0-9-]+)(?::([a-z]+))?$/.exec(location.hash);
   document.removeEventListener("htmx:afterSettle", drawerSettled);
   if (!d) return;
@@ -759,7 +741,10 @@ function showDrawer() {
   }
   var id;
   try { id = decodeURIComponent(m[1]); } catch (err) { closeDrawer(); return; }
-  var url = "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : "");
+  var url = "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] || m[3] ? "?tab=overview" : ""),
+    shown = casesInView().filter(function (v) { return v.indexOf(id + ":") === 0; });
+  if (m[3]) url += "&press=" + encodeURIComponent(m[3]);
+  if (shown.length) url += (m[2] || m[3] ? "&" : "?") + "case=" + encodeURIComponent(shown[0]);
   // htmx wires the swapped nodes at the settle, after the swap's promise:
   // a fold opened before it fires its toggle to no listener. Only this
   // request's settle counts, not a tab's or an earlier card's.
@@ -769,6 +754,8 @@ function showDrawer() {
     document.removeEventListener("htmx:afterSettle", drawerSettled);
     var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
     if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
+    var pressed = m[3] && d.querySelector('button.pick[aria-expanded="true"]');
+    if (pressed) { pressed.focus(); return; }
     var h = d.querySelector("h2");
     if (h) h.focus();
   };
@@ -782,8 +769,7 @@ function closeDrawer() {
 }
 window.addEventListener("hashchange", showDrawer);
 document.addEventListener("DOMContentLoaded", showDrawer);
-// a drawer refused or unreachable closes, so the board moves again; a
-// refused steer leaves it open, its sentence in the flash
+// a drawer refused or unreachable closes, so the board moves again
 function drawerFailed(e) {
   if (e.detail.target && e.detail.target.id === "drawer" && e.detail.requestConfig.verb === "get") closeDrawer();
 }
@@ -797,15 +783,13 @@ function lifeFailed(e) {
 }
 document.addEventListener("htmx:responseError", lifeFailed);
 document.addEventListener("htmx:sendError", lifeFailed);
-// after a tab the focus is on the tab shown, after a steer in its input
+// after a tab the focus is on the tab shown
 document.addEventListener("htmx:afterSwap", function (e) {
   var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer], [data-routine-drawer]");
   if (!shown) return;
   var hash = shown.dataset.drawer ? "#card=" + shown.dataset.drawer : "#routine=" + shown.dataset.routineDrawer;
   if (location.hash !== hash) history.replaceState(null, "", hash);
-  var from = e.detail.requestConfig.elt, steer = document.getElementById("steer-input");
-  if (from.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
-  else if (from.id === "steer-form" && steer) steer.focus();
+  if (e.detail.requestConfig.elt.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
 });
 
 // the agent's view change opens the drawer's card as its link does, the
@@ -832,8 +816,8 @@ document.addEventListener("view", function (e) {
   document.addEventListener("htmx:afterSettle", pendingTabShot);
 });
 
-// The board's keys, listed by ? : w switches the view, Escape closes the
-// list or the drawer. The view chosen is remembered (theme.js applies it).
+// The board's keys, listed by ?: Escape closes the list or the drawer, f
+// finds on the board.
 (function () {
   function keys() { return document.getElementById("keys"); }
   function showKeys(open) {
@@ -860,11 +844,7 @@ document.addEventListener("view", function (e) {
       return;
     }
     if (e.target.closest("input, textarea, select, [contenteditable]")) return;
-    if (e.key === "w" && window.innerWidth < 900) return;
-    if (e.key === "w") {
-      e.preventDefault();
-      document.getElementById("view-toggle").click();
-    } else if (e.key === "?") {
+    if (e.key === "?") {
       e.preventDefault();
       showKeys(true);
     } else if (e.key === "f") {
@@ -879,10 +859,6 @@ document.addEventListener("view", function (e) {
     if (e.target.closest("#keys-toggle")) showKeys(true);
     else if (e.target.closest("#keys-close") || e.target.id === "keys") showKeys(false);
     else if (e.target.closest("#drawer-close")) closeDrawer();
-    var toggle = e.target.closest("#view-toggle");
-    if (!toggle) return;
-    if (toggle.dataset.view) localStorage.setItem("view", toggle.dataset.view);
-    else localStorage.removeItem("view");
   });
 })();
 
@@ -1580,10 +1556,10 @@ document.addEventListener("keydown", function (e) {
     if (!d.doc) return;
     openDoc(d.doc, {heading: d.heading || ""});
   });
-  // a document's own links: a data-doc link opens in the view, a quiet
-  // one goes nowhere
+  // a document's own links and a card's link to a document: a data-doc
+  // link opens in the view at its heading, a quiet one goes nowhere
   document.addEventListener("click", function (e) {
-    var a = e.target.closest && e.target.closest("#doc-view a");
+    var a = e.target.closest && e.target.closest("#doc-view a, a.doc-link[data-doc]");
     if (!a) return;
     if (a.dataset.doc) {
       e.preventDefault();

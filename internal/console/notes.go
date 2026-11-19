@@ -51,7 +51,7 @@ func (t *turn) notesText() (string, error) {
 // another came between reads it again and applies once more.
 func (t *turn) writeNotes(text, old, new string) (string, error) {
 	if (text == "") == (old == "") {
-		return "", refuse(http.StatusBadRequest, "notes_write takes text to append, or old and new to replace a passage")
+		return "", refuse(http.StatusBadRequest, "`notes_write` takes `text` to append, or `old` and `new` to replace a passage")
 	}
 	for range notesTries {
 		n, err := t.notes()
@@ -65,7 +65,7 @@ func (t *turn) writeNotes(text, old, new string) (string, error) {
 		case text != "":
 			next = strings.TrimRight(next, "\n") + "\n\n" + strings.TrimSpace(text)
 		case strings.Count(next, old) != 1:
-			return "", refuse(http.StatusUnprocessableEntity, fmt.Sprintf("the passage old is in the scratchpad %d times: read it with notes_read and copy one passage exactly", strings.Count(next, old)))
+			return "", refuse(http.StatusUnprocessableEntity, fmt.Sprintf("the passage old is in the scratchpad %d times: read it with `notes_read` and copy one passage exactly", strings.Count(next, old)))
 		default:
 			next = strings.Replace(next, old, new, 1)
 		}
@@ -80,7 +80,7 @@ func (t *turn) writeNotes(text, old, new string) (string, error) {
 			return fmt.Sprintf("The scratchpad holds %d of %d bytes now.", len(next), notesMax), nil
 		}
 	}
-	return "", refuse(http.StatusConflict, "the scratchpad changed under every try; read it with notes_read and write again")
+	return "", refuse(http.StatusConflict, "The scratchpad changed under every try. Read it with `notes_read` and write again.")
 }
 
 // activeThreads is active_threads: the project's active threads, every

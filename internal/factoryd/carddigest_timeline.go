@@ -137,7 +137,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			step.Kind, step.Outcome = "handover", digestText(scrub, l.Handover)
 		case "checks":
 			step.Kind, step.Findings, step.texts = "checks", findingIDs(l.Findings), findingList(l.Findings)
-			step.Outcome = withFindings(fmt.Sprintf("%s at %s", l.State, l.Commit[:min(7, len(l.Commit))]), step.Findings)
+			step.Outcome = withFindings(fmt.Sprintf("%s at %s", l.State, ShortSHA(l.Commit)), step.Findings)
 		case "gate_criteria":
 			if len(l.Proofs) == 0 && l.StartFailed == "" {
 				continue
@@ -253,7 +253,7 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 		return DigestStep{}, err
 	}
 	if s.outcome == string(OutcomePushed) && s.commit != "" {
-		outcome += " " + s.commit[:min(7, len(s.commit))]
+		outcome += " " + ShortSHA(s.commit)
 	}
 	actor := fmt.Sprintf("%d %s", s.attempt, aliasOf(s.model))
 	if s.role != "" {
@@ -333,7 +333,7 @@ func proofsStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) DigestS
 			outcome = strings.Join(unstatedParts(proofs), ", ")
 		}
 	}
-	step.Outcome = withFindings("at "+l.Commit[:min(7, len(l.Commit))]+": "+outcome, step.Findings)
+	step.Outcome = withFindings("at "+ShortSHA(l.Commit)+": "+outcome, step.Findings)
 	return step
 }
 
@@ -418,7 +418,7 @@ func invariantParts(proofs []gateProof) []string {
 // mainStepOutcome is a proofs_at_main line's outcome: how many of its
 // criteria passed, or why its sandbox never started.
 func mainStepOutcome(scrub *redact.Scrubber, l timelineLine) string {
-	at := l.Head[:min(7, len(l.Head))]
+	at := ShortSHA(l.Head)
 	if l.StartFailed != "" {
 		return fmt.Sprintf("at main %s: the sandbox did not start: %s", at, digestText(scrub, l.StartFailed))
 	}

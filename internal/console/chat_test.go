@@ -25,10 +25,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // fakeChat is the chat's store: the chat tasks among the rig's tasks, the
@@ -1557,24 +1559,14 @@ func equal(t *testing.T, what string, got, want any) {
 // boardText is the board read of the chat rig's project, its pool with no
 // draws first.
 var boardText = defaultPoolRead() + ".\n" + `Open cards:
-Queued (1):
-  #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), €0.40 of €3.00
-Running (1):
+Needs you (2):
+  #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR
+  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
+Queued (0):
+In progress (1):
   #11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox)
-Waiting on a human (1):
-  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
-Waiting for image (0):
-Waiting on the author (0):
-In review (0):
-Merged (0):
-Human lane (0):
-Escalated, waiting on an answer (2):
-  #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), €0.40 of €3.00
-  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Finished cards, ended in the last 7 days and open no more:
 Done (0):
-Failed (0):
-Closed (0):
 Approval requests waiting (1):
   resource request 3 of t-res`
 
@@ -1602,12 +1594,14 @@ func TestChatTextReply(t *testing.T) {
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
 		"The human decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
 		"A tool marked (needs OK) is called like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
+		"Name a card to the human by its title with its issue number, #12. A task id (t-...) is for tool calls only and never appears in text for the human.",
+		writingguide.For(writingguide.JobChat, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk),
 	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
 	}
-	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger; pool: " + noDraws + "\n" +
+	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month 0.00 of 50.00 EUR, the factory's whole ledger; pool: " + noDraws + "\n" +
 		"Sandbox images: none; every card runs the factory image."; !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
@@ -2016,7 +2010,9 @@ func TestChatToolSentences(t *testing.T) {
 		}
 		required[name] = f["parameters"].(map[string]any)["required"]
 		for _, p := range phrases(f["parameters"].(map[string]any)) {
-			if len(p.about) > 60 || strings.Contains(p.about, ". ") || strings.ContainsAny(p.about, ";\n") {
+			// the brief's field lines are every filing door's schema
+			brief := p.about == writingguide.TitleLine || p.about == writingguide.WhyLine || p.about == writingguide.SummaryLine
+			if !brief && len(p.about) > 60 || strings.Contains(p.about, ". ") || strings.ContainsAny(p.about, ";\n") {
 				t.Errorf("%s's %s: %q is no short phrase", name, p.name, p.about)
 			}
 			if p.fallback != nil {
@@ -2028,9 +2024,9 @@ func TestChatToolSentences(t *testing.T) {
 		"answer", "tell_card", "retry", "request_changes", "approve_merge", "deny_merge", "invite",
 		"github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})
-	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"],
+	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["edit"], required["set_accent"],
 		required["session_step"], required["answer"]},
-		[]any{[]any{"title", "track", "track_reason"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
+		[]any{[]any{"title", "why", "track", "track_reason"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
 	equal(t, "the schemas' defaults", []any{defaults["new_card track"], defaults["deny_merge action"], defaults["github_export mode"],
 		defaults["set_autonomy queue_cap"], defaults["history n"], defaults["session_step from"]},
 		[]any{nil, "request_changes", "mirror", nil, float64(20), float64(1)})
@@ -2062,13 +2058,13 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
-			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines",
+			"rerun_checks", "set_accent", "close", "edit", "grant_session", "set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
-			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
+			"request_changes", "deny_merge", "rerun_checks", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
 			"attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
@@ -2134,7 +2130,7 @@ func TestChatCardLeadsWithTheDigest(t *testing.T) {
 	r, _, g := newChatRig(t)
 	got := reads(t, r, g, "card", `{"task_id":"#5"}`)[0]
 	if want := "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
-		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n"; !strings.HasPrefix(got, want) {
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\n"; !strings.HasPrefix(got, want) {
 		t.Fatalf("the card read =\n%s\nwant it to start\n%s", got, want)
 	}
 }
@@ -2148,7 +2144,7 @@ func TestChatCardKeepsTheCardWhenTheDigestFails(t *testing.T) {
 	}
 	got := reads(t, r, g, "card", `{"task_id":"#5"}`)[0]
 	if want := "digest unreadable: read the timeline: s3 down\n\n" +
-		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n"; !strings.HasPrefix(got, want) {
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\n"; !strings.HasPrefix(got, want) {
 		t.Fatalf("the card read =\n%s\nwant it to start\n%s", got, want)
 	}
 }
@@ -2215,36 +2211,36 @@ func TestChatOpeningContextRestatesNoRead(t *testing.T) {
 }
 
 // The board's text keeps the finished cards apart from the open ones: the
-// open columns, the human lane and the escalations under Open cards, the
-// final states' columns under their own head after them, so a count of
-// open cards takes in no card that ended.
+// open columns under Open cards, Needs you's cards with them, Done under
+// its own head after them, so a count of open cards takes in no card that
+// ended; the approval requests Needs you holds follow in their own list.
 func TestBoardWordsKeepsTheFinishedApart(t *testing.T) {
 	task := func(n int64, status, title string) card {
 		return card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", n), IssueNumber: n, Status: status, Objective: title}}
 	}
+	merge := &approvalCard{Request: factoryd.Request{ApprovalRequest: factoryd.ApprovalRequest{ID: 4, Kind: "merge", TaskID: "t-1"}}, Issue: 1}
+	sized := task(2, "running", "Speed up the board.")
+	sized.Helper = &factoryd.Task{ID: "t-size", Source: factoryd.SourceSizing, Status: "waiting-human"}
 	d := boardData{Columns: []column{
+		{Title: "Needs you", Needs: []need{{Approval: merge}, {Card: task(7, "waiting-human", "Use a replica?")}}},
 		{Title: "Queued", Cards: []card{task(1, "queued", "Fix the cache.")}},
-		{Title: "Running", Cards: []card{task(2, "running", "Speed up the board.")}},
-		{Title: "Done", Finished: "done", Cards: []card{task(3, "done", "Add the feed.")}},
-		{Title: "Failed", Finished: "failed", Cards: []card{task(4, "failed", "Port the store."), task(5, "failed", "Drop the cache."), task(6, "failed", "Rename the page.")}},
-		{Title: "Closed", Finished: "closed"},
+		{Title: "In progress", Cards: []card{sized}},
+		{Title: "Done", Finished: "done", Cards: []card{task(3, "done", "Add the feed."), task(4, "failed", "Port the store."), task(5, "closed", "Drop the cache.")}},
 	}}
 	equal(t, "the board's text", boardWords(d), `Open cards:
+Needs you (1):
+  #7 t-7 "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Queued (1):
   #1 t-1 "Fix the cache." queued (waits for a free work slot, in filing order)
-Running (1):
-  #2 t-2 "Speed up the board." running (runs an agent session)
-Human lane (0):
-Escalated, waiting on an answer (0):
+In progress (1):
+  #2 t-2 "Speed up the board." running (runs an agent session), its sizing t-size is waiting-human
 Finished cards, ended in the last 7 days and open no more:
-Done (1):
+Done (3):
   #3 t-3 "Add the feed." done (is done)
-Failed (3):
   #4 t-4 "Port the store." failed (has failed)
-  #5 t-5 "Drop the cache." failed (has failed)
-  #6 t-6 "Rename the page." failed (has failed)
-Closed (0):
-Approval requests waiting (0):`)
+  #5 t-5 "Drop the cache." closed (was closed)
+Approval requests waiting (1):
+  merge request 4 of t-1 (#1)`)
 }
 
 // Every list of the board's text is bounded as a column's cards are: 25
@@ -2253,21 +2249,22 @@ Approval requests waiting (0):`)
 func TestBoardWordsBoundsEveryList(t *testing.T) {
 	var d boardData
 	var cards []card
+	var requests []need
 	for i := 1; i <= 27; i++ {
 		cards = append(cards, card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", i), IssueNumber: int64(i), Status: "queued", Objective: "Fix."}})
-		d.Approvals = append(d.Approvals, approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}})
+		requests = append(requests, need{Approval: &approvalCard{Request: factoryd.Request{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}}}})
 		d.Problems = append(d.Problems, fmt.Sprintf("problem %d", i))
 	}
 	done := []card{
 		{Task: factoryd.Task{ID: "t-90", IssueNumber: 90, Status: "done", Objective: "Ship."}},
 		{Task: factoryd.Task{ID: "t-91", IssueNumber: 91, Status: "done", Objective: "Ship."}},
 	}
-	d.Columns = []column{{Title: "Queued", Cards: cards}, {Title: "Done", Finished: "done", Whole: 60, Cards: done}}
+	d.Columns = []column{{Title: "Needs you", Needs: requests}, {Title: "Queued", Cards: cards}, {Title: "Done", Finished: "done", Whole: 60, Cards: done}}
 	got := boardWords(d)
 	for _, want := range []string{
 		"\nDone (60):\n  #90 t-90 \"Ship.\" done (is done)\n  #91 t-91 \"Ship.\" done (is done)\n  and 58 more\nApproval requests waiting (27):",
-		"Queued (27):\n  #1 t-1 \"Fix.\" queued (waits for a free work slot, in filing order)\n",
-		"\n  #25 t-25 \"Fix.\" queued (waits for a free work slot, in filing order)\n  and 2 more\nHuman lane (0):\n",
+		"Open cards:\nNeeds you (0):\nQueued (27):\n  #1 t-1 \"Fix.\" queued (waits for a free work slot, in filing order)\n",
+		"\n  #25 t-25 \"Fix.\" queued (waits for a free work slot, in filing order)\n  and 2 more\nFinished cards,",
 		"\nApproval requests waiting (27):\n  merge request 1 of t-1\n",
 		"\n  merge request 25 of t-25\n  and 2 more\nNote: problem 1\n",
 	} {
@@ -2340,7 +2337,7 @@ func TestChatReadThenReply(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n` +
-			`#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\ntrack direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nm…"}`,
+			`#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\ntrack direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nmer…"}`,
 		`text {"text":"#5 waits for a work slot."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	calls := g.calls()
@@ -2350,7 +2347,7 @@ func TestChatReadThenReply(t *testing.T) {
 		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
 		{"role": "tool", "tool_call_id": "call_1", "content": "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
-			"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
+			"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
 			"merge request 4 pending for pull request #9, risk high, review approve, strict improvement no, head abc123; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
@@ -2432,13 +2429,10 @@ func TestSystemTool(t *testing.T) {
 			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond the pool still ask\n"+
 			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond the pool\n",
 		"\nProcess maintenance:\n  track direct, class coder\n  merge rule: human\n  approvers: sebastian\n"+
-			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
+			"  task budget: 2.00 EUR default, 5.00 EUR maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n"+
-			"\nChat bounds:\n  message size: 8 KiB\n  model calls: as many as the task's budget holds\n",
-		"\nThe writing guide, for every word a person reads:\n# The writing guide\n",
-		"Never use a long word where a short one will do.",
-		"No em dashes. No en dashes as punctuation.")
+			"\nChat bounds:\n  message size: 8 KiB\n  model calls: as many as the task's budget holds\n")
 	at := -1
 	for _, gate := range []string{"intake: the issue becomes a card", "session: an agent works in a sandbox",
 		"screening: a model screens an outsider's issue", "checks: the pull request's CI", "merge: factory-merge merges", "human: a human decides"} {
@@ -2447,6 +2441,9 @@ func TestSystemTool(t *testing.T) {
 			t.Errorf("the gate %q is at %d, want it after %d:\n%s", gate, i, at, got)
 		}
 		at = i
+	}
+	if strings.Contains(got, "# The writing guide") {
+		t.Errorf("the manual holds the writing guide, which the standing prompt carries:\n%s", got)
 	}
 	for _, not := range []string{"\n  steer", "month cap", "needs OK", "\n  card, ", "\n  approve_merge"} {
 		if strings.Contains(got, not) {
@@ -2458,7 +2455,7 @@ func TestSystemTool(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	r.c.cfg.Policies = cappedPolicies{r.ledger}
 	got = read(r, g)
-	contains(got, "\n  approvers: sebastian\n  project month cap: €12.00\n  task budget: €2.00 default, €5.00 maximum\n")
+	contains(got, "\n  approvers: sebastian\n  project month cap: 12.00 EUR\n  task budget: 2.00 EUR default, 5.00 EUR maximum\n")
 }
 
 // A tool the chat's confirm names proposes and runs nothing; the
@@ -2526,14 +2523,14 @@ func TestChatUndoOfAnEdgeTheCardStarted(t *testing.T) {
 	before := r.events.count()
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
 	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_dependency","result":"Refused: Card #22 runs an agent session, ` +
-		`not a card that has not started: steer sends its session a message; its pull request comes when the session ends."}`, `done {}`})
+		`not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
 }
 
 // A tool no confirm names runs at once with its undo token; the stream
 // carries the turn's events in their order. The undo restores the
-// summary with one row, once. The conversation keeps every call with its
+// accent with one row, once. The conversation keeps every call with its
 // result, so the next turn replays a valid conversation, the earlier
 // read left out and the write's result whole, and GET answers it.
 func TestChatAppliedWithUndo(t *testing.T) {
@@ -2542,40 +2539,40 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	before := r.events.count()
 	g.replies = [][]string{
 		{say("Let me look."), call(1, "board", "{}")},
-		{say("Setting it."), call(2, "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{say("Setting it."), call(2, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
-	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"summarize #5"}})
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"mark #5 blue"}})
 	if len(events) != 7 {
 		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
 	}
 	equal(t, "stream text before board", events[0], `text {"text":"Let me look."}`)
-	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nQueued (1):`) {
+	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nNeeds you (2):`) {
 		t.Errorf("board tool line prefix mismatch: %s", events[1])
 	}
 	equal(t, "stream after board", events[2:], []string{
 		`text {"text":"Setting it."}`,
-		`tool {"arguments":{"task_id":"t-m","summary":"Cache fix"},"duration_ms":0,"name":"set_summary","result":"The summary of #5 is set."}`,
-		`applied {"result":"The summary of #5 is set.","tool":"set_summary","undo":"TOKEN"}`,
+		`tool {"arguments":{"task_id":"t-m","accent":"blue"},"duration_ms":0,"name":"set_accent","result":"The accent of #5 is set."}`,
+		`applied {"result":"The accent of #5 is set.","tool":"set_accent","undo":"TOKEN"}`,
 		`text {"text":"Done."}`, `done {}`})
-	summarySet := func(summary string) factoryd.Event {
-		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventSummarySet, Detail: map[string]any{"summary": summary}}
+	accentSet := func(accent string) factoryd.Event {
+		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventAccentSet, Detail: map[string]any{"accent": accent}}
 	}
-	chatRows(t, r.events, before, "sebastian", summarySet("Cache fix"))
-	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.HumanSummary != "Cache fix" {
-		t.Fatalf("summary = %q", k.HumanSummary)
+	chatRows(t, r.events, before, "sebastian", accentSet("blue"))
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "blue" {
+		t.Fatalf("accent = %q", k.Accent)
 	}
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil)
-	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_summary","result":"The summary of #5 is back to \"\"."}`,
-		`applied {"result":"The summary of #5 is back to \"\".","tool":"set_summary"}`, `done {}`})
-	chatRows(t, r.events, before, "sebastian", summarySet("Cache fix"), summarySet(""))
-	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.HumanSummary != "" {
-		t.Fatalf("summary after the undo = %q", k.HumanSummary)
+	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_accent","result":"The accent of #5 is back to \"\"."}`,
+		`applied {"result":"The accent of #5 is back to \"\".","tool":"set_accent"}`, `done {}`})
+	chatRows(t, r.events, before, "sebastian", accentSet("blue"), accentSet(""))
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "" {
+		t.Fatalf("accent after the undo = %q", k.Accent)
 	}
 	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil); code != http.StatusNotFound {
 		t.Fatalf("a second undo = %d, want 404", code)
 	}
-	chatRows(t, r.events, before, "sebastian", summarySet("Cache fix"), summarySet(""))
+	chatRows(t, r.events, before, "sebastian", accentSet("blue"), accentSet(""))
 
 	g.replies = [][]string{{say("Fine.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
@@ -2598,13 +2595,13 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	}
 	read := rows[1].ToolCalls[0].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
 	equal(t, "the next turn's conversation", shape, []string{
-		`user "summarize #5"`,
+		`user "mark #5 blue"`,
 		fmt.Sprintf("assistant %q calls call_1 board {}", earlier("Let me look.")),
 		`tool call_1 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
-		fmt.Sprintf(`assistant %q calls call_2 set_summary {"task_id":"t-m","summary":"Cache fix"}`, earlier("Setting it.")),
-		`tool call_2 "The summary of #5 is set. The human may undo it."`,
+		fmt.Sprintf(`assistant %q calls call_2 set_accent {"task_id":"t-m","accent":"blue"}`, earlier("Setting it.")),
+		`tool call_2 "The accent of #5 is set. The human may undo it."`,
 		fmt.Sprintf("assistant %q", earlier("Done.")),
-		fmt.Sprintf("assistant %q", earlier(`Undo of set_summary: The summary of #5 is back to "".`)),
+		fmt.Sprintf("assistant %q", earlier(`Undo of set_accent: The accent of #5 is back to "".`)),
 		`user "and now?"`,
 	})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
@@ -2617,8 +2614,8 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	for _, m := range got {
 		roles = append(roles, m.Role+" "+m.Content+fmt.Sprint(len(m.ToolCalls)))
 	}
-	equal(t, "GET", roles, []string{"user summarize #50", "assistant Let me look.1", "assistant Setting it.1", "assistant Done.0",
-		"assistant Undo of set_summary: The summary of #5 is back to \"\".0", "user and now?0", "assistant Fine.0"})
+	equal(t, "GET", roles, []string{"user mark #5 blue0", "assistant Let me look.1", "assistant Setting it.1", "assistant Done.0",
+		"assistant Undo of set_accent: The accent of #5 is back to \"\".0", "user and now?0", "assistant Fine.0"})
 	stored := got[2].ToolCalls
 	if stored[0].ReadAt.Before(time.Now().Add(-time.Minute)) {
 		t.Errorf("the stored call's ReadAt = %v, want a fresh read", stored[0].ReadAt)
@@ -2627,8 +2624,8 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		t.Errorf("the stored call's at = %v, want the turn's time", stored[0].At)
 	}
 	stored[0].ReadAt, stored[0].At, stored[0].Ms = time.Time{}, time.Time{}, 0
-	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
-		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The human may undo it."}})
+	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_accent",
+		Arguments: `{"task_id":"t-m","accent":"blue"}`, Result: "The accent of #5 is set. The human may undo it."}})
 }
 
 // A tool the policy refuses the member's role answers the refusal to the
@@ -2667,7 +2664,7 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 	before := r.events.count()
 	chatTask := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "session", `{"task_id":"t-ls"}`,
-		"session_search", `{"task_id":"t-ls","query":"go"}`, "set_summary", `{"task_id":"t-ls","summary":"x"}`,
+		"session_search", `{"task_id":"t-ls","query":"go"}`, "set_accent", `{"task_id":"t-ls","accent":"red"}`,
 		"close", `{"task_id":"t-ls"}`, "card_history", `{"task_id":"`+chatTask+`"}`)}, {say("None is here.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look at linkshort's card"}})
 	equal(t, "stream", events, []string{
@@ -2676,13 +2673,13 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"pr","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"session","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","query":"go"},"duration_ms":0,"name":"session_search","result":"Refused: There is no card t-ls in this project."}`,
-		`tool {"arguments":{"task_id":"t-ls","summary":"x"},"duration_ms":0,"name":"set_summary","result":"Refused: There is no card t-ls in this project."}`,
+		`tool {"arguments":{"task_id":"t-ls","accent":"red"},"duration_ms":0,"name":"set_accent","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"close","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"n":20,"task_id":"` + chatTask + `"},"duration_ms":0,"name":"card_history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,
 		`text {"text":"None is here."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
-	if k, _, _ := r.tasks.Task(t.Context(), "t-ls"); k.HumanSummary != "" || len(r.fg.labelled) != 0 {
-		t.Fatalf("another project's card was touched: summary %q, labelled %q", k.HumanSummary, r.fg.labelled)
+	if k, _, _ := r.tasks.Task(t.Context(), "t-ls"); k.Accent != "" || len(r.fg.labelled) != 0 {
+		t.Fatalf("another project's card was touched: accent %q, labelled %q", k.Accent, r.fg.labelled)
 	}
 }
 
@@ -2759,14 +2756,13 @@ func TestChatBoardView(t *testing.T) {
 	if !slices.Contains(ev, `view {"card":"t-r","query":"?project=ai-software-factory-code","tab":"chat","theme":"light"}`) {
 		t.Errorf("the card, tab and theme do not ride along:\n%s", strings.Join(ev, "\n"))
 	}
-	// the POST's view field is bounded and only the wide view rides: one
-	// too long reads as absent (its find with it), a view word the board
-	// does not carry drops
+	// the POST's view field is bounded: one too long reads as absent (its
+	// find with it), and a view word, the old wide view's too, drops
 	ev = post("q="+strings.Repeat("a", chatViewMax+1), `{}`)
 	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code"}`) {
 		t.Errorf("an overlong view field does not read as absent:\n%s", strings.Join(ev, "\n"))
 	}
-	ev = post("?project=ai-software-factory-code&view=narrow&q=cache", `{}`)
+	ev = post("?project=ai-software-factory-code&view=wide&q=cache", `{}`)
 	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code\u0026q=cache"}`) {
 		t.Errorf("a view word the board does not carry rides along:\n%s", strings.Join(ev, "\n"))
 	}
@@ -2842,7 +2838,7 @@ func TestChatShowDocRefusals(t *testing.T) {
 	equal(t, "the malformed path", []any{status, msg}, []any{http.StatusBadRequest, "../escape.md is no file path: name a path from the repository's root, with no . or .. segments"})
 	r, _ = newReadsRig(t)
 	status, msg = refused(t, r, "show_doc", toolInput{Path: "docs/roadmap.md"})
-	equal(t, "no document repository", []any{status, msg}, []any{http.StatusConflict, "the project names no document repository (chat.doc_repo); there are no documents"})
+	equal(t, "no document repository", []any{status, msg}, []any{http.StatusConflict, "The project names no document repository, so there are no documents (`chat.doc_repo`)."})
 }
 
 // TestChatBoardViewRefusals: a word a control does not carry is refused
@@ -2872,7 +2868,6 @@ func TestChatBoardViewRefusals(t *testing.T) {
 	refuse(`{"queued":"first"}`, "The queued order must be newest, oldest or next.")
 	refuse(`{"progress_only":"both"}`, "The progress show must be all or exceptional.")
 	refuse(`{"done":"latest"}`, "The done order must be newest or oldest.")
-	refuse(`{"view":"narrow"}`, "The view must be wide or none.")
 	refuse(`{"routines":"sometimes"}`, "The routines must be all, within or none.")
 	refuse(`{"within":0}`, "The period must be 1 to 999.")
 	refuse(`{"within":1000}`, "The period must be 1 to 999.")
@@ -2964,12 +2959,12 @@ func TestChatProposalIsStored(t *testing.T) {
 	r.forgetWriters()
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
 	g.replies = [][]string{{call(1, "new_card", args)}}
 	start := time.Now()
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card for cache metrics"}})
 	end := time.Now()
-	desc := "File a card, title Cache metrics, body Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n, track direct, track_reason a small read, size small"
+	desc := "File a card, title Cache metrics, why The board needs it., body Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n, track direct, track_reason a small read, size small, summary It builds what the title names. A test checks it."
 	row, _ := chat.proposal(tokens[0])
 	if row.ExpiresAt.Before(start.Add(30*time.Minute)) || row.ExpiresAt.After(end.Add(30*time.Minute)) {
 		t.Fatalf("the proposal expires %v, want 30 minutes after %v", row.ExpiresAt, start)
@@ -2992,7 +2987,7 @@ func TestChatProposalIsStored(t *testing.T) {
 	}
 	calls[0].ReadAt, calls[0].At, calls[0].Ms = time.Time{}, time.Time{}, 0
 	equal(t, "the stored call", calls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
-		Result: "Proposed to sebastian: " + desc + ". Nothing runs until they press Do it.", Proposal: tokens[0]}})
+		Result: "Proposed to sebastian: " + desc + " Nothing runs until they press Do it.", Proposal: tokens[0]}})
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
 		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
 	}
@@ -3030,6 +3025,41 @@ func TestChatProposalIsStored(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian", card)
 }
 
+// The project agent's proposal of a factory pull request's Merge it
+// carries the head it was proposed on and names it. A push before Do it
+// refuses the press with the new head, and nothing merges.
+func TestAMergeProposalTakesTheHeadItNamed(t *testing.T) {
+	const pull = "/api/v1/repos/sf/code/pulls/14"
+	const read, pushed = "abc1234aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "def5678bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	r, chat, g := newChatRig(t)
+	all := facefixtures.All()
+	i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool {
+		return fx.Group == facefixtures.GroupCard && fx.Kind == "factory pull request on a project without agents"
+	})
+	r.seedScene(fixtureScene(all[i], all))
+	card := all[i].Task
+	r.fg.setPullHead(pull, read)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "answer", `{"task_id":"`+card.ID+`","action":"approve_merge"}`)}, {say("The pull request moved: read it again.")}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"merge the template update"}})
+	if len(tokens) != 1 {
+		t.Fatalf("proposals %q, want one", tokens)
+	}
+	row, _ := chat.proposal(tokens[0])
+	var args struct {
+		Args map[string]any `json:"args"`
+	}
+	json.Unmarshal(row.Args, &args)
+	if args.Args["head"] != read || !strings.Contains(row.Description, "merges abc1234 of pull request #14") {
+		t.Fatalf("the proposal = %s %q, want the head %s carried and named", row.Args, row.Description, read)
+	}
+	r.fg.setPullHead(pull, pushed)
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	if want := "Pull request #14 moved to def5678 after you read it: read it again, then press Merge it."; !slices.ContainsFunc(events, func(e string) bool { return strings.Contains(e, want) }) || len(r.fg.merged) != 0 {
+		t.Fatalf("Do it after a push: events %q, merged %v; want %q and no merge", events, r.fg.merged, want)
+	}
+}
+
 // A refused Do it is not the end: the refusal feeds the agent another
 // model call, which reads the refused row and files again, its acceptance
 // argument carrying the tests the ready check wants. A successful Do it
@@ -3041,7 +3071,7 @@ func TestChatTwoCallsEachKeepTheirOwnTime(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{
-		{call(1, "board", "{}", "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{call(1, "board", "{}", "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look and set"}})
@@ -3073,9 +3103,9 @@ func TestChatTwoCallsEachKeepTheirOwnTime(t *testing.T) {
 func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	noTests := `{"title":"Documents in the chat","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small"}`
-	withTests := `{"title":"Documents in the chat","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small","acceptance":["The agent reads a document the member sends","The chat shows what was read"]}`
-	refusal := "Refused: The ready check refuses the filing: card Documents in the chat: 0 acceptance tests; want 1 to 10"
+	noTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the human sends.","track":"direct","track_reason":"one feature","size":"small"}`
+	withTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the human sends.","track":"direct","track_reason":"one feature","size":"small","acceptance":["The agent reads a document the human sends","The chat shows what was read"]}`
+	refusal := "Refused: The ready check refuses the filing: card Documents in the chat: 0 acceptance tests, want 1 to 10"
 	g.replies = [][]string{{call(1, "new_card", noTests)}, {call(1, "new_card", withTests)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap 300 as a card"}})
 	if len(tokens) != 1 {
@@ -3084,7 +3114,7 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	_, events, tokens := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "the refused Do it", events, []string{
 		`tool {"arguments":` + noTests + `,"duration_ms":0,"name":"new_card","result":"` + refusal + `"}`,
-		`proposal {"arguments":` + withTests + `,"description":"File a card, title Documents in the chat, body The agent reads what the member sends., track direct, track_reason one feature, size small, acceptance The agent reads a document the member sends; The chat shows what was read","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + withTests + `,"description":"File a card, title Documents in the chat, why The board needs it., body The agent reads what the human sends., track direct, track_reason one feature, size small, summary It builds what the title names. A test checks it., acceptance The agent reads a document the human sends; The chat shows what was read","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	if n := len(g.calls()); n != 2 {
 		t.Fatalf("%d model calls, want the refusal to feed a second", n)
@@ -3176,6 +3206,26 @@ func TestChatAskBounds(t *testing.T) {
 	}
 }
 
+// An ask's choice is a button the human presses: a choice a button cannot
+// carry, one in the agent's own voice, is refused, and the ask stores
+// nothing.
+func TestChatAskRefusesAChoiceAButtonCannotCarry(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Which store?","choices":["Postgres","I keep SQLite"]}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask again.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go when ready"}})
+	equal(t, "the refused ask", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: choices: \"I keep SQLite\": The answer says \"I\". Name what happens, for example \"Send the new pins to the agent\"."}`,
+		`text {"text":"I will ask again."}`, `done {}`})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	for _, m := range rows {
+		if m.Kind == "ask" {
+			t.Fatalf("a refused ask stored a row: %+v", m)
+		}
+	}
+}
+
 // png1x1 is a real 1×1 PNG: an image body small enough to ride every
 // upload test.
 // The ask tool binds one of its choices to a tool call: the binding is a
@@ -3229,7 +3279,7 @@ func TestChatAskBindsOnlyWriteTools(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask without a binding.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close #5 when you are sure"}})
 	equal(t, "the refused binding", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: tool: board reads; a bound tool writes"}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: ` + "`tool`" + `: board reads, and a bound tool writes"}`,
 		`text {"text":"I will ask without a binding."}`, `done {}`})
 	chat.mu.Lock()
 	binds := len(chat.proposals)
@@ -3537,7 +3587,7 @@ func TestChatAskPressIsSingleUse(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
 		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
 	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"hold"}})
-	equal(t, "the second press", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+	equal(t, "the second press", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo. It may have expired."})
 
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
 	r.forgetWriters()
@@ -3656,7 +3706,7 @@ func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.replies = [][]string{{say("I read the card.")}}
-	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "", 0)
+	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "")
 	if err != nil || note != "The words are in the project chat; the agent answers there." {
 		t.Fatalf("the answer in words = %q, %v", note, err)
 	}
@@ -4362,7 +4412,7 @@ func TestChatReads(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what happened?"}})
 	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
 	moved := `2026-10-11 09:30 #5 t-m card_retried by sebastian via button {\"replacement\":9}`
-	costs := "The project's spend this month €5.50 of €50.00, the factory's whole ledger."
+	costs := "The project's spend this month 5.50 of 50.00 EUR, the factory's whole ledger."
 	if len(events) != 6 {
 		t.Fatalf("stream length = %d, want 6; events: %v", len(events), events)
 	}
@@ -4812,7 +4862,7 @@ func TestIsClaim(t *testing.T) {
 func TestChatProposalStatesInGet(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Cache metrics","track":"direct","track_reason":"one count"}`, "new_card", `{"title":"Cache alerts","track":"direct","track_reason":"one alert"}`)}, {say("It needs acceptance tests.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one count"}`, "new_card", `{"title":"Cache alerts","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one alert"}`)}, {say("It needs acceptance tests.")}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file two cards"}})
 	states := func() []factoryd.ProposalState {
 		t.Helper()
@@ -4880,7 +4930,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		refused("answer", `{"task_id":"t-r","text":"yes"}`, "The session of #11 has your message."),
 		`applied {"result":"The session of #11 has your message.","tool":"answer"}`,
 		refused("steer", `{"task_id":"t-mr","text":"go"}`,
-			"Refused: Card #15 "+human+", not a running session: approve_merge or deny_merge decide its merge request."),
+			"Refused: Card #15 "+human+", not a running session: `approve_merge` or `deny_merge` decides its merge request."),
 	})
 	for i, wantPrefix := range []string{
 		`#14 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n#14 t-cap \"Trim the logs.\" waiting-human (` + human + `)`,
@@ -4915,7 +4965,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 	// the real Act's gate: a queued card has no case, so a typed answer (a continue) has none to answer
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
-		"no case is open on card #5, so continue has nothing to answer, and the human may take extend, fund, raise_ceiling, replan, close and set_dependency\n"})
+		"no ask is open on card #5, so “Go on with my note” has nothing to answer, and the human may take “Allow more sessions”, “Add money”, “Raise the spend limit”, “Send back to the planner”, “End the card” and “Make it wait for a card”\n"})
 }
 
 // The fitting action of each state wrongState names, past the ones the
@@ -4931,16 +4981,16 @@ func TestWrongState(t *testing.T) {
 			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: one of its choices answers it (answer). Close ends it."},
 		{factoryd.Task{Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, IssueNumber: 2}, capFacts{plan: true},
 			"Card #2 waits on a human: an answer, an approval or a decision, not a running session: " +
-				"answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner."},
+				"answer its open questions (answer). Its next revision with none files the cards, and a change request sends it back to the planner (`request_changes`)."},
 		{factoryd.Task{Status: "waiting-poster", IssueNumber: 3}, capFacts{},
 			"Card #3 waits on its poster's information, not a running session: the poster must answer on the issue."},
 		{factoryd.Task{Status: "queued", IssueNumber: 4}, capFacts{}, "Card #4 waits for a free work slot, in filing order, not a running session: nothing to do until it starts."},
 		{factoryd.Task{Status: "waiting-deps", IssueNumber: 5}, capFacts{},
 			"Card #5 waits for the cards it depends on, not a running session: nothing to do until it starts."},
 		{factoryd.Task{Status: "in-review", IssueNumber: 6}, capFacts{},
-			"Card #6 passes the gates after its session, not a running session: its gates run; nothing to do until they end."},
+			"Card #6 passes the gates after its session, not a running session: its gates run, and there is nothing to do until they end."},
 		{factoryd.Task{Status: "in-review", IssueNumber: 11}, capFacts{merge: true},
-			"Card #11 waits at its approval gate, where a human approves the merge, not a running session: approve_merge or deny_merge decide its merge request."},
+			"Card #11 waits at its approval gate, where a human approves the merge, not a running session: `approve_merge` or `deny_merge` decides its merge request."},
 		{factoryd.Task{Status: "done", IssueNumber: 7}, capFacts{}, "Card #7 is done, not a running session: a new card continues the work."},
 		{factoryd.Task{Status: "failed", IssueNumber: 8}, capFacts{}, "Card #8 has failed, not a running session: close ends it (close)."},
 		{factoryd.Task{Status: "closed", IssueNumber: 9}, capFacts{}, "Card #9 was closed, not a running session: a new card continues the work."},
@@ -5052,7 +5102,7 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 		return "proposal " + string(b)
 	}
 	refused := `tool {"arguments":{"task_id":"t-c1"},"duration_ms":0,"name":"approve_merge","result":"Refused: Card #21 runs an agent session, ` +
-		`not a pending merge request: steer sends its session a message; its pull request comes when the session ends."}`
+		`not a pending merge request: steer sends its session a message, and its pull request comes when the session ends."}`
 	equal(t, "stream", events, []string{proposal("t-r", r11), proposal("t-m", r5), proposal("t-e", r13), refused, `done {}`})
 	stored, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "what the agent reads of the first", stored[0].ToolCalls[0].Result, "Proposed to sebastian: "+r11+" Nothing runs until they press Do it.")
@@ -5157,14 +5207,14 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 			oldBoard, _ = m["content"].(string)
 		}
 	}
-	if !strings.Contains(oldBoard, "Queued (1):\n  #5 t-m ") {
-		t.Fatalf("the first turn's board read holds no #5 queued:\n%s", oldBoard)
+	if !strings.Contains(oldBoard, "Needs you (2):\n  #5 t-m ") {
+		t.Fatalf("the first turn's board read holds no #5 in Needs you:\n%s", oldBoard)
 	}
 	stamp := then.UTC().Format("2006-01-02 15:04 UTC") + ", 120 min ago"
 	var replayed []string
 	for _, m := range secondMsgs[1:] {
 		content, _ := m["content"].(string)
-		if strings.Contains(content, "Queued (1):") {
+		if strings.Contains(content, "Needs you (2):") {
 			t.Errorf("the second turn's %s message holds the old board read:\n%s", m["role"], content)
 		}
 		replayed = append(replayed, fmt.Sprintf("%v %v", m["role"], content))

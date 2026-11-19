@@ -195,8 +195,8 @@ func rowKinds(store *freezeStore) []string {
 
 // TestRetrySwitchEndsFreeze proves the retry switch from both of its entry
 // points, on the real gateway and the real watcher: the freeze card's
-// Retry now, the console route's Config.RetryFreeze, which cmd/factoryd
-// wires to the switch's RetryFreeze, and the chat's retry of a frozen
+// Retry now, the switch's RetryFreeze, which Act runs for an approver's
+// answer on the card's ask, and the chat's retry of a frozen
 // card, Act's ActRetry on t2 by the project agent, which reaches the
 // switch through Runner.RetryFreeze. In each, sf/other's t5 meets zai's
 // dated refusal first, to 09:45; the gateway restarts, which forgets the
@@ -216,7 +216,7 @@ func rowKinds(store *freezeStore) []string {
 // path of a session of the frozen class: its digest and its image look,
 // whose calls run through the chat's model door on the card's account,
 // refuse naming the decision, zai's words, the new reset, that the session
-// goes on without the tool's answer, and the press that ends the freeze
+// goes on without the tool's answer, and the answer that ends the freeze
 // sooner. The hold is the class's in both repositories, so each re-arm
 // inside the reset a pressed card held reopens both cards, and each press
 // closes both again, every close with its own comment naming who pressed,
@@ -468,7 +468,7 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 	// the second press closed both reopened cards, each close its own
 	// comment naming who pressed, and left its own row
 	for _, repo := range []string{acme, other} {
-		closeSaid := fmt.Sprintf("#%d factoryd: %s's retry press cleared the big class's hold: the freeze card closes at once.", cards[repo].IssueNumber, by)
+		closeSaid := fmt.Sprintf("#%d %s's retry press cleared the big class's freeze: the freeze card closes at once.", cards[repo].IssueNumber, by)
 		if n := len(slices.DeleteFunc(slices.Clone(fj.comments), func(c string) bool { return c != closeSaid })); cardStatus(repo) != "done" || n != 2 {
 			t.Fatalf("%s's card stands %s with %d press closes %q, want closed again with the second its own", repo, cardStatus(repo), n, closeSaid)
 		}
@@ -478,7 +478,7 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 	}
 	// the done card of sf/other: its freeze ended, which the press names
 	if err := sw.RetryFreeze(ctx, cards[other].ID, "sebastian", ViaButton); !errors.As(err, &no) ||
-		err.Error() != fmt.Sprintf("the freeze of #%d ended, the card is done: no hold waits on a retry, and a new limit on the class opens a freeze card again", cards[other].IssueNumber) {
+		err.Error() != fmt.Sprintf("the freeze of #%d ended, the card is done: nothing waits for a retry, and a new limit on the class opens a freeze card again", cards[other].IssueNumber) {
 		t.Fatalf("the press on a done freeze card = %v, want the ended-freeze refusal", err)
 	}
 	// the probe's refusal re-armed the gateway's hold at the new reset: a
@@ -497,11 +497,7 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 	if refrozen.Status != "waiting-human" || !strings.Contains(refrozen.Objective, "in 1h 45m") || len(fj.issues) != 2 {
 		t.Fatalf("the refrozen card stands %s over %d issues:\n%s", refrozen.Status, len(fj.issues), refrozen.Objective)
 	}
-	for _, e := range store.events {
-		if e.Kind == EventQuestionAsked {
-			t.Fatalf("a question was asked: %+v", e)
-		}
-	}
+	freezeAsks(t, store)
 	// a session of the frozen class meets the hold in its tools whose calls
 	// run through the chat's model door on the card's account, the digest
 	// and the image look: each refusal names the decision, zai's words, the
@@ -510,8 +506,9 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 		t.Fatal(err)
 	}
 	op := &OperatorModel{GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client()}
-	frozenUntil := " was refused (refused_provider_limit): " + zaiWords(at(125*time.Minute)) + "; the class is frozen until " + stamp(at(125*time.Minute)) +
-		": go on without it, as the card resumes by itself at the reset, or sooner if an approver presses Retry now on the class's freeze card or retries a frozen case in the chat"
+	ends := ". The class is frozen until " + stamp(at(125*time.Minute)) + ": go on without it, as the card resumes by itself at the reset. " +
+		`An approver ends the freeze sooner with the answer "Retry now" on the class's freeze card, or with a retry of a frozen card in the chat.`
+	frozenUntil := " was refused (refused_provider_limit): " + strings.TrimSuffix(zaiWords(at(125*time.Minute)), ".") + ends
 	for _, tool := range []struct {
 		serve      http.HandlerFunc
 		body, want string
@@ -543,7 +540,7 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 		t.Fatalf("the empty press: rows %+v, woke %q, sf/acme's card %s, premium's %s; want a seventh row, premium's class_resumed on its card, and only premium's card closed", store.rows, signalled, cardStatus(acme), got.Status)
 	}
 	if !slices.ContainsFunc(fj.comments, func(c string) bool {
-		return strings.Contains(c, "sebastian's retry press cleared the premium class's hold")
+		return strings.Contains(c, "sebastian's retry press cleared the premium class's freeze")
 	}) {
 		t.Fatalf("comments %q, want the close naming who pressed", fj.comments)
 	}
@@ -715,7 +712,7 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 	}
 	var refused ErrActRefused
 	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActRetry}}); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "rung 0 ends no provider freeze, a human's press or the project agent's: hand it up (hand_up) with retry as the recommendation") {
+		!strings.HasPrefix(err.Error(), "the factory ends no provider freeze, which a human's press or the factory agent's ends: hand it up (`hand_up`) with `retry` as the recommendation") {
 		t.Fatalf("rung 0's retry = %v, want the refusal naming who presses", err)
 	}
 	const ladder = "no provider freeze holds the card: its newest provider refusal named no reset beyond the ladder's longest backoff of 30 minutes, so its next session starts by itself"
@@ -725,8 +722,8 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 		"t-x":  "no failed dependency is open to a retry, and no provider freeze holds the card: retry files a failed dependency again or ends a freeze, so pick the action the card's wait needs",
 		"t-w":  ladder + " at 2026-11-21T12:01:00Z, and retry ends no freeze there",
 		"t-v":  "the card waits to the provider limit's reset 2026-11-21T16:00:00Z, and no freeze card of the big class stands open to end the freeze sooner: the card starts by itself at the reset",
-		"t-fr": "the plain class resumed on its own and #10 closes itself at 2026-11-21T12:05:00Z: no hold waits on a retry, its frozen cards wake once the resume holds five minutes, and a new limit opens a freeze card again",
-		"t-fd": "the freeze of #11 ended, the card is done: no hold waits on a retry, and a new limit on the class opens a freeze card again",
+		"t-fr": "the plain class resumed on its own and #10 closes itself at 2026-11-21T12:05:00Z: nothing waits for a retry, its frozen cards wake once the class has run for five minutes, and a new limit opens a freeze card again",
+		"t-fd": "the freeze of #11 ended, the card is done: nothing waits for a retry, and a new limit on the class opens a freeze card again",
 	} {
 		if _, err := r.Act(ctx, ActInput{TaskID: id, By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}}); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
 			t.Fatalf("the retry on %s = %v, want the refusal %q", id, err, want)
@@ -734,7 +731,7 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 	}
 	store.failFreezeCards = errors.New("the store is down")
 	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}}); !errors.As(err, &refused) ||
-		!strings.Contains(err.Error(), "the class's freeze cards could not be read, so it is unknown whether a provider freeze holds the card, which retry needs: try again in a minute") {
+		!strings.Contains(err.Error(), "the class's freeze cards could not be read, so it is unknown whether a provider freeze holds the card, which `retry` needs: try again in a minute") {
 		t.Fatalf("the retry on t-z with the freeze cards unread = %v, want the unread refusal", err)
 	}
 	store.failFreezeCards = nil
@@ -753,6 +750,49 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 	var part *PartialPressError
 	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}}); !errors.As(err, &part) {
 		t.Fatalf("a press that failed past the clear = %v, want its PartialPressError", err)
+	}
+}
+
+// The freeze card asks as a human card, and Retry now is its own answer: a
+// human's press on its case runs the retry switch on the card and ends the
+// case, rung 1's is refused as any answer of a human card is, and
+// the switch's refusal comes back as Act's with the case still open.
+func TestTheFreezeCardsRetryNowRunsTheRetrySwitch(t *testing.T) {
+	ctx := context.Background()
+	g := newFactsRig(t)
+	card := Task{ID: "t-fz", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, Repository: "demo-app/demo-app", IssueNumber: 8,
+		Objective: freezeCardTitle("coder") + "\n\n" + freezeClassMarker("coder")}
+	g.store.tasks[card.ID] = card
+	g.store.cases = []Case{{ID: 9, TaskID: card.ID, Repository: card.Repository, Kind: CaseHumanCard, Status: CaseAtHuman}}
+	asked := freezeAsk(FreezeQuestion(FreezeEvent{Class: "coder", Reset: "2026-11-21T17:00:00Z"}, 2, time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC), time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC))).Event(card)
+	asked.Detail["case_id"] = 9
+	g.store.events = append(g.store.events, asked)
+	var pressed []string
+	var refusal error
+	g.r.RetryFreeze = func(_ context.Context, cardID, by, via string) error {
+		pressed = append(pressed, cardID+" by "+by+" via "+via)
+		return refusal
+	}
+	retry := ActInput{TaskID: card.ID, CaseID: 9, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActRetry, Note: "Retry now"}}
+	var refused ErrActRefused
+	checkin := retry
+	checkin.Rung = 1
+	if _, err := g.r.Act(ctx, checkin); !errors.As(err, &refused) || err.Error() != "the check-in may not answer a human card: the factory agent and the human may" || len(pressed) != 0 {
+		t.Fatalf("rung 1's retry = %v, pressed %q; want the human card's refusal and no press", err, pressed)
+	}
+	refusal = ErrNoFreeze("the freeze of #8 ended, the card is done: nothing waits for a retry, and the class's next freeze opens its card again")
+	if _, err := g.r.Act(ctx, retry); !errors.As(err, &refused) || err.Error() != refusal.Error() || g.store.cases[0].Status != CaseAtHuman {
+		t.Fatalf("a press the switch refuses = %v, case %s; want its refusal and the case open", err, g.store.cases[0].Status)
+	}
+	refusal = nil
+	got, err := g.r.Act(ctx, retry)
+	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"freeze_card": "t-fz"},
+		Result: "Ended the provider freeze: its hold cleared, its freeze card closed, and its frozen cards call the provider again."}}
+	if err != nil || !reflect.DeepEqual(got.Did, want) || g.store.cases[0].Status != CaseResolved {
+		t.Fatalf("the human's Retry now = %+v, %v, case %s; want the press and the case ended", got.Did, err, g.store.cases[0].Status)
+	}
+	if !slices.Equal(pressed, []string{"t-fz by sebastian via console", "t-fz by sebastian via console"}) {
+		t.Fatalf("pressed %q, want the refused press and the taken one, both on the freeze card by the human through the console", pressed)
 	}
 }
 
@@ -842,7 +882,7 @@ func TestRetrySwitchRefusesAResumedClass(t *testing.T) {
 	sw := &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client()}
 	var no ErrNoFreeze
 	if err := sw.RetryFreeze(context.Background(), freezeCardOn(t, store, 1).ID, "sebastian", ViaButton); !errors.As(err, &no) ||
-		err.Error() != "the big class resumed on its own and #1 closes itself at 2026-11-21T12:05:00Z: no hold waits on a retry, its frozen cards wake once the resume holds five minutes, and a new limit opens a freeze card again" {
+		err.Error() != "the big class resumed on its own and #1 closes itself at 2026-11-21T12:05:00Z: nothing waits for a retry, its frozen cards wake once the class has run for five minutes, and a new limit opens a freeze card again" {
 		t.Fatalf("the press on a resumed class = %v, want the resumed refusal", err)
 	}
 	if code, held := gw.call(t, "t1"); held != stamp(reset) || len(*woke) != 0 || len(store.rows) != rows {

@@ -20,7 +20,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // agentDocTask is the task id every capture bills under; the fake gateway
@@ -97,7 +96,7 @@ func agentDocJSON(s string) string {
 
 // agentDocInputLead is the heading every JSON-mode call's user message
 // opens with.
-var agentDocInputLead = agentdoc.Span{Name: "the input heading", Symbol: "factoryd.chatInputLead", Kind: agentdoc.KindBuilder,
+var agentDocInputLead = agentdoc.Span{Name: "the input heading", Symbol: "factoryd.ChatInputLead", Kind: agentdoc.KindBuilder,
 	Place: agentdoc.PlaceUser, Text: ChatInputLead}
 
 // agentDocFiles is the fixture diff one file wide, the review and audit
@@ -112,11 +111,16 @@ func agentDocFiles() []fileDiff {
 	}}
 }
 
-// agentDocObjective is the fixture task's objective as the brief builder
+// agentDocCardBrief is the fixture task's card brief: an outside account's
+// issue, its title and its why line.
+var agentDocCardBrief = CardBrief{Text: BriefText{Title: "Fix the counter so it counts the skipped rows too.",
+	Why: "The nightly report undercounts the rows it skipped."}}
+
+// agentDocObjective is the fixture task's brief as the brief builder
 // writes it.
 func agentDocObjective() harness.TaskBrief {
 	return InboundBrief(harness.TaskBrief{
-		Objective:      briefObjective("Fix the counter so it counts the skipped rows too.", false),
+		Objective:      agentDocCardBrief.AgentText(),
 		Repository:     "owner/name",
 		SHA:            "fixture-sha",
 		Author:         "fixture-author",
@@ -148,8 +152,8 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
 		{Name: "the answer deadline", Symbol: "factoryd.checkinDueLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinDueLine(checkinAnswerDue(timeCap, 0))},
-		{Name: "the writing guide", Symbol: "writingguide.Guide", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: writingguide.Guide},
+		{Name: "the guide's forms", Symbol: "factoryd.checkinForms", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: checkinForms},
 		{Name: "the parent session's tail", Symbol: "factoryd.agentDocCheckin", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
 			Text: string(parent)},
 	}
@@ -201,13 +205,13 @@ func agentDocReview(ctx context.Context, gwURL string, v policy.Version, hc *htt
 		Gates:       reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction},
 	}
 	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout,
-		reviewPromptFor(gates), in); err != nil {
+		reviewCallPrompt(gates, false, nil, nil, false), in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the review prompt", Symbol: "factoryd.reviewPromptFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: reviewPromptFor(gates)},
+		{Name: "the review prompt", Symbol: "factoryd.reviewCallPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
+			Text: reviewCallPrompt(gates, false, nil, nil, false)},
 		{Name: "the review's facts", Symbol: "factoryd.reviewInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
 		{Name: "the task brief", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -417,14 +421,14 @@ func agentDocAnswer(ctx context.Context, gwURL string, v policy.Version, hc *htt
 	}
 	text := sanitize.Inbound("The counter skips rows when the batch is empty; the log shows count=0 for batch 7.")
 	open, closing := "===ANSWER-"+agentDocAnswerTag, "ANSWER-"+agentDocAnswerTag+"==="
-	system := fmt.Sprintf(answerPrompt, open, closing)
+	system := answerSystem(open, closing)
 	in := answerInput{Repository: "owner/name", Answer: open + "\n" + text + "\n" + closing}
 	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the screening prompt", Symbol: "factoryd.answerPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
+		{Name: "the screening prompt", Symbol: "factoryd.answerSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
 		{Name: "the screening call's facts", Symbol: "factoryd.answerInput", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceUser, Text: marshalled(in)},
 		{Name: "the answer between markers", Symbol: "sanitize.Inbound", Kind: agentdoc.KindBuilder,
@@ -450,11 +454,11 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}
 	t := agentDocCard()
 	life := agentDocLife().Render()
-	facts, acts, err := briefFacts(a, t, nil, life)
+	facts, err := briefFacts(a, t, life)
 	if err != nil {
 		return nil, err
 	}
-	system := briefPrompt(a.Kind, acts)
+	system := briefPrompt(a.Kind)
 	if _, _, err := m.Chat(ctx, t.ID, alias, policy.PurposeBrief, v.Document.Limits.SupervisorTimeout, system, facts); err != nil {
 		return nil, err
 	}
@@ -485,39 +489,23 @@ func agentDocLife() CardDigest {
 type agentDocCaseStore struct {
 	BriefStore
 	steps []CaseStep
-	req   ApprovalRequest
 }
 
 func (s agentDocCaseStore) CaseSteps(context.Context, int64) ([]CaseStep, error) { return s.steps, nil }
-func (s agentDocCaseStore) LastAnswerAt(context.Context, string) (*time.Time, error) {
-	return nil, nil
-}
-func (s agentDocCaseStore) ApprovalRequests(context.Context, string) ([]ApprovalRequest, error) {
-	return []ApprovalRequest{s.req}, nil
-}
 
-// agentDocCaseBrief drives the case brief writer on a merge case that a
-// rung handed up.
+// agentDocCaseBrief drives the case story writer on a check-in's stop that
+// a rung handed up.
 func agentDocCaseBrief(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
 	m, _, err := agentDocModel(gwURL, v, policy.PurposeBrief, hc)
 	if err != nil {
 		return nil, err
 	}
-	spec, err := json.Marshal(MergeSpec{
-		RiskClass: "small", Review: Review{Verdict: "changes_requested", Summary: "fixture review summary"},
-		VerdictSummary: "changes requested once", WhyHuman: []string{"the merge rule asks a human below auto"},
-		Recommendation: "approve: the gates are green", HeadSHA: "fixture-head-sha", PRURL: "https://forgejo.example/owner/name/pull/4711",
-	})
-	if err != nil {
-		return nil, err
-	}
-	req := ApprovalRequest{ID: 9, Kind: ApprovalMerge, TaskID: agentDocTask, Project: "owner/name", PRNumber: 4711, Spec: spec,
-		Reason: "the merge rule asks a human", CreatedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)}
-	c := Case{ID: 3, TaskID: agentDocTask, Repository: "owner/name", Kind: CaseMergeApproval, Status: CaseAtHuman,
-		Problem: "Pull request #4711 waits for a merge approval", Facts: map[string]any{"approval": float64(req.ID)}}
-	store := agentDocCaseStore{req: req, steps: []CaseStep{
-		{Rung: 2, Actor: "factory agent", Found: "the review asked for one change and the gates are green", Decision: ActApproveMerge,
-			Grounds: "the change is small and the gates are green", Outcome: StepHandedUp}}}
+	c := Case{ID: 3, TaskID: agentDocTask, Repository: "owner/name", Kind: CaseCheckinHuman, Status: CaseAtHuman,
+		Problem: CaseFaces[CaseCheckinHuman].Ask(Facts{}),
+		Facts:   map[string]any{"reason": "check-in: goal conflict: the change edits the importer, not the counter the card names"}}
+	store := agentDocCaseStore{steps: []CaseStep{
+		{Rung: 2, Actor: "factory agent", Found: "the session edited the importer, and the counter still skips rows", Decision: ActContinue,
+			Grounds: "the counter is the card's work", Outcome: StepHandedUp}}}
 	w := &BriefWriter{Store: store, Model: m, Current: func() policy.Version { return v },
 		CardDigest: func(context.Context, string) (CardDigest, error) { return agentDocLife(), nil }}
 	t := agentDocCard()

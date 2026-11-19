@@ -200,7 +200,7 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 			face = cm.body
 		}
 	}
-	if !strings.Contains(face, want) || !strings.Contains(face, timeCapAsk) {
+	if !strings.Contains(face, want) || !strings.Contains(face, "The card used its agent time of 20 minutes. How should it go on?") {
 		t.Fatalf("the face %q lacks the note or the ask", face)
 	}
 	if err := store.SetPlanDraft(ctx, "t-b", json.RawMessage(`{}`), []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"}); err != nil {
@@ -428,7 +428,7 @@ func TestEveryRefusalKeepsADraft(t *testing.T) {
 			off.Cards[1].Brief = "Create and list links."
 			off.TakeOffMain = []string{"links-api"}
 			return r, store, planJSON(t, off)
-		}, "take_off_main names links-api with no reason"},
+		}, "`take_off_main` names links-api with no reason"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, plan := tc.rig(t)

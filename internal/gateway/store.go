@@ -26,6 +26,9 @@ type Task struct {
 	Repository string
 	// Source is the card's source (tasks.source).
 	Source string
+	// ToolImage is the image a tool card adds its tool to (tasks.tool_image),
+	// "" for a card that is no tool card nor continues one.
+	ToolImage string
 	// ModelAlias is the alias of the task's current session
 	// (tasks.model_alias), set before its pod starts: the one alias its
 	// agent may call.
@@ -147,8 +150,8 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	var t Task
 	var classes []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, budget_eur::float8, spent_eur::float8, status, required_capabilities, repository, source, model_alias FROM tasks WHERE id = $1`, id,
-	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status, &classes, &t.Repository, &t.Source, &t.ModelAlias)
+		`SELECT id, budget_eur::float8, spent_eur::float8, status, required_capabilities, repository, source, COALESCE(tool_image, ''), model_alias FROM tasks WHERE id = $1`, id,
+	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status, &classes, &t.Repository, &t.Source, &t.ToolImage, &t.ModelAlias)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}

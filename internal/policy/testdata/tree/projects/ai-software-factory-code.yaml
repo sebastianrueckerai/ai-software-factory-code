@@ -9,7 +9,8 @@ namespaces: [factory]
 tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge, gate: forgejo-gate, chat: forgejo-chat}
 routines:
   - name: weekly-bump
-    title: Weekly bump of the pinned outside inputs
+    title: Update the fixed versions of outside software every week
+    why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.
     schedule:
       - cron: "0 6 * * 1"
     files: human

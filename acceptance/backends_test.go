@@ -1000,6 +1000,18 @@ func (s *acceptanceStore) MergeAlertDetail(_ context.Context, id int64, detail m
 	return nil
 }
 
+func (s *acceptanceStore) SetAskFace(_ context.Context, t factoryd.Task, _ int64, _, _ map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.tasks[t.ID]
+	if !ok {
+		return fmt.Errorf("task %s: %w", t.ID, factoryd.ErrNotFound)
+	}
+	cur.Objective, cur.Why = t.Objective, t.Why
+	s.tasks[t.ID] = cur
+	return nil
+}
+
 func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
 	s.mu.Lock()
 	t, ok := s.tasks[taskID]
@@ -1074,6 +1086,18 @@ func (s *acceptanceStore) OpenReportTask(_ context.Context, t factoryd.Task) (fa
 		return have, nil
 	}
 	return t, s.CreateTask(context.Background(), t)
+}
+
+func (s *acceptanceStore) TasksByParent(_ context.Context, id string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Task
+	for _, t := range s.tasks {
+		if t.Parent == id {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 func (s *acceptanceStore) ReportOf(_ context.Context, parent, source string) (factoryd.Task, bool, error) {
@@ -1249,7 +1273,7 @@ func (s *acceptanceStore) Dependents(ctx context.Context, id string) ([]factoryd
 	return out, nil
 }
 
-func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Task) (bool, error) {
+func (s *acceptanceStore) ReplaceCard(context.Context, string, string, factoryd.Task) (bool, error) {
 	return false, nil
 }
 
@@ -1589,6 +1613,15 @@ func (s *acceptanceStore) HeldOn(context.Context, string) ([]factoryd.Task, erro
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
 
+func (s *acceptanceStore) CardBrief(ctx context.Context, taskID string) (factoryd.CardBrief, error) {
+	return factoryd.ReadCardBrief(ctx, s, taskID)
+}
+
+// SessionBriefs: the acceptance flows run no session pod.
+func (s *acceptanceStore) SessionBriefs(context.Context, string) ([]factoryd.SessionBrief, error) {
+	return nil, nil
+}
+
 // The cases: nothing here opens one.
 func (s *acceptanceStore) OpenCase(context.Context, factoryd.Case) (factoryd.Case, bool, error) {
 	return factoryd.Case{}, false, nil
@@ -1644,7 +1677,7 @@ func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResol
 	return nil
 }
 
-func (s *acceptanceStore) SetCaseOffers(context.Context, int64, []factoryd.AskOffer, []factoryd.ActionRefusal) error {
+func (s *acceptanceStore) SetCaseFace(context.Context, int64, map[string]any) error {
 	return nil
 }
 

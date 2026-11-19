@@ -148,14 +148,14 @@ func TestDigestQuietInsideFreeze(t *testing.T) {
 	reset := tenHours.Add(192*time.Minute + 7*time.Hour)
 	chip := "frozen until " + reset.UTC().Format("15:04 UTC") + ": " + plFrozenWords
 	board := r.get(t, "/board", ck).Body.String()
-	for _, want := range []string{`<span class="elapsed">3 h 12 min, frozen 6 h 48 min</span>`, chip} {
+	for _, want := range []string{`building</span> 3 h 12 min, frozen 6 h 48 min</span>`, chip} {
 		if !strings.Contains(board, want) {
 			t.Errorf("the board lacks %s", want)
 		}
 	}
 	drawer := r.get(t, "/cards/t-frozen-600/drawer?tab=overview", ck).Body.String()
 	for _, want := range []string{
-		`<dd>building, 3 h 12 min, frozen 6 h 48 min, 3 h 12 min, frozen 6 h 48 min in all</dd>`,
+		`<span class="it">3 h 12 min, frozen 6 h 48 min</span>`,
 		"frozen on the provider limit until " + reset.UTC().Format("15:04 UTC") + ": " + plFrozenWords,
 	} {
 		if !strings.Contains(drawer, want) {

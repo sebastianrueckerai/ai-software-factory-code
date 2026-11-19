@@ -44,14 +44,13 @@ func (t Task) Holdable() bool {
 var errHeld = errors.New("the card is on hold")
 
 // HoldView is where a card's hold stands, read with its release card:
-// Line words it with the human's reason; Warn marks a release card that
-// releases nothing, one that ended failed or closed or one that became a
+// Line words it with the human's reason, and says so when the release card
+// releases nothing: one that ended failed or closed, or one that became a
 // plan (a direct card cut into one), whose done comes before its work
-// lands; Released one that ended done or merged, whose hold the card's
-// next admission or dependency check ends.
+// lands. Released marks one that ended done or merged, whose hold the
+// card's next admission or dependency check ends.
 type HoldView struct {
 	Line     string
-	Warn     bool
 	Released bool
 	release  Task
 }
@@ -75,13 +74,11 @@ func holdView(ctx context.Context, store interface {
 	v := HoldView{Line: fmt.Sprintf("on hold until %s is merged or done: %s", name, h.Reason), release: rel}
 	switch {
 	case rel.Track == policy.TrackPlan:
-		v.Warn = true
 		v.Line = fmt.Sprintf("on hold: its release card %s became a plan, which is done once it files its cards, before their work lands, so a human releases the hold or holds the card on the plan's last card: %s",
 			name, h.Reason)
 	case rel.Status == "done" || rel.Status == "merged":
 		v.Released = true
 	case rel.Status == "failed" || rel.Status == "closed":
-		v.Warn = true
 		fit := "releases the hold or holds the card on another card"
 		if rel.Status == "failed" {
 			fit = fmt.Sprintf("retries #%d, whose retry takes the hold over, releases the hold or holds the card on another card", rel.IssueNumber)
@@ -145,7 +142,7 @@ func (r *Runner) holdFact(ctx context.Context, t Task) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("card %s is %s", cardName(t), v.Line), nil
+	return fmt.Sprintf("card %s is %s", ShownName(t), v.Line), nil
 }
 
 // The readers of the hold facts and of the card's timeline, as
@@ -186,12 +183,12 @@ func holdRefusal(f CaseFacts, rung int, action string, args map[string]any) stri
 		if partial == partialPlanHold {
 			what = "the holds of its plan's cards"
 		}
-		return fmt.Sprintf("%s could not be read, so %s takes no %s on %s: try again in a minute, or hand it up to the human", what, who(rung), action, on)
+		return fmt.Sprintf("%s could not be read, so %s takes no `%s` on %s: try again in a minute, or hand it up to the human", what, who(rung), action, on)
 	}
 	if held == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s. Only a human releases a held card, starts it or closes it, so %s takes no %s on %s: %s", held, who(rung), action, on, holdFit(f, rung))
+	return fmt.Sprintf("%s. Only a human releases a held card, starts it or closes it, so %s takes no `%s` on %s: %s", held, who(rung), action, on, holdFit(f, rung))
 }
 
 // holdFit is what fits rung on f instead of an answer a hold refuses: the
@@ -202,7 +199,7 @@ func holdFit(f CaseFacts, rung int) string {
 		return "ask the human instead"
 	}
 	var fits []string
-	for _, fit := range []struct{ action, words string }{{ActNote, "note the case"}, {ActSettle, "settle it"}} {
+	for _, fit := range []struct{ action, words string }{{ActNote, "note the ask"}, {ActSettle, "settle it"}} {
 		if a, _ := ActionByName(fit.action); a.offerRefusal(f, rung) == "" {
 			fits = append(fits, fit.words)
 		}
@@ -269,7 +266,7 @@ func (r *Runner) ReleaseCardHold(ctx context.Context, id string) (bool, error) {
 // heldFindings refuses revision next of the plan st judges when it drops
 // the key of a card a human holds, whoever asked for the replan: the
 // revision's restart would close the card, and only a human closes a held
-// card, on its drawer. A kept key holds the card, which never started, and
+// card, on the opened card. A kept key holds the card, which never started, and
 // gives it the revision's entry for that key. Once the human closed it,
 // replanFindings asks for its key to be left out.
 func (r *Runner) heldFindings(ctx context.Context, st replanState, next Plan) ([]string, error) {
@@ -283,7 +280,7 @@ func (r *Runner) heldFindings(ctx context.Context, st replanState, next Plan) ([
 			return nil, err
 		}
 		found = append(found, fmt.Sprintf("card %s (#%d) is %s. Only a human closes a held card, so keep its key: the card takes the entry this revision gives that key. "+
-			"If the plan no longer needs the card, keep its key and ask in a question of this revision that the human close it or release its hold on its drawer",
+			"If the plan no longer needs the card, keep its key and ask in a question of this revision that the human close it or press “Release the hold” on the opened card",
 			k.PlanKey, k.IssueNumber, v.Line))
 	}
 	return found, nil

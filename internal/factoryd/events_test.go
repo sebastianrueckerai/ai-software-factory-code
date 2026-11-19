@@ -69,7 +69,7 @@ func TestEventsRecorded(t *testing.T) {
 			t.Fatalf("person's card: %v", got)
 		}
 		f, _ := fileStub(t)
-		filed, _, err := FileAgentTask(ctx, newFakeStore(), f, &fakeWorkflows{}, in.Timeline, seedProject("sf/r"), "Fix it", "body", []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
+		filed, _, err := FileAgentTask(ctx, newFakeStore(), f, &fakeWorkflows{}, in.Timeline, seedProject("sf/r"), BriefText{Title: "Fix it", Body: "body"}, []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +136,7 @@ func TestEventsRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 		// each card's done end closes its own issue, the plan's stays open
-		ended := "factoryd: merged; this card ends with it."
+		ended := "Merged. This card ends with it."
 		if got := events(t, objects, "t-plan"); len(got) != 0 || !slices.Equal(fj.comments, []string{ended}) || !slices.Equal(fj.issuesClosed, []int64{2}) {
 			t.Fatalf("one card open: plan events %v, comments %q, issues closed %v", got, fj.comments, fj.issuesClosed)
 		}
@@ -152,7 +152,7 @@ func TestEventsRecorded(t *testing.T) {
 		if got := events(t, objects, "t-plan"); !slices.Equal(got, []string{"all_children_done 2"}) {
 			t.Fatalf("plan events = %v", got)
 		}
-		if !slices.Equal(fj.comments, []string{ended, ended, "factoryd: all 2 cards of this plan are done."}) || !slices.Equal(fj.issuesClosed, []int64{2, 3}) {
+		if !slices.Equal(fj.comments, []string{ended, ended, "All 2 cards of this plan are done."}) || !slices.Equal(fj.issuesClosed, []int64{2, 3}) {
 			t.Fatalf("comments = %q, issues closed %v", fj.comments, fj.issuesClosed)
 		}
 	})

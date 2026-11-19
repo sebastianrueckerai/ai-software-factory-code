@@ -171,8 +171,10 @@ func newParkRig(t *testing.T) *parkRig {
 	// ran, so its projects row holds the tokens and the trust gate reads
 	// its assignees and collaborators, not the org teams of a seed
 	v := acceptancePolicyVersion()
+	// the member approves the project: an extend is an approver's answer on
+	// every door, the chat's among them
 	v.Tree.Projects[parkProject] = policy.ProjectConfig{Repository: parkRepo, Process: "maintenance",
-		Objects: policy.ObjectsFactory, Agents: policy.AgentsCoder}
+		Objects: policy.ObjectsFactory, Agents: policy.AgentsCoder, Approvers: []string{parkMember}}
 	if _, _, err := store.RecordPolicy(ctx, v.Commit, v.Tree); err != nil {
 		t.Fatal(err)
 	}
@@ -331,11 +333,6 @@ func newParkRig(t *testing.T) *parkRig {
 	ccfg.CardDigest = runner.CardDigest
 	ccfg.CardStep = runner.CardStep
 	ccfg.BoardDigest = runner.BoardDigest
-	// a freeze card's Retry now presses the switch the chat's retry does,
-	// the one a test wires on the runner
-	ccfg.RetryFreeze = func(ctx context.Context, cardID, by, via string) error {
-		return runner.RetryFreeze(ctx, cardID, by, via)
-	}
 	board, err := console.New(ccfg)
 	if err != nil {
 		t.Fatal(err)
@@ -448,7 +445,7 @@ func (r *parkRig) postCommentWebhook(t *testing.T, issue, comment int64, author,
 func (r *parkRig) login(t *testing.T) (*http.Cookie, string) {
 	t.Helper()
 	session := r.session(t)
-	rec := r.get(t, "/board", session)
+	rec := r.get(t, "/", session)
 	m := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindSubmatch(rec.Body.Bytes())
 	if rec.Code != http.StatusOK || m == nil {
 		t.Fatalf("the board after the login = %d, a form token on it: %v", rec.Code, m != nil)
@@ -583,7 +580,7 @@ func TestTheWebhooksEmptyAnswerKeepsTheCapAskLive(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("the case fragment = %d: %s", page.Code, page.Body.String())
 	}
-	if !strings.Contains(page.Body.String(), "agent time is used up") {
+	if !strings.Contains(page.Body.String(), "The card used its agent time") {
 		t.Fatalf("the case fragment lacks the ask's sentence:\n%s", page.Body.String())
 	}
 }

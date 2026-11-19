@@ -19,15 +19,17 @@ type Digester interface {
 	Digest(ctx context.Context, taskID, thread, ask, text string) (string, error)
 }
 
-// refusedSentence is a session tool's sentence for its call the gateway
+// refusedSentence is a session tool's words for its call the gateway
 // refused: what was refused, the decision and its reason, and for a
-// provider limit the reset its class is frozen until, what the session
-// does, and what ends the freeze sooner.
+// provider limit the reset its class is frozen until, as the freeze card's
+// face prints it, what the session does, and the card's answer that ends
+// the freeze sooner.
 func refusedSentence(what string, refused *policy.Refusal) string {
 	s := fmt.Sprintf("%s was refused (%s): %s", what, refused.Decision, refused.Reason)
 	if !refused.Until.IsZero() {
-		s += "; the class is frozen until " + stamp(refused.Until) + ": go on without it, as the card resumes by itself at the reset, " +
-			"or sooner if an approver presses Retry now on the class's freeze card or retries a frozen case in the chat"
+		s = strings.TrimSuffix(s, ".") + ". The class is frozen until " + stamp(refused.Until) + ": go on without it, as the card resumes by itself at the reset. " +
+			fmt.Sprintf("An approver ends the freeze sooner with the answer %q on the class's freeze card, or with a retry of a frozen card in the chat.",
+				choices(ActRetry + "/" + variantThaw)[0].Label)
 	}
 	return s
 }
@@ -36,7 +38,8 @@ func refusedSentence(what string, refused *policy.Refusal) string {
 // session's digest: {task_id, path, ask} answers {"text"}, the path and
 // what the Small model answered over the file's text, read from the
 // task's running session's workspace (POST /file). The file's bytes go to
-// the model, never back to the session. Every refusal is one sentence.
+// the model, never back to the session. Every refusal is one sentence, and
+// one inside a provider freeze adds what ends the freeze.
 func (r *Runner) DigestHandler(d Digester) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		var in struct {

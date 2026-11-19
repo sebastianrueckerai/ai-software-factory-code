@@ -89,12 +89,12 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 						t.Fatalf("%d question_asked rows, want the one face", len(asked))
 					}
 					pre, _ := asked[0].Detail["preselected"].(map[string]any)
-					if pre["action"] != ActRetry || !strings.HasPrefix(asked[0].Detail["recommendation"].(string), "retry: ") {
+					if pre["action"] != ActRetry || asked[0].Detail["recommendation"] == "" {
 						t.Errorf("face %+v, want retry preselected and recommended", asked[0].Detail)
 					}
 					recommendation, _ := asked[0].Detail["recommendation"].(string)
-					if !strings.HasPrefix(recommendation, "retry: ") || strings.Contains(recommendation, "user:pass") || strings.Contains(recommendation, "abc123def456") {
-						t.Errorf("recommendation %q, want retry's, masked", recommendation)
+					if !strings.HasPrefix(recommendation, "the dependency failed on a cap") || strings.Contains(recommendation, "user:pass") || strings.Contains(recommendation, "abc123def456") {
+						t.Errorf("recommendation %q, want rung 2's grounds alone, masked", recommendation)
 					}
 					var on6 []string
 					for _, c := range fj.comments {
@@ -177,7 +177,7 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 		t.Errorf("the proposal's face = %+v, want its recommendation by the factory agent", face)
 	}
 	err := propose()
-	want := "case 3 already carries your proposal of retry: the human decides it on the card"
+	want := "`case_id` 3 already carries your proposal of “Try the failed card again”: the human decides it on the card."
 	if err == nil || err.Error() != want {
 		t.Fatalf("second proposal = %v, want %q", err, want)
 	}
@@ -256,7 +256,7 @@ func TestAProposalAfterAnAnalysisIsRefused(t *testing.T) {
 	}
 	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Via: ViaChat, Rung: 2,
 		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}})
-	want := "case 3 already carries your recommendation of replan: the human decides it on the card"
+	want := "`case_id` 3 already carries your recommendation of “Send back to the planner”: the human decides it on the card."
 	if err == nil || err.Error() != want {
 		t.Fatalf("proposal after an analysis = %v, want %q", err, want)
 	}
@@ -311,5 +311,30 @@ func askOwn(t *testing.T, store interface {
 	if _, err := store.Record(context.Background(), Event{TaskID: taskID, Repository: "demo-app/demo-app", Kind: EventQuestionAsked,
 		Detail: map[string]any{"case_id": caseID, "ask": "what now", "offers": choices}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Rung 2's proposal names none of the factory's machinery where Act turns
+// it into one: at manual autonomy a note the human would read as the
+// proposal's grounds with such a name is refused with the name, so the agent writes it again,
+// and no step ends and no face is asked.
+func TestRung2ProposalsNoteNamesNoMachinery(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	atLevel(t, r, policy.AutonomyManual)
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseOpen, StateKey: "t-a", Facts: map[string]any{}}}
+	if _, err := store.AppendCaseStep(ctx, CaseStep{CaseID: 3, Rung: 2, Actor: ChatUser, Outcome: StepInProgress}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
+		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "The dependency failed on a cap, as factory-chat found."}})
+	var refused ErrActRefused
+	if want := `the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`; !errors.As(err, &refused) || string(refused) != want {
+		t.Fatalf("a proposal with a decider's name = %v, want the refusal %q", err, want)
+	}
+	steps := store.caseSteps[3]
+	if len(steps) != 1 || steps[0].Outcome != StepInProgress || fj.issues[9] != nil ||
+		slices.ContainsFunc(store.events, func(e Event) bool { return e.Kind == EventQuestionAsked }) {
+		t.Errorf("a refused proposal left steps %+v, issue #9 filed %v, events %+v", steps, fj.issues[9] != nil, store.events)
 	}
 }

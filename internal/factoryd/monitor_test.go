@@ -40,7 +40,6 @@ func TestMonitorFlagStates(t *testing.T) {
 		{running, "answer_changed_nothing", "h1", "h1"},
 		{running, "faced_unjudged", "7", "7"},
 		{running, "review_refused_not_run", "review: the gateway refused the call", "h2"},
-		{running, "money_ask_hides_findings", "", "h2"},
 		{running, "dependency_failed", "#5", "-"},
 		{running, "wait_over_bound", "run_quiet since +0:00", "run_quiet|2026-11-04T11:00:00Z"},
 		{queued, "queued_over_bound", "work bound 3 of 3 for 3h", "queued|2026-11-04T09:00:00Z"},
@@ -80,5 +79,17 @@ func TestMonitorLeavesAFailedDependencyToItsRun(t *testing.T) {
 	cases, _ := store.CasesOf(ctx, "t-b")
 	if _, retried := store.tasks[RetryID("t-a")]; len(cases) != 0 || retried {
 		t.Fatalf("t-b's cases = %+v, t-a retried %v; want none and no retry", cases, retried)
+	}
+}
+
+// A flag's issue line names the answers the board shows on its face, as
+// every stop's does: the card goes on, and no line sends the human to the
+// chat. A quiet run's flag offers the rescue first. An ended card's line
+// is AskHuman's, from its row's face (monitor_pg_test.go).
+func TestAFlagsIssueLineNamesItsAnswers(t *testing.T) {
+	quiet := Case{Kind: CaseMonitorFlag, Facts: map[string]any{"flag": "wait_over_bound", "wait": "run_quiet", "bound": "30m"}}
+	want := "The card goes on meanwhile. Press “Rescue the work into a new card”, “It is fine, go on” or “Not now” on the board."
+	if got := tripNext(quiet, MonitorFlagReason(DigestFlag{Name: "wait_over_bound", Detail: "run_quiet since +5:19"})); got != want {
+		t.Errorf("the issue line %q, want %q", got, want)
 	}
 }

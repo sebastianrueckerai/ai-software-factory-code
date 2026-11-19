@@ -29,7 +29,7 @@ func TestCardDoesNotCloseBeforeMerge(t *testing.T) {
 	}
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
 	ck, s := r.loggedIn(t)
-	press := r.do(post("/tasks/t-int/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	press := r.do(post("/tasks/t-int/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActClose}}), ck)
 	if press.Code != http.StatusConflict {
 		t.Errorf("the close press on the open criteria card: %d %q; want 409", press.Code, press.Body)
 	}
@@ -60,7 +60,7 @@ func TestASuccessorOfTheCriteriaCardDoesNotCloseBeforeMerge(t *testing.T) {
 	}
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
 	ck, s := r.loggedIn(t)
-	press := r.do(post("/tasks/t-is/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	press := r.do(post("/tasks/t-is/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActClose}}), ck)
 	if press.Code != http.StatusConflict {
 		t.Errorf("the close press on the open successor of the criteria card: %d %q; want 409", press.Code, press.Body)
 	}
@@ -82,7 +82,7 @@ func TestCardWithoutCriteriaClosesBeforeMerge(t *testing.T) {
 	}
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
 	ck, s := r.loggedIn(t)
-	press := r.do(post("/tasks/t-int/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	press := r.do(post("/tasks/t-int/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActClose}}), ck)
 	if press.Code != http.StatusSeeOther {
 		t.Errorf("the close press on the criteria-less card: %d %q; want a close, not a refusal", press.Code, press.Body)
 	}

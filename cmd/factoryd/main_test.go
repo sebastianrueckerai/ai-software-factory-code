@@ -73,6 +73,10 @@ func (e *escalationStub) InsertIntakeEvent(context.Context, factoryd.IntakeEvent
 	return 1, nil
 }
 
+func (e *escalationStub) AdmitAsk(context.Context, factoryd.Task, factoryd.AgentAsk) error {
+	return nil
+}
+
 func (e *escalationStub) EscalateSession(context.Context, string, factoryd.AgentAsk) error {
 	e.delivered++
 	return nil
@@ -215,7 +219,7 @@ func TestCreateTaskHandlerFilesIssueBeforeRow(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -229,7 +233,7 @@ func TestCreateTaskHandlerResponseCarriesIssueRef(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -259,7 +263,7 @@ func TestCreateTaskHandlerStampsBaseSHA(t *testing.T) {
 		var events []string
 		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 		store := &fakeTaskCreator{events: &events}
-		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), body)
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), body)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 		}
@@ -276,7 +280,7 @@ func TestCreateTaskHandlerLabelsAgentAndQueued(t *testing.T) {
 	var events []string
 	forgejo, _, appliedLabels := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -289,11 +293,11 @@ func TestCreateTaskHandlerIssueBodyIsObjectivePlusFiledByFactoryd(t *testing.T) 
 	var events []string
 	forgejo, issueBody, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
-	want := "Add X\n\nfiled by factoryd intake"
+	want := "Add X\n\nFiled by the factory's intake."
 	if *issueBody != want {
 		t.Fatalf("issue body = %q, want %q", *issueBody, want)
 	}
@@ -303,7 +307,7 @@ func TestCreateTaskHandlerIssueCreationFailureCreatesNoRow(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, true)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -316,7 +320,7 @@ func TestCreateTaskHandlerStoreFailureReturnsError(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events, err: errors.New("db unavailable")}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -393,8 +397,10 @@ func TestRecordHandlerServesASessionRecord(t *testing.T) {
 	}
 }
 
-func testBudget() policy.Budget {
-	return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20, MonthEUR: 50}
+// testTree is the policy in force for the task API: its budget and no
+// document repository.
+func testTree() policy.Tree {
+	return policy.Tree{Document: policy.Document{Budget: policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20, MonthEUR: 50}}}
 }
 
 // The task budget comes from the policy in force: its default when none is
@@ -408,7 +414,7 @@ func TestCreateTaskHandlerBudgetFromPolicy(t *testing.T) {
 		var events []string
 		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 		store := &fakeTaskCreator{events: &events}
-		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), body)
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), body)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 		}
@@ -437,7 +443,7 @@ func TestCreateTaskHandlerWritesTheAskedBudget(t *testing.T) {
 		var events []string
 		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 		store := &fakeTaskCreator{events: &events}
-		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), body)
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), body)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 		}
@@ -459,7 +465,7 @@ func TestCreateTaskHandlerBudgetUnderAProjectMaximum(t *testing.T) {
 		var events []string
 		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 		store := &fakeTaskCreator{events: &events, projects: map[string]factoryd.Project{project.Repository: project}}
-		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), body)
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), body)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 		}
@@ -475,7 +481,7 @@ func TestCreateTaskHandlerReproCommand(t *testing.T) {
 	var events []string
 	forgejo, issueBody, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget),
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree),
 		`{"objective":"Fix X","repository":"sf/ai-software-factory-code","repro_command":" go test ./x -run TestX "}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -484,7 +490,7 @@ func TestCreateTaskHandlerReproCommand(t *testing.T) {
 		t.Fatalf("task repro = %q, issue body = %q", store.created[0].ReproCommand, *issueBody)
 	}
 	events = nil
-	rec = postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget),
+	rec = postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree),
 		"{\"objective\":\"Fix X\",\"repository\":\"sf/ai-software-factory-code\",\"repro_command\":\"a\\n```\\nb\"}")
 	if rec.Code != http.StatusBadRequest || len(events) != 0 {
 		t.Fatalf("a fence in the command = %d with calls %v, want 400 and none", rec.Code, events)
@@ -514,7 +520,7 @@ func TestCreateTaskHandlerRefusesWhereNoAgentWorks(t *testing.T) {
 		"sf/ai-software-factory-infra": {Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none", File: true},
 		"demo-app/demo-app":            {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true},
 	}}
-	h := createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget)
+	h := createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree)
 	for repo, want := range map[string]string{
 		"sf/ai-software-factory-infra": "project ai-software-factory-infra takes no agent tasks (agents: none in projects/ai-software-factory-infra.yaml): file an issue for a human",
 		"sf/elsewhere":                 "no active project has the repository sf/elsewhere",
@@ -527,6 +533,29 @@ func TestCreateTaskHandlerRefusesWhereNoAgentWorks(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("a refused task reached Forgejo or the store: %v", events)
+	}
+}
+
+// The task API files a human's issue as the webhook does, on the last
+// try: its title, why line and summary pass the door or mark the card
+// unchecked, and its text stays as written, so a reference in it is not
+// looked up (the stub answers no issue read).
+func TestCreateTaskHandlerFilesAHumansBriefAsWritten(t *testing.T) {
+	for _, c := range []struct {
+		objective string
+		unchecked bool
+	}{
+		{"Fix the cache\n\nThe cache drops entries. Like #999 did.", false},
+		{"Fix the cache on branch card/2084\n\nThe cache drops entries. Like #999 did.", true},
+	} {
+		var events []string
+		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
+		store := &fakeTaskCreator{events: &events}
+		body, _ := json.Marshal(map[string]string{"objective": c.objective, "repository": "sf/ai-software-factory-code"})
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), string(body))
+		if rec.Code != http.StatusCreated || len(store.created) != 1 || store.created[0].BriefUnchecked != c.unchecked {
+			t.Errorf("%q: %d %q, created %+v; want 201, unchecked %v", c.objective, rec.Code, rec.Body, store.created, c.unchecked)
+		}
 	}
 }
 

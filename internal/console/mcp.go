@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"net/http"
 	"slices"
@@ -340,7 +341,7 @@ func (k *collector) send(event string, data any) {
 func fundAction(project string, f *chatBudget) string {
 	const then = "this thread then goes on by itself, and chat_read reads it."
 	if f.CanFund {
-		return fmt.Sprintf("Fund the chat with chat_fund, €%.0f suggested: %s", f.SuggestEUR, then)
+		return fmt.Sprintf("Fund the chat with chat_fund, %s EUR suggested: %s", textutil.EUR(f.SuggestEUR), then)
 	}
 	return "An approver of " + project + " funds the chat: " + then
 }
@@ -480,7 +481,7 @@ func (c *Console) tokenFund(ctx context.Context, call tokenCall, in fundInput) (
 	if err != nil {
 		return nil, nil, errors.New(t.sentence(err))
 	}
-	result := fmt.Sprintf("Raised the judgment budget from €%.2f to €%.2f.", from, to)
+	result := fmt.Sprintf("Raised the judgment budget from %s to %s EUR.", textutil.EUR(from), textutil.EUR(to))
 	if stop.stopped {
 		result += " Every thread the budget stopped goes on by itself; chat_read reads it."
 	} else {

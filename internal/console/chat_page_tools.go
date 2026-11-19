@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"maps"
 	"net/http"
@@ -161,7 +162,7 @@ func (c *Console) commissionsText(ctx context.Context, a actor) (string, error) 
 		if i == 0 || rows[i-1].Repo != res.Repo {
 			b.WriteString(res.Repo + ":\n")
 		}
-		fmt.Fprintf(&b, "  %d %s %s %.4f EUR/month", res.ID, res.Kind, res.State, res.MonthlyEUR)
+		fmt.Fprintf(&b, "  %d %s %s %s EUR a month", res.ID, res.Kind, res.State, textutil.EUR(res.MonthlyEUR))
 		if actions[res.HoldID] == res.ID {
 			if approver && promotable(res, now) {
 				b.WriteString(", promotable")
@@ -264,14 +265,14 @@ func (c *Console) policyText(ctx context.Context, a actor) (string, error) {
 	d := v.Tree.Document
 	var b strings.Builder
 	fmt.Fprintf(&b, "Policy version %d (commit %s).\nLimits and budgets:\n%s", v.ID, v.Commit, limitLines(d))
-	fmt.Fprintf(&b, "  day cap: €%.2f\n  month cap: €%.2f\n", d.Budget.DayEUR, d.Budget.MonthEUR)
+	fmt.Fprintf(&b, "  day cap: %s EUR\n  month cap: %s EUR\n", textutil.EUR(d.Budget.DayEUR), textutil.EUR(d.Budget.MonthEUR))
 	if d.Budget.PremiumMonthEUR > 0 {
-		fmt.Fprintf(&b, "  premium month cap: €%.2f (past it, premium calls run on big)\n", d.Budget.PremiumMonthEUR)
+		fmt.Fprintf(&b, "  premium month cap: %s EUR (past it, premium calls run on big)\n", textutil.EUR(d.Budget.PremiumMonthEUR))
 	}
 	names := slices.Sorted(maps.Keys(v.Projects))
 	for _, name := range names {
 		if p := v.Projects[name]; p.Budget != nil {
-			fmt.Fprintf(&b, "  project %s month cap: €%.2f\n", name, p.Budget.MonthEUR)
+			fmt.Fprintf(&b, "  project %s month cap: %s EUR\n", name, textutil.EUR(p.Budget.MonthEUR))
 		}
 	}
 	for _, name := range names {
@@ -370,14 +371,14 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 			d := ledger.Days[i]
 			parts := make([]string, 0, len(d.ByKind))
 			for _, k := range slices.Sorted(maps.Keys(d.ByKind)) {
-				parts = append(parts, fmt.Sprintf("%s %.4f", k, d.ByKind[k]))
+				parts = append(parts, k+" "+textutil.EUR(d.ByKind[k]))
 			}
-			lines = append(lines, fmt.Sprintf("  %s %.4f%s", d.Day, d.Total, tailWords(parts)))
+			lines = append(lines, fmt.Sprintf("  %s %s%s", d.Day, textutil.EUR(d.Total), tailWords(parts)))
 			grand += d.Total
 		}
 	case "card":
 		for _, t := range ledger.Tasks {
-			lines = append(lines, fmt.Sprintf("  %s %.4f", t.TaskID, t.EUR))
+			lines = append(lines, fmt.Sprintf("  %s %s", t.TaskID, textutil.EUR(t.EUR)))
 			grand += t.EUR
 		}
 	case "tier":
@@ -392,7 +393,7 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 			}
 		}
 		for _, k := range slices.Sorted(maps.Keys(tiers)) {
-			lines = append(lines, fmt.Sprintf("  %s %.4f", k, tiers[k]))
+			lines = append(lines, fmt.Sprintf("  %s %s", k, textutil.EUR(tiers[k])))
 			grand += tiers[k]
 		}
 	}
@@ -401,7 +402,7 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 	}
 	head := map[string]string{"day": "By day", "card": "By card", "tier": "By tier"}[by]
 	return head + " " + ledger.From + " to " + ledger.To + ", EUR:\n" +
-		strings.Join(lines, "\n") + fmt.Sprintf("\ntotal: %.4f EUR", grand), nil
+		strings.Join(lines, "\n") + fmt.Sprintf("\ntotal: %s EUR", textutil.EUR(grand)), nil
 }
 
 // tailWords is a breakdown's parts behind their total, " (model 1.00, ci 0.10)" style.
@@ -445,10 +446,10 @@ func (c *Console) resourceChange(ctx context.Context, a actor, what string, id i
 		log.Printf("console: %s %s resource %d: %v", a.s.user, what, id, err)
 		switch {
 		case errors.Is(err, cloudres.ErrLeaseEnded):
-			return refuse(http.StatusConflict, "cannot "+what+": its lease has ended or it was released; the collector deletes it")
+			return refuse(http.StatusConflict, "cannot "+what+": its lease has ended or it was released, and the collector deletes it")
 		case errors.Is(err, cloudres.ErrBeyondStanding):
 			_, why, _ := strings.Cut(err.Error(), cloudres.ErrBeyondStanding.Error()+": ")
-			return refuse(http.StatusConflict, "cannot "+what+": "+why+"; raise the standing block in the project's file first")
+			return refuse(http.StatusConflict, "cannot "+what+": "+why+". Raise the standing block in the project's file first.")
 		case errors.Is(err, cloudres.ErrNotOpen):
 			return refuse(http.StatusConflict, "cannot "+what+": the resource is no longer open")
 		default:

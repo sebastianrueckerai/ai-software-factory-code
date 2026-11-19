@@ -98,7 +98,7 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 	state, verifier, ok := c.pendingLogin(r)
 	setCookie(w, loginCookie, "", -1)
 	if !ok || q.Get("state") == "" || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
-		http.Error(w, "login state mismatch or expired; start again at /login", http.StatusBadRequest)
+		http.Error(w, "The login does not match or has expired. Start again at /login.", http.StatusBadRequest)
 		return
 	}
 	if e := q.Get("error"); e != "" {
@@ -280,7 +280,7 @@ func (c *Console) callAs(ctx context.Context, s *session, method, path string, p
 	b, err := c.call(ctx, tok, method, path, payload, want, limit)
 	if ae := (*apiError)(nil); s.chatToken != 0 && errors.As(err, &ae) && ae.status == http.StatusUnauthorized {
 		log.Printf("console: chat token %d of %s: %v", s.chatToken, s.user, err)
-		return nil, refuse(http.StatusUnauthorized, "the Forgejo token behind chat token "+s.tokenName+" was refused; make a new chat token")
+		return nil, refuse(http.StatusUnauthorized, "the Forgejo token behind chat token "+s.tokenName+" was refused. Make a new chat token.")
 	}
 	return b, err
 }

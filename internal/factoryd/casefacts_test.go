@@ -140,6 +140,69 @@ func (g factsRig) timeline(t *testing.T) {
 	}
 }
 
+// The newest session of the timeline is what a stop's story tells: it
+// cost the 0.70 EUR spent between its start and its end, it pushed h2,
+// which the review judged, and the head it started from, h1, held two
+// review findings. A newer session that pushed h3, which no gate judged,
+// names h2's findings with no gate on its head; at the card's head h2 it
+// names none, the review judging h2. One that pushed nothing says so.
+func TestTripFactsReadTheLastSession(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	card := g.store.tasks["t1"]
+	card.PRNumber = 0 // its pull request's commits are no part of this
+	g.store.tasks["t1"] = card
+	write := func(lines ...[3]any) {
+		t.Helper()
+		for _, l := range lines {
+			g.tl.now = func() time.Time { return l[0].(time.Time) }
+			if err := g.tl.Append(context.Background(), "t1", l[1].(string), l[2].(map[string]any)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write([3]any{factsAt(8, 0), "session_start", map[string]any{"session": "s1", "attempt": 1}},
+		[3]any{factsAt(8, 10), "pushed", map[string]any{"session": "s1", "commit": "h1"}},
+		[3]any{factsAt(8, 12), "session_end", map[string]any{"session": "s1", "outcome": "pushed"}},
+		[3]any{factsAt(8, 20), "model_review", map[string]any{"commit": "h1", "verdict": "concerns", "findings": []string{findingA, "an older remark"}}},
+		[3]any{factsAt(9, 0), "session_start", map[string]any{"session": "s2", "attempt": 2}},
+		[3]any{factsAt(9, 10), "pushed", map[string]any{"session": "s2", "commit": "h2"}},
+		[3]any{factsAt(9, 12), "session_end", map[string]any{"session": "s2", "outcome": "pushed"}},
+		[3]any{factsAt(9, 45), "model_review", map[string]any{"commit": "h2", "verdict": "approve", "findings": []string{findingA}}})
+	g.store.spends = append(g.store.spends, fakeSpend{task: "t1", at: factsAt(8, 5), eur: 0.3}, fakeSpend{task: "t1", at: factsAt(9, 5), eur: 0.7})
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &LastSessionFacts{CostEUR: 0.7, Pushed: true, Judged: []string{"review"}, Review: []string{FindingID("an older remark"), idA}}
+	if got.LastSession != nil {
+		slices.Sort(got.LastSession.Review)
+		slices.Sort(want.Review)
+	}
+	if !reflect.DeepEqual(got.LastSession, want) {
+		t.Errorf("the last session = %+v, want %+v", got.LastSession, want)
+	}
+	write([3]any{factsAt(10, 0), "session_start", map[string]any{"session": "s3", "attempt": 3}},
+		[3]any{factsAt(10, 10), "pushed", map[string]any{"session": "s3", "commit": "h3"}},
+		[3]any{factsAt(10, 12), "session_end", map[string]any{"session": "s3", "outcome": "pushed"}})
+	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{Pushed: true, Judged: []string{"review"}}) {
+		t.Errorf("after a push past the card's head, the last session = %+v, want it pushed with no findings and no cost", got.LastSession)
+	}
+	tl, err := g.r.objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps, sessions := lineSteps(g.r.Scrub, tl)
+	if got := lastSession(steps, sessions, "h3"); !reflect.DeepEqual(got, &LastSessionFacts{Pushed: true, Review: []string{idA}}) {
+		t.Errorf("at h3, which no gate judged, the last session = %+v, want h2's review finding and no gate on the head", got)
+	}
+	write([3]any{factsAt(11, 0), "session_start", map[string]any{"session": "s4", "attempt": 4}},
+		[3]any{factsAt(11, 12), "session_end", map[string]any{"session": "s4", "outcome": "no_push"}})
+	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{Judged: []string{"review"}}) {
+		t.Errorf("after a session that pushed nothing, the last session = %+v, want it unpushed", got.LastSession)
+	}
+}
+
 // The facts of a card read from its row, its events, its timeline, the
 // checks of its head, its configuration, its dependencies, its cases and
 // the draws, by hand:
@@ -159,6 +222,11 @@ func (g factsRig) timeline(t *testing.T) {
 //   - the time draw is the newest pool row that raised agent time: the
 //     09:00 extend of 300 s on h1, red, no findings recorded, with the
 //     pushes of s2 and s3 after it
+//   - no answer of the issue's author bought a session yet: its grant is
+//     left
+//   - the policy's limits are 20 EUR a day and 50 a month, demo-app's file
+//     sets none, and a session may spend the default 60 percent with
+//     nothing pushed
 func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -188,6 +256,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 		Autonomy:     policy.AutonomyFullAuto,
 		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
+		PosterGrant:  true, DayCapEUR: 20, MonthCapEUR: 50, SpendShare: 0.6,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts =\n%+v\nwant\n%+v", got, want)
@@ -435,10 +504,34 @@ func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
 
 // A floor case asks the opening price the run's next session needs: the
 // case's need is the raise the refusal text names, so a fund of exactly
-// it clears SessionFunded, and no premade amount under the raise is
-// offered. Spent 4.40 of 5 with nothing held leaves 0.60, less the 0.40
+// it clears SessionFunded, and "Add money" opens with it. Spent 4.40 of
+// 5 with nothing held leaves 0.60, less the 0.40
 // reserve 0.20 for a session, and the recorded opening on small needs
 // 0.607001: the raise and the case's need are both 0.41.
+// firstRaise is the amount "Add money" opens with on the budget floor of
+// card at refusal why, on the facts of the card's next session on model.
+func firstRaise(t *testing.T, r *Runner, card Task, why, model string) float64 {
+	t.Helper()
+	f, err := r.tripFacts(context.Background(), card, "", model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pressedFund(t, Facts{CaseFacts: f, Card: card, Case: Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}})
+}
+
+// pressedFund is the amount a press of "Add money" with its default funds on
+// facts f.
+func pressedFund(t *testing.T, f Facts) float64 {
+	t.Helper()
+	a, _ := AnswerFor(ActFund, f)
+	res, err := a.Press(f, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eur, _ := res.Args["eur"].(float64)
+	return eur
+}
+
 func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	g := newFactsRig(t)
 	card := g.store.tasks["t1"]
@@ -459,21 +552,19 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if err != nil || !BudgetRefusal(why) {
 		t.Fatalf("SessionFunded = (%q, %v), want the money ask", why, err)
 	}
-	raise := FundRaise(why, f.LeftEUR, f.ReserveEUR)
-	if raise != fundFor(f.FloorEUR, f.SessionLeft()) || raise != 0.41 {
-		t.Fatalf("raise %v, want the case's need %v at 0.41", raise, fundFor(f.FloorEUR, f.SessionLeft()))
+	raise := fundFor(f.FloorEUR, f.SessionLeft())
+	if raise != 0.41 {
+		t.Fatalf("raise %v, want the case's need at 0.41", raise)
 	}
 	c, _, err := g.r.tripCase(ctx, card, f, TripInput{TaskID: "t1", Reason: why})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Kind != CaseBudgetFloor || c.Money == nil || c.Money.NeedEUR != raise {
+	if c.Kind != CaseBudgetFloor || c.Money == nil {
 		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
 	}
-	q := BudgetQuestion(why, g.r.questionFacts(ctx, card, why))
-	if want := []QuestionChoice{{FundChoiceValue(raise), "Fund 0.41 EUR and go on"},
-		{FundChoiceValue(2), "Fund 2.00 EUR and go on"}, {AnswerPark, "Park it"}}; !slices.Equal(q.Choices, want) {
-		t.Fatalf("choices = %v, want the raise and the round 2.00 alone: the 0.30 floor would leave the session refused", q.Choices)
+	if eur := pressedFund(t, Facts{CaseFacts: FactsOf(c), Card: card, Case: c}); eur != raise {
+		t.Fatalf("Add money opens with %v, want the raise %v", eur, raise)
 	}
 	card.BudgetEUR += raise
 	g.store.tasks["t1"] = card
@@ -537,7 +628,7 @@ func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
 				}
 				return
 			}
-			if !strings.HasPrefix(f.CapWait, dayCapResumes) || !strings.Contains(f.CapWait, "turns at 2026-11-04T00:00:00Z") || !strings.Contains(f.CapWait, "budget.day_eur in policy.yaml") {
+			if !strings.HasPrefix(f.CapWait, dayCapResumes) || !strings.Contains(f.CapWait, "turns at 2026-11-04T00:00:00Z") || !strings.Contains(f.CapWait, "the day cap in policy.yaml") {
 				t.Fatalf("cap wait %q, want the day cap's, lifting at the day's turn", f.CapWait)
 			}
 			if !strings.HasPrefix(face, "The day cap is reached") || !strings.Contains(face, "Once it lifts, the task asks the budget floor") || strings.Contains(face, "Reply on this issue to start") {
@@ -662,5 +753,25 @@ func TestNoIssueHoldsOnlyForAQueuedWorkCardNeverLinked(t *testing.T) {
 				t.Errorf("close offered to rung 2 on its flag case = %v, want %v", closeOffered, tc.want)
 			}
 		})
+	}
+}
+
+// A limit of whole hours reads in hours, any other in whole minutes, and
+// one under a minute in seconds.
+func TestMinutesWordSaysWholeHoursInHours(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		time.Second:                     "1 second",
+		30 * time.Second:                "30 seconds",
+		time.Minute:                     "1 minute",
+		59 * time.Minute:                "59 minutes",
+		59*time.Minute + 40*time.Second: "1 hour",
+		time.Hour:                       "1 hour",
+		90 * time.Minute:                "90 minutes",
+		2 * time.Hour:                   "2 hours",
+		24 * time.Hour:                  "24 hours",
+	} {
+		if got := minutesWord(d); got != want {
+			t.Errorf("%s reads %q, want %q", d, got, want)
+		}
 	}
 }
