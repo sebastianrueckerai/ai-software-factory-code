@@ -94,8 +94,8 @@ type Kube interface {
 	// holds yet come back as unplaced.
 	NodeStorage(ctx context.Context) (nodes []NodeStorage, unplaced []int64, err error)
 	DeletePod(ctx context.Context, namespace, name string) error
-	// PodStatus reports the pod phase, the container exit code (-1 while
-	// the container has not terminated) and what a container waits in.
+	// PodStatus reports the pod phase, the container exit code of an ended
+	// pod and what a container waits in.
 	PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, wait PodWait, err error)
 	// PodIP is the running pod's address; ErrNotFound before it has one.
 	PodIP(ctx context.Context, namespace, name string) (string, error)
@@ -504,8 +504,9 @@ type PodWait struct {
 	Since           time.Time
 }
 
-// PodStatus reports the pod's phase, its first container's exit code, -1
-// while it has not terminated, and what a container waits in. The log
+// PodStatus reports the pod's phase, its first container's exit code, read
+// on an ended pod (-1 before the pod has a container status), and what a
+// container waits in. The log
 // follower ends its stream on a terminal phase, the session's reattach and
 // the CI spawner's pod watch read it.
 func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, wait PodWait, err error) {
