@@ -687,7 +687,8 @@ func TestHealPassEndsTheOpenReportTasksOfAnEndedCard(t *testing.T) {
 	wf := &fakeWorkflows{}
 	forgejo, _ := newAlertForgejo(t)
 	gone := func(_ context.Context, id string) (bool, error) { return id == "t-screen" || id == "t-closing", nil }
-	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, &Completion{Store: store}, gone, nil)
+	fjURL, llURL := (&recordingBackend{forgejoStatus: 204, litellmStatus: 200}).srv(t)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, newCompletion(store, fjURL, llURL), gone, nil)
 	for _, id := range []string{"t-size", "t-screen", "t-closing", "t-prove"} {
 		if c := store.tasks[id]; c.Status != "closed" || !strings.HasPrefix(c.ClosingReason, ReasonCardGone) {
 			t.Fatalf("%s stands %s for %q, want it closed as its card is gone", id, c.Status, c.ClosingReason)

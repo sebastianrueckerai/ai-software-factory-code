@@ -2621,7 +2621,12 @@ func (h *freezeTable) restart() {
 func (h *freezeTable) row(kind string, days int) { h.rowIn("sf/acme", kind, days) }
 
 func (h *freezeTable) rowIn(repo, kind string, days int) {
-	h.store.rows = append(h.store.rows, FreezeEvent{ID: int64(len(h.store.rows) + 1), Repository: repo, At: h.now, Kind: kind, Class: "big",
+	at := h.now
+	if kind == "class_frozen" {
+		// an arm's own instant, after a press's record of the same minute
+		at = at.Add(h.store.instant())
+	}
+	h.store.rows = append(h.store.rows, FreezeEvent{ID: int64(len(h.store.rows) + 1), Repository: repo, At: at, Kind: kind, Class: "big",
 		Reset: freezeTableBase.Add(time.Duration(days) * 24 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
 }
 
@@ -3208,7 +3213,14 @@ var freezeTableExceptions = func() map[string]map[string]freezeFaultException {
 	lost := freezeFaultException{"the press's write failed and a pass read the class_resumed before the second press: the card closes itself five minutes after the resume",
 		"#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes"}
 	cell := map[string]freezeFaultException{"EndFreezeCard/made again later": lost, "EndFreezeCard/restart/made again later": lost}
-	return map[string]map[string]freezeFaultException{"open frozen/press": cell, "open frozen/press/after a restart": cell}
+	// the pass that read the resume made the kept filing once more, which
+	// Forgejo refused, and failed its cursor's write; the next pass read
+	// the resume again and made the filing again, which Forgejo then took
+	again := freezeFaultException{"the cursor's write failed, so the next pass read the resume again and made the filing again, which Forgejo now took: a card shows the freeze that ended",
+		"#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes"}
+	filed := map[string]freezeFaultException{"SetFreezeCursor": again, "SetFreezeCursor/restart": again}
+	return map[string]map[string]freezeFaultException{"open frozen/press": cell, "open frozen/press/after a restart": cell,
+		"pending filing/class_resumed": filed, "pending filing/class_resumed/after a restart": filed}
 }()
 
 // Hand-derived from a human's close the watcher lives through: big's #1,

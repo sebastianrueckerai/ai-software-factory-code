@@ -321,9 +321,17 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 				}
 				continue
 			}
-			// a report task whose card is gone ends, and gets no run
-			if t.Report() && t.Parent != "" && endOrphanReport(ctx, store, wf, t) {
-				continue
+			// a report task whose card is gone ends here, and gets no run
+			if t.Report() && t.Parent != "" {
+				gone, err := cardGone(ctx, store, t)
+				if err != nil {
+					log.Printf("heal pass: the card of %s task %s: %s", t.Source, t.ID, maskedErr(err))
+					continue
+				}
+				if gone != "" {
+					endOrphanReport(ctx, store, wf, in, completion, completed, t, gone)
+					continue
+				}
 			}
 			// a task no workflow can run (its repository is not owner/name)
 			// is completed failed here like any failure (credentials
@@ -533,6 +541,35 @@ func endStrayRuns(ctx context.Context, store Store, wf Workflows, tree func() po
 			continue
 		}
 		log.Printf("heal pass: task %s: %s", id, scrub.String(reason))
+	}
+}
+
+// endOrphanReport ends report task c, whose card is gone for reason: no
+// report runs for a card that is gone. The heal pass ends the row itself,
+// closed for that reason, whatever became of c's run, so a run that
+// completed, died or never started leaves no open row; a card that lives
+// again reads the reason and runs the report again (openReport). A run
+// that did not complete gets the factory's own close, issue_closed, which
+// a report task takes in any wait, a provider limit's hold too: it stops,
+// and its finish finds the row ended. The end is read from the rows in
+// every heal pass, so no crash at a card's end and no stopped activity
+// loses it. A failure is logged and the next pass tries again.
+func endOrphanReport(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(context.Context, string) (bool, error), c Task, reason string) {
+	done, err := completed(ctx, c.ID)
+	if err != nil {
+		log.Printf("heal pass: %s task %s: its run: %s", c.Source, c.ID, maskedErr(err))
+		return
+	}
+	if err := completion.Complete(ctx, c.ID, "closed", "closed", reason); err != nil {
+		log.Printf("heal pass: end %s task %s (%s): %s", c.Source, c.ID, reason, maskedErr(err))
+		return
+	}
+	taskEnded(ctx, in.Timeline, store, in.Forgejo, wf, c, "closed", reason)
+	if done {
+		return
+	}
+	if err := wf.Signal(ctx, c.ID, SignalIssueClosed, TaskSignal{Author: FactoryDecider}); err != nil {
+		log.Printf("heal pass: stop the run of %s task %s (%s): %s", c.Source, c.ID, reason, maskedErr(err))
 	}
 }
 

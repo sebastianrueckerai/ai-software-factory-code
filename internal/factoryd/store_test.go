@@ -61,6 +61,8 @@ type fakeStore struct {
 	// now is the clock that stamps intake events, as the database's does;
 	// nil is the wall clock
 	now func() time.Time
+	// instants counts the nanoseconds instant handed out
+	instants int64
 	// failFreezeCards is FreezeCards' error, set to test its readers
 	failFreezeCards error
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
@@ -1693,7 +1695,7 @@ func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment str
 			return false, nil
 		}
 		s.intakeEvents = append(s.intakeEvents, IntakeEvent{ID: s.nextIntakeID(), TaskID: t.ID, Kind: IntakeFactoryClosed,
-			Author: FactoryDecider, CommentID: t.IssueNumber, Body: comment, CreatedAt: s.clock()})
+			Author: FactoryDecider, CommentID: t.IssueNumber, Body: comment, CreatedAt: s.clock().Add(s.instant())})
 	}
 	if face != "" {
 		c.Objective = face
@@ -1701,6 +1703,12 @@ func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment str
 	}
 	if err := s.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
 		return false, err
+	}
+	// the transaction's one time, as the close's record has it
+	c = s.tasks[t.ID]
+	if at := s.clock().Add(s.instant()); c.FinishedAt != nil {
+		c.FinishedAt = &at
+		s.tasks[t.ID] = c
 	}
 	return true, s.SettleFreezeReopen(ctx, t.ID, t.IssueNumber)
 }
@@ -1749,6 +1757,14 @@ func (s *fakeStore) OwedFreezeReopens(ctx context.Context) ([]IntakeEvent, error
 		}
 	}
 	return out, nil
+}
+
+// instant is the next nanosecond of the fake's clock: Postgres orders a
+// freeze card's close record and a gateway row written in one second by
+// their own times, which the fake's clock of whole minutes cannot.
+func (s *fakeStore) instant() time.Duration {
+	s.instants++
+	return time.Duration(s.instants)
 }
 
 // nextIntakeID is an id above every intake event the fake holds, so a

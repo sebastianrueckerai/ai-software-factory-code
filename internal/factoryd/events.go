@@ -232,32 +232,21 @@ var allDoneMu sync.Mutex
 // ended because its card was gone.
 const ReasonCardGone = "its card is gone: "
 
-// endOrphanReport ends report task c when its card is gone: closed, or
-// failed for a screening or a sizing, whose gate belongs to the card's
-// run. It sends c the factory's own close, issue_closed, which a report
-// task takes in any wait, a provider limit's hold too, and which ends it
-// closed with its row. A failed plan keeps its prover, which a replan of
-// the plan takes up again, and a done plan's prover still writes its
-// proofs. The heal pass calls it for every open report task, so the end
-// is read from the rows: no crash at a card's end and no stopped activity
-// loses it, and an activity that runs again for a card that lives ends
-// nothing. A card that lives again gets its closed report task run again
-// (openReport). It reports whether c's card is gone.
-func endOrphanReport(ctx context.Context, store Store, wf Workflows, c Task) bool {
+// cardGone tells why report task c's card is gone, "" while it is not:
+// closed, or failed for a screening or a sizing, whose gate belongs to
+// the card's run. A failed plan keeps its prover, which a replan of the
+// plan takes up again, and a done plan's prover still writes its proofs.
+func cardGone(ctx context.Context, store Store, c Task) (string, error) {
 	parent, ok, err := store.Task(ctx, c.Parent)
-	if err != nil {
-		log.Printf("heal pass: the card of %s task %s: %s", c.Source, c.ID, maskedErr(err))
-		return false
+	switch {
+	case err != nil:
+		return "", err
+	case !ok:
+		return ReasonCardGone + c.Parent + " is not there", nil
+	case parent.Status == "closed" || parent.Status == "failed" && c.Source != SourceProver:
+		return ReasonCardGone + cardName(parent) + " ended " + parent.Status, nil
 	}
-	if ok && parent.Status != "closed" && (parent.Status != "failed" || c.Source == SourceProver) {
-		return false
-	}
-	if c.Status != "closing" {
-		if err := wf.Signal(ctx, c.ID, SignalIssueClosed, TaskSignal{Author: FactoryDecider}); err != nil {
-			log.Printf("heal pass: end %s task %s, whose card %s is gone: %s", c.Source, c.ID, c.Parent, maskedErr(err))
-		}
-	}
-	return true
+	return "", nil
 }
 
 // taskEnded records task t's end in state final, with why when one is

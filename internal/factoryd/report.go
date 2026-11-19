@@ -38,8 +38,9 @@ const maxReport = 64 << 10
 
 // openReport opens parent's report task of source and class at sha, once
 // per parent and source, and starts its workflow unless it has finished.
-// A report task that ended closed did not finish: its card ended under
-// it, and it runs again for the card that asks now.
+// A report task the factory closed because its card was gone did not
+// finish, and it runs again for the card that asks now. One a human
+// closed stands as the report's answer.
 // Like every agent card it is on a track, the direct one, though it runs
 // its own class.
 func openReport(ctx context.Context, store Store, workflows Workflows, budget policy.Budget, parent Task, source, class, sha string) (Task, error) {
@@ -50,7 +51,7 @@ func openReport(ctx context.Context, store Store, workflows Workflows, budget po
 		return Task{}, fmt.Errorf("open the %s task of %s: %w", source, parent.ID, err)
 	}
 	switch {
-	case t.Status == "closed":
+	case t.Status == "closed" && strings.HasPrefix(t.ClosingReason, ReasonCardGone):
 		// the card's earlier end closed its report task (endOrphanReport);
 		// the card lives again and needs the report: a new run
 		if err := store.TransitionTask(ctx, t.ID, []string{"closed"}, "queued"); err != nil {
@@ -346,7 +347,7 @@ func awaitReport(ctx context.Context, store Store, workflows Workflows, budget p
 			}
 			child = got
 		}
-		if child.Status != "closed" || again {
+		if child.Status != "closed" || !strings.HasPrefix(child.ClosingReason, ReasonCardGone) || again {
 			return child, nil
 		}
 	}

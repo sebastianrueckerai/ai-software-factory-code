@@ -289,14 +289,12 @@ func (w *FreezeCard) Loop(ctx context.Context, every time.Duration) {
 // the rows.
 //
 // The cursor moves past a row whose effect is written, and past an arm
-// that Forgejo did not take: each pass applies it again while its freeze
-// stands (stand), and an arm whose class resumed in the same batch is
-// over with its freeze, the wake of its frozen cards coming from the rows
-// (wakeHeld). So one repository's Forgejo holds no other class's rows. An
-// arm the store's failure stopped, and whose class resumes later in the
-// same batch, ends the batch before its row: the next pass reads that row
-// again and the rows after it. A store that fails stops every class in
-// any case. The rest of the pass still runs.
+// that did not finish, whatever stopped it: each pass makes that arm
+// again while its freeze stands (stand), and once more when the pass
+// comes to the class's resume, before it applies the resume. An arm that
+// fails then too is over with its freeze, and the wake of its frozen
+// cards comes from the rows (wakeHeld). So no repository and no row holds
+// another class's rows. The rest of the pass runs whatever a row did.
 func (w *FreezeCard) Check(ctx context.Context) error {
 	if w.Current == nil {
 		return errNoPolicyReader
@@ -319,6 +317,9 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 	if err := w.closeOwed(ctx); err != nil {
 		return err
 	}
+	if err := w.readStanding(ctx, !w.stood); err != nil {
+		return err
+	}
 	events, _, err := w.Store.FreezeEvents(ctx)
 	if err != nil {
 		return err
@@ -326,15 +327,15 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 	var stopped error
 	applied := 0
 	for i, ev := range events {
-		err := w.event(ctx, ev)
-		var kept *armStopped
-		if errors.As(err, &kept) && !slices.ContainsFunc(events[i+1:], func(later FreezeEvent) bool {
-			return later.Kind == "class_resumed" && later.Class == ev.Class
-		}) {
-			log.Printf("freeze card: %v: each pass makes the arm again while the freeze stands", err)
-			err = nil
+		if ev.Kind == "class_resumed" {
+			// the freeze ends: what its arms did not finish is made once
+			// more, so the resume meets the cards a run with no failure has
+			stopped = w.stand(ctx, w.armsBefore(events[:i], ev.Class))
 		}
-		if stopped = err; stopped != nil {
+		if stopped == nil {
+			stopped = w.event(ctx, ev)
+		}
+		if stopped != nil {
 			break
 		}
 		applied++
@@ -344,20 +345,63 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 			return err
 		}
 	}
-	if !w.stood || applied > 0 {
-		if w.standing, err = w.Store.StandingFreezes(ctx); err != nil {
-			return err
-		}
-		if w.held, err = w.Store.HeldResumes(ctx); err != nil {
-			return err
-		}
-		w.stood = true
+	if err := w.readStanding(ctx, applied > 0); err != nil {
+		return err
 	}
-	return errors.Join(stopped, w.stand(ctx), w.wakeHeld(ctx), w.tick(ctx))
+	return errors.Join(stopped, w.stand(ctx, w.standing), w.wakeHeld(ctx), w.tick(ctx))
 }
 
-// stand applies again each standing freeze whose reset is ahead, in every
-// pass: what an arm did not finish, this pass does. An open card that
+// readStanding reads the standing freezes and the held resumes at the
+// stored cursor when due: on a watcher's first pass and after the cursor
+// moved.
+func (w *FreezeCard) readStanding(ctx context.Context, due bool) (err error) {
+	if !due {
+		return nil
+	}
+	if w.standing, err = w.Store.StandingFreezes(ctx); err != nil {
+		return err
+	}
+	if w.held, err = w.Store.HeldResumes(ctx); err != nil {
+		return err
+	}
+	w.stood = true
+	return nil
+}
+
+// armsBefore is what StandingFreezes would answer for class right before
+// the row after batch, the rows of this pass read so far: one arm for each
+// repository that armed the class since its last resume, with the newest
+// arm's id, time, reset and words.
+func (w *FreezeCard) armsBefore(batch []FreezeEvent, class string) []FreezeEvent {
+	var arms []FreezeEvent
+	for _, ev := range w.standing {
+		if ev.Class == class {
+			arms = append(arms, ev)
+		}
+	}
+	for _, ev := range batch {
+		switch {
+		case ev.Class != class:
+		case ev.Kind == "class_resumed":
+			arms = nil
+		case ev.Kind == "class_frozen":
+			arms = append(arms, ev)
+		}
+	}
+	var out []FreezeEvent
+	for _, arm := range arms {
+		if !slices.ContainsFunc(out, func(have FreezeEvent) bool { return have.Repository == arm.Repository }) {
+			newest := arms[len(arms)-1]
+			newest.Repository, newest.TaskID = arm.Repository, ""
+			out = append(out, newest)
+		}
+	}
+	return out
+}
+
+// stand applies again each of arms whose reset is ahead: the standing
+// freezes in every pass, and a class's arms once more when its resume
+// comes (Check). What an arm did not finish, this does. An open card that
 // holds the freeze's reset stays quiet (frozen); a filing, a re-arm or a
 // reopen that Forgejo or the store stopped is made again. A freeze the
 // retry press answered since, by the time of its close's record after the
@@ -365,10 +409,10 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 // press cleared the hold. A freeze whose card a human closed gets no card
 // again before a new reset (endedOutside), and one whose filing Forgejo
 // refused for good waits for a newer arm.
-func (w *FreezeCard) stand(ctx context.Context) error {
+func (w *FreezeCard) stand(ctx context.Context, arms []FreezeEvent) error {
 	answered := map[string]bool{}
 	var errs []error
-	for _, ev := range w.standing {
+	for _, ev := range arms {
 		if id, ok := w.refused[ev.Repository+"/"+ev.Class]; !beforeReset(w.now(), ev.Reset) || ok && id == ev.ID {
 			continue
 		}
@@ -392,11 +436,7 @@ func (w *FreezeCard) stand(ctx context.Context) error {
 		if answered[ev.Class] {
 			continue
 		}
-		err := w.event(ctx, ev)
-		var kept *armStopped
-		if errors.As(err, &kept) {
-			log.Printf("freeze card: %v: each pass makes the arm again while the freeze stands", err)
-		} else if err != nil {
+		if err := w.event(ctx, ev); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -672,17 +712,11 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 		if !slices.Contains(repos, ev.Repository) {
 			repos = append(repos, ev.Repository)
 		}
-		var stopped error
 		for _, repo := range repos {
-			err := w.arm(ctx, w.class(repo, ev.Class), ev)
-			var kept *armStopped
-			if errors.As(err, &kept) {
-				stopped = cmp.Or(stopped, err)
-			} else if err != nil {
+			if err := w.arm(ctx, w.class(repo, ev.Class), ev); err != nil {
 				return err
 			}
 		}
-		return stopped
 	case "class_resumed":
 		if err := w.endGivenUp(ctx, ev.Class); err != nil {
 			return err
@@ -706,12 +740,11 @@ func forgejoGone(err error) bool {
 // failure does to it, so that one card does not stop the pass for every
 // class. A card whose issue is gone for good is given up, and the arm in
 // hand files its replacement at once. A filing Forgejo refuses for good
-// waits for the class's next arm. A 4xx keeps the card (keep), and so
-// does a Forgejo that does not answer (forgejoFailed): each pass applies
-// the freeze again while it stands (stand), and no other class waits on
-// that repository's Forgejo. A store's failure is an armStopped: nothing
-// of the arm is written, and the pass decides whether the freeze still
-// stands to make it again (Check).
+// waits for the class's next arm. Any other failure keeps the card and
+// stops nothing: a 4xx (keep), a Forgejo that does not answer, a store's
+// failed write or a row that names no repository. The arm is made again
+// while its freeze stands (stand) and when its class resumes (Check).
+// Only the store's failure to give a card up is returned.
 func (w *FreezeCard) arm(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
 	err := w.frozen(ctx, st, ev)
 	switch {
@@ -734,27 +767,9 @@ func (w *FreezeCard) arm(ctx context.Context, st *freezeClass, ev FreezeEvent) e
 		w.keep(st, err)
 		return nil
 	}
-	var forgejo *forgejoFailed
-	if errors.As(err, &forgejo) {
-		log.Printf("freeze card: %s's %s card%s: %v: each pass makes the arm again while the freeze stands", st.repo, st.class, issueRef(st.issue), maskedErr(err))
-		return nil
-	}
-	return &armStopped{fmt.Errorf("%s's %s card%s: %w", st.repo, st.class, issueRef(st.issue), err)}
+	log.Printf("freeze card: %s's %s card%s: %v: the arm is made again while the freeze stands", st.repo, st.class, issueRef(st.issue), maskedErr(err))
+	return nil
 }
-
-// armStopped is an arm that the store's failure stopped before anything
-// of it was written.
-type armStopped struct{ err error }
-
-func (e *armStopped) Error() string { return e.err.Error() }
-func (e *armStopped) Unwrap() error { return e.err }
-
-// forgejoFailed is a Forgejo call of an arm that failed, whatever the
-// answer: a refusal, which the arm reads through it, or no answer.
-type forgejoFailed struct{ err error }
-
-func (e *forgejoFailed) Error() string { return e.err.Error() }
-func (e *forgejoFailed) Unwrap() error { return e.err }
 
 // issueRef is " #n" for an issue, "" for none.
 func issueRef(issue int64) string {
@@ -987,7 +1002,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 	}
 	if err := w.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, st.issue,
 		fmt.Sprintf("factoryd: the hold re-armed at %s, to the reset %s. %s.", stamp(ev.At), ev.Reset, cardsWait(count))); err != nil {
-		return &forgejoFailed{fmt.Errorf("comment the re-arm on issue #%d: %w", st.issue, err)}
+		return fmt.Errorf("comment the re-arm on issue #%d: %w", st.issue, err)
 	}
 	if err := w.Store.SetObjective(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body); err != nil {
 		return err
@@ -1287,11 +1302,7 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 				}
 				next := w.class(st.repo, st.class)
 				next.frozenAt = st.frozenAt
-				err = w.arm(ctx, next, FreezeEvent{Repository: st.repo, At: now, Kind: "class_frozen", Class: st.class, Reset: st.reset, Words: words})
-				var kept *armStopped
-				if errors.As(err, &kept) {
-					log.Printf("freeze card: %v: each pass makes the arm again while the freeze stands", err)
-				} else if err != nil {
+				if err := w.arm(ctx, next, FreezeEvent{Repository: st.repo, At: now, Kind: "class_frozen", Class: st.class, Reset: st.reset, Words: words}); err != nil {
 					return err
 				}
 				continue
@@ -1492,20 +1503,16 @@ func (w *FreezeCard) file(ctx context.Context, st *freezeClass, ev FreezeEvent, 
 	title := freezeCardTitle(st.class)
 	reuse, err := strandedIssue(ctx, w.Store, w.Forgejo, repo, title)
 	if err != nil {
-		return Task{}, &forgejoFailed{err}
+		return Task{}, err
 	}
 	t := Task{ID: NewTaskID(), Kind: "human", Status: "waiting-human", RiskClass: "standard", Repository: ev.Repository,
 		Source: SourceFreezeCard, Author: w.Forgejo.BotUser, Objective: title + "\n\n" + body}
-	var stored error
 	got, _, err := fileOnIssue(ctx, w.Forgejo, repo, title, body, []string{"human"}, t, reuse, func(t Task) (Task, error) {
-		if stored = w.Store.CreateTask(ctx, t); stored != nil {
-			return Task{}, stored
+		if err := w.Store.CreateTask(ctx, t); err != nil {
+			return Task{}, err
 		}
 		return t, nil
 	})
-	if err != nil && stored == nil {
-		return Task{}, &forgejoFailed{err}
-	}
 	if err != nil {
 		return Task{}, err
 	}
