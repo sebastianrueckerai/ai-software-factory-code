@@ -15,9 +15,9 @@ import (
 // of ended cards, of replaced plan revisions and of merges the factory
 // denied; Resolved the merge cases a decision ended; Moved the cases of
 // cards that moved on with no answer; Opened the pending merge requests
-// that had no case.
+// that had no case; Denied the pending merge requests of ended cards.
 type CaseHealReport struct {
-	Withdrawn, Resolved, Moved, Opened int
+	Withdrawn, Resolved, Moved, Opened, Denied int
 }
 
 // ReconcileCases ends repository's live cases the events writer cannot
@@ -25,7 +25,20 @@ type CaseHealReport struct {
 // it once a minute.
 func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error) {
 	var r CaseHealReport
-	var err error
+	// a card's end denies its pending merge request: one the end missed
+	// would wait on a card no page asks for
+	denied, err := s.db.ExecContext(ctx, `UPDATE approval_requests a SET status = 'denied', decided_by = $3, decided_at = now(),
+		decision_note = 'the card ended ' || t.status FROM tasks t
+		WHERE t.id = a.task_id AND t.repository = $1 AND a.kind = $2 AND a.status = 'pending' AND t.status IN ('done', 'failed', 'closed')`,
+		repository, ApprovalMerge, FactoryDecider)
+	if err != nil {
+		return r, err
+	}
+	n, err := denied.RowsAffected()
+	if err != nil {
+		return r, err
+	}
+	r.Denied = int(n)
 	// first, so a decided merge on an ended card reads as decided
 	if r.Resolved, r.Withdrawn, err = s.endDecidedMergeCases(ctx, repository); err != nil {
 		return r, err
@@ -150,8 +163,8 @@ func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) 
 // the cases table among them, and counts the cases it opened. A request
 // younger than a minute is left to its approval_requested row, written
 // after it; a request whose case a confirmation resolved stays pending until
-// the criteria pass and is left as it is; an ended card's is left alone, as
-// the ended rule would withdraw its case.
+// the criteria pass and is left as it is; an ended card's is denied before
+// this runs.
 func (s *PGStore) openMissedMerges(ctx context.Context, repository string) (int, error) {
 	ids, err := queryAll(ctx, s.db, `SELECT a.id FROM approval_requests a JOIN tasks t ON t.id = a.task_id
 		WHERE t.repository = $1 AND a.kind IN ($2, $3, $4) AND a.status = 'pending' AND a.created_at < now() - interval '1 minute'
@@ -281,8 +294,8 @@ func reconcileCases(ctx context.Context, store Store, projects interface {
 			continue
 		}
 		if r != (CaseHealReport{}) {
-			log.Printf("heal pass: cases of %s: %d withdrawn, %d resolved, %d moved on, %d opened",
-				p.Repository, r.Withdrawn, r.Resolved, r.Moved, r.Opened)
+			log.Printf("heal pass: cases of %s: %d withdrawn, %d resolved, %d moved on, %d opened, %d merge requests of ended cards denied",
+				p.Repository, r.Withdrawn, r.Resolved, r.Moved, r.Opened, r.Denied)
 		}
 	}
 }

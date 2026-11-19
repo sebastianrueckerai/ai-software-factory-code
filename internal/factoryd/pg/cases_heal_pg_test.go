@@ -185,17 +185,48 @@ func TestReconcileCasesOpensTheCaseOfAPendingMergeWithNone(t *testing.T) {
 	reconcile(t, s, CaseHealReport{})
 }
 
-// A pending request on an ended card opens nothing: the ended rule would
-// withdraw its case the next minute.
-func TestReconcileCasesOpensNoMergeCaseOnAnEndedCard(t *testing.T) {
-	s := cardCaseStore(t, "cases_heal")
-	setCaseTaskStatus(t, s, "done")
-	agedMerge(t, s, "2 minutes")
-
-	reconcile(t, s, CaseHealReport{})
-	if cs, err := s.CasesOf(context.Background(), caseTask); err != nil || len(cs) != 0 {
-		t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+// A pending merge request on an ended card, which the card's end did not
+// deny, is denied by the heal within one pass, as the end denies it: no
+// case opens for it, and the live case of one is withdrawn in the same
+// pass. No page shows a request of an ended card.
+func TestReconcileCasesDeniesAPendingMergeOfAnEndedCard(t *testing.T) {
+	ctx := context.Background()
+	decided := func(t *testing.T, s *PGStore, id int64) {
+		t.Helper()
+		var status, by, note string
+		if err := s.DB().QueryRowContext(ctx, `SELECT status, decided_by, decision_note FROM approval_requests WHERE id = $1`, id).Scan(&status, &by, &note); err != nil {
+			t.Fatal(err)
+		}
+		if status != "denied" || by != FactoryDecider || note != "the card ended done" {
+			t.Fatalf("request %d = %s by %q, note %q; want denied by the factory, the card ended done", id, status, by, note)
+		}
 	}
+	t.Run("with no case", func(t *testing.T) {
+		s := cardCaseStore(t, "cases_heal")
+		setCaseTaskStatus(t, s, "done")
+		id := agedMerge(t, s, "2 minutes")
+
+		reconcile(t, s, CaseHealReport{Denied: 1})
+		decided(t, s, id)
+		if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 0 {
+			t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+		}
+		reconcile(t, s, CaseHealReport{})
+	})
+	t.Run("with its live case", func(t *testing.T) {
+		s := cardCaseStore(t, "cases_heal")
+		id := openMerge(t, s, "abc1479")
+		c := onlyOpenCase(t, s)
+		setCaseTaskStatus(t, s, "done")
+
+		reconcile(t, s, CaseHealReport{Denied: 1, Withdrawn: 1})
+		decided(t, s, id)
+		want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "the card ended done"}
+		if got := caseByID(t, s, c.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) {
+			t.Fatalf("case = %+v, resolution %+v; want withdrawn %+v", got, got.Resolution, want)
+		}
+		reconcile(t, s, CaseHealReport{})
+	})
 }
 
 func TestReconcileCasesWithdrawsThePlanQuestionsANewerRevisionReplaced(t *testing.T) {
