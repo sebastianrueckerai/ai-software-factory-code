@@ -1939,3 +1939,61 @@ func TestCISpawnerKeepsThePullCountsOfARepositoryItCouldNotList(t *testing.T) {
 		t.Fatalf("pull counts = %v, want none for a job no longer listed", r.spawner.pullFails)
 	}
 }
+
+// A smoke job's runner is under the same bound as any other: three pods
+// that cannot pull, then one more pod every ciPullRetry, never a pod at
+// once after the third.
+func TestCISpawnerRetriesSlowlyASmokeRunnerWhoseImageCannotBePulled(t *testing.T) {
+	kube := newFakeKube()
+	hub := &smokeHub{jobs: []CIJob{smokeJob(21, "waiting", "h-21", 0)}}
+	spawner, _ := hub.spawner(t, kube)
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	spawner.now = func() time.Time { return now }
+	ctx := context.Background()
+	const ns = "factory-agents-ci-21"
+	spawned := func() int64 {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		return hub.next - 100
+	}
+	failPull := func() {
+		t.Helper()
+		kube.mu.Lock()
+		p := kube.pods[ns+"/"+ciPodName]
+		if p == nil {
+			kube.mu.Unlock()
+			t.Fatalf("the smoke job has no pod at %s", now.Format("15:04"))
+		}
+		p.phase, p.wait = "Pending", PodWait{Reason: "ImagePullBackOff", Message: pullDenied}
+		kube.mu.Unlock()
+		spawner.poll(ctx)
+		now = now.Add(4 * time.Minute)
+		spawner.poll(ctx)
+	}
+	spawner.poll(ctx)
+	failPull() // 10:04
+	failPull() // 10:08
+	if spawned() != 3 {
+		t.Fatalf("%d pods, want the smoke job spawned three times", spawned())
+	}
+	logs := captureLog(t)
+	failPull() // 10:12: the third failure
+	line := "ci spawner: job 21 (demo-smoke) stays queued: its runner pod could not pull its image (ImagePullBackOff: " + pullDenied + "): the next try comes at 2026-11-19T10:27:00Z"
+	if _, ok := kube.namespaces[ns]; ok || spawned() != 3 || !strings.Contains(logs.String(), line) {
+		t.Fatalf("after the third failure: namespace %v, %d pods, log %q; want no fourth pod and %q", kube.namespaces[ns], spawned(), logs.String(), line)
+	}
+	now = now.Add(14 * time.Minute) // 10:26
+	spawner.poll(ctx)
+	if spawned() != 3 {
+		t.Fatalf("%d pods at 10:26, want no pod before the slow retry", spawned())
+	}
+	now = now.Add(2 * time.Minute) // 10:28
+	spawner.poll(ctx)
+	if spawned() != 4 {
+		t.Fatalf("%d pods at 10:28, want one more", spawned())
+	}
+	failPull() // 10:32: the fourth failure waits again
+	if _, ok := kube.namespaces[ns]; ok || spawned() != 4 {
+		t.Fatalf("after the fourth failure: namespace %v, %d pods; want no fifth pod", kube.namespaces[ns], spawned())
+	}
+}

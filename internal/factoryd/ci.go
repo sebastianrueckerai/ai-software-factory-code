@@ -240,10 +240,9 @@ func (s *CISpawner) poll(ctx context.Context) {
 	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos)
 	fit := &fitReader{read: func() (*storageFit, error) { return s.storageFit(ctx, repos) }}
 
-	s.serveSmoke(ctx, repos, &slots, fit)
-	unread := map[string]bool{}
+	unread, waiting := map[string]bool{}, map[int64]bool{}
+	s.serveSmoke(ctx, repos, &slots, fit, waiting, unread)
 	s.jobs(ctx, repos, s.cfg.TrustedLabel, unread)
-	waiting := map[int64]bool{}
 	// a job Forgejo no longer lists as waiting is forgotten, unless its
 	// repository's list, or with no repository known any list, was not read
 	defer func() {
@@ -258,13 +257,8 @@ func (s *CISpawner) poll(ctx context.Context) {
 				continue
 			}
 			waiting[job.ID] = true
-			if f, ok := s.pullFails[job.ID]; ok {
-				f.repo = rj.repo.Repo.String()
-				s.pullFails[job.ID] = f
-				if next := f.at.Add(ciPullRetry); f.tries >= ciPullTries && s.now().Before(next) {
-					log.Printf("ci spawner: job %d (%s) stays queued: its runner pod could not pull its image (%s): the next try comes at %s", job.ID, kind.label, f.why, stamp(next))
-					continue
-				}
+			if s.pullHeld(job.ID, kind.label, rj.repo) {
+				continue
 			}
 			served, err := s.served(ctx, job.ID)
 			if err != nil {
@@ -510,14 +504,16 @@ func (s *CISpawner) fitsStorage(reader *fitReader, jobID int64, repo CIRepo, kin
 // that reaches its staging (the template's ci.yml).
 func smokeLabel(project string) string { return project + "-smoke" }
 
-// serveSmoke serves each staging project's smokeLabel jobs (roadmap 162).
+// serveSmoke serves each staging project's smokeLabel jobs (roadmap 162),
+// and marks its waiting jobs in waiting and a repository whose list failed
+// in unread, for the pull counts.
 // Forgejo 15 lists a waiting job without its run, so a smoke runner takes
 // only the job attempt it was spawned for (--handle, also the namespace's
 // CIHandleLabel) and starts without staging; once it took the job,
 // admitSmoke reads the job's run. A smoke namespace whose job Forgejo no
 // longer lists waiting or running, or lists waiting as another attempt, is
 // torn down: a bound runner never serves another job.
-func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, fit *fitReader) {
+func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, fit *fitReader, waiting map[int64]bool, unread map[string]bool) {
 	listed := map[int64]bool{}
 	complete := true
 	for _, r := range repos {
@@ -529,11 +525,13 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, 
 		if err != nil {
 			log.Printf("ci spawner: jobs of %s (%s): %v", r.Repo, label, err)
 			complete = false
+			unread[r.Repo.String()] = true
 			continue
 		}
 		s.cfg.Queue.Observe(ctx, label, jobs)
 		for _, job := range jobs {
 			listed[job.ID] = true
+			waiting[job.ID] = waiting[job.ID] || job.Status == "waiting"
 			if h, ok := s.smokeDone[job.ID]; ok && h == job.Handle {
 				continue
 			}
@@ -551,6 +549,7 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, 
 					// cancelled and re-run: the runner waits on a dead attempt
 					log.Printf("ci spawner: %s: bound to attempt %s, its job now waits as %s: torn down", nss[0].Name, nss[0].Labels[CIHandleLabel], job.Handle)
 					s.teardown(ctx, nss[0].Name, repos)
+				case s.pullHeld(job.ID, label, r):
 				case *slots <= 0:
 					log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, label, s.cfg.MaxConcurrent)
 				default:
@@ -914,6 +913,25 @@ type pullFail struct {
 	why   string
 	at    time.Time
 	repo  string
+}
+
+// pullHeld says waiting job id of repo, listed under label, gets no pod
+// now: ciPullTries of its runner pods could not pull their image, and the
+// last less than ciPullRetry ago. It logs that, with when the next try
+// comes, and notes the job's repository.
+func (s *CISpawner) pullHeld(id int64, label string, repo CIRepo) bool {
+	f, ok := s.pullFails[id]
+	if !ok {
+		return false
+	}
+	f.repo = repo.Repo.String()
+	s.pullFails[id] = f
+	next := f.at.Add(ciPullRetry)
+	if f.tries < ciPullTries || !s.now().Before(next) {
+		return false
+	}
+	log.Printf("ci spawner: job %d (%s) stays queued: its runner pod could not pull its image (%s): the next try comes at %s", id, label, f.why, stamp(next))
+	return true
 }
 
 // pullFailed says the pod of namespace ns, which waits in wait, has failed
