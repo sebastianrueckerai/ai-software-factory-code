@@ -224,23 +224,29 @@ type classHold struct {
 
 // holdFor returns the active hold on class, ending it when it has lapsed:
 // the lapse writes a class_resumed event (reset, words) and the next
-// arrival probes the provider once. nil when the class holds no hold.
+// arrival probes the provider once. nil when the class holds no hold. A
+// lapse whose row the store refuses leaves the hold standing, and the
+// next call ends it.
 func (s *Server) holdFor(ctx context.Context, task Task, class string) *classHold {
 	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
 	h := s.holds[class]
-	if h != nil && !s.now().Before(h.until) {
-		delete(s.holds, class)
-		s.writeEvent(ctx, task, "class_resumed", class, h.reset, h.words)
-		h = nil
+	if h == nil || s.now().Before(h.until) {
+		return h
 	}
-	s.holdMu.Unlock()
-	return h
+	if err := s.changeHold(ctx, task, class, nil, h); err != nil {
+		log.Printf("the %s class's hold lapsed and stays until its row stands (task %s): %v", class, task.ID, err)
+		return h
+	}
+	return nil
 }
 
 // armClassHold freezes class until the earlier of reset and now plus
 // policy's provider_recheck, writing a class_frozen event on a fresh arm
 // or a new reset; an unchanged re-arm stays quiet, factoryd's card reads
-// the first event.
+// the first event. An arm whose row the store refuses arms nothing: the
+// provider's refusal is answered as it is, and the next call meets the
+// provider again and arms then.
 func (s *Server) armClassHold(ctx context.Context, pv *policy.Version, task Task, class, reset, words string) {
 	recheck := pv.Tree.WaitsOf(task.Repository).ProviderRecheck
 	if recheck <= 0 {
@@ -255,48 +261,56 @@ func (s *Server) armClassHold(ctx context.Context, pv *policy.Version, task Task
 		until = probe
 	}
 	s.holdMu.Lock()
-	old := s.holds[class]
-	fresh := old == nil || old.reset != reset
-	s.holds[class] = &classHold{class: class, until: until, reset: reset, words: words}
-	s.holdMu.Unlock()
-	if fresh {
-		s.writeEvent(ctx, task, "class_frozen", class, reset, words)
+	defer s.holdMu.Unlock()
+	to := &classHold{class: class, until: until, reset: reset, words: words}
+	if old := s.holds[class]; old != nil && old.reset == reset {
+		s.holds[class] = to
+	} else if err := s.changeHold(ctx, task, class, to, nil); err != nil {
+		log.Printf("the %s class's hold is not armed without its row (task %s): %v", class, task.ID, err)
 	}
 }
 
 // ClearClassHold ends class's hold before its lapse, as the retry press
 // does: the next call probes the provider. It writes the press's
-// class_resumed event on task first (reset, words as held), also when no
-// hold is armed, as after a restart: the row's place among the class's
+// class_resumed event on task (reset, words as held), also when no hold
+// is armed, as after a restart: the row's place among the class's
 // class_frozen rows is what tells factoryd which arms the press answered.
-// A row the store refuses is the error, and the hold stays. The row is
-// written under the lock, as the lapse's is (holdFor), so the rows of a
-// class's ends keep the order of the hold's changes; eventWriteTimeout
-// bounds how long a stalled store holds the lock.
+// A row the store refuses is the error, and the hold stays.
 func (s *Server) ClearClassHold(ctx context.Context, task Task, class string) error {
 	s.holdMu.Lock()
 	defer s.holdMu.Unlock()
-	h := s.holds[class]
-	if h == nil {
-		h = &classHold{}
+	was := s.holds[class]
+	if was == nil {
+		was = &classHold{}
 	}
-	if err := s.insertEvent(ctx, task, "class_resumed", class, h.reset, h.words); err != nil {
+	return s.changeHold(ctx, task, class, nil, was)
+}
+
+// changeHold is the one way class's hold changes, called with holdMu
+// held: to to, armed with its class_frozen row, or to none, ended with
+// the class_resumed row of was, the hold that ends. The row is written
+// first and the hold changes only when the row stands, both under the
+// lock: the rows are what factoryd reads, so they keep the order of the
+// hold's changes and no hold stands without its row. eventWriteTimeout
+// bounds how long a stalled store holds the lock.
+func (s *Server) changeHold(ctx context.Context, task Task, class string, to, was *classHold) error {
+	kind, row := "class_frozen", to
+	if to == nil {
+		kind, row = "class_resumed", was
+	}
+	if err := s.insertEvent(ctx, task, kind, class, row.reset, row.words); err != nil {
 		return err
 	}
-	delete(s.holds, class)
+	if to == nil {
+		delete(s.holds, class)
+	} else {
+		s.holds[class] = to
+	}
 	return nil
 }
 
-// writeEvent writes one events-table row factoryd reads; best-effort, the
-// hold is in-memory truth.
-func (s *Server) writeEvent(ctx context.Context, task Task, kind, class, reset, words string) {
-	if err := s.insertEvent(ctx, task, kind, class, reset, words); err != nil {
-		log.Printf("insert %s event (task %s, class %s): %v", kind, task.ID, class, err)
-	}
-}
-
-// eventWriteTimeout bounds one events-table write: the lapse's and the
-// clear's are made under holdMu, which every model call takes.
+// eventWriteTimeout bounds one events-table write, made under holdMu,
+// which every model call takes.
 const eventWriteTimeout = 3 * time.Second
 
 func (s *Server) insertEvent(ctx context.Context, task Task, kind, class, reset, words string) error {
