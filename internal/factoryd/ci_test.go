@@ -1885,14 +1885,17 @@ func TestCISpawnerRetriesSlowlyARunnerWhoseImageCannotBePulled(t *testing.T) {
 	r.poll(0)
 	queued := func(when, next string, pods int) {
 		t.Helper()
-		logs := captureLog(t)
-		r.poll(4 * time.Minute)
-		if _, ok := r.kube.namespaces[r.ns]; ok || len(r.hub.registered) != pods {
-			t.Fatalf("%s: namespace %v, registered %v: want the pod torn down and no pod after it", when, r.kube.namespaces[r.ns], r.hub.registered)
-		}
-		line := "ci spawner: job 63 (pr-untrusted) stays queued: its runner pod could not pull its image (ErrImagePull: " + pullDenied + "): the next try comes at " + next
-		if strings.Count(logs.String(), line) != 1 || strings.Contains(logs.String(), "storage") {
-			t.Fatalf("%s: the log = %q, want %q once and no word of storage", when, logs.String(), line)
+		// the poll that tears the pod down, and the one after it
+		for poll, after := range []time.Duration{4 * time.Minute, 0} {
+			logs := captureLog(t)
+			r.poll(after)
+			if _, ok := r.kube.namespaces[r.ns]; ok || len(r.hub.registered) != pods {
+				t.Fatalf("%s, poll %d: namespace %v, registered %v: want the pod torn down and no pod after it", when, poll+1, r.kube.namespaces[r.ns], r.hub.registered)
+			}
+			line := "ci spawner: job 63 (pr-untrusted) stays queued: its runner pod could not pull its image (ErrImagePull: " + pullDenied + "): the next try comes at " + next
+			if strings.Count(logs.String(), line) != 1 || strings.Contains(logs.String(), "storage") {
+				t.Fatalf("%s, poll %d: the log = %q, want %q once and no word of storage", when, poll+1, logs.String(), line)
+			}
 		}
 	}
 	queued("the third failure, at 10:12", "2026-11-19T10:27:00Z", 3)
@@ -1981,6 +1984,10 @@ func TestCISpawnerRetriesSlowlyASmokeRunnerWhoseImageCannotBePulled(t *testing.T
 	line := "ci spawner: job 21 (demo-smoke) stays queued: its runner pod could not pull its image (ImagePullBackOff: " + pullDenied + "): the next try comes at 2026-11-19T10:27:00Z"
 	if _, ok := kube.namespaces[ns]; ok || spawned() != 3 || !strings.Contains(logs.String(), line) {
 		t.Fatalf("after the third failure: namespace %v, %d pods, log %q; want no fourth pod and %q", kube.namespaces[ns], spawned(), logs.String(), line)
+	}
+	spawner.poll(ctx)
+	if spawned() != 3 || strings.Count(logs.String(), line) != 2 {
+		t.Fatalf("at the next poll: %d pods, log %q; want no pod and the line once per poll", spawned(), logs.String())
 	}
 	now = now.Add(14 * time.Minute) // 10:26
 	spawner.poll(ctx)
