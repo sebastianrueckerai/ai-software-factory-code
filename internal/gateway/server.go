@@ -264,22 +264,35 @@ func (s *Server) armClassHold(ctx context.Context, pv *policy.Version, task Task
 	}
 }
 
-// ClearClassHold ends class's hold before its lapse, as the retry switch
-// does from the chat: the next call probes the provider, and a
-// class_resumed event is written (reset, words as held).
-func (s *Server) ClearClassHold(ctx context.Context, task Task, class string) {
+// ClearClassHold ends class's hold before its lapse, as the retry press
+// does: the next call probes the provider. It writes the press's
+// class_resumed event on task first (reset, words as held), also when no
+// hold is armed, as after a restart: the row's place among the class's
+// class_frozen rows is what tells factoryd which arms the press answered.
+// A row the store refuses is the error, and the hold stays.
+func (s *Server) ClearClassHold(ctx context.Context, task Task, class string) error {
 	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
 	h := s.holds[class]
-	delete(s.holds, class)
-	s.holdMu.Unlock()
-	if h != nil {
-		s.writeEvent(ctx, task, "class_resumed", class, h.reset, h.words)
+	if h == nil {
+		h = &classHold{}
 	}
+	if err := s.insertEvent(ctx, task, "class_resumed", class, h.reset, h.words); err != nil {
+		return err
+	}
+	delete(s.holds, class)
+	return nil
 }
 
 // writeEvent writes one events-table row factoryd reads; best-effort, the
 // hold is in-memory truth.
 func (s *Server) writeEvent(ctx context.Context, task Task, kind, class, reset, words string) {
+	if err := s.insertEvent(ctx, task, kind, class, reset, words); err != nil {
+		log.Printf("insert %s event (task %s, class %s): %v", kind, task.ID, class, err)
+	}
+}
+
+func (s *Server) insertEvent(ctx context.Context, task Task, kind, class, reset, words string) error {
 	ctx = context.WithoutCancel(ctx)
 	detail := map[string]any{"class": class}
 	if reset != "" {
@@ -288,9 +301,7 @@ func (s *Server) writeEvent(ctx context.Context, task Task, kind, class, reset, 
 	if words != "" {
 		detail["words"] = words
 	}
-	if err := s.opts.Store.InsertEvent(ctx, EventRow{Repository: task.Repository, TaskID: task.ID, Kind: kind, Detail: detail}); err != nil {
-		log.Printf("insert %s event (task %s, class %s): %v", kind, task.ID, class, err)
-	}
+	return s.opts.Store.InsertEvent(ctx, EventRow{Repository: task.Repository, TaskID: task.ID, Kind: kind, Detail: detail})
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
@@ -559,8 +570,9 @@ func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
 // handleHoldClear is the retry switch's door: factoryd, by the
 // gateway-factoryd token on the pressing card's task, ends the class's
 // provider-limit hold at once (ClearClassHold) and is answered the
-// cleared class; a class with no armed hold is a success. No sandbox opens
-// it, no call is made and nothing is booked.
+// cleared class; a class with no armed hold is a success too, and each
+// clear writes its class_resumed row or fails. No sandbox opens it, no
+// call is made and nothing is booked.
 func (s *Server) handleHoldClear(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	taskID := r.Header.Get(HeaderFactoryTask)
@@ -590,7 +602,10 @@ func (s *Server) handleHoldClear(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, nil, taskID, auditFactoryd, "refused_task_unknown", "no task row for "+taskID, "", http.StatusNotFound, "invalid_request_error")
 		return
 	}
-	s.ClearClassHold(ctx, task, req.Class)
+	if err := s.ClearClassHold(ctx, task, req.Class); err != nil {
+		s.refuse(w, nil, taskID, auditFactoryd, "error_store", err.Error(), "", http.StatusInternalServerError, "server_error")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 		Class string `json:"class"`

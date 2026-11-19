@@ -475,7 +475,7 @@ func TestFreezeCardCloseOnRetry(t *testing.T) {
 	// a first success after the press: the card stays closed on
 	// class_resumed, no second card
 	now = base.Add(time.Minute)
-	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), At: now, Kind: "class_resumed",
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), TaskID: card.ID, At: now, Kind: "class_resumed",
 		Class: "big", Reset: now.Format(time.RFC3339)})
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
@@ -567,7 +567,7 @@ func TestFreezeCardCloseSurvivesRestart(t *testing.T) {
 	w2 := freezeWatcher(store, forgejo, &now)
 	// a first success after the restart: the card keeps closed
 	now = base.Add(time.Minute)
-	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), At: now, Kind: "class_resumed",
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), TaskID: card.ID, At: now, Kind: "class_resumed",
 		Class: "big", Reset: now.Format(time.RFC3339)})
 	if err := w2.Check(ctx); err != nil {
 		t.Fatal(err)
@@ -1082,7 +1082,8 @@ func TestFreezeCardSameResetArm(t *testing.T) {
 			if err := w.CloseOnRetry(ctx, "sf/acme", "big", "sebastian"); err != nil {
 				return err
 			}
-			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: *now, Kind: "class_resumed", Class: "big", Reset: reset})
+			// the gateway writes the press's row on the pressed card
+			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", TaskID: cardOfClass(store, Repo{Owner: "sf", Name: "acme"}, "big"), At: *now, Kind: "class_resumed", Class: "big", Reset: reset})
 			return w.Check(ctx)
 		},
 		"inside a resume's close": func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error {
@@ -2637,12 +2638,7 @@ func (h *freezeTable) rowIn(repo, kind string, days int) { h.rowOn("", repo, kin
 // rowOn writes the row on task's account, as the gateway names the task
 // whose call or press made it.
 func (h *freezeTable) rowOn(task, repo, kind string, days int) {
-	at := h.now
-	if kind == "class_frozen" {
-		// an arm's own instant, after a press's record of the same minute
-		at = at.Add(h.store.instant())
-	}
-	h.store.rows = append(h.store.rows, FreezeEvent{ID: int64(len(h.store.rows) + 1), Repository: repo, TaskID: task, At: at, Kind: kind, Class: "big",
+	h.store.rows = append(h.store.rows, FreezeEvent{ID: int64(len(h.store.rows) + 1), Repository: repo, TaskID: task, At: h.now, Kind: kind, Class: "big",
 		Reset: freezeTableBase.Add(time.Duration(days) * 24 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
 }
 
@@ -2686,15 +2682,17 @@ func (h *freezeTable) pass() {
 	h.afterFault()
 	if h.pressOwed {
 		h.pressOwed = false
-		h.closeOnRetry()
+		if h.clear() {
+			h.closeOnRetry()
+		}
 	}
 }
 
 // press is the retry press as RetryFreeze makes it: only on a card that
 // holds, the gateway clears the hold and writes the class_resumed row
 // (clear), then the card closes (closePressed). A press that fails is made
-// again, as a human presses again: the gateway, its hold cleared, writes
-// no second row.
+// again, as a human presses again, when the card still takes one: the
+// gateway writes that press's row too.
 func (h *freezeTable) press() {
 	h.t.Helper()
 	if h.clear() {
@@ -2732,7 +2730,9 @@ func (h *freezeTable) closePressed() {
 		h.pressOwed = true
 		return
 	}
-	h.closeOnRetry()
+	if h.clear() {
+		h.closeOnRetry()
+	}
 }
 
 // holds reports whether a freeze card stands that takes the press.
@@ -3430,14 +3430,16 @@ func (p *freezeProbe) close(at time.Duration, said string, webhook bool) {
 	}
 }
 
-// Hand-derived from a press whose face write failed: the press's close of
-// #1 is recorded at 12:10 and its webhook ends the card, which keeps the
-// holding face. The hold never armed again. A watcher built anew passes at
-// 12:11 and 12:12: the record's time, after the arm of 12:00, tells that
-// the press answered the standing freeze, so #1 stays done with no re-arm
-// comment.
-func TestFreezeCardPressAnsweredByItsRecord(t *testing.T) {
+// Hand-derived from a press whose close the webhook ended: at 12:10 the
+// gateway clears the hold and writes the press's class_resumed on #1's
+// card, the press's close of #1 is recorded and its webhook ends the card,
+// which keeps the holding face. The hold never armed again. A watcher
+// built anew passes at 12:11 and 12:12: the press's row is after the arm
+// of 12:00, so no freeze stands and the press's row makes no arm again:
+// #1 stays done with no re-arm comment.
+func TestFreezeCardPressAnsweredByItsRow(t *testing.T) {
 	p := newFreezeProbe(t)
+	p.store.rows = append(p.store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", TaskID: freezeCardOn(t, p.store, 1).ID, At: p.base.Add(10 * time.Minute), Kind: "class_resumed", Class: "big"})
 	p.close(10*time.Minute, "factoryd: sebastian's retry press cleared the big class's hold: the freeze card closes at once.", true)
 	said := len(p.fj.comments)
 	p.restart()
@@ -3765,9 +3767,16 @@ func TestFreezeCardAMalformedRepositoryStopsNoOtherClass(t *testing.T) {
 // own class_resumed, so the press did not answer it and the freeze stands:
 // the next pass opens #1 again with the re-arm's comment. Without a fault
 // #1 waits with the press's comment and the re-arm's, its end counted
-// once, and no card wakes, as the class is frozen. A press that was lost
-// leaves the card open under the standing freeze, with no comment.
+// once, and no card wakes, as the class is frozen. A press whose write
+// failed changed nothing, and the human presses again, at once or after
+// the next pass: that press clears the hold the arm armed, and its
+// class_resumed is after the arm, so it answered the arm too. #1 then
+// stays closed with the press's one comment, its end counted once, and the
+// resume that held wakes the frozen card.
 func TestFreezeCardFaultsOfAnArmBetweenAPressesClearAndItsClose(t *testing.T) {
+	second := freezeFaultException{"the press's write failed and the press made again cleared the hold the arm armed: no freeze stands", "#1 done pressed R1 | open  | 1 comments, 1 ends, 1 wakes"}
+	secondPress := map[string]freezeFaultException{"EndFreezeCard": second, "EndFreezeCard/restart": second,
+		"EndFreezeCard/made again later": second, "EndFreezeCard/restart/made again later": second}
 	freezeScenario(t, frozenCard, func(h *freezeTable) {
 		pressed := h.clear()
 		h.row("class_frozen", 5)
@@ -3776,7 +3785,7 @@ func TestFreezeCardFaultsOfAnArmBetweenAPressesClearAndItsClose(t *testing.T) {
 			h.closePressed()
 		}
 		h.pass()
-	}, "#1 waiting frozen R1 | open #1 | 2 comments, 1 ends, 0 wakes", lostPress("#1 waiting frozen R1 | open #1 | 0 comments, 0 ends, 0 wakes"))
+	}, "#1 waiting frozen R1 | open #1 | 2 comments, 1 ends, 0 wakes", secondPress)
 }
 
 // Hand-derived from a read of the held resumes that fails once: big's #1
