@@ -1886,7 +1886,8 @@ func TestARefusalListsTheAnswersOfTheStopItNames(t *testing.T) {
 func TestACapWaitRefusalNamesTheWaitAndTheLift(t *testing.T) {
 	line, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)), "\n")
 	f := CaseFacts{Kind: CaseSessionCap, FloorEUR: 1, LeftEUR: 0.2, SessionCap: 3, Attempts: 1, AgentTimeS: 100, AgentTimeCapS: 1200, SessionLeastS: 300, CapWait: line}
-	want := "a cap binds before a session can start, so wait for it to turn or lift it: " + line
+	want := "the day cap is reached: the card resumes on its own once the day's free headroom funds a session, " +
+		"at the latest when the UTC day turns at 2026-11-12T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
 	if got := sessionRoom(f); got != want || !strings.Contains(line, "turns at 2026-11-12T00:00:00Z") || !strings.Contains(line, "Raise the day cap in policy.yaml") {
 		t.Errorf("the refusal = %q, want %q, whose line names the turn and the lift", got, want)
 	}

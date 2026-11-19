@@ -978,7 +978,8 @@ func sessionRoom(f CaseFacts) string {
 	case f.Running:
 		return sessionRuns
 	case !f.Planner && capWaitDecision(f.CapWait) != "":
-		return "a cap binds before a session can start, so wait for it to turn or lift it: " + f.CapWait
+		// the cap's own line names the cap, its turn and its lift
+		return strings.ToLower(f.CapWait[:1]) + f.CapWait[1:]
 	case f.Attempts >= f.SessionCap:
 		return fmt.Sprintf("the session cap of %d is reached", f.SessionCap) + stopAnswers(CaseSessionCap, f)
 	case slices.Contains(f.Partial, "config"):
