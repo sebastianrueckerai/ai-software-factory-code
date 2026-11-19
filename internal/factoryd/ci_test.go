@@ -40,6 +40,7 @@ type ciHub struct {
 	deleted    []int64
 	nextID     int64
 	wantToken  string
+	failJobs   bool // the job list answers 500
 }
 
 func (h *ciHub) srv(t *testing.T) *httptest.Server {
@@ -52,6 +53,10 @@ func (h *ciHub) srv(t *testing.T) *httptest.Server {
 		}
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/actions/runners/jobs"):
+			if h.failJobs {
+				http.Error(w, "the job list is down", http.StatusInternalServerError)
+				return
+			}
 			label := r.URL.Query().Get("labels")
 			matched := make([]CIJob, 0, len(h.jobs))
 			for _, j := range h.jobs {
@@ -1740,108 +1745,197 @@ func TestPullRequestJobsKeepGoUnderThePodLimit(t *testing.T) {
 	}
 }
 
-// pullRunner seats a spawner with one waiting job whose runner pod is
-// spawned at now, and answers the pod's namespace and a setter of what its
-// container waits in, since ago before now.
-func pullRunner(t *testing.T, job int64, now time.Time) (*CISpawner, *fakeKube, *ciHub, string, func(reason, message string, ago time.Duration)) {
+// pullRig is a spawner with one waiting job whose runner pod is spawned,
+// on a clock the test moves.
+type pullRig struct {
+	t       *testing.T
+	spawner *CISpawner
+	kube    *fakeKube
+	hub     *ciHub
+	ns      string
+	now     time.Time
+}
+
+func newPullRig(t *testing.T, job int64) *pullRig {
 	t.Helper()
-	kube := newFakeKube()
-	hub := &ciHub{jobs: []CIJob{{ID: job, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
-	spawner := newTestCISpawner(t, kube, hub)
-	spawner.now = func() time.Time { return now }
-	spawner.poll(context.Background())
-	ns := fmt.Sprintf("factory-agents-ci-%d", job)
-	waits := func(reason, message string, ago time.Duration) {
-		kube.mu.Lock()
-		defer kube.mu.Unlock()
-		p := kube.pods[ns+"/"+ciPodName]
-		p.phase, p.wait = "Pending", PodWait{Reason: reason, Message: message, Since: now.Add(-ago)}
+	r := &pullRig{t: t, kube: newFakeKube(), now: time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC), ns: fmt.Sprintf("factory-agents-ci-%d", job)}
+	r.hub = &ciHub{jobs: []CIJob{{ID: job, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	r.spawner = newTestCISpawner(t, r.kube, r.hub)
+	r.spawner.now = func() time.Time { return r.now }
+	r.poll(0)
+	return r
+}
+
+// poll moves the clock by after and polls.
+func (r *pullRig) poll(after time.Duration) {
+	r.now = r.now.Add(after)
+	r.spawner.poll(context.Background())
+}
+
+// waits sets what the job's pod waits in.
+func (r *pullRig) waits(reason string) {
+	r.t.Helper()
+	r.kube.mu.Lock()
+	defer r.kube.mu.Unlock()
+	p := r.kube.pods[r.ns+"/"+ciPodName]
+	if p == nil {
+		r.t.Fatalf("the job has no pod in %s", r.ns)
 	}
-	return spawner, kube, hub, ns, waits
+	p.phase, p.wait = "Pending", PodWait{Reason: reason, Message: pullDenied}
+}
+
+// failPull lets the job's pod fail its pull, seen by one poll, and polls
+// again 4 minutes later.
+func (r *pullRig) failPull() {
+	r.t.Helper()
+	r.waits("ErrImagePull")
+	r.poll(0)
+	r.poll(4 * time.Minute)
 }
 
 const pullDenied = `Back-off pulling image "git.example/sf/ci-runner:1": unauthorized: authentication required`
 
-// A runner pod that has failed to pull its image for longer than
+// A runner pod the spawner has seen fail its pull for longer than
 // ciPullWait gives its room back: its namespace is deleted, and the job
 // spawns again with a copy of the pull secret as it reads then. The log
 // names the pod, the job, the reason and the pull's message.
 func TestCISpawnerTearsDownARunnerThatCannotPullItsImage(t *testing.T) {
-	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
-	spawner, kube, hub, ns, waits := pullRunner(t, 61, now)
-	waits("ImagePullBackOff", pullDenied, 4*time.Minute)
-	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": `{"auths":{"git.example":{"auth":"new"}}}`}
+	r := newPullRig(t, 61)
+	r.waits("ImagePullBackOff")
+	r.poll(0)
+	r.kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": `{"auths":{"git.example":{"auth":"new"}}}`}
 	logs := captureLog(t)
 
-	spawner.poll(context.Background())
+	r.poll(4 * time.Minute)
 
-	if !slices.Contains(kube.deletedNs, ns) {
-		t.Fatalf("deleted namespaces = %v, want %s: the pod's storage stays taken", kube.deletedNs, ns)
+	if !slices.Contains(r.kube.deletedNs, r.ns) {
+		t.Fatalf("deleted namespaces = %v, want %s: the pod's storage stays taken", r.kube.deletedNs, r.ns)
 	}
-	if len(hub.registered) != 2 || len(hub.deleted) != 1 {
-		t.Fatalf("registered %v, deleted %v: want the first runner removed and the job spawned again", hub.registered, hub.deleted)
+	if len(r.hub.registered) != 2 || len(r.hub.deleted) != 1 {
+		t.Fatalf("registered %v, deleted %v: want the first runner removed and the job spawned again", r.hub.registered, r.hub.deleted)
 	}
-	if got := kube.secrets[ns+"/forgejo-registry"][".dockerconfigjson"]; got != `{"auths":{"git.example":{"auth":"new"}}}` {
+	if got := r.kube.secrets[r.ns+"/forgejo-registry"][".dockerconfigjson"]; got != `{"auths":{"git.example":{"auth":"new"}}}` {
 		t.Fatalf("the new namespace's pull secret = %q, want the copy of the secret as it reads now", got)
 	}
-	if p := kube.pods[ns+"/"+ciPodName]; p == nil || p.phase != "Running" {
+	if p := r.kube.pods[r.ns+"/"+ciPodName]; p == nil || p.phase != "Running" {
 		t.Fatalf("the job's new pod = %+v, want one spawned again", p)
 	}
-	line := "ci spawner: " + ns + ": the runner pod of job 61 cannot pull its image (ImagePullBackOff: " + pullDenied + "): torn down, and the job spawns again with a new copy of the pull secret (try 1 of 3)"
+	line := "ci spawner: " + r.ns + ": the runner pod of job 61 cannot pull its image (ImagePullBackOff: " + pullDenied + "): torn down, and the job spawns again with a new copy of the pull secret (try 1 of 3)"
 	if !strings.Contains(logs.String(), line) || strings.Contains(logs.String(), "storage") {
 		t.Fatalf("the log = %q, want %q and no word of storage", logs.String(), line)
 	}
 }
 
-// A pull that failed two minutes ago may still succeed, and a pod whose
-// container is being created has failed no pull: both stay.
-func TestCISpawnerLeavesARunnerWhosePullMayStillSucceed(t *testing.T) {
-	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
-	for name, tc := range map[string]struct {
-		reason string
-		ago    time.Duration
-	}{
-		"ImagePullBackOff for 2 minutes":   {"ImagePullBackOff", 2 * time.Minute},
-		"ErrImagePull for 2 minutes":       {"ErrImagePull", 2 * time.Minute},
-		"ContainerCreating for 10 minutes": {"ContainerCreating", 10 * time.Minute},
-	} {
-		t.Run(name, func(t *testing.T) {
-			spawner, kube, hub, ns, waits := pullRunner(t, 62, now)
-			waits(tc.reason, pullDenied, tc.ago)
-
-			spawner.poll(context.Background())
-
-			if _, ok := kube.namespaces[ns]; !ok || len(kube.deletedNs) != 0 || len(hub.registered) != 1 {
-				t.Fatalf("namespaces deleted %v, registered %v: want the pod left alone", kube.deletedNs, hub.registered)
-			}
-		})
+// The wait counts from the poll that first saw the pull fail, not from the
+// pod's start: a pod that started 10 minutes ago and fails its pull now
+// stays, and goes 4 minutes after that. A pull seen failing for 2 minutes
+// stays, a pull that goes on starts the wait anew, and a pod whose
+// container is being created has failed no pull.
+func TestCISpawnerCountsThePullWaitFromTheFirstFailureItSaw(t *testing.T) {
+	stays := func(t *testing.T, r *pullRig, when string) {
+		t.Helper()
+		if _, ok := r.kube.namespaces[r.ns]; !ok || len(r.kube.deletedNs) != 0 || len(r.hub.registered) != 1 {
+			t.Fatalf("%s: namespaces deleted %v, registered %v: want the pod left alone", when, r.kube.deletedNs, r.hub.registered)
+		}
 	}
+	t.Run("a pod that started 10 minutes ago", func(t *testing.T) {
+		r := newPullRig(t, 62)
+		r.poll(10 * time.Minute)
+		r.waits("ErrImagePull")
+		r.poll(0)
+		stays(t, r, "at the first failure seen")
+		r.poll(2 * time.Minute)
+		stays(t, r, "2 minutes after it")
+		r.poll(2 * time.Minute)
+		if !slices.Contains(r.kube.deletedNs, r.ns) || len(r.hub.registered) != 2 {
+			t.Fatalf("4 minutes after the first failure seen: deleted %v, registered %v: want the pod torn down and the job spawned again", r.kube.deletedNs, r.hub.registered)
+		}
+	})
+	t.Run("a pull that goes on", func(t *testing.T) {
+		r := newPullRig(t, 62)
+		r.waits("ImagePullBackOff")
+		r.poll(0)
+		r.waits("ContainerCreating")
+		r.poll(2 * time.Minute)
+		r.waits("ImagePullBackOff")
+		r.poll(2 * time.Minute)
+		stays(t, r, "4 minutes after a failure the pull got past")
+	})
+	t.Run("ContainerCreating for 10 minutes", func(t *testing.T) {
+		r := newPullRig(t, 62)
+		r.waits("ContainerCreating")
+		r.poll(0)
+		r.poll(10 * time.Minute)
+		stays(t, r, "with no pull failure")
+	})
 }
 
-// A job whose runner could not pull its image ciPullTries times stays
-// queued, and every poll's log says the image cannot be pulled and why,
-// not that storage is short.
-func TestCISpawnerStopsSpawningARunnerWhoseImageCannotBePulled(t *testing.T) {
-	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
-	spawner, kube, hub, ns, waits := pullRunner(t, 63, now)
-	ctx := context.Background()
-	for range 2 {
-		waits("ErrImagePull", pullDenied, 4*time.Minute)
-		spawner.poll(ctx)
+// A job whose runner could not pull its image ciPullTries times gets no
+// pod at once: every poll's log says the image cannot be pulled, why, and
+// when the next try comes, not that storage is short. After ciPullRetry
+// the job gets one more pod, and one more failure waits again.
+func TestCISpawnerRetriesSlowlyARunnerWhoseImageCannotBePulled(t *testing.T) {
+	r := newPullRig(t, 63)
+	r.failPull() // torn down at 10:04, spawned again
+	r.failPull() // torn down at 10:08, spawned again
+	if len(r.hub.registered) != 3 {
+		t.Fatalf("registered %v: want the job spawned three times", r.hub.registered)
 	}
-	if len(hub.registered) != 3 {
-		t.Fatalf("registered %v: want the job spawned three times", hub.registered)
-	}
-	waits("ErrImagePull", pullDenied, 4*time.Minute)
-	for poll := 1; poll <= 2; poll++ {
+	r.waits("ErrImagePull")
+	r.poll(0)
+	queued := func(when, next string, pods int) {
+		t.Helper()
 		logs := captureLog(t)
-		spawner.poll(ctx)
-		if _, ok := kube.namespaces[ns]; ok || len(hub.registered) != 3 {
-			t.Fatalf("poll %d: namespace %v, registered %v: want the third pod torn down and no fourth", poll, kube.namespaces[ns], hub.registered)
+		r.poll(4 * time.Minute)
+		if _, ok := r.kube.namespaces[r.ns]; ok || len(r.hub.registered) != pods {
+			t.Fatalf("%s: namespace %v, registered %v: want the pod torn down and no pod after it", when, r.kube.namespaces[r.ns], r.hub.registered)
 		}
-		line := "ci spawner: job 63 (pr-untrusted) stays queued: its runner pod could not pull its image in 3 tries (ErrImagePull: " + pullDenied + ")"
+		line := "ci spawner: job 63 (pr-untrusted) stays queued: its runner pod could not pull its image (ErrImagePull: " + pullDenied + "): the next try comes at " + next
 		if strings.Count(logs.String(), line) != 1 || strings.Contains(logs.String(), "storage") {
-			t.Fatalf("poll %d: the log = %q, want %q once and no word of storage", poll, logs.String(), line)
+			t.Fatalf("%s: the log = %q, want %q once and no word of storage", when, logs.String(), line)
 		}
+	}
+	queued("the third failure, at 10:12", "2026-11-19T10:27:00Z", 3)
+	r.poll(14 * time.Minute) // 10:26
+	if len(r.hub.registered) != 3 {
+		t.Fatalf("registered %v at 10:26: want no pod before the slow retry", r.hub.registered)
+	}
+	r.poll(2 * time.Minute) // 10:28, 16 minutes after the third failure
+	if len(r.hub.registered) != 4 || r.kube.pods[r.ns+"/"+ciPodName] == nil {
+		t.Fatalf("registered %v at 10:28: want one more pod", r.hub.registered)
+	}
+	r.waits("ErrImagePull")
+	r.poll(0)
+	queued("the fourth failure, at 10:32", "2026-11-19T10:47:00Z", 4)
+}
+
+// A job list Forgejo fails to answer forgets no count: the jobs of a
+// repository whose list was not read keep theirs.
+func TestCISpawnerKeepsThePullCountsOfARepositoryItCouldNotList(t *testing.T) {
+	r := newPullRig(t, 64)
+	r.failPull()
+	r.failPull()
+	r.failPull()
+	if len(r.hub.registered) != 3 {
+		t.Fatalf("registered %v: want three pods and none after the third failure", r.hub.registered)
+	}
+	r.hub.mu.Lock()
+	r.hub.failJobs = true
+	r.hub.mu.Unlock()
+	r.poll(time.Minute)
+	r.hub.mu.Lock()
+	r.hub.failJobs = false
+	r.hub.mu.Unlock()
+	r.poll(time.Minute)
+	if len(r.hub.registered) != 3 {
+		t.Fatalf("registered %v: a failed job list bought the job a new pod", r.hub.registered)
+	}
+	// a job Forgejo no longer lists is forgotten
+	r.hub.mu.Lock()
+	r.hub.jobs = nil
+	r.hub.mu.Unlock()
+	r.poll(time.Minute)
+	if len(r.spawner.pullFails) != 0 {
+		t.Fatalf("pull counts = %v, want none for a job no longer listed", r.spawner.pullFails)
 	}
 }

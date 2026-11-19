@@ -121,10 +121,11 @@ the covert channel named above, accepted as the price of a usable Go
 toolchain). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
 60-minute deadline passes. A pod that cannot pull its image
-(`ErrImagePull` or `ImagePullBackOff` for more than 3 minutes) is torn
-down too, so its storage frees, and its job gets a new pod with a new copy
-of the pull secret; after 3 such pods the job stays queued and each poll
-logs the pull's failure. Idempotency is the Forgejo job id on the
+(`ErrImagePull` or `ImagePullBackOff` for more than 3 minutes since the
+spawner first saw it) is torn down too, so its storage frees, and its job
+gets a new pod with a new copy of the pull secret; after 3 such pods the
+job gets one more pod every 15 minutes, and each poll between logs the
+pull's failure and when the next try comes. Idempotency is the Forgejo job id on the
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,

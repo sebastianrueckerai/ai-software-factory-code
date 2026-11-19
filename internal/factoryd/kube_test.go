@@ -917,17 +917,16 @@ func TestInClusterKubeNewestPodEvent(t *testing.T) {
 }
 
 // PodStatus reads why a container waits, an init container's first, with
-// the pull's message, and since when: the pod's start, or the end of the
-// init containers before the one that waits.
+// the pull's message.
 func TestPodStatusReadsAWaitingContainer(t *testing.T) {
 	pods := map[string]string{
-		"init": `{"status":{"phase":"Pending","startTime":"2026-11-19T09:40:47Z",
+		"init": `{"status":{"phase":"Pending",
 			"initContainerStatuses":[{"state":{"waiting":{"reason":"ErrImagePull","message":"unauthorized: authentication required"}}}],
 			"containerStatuses":[{"state":{"waiting":{"reason":"PodInitializing"}}}]}}`,
-		"main": `{"status":{"phase":"Pending","startTime":"2026-11-19T09:40:47Z",
-			"initContainerStatuses":[{"state":{"terminated":{"exitCode":0,"finishedAt":"2026-11-19T09:52:00Z"}}}],
+		"main": `{"status":{"phase":"Pending",
+			"initContainerStatuses":[{"state":{"terminated":{"exitCode":0}}}],
 			"containerStatuses":[{"state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}]}}`,
-		"runs": `{"status":{"phase":"Running","startTime":"2026-11-19T09:40:47Z","containerStatuses":[{"state":{"running":{}}}]}}`,
+		"runs": `{"status":{"phase":"Running","containerStatuses":[{"state":{"running":{}}}]}}`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, pods[path.Base(r.URL.Path)])
@@ -941,8 +940,8 @@ func TestPodStatusReadsAWaitingContainer(t *testing.T) {
 	t.Cleanup(func() { SaDirForTest(old) })
 	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
 	for name, want := range map[string]PodWait{
-		"init": {Reason: "ErrImagePull", Message: "unauthorized: authentication required", Since: time.Date(2026, 11, 19, 9, 40, 47, 0, time.UTC)},
-		"main": {Reason: "ImagePullBackOff", Message: "Back-off pulling image", Since: time.Date(2026, 11, 19, 9, 52, 0, 0, time.UTC)},
+		"init": {Reason: "ErrImagePull", Message: "unauthorized: authentication required"},
+		"main": {Reason: "ImagePullBackOff", Message: "Back-off pulling image"},
 		"runs": {},
 	} {
 		phase, _, wait, err := k.PodStatus(context.Background(), "ns", name)
