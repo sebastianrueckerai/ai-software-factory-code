@@ -115,11 +115,11 @@ func CapWaitReason(decision, by, state string, until time.Time) string {
 	var what, cap, file string
 	switch decision {
 	case policy.RefusedDayCap:
-		what, cap, file = "the day's free headroom", "the day cap", "policy.yaml"
+		what, cap, file = "the money left under the day cap", "the day cap", "policy.yaml"
 	case policy.RefusedMonthCap:
-		what, cap, file = "the month's free headroom", "the month cap", "policy.yaml"
+		what, cap, file = "the money left under the month cap", "the month cap", "policy.yaml"
 	default:
-		what, cap, file = "the project's free month headroom", "the project's month cap", cmp.Or(projectFile.FindString(state), "the project's file")
+		what, cap, file = "the money left under the project's month cap", "the project's month cap", cmp.Or(projectFile.FindString(state), "the project's file")
 	}
 	o := capOpenings[decision]
 	return fmt.Sprintf("%s once %s funds a session, at the latest when the UTC %s turns at %s. "+

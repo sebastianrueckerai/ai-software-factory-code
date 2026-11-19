@@ -3519,14 +3519,14 @@ func TestCapWaitReason(t *testing.T) {
 	if got := CapWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), day, oct(15, 0, 0)); got != dayReason {
 		t.Errorf("day reason = %q, want %q", got, dayReason)
 	}
-	const month = "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, " +
+	const month = "the month cap is reached: the card resumes on its own once the money left under the month cap funds a session, " +
 		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_month_cap): spent"
 	if got := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", nov1); got != month {
 		t.Errorf("month reason = %q, want %q", got, month)
 	}
 	state := "0.01 EUR of the project's 3.00 EUR month in projects/linkshort.yaml is free"
-	const project = "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
+	const project = "the project's month cap is reached: the card resumes on its own once the money left under the project's month cap funds a session, " +
 		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the project's month cap in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_project_cap): "
 	got := CapWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), state, nov1)

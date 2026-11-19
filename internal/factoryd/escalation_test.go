@@ -611,7 +611,7 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	if res.Outcome != OutcomeDayCap || res.Capped == nil || res.Capped.Refusal != capped.Refusal || !res.Capped.At.Equal(capped.At) || !res.Capped.Allowed {
 		t.Fatalf("result = %+v, want day_cap with the refusal", res)
 	}
-	question := "the day cap is reached: the card resumes on its own once the day's free headroom " +
+	question := "the day cap is reached: the card resumes on its own once the money left under the day cap " +
 		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
 	run := &taskRun{}
 	reason, until := CapRefusalReason(*res.Capped), run.capUntil(*res.Capped)

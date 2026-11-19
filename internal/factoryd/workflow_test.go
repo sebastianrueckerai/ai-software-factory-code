@@ -2323,7 +2323,7 @@ var (
 		At: oct(14, 20, 43)}
 	dayCapped = SessionResult{Outcome: OutcomeDayCap, SessionID: "s1", Capped: &dayRefusal,
 		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_day_cap"}}
-	dayQuestion = "the day cap is reached: the card resumes on its own once the day's free headroom " +
+	dayQuestion = "the day cap is reached: the card resumes on its own once the money left under the day cap " +
 		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
 	dayReason = dayQuestion + "\nthe gateway refused this task's spend (refused_day_cap): free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55)"
 
@@ -2335,7 +2335,7 @@ var (
 	// with the cap's reason and the refusal
 	monthCapped = SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: capRefused(monthRefusal.Refusal), Capped: &monthRefusal,
 		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_month_cap"}}
-	monthQuestion = "the month cap is reached: the card resumes on its own once the month's free headroom " +
+	monthQuestion = "the month cap is reached: the card resumes on its own once the money left under the month cap " +
 		"funds a session, at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card."
 	monthReason = monthQuestion + "\nthe gateway refused this task's spend (refused_month_cap): free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 0.000001)"
 )
@@ -2641,7 +2641,7 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	want := "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, at the latest when the UTC month turns at " +
+	want := "the month cap is reached: the card resumes on its own once the money left under the month cap funds a session, at the latest when the UTC month turns at " +
 		"2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_month_cap): " + state
 	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != SourceMonthCap {
@@ -2815,7 +2815,7 @@ func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	want := "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
+	want := "the project's month cap is reached: the card resumes on its own once the money left under the project's month cap funds a session, " +
 		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the project's month cap in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_project_cap): " + refusal
 	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "project_cap" {
