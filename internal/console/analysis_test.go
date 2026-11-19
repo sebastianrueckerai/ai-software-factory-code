@@ -60,13 +60,13 @@ func TestAttachAnalysisTool(t *testing.T) {
 		status int
 		want   string
 	}{
-		{&factoryd.AskSettledError{Kind: "question", Word: "answered", By: "sebastian"}, http.StatusConflict,
+		{&factoryd.AskSettledError{Word: "answered", By: "sebastian"}, http.StatusConflict,
 			"The question of #13 is answered by sebastian. A settled ask is done. `escalate` files a new one when you need a human."},
-		{&factoryd.AskSettledError{Kind: "criteria", Word: "superseded"}, http.StatusConflict,
-			"The criteria request of #13 is superseded. A settled ask is done. `escalate` files a new one when you need a human."},
+		{&factoryd.AskSettledError{Word: "moved on"}, http.StatusConflict,
+			"The question of #13 is moved on. A settled ask is done. `escalate` files a new one when you need a human."},
 		{factoryd.ErrNoAsk, http.StatusNotFound,
 			"Card #13 asks nothing in the chat. `escalate` files an ask when you need a human."},
-		{&factoryd.AskUnshownError{Kind: "question"}, http.StatusConflict,
+		{&factoryd.AskUnshownError{}, http.StatusConflict,
 			"The question of #13 holds no open ask, so no card shows an analysis of it. Tell the human in the chat, or `escalate` when a human must decide."},
 		{errors.New("the store is down"), http.StatusBadGateway,
 			"The analysis could not be recorded: the store is down. Attach the analysis again."},
@@ -78,15 +78,6 @@ func TestAttachAnalysisTool(t *testing.T) {
 		var no *refusal
 		if !errors.As(got, &no) || no.status != tc.status || no.msg != tc.want {
 			t.Fatalf("the refusal = %v, want %d %q", got, tc.status, tc.want)
-		}
-	}
-}
-
-// An ask's noun reads as words, its kind's underscore a space.
-func TestAskNounReadsAsWords(t *testing.T) {
-	for kind, want := range map[string]string{factoryd.ApprovalMerge: "merge request", factoryd.ApprovalCriteriaRerun: "criteria rerun request", "": "question"} {
-		if got := askNoun(kind); got != want {
-			t.Errorf("askNoun(%q) = %q, want %q", kind, got, want)
 		}
 	}
 }

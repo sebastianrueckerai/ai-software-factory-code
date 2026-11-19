@@ -243,9 +243,11 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	requested := time.Now().Add(-time.Hour)
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "limit reached: 3 sessions", requested.Add(time.Minute)
-	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
+	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, StateKey: "4c1d2e0f9a8b7c6d@r2", Status: factoryd.CaseAtHuman,
+		Problem: "The plan hit its session cap."}}}
 	asked := board(ck)
-	if needs := col(t, asked, "Needs you"); !strings.Contains(needs, `<strong class="title">The planner has a question about this plan. How should it go?</strong>`) || strings.Contains(asked, "limit reached: 3 sessions") ||
+	// the case, keyed on its revision, asks the revision's first open question
+	if needs := col(t, asked, "Needs you"); !strings.Contains(needs, `<strong class="title">How long are the results kept?</strong>`) || strings.Contains(asked, "limit reached: 3 sessions") ||
 		!strings.Contains(asked, `Needs you <span class="count">1</span>`) || strings.Count(needs, `data-card="t-plan"`) != 1 {
 		t.Errorf("the plan's escalation is not its case's row alone:\n%s", needs)
 	}
@@ -304,9 +306,9 @@ func TestPlanFaceHoldsNoRawEscalation(t *testing.T) {
 	}
 }
 
-// A plan card with no case at the human, which stands alone, shows no raw
-// escalation on its opened card: its ask is its request's, and a long
-// escalation fills nothing.
+// A plan card with no case at the human, whose request waits for its
+// case's face, shows no raw escalation on its opened card and asks
+// nothing: a long escalation fills nothing.
 func TestPlanCardEscalationIsBounded(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -315,8 +317,8 @@ func TestPlanCardEscalationIsBounded(t *testing.T) {
 	requested := time.Now().Add(-time.Hour)
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
-	if card := planDrawer(t, r, ck); strings.Contains(card, strings.Repeat("a", 100)) || !strings.Contains(card, `<section class="o-ask"`) {
-		t.Errorf("the plan card shows its raw escalation, or asks nothing:\n%s", card)
+	if card := planDrawer(t, r, ck); strings.Contains(card, strings.Repeat("a", 100)) || strings.Contains(card, `<section class="o-ask"`) {
+		t.Errorf("the plan card shows its raw escalation, or asks before its case's face:\n%s", card)
 	}
 }
 

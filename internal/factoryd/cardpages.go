@@ -278,8 +278,9 @@ func (r *Request) criteriaRows(ctx context.Context, s RequestReads) error {
 // the merge case that names it, a resource request of its case of the
 // resource kind (the export's shape, as the store opens no case of its own
 // for one), a criteria request of the criteria case that names it, a
-// plan's of its plan question or confirmation. The case names the request
-// by its id however its facts decode the number.
+// plan's of a question or the confirmation of its revision, or of one that
+// names no revision. The case names the request by its id however its
+// facts decode the number.
 func RequestAnswers(a ApprovalRequest, c Case) bool {
 	id, named := c.Facts["approval"]
 	raw, _ := json.Marshal(id)
@@ -292,7 +293,9 @@ func RequestAnswers(a ApprovalRequest, c Case) bool {
 	case CasePlanCriteria:
 		return (a.Kind == ApprovalCriteria || a.Kind == ApprovalCriteriaRerun) && mine
 	case CasePlanQuestion, CasePlanConfirmation:
-		return a.Kind == ApprovalPlan
+		var spec PlanSpec
+		revision := planCaseRevision(c)
+		return a.Kind == ApprovalPlan && (revision == 0 || json.Unmarshal(a.Spec, &spec) == nil && spec.Revision == revision)
 	}
 	return false
 }
@@ -695,7 +698,9 @@ func CardPages(card BoardTask, cases []Case, asks map[int64]CaseAsk, pending []A
 }
 
 // casePage is part (0 for the whole) c of a case of owner, which request r
-// answers, with the facts and the ask its face reads.
+// answers, with the facts and the ask its face reads. A request's rows
+// write its case's face anew, so its page takes only the rungs' words of
+// the ask the case stored (rungsAsk).
 func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]CaseAsk) CardPage {
 	k := withDeps(c, owner)
 	if r != nil && r.Kind == ApprovalPlan {
@@ -703,15 +708,19 @@ func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]Case
 	}
 	ask := asks[c.ID]
 	switch {
-	case k.Kind == CasePlanCriteria && r != nil:
+	case r == nil && part > 0:
+		ask = CaseAsk{}
+	case r == nil:
+	case k.Kind == CasePlanCriteria:
 		if part == 0 {
 			k = r.onPromises(k)
 		}
-		ask = criteriaAsk(ask, k)
-	case part > 0:
-		ask = CaseAsk{}
-	case r != nil && r.Healed:
-		k = healed(k)
+		ask = rungsAsk(ask, k, true)
+	default:
+		if r.Healed && part == 0 {
+			k = healed(k)
+		}
+		ask = rungsAsk(ask, k, part == 0)
 	}
 	face := CaseFace(k, owner.Task, ask)
 	if r != nil && r.Healed && part == 0 {
@@ -720,13 +729,17 @@ func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]Case
 	return CardPage{Case: k, Part: part, Request: r, Owner: owner, Face: face}
 }
 
-// criteriaAsk is ask as page of a criteria request reads it: the rungs'
-// view and their recommendation, without the face the ask stored, which
-// the request's rows write anew. A recommendation that names one promise
-// stands on that promise's page alone.
-func criteriaAsk(ask CaseAsk, page Case) CaseAsk {
+// rungsAsk is ask as page of a request's case reads it: the rungs' view,
+// and with recommended their recommendation, without the face the ask
+// stored, which the request's rows write anew. A recommendation that names
+// one promise stands on that promise's page alone.
+func rungsAsk(ask CaseAsk, page Case, recommended bool) CaseAsk {
 	out := CaseAsk{At: ask.At, Analysis: ask.Analysis, Detail: map[string]any{}}
-	for _, k := range []string{"info", "recommendation", "recommended_by", "preselected"} {
+	keys := []string{"info"}
+	if recommended {
+		keys = append(keys, "recommendation", "recommended_by", "preselected")
+	}
+	for _, k := range keys {
 		if v, ok := ask.Detail[k]; ok {
 			out.Detail[k] = v
 		}

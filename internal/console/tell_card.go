@@ -139,6 +139,12 @@ func (t *turn) tellRoute(in toolInput) (tellBranch, factoryd.Task, factoryd.Appr
 			return tellBranch{}, k, factoryd.ApprovalRequest{}, err
 		}
 		key.merge, q = has, pending
+		if has {
+			// the text would decide the merge, which its case's face offers
+			if err := t.mergeOnRungs(k, q); err != nil {
+				return tellBranch{}, k, q, err
+			}
+		}
 		var spec factoryd.MergeSpec
 		if has && json.Unmarshal(q.Spec, &spec) == nil && spec.Factory {
 			// no agent reads a text there: the actions that fit decide it

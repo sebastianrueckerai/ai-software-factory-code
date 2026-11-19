@@ -1577,7 +1577,10 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	if e.Kind == EventQuestionAsked {
 		id, _ := toInt(e.Detail["case_id"])
 		if id == 0 {
-			id = int(s.askOpensCase(e))
+			// a case the ask opens open climbs to its face
+			if c := s.askOpensCase(e); c.Status == CaseAtHuman {
+				id = int(c.ID)
+			}
 		}
 		if id != 0 {
 			s.faced(int64(id), e)
@@ -1601,16 +1604,16 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 }
 
 // askOpensCase opens the case ask row e goes to when it names none, as the
-// events writer does, stamps the row with it and answers its id; 0 when the
-// card is unknown.
-func (s *fakeStore) askOpensCase(e Event) int64 {
+// events writer does, stamps the row with it and answers it; the zero Case
+// when the card is unknown or the ask has no words.
+func (s *fakeStore) askOpensCase(e Event) Case {
 	t, ok := s.tasks[e.TaskID]
 	if !ok {
-		return 0
+		return Case{}
 	}
 	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
-		return 0
+		return Case{}
 	}
 	got, _, _ := s.OpenCase(context.Background(), c)
 	last := &s.events[len(s.events)-1]
@@ -1619,7 +1622,7 @@ func (s *fakeStore) askOpensCase(e Event) int64 {
 		last.Detail = map[string]any{}
 	}
 	last.Detail["case_id"] = got.ID
-	return got.ID
+	return got
 }
 
 // faced is the events writer's face of ask row e on its case: the case at

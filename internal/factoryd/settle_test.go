@@ -288,3 +288,25 @@ func TestACriteriaFaceStaysOpenWhileItsRequestPends(t *testing.T) {
 		t.Fatalf("the face once its request is decided = %+v, want it moved on", s)
 	}
 }
+
+// A merge case faces the human beside the card's run, the card in review:
+// its ask row waits as the request's own row did, open while the request
+// pends, settled approved by the human's approve, and moved on once the
+// request is decided another way.
+func TestAMergeFaceStaysOpenWhileItsRequestPends(t *testing.T) {
+	at := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	const question = "Merge PR #9, standard risk."
+	birth := Event{ID: 1, Kind: EventQuestionAsked, TaskID: "t-1", At: at, Actor: FactoryDecider,
+		Detail: map[string]any{"question": question, "case_id": float64(7), "case_kind": string(CaseMergeApproval)}}
+	m := ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, TaskID: "t-1", At: at.Add(time.Second), Content: "#12 needs you: " + question}
+	if s := SettleOf(m, []Event{birth}, "in-review", true); !s.Open {
+		t.Fatalf("the face on the card in review, its request pending = %+v, want it open", s)
+	}
+	approved := Event{ID: 2, Kind: EventMergeApproved, TaskID: "t-1", At: at.Add(time.Minute), Actor: "sebastian", Detail: map[string]any{"pr": float64(9)}}
+	if s := SettleOf(m, []Event{birth, approved}, "in-review", false); s.Open || s.Word != "approved" || s.By != "sebastian" {
+		t.Fatalf("the face after the human's approve = %+v, want it approved by sebastian", s)
+	}
+	if s := SettleOf(m, []Event{birth}, "in-review", false); s.Open || s.Word != "moved on" {
+		t.Fatalf("the face once its request is decided = %+v, want it moved on", s)
+	}
+}

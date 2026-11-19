@@ -1243,22 +1243,22 @@ func specBlock(p Plan) string {
 }
 
 // planComment is revision's comment on plan task t's issue before its
-// marker: the summary, the spec, the round with the outline still to plan,
-// and one row per card in filing order, with its issue once filed (issues
-// by key), its round in a later round's plan and, when t's spec has a
-// Deploy line, the deploy owner's mark; then the keys it takes off main,
-// the criteria, the questions, and the brief of each card of the round in
-// a details block.
+// marker, the revision's record, which asks for no answer (its face does,
+// planFaceComment): the summary, the spec, the round with the outline
+// still to plan, and one row per card in filing order, with its issue once
+// filed (issues by key), its round in a later round's plan and, when t's
+// spec has a Deploy line, the deploy owner's mark; then the keys it takes
+// off main, the criteria, the questions, and the brief of each card of the
+// round in a details block.
 func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	edges := planEdges(p)
 	needed, owner := deployOwner(t.Objective, p)
 	var b strings.Builder
-	next := "Its open questions wait for the humans' answers on the factory console, and each answer sends it back to the planner. " +
-		"A comment here asks the planner for a new revision. Closing the issue ends the plan."
+	fmt.Fprintf(&b, "Plan revision %d, written by the planner.", revision)
 	if issues != nil {
-		next = "It asks no question, so its cards are filed: the table names their issues."
+		b.WriteString(" It asks no question, so its cards are filed: the table names their issues.")
 	}
-	fmt.Fprintf(&b, "Plan revision %d, written by the planner. %s\n\n%s\n\n", revision, next, strings.TrimSpace(p.Summary))
+	fmt.Fprintf(&b, "\n\n%s\n\n", strings.TrimSpace(p.Summary))
 	if s := specBlock(p); s != "" {
 		b.WriteString(s + "\n\n")
 	}
@@ -2698,14 +2698,17 @@ func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []strin
 }
 
 // planResolution takes the resolutions of the case the plan waits on
-// signalled so far (versionCases), as awaitAnswer takes the card's:
-// another case's is dropped, as one rung 0 resolved in place. A
+// signalled so far (versionCases), as awaitAnswer takes the card's, and
+// of the case that asks its question again, which becomes the plan's
+// (versionAskedAgainCase): another case's is dropped, as one rung 0
+// resolved in place. A
 // resolution's note is a finding unless the webhook's copy of its comment
 // came first; ok: one came.
 func (t *taskRun) planResolution() (notes []string, ok bool) {
 	var done TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
-		if c := done.Case; c != nil && t.caseID != 0 && c.CaseID == t.caseID {
+		if c := done.Case; c != nil && t.caseID != 0 && (c.CaseID == t.caseID || t.askedAgainCase(c)) {
+			t.caseID = c.CaseID
 			res := c.Res
 			t.resolution, ok = &res, true
 			if note := strings.TrimSpace(res.Note); note != "" && (c.Comment == 0 || !slices.Contains(t.planTaken, c.Comment)) {
@@ -3883,11 +3886,15 @@ func ConfirmationQuestion(revision int, p Plan) string {
 }
 
 // postPlan puts revision's comment on the plan's issue, sanitised, with
-// the cards' issues once filed: it edits the comment its marker finds, or
-// posts it.
+// the cards' issues once filed (putMarked).
 func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, p Plan, issues map[string]int64) (int64, error) {
-	marker := planMarker(t.ID, revision)
-	body := r.Scrub.String(r.untrusted(t, planComment(t, revision, p, issues))) + "\n" + marker
+	return r.putMarked(ctx, t, repo, planMarker(t.ID, revision), planComment(t, revision, p, issues))
+}
+
+// putMarked puts text on t's issue, sanitised, under marker: it edits the
+// bot's comment the marker finds, or posts it, and answers its id.
+func (r *Runner) putMarked(ctx context.Context, t Task, repo Repo, marker, text string) (int64, error) {
+	body := r.Scrub.String(r.untrusted(t, text)) + "\n" + marker
 	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil {
 		return 0, err
@@ -3901,6 +3908,60 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 		}
 	}
 	return r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body)
+}
+
+// planFaceComment is the face of plan case c on the plan's issue: one
+// comment per revision, under its own marker, which names the revision's
+// questions at the human and c's, each with the answer its face suggests
+// and the grounds (a faced one's as its face row holds it, c's as row
+// asks it), and ends with next. The revision's first face posts it, each
+// later one edits it, so a face that runs again writes no second one. It
+// answers the comment's id.
+func (r *Runner) planFaceComment(ctx context.Context, t Task, repo Repo, c Case, row map[string]any, next string) (int64, error) {
+	revision, _ := toInt(c.Facts["revision"])
+	open, err := r.store.OpenCasesOf(ctx, t.ID)
+	if err != nil {
+		return 0, err
+	}
+	asked, err := r.store.TaskEventsOfKind(ctx, t.ID, EventQuestionAsked, 200)
+	if err != nil {
+		return 0, err
+	}
+	suggested := func(detail map[string]any) string {
+		line := suggestion(detail, offersOf(detail["offers"]))
+		if line == "" {
+			return ""
+		}
+		if grounds, _ := detail["recommendation"].(string); grounds != "" {
+			line = strings.TrimSuffix(line, ".") + ": " + grounds
+		}
+		return "   " + line + "\n"
+	}
+	recs := map[int64]string{c.ID: suggested(row)}
+	for _, e := range asked { // newest first: a case's face row
+		id, _ := toInt(e.Detail["case_id"])
+		if _, done := recs[int64(id)]; done || e.Detail["case_kind"] == nil {
+			continue
+		}
+		recs[int64(id)] = suggested(e.Detail)
+	}
+	listed := slices.DeleteFunc(open, func(k Case) bool {
+		rev, _ := toInt(k.Facts["revision"])
+		return !planAsk(k) || rev != revision || k.Status != CaseAtHuman && k.ID != c.ID
+	})
+	if !slices.ContainsFunc(listed, func(k Case) bool { return k.ID == c.ID }) {
+		listed = append(listed, c)
+	}
+	index := func(k Case) int { n, _ := toInt(k.Facts["index"]); return n }
+	slices.SortFunc(listed, func(a, b Case) int { return cmp.Compare(index(a), index(b)) })
+	var b strings.Builder
+	fmt.Fprintf(&b, "Revision %d of the plan waits for the humans' answers in Needs you on the factory console.\n\n", revision)
+	for _, k := range listed {
+		question, _ := k.Facts["question"].(string)
+		fmt.Fprintf(&b, "%d. %s\n%s", index(k), FirstLine(cmp.Or(question, k.Problem)), recs[k.ID])
+	}
+	b.WriteString("\n" + next)
+	return r.putMarked(ctx, t, repo, fmt.Sprintf("<!-- factoryd questions of plan %s revision %d -->", t.ID, revision), b.String())
 }
 
 // stepFiling marks the start of a revision's filing: its cards file from

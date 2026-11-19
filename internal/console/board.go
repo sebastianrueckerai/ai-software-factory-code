@@ -1646,13 +1646,9 @@ type boardView struct {
 	byID            map[string]factoryd.Task
 	pending         []factoryd.ApprovalRequest
 	carded, planned map[string]bool
-	// mergePended names the tasks whose merge approval pends: in the four
-	// columns the card yields In progress to that approval (Needs you
-	// holds it), as a plan does to its open questions.
-	mergePended map[string]bool
-	writes      bool // the viewer writes the shown project
-	unchecked   bool // a writers check failed, logged once per render
-	problems    []string
+	writes          bool // the viewer writes the shown project
+	unchecked       bool // a writers check failed, logged once per render
+	problems        []string
 	// planTrack names the repositories whose project's process has a plan
 	// track.
 	planTrack map[string]bool
@@ -1681,7 +1677,6 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	for _, a := range v.pending {
 		v.carded[a.TaskID] = true
 		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
-		v.mergePended[a.TaskID] = v.mergePended[a.TaskID] || a.Kind == factoryd.ApprovalMerge
 	}
 	return v, all, nil
 }
@@ -1691,8 +1686,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 // approval.
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
-	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{},
-		mergePended: map[string]bool{}}
+	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
@@ -2194,6 +2188,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			needs = append(needs, need{Since: t.CreatedAt, Card: k})
 		case holds:
 			needs = append(needs, row)
+		case col == colNeedsYou && v.planned[t.ID] && !planFaced(v, cs, t.ID):
+			// a plan whose questions climb their rungs works, as a merge
+			// card in review does while its case climbs
+			d.Columns[colProgress].Cards = append(d.Columns[colProgress].Cards, k)
 		case col == colNeedsYou:
 			// a plan that waits for its answers needs its approval card
 			if v.planned[t.ID] {
@@ -2201,11 +2199,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			needs = append(needs, need{Since: waitingSince(bt), Card: k})
 		case col >= 0:
-			// a card whose merge approval pends yields In progress to
-			// that approval, as a plan yields to its questions' card
-			if col == colProgress && v.mergePended[t.ID] && !v.planned[t.ID] {
-				break
-			}
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
 	}
@@ -2217,10 +2210,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if cs.holds(v.byID[a.TaskID]) {
 			continue
 		}
-		// a plan's criteria request waits for its case to reach the human,
-		// whose pages the card's row carries
-		if (a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun) &&
-			!slices.ContainsFunc(cs.byCard[a.TaskID], func(k factoryd.Case) bool { return factoryd.RequestAnswers(a, k) }) {
+		// a merge's, a plan's or a plan's criteria request waits for its
+		// case to reach the human, whose pages the card's row carries
+		if waitsForFace(a) && !cs.faced(a) {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)

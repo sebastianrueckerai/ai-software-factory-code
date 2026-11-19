@@ -64,21 +64,34 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: named + " needs you no more: reviewer sebastian requested changes."}, true},
 		{"a withdrawal past a notice's length drops its reason", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"reason": "factoryd closed pull request #12: the branch it came from was deleted, and no other branch holds its commits any more"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: named + " needs you no more."}, true},
-		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
+		// a merge request's case climbs first: its face's ask is the poke
+		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card, ChatMessage{}, false},
+		{"an agent's merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true, "checks": "red"}}, card, ChatMessage{}, false},
+		{"a factory merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true, "checks": "red"}}, card, ChatMessage{}, false},
+		{"a merge's face", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: mergeAskRow(card, MergeSpec{RiskClass: "high", HeadSHA: "c1"})}, card,
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Merge “Session store: pick the table's store”? The change is high risk, and the factory's rules let only a human merge it.", Choices: []string{"Merge it"}}, true},
-		{"a merge the review approved suggests it", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high",
-			"pr_open": true, "head": "c1", "checks": "green", "review_approved": true, "review_summary": "The change is small and tested."}}, card,
+		{"the face of a merge the review approved suggests it", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: mergeAskRow(card, MergeSpec{RiskClass: "high", HeadSHA: "c1",
+			Review: Review{Verdict: "approve", Summary: "The change is small and tested."}})}, card,
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Merge “Session store: pick the table's store”? The change is high risk, and the factory's rules let only a human merge it. The model review suggests “Merge it”.", Choices: []string{"Merge it"}}, true},
-		{"an agent's merge on red checks offers no merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true, "checks": "red"}}, card,
+		{"the face of an agent's merge on red checks offers no merge", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: mergeAskRow(card, MergeSpec{RiskClass: "normal", HeadSHA: "c1", RedChecks: true})}, card,
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. The checks of “Session store: pick the table's store” are red. Send it back to its agent? It cannot merge until its checks pass."}, true},
-		{"a factory merge on red checks offers the rerun", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true, "checks": "red"}}, card,
+		{"the face of a factory merge on red checks offers the rerun", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: mergeAskRow(card, MergeSpec{RiskClass: "normal", HeadSHA: "c1", RedChecks: true, Factory: true})}, card,
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. The checks of “Session store: pick the table's store” are red. Run them again, or close it? It cannot merge until its checks pass, and no agent works on a pull request the factory opened.",
 				Choices: []string{"Run the failed checks again"}}, true},
-		// a plan's request is its revision's bookkeeping: its questions' rows ask
+		// a plan's questions climb first: the face of each asks, never its
+		// request nor the planner's row
 		{"a plan pokes nobody", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan, ChatMessage{}, false},
-		{"a plan's confirmation says why", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: ConfirmationRow(PlanQuestion{Kind: QuestionConfirmation,
-			Text: "Confirmation of the spec and the criteria of plan revision 2:\nConfirm the plan fixes them."}, 2, 1)}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. The plan's cards and promises are fixed only once a human confirms them."}, true},
+		{"a planner's question pokes nobody", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: map[string]any{"question": "Which database?", "revision": float64(2),
+			"index": float64(1), "case_id": float64(31), "choices": []any{"Postgres", "SQLite"}}}, plan, ChatMessage{}, false},
+		{"a planner's confirmation pokes nobody", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: ConfirmationRow(PlanQuestion{Kind: QuestionConfirmation,
+			Text: "Confirmation of the spec and the criteria of plan revision 2:\nConfirm the plan fixes them."}, 2, 1)}, plan, ChatMessage{}, false},
+		{"a plan question's face", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: faceAskRow(plan, Case{ID: 31, TaskID: plan.ID, Kind: CasePlanQuestion, Status: CaseAtHuman,
+			Problem: "Which database?", Facts: map[string]any{"question": "Which database?", "revision": 2, "index": 1, "choices": []any{"Postgres", "SQLite"}}}, "Postgres", "SQLite")}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Which database? The planner needs your answer before it can finish the plan.",
+				Choices: []string{"Postgres", "SQLite"}}, true},
+		{"a plan confirmation's face says why", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: faceAskRow(plan, Case{ID: 32, TaskID: plan.ID, Kind: CasePlanConfirmation, Status: CaseAtHuman,
+			Problem: "Confirmation of the spec and the criteria of plan revision 2:\nConfirm the plan fixes them.", Facts: map[string]any{"revision": 2, "index": 2, "kind": QuestionConfirmation}})}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Confirm plan “Members page” so its cards can start? The plan's cards and promises are fixed only once a human confirms them."}, true},
 		// a criteria request's case climbs first: its face's ask is the poke
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria", "open": []any{"c1", "c2"}, "of": float64(3),
 			"problem": CriteriaGapReason([]string{"c1", "c2"})}}, plan, ChatMessage{}, false},
@@ -90,8 +103,8 @@ func TestPokeOf(t *testing.T) {
 		{"the face of criteria never judged", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: criteriaAskRow(plan, ApprovalCriteriaRerun, []string{"a", "b", "c"}, []string{"a", "b", "c"}, 3)}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Plan “Members page” finished, but no test checked its 3 promises. Settle each one. " +
 				"Until all 3 are settled, the plan stays open and holds production deploys."}, true},
-		{"a merge whose promise a human judges first opens on its page", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612),
-			"class": "high", "pr_open": true, "head": "c1", "checks": "green", "review_approved": true, "open": []any{"pages_read"}}}, card,
+		{"the face of a merge whose promise a human judges first opens on its page", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: mergeAskRow(card, MergeSpec{RiskClass: "high", HeadSHA: "c1",
+			Review: Review{Verdict: "approve"}, HumanOpen: []string{"pages_read"}})}, card,
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Is this promise met by “Session store: pick the table's store”? The pull request merges only once the promise a human judges has a verdict."}, true},
 		{"a resource request pokes nobody", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "resource"}}, card, ChatMessage{}, false},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
@@ -715,8 +728,15 @@ func TestTheChoiceLabelsMigrationRenamesTheOldButtons(t *testing.T) {
 		{Kind: MessagePoke, BirthKind: EventTaskEnded, Choices: []string{"Retry", "Leave it"}},
 		{Kind: MessageEscalation, BirthKind: EventQuestionAsked, Choices: []string{"Approve", "Retry"}},
 	} {
-		m.Role, m.Conversation, m.TaskID, m.Content = "assistant", conv, "t-1", "a row"
-		if _, err := s.AddChatMessage(ctx, "sf/wake", "sebastian", m); err != nil {
+		// a request's own row is written no more: the store holds it from
+		// before a request asked through its case's face
+		birth := m.BirthKind
+		m.Role, m.Conversation, m.TaskID, m.Content, m.BirthKind = "assistant", conv, "t-1", "a row", ""
+		id, err := s.AddChatMessage(ctx, "sf/wake", "sebastian", m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET birth_kind = $1 WHERE id = $2`, birth, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -861,15 +881,33 @@ func TestAStrandedHoldPokesTheHumanOnce(t *testing.T) {
 }
 
 // criteriaAskRow is the ask row the face of plan's criteria case of kind
-// writes as it reaches the human, as AskHuman writes it: open its open
-// promises, unchecked those nothing judged, of the plan's count.
+// writes as it reaches the human: open its open promises, unchecked those
+// nothing judged, of the plan's count.
 func criteriaAskRow(plan Task, kind string, open, unchecked []string, of int) map[string]any {
+	return faceAskRow(plan, OnOpen(Case{ID: 7, TaskID: plan.ID, Kind: CasePlanCriteria, Status: CaseAtHuman, Facts: map[string]any{"approval": 30, "approval_kind": kind}}, open, unchecked, of))
+}
+
+// mergeAskRow is the ask row the face of card's merge case writes as it
+// reaches the human, the case as the request of spec for pull request 612
+// opens it.
+func mergeAskRow(card Task, spec MergeSpec) map[string]any {
+	b, _ := json.Marshal(spec)
+	c, err := RequestCase(ApprovalRequest{ID: 31, Kind: ApprovalMerge, TaskID: card.ID, PRNumber: 612, Spec: b})
+	if err != nil {
+		panic(err)
+	}
+	c.ID, c.Status = 8, CaseAtHuman
+	return faceAskRow(card, c)
+}
+
+// faceAskRow is the ask row the face of case c on card writes as it reaches
+// the human, as AskHuman writes it and the store reads it back, choices
+// the case's own.
+func faceAskRow(card Task, c Case, choices ...string) map[string]any {
 	same := func(s string) string { return s }
-	c := OnOpen(Case{ID: 7, TaskID: plan.ID, Kind: CasePlanCriteria, Status: CaseAtHuman, Facts: map[string]any{"approval": 30, "approval_kind": kind}}, open, unchecked, of)
-	face := FaceRow(c, plan, FactsOf(c), "", nil, same, same)
+	face := FaceRow(c, card, FactsOf(c), "", nil, same, same)
 	ask, _ := face["ask"].(string)
-	row := AskRow(c, plan, "criteria wait", ask, 0, face, nil, nil, same)
-	b, _ := json.Marshal(row)
+	b, _ := json.Marshal(AskRow(c, card, c.Problem, ask, 0, face, choices, nil, same))
 	var read map[string]any
 	_ = json.Unmarshal(b, &read)
 	return read

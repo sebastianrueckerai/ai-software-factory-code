@@ -1272,8 +1272,8 @@ func (b *builder) humanMerge(p *factoryd.Plan) Fixture {
 }
 
 // request is card t holding the case its pending request a opens. A
-// criteria request's case reaches the human through its face, so it holds
-// the ask AskHuman writes then.
+// merge's and a criteria request's case reaches the human through its
+// face, so it holds the ask AskHuman writes then.
 func (b *builder) request(group, name string, t factoryd.Task, a *factoryd.ApprovalRequest, age time.Duration) Fixture {
 	opened, err := factoryd.RequestCase(*a)
 	if err != nil {
@@ -1281,7 +1281,7 @@ func (b *builder) request(group, name string, t factoryd.Task, a *factoryd.Appro
 	}
 	c := b.atHuman(opened, 7000+a.ID, age)
 	fx := Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Approval: a}
-	if a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun {
+	if a.Kind != factoryd.ApprovalResource {
 		face := factoryd.FaceRow(*c, t, fx.Facts, "", nil, same, same)
 		ask, _ := face["ask"].(string)
 		fx.Ask = &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(factoryd.AskRow(*c, t, a.Reason, ask, c.CommentID, face, nil, nil, same))}

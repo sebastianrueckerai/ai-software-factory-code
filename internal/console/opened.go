@@ -316,9 +316,10 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	case casesRead && k.Status == "waiting-human" && len(o.Brief.Approvals) == 0:
 		o.Sent = true
 	}
-	// a criteria request asks through its case, once that is at the human
+	// a plan's request asks through its cases alone, and a merge's and a
+	// criteria request only once their case is at the human
 	asking := slices.DeleteFunc(slices.Clone(o.Brief.Approvals), func(ap approvalCard) bool {
-		return ap.Kind == factoryd.ApprovalCriteria || ap.Kind == factoryd.ApprovalCriteriaRerun
+		return ap.Kind == factoryd.ApprovalPlan || waitsForFace(ap.ApprovalRequest) && !cs.faced(ap.ApprovalRequest)
 	})
 	if o.Ask == nil && !o.Sent && len(asking) > 0 {
 		pending := make([]factoryd.ApprovalRequest, len(asking))
@@ -340,14 +341,6 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			return requestPress(v, k, ap, an, key)
 		}
 		ask := k.ID + "-r" + strconv.FormatInt(ap.ID, 10)
-		if kase.Kind == factoryd.CasePlanQuestion {
-			// a plan that waits on its open questions asks the first of them
-			slot := &caseRow{Case: kase, Face: face, Plan: planSlotOf(face, kase)}
-			press = func(an factoryd.Answer, key string) (*pressForm, func(string) string) {
-				return casePress(v, k, *slot, an, key)
-			}
-			ask += fmt.Sprintf("-q%v", kase.Facts["index"])
-		}
 		face = v.scrubbed(face)
 		o.Ask = c.askOf(ctx, v, k, &o.Face, face, seen)
 		o.Ask.Position, o.Ask.Of = 1, 1

@@ -197,8 +197,9 @@ func TestChatEscalateRefusalNamesTheError(t *testing.T) {
 }
 
 // An answer that approves a merge needs an approver, as the board's
-// button and the chat's tool do: a writer on the notify list hears the
-// refusal, and the request stays pending.
+// button and the chat's tool do: a writer on the notify list who presses
+// Approve on the merge case's face hears the refusal, and the request
+// stays pending.
 func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	r, _ := newReadsRig(t)
 	r.ledger.approvers = []string{"alice"}
@@ -208,11 +209,16 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := r.chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	const question = "Merge PR #9, low risk."
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAsked,
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"question": question, "case_kind": string(factoryd.CaseMergeApproval)}}); err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range []struct{ task, text, choice string }{
 		{"t-e", "#13 needs you. The factory's rules let only a human merge this change.", "Merge it"},
 	} {
 		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
-			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
+			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventQuestionAsked}); err != nil {
 			t.Fatal(err)
 		}
 		if code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},

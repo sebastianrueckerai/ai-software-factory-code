@@ -622,6 +622,16 @@ func noEvidenceRefusal(f CaseFacts, note string) string {
 	return ""
 }
 
+// mergeRuleRefusal is why rung may not take action, a decision of merge
+// approval f, "" when it may: below full auto the merge rule is human, and
+// rung 2 hands the merge up with its recommendation.
+func mergeRuleRefusal(f CaseFacts, rung int, action string) string {
+	if rung != 2 || f.Kind != CaseMergeApproval || action != ActApproveMerge && action != ActDenyMerge || f.Autonomy == policy.AutonomyFullAuto {
+		return ""
+	}
+	return "the merge rule is human at `" + f.Autonomy + "`: hand the case up (`hand_up`) with `" + ActApproveMerge + "` or `" + ActDenyMerge + "` as the recommendation"
+}
+
 // humanWordActions settle a plan's criteria by word: a verdict on a
 // criterion, a waiver among them, a confirmation and a denial. A person
 // takes them (ErrNotPerson); rung 2 hands them up (CriteriaWordRefusal).
@@ -812,6 +822,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
 		return CriteriaWordRefusal(f.Kind)
 	}
+	if why := mergeRuleRefusal(f, rung, a.Name); why != "" {
+		return why
+	}
 	if why := a.Applies(f, r); why != "" {
 		return why
 	}
@@ -830,6 +843,14 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
+	}
+	if i := slices.IndexFunc(f.Partial, func(p string) bool { return strings.HasPrefix(p, partialApprovedCases) }); rung == 2 && a.Name == ActApproveMerge && i >= 0 {
+		return fmt.Sprintf("the earlier cases of this merge could not be read (%s), so rung 2 cannot tell whether it approved head `%s` before: hand the case up (`hand_up`) with `approve_merge` as the recommendation",
+			strings.TrimPrefix(f.Partial[i], partialApprovedCases+": "), f.Head[:min(7, len(f.Head))])
+	}
+	if rung == 2 && a.Name == ActApproveMerge && f.ApprovedOn != 0 {
+		return fmt.Sprintf("rung 2 approved head `%s` of pull request #%d on case %d and its merge did not land: hand the case up (`hand_up`) with what the merge said",
+			f.Head[:min(7, len(f.Head))], f.PR, f.ApprovedOn)
 	}
 	if rung == 2 && a.Name == ActRestartPlan && slices.Contains(f.Partial, "open criteria") {
 		return "the plan's open criteria could not be read, so the factory agent cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up (`hand_up`) with `restart_plan` as the recommendation"

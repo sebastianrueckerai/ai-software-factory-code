@@ -12,6 +12,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // casesFromEvent writes, inside the transaction tx that inserted event e,
@@ -93,7 +95,11 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 // a case at the human. An ask that names its case (OpenTrip's face) puts
 // that case at the human with its comment and appends the human's step,
 // while the case is live and the asking card's. One that names none,
-// another card's case or a case that ended goes by its words.
+// another card's case or a case that ended goes by its words, but a plan's
+// face whose case ended opens none: its answer ended it. A planner's row
+// opens its case open at rung 0, due at the row, with no step: it climbs
+// to its face. One the factory answered as it asked it (settled) has no
+// wake, for that answer comes in the same filing.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 		comment, _ := toInt(e.Detail["comment"])
@@ -112,6 +118,9 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return false, err
+		}
+		if revision, _ := toInt(e.Detail["revision"]); revision > 0 {
+			return false, nil
 		}
 	}
 	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, e.TaskID).Scan)
@@ -146,26 +155,32 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		}
 		step.CaseID = live.ID
 	}
-	opened := false
+	opened, onRungs := false, false
 	if step.CaseID == 0 {
 		if c.Follows, err = newestEndedCase(ctx, tx, t.ID); err != nil {
 			return false, err
+		}
+		if _, settled := e.Detail["settled"]; c.Status == CaseOpen && !settled {
+			c.NextWakeAt = &e.At
 		}
 		var got Case
 		if got, opened, err = openCase(ctx, tx, c); err != nil {
 			return false, err
 		}
-		step.CaseID = got.ID
+		step.CaseID, onRungs = got.ID, got.Status == CaseOpen
 		if !opened && !healed {
 			step.Found = "asked again: " + c.Problem
 		}
 	}
-	// the ask puts its case at the human, a live case it asks again too
-	if _, err := tx.ExecContext(ctx, `UPDATE cases SET status = $2 WHERE id = $1 AND status = $3`, step.CaseID, CaseAtHuman, CaseOpen); err != nil {
-		return false, err
+	if c.Status == CaseAtHuman {
+		// the ask puts its case at the human, a live case it asks again too
+		if _, err := tx.ExecContext(ctx, `UPDATE cases SET status = $2 WHERE id = $1 AND status = $3`, step.CaseID, CaseAtHuman, CaseOpen); err != nil {
+			return false, err
+		}
+		onRungs = false
 	}
-	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil {
-		return false, err
+	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil || onRungs {
+		return opened, err
 	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
@@ -206,7 +221,8 @@ var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloo
 // caseFromAsk maps question_asked event e of task t to the case it opens
 // or appends to; head is the task's newest gate head, "" for none. A plan
 // question's case keys on its words and its revision, which its answer
-// finds it by: a later revision asking the same words opens its own.
+// finds it by: a later revision asking the same words opens its own. It
+// opens open, to climb to its face; every other ask's at the human.
 func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	ask := askSentence(e)
 	if strings.TrimSpace(ask) == "" {
@@ -216,7 +232,7 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	revision, _ := toInt(e.Detail["revision"])
 	facts := map[string]any{}
 	maps.Copy(facts, e.Detail)
-	var kind CaseKind
+	kind, status := CaseKind(""), CaseOpen
 	switch {
 	case revision > 0 && str("kind") == QuestionConfirmation:
 		kind, head = CasePlanConfirmation, planHead(revision)
@@ -226,9 +242,9 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = CaseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		kind = HumanCardKind(kind, t)
+		kind, status = HumanCardKind(kind, t), CaseAtHuman
 	}
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: status,
 		Problem: ask, Facts: facts}
 	if slices.Contains(cardMoneyKinds, kind) {
 		c.Money = &CaseMoney{Kind: string(kind), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR}
@@ -321,14 +337,16 @@ func caseStateKey(kind CaseKind, ask, head string) string {
 func planHead(revision int) string { return fmt.Sprintf("r%d", revision) }
 
 // resolvePlanCase resolves the live case of the plan question
-// plan_question_answered event e answers.
+// plan_question_answered event e answers, by who answered it as the
+// question stores it: the row's actor in a wake is the venue's human. A
+// question with no answer stored resolves nothing.
 func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
-	var text, kind string
+	var text, kind, by string
 	revision, _ := toInt(e.Detail["revision"])
 	index, _ := toInt(e.Detail["index"])
-	err := q.QueryRowContext(ctx, `SELECT text, COALESCE(kind, '') FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = $3`,
-		e.TaskID, revision, index).Scan(&text, &kind)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := q.QueryRowContext(ctx, `SELECT text, COALESCE(kind, ''), COALESCE(answered_by, '') FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = $3`,
+		e.TaskID, revision, index).Scan(&text, &kind, &by)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && by == "" {
 		return nil
 	}
 	if err != nil {
@@ -352,16 +370,16 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 	if decision, _ := e.Detail["decision"].(string); decision != "" {
 		args["decision"] = decision
 	}
-	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: "answer", Args: args}))
+	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: "answer", Args: args}))
 }
 
-// RequestCase is the case pending approval request a opens: a merge
-// request's merge case at the human, its pull request at the head the
-// gates passed, a resource request's, which holds the request's spec and
-// opens no row, or a plan's criteria request's plan_criteria case, open at
-// rung 0 and due at the request's opening, with the words its face posts.
+// RequestCase is the case pending approval request a opens, open at rung 0
+// and due at the request's opening: a merge request's merge case, its pull
+// request at the head the gates passed, or a plan's criteria request's
+// plan_criteria case, with the words its face posts. A resource request's
+// holds the request's spec at the human and opens no row.
 func RequestCase(a ApprovalRequest) (Case, error) {
-	c := Case{TaskID: a.TaskID, Repository: a.Project, Status: CaseAtHuman}
+	c := Case{TaskID: a.TaskID, Repository: a.Project, Status: CaseOpen, NextWakeAt: &a.CreatedAt}
 	if a.Kind == ApprovalMerge {
 		var spec MergeSpec
 		if err := json.Unmarshal(a.Spec, &spec); err != nil {
@@ -403,6 +421,7 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 	}
 	if a.Kind == ApprovalResource {
 		// a resource request opens no case: its face is the request's own
+		c.Status, c.NextWakeAt = CaseAtHuman, nil
 		c.StateKey, c.Problem, c.Facts = fmt.Sprintf("%s:%d", a.Kind, a.ID), a.Reason, map[string]any{}
 		if err := json.Unmarshal(a.Spec, &c.Facts); err != nil {
 			return Case{}, err
@@ -410,7 +429,7 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 		c.Facts["approval"], c.Facts["approval_kind"] = a.ID, a.Kind
 		return c, nil
 	}
-	c.Kind, c.Status, c.NextWakeAt = CasePlanCriteria, CaseOpen, &a.CreatedAt
+	c.Kind = CasePlanCriteria
 	c.StateKey = fmt.Sprintf("%s:%d", a.Kind, a.ID)
 	c.Problem = cmp.Or(a.Reason, "The plan's criteria wait for a verdict")
 	c.Facts = map[string]any{"approval": a.ID, "approval_kind": a.Kind}
@@ -432,8 +451,7 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 }
 
 // RequestRow is the approval_requested row of request a: its case's facts
-// (RequestCase) and its kind, which the inbox's poke writes the card's
-// face from.
+// (RequestCase) and its kind.
 func RequestRow(a ApprovalRequest) (map[string]any, error) {
 	c, err := RequestCase(a)
 	if err != nil {
@@ -465,26 +483,33 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
 		return false, err
 	}
-	got, opened, err := openCase(ctx, q, c)
-	if err != nil || !opened || c.Status == CaseOpen {
-		return opened, err
-	}
-	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: got.ID, Rung: 3, Actor: FactoryDecider})
-	return err == nil, err
+	_, opened, err := openCase(ctx, q, c)
+	return opened, err
 }
 
 // reopenMergeCase puts the merge case that request id's decision ended
-// back at the human, its end and any wake it carried cleared, with a step
-// naming reason, the why of the undo; with no such case, or a live one of
-// its key, it opens the request's case as openRequestCase does.
+// back open at rung 0, due now, its end, its wake events and its brief
+// cleared, so it climbs again at once. The undo, "approval undone:" and
+// reason, is a step of rung 0 handed up, and the found of each rung 1 and
+// rung 2 step the decision ended, which the face then reads as that rung's
+// hand-up. With no such case, or a live one of its key, it opens the
+// request's case as openRequestCase does.
 func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
+	found := "approval undone: " + reason
 	var caseID int64
-	err := q.QueryRowContext(ctx, `UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL,
-		owner_rung = 3, wake_on = '{}', next_wake_at = NULL, brief = '', brief_detail = '', brief_error = ''
-		WHERE c.id = (SELECT max(id) FROM cases WHERE kind = $2 AND (facts->>'approval')::bigint = $1) AND c.status NOT IN `+caseLiveStatuses+`
-		AND NOT EXISTS (SELECT 1 FROM cases o WHERE o.task_id = c.task_id AND o.kind = c.kind AND o.state_key = c.state_key
-		    AND o.status IN `+caseLiveStatuses+`)
-		RETURNING c.id`, id, CaseMergeApproval, CaseAtHuman).Scan(&caseID)
+	// the decision ended the rungs' steps resolved with no decision of their own
+	err := q.QueryRowContext(ctx, `WITH reopened AS (
+		    UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL,
+		        owner_rung = 0, wake_on = '{}', next_wake_at = now(), brief = '', brief_detail = '', brief_error = ''
+		    WHERE c.id = (SELECT max(id) FROM cases WHERE kind = $2 AND (facts->>'approval')::bigint = $1) AND c.status NOT IN `+caseLiveStatuses+`
+		    AND NOT EXISTS (SELECT 1 FROM cases o WHERE o.task_id = c.task_id AND o.kind = c.kind AND o.state_key = c.state_key
+		        AND o.status IN `+caseLiveStatuses+`)
+		    RETURNING c.id
+		), steps AS (
+		    UPDATE case_steps SET outcome = $4, found = $5
+		    WHERE case_id IN (SELECT id FROM reopened) AND rung IN (1, 2) AND outcome = $6 AND decision = ''
+		)
+		SELECT id FROM reopened`, id, CaseMergeApproval, CaseOpen, StepHandedUp, found, StepResolved).Scan(&caseID)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = openRequestCase(ctx, q, id)
 		return err
@@ -492,7 +517,7 @@ func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string)
 	if err != nil {
 		return err
 	}
-	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: caseID, Rung: 3, Actor: FactoryDecider, Found: "approval undone: " + reason})
+	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: caseID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
 	return err
 }
 
@@ -501,8 +526,13 @@ func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string)
 var requestCaseKinds = map[string]CaseKind{ApprovalMerge: CaseMergeApproval, ApprovalCriteria: CasePlanCriteria, ApprovalCriteriaRerun: CasePlanCriteria}
 
 // endRequestCase ends task taskID's live case of approval request kind by
-// the request's decision: status approved or denied, by whom, with note.
+// the request's decision: status approved or denied, by whom, with note. A
+// plan's request denied by its decider (request_changes) ends every live
+// case of the plan's questions with that decider's revise.
 func endRequestCase(ctx context.Context, q rowQuerier, taskID, kind, status, by, note string) error {
+	if kind == ApprovalPlan && status == "denied" {
+		return revisePlanCases(ctx, q, taskID, by, note)
+	}
 	ck, ok := requestCaseKinds[kind]
 	if !ok {
 		return nil
@@ -543,6 +573,30 @@ func endHoldCase(ctx context.Context, q rowQuerier, e Event) error {
 // HeldPlanSettled is why the factory's close of a held plan withdraws its
 // ask: no promise was left open.
 const HeldPlanSettled = "every promise of the plan is settled, and the plan closed"
+
+// revisePlanCases ends plan taskID's live question and confirmation cases
+// by by's request for changes, note: resolved with by's revise, or
+// withdrawn with note when the factory denied the request.
+func revisePlanCases(ctx context.Context, q rowQuerier, taskID, by, note string) error {
+	var ids []int64
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE(array_agg(id ORDER BY id), '{}') FROM cases WHERE task_id = $1 AND kind IN ($2, $3) AND `+caseLive,
+		taskID, CasePlanQuestion, CasePlanConfirmation).Scan(pgtype.NewMap().SQLScanner(&ids)); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		var err error
+		if by == FactoryDecider {
+			err = withdrawCase(ctx, q, id, note)
+		} else {
+			err = resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: CaseAnswer,
+				Args: map[string]any{"answer": note, "decision": DecisionRevise}})
+		}
+		if err := caseEnded(err); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // decideRequestCase ends live case id of kind by its request's decision and
 // answers how it ended. The factory's denial (a superseded head, an ended
@@ -677,7 +731,7 @@ func pendFaced(ctx context.Context, tx *sql.Tx, id, comment int64) error {
 	if err != nil || !runHears(t, c) || caseBesideRun(c, t) {
 		return err
 	}
-	return pendCaseSignal(ctx, tx, id, t.ID, SignalCaseFaced, facedSignal(id, comment))
+	return pendCaseSignal(ctx, tx, id, t.ID, SignalCaseFaced, facedSignal(c, comment))
 }
 
 // caseEnded drops ErrNotFound from err: the case had ended already.

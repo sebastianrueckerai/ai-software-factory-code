@@ -2102,7 +2102,7 @@ func (s *AcceptanceRig) PlanClosed(context.Context, string) (time.Time, bool, er
 
 func (s *AcceptanceRig) PlanMerged(context.Context, string) (bool, error) { return false, nil }
 
-// requestCaseOf is the case the store opens for pending request q,
+// requestCaseOf is the case of pending request q once its climb faced it,
 // numbered 7000 and its id: a merge or a criteria request's, none for a
 // resource or a plan request.
 func requestCaseOf(q factoryd.ApprovalRequest) (factoryd.Case, bool, error) {
@@ -2110,6 +2110,6 @@ func requestCaseOf(q factoryd.ApprovalRequest) (factoryd.Case, bool, error) {
 		return factoryd.Case{}, false, nil
 	}
 	k, err := factoryd.RequestCase(q)
-	k.ID = 7000 + q.ID
+	k.ID, k.Status = 7000+q.ID, factoryd.CaseAtHuman
 	return k, err == nil, err
 }

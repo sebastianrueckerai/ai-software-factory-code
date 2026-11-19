@@ -384,20 +384,20 @@ func TestAnApprovalRequestOpensAMergeCaseAndItsDecisionResolvesIt(t *testing.T) 
 	id := openMerge(t, s, "abc1479")
 
 	c := onlyOpenCase(t, s)
-	if c.Kind != CaseMergeApproval || c.StateKey != "pr:1479@abc1479" || c.Status != CaseAtHuman ||
+	if c.Kind != CaseMergeApproval || c.StateKey != "pr:1479@abc1479" || c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil ||
 		c.Problem != "Pull request #1479 waits for a merge approval" || c.Repository != "sf/r" {
-		t.Fatalf("merge case = %+v", c)
+		t.Fatalf("merge case = %+v; want it open at rung 0 with its wake", c)
 	}
 	if c.Facts["pr"] != float64(1479) || c.Facts["class"] != "standard" || c.Facts["red_checks"] != true || c.Facts["approval"] != float64(id) {
 		t.Fatalf("merge facts = %v", c.Facts)
 	}
-	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Outcome != StepInProgress {
-		t.Fatalf("steps = %+v; want one running rung 3 step", steps)
+	if steps := caseStepsOf(t, s, c.ID); len(steps) != 0 {
+		t.Fatalf("steps = %+v; want none: rung 0 takes the case at its wake", steps)
 	}
 	// an answer is no word on a merge
 	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaWebhook, map[string]any{"comment": int64(27009)})
-	if got := caseByID(t, s, c.ID); got.Status != CaseAtHuman {
-		t.Fatalf("merge case after an answer = %+v; want it at the human", got)
+	if got := caseByID(t, s, c.ID); got.Status != CaseOpen {
+		t.Fatalf("merge case after an answer = %+v; want it open", got)
 	}
 
 	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
@@ -424,8 +424,8 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 	if got := caseByID(t, s, first.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, superseded) {
 		t.Fatalf("superseded case = %+v, resolution %+v; want withdrawn %+v", got, got.Resolution, superseded)
 	}
-	if steps := caseStepsOf(t, s, first.ID); len(steps) != 1 || steps[0].Outcome != StepWithdrawn {
-		t.Fatalf("superseded case's steps = %+v; want the one step withdrawn", steps)
+	if steps := caseStepsOf(t, s, first.ID); len(steps) != 0 {
+		t.Fatalf("superseded case's steps = %+v; want none: it never climbed", steps)
 	}
 	if second.StateKey != "pr:1479@h2" || second.Follows != first.ID {
 		t.Fatalf("second merge case = %+v; want pr:1479@h2 following %d", second, first.ID)
@@ -442,8 +442,8 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 		t.Fatalf("ReopenApproval: %v", err)
 	}
 	third := onlyOpenCase(t, s)
-	if third.StateKey != "pr:1479@h2" || third.Follows != second.ID || third.Status != CaseAtHuman {
-		t.Fatalf("reopened merge case = %+v; want pr:1479@h2 at the human following %d", third, second.ID)
+	if third.StateKey != "pr:1479@h2" || third.Follows != second.ID || third.Status != CaseOpen {
+		t.Fatalf("reopened merge case = %+v; want pr:1479@h2 open following %d", third, second.ID)
 	}
 
 	if err := s.DecideApproval(ctx, b, ApprovalMerge, "denied", "sebastian", "changes requested: no"); err != nil {
@@ -455,15 +455,16 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 	if err := s.UndecideApproval(ctx, b, "the signal failed"); err != nil {
 		t.Fatalf("UndecideApproval: %v", err)
 	}
-	if again := onlyOpenCase(t, s); again.ID != third.ID || again.Status != CaseAtHuman || again.Resolution != nil {
-		t.Fatalf("undecided merge case = %+v; want case %d at the human again", again, third.ID)
+	if again := onlyOpenCase(t, s); again.ID != third.ID || again.Status != CaseOpen || again.Resolution != nil {
+		t.Fatalf("undecided merge case = %+v; want case %d open again", again, third.ID)
 	}
 }
 
-// A decision whose signal failed is undone: the merge case it resolved
-// waits at the human again with a step that says why, and no second case
-// opens, so the digest reads no answer that changed nothing. The wake it
-// carried before its end is gone: it is the human's, and not due.
+// A decision whose signal failed is undone: the merge case it resolved is
+// open again at rung 0 with a step of rung 0 by factoryd, handed up, that
+// says why, and no second case opens, so the digest reads no answer that
+// changed nothing. The wake it carried before its end gives way to one due
+// now: the case climbs again at once.
 func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -486,22 +487,22 @@ func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	if got.Brief != "" || got.BriefDetail != "" {
 		t.Fatalf("the undone case keeps its brief %q / %q; want it cleared for the writer", got.Brief, got.BriefDetail)
 	}
-	if got.ID != c.ID || got.Status != CaseAtHuman || got.Resolution != nil || got.ResolvedAt != nil {
-		t.Fatalf("undone merge case = %+v, resolution %+v; want case %d at the human, unresolved", got, got.Resolution, c.ID)
+	if got.ID != c.ID || got.Status != CaseOpen || got.Resolution != nil || got.ResolvedAt != nil {
+		t.Fatalf("undone merge case = %+v, resolution %+v; want case %d open, unresolved", got, got.Resolution, c.ID)
 	}
-	if got.OwnerRung != 3 || len(got.WakeOn) != 0 || got.NextWakeAt != nil {
-		t.Fatalf("undone merge case = rung %d, on %v, at %v; want rung 3, no events, no wake", got.OwnerRung, got.WakeOn, got.NextWakeAt)
+	if got.OwnerRung != 0 || len(got.WakeOn) != 0 || got.NextWakeAt == nil || got.NextWakeAt.Before(past) {
+		t.Fatalf("undone merge case = rung %d, on %v, at %v; want rung 0, no events, a wake due now", got.OwnerRung, got.WakeOn, got.NextWakeAt)
 	}
-	if due, err := s.DueCases(ctx, time.Now(), 10); err != nil || len(due) != 0 {
-		t.Fatalf("DueCases = %v, %v; want none", caseIDs(due), err)
+	if due, err := s.DueCases(ctx, time.Now().Add(time.Second), 10); err != nil || !slices.Equal(caseIDs(due), []int64{c.ID}) {
+		t.Fatalf("DueCases = %v, %v; want the merge case", caseIDs(due), err)
 	}
 	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 1 {
 		t.Fatalf("CasesOf = %+v, %v; want the one merge case", cs, err)
 	}
 	steps := caseStepsOf(t, s, c.ID)
-	if len(steps) != 2 || steps[0].Outcome != StepResolved || steps[1].Rung != 3 || steps[1].Actor != FactoryDecider ||
-		steps[1].Found != "approval undone: no workflow for t1410" || steps[1].Outcome != StepInProgress {
-		t.Fatalf("steps = %+v; want the decided step and a running step naming the undo", steps)
+	if len(steps) != 1 || steps[0].Rung != 0 || steps[0].Actor != FactoryDecider ||
+		steps[0].Found != "approval undone: no workflow for t1410" || steps[0].Outcome != StepHandedUp {
+		t.Fatalf("steps = %+v; want one step of rung 0 handed up naming the undo", steps)
 	}
 
 	if err := s.DecideApproval(ctx, id, ApprovalMerge, "denied", "sebastian", "changes requested: no"); err != nil {
@@ -528,17 +529,73 @@ func TestAPlanAnswerResolvesItsQuestionsCase(t *testing.T) {
 	if c.Kind != CasePlanQuestion || c.Problem != "Which database?" || c.StateKey != "77a551c3111d00d9@r1" {
 		t.Fatalf("plan case = %+v", c)
 	}
-	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 1, "answer": "Postgres"})
+	if err := s.AnswerPlanQuestion(ctx, caseTask, rev, 1, "", "Postgres", ChatUser); err != nil {
+		t.Fatalf("AnswerPlanQuestion: %v", err)
+	}
+	// the console's row in a wake names the venue's human; the stored answer names who answered
+	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaChat, map[string]any{"revision": rev, "index": 1, "answer": "Postgres"})
 	got := caseByID(t, s, c.ID)
-	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: "answer", Args: map[string]any{"answer": "Postgres"}}); got.Status != CaseResolved ||
+	if want := (&CaseResolution{By: ChatUser, Rung: 2, Action: "answer", Args: map[string]any{"answer": "Postgres"}}); got.Status != CaseResolved ||
 		!reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("answered plan case = %+v, resolution %+v; want %+v", got, got.Resolution, want)
 	}
 }
 
+// A planner's row opens its case open at rung 0, due at the row, with no
+// step: the case climbs to its face. The identical re-file's confirmation,
+// which the factory answers in the same filing (settled), opens its case
+// with no wake, so no rung takes it before that answer. A face's row whose
+// case ended opens no case again, and an answer row whose question holds
+// no stored answer resolves nothing.
+func TestAPlannersRowOpensItsCaseOnTheRungs(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	rev, err := s.AddPlanRevision(ctx, caseTask, json.RawMessage(`{"summary": "one"}`), "s1")
+	if err != nil {
+		t.Fatalf("AddPlanRevision: %v", err)
+	}
+	if _, err := s.PutPlanQuestions(ctx, caseTask, rev, []PlanQuestion{{Text: "Which database?"}}); err != nil {
+		t.Fatalf("PutPlanQuestions: %v", err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: caseTask, IssueNumber: 1410, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": "Which database?", "revision": rev, "index": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	asked, err := s.TaskEventsOfKind(ctx, caseTask, EventQuestionAsked, 1)
+	if err != nil || len(asked) != 1 {
+		t.Fatalf("the planner's row: %+v, %v", asked, err)
+	}
+	c := onlyOpenCase(t, s)
+	if c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(asked[0].At) || len(caseStepsOf(t, s, c.ID)) != 0 ||
+		asked[0].Detail["case_id"] != float64(c.ID) {
+		t.Fatalf("plan case = %+v, steps %+v, row %+v; want it open at rung 0, due at its row, with no step, the row naming it", c, caseStepsOf(t, s, c.ID), asked[0].Detail)
+	}
+	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 1, "answer": "Postgres"})
+	if got := caseByID(t, s, c.ID); got.Status != CaseOpen {
+		t.Fatalf("case after an answer row with no stored answer = %+v; want it open", got)
+	}
+	if err := s.WithdrawCase(ctx, c.ID, "the test ends it"); err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which database?", "revision": rev, "index": 1,
+		"case_id": c.ID, "case_kind": string(CasePlanQuestion), "comment": 501})
+	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 1 {
+		t.Fatalf("cases after the ended case's face = %+v, %v; want the one ended case", cs, err)
+	}
+	if _, _, err := s.PutPlanConfirmation(ctx, caseTask, rev, PlanQuestion{Text: "Confirmation of revision 1"}); err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Confirmation of revision 1", "revision": rev, "index": 2,
+		"kind": QuestionConfirmation, "settled": "the same plan as revision 0, confirmed there"})
+	settled := onlyOpenCase(t, s)
+	if settled.Kind != CasePlanConfirmation || settled.Status != CaseOpen || settled.NextWakeAt != nil {
+		t.Fatalf("the settled confirmation's case = %+v; want it open with no wake", settled)
+	}
+}
+
 // One answer of a plan with three open questions resolves its own question's
-// case only; the other two stay at the human, their facts holding the
-// planner's recommended answer and grounds.
+// case only; the other two stay live, their facts holding the planner's
+// recommended answer and grounds.
 func TestAPlanAnswerResolvesOnlyItsOwnQuestionsCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -557,6 +614,9 @@ func TestAPlanAnswerResolvesOnlyItsOwnQuestionsCase(t *testing.T) {
 	for i, q := range qs {
 		recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": q.Text, "choices": q.Choices,
 			"recommended": q.Recommended, "grounds": q.Grounds, "revision": rev, "index": i + 1})
+	}
+	if err := s.AnswerPlanQuestion(ctx, caseTask, rev, 2, "", "none", "sebastian"); err != nil {
+		t.Fatalf("AnswerPlanQuestion: %v", err)
 	}
 	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 2, "answer": "none"})
 	open, err := s.OpenCasesOf(ctx, caseTask)

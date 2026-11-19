@@ -422,7 +422,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !runHears(t, c) {
 		return out, nil
 	}
-	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c.ID, out.Comment))
+	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c, out.Comment))
 	if out.Comment != 0 {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
@@ -630,19 +630,18 @@ func answerKeys(answers []Answer) []string {
 }
 
 // Proposes says rung 2's answer action at autonomy state is a proposal the
-// human confirms, not an action that runs: never at full auto, at autonomous
-// for a merge approval alone, at assisted and manual for every action a
-// human may take. An action only the rungs take (route_approval) runs at
-// every level: it asks nobody for anything the human could confirm.
+// human confirms, not an action that runs: never at full auto or
+// autonomous, at assisted and manual for every action a human may take. A
+// merge decision below full auto is refused before it could be one
+// (mergeRuleRefusal). An action only the rungs take (route_approval) runs
+// at every level: it asks nobody for anything the human could confirm.
 func Proposes(state, action string) bool {
 	if a, ok := ActionByName(action); ok && !a.Rungs[3] {
 		return false
 	}
 	switch state {
-	case policy.AutonomyFullAuto:
+	case policy.AutonomyFullAuto, policy.AutonomyAutonomous:
 		return false
-	case policy.AutonomyAutonomous:
-		return action == ActApproveMerge
 	}
 	return true
 }
@@ -773,7 +772,7 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 			step.Outcome = StepWithdrawn
 			resolution.Reason = cmp.Or(strings.TrimSpace(res.Note), "withdrawn by "+in.By)
 		} else if runHears(t, c) {
-			resolved := resolvedSignal(in, res, c.ID, comment)
+			resolved := resolvedSignal(in, res, c, comment)
 			sig = &resolved
 		}
 		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step, sig)
@@ -857,9 +856,9 @@ func runHears(t Task, c Case) bool {
 }
 
 // resolvedSignal is the case_resolved of answer in, res as the run takes
-// it, on case caseID, carried by comment.
-func resolvedSignal(in ActInput, res Resolution, caseID, comment int64) TaskSignal {
-	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: in.Rung, By: in.By, Res: res, Comment: comment}}
+// it, on case c, carried by comment.
+func resolvedSignal(in ActInput, res Resolution, c Case, comment int64) TaskSignal {
+	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: comment, Again: asksAgain(c)}}
 }
 
 // signalRun signals card taskID's run. A failed signal is logged: the
@@ -983,7 +982,7 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if why == "" {
 		return ""
 	}
-	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" {
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" && mergeRuleRefusal(f, in.Rung, a.Name) == "" {
 		// the approval card's own remedies: a factory pull request's checks run again, an agent's goes back
 		remedy := "return it to the agent with what to change (`deny_merge` with `request_changes`) or close it (`deny_merge` with `reject`)"
 		if f.Factory {
@@ -991,7 +990,7 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 		}
 		return why + ", and " + who(in.Rung) + " may " + remedy
 	}
-	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" {
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" && mergeRuleRefusal(f, in.Rung, a.Name) == "" {
 		return why + ", and " + who(in.Rung) + " may wait for them to settle or close it (`deny_merge` with `reject`)"
 	}
 	var names []string

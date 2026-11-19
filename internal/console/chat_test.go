@@ -1559,17 +1559,16 @@ func equal(t *testing.T, what string, got, want any) {
 // boardText is the board read of the chat rig's project, its pool with no
 // draws first.
 var boardText = defaultPoolRead() + ".\n" + `Open cards:
-Needs you (1):
-  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
-Queued (1):
+Needs you (2):
   #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR
+  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
+Queued (0):
 In progress (1):
   #11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox)
 Finished cards, ended in the last 7 days and open no more:
 Done (0):
-Approval requests waiting (2):
-  resource request 3 of t-res
-  merge request 4 of t-m (#5), pull request #9`
+Approval requests waiting (1):
+  resource request 3 of t-res`
 
 // A text reply streams piece by piece and ends with done; it acts on
 // nothing. The one model call goes out as the operator's on the month's
@@ -2548,7 +2547,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
 	}
 	equal(t, "stream text before board", events[0], `text {"text":"Let me look."}`)
-	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nNeeds you (1):`) {
+	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nNeeds you (2):`) {
 		t.Errorf("board tool line prefix mismatch: %s", events[1])
 	}
 	equal(t, "stream after board", events[2:], []string{
@@ -5181,6 +5180,12 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	if !found {
 		t.Fatal("t-m not found in tasks")
 	}
+	// a card that runs again holds no merge request: the factory denied it
+	for i := range r.approvals.rows {
+		if r.approvals.rows[i].TaskID == "t-m" && r.approvals.rows[i].Kind == factoryd.ApprovalMerge {
+			r.approvals.rows[i].Status = "denied"
+		}
+	}
 	g.replies = [][]string{{say("second answer")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how many cards are open?"}})
 	calls := g.calls()
@@ -5193,7 +5198,7 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	if !strings.Contains(firstSystem, "\nStatus: waiting on you; 1 working; 3 need you; ") {
 		t.Errorf("the first turn's status line counts no 1 working:\n%s", firstSystem)
 	}
-	if !strings.Contains(secondSystem, "\nStatus: waiting on you; 2 working; 3 need you; ") {
+	if !strings.Contains(secondSystem, "\nStatus: waiting on you; 2 working; 2 need you; ") {
 		t.Errorf("the second turn's status line counts no 2 working:\n%s", secondSystem)
 	}
 	var oldBoard string
@@ -5202,14 +5207,14 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 			oldBoard, _ = m["content"].(string)
 		}
 	}
-	if !strings.Contains(oldBoard, "Queued (1):\n  #5 t-m ") {
-		t.Fatalf("the first turn's board read holds no #5 queued:\n%s", oldBoard)
+	if !strings.Contains(oldBoard, "Needs you (2):\n  #5 t-m ") {
+		t.Fatalf("the first turn's board read holds no #5 in Needs you:\n%s", oldBoard)
 	}
 	stamp := then.UTC().Format("2006-01-02 15:04 UTC") + ", 120 min ago"
 	var replayed []string
 	for _, m := range secondMsgs[1:] {
 		content, _ := m["content"].(string)
-		if strings.Contains(content, "Queued (1):") {
+		if strings.Contains(content, "Needs you (2):") {
 			t.Errorf("the second turn's %s message holds the old board read:\n%s", m["role"], content)
 		}
 		replayed = append(replayed, fmt.Sprintf("%v %v", m["role"], content))

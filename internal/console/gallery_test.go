@@ -86,16 +86,11 @@ func inboxEntries(all []facefixtures.Fixture) []galleryEntry {
 	agent := map[string]any{"autonomy": "assisted", "decider": "agent"}
 	merged := card
 	merged.Status = "merged"
-	approval, err := factoryd.RequestCase(*merge.Approval)
-	if err != nil {
-		panic(err)
-	}
-	approval.Facts["kind"] = factoryd.ApprovalMerge
 	statement := strings.Repeat("The criteria gate ran twice on the same head, and the review raised the same two findings each time. ", 40)
 	rows := map[string][]factoryd.ChatMessage{
-		factoryd.EventQuestionAsked:     {poke(factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: capped.Ask.Detail}, card)},
+		factoryd.EventQuestionAsked: {poke(factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: capped.Ask.Detail}, card),
+			poke(factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: merge.Ask.Detail}, merge.Task)},
 		factoryd.EventQuestionWithdrawn: {poke(factoryd.Event{Kind: factoryd.EventQuestionWithdrawn, Detail: map[string]any{"reason": "the card ended"}}, card)},
-		factoryd.EventApprovalRequested: {poke(factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: approval.Facts}, merge.Task)},
 		factoryd.EventTaskEnded: {poke(factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "failed", "reason": "checks: the checks failed on c1."}}, card),
 			poke(factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "done"}}, card)},
 		factoryd.EventAllChildrenDone:   {poke(factoryd.Event{Kind: factoryd.EventAllChildrenDone, Detail: map[string]any{"cards": float64(5)}}, plan.Task)},

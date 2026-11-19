@@ -1419,12 +1419,15 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	if bt.Question != nil {
 		problem = bt.Question.Ask
 	}
+	key := ""
 	if k.Track == policy.TrackPlan {
 		if open := r.tasks.planCases(taskID); len(open) > 0 {
 			return open, nil
 		}
-		// a plan's case is its first open question
+		// a plan's case is its first open question, keyed on the newest
+		// revision as caseFromAsk keys it
 		if rev, ok, _ := r.tasks.PlanRevision(ctx, taskID, 0); ok {
+			key = fmt.Sprintf("rig@r%d", rev.Revision)
 			qs, _ := r.tasks.PlanQuestions(ctx, taskID, rev.Revision)
 			if i := slices.IndexFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() }); i >= 0 {
 				problem = qs[i].Text
@@ -1458,7 +1461,7 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 		}
 		kind, facts, money = trip.Kind, trip.Facts, trip.Money
 	}
-	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment, Facts: facts, Money: money}}, nil
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, StateKey: key, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment, Facts: facts, Money: money}}, nil
 }
 
 // planCases are the cases of a plan's newest revision at the human, one for
@@ -1625,8 +1628,19 @@ func newRig(t *testing.T) *rig {
 			for id, ask := range r.caseAsks {
 				d.Asks[id] = ask
 			}
+			// a pending merge request's case is on the desk, its card on the board or not
+			for _, a := range r.approvals.rows {
+				if a.Project == repository && a.Kind == factoryd.ApprovalMerge && !slices.ContainsFunc(tasks, func(bt factoryd.BoardTask) bool { return bt.ID == a.TaskID }) {
+					tasks = append(tasks, factoryd.BoardTask{Task: factoryd.Task{ID: a.TaskID, Repository: repository}})
+				}
+			}
 			for _, bt := range tasks {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
+				for _, q := range r.requestCases(ctx, bt.ID) {
+					if q.c.Kind == factoryd.CaseMergeApproval && !slices.ContainsFunc(open, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q.req, k) }) {
+						open = append(open, q.c)
+					}
+				}
 				for _, k := range open {
 					d.Cases = append(d.Cases, k)
 				}
@@ -2903,8 +2917,8 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		t.Errorf("the resource card, which no one suggests, holds a pick:\n%s", face)
 	}
 	face := faceOf(t, lane, "t-m")
-	for _, want := range []string{`action="/approvals/4/approve" hx-post="/approvals/4/approve" class="press" data-to="in-review">`,
-		`<input type="hidden" name="action" value="approve"><button type="submit" class="pick">Merge it</button></form>`,
+	for _, want := range []string{`action="/tasks/t-m/resolve" hx-post="/tasks/t-m/resolve" class="press" data-to="in-review">`,
+		`<input type="hidden" name="action" value="approve_merge"><button type="submit" class="pick">Merge it</button></form>`,
 		`<span class="by">model review&#39;s pick</span>`} {
 		if !strings.Contains(face, want) {
 			t.Errorf("the merge card lacks %q:\n%s", want, face)
@@ -2934,9 +2948,9 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="o-question">Merge this card&#39;s pull request?</p>`,
 		`<p class="o-askwhy">The change is high risk, and the factory&#39;s rules let only a human merge it.</p>`,
 		`<p class="o-by">suggested by the model review: <span class="quote">It approved the change with no finding, and the security audit raised 2 findings.</span></p>`,
-		`<input type="hidden" name="action" value="approve">`, `<input type="hidden" name="action" value="request_changes">`,
+		`<input type="hidden" name="action" value="approve_merge">`, `<input type="hidden" name="action" value="deny_merge">`,
 		`<span class="effect">Returns the pull request to its agent with your note.</span>`,
-		`name="csrf" value="` + s.csrf + `"`, `action="/approvals/4/approve"`,
+		`name="csrf" value="` + s.csrf + `"`, `action="/tasks/t-m/resolve"`,
 		`<dt>Migration</dt><dd>yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code></dd>`,
 		`<dt>Model review</dt><dd>It approves the change. <span class="quote">adds the column safely</span>`,
 		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
@@ -3068,7 +3082,8 @@ func withRequestCards(r *rig) {
 func requestOf(t *testing.T, r *rig, ck *http.Cookie, task string, id int64) string {
 	t.Helper()
 	body := drawer(t, r, ck, task, "overview")
-	if !strings.Contains(body, fmt.Sprintf(`action="/approvals/%d/`, id)) {
+	// a merge request asks on its case's page, a resource request on its own
+	if !strings.Contains(body, fmt.Sprintf(`action="/approvals/%d/`, id)) && !strings.Contains(body, fmt.Sprintf(`name="case_id" value="%d"`, 7000+id)) {
 		t.Fatalf("the opened card of %s shows no answer of request %d:\n%s", task, id, body)
 	}
 	return approvalFaceOf(t, body, task)
@@ -3099,12 +3114,12 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	factory(true)
 	got := item()
 	for _, want := range []string{`action="/approvals/4/rerun"`, `<button type="submit" class="pick">Run the failed checks again</button>`,
-		`<input type="hidden" name="action" value="reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
+		`<input type="hidden" name="action" value="deny_merge/reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red factory request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`name="action" value="approve"`, "Send it back", `class="o-who"`} {
+	for _, not := range []string{`name="action" value="approve_merge"`, "Send it back", `class="o-who"`} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red factory request shows %q:\n%s", not, got)
 		}
@@ -3120,7 +3135,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 
 	factory(false)
 	got = item()
-	for _, want := range []string{`<input type="hidden" name="action" value="approve">` + "\n" + `<button type="submit" class="pick">Merge it</button>`,
+	for _, want := range []string{`<input type="hidden" name="action" value="approve_merge">` + "\n" + `<button type="submit" class="pick">Merge it</button>`,
 		`data-press="deny_merge/reject">Reject and close it</button> <span class="effect">Closes the pull request. The card ends.</span>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the green factory request lacks %q:\n%s", want, got)
@@ -3168,20 +3183,20 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 
 	page := drawer(t, r, ck, "t-m", "overview")
 	got := requestOf(t, r, ck, "t-m", 4)
-	for _, want := range []string{`<input type="hidden" name="action" value="request_changes">`, `data-press="deny_merge">Send it back</button>`,
-		`<input type="hidden" name="action" value="reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
+	for _, want := range []string{`<input type="hidden" name="action" value="deny_merge">`, `data-press="deny_merge">Send it back</button>`,
+		`<input type="hidden" name="action" value="deny_merge/reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red agent request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`name="action" value="approve"`, `action="/approvals/4/rerun"`, "Run the failed checks again"} {
+	for _, not := range []string{`name="action" value="approve_merge"`, `action="/approvals/4/rerun"`, "Run the failed checks again"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red agent request shows %q:\n%s", not, got)
 		}
 	}
 	r.fg.calls = nil
 	back := answerForm(t, page, factoryd.ActDenyMerge)
-	back.Values.Set("note", "make the stub match the interface")
+	back.Values.Set("deny_merge.note", "make the stub match the interface")
 	rec := r.do(post(back.Action, back.Values), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("return = %d: %s", rec.Code, rec.Body)
@@ -3229,14 +3244,14 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	}
 
 	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
-	if got := item(); strings.Contains(got, `name="action" value="approve"`) || strings.Contains(got, "healed") {
+	if got := item(); strings.Contains(got, `name="action" value="approve_merge"`) || strings.Contains(got, "healed") {
 		t.Errorf("the still-red card offers an approve or says the checks healed:\n%s", got)
 	}
 
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	r.fg.calls = nil
 	got := item()
-	for _, want := range []string{`<input type="hidden" name="action" value="approve">`, "<li>The checks healed after a re-run.</li>"} {
+	for _, want := range []string{`<input type="hidden" name="action" value="approve_merge">`, "<li>The checks healed after a re-run.</li>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the healed card lacks %q:\n%s", want, got)
 		}
@@ -3247,8 +3262,10 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 		}
 	}
 	// the button path reads the head's current checks as the viewer who
-	// asked for the board (#1013), the one forge call the read makes
-	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
+	// asked for the board (#1013), the one forge call a read makes: the
+	// opened card reads the request for its brief and for its case's page
+	equal(t, "the head's reads", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
+		"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
 }
 
 // A merge request is about the one head it recorded (#1091): when the
@@ -3268,7 +3285,7 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	body := drawer(t, r, ck, "t-m", "overview")
-	if strings.Contains(body, `name="action" value="approve"`) || strings.Contains(body, "healed") {
+	if strings.Contains(body, `name="action" value="approve_merge"`) || strings.Contains(body, "healed") {
 		t.Error("a moved green branch head offers an approve on the red recorded head")
 	}
 
@@ -3284,10 +3301,10 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
 	body = drawer(t, r2, ck2, "t-m", "overview")
-	if strings.Contains(body, `name="action" value="approve"`) || strings.Contains(body, "healed") {
+	if strings.Contains(body, `name="action" value="approve_merge"`) || strings.Contains(body, "healed") {
 		t.Errorf("the still-red moved head offers an approve or a healed line")
 	}
-	if !strings.Contains(body, `name="action" value="request_changes"`) || !strings.Contains(body, `name="action" value="reject"`) {
+	if !strings.Contains(body, `name="action" value="deny_merge"`) || !strings.Contains(body, `name="action" value="deny_merge/reject"`) {
 		t.Errorf("the still-red moved head lost its return and close")
 	}
 }

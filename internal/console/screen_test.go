@@ -1056,7 +1056,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 			t.Errorf("the merge item shows %s, which the opened card holds:\n%s", gone, face)
 		}
 	}
-	if strings.Count(face, "<form") != 1 || !strings.Contains(face, `action="/approvals/4/approve"`) {
+	if strings.Count(face, "<form") != 1 || !strings.Contains(face, `action="/tasks/t-m/resolve"`) || !strings.Contains(face, `name="action" value="approve_merge"`) {
 		t.Errorf("the merge item holds a form other than its pick's press:\n%s", face)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
@@ -1070,8 +1070,8 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 			t.Errorf("the merge ask lacks %s:\n%s", want, ask)
 		}
 	}
-	for what, want := range map[string]int{`<form `: 3, `action="/approvals/4/approve"`: 1, `<input type="hidden" name="action" value="request_changes">`: 1,
-		`<input type="hidden" name="action" value="reject">`: 1, `name="fund_eur"`: 0, `<textarea`: 2} {
+	for what, want := range map[string]int{`<form `: 3, `action="/tasks/t-m/resolve"`: 3, `<input type="hidden" name="action" value="approve_merge">`: 1,
+		`<input type="hidden" name="action" value="deny_merge">`: 1, `<input type="hidden" name="action" value="deny_merge/reject">`: 1, `name="fund_eur"`: 0, `<textarea`: 2} {
 		if got := strings.Count(ask, what); got != want {
 			t.Errorf("the merge ask carries %s %d times, want %d:\n%s", what, got, want, ask)
 		}

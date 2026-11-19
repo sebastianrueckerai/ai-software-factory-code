@@ -1165,10 +1165,9 @@ func (s *PGStore) BudgetStoppedThreads(ctx context.Context, repository string) (
 // person there for an analysis to enrich.
 var ErrNoAsk = errors.New("the card asks nothing")
 
-// AskSettledError says the ask an analysis targeted is settled already:
-// Kind the ask's kind word (question, merge, plan, criteria), Word the
-// settling event's reason word, By its actor.
-type AskSettledError struct{ Kind, Word, By string }
+// AskSettledError says the question an analysis targeted is settled
+// already: Word the settling event's reason word, By its actor.
+type AskSettledError struct{ Word, By string }
 
 func (e *AskSettledError) Error() string {
 	if e.By != "" {
@@ -1177,34 +1176,22 @@ func (e *AskSettledError) Error() string {
 	return "the ask is " + e.Word
 }
 
-// AskUnshownError says the card's open ask holds no case, so no face
-// shows an analysis of it: Kind the ask's kind word.
-type AskUnshownError struct{ Kind string }
+// AskUnshownError says the card's open question holds no case, so no face
+// shows an analysis of it.
+type AskUnshownError struct{}
 
-func (e *AskUnshownError) Error() string { return "no case shows the " + e.Kind + " ask" }
-
-// askKind is ask event e's kind word: "question" for a question asked,
-// the approval's own kind (merge, plan, criteria) for a request.
-func askKind(e Event) string {
-	if e.Kind == EventApprovalRequested {
-		kind, _ := e.Detail["kind"].(string)
-		return kind
-	}
-	return "question"
-}
+func (e *AskUnshownError) Error() string { return "no case shows the question" }
 
 // AttachAnalysis records what the chat agent found about the card's open
 // ask (the main agent concept): e, the analysis_attached row on the spine
 // with its repository, actor, via and detail, the store adding the card
 // and the findings. The card's face shows the newest one beside its ask
 // (CaseDesk), and no inbox row repeats it. The ask is the card's newest
-// open one of either family, a question asked or an approval requested, a
-// monitor's ask and a plan's request aside (the plan's questions are its
-// asks); of a plan's newest open revision, its oldest open question,
-// else its confirmation, as its card shows them; none open, the newest
-// ask there is refuses as AskSettledError with its kind and state, a
-// card without an ask as ErrNoAsk. The row names the ask's case, a
-// question's by its id, a request's by the approval its case holds; a
+// open question asked, a monitor's ask aside (a request's ask is its
+// case's face); of a plan's newest open revision, its oldest open
+// question, else its confirmation, as its card shows them; none open, the
+// newest ask there is refuses as AskSettledError with its state, a card
+// without an ask as ErrNoAsk. The row names the ask's case by its id; a
 // question whose row names no case refuses as AskUnshownError.
 func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
 	t, ok, err := s.Task(ctx, taskID)
@@ -1227,35 +1214,26 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 	revision := func(e *Event) int { n, _ := toInt(e.Detail["revision"]); return n }
 	for i := range events { // newest first
 		e := &events[i]
-		var family string
-		switch {
-		case e.Kind == EventQuestionAsked && e.Detail["case_kind"] != string(CaseMonitorFlag):
+		if e.Kind != EventQuestionAsked || e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			// a monitor's ask sits beside the card's own and is answered
 			// by its case's number: the analysis is the card's own ask's
-			family = "question"
-		case e.Kind == EventApprovalRequested && e.Detail["kind"] != ApprovalPlan:
-			family = "approval"
-		default:
 			continue
 		}
-		var st PokeSettle
-		if family == "question" {
-			// the question is its own birth among the events: it settles
-			// nothing. A criteria case's face waits on its request
-			st = SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: e.At},
-				events, t.Status, ApprovalWaits(pending, taskID))
-		} else {
-			rest := append(append([]Event{}, events[:i]...), events[i+1:]...) // a request never supersedes itself
-			st = SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventApprovalRequested, At: e.At},
-				rest, t.Status, ApprovalWaits(pending, taskID))
+		if revision(e) > 0 && e.Detail["case_kind"] == nil {
+			// the planner's row: its case climbs, and its face's row asks
+			continue
 		}
+		// the question is its own birth among the events: it settles
+		// nothing. A criteria or merge case's face waits on its request
+		st := SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: e.At},
+			events, t.Status, ApprovalWaits(pending, taskID))
 		if newest == nil {
 			newest, newestState = e, st
 		}
 		if !st.Open {
 			continue
 		}
-		if planRow := family == "question" && revision(e) > 0; planRow && (plan == nil || revision(e) == revision(plan)) {
+		if revision(e) > 0 && (plan == nil || revision(e) == revision(plan)) {
 			// the card opens on the revision's first open question, the
 			// oldest, and shows its confirmation last
 			plan = cmp.Or(plan, e)
@@ -1272,20 +1250,17 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 		if newest == nil {
 			return ErrNoAsk
 		}
-		return &AskSettledError{Kind: askKind(*newest), Word: newestState.Word, By: newestState.By}
+		return &AskSettledError{Word: newestState.Word, By: newestState.By}
 	}
-	ref, key := ask.Detail["case_id"], "case_id"
-	if ask.Kind == EventApprovalRequested {
-		ref, key = ask.Detail["approval"], "approval"
-	}
+	ref := ask.Detail["case_id"]
 	if ref == nil {
-		return &AskUnshownError{Kind: askKind(*ask)}
+		return &AskUnshownError{}
 	}
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
 	}
-	e.Detail["found"], e.Detail["source"], e.Detail[key] = found, "agent", ref
+	e.Detail["found"], e.Detail["source"], e.Detail["case_id"] = found, "agent", ref
 	if recommendation != "" {
 		e.Detail["recommendation"] = recommendation
 	}

@@ -155,7 +155,7 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 }
 
 // mergeRig is the rung rig with a pending merge request on t1's pull request 9
-// at head h2, whose case is at the human.
+// at head h2, whose case is open at rung 0.
 func mergeRig(t *testing.T, checks string) (rungRig, *boardStub, int64) {
 	t.Helper()
 	g := newRungRig(t, checks)
@@ -170,6 +170,49 @@ func mergeRig(t *testing.T, checks string) (rungRig, *boardStub, int64) {
 	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
 	stub := &boardStub{s: g.s, approval: id}
 	return g, stub, id
+}
+
+// mergeWakeRig is the rung 2 rig at autonomy state whose card t1 is in
+// review, its pull request 9 at head h2 reviewed and audited, with a
+// pending merge request of class standard at h2, whose case is open at
+// rung 0 and due at the request's opening, with no step yet; the stub
+// decides the request.
+func mergeWakeRig(t *testing.T, state string) (rungRig, *Waker, *fakeWakeStarter, *boardStub, Case) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	g.atAutonomy(state)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'in-review' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventGateAudit, map[string]any{"commit": "h2", "ran": true})
+	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9), "class": "standard", "factory": false, "red_checks": false})
+	c := g.liveCase(t, CaseMergeApproval)
+	var opened time.Time
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT created_at FROM approval_requests WHERE id = $1`, id).Scan(&opened); err != nil {
+		t.Fatal(err)
+	}
+	if c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(opened) || len(g.steps(t, c.ID)) != 0 {
+		t.Fatalf("case = %+v with steps %+v, want it open at rung 0, due at the request's opening %s, with no step", c, g.steps(t, c.ID), opened)
+	}
+	return g, w, starter, &boardStub{s: g.s, approval: id}, c
+}
+
+// approveWork is the console's approve of t1's pull request 9 as approver,
+// whose decision signals wf: Act's work for approve_merge.
+func (g rungRig) approveWork(wf Workflows, approver string) func(context.Context) (int64, error) {
+	return func(ctx context.Context) (int64, error) {
+		at := func(context.Context, int64) (policy.Version, bool) { return g.r.PgCfg().Policy(), true }
+		return 0, ApproveMerge(ctx, g.s, at, wf, "t1", 9, approver)
+	}
 }
 
 func (g rungRig) record(t *testing.T, kind string, detail map[string]any) {
@@ -286,6 +329,80 @@ func planCriteriaRig(t *testing.T, head string, cuts ...string) (rungRig, *Waker
 	}
 	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": ids})
 	return g, w, starter, &boardStub{s: g.s, approval: id}, g.liveCase(t, CasePlanCriteria)
+}
+
+// planWakeRig is the rung 2 rig at autonomy state whose card t1 is a plan
+// waiting for its answers at revision, under plan: its questions qs come
+// through AskQuestions, a confirmation among them as AskConfirmation's row
+// asks it, and its plan request is pending. Each question's case is open
+// at rung 0 with no step. It answers the request's id.
+func planWakeRig(t *testing.T, state string, revision int, plan Plan, qs ...PlanQuestion) (rungRig, *Waker, *fakeWakeStarter, int64) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	g.atAutonomy(state)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human', track = 'plan' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 1; n <= revision; n++ {
+		if _, err := g.s.AddPlanRevision(ctx, "t1", raw, fmt.Sprint("s", n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task, _, err := g.r.PgTask(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []PlanQuestion
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation {
+			asked = append(asked, q)
+		}
+	}
+	if err := g.r.AskQuestions(ctx, task, revision, asked); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation {
+			continue
+		}
+		idx, _, err := g.s.PutPlanConfirmation(ctx, "t1", revision, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.record(t, EventQuestionAsked, map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": QuestionConfirmation})
+	}
+	spec, err := json.Marshal(factoryd.PlanSpec{Revision: revision, SHA256: fmt.Sprint("s", revision)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: factoryd.ApprovalPlan, TaskID: "t1", Project: "demo-app/demo-app", Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": factoryd.ApprovalPlan, "revision": revision, "cards": len(plan.Cards)})
+	return g, w, starter, id
+}
+
+// commentBodies are the bodies of the comments on t1's issue, oldest first,
+// as the last write left each.
+func (g rungRig) commentBodies(t *testing.T) []string {
+	t.Helper()
+	g.forge.mu.Lock()
+	defer g.forge.mu.Unlock()
+	out := make([]string, len(g.forge.comments))
+	for i, raw := range g.forge.comments {
+		var c struct{ Body string }
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Fatal(err)
+		}
+		out[i] = c.Body
+	}
+	return out
 }
 
 // wakePass runs the case-wake pass on g's store and runner a second past

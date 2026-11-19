@@ -614,6 +614,17 @@ func (g *replayRig) stubs() {
 		g.mu.Unlock()
 		return nil
 	})
+	// the request's case opens at rung 0, and the case-wake pass, every 5
+	// seconds in production, climbs it at once
+	ok(ActivityRequestApproval, 3, func(ctx context.Context, taskID string, in ApprovalInput) error {
+		if err := g.r.RequestApproval(ctx, taskID, in); err != nil {
+			return err
+		}
+		m := &Monitor{Store: g.r.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }, Now: func() time.Time { return time.Now().Add(time.Second) }}
+		err := m.WakeCases(ctx)
+		g.drain(ctx)
+		return err
+	})
 	ok(ActivityOpenTrip, 2, func(ctx context.Context, in TripInput) (TripOutcome, error) {
 		out, err := g.r.openTrip(ctx, in)
 		g.drain(ctx)
@@ -831,18 +842,20 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //     next, 44b21aaa, the one inference. The stop opens a check-in spend case;
 //     rung 0 has no row for it; rung 1, scripted with production's answer (the
 //     human had the head taken through the gates again), re-verifies, the review
-//     approves 44b21aaa and the merge approval opens: cases [rung 1, open],
-//     two sessions, one human case, the card in review.
+//     approves 44b21aaa and the merge approval opens; rung 2's one turn hands
+//     it up: cases [rung 1, open], two sessions, one human case, one rung 2
+//     turn, the card in review.
 //   - 1462, a card whose first push drew review concerns and whose second push
 //     the review approved: the record holds the second session's gate-moment
 //     stop, a third session that never started and the red check of a main sync,
 //     none of which opens a case before the merge approval of the second head,
-//     which the merge rule leaves to a human: [open], two sessions, one human
-//     case, the card in review.
+//     which the merge rule leaves to a human, rung 2's one turn handing it up:
+//     [open], two sessions, one human case, one rung 2 turn, the card in review.
 //   - 1333, a revert card of a pull request factoryd opened, with no session:
 //     its review was refused by the gateway (a price error), so the merge
-//     approval, the only case, waits at the human and its why names the refusal,
-//     as the approval of a merge whose review did not run must. Left out: the
+//     approval, the only case, waits at the human after rung 2's one turn, and
+//     its why names the refusal, as the approval of a merge whose review did not
+//     run must. Left out: the
 //     revert merged on its own on 30 October with no human; the export takes the
 //     merge rule from the policy at export time, so the replay runs today's rule
 //     (a human decides), not that day's.
@@ -852,13 +865,15 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //   - 1380, a card whose first session stopped on the check-in's share and
 //     whose second pushed a head the month cap kept from a model review: rung 1,
 //     scripted with production's answer (go on, one more session), extends;
-//     then the merge approval, open at the human, whose why names the review
-//     that did not run and what it would have cost: [rung 1, open], two sessions,
-//     one human case, the card in review.
+//     then the merge approval, open at the human after rung 2's one turn, whose
+//     why names the review that did not run and what it would have cost: [rung
+//     1, open], two sessions, one human case, one rung 2 turn, the card in
+//     review.
 //   - 1396, a card whose first push the review approved (audit clear, checks
 //     green): nothing stops it, and the merge approval, a merge the merge rule
-//     leaves to a human, opens: [open], one session, one human case, the card in
-//     review. Left out, and so not proven: everything after the first approval.
+//     leaves to a human, opens and rung 2's one turn hands it up: [open], one
+//     session, one human case, one rung 2 turn, the card in review. Left out,
+//     and so not proven: everything after the first approval.
 //     Production's human answered the next stops (a budget floor, a session cap,
 //     a goal conflict) and the run restarted on a closing card; the replay has no
 //     human answers and no restart, the heads after 7b59efeb (a main sync, a
@@ -957,10 +972,11 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 }
 
 // A card of one pushed session whose review approves, in a project whose
-// merge rule is human: the run ends at the merge approval, which no rung
-// takes. By hand: one case of kind merge_approval, open at the human (rung
-// ResolvedOpen), one session, one human case, whose ask names the merge
-// approval; no rung 2 turn; the card in review.
+// merge rule is human: the run ends at the merge approval, which rung 2
+// analyses and hands up, for no rung decides it. By hand: one case of kind
+// merge_approval, open at the human (rung ResolvedOpen), one session, one
+// human case, whose ask names the merge approval; one rung 2 turn; the
+// card in review.
 func syntheticFixture() Fixture {
 	return Fixture{
 		Card: FixtureCard{Issue: 7, TaskID: "t-x", Repository: "owner/repo", Kind: "agent", Track: "direct", Source: "webhook", Size: "small",
@@ -968,7 +984,7 @@ func syntheticFixture() Fixture {
 		Sessions: []FixtureSession{{Attempt: 1, Outcome: "pushed", Commit: "c1", Pushed: true, CostEUR: 0.2, Calls: 10, AgentTimeS: 300, Summary: "pushed c1"}},
 		Gates:    []FixtureGate{{Head: "c1", Gate: "review", Verdict: "approve"}},
 		Checks:   []FixtureChecks{{Head: "c1", State: "success"}},
-		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "Merge “a card of one session”?", Why: "The change is of normal risk, and the factory's rules let only a human merge it."}}, Status: "in-review"},
+		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "Merge “a card of one session”?", Why: "The change is of normal risk, and the factory's rules let only a human merge it."}}, Rung2Turns: 1, Status: "in-review"},
 	}
 }
 
@@ -1015,8 +1031,9 @@ func rung2Fixture() Fixture {
 // raises a concern and whose second, on the re-verify, approves. By hand: the
 // push c1 is reviewed (concerns), the second session stops on the check-in's
 // policy class, rung 0 routes it (case 1, rung 0), the re-verify's review of
-// c1 approves, and the merge approval opens at the human (case 2, open): two
-// sessions, one human case whose why names the migration class.
+// c1 approves, and the merge approval reaches the human after rung 2's one
+// turn (case 2, open): two sessions, one human case whose why names the
+// migration class.
 func migrationTwinFixture() Fixture {
 	return Fixture{
 		Card: FixtureCard{Issue: 9, TaskID: "t-z", Repository: "owner/repo", Kind: "agent", Track: "direct", Source: "webhook", Size: "small",
@@ -1033,7 +1050,7 @@ func migrationTwinFixture() Fixture {
 		},
 		Checks: []FixtureChecks{{Head: "c1", State: "success"}},
 		Expect: &FixtureExpect{ResolvedByRung: []int{0, ResolvedOpen}, Sessions: 2, HumanCases: 1,
-			Face: []FixtureFace{{Ask: "pull request?", Why: "The change alters the database"}}},
+			Face: []FixtureFace{{Ask: "pull request?", Why: "The change alters the database"}}, Rung2Turns: 1},
 	}
 }
 

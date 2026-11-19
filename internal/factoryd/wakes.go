@@ -31,7 +31,7 @@ func wakeCaseIDs(asks []pendingAsk) []int64 {
 	return out
 }
 
-// The wakes' birth kinds: WakeAsk names asks and merge rows, WakeCard a
+// The wakes' birth kinds: WakeAsk names asks, WakeCard a
 // watched card's news, WakeTimer a timer the agent set, WakeRefill a
 // queue whose waiting cards fell below refill_below.
 const (
@@ -127,9 +127,8 @@ const (
 var ErrChatWakeCap = errors.New("this project's watches and timers are full")
 
 // wakeKinds are the events the Waker reads: the asks, the cases handed to
-// rung 2, the approval rows whose merge kind wakes like an ask, and the
-// task moves the watches judge.
-var wakeKinds = []string{EventQuestionAsked, EventCaseClimbed, EventApprovalRequested, EventTaskStatus, EventTaskEnded}
+// rung 2, and the task moves the watches judge.
+var wakeKinds = []string{EventQuestionAsked, EventCaseClimbed, EventTaskStatus, EventTaskEnded}
 
 // Loop passes every interval until ctx ends.
 func (w *Waker) Loop(ctx context.Context, every time.Duration) {
@@ -267,7 +266,10 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if settled, _ := e.Detail["settled"].(string); e.Kind == EventQuestionAsked && settled != "" {
 			continue // the factory answered the ask as it asked it: it wakes nobody
 		}
-		if e.Kind == EventCaseClimbed || (e.Kind == EventQuestionAsked || isMergeRow(e)) && judges {
+		if revision, _ := toInt(e.Detail["revision"]); e.Kind == EventQuestionAsked && revision > 0 {
+			continue // a plan's question, the planner's row or its face's: its case climbs to rung 2 on case_climbed
+		}
+		if e.Kind == EventCaseClimbed || e.Kind == EventQuestionAsked && judges {
 			if worked, err := w.staleCaseEvent(ctx, e); err != nil {
 				return err
 			} else if worked {
@@ -346,7 +348,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	if err != nil {
 		return err
 	}
-	asks, text := pending, w.askText(ctx, pending, v.ApproversOf(p.Repository), logins[0], p.MergeRule, p.Repository)
+	asks, text := pending, w.askText(ctx, pending, p.Repository)
 	birth := WakeAsk
 	if slices.ContainsFunc(pending, func(a pendingAsk) bool { return a.e.Kind == EventCaseClimbed }) {
 		birth = EventCaseClimbed
@@ -517,32 +519,24 @@ func WakeCards(text string) []string {
 
 var wakeRef = regexp.MustCompile(`#\d+\b|\bt-[0-9a-z][0-9a-z-]*`)
 
-// askText is the wake's text: its first line the asks, the cases handed to
-// rung 2 and the merge rows of the batch counted apart, with the refs of
-// their cards (WakeCards), then each with its card ref, a case
-// with its statement for rung 2 and the two ends of the turn, then the
-// project's board digest once. A batch with a merge row closes on one merge
-// sentence: approve_merge and deny_merge where the approver may merge, at
-// merge rule auto, else that a human approves merges.
-func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []string, login, mergeRule, repository string) string {
-	merges, cases := 0, 0
+// askText is the wake's text: its first line the asks and the cases handed
+// to rung 2 of the batch counted apart, with the refs of their cards
+// (WakeCards), then each with its card ref, a case with its statement for
+// rung 2 and the two ends of the turn, then the project's board digest
+// once.
+func (w *Waker) askText(ctx context.Context, asks []pendingAsk, repository string) string {
+	cases := 0
 	for _, a := range asks {
-		switch {
-		case isMergeRow(a.e):
-			merges++
-		case a.e.Kind == EventCaseClimbed:
+		if a.e.Kind == EventCaseClimbed {
 			cases++
 		}
 	}
 	var heads []string
-	if n := len(asks) - merges - cases; n > 0 {
+	if n := len(asks) - cases; n > 0 {
 		heads = append(heads, plural(n, "ask"))
 	}
 	if cases > 0 {
 		heads = append(heads, plural(cases, "case"))
-	}
-	if merges > 0 {
-		heads = append(heads, plural(merges, "merge"))
 	}
 	verb, who := "wait", "a human"
 	if len(asks) == 1 {
@@ -566,14 +560,11 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	for i, a := range asks {
 		t := cards[i]
 		line := askSentence(a.e)
-		switch {
-		case isMergeRow(a.e):
-			line = mergeLine(a.e, t)
-		case a.e.Kind == EventCaseClimbed:
+		if a.e.Kind == EventCaseClimbed {
 			line, _ = a.e.Detail["problem"].(string)
 		}
 		id, _ := toInt(a.e.Detail["case_id"])
-		withStatement := id != 0 && w.Statement != nil && !isMergeRow(a.e)
+		withStatement := id != 0 && w.Statement != nil
 		if withStatement {
 			// the statement's first line is the case's problem
 			fmt.Fprintf(&b, "\n%s:", cardRef(a.e, t))
@@ -587,7 +578,11 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 			fmt.Fprintf(&b, " %s\nThe statement of case %d could not be built: %s", line, id, err)
 			continue
 		}
-		fmt.Fprintf(&b, "\n%s\nEnd case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", statement, id)
+		end := fmt.Sprintf("End case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", id)
+		if kind := a.e.Detail["kind"]; kind == string(CasePlanQuestion) || kind == string(CasePlanConfirmation) {
+			end = fmt.Sprintf("End case %d with answer on the plan's revision and question, with no case_id, or with attach_analysis, case_id %d and the recommended answer.", id, id)
+		}
+		fmt.Fprintf(&b, "\n%s\n%s", statement, end)
 	}
 	if w.Board != nil {
 		if board, err := w.Board(ctx, repository); err != nil {
@@ -596,12 +591,6 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 		} else {
 			b.WriteString("\n\n" + board)
 		}
-	}
-	switch {
-	case merges > 0 && slices.Contains(approvers, login) && mergeRule == policy.MergeAuto:
-		b.WriteString("\n\nA merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis.")
-	case merges > 0:
-		b.WriteString("\n\nA human approves merges here.")
 	}
 	return b.String()
 }
@@ -625,42 +614,15 @@ func (w *Waker) staleCaseEvent(ctx context.Context, e Event) (bool, error) {
 	return slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }), nil
 }
 
-// isMergeRow says e is a merge approval row, the one approval kind that
-// wakes.
-func isMergeRow(e Event) bool {
-	return e.Kind == EventApprovalRequested && e.Detail["kind"] == ApprovalMerge
-}
-
-// mergeLine is a merge approval row's line on the wake: its pull request,
-// its risk class, its red checks, and a human's approval when card t is
-// a GitHub sync, which no agent approves.
-func mergeLine(e Event, t Task) string {
-	pr, _ := toInt(e.Detail["pr"])
-	class, _ := e.Detail["class"].(string)
-	line := fmt.Sprintf("merge of PR #%d, %s risk", pr, class)
-	if red, _ := e.Detail["red_checks"].(bool); red {
-		line += ", checks red"
-	}
-	if t.Source == SourceGitHubSync {
-		line += ", a human approves"
-	}
-	return line
-}
-
 // askKey is the ask's own identity on its mark: the issue comment the ask
 // filed, so a new ask wakes however it is worded, for two asks of one
 // sentence are two asks, and a reprocessed batch still wakes once, the
-// same comment keeping its key. An ask that files no comment (the
-// planner's) falls back to its sentence's hash. A merge approval row keys
-// its approval id, so each merge request of a card wakes once, and a case
-// handed to rung 2 its case id.
+// same comment keeping its key. An ask that files no comment (a merge's
+// face) falls back to its sentence's hash. A case handed to rung 2 keys
+// its case id.
 func askKey(e Event) string {
 	if id, _ := toInt(e.Detail["case_id"]); e.Kind == EventCaseClimbed {
 		return "case:" + strconv.Itoa(id)
-	}
-	if e.Kind == EventApprovalRequested {
-		id, _ := toInt(e.Detail["approval"])
-		return "approval:" + e.TaskID + ":" + strconv.Itoa(id)
 	}
 	if id, _ := toInt(e.Detail["comment"]); id > 0 {
 		return "ask:" + e.TaskID + ":" + strconv.Itoa(id)

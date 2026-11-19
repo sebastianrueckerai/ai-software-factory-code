@@ -230,6 +230,43 @@ func casesInView(r *http.Request) map[string]string {
 	return out
 }
 
+// waitsForFace says request a waits for its case's face before any page
+// lists it: a merge's, a plan's and a plan's criteria request's.
+func waitsForFace(a factoryd.ApprovalRequest) bool {
+	return a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan || a.Kind == factoryd.ApprovalCriteria ||
+		a.Kind == factoryd.ApprovalCriteriaRerun
+}
+
+// climbing is the live case that holds request q while it climbs its
+// rungs, false once it is at the human or with no live case.
+func (c *Console) climbing(ctx context.Context, q factoryd.ApprovalRequest) (factoryd.Case, bool, error) {
+	open, err := c.cfg.OpenCasesOf(ctx, q.TaskID)
+	if err != nil {
+		return factoryd.Case{}, false, err
+	}
+	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q, k) })
+	if i < 0 || open[i].Status == factoryd.CaseAtHuman {
+		return factoryd.Case{}, false, nil
+	}
+	return open[i], true, nil
+}
+
+// faced says a case at the human holds request a, its card on the board or
+// not: a request waitsForFace names waits for its case's face.
+func (cs caseSet) faced(a factoryd.ApprovalRequest) bool {
+	return slices.ContainsFunc(cs.desk.Cases, func(k factoryd.Case) bool {
+		return k.Status == factoryd.CaseAtHuman && k.TaskID == a.TaskID && factoryd.RequestAnswers(a, k)
+	})
+}
+
+// planFaced says a pending plan request of card taskID has its face: a
+// case of its revision at the human.
+func planFaced(v *boardView, cs caseSet, taskID string) bool {
+	return slices.ContainsFunc(v.pending, func(a factoryd.ApprovalRequest) bool {
+		return a.Kind == factoryd.ApprovalPlan && a.TaskID == taskID && cs.faced(a)
+	})
+}
+
 // caseFragment answers GET /projects/{name}/cards/{id}/cases/{case}: the
 // card's page with that key as Needs you shows it, which htmx swaps in for
 // the card's row.

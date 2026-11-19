@@ -79,8 +79,9 @@ func (r *Runner) scrubbed(err error) error {
 	return errors.New(r.scrub(err.Error()))
 }
 
-// RungTwoRecommendation is the action rung 2 recommends to the human, with
-// its arguments and the words that ground it.
+// RungTwoRecommendation is what rung 2 recommends to the human: an action
+// with its arguments, or on a plan's case the plan's answer (a choice of
+// its question, confirm or revise), and the words that ground it.
 type RungTwoRecommendation struct {
 	Action, Grounds string
 	Args            map[string]any
@@ -89,10 +90,11 @@ type RungTwoRecommendation struct {
 // HandUpRung2 ends rung 2's step on a case of card taskID handed up, with
 // found as its finding, the recommendation as its decision and grounds and
 // the turn's reads, and climbs: the human is asked once, with the
-// recommendation. The case is caseID, or with 0 the card's open case rung 2
-// holds. It answers the case it handed up, 0 when rung 2 holds no case of
-// the card, and the ask stays as it was. A case of another card is refused
-// with the card's open cases.
+// recommendation, which the face preselects as an action; a plan answer
+// is its decision alone. The case is caseID, or with 0 the card's open
+// case rung 2 holds. It answers the case it handed up, 0 when rung 2 holds
+// no case of the card, and the ask stays as it was. A case of another card
+// is refused with the card's open cases.
 func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, found string, rec RungTwoRecommendation, reads []CaseRead) (handled int64, err error) {
 	var c Case
 	var own CaseStep
@@ -132,15 +134,8 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 		return 0, nil
 	}
 	if rec.Action != "" {
-		a, ok := ActionByName(rec.Action)
-		if !ok || !a.Rungs[3] {
-			names := make([]string, 0, len(Actions))
-			for _, a := range Actions {
-				if a.Rungs[3] {
-					names = append(names, a.Name)
-				}
-			}
-			return 0, ErrActRefused(fmt.Sprintf("%q is no action the human may take: recommend %s", rec.Action, textutil.AndList(names)))
+		if err := rungTwoRecommends(c, rec.Action); err != nil {
+			return 0, err
 		}
 	}
 	t, _, err := r.task(ctx, taskID)
@@ -148,7 +143,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 		return 0, err
 	}
 	var did []CaseAction
-	if rec.Action != "" {
+	if rec.Action != "" && !planAsk(c) {
 		did = []CaseAction{{Action: rec.Action, Args: r.scrubArgs(rec.Args), Result: resultRecommended}}
 	}
 	found = textutil.Truncate(r.scrub(found), 1200)
@@ -172,6 +167,35 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 	r.atCaseOf(ctx, &f, t, c)
 	_, err = r.Climb(ctx, t, c, f, 2, found)
 	return c.ID, err
+}
+
+// rungTwoRecommends refuses rung 2's recommendation rec on case c unless the
+// human can take it there: a plan's question one of its choices, any
+// answer where it offers none, its confirmation confirm or revise, every
+// other case an action the human may take.
+func rungTwoRecommends(c Case, rec string) error {
+	switch c.Kind {
+	case CasePlanConfirmation:
+		if rec != DecisionConfirm && rec != DecisionRevise {
+			return ErrActRefused(fmt.Sprintf("%q is no decision of a plan's confirmation: recommend %s or %s", rec, DecisionConfirm, DecisionRevise))
+		}
+		return nil
+	case CasePlanQuestion:
+		if choices := factStrings(c, "choices"); len(choices) > 0 && !slices.Contains(choices, rec) {
+			return ErrActRefused(fmt.Sprintf("%q is no choice of this plan question: recommend one of %s", rec, textutil.AndList(choices)))
+		}
+		return nil
+	}
+	if a, ok := ActionByName(rec); ok && a.Rungs[3] {
+		return nil
+	}
+	names := make([]string, 0, len(Actions))
+	for _, a := range Actions {
+		if a.Rungs[3] {
+			names = append(names, a.Name)
+		}
+	}
+	return ErrActRefused(fmt.Sprintf("%q is no action the human may take: recommend %s", rec, textutil.AndList(names)))
 }
 
 // RefusedRung2 hands up each of cases whose rung 2 turn the model provider

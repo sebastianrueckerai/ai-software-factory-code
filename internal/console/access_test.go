@@ -325,7 +325,7 @@ func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k.ID = 90
+	k.ID, k.Status = 90, factoryd.CaseAtHuman
 	r.openCases = map[string][]factoryd.Case{"t-m": {k}, "t-g": {{ID: 91, TaskID: "t-g", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman,
 		Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Kind, f.Gate, f.Attempts = factoryd.CaseGateStop, "review", 1 })}}}
 	r.tasks.tasks = append(r.tasks.tasks,

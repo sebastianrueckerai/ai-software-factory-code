@@ -2405,7 +2405,7 @@ func MergeRequest(t Task, in ApprovalInput, failed []FailedTest, failedMore int)
 
 // openMergeRequest files task t's merge request of spec for pull request
 // pr at commit, and records it: the timeline's step and the
-// approval_requested row the inbox's poke answers.
+// approval_requested row that opens its case.
 func (r *Runner) openMergeRequest(ctx context.Context, t Task, pr int64, commit string, spec MergeSpec, reason string) error {
 	b, err := json.Marshal(spec)
 	if err != nil {

@@ -240,9 +240,9 @@ func caseDep(c Case, f CaseFacts) *DepFact {
 // row that fires resolves the case through Act. With none the case climbs
 // (climb): to rung 1 when it judges, else to the human. A
 // restart's trip (healedReason) waits on the card's newest live ask,
-// faces it when it has no face yet, and with none opens the stop the card
-// asked last as its own case again (healedTrip). An attempt after the
-// first takes what the attempts before left (retriedTrip).
+// climbs it when it has no face yet, and with none opens the stop the card
+// asked last as its own case again, which climbs (healedTrip). An attempt
+// after the first takes what the attempts before left (retriedTrip).
 func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (TripOutcome, error) {
 	t, _, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -411,7 +411,7 @@ func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 		r.rungs.Add(1)
 		go func() {
 			defer r.rungs.Done()
-			r.signalFaced(context.WithoutCancel(ctx), t.ID, live.ID, out.Comment)
+			r.signalFaced(context.WithoutCancel(ctx), t.ID, live, out.Comment)
 		}()
 	}
 	return out, err
@@ -467,10 +467,8 @@ func (r *Runner) refusedUp(ctx context.Context, c Case, steps []CaseStep, up *Ha
 		return nil, up, nil
 	case !slices.ContainsFunc(kept, func(s CaseStep) bool { return s.Rung == 1 || s.Rung == 2 }):
 		last := refused[len(refused)-1]
-		seen := rungName(last.Rung) + " did not judge it: the model provider refused."
-		if detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(last.Found, markProviderRefused), ":")); detail != "" {
-			seen += " The provider said:\n\n" + Quoted(detail)
-		}
+		// the provider's own words stay in the steps, which the card's life shows
+		seen := rungName(last.Rung) + " did not judge it: the model provider refused. The provider's words are in the card's life."
 		unjudged, err = r.notJudged(ctx, c, steps, markProviderRefused, last.Found, seen)
 		return unjudged, up, err
 	case !slices.ContainsFunc(kept, func(s CaseStep) bool {
@@ -597,20 +595,20 @@ const FacedTries = 4
 
 var FacedBackoff = time.Second
 
-// signalFaced tells card taskID's run the comment of case caseID's face: a
+// signalFaced tells card taskID's run the comment of case c's face: a
 // failed send is tried again, with a doubling pause, up to facedTries times
 // or until ctx ends, and one that delivers ends the signal's pending row,
 // which the heal pass sends again until one does.
-func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment int64) {
-	sig := facedSignal(caseID, comment)
+func (r *Runner) signalFaced(ctx context.Context, taskID string, c Case, comment int64) {
+	sig := facedSignal(c, comment)
 	pause := FacedBackoff
 	for try := 1; ; try++ {
 		err := r.cfg.Workflows.Signal(ctx, taskID, SignalCaseFaced, sig)
 		if err == nil {
-			r.settleSignal(ctx, caseID, SignalCaseFaced)
+			r.settleSignal(ctx, c.ID, SignalCaseFaced)
 			return
 		}
-		log.Printf("task %s: signal %s of case %d (try %d): %s", taskID, SignalCaseFaced, caseID, try, r.scrub(err.Error()))
+		log.Printf("task %s: signal %s of case %d (try %d): %s", taskID, SignalCaseFaced, c.ID, try, r.scrub(err.Error()))
 		if try == FacedTries {
 			return
 		}
@@ -652,11 +650,11 @@ func boardLevel(c Case) bool {
 
 // rungTwoTakes reports whether rung 2 takes case c: at every autonomy
 // level, where below autonomous its answer is a proposal the human
-// confirms (Proposes), every kind but a human card, the judgment budget's,
-// a merge approval and a closed plan's ask to close it. A case only a
-// human decides is taken for its analysis alone.
+// confirms (Proposes), every kind but a human card, the judgment budget's
+// and a closed plan's ask to close it. A case only a human decides is taken
+// for its analysis alone.
 func rungTwoTakes(c Case) bool {
-	return c.Kind != CaseHumanCard && c.Kind != CaseJudgmentBudget && c.Kind != CaseMergeApproval && c.Kind != CasePlanHeld
+	return c.Kind != CaseHumanCard && c.Kind != CaseJudgmentBudget && c.Kind != CasePlanHeld
 }
 
 // startRung2 hands case c to rung 2 as a step in progress due after the
@@ -692,15 +690,23 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case) (started bool, 
 	return true, nil, nil
 }
 
-// facedSignal is the case_faced that tells a run the comment of case
-// caseID's face.
-func facedSignal(caseID, comment int64) TaskSignal {
-	return TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: comment}}
+// facedSignal is the case_faced that tells a run the comment of case c's
+// face.
+func facedSignal(c Case, comment int64) TaskSignal {
+	return TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: c.ID, Rung: 3, By: FactoryDecider, Comment: comment, Again: asksAgain(c)}}
+}
+
+// asksAgain is the case whose question case c asks again (its fact
+// asks_again), 0 for none.
+func asksAgain(c Case) int64 {
+	id, _ := toInt(c.Facts["asks_again"])
+	return int64(id)
 }
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
 func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
-	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval || c.Kind == CasePlanCriteria || c.Kind == CasePlanHeld {
+	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval ||
+		c.Kind == CasePlanCriteria || c.Kind == CasePlanHeld || planAsk(c) {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.Checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
@@ -1088,11 +1094,13 @@ func askedAgainFound(reason string) string {
 // healedTrip is the trip, of id trip, that asks card t's standing question
 // again for in's reason (askedAgain): the card's newest live ask
 // (NewestAskCase) at the human waits on with a step and no new face. One
-// with no face yet gets it, on its own reason. With none, the stop the
-// card asked last (restartedStop) opens its own case again, as its trip
-// opened it. Either way the case takes the reason's step of rung 0, a trip
-// under the gate's mark (runGrants), and the face names what moves the
-// card on by the case's kind and reason.
+// with no face yet climbs on the facts it was opened with. With none, the
+// stop the card asked last (restartedStop) opens its own case again, as
+// its trip opened it, and the case names the case whose question it asks
+// again (asks_again): that ask's, else the card's newest ask case. Either
+// way the case takes the reason's step of rung 0, a trip under the gate's
+// mark (runGrants), and climbs from rung 0 with no resolver: the stop's
+// own rung 0 ran when it was first asked.
 func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip string) (TripOutcome, error) {
 	found := askedAgainFound(in.Reason)
 	c, err := r.store.NewestAskCase(ctx, t.ID)
@@ -1102,17 +1110,34 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 	if c.Status == CaseAtHuman {
 		return r.waitsAtHuman(ctx, t, c, found)
 	}
-	stop, _ := c.Facts["reason"].(string)
+	head, model := in.Head, in.Model
+	if c.ID != 0 {
+		head, _ = c.Facts["head"].(string)
+		model, _ = c.Facts["model"].(string)
+	}
+	f, err := r.tripFacts(ctx, t, head, model)
+	if err != nil {
+		return TripOutcome{}, err
+	}
 	if c.ID == 0 {
-		if stop, err = r.restartedStop(ctx, t, in.Reason); err != nil {
-			return TripOutcome{}, err
-		}
-		f, err := r.tripFacts(ctx, t, in.Head, in.Model)
+		stop, again, err := r.restartedStop(ctx, t, in.Reason)
 		if err != nil {
 			return TripOutcome{}, err
 		}
-		if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: t.ID, Reason: stop, Choices: in.Choices, Head: in.Head}); err != nil {
+		var cases []Case
+		if c, cases, err = r.tripCase(ctx, t, f, TripInput{TaskID: t.ID, Reason: stop, Choices: in.Choices, Head: in.Head,
+			Extra: map[string]any{"asked_again": in.Reason}}); err != nil {
 			return TripOutcome{}, err
+		}
+		if again == 0 {
+			for _, e := range cases {
+				if AnsweredOnCard(e.Kind) {
+					again = max(again, e.ID)
+				}
+			}
+		}
+		if again != 0 {
+			c.Facts["asks_again"] = again
 		}
 		if trip != "" {
 			c.Facts["trip"] = trip
@@ -1121,13 +1146,14 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 			return TripOutcome{}, err
 		}
 	}
+	r.atCaseOf(ctx, &f, t, c)
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
 	if out, ok, err := r.waitsOnRung(ctx, c); ok || err != nil {
 		return out, err
 	}
-	return r.Face(ctx, t, c, in.Reason, tripNext(c, stop), in.Choices, nil)
+	return r.Climb(ctx, t, c, f, 0, found)
 }
 
 // refreshDraftInfo swaps the draft note have in the info of the question
@@ -1160,16 +1186,17 @@ func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string
 }
 
 // restartedStop is the reason of the stop card t asked last, which reason
-// asks again: its newest ask's words, reason itself when it has none.
-func (r *Runner) restartedStop(ctx context.Context, t Task, reason string) (string, error) {
+// asks again, and the case that asked it: its newest ask's words and case,
+// reason itself and 0 when it has none.
+func (r *Runner) restartedStop(ctx context.Context, t Task, reason string) (string, int64, error) {
 	asks, err := r.store.AskAnchors(ctx, t.ID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if i := len(asks) - 1; i >= 0 && strings.TrimSpace(asks[i].Body) != "" {
-		return asks[i].Body, nil
+		return asks[i].Body, asks[i].CaseID, nil
 	}
-	return reason, nil
+	return reason, 0, nil
 }
 
 // retriedTrip is what the attempts before trip's left on a case, ok false
@@ -1520,8 +1547,10 @@ func tripNext(c Case, reason string) string {
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
 	case CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused:
 		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
-	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria, CasePlanHeld, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
+	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria, CasePlanHeld, CaseAgentRequestInfo:
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
+	case CasePlanQuestion, CasePlanConfirmation:
+		return "A reply on this issue asks the planner for a new revision instead. Closing the issue ends the plan."
 	case CaseDependencyClosed, CaseDependencyFailed:
 		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
 	}
@@ -1535,6 +1564,18 @@ const healedLine = "The factory restarted while this card waited for a human. It
 // asklessLine opens the comment of an ask the heal pass puts again on a
 // card that waited with no live ask.
 const asklessLine = "This card waited for a human with no question open. The factory asks its question on the board again."
+
+// askedAgainLine opens the comment of an ask the factory puts again for reason
+// (askedAgain), "" for any other reason.
+func askedAgainLine(reason string) string {
+	switch reason {
+	case HealedReason:
+		return healedLine
+	case AsklessReason:
+		return asklessLine
+	}
+	return ""
+}
 
 // IssueAsk opens the comment of ask row face on its card's issue with the
 // face as the board shows it: the ask, the why line and the story, each
@@ -1582,11 +1623,14 @@ func EndedCardCase(c Case, t Task) bool {
 }
 
 // caseBesideRun says no run of card t waits on case c's face: a monitor
-// flag's case, beside the card's run, a plan's wait on its failed card and
-// a plan's criteria case, opened on the done plan. Its face moves no card,
-// writes no escalated step and sends no case_faced.
+// flag's case, beside the card's run, a plan's wait on its failed card, a
+// plan's criteria case, opened on the done plan, a merge approval, whose
+// run waits on its request's decision, and a plan's question or
+// confirmation, whose run waits on its answer and moved the card itself.
+// Its face moves no card, writes no escalated step and sends no
+// case_faced.
 func caseBesideRun(c Case, t Task) bool {
-	return c.Kind == CaseMonitorFlag || c.Kind == CasePlanCriteria || PlanWaitCase(c, t)
+	return c.Kind == CaseMonitorFlag || c.Kind == CasePlanCriteria || c.Kind == CaseMergeApproval || planAsk(c) || PlanWaitCase(c, t)
 }
 
 // outlivesCard says case c stays live after card t ended: it is woken,
@@ -1600,12 +1644,18 @@ func outlivesCard(c Case, t Task) bool {
 // next, the line that says what moves the card on, and a question_asked
 // row, written before the wait, with its question and case c (none for the
 // zero Case); the agent's choices, if any, ride on that row and the
-// timeline's step. A monitor flag's case sits beside the card's run, and a
-// plan's case on its failed card and its criteria case beside the plan at
-// rest: its face is the comment, the row and the alert, and moves no
-// status, writes no ask the run reads and no timeline line. A criteria
-// case's comment is its request's words. It returns the comment's id: only
-// later comments answer it.
+// timeline's step. A monitor flag's case and a merge approval sit beside
+// the card's run, a plan's question and confirmation beside the plan's
+// wait for its answers, and a plan's case on its failed card and its
+// criteria case beside the plan at rest: its face is the comment, the row
+// and the alert, and moves no status, writes no ask the run reads and no
+// timeline line. A criteria case's comment is its request's words; a
+// merge's face posts none; a plan question's is its revision's one face
+// comment (planFaceComment), and its row the planner's again. A case that
+// asks its card's stop again (asked_again) says so above the stop. An
+// asked-again reason is a stop of its own on a case that has no face yet,
+// and on a case at the human repeats the face it had (repeatFace). It
+// returns the comment's id: only later comments answer it.
 func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *HandUp) (int64, error) {
 	beside := caseBesideRun(c, t)
 	repo, err := SplitRepo(t.Repository)
@@ -1623,10 +1673,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			return 0, errNoWait{cur.Status}
 		}
 	}
-	body := healedLine
-	if reason == AsklessReason {
-		body = asklessLine
-	}
+	body := askedAgainLine(reason)
 	stop := reason
 	if askedAgain(reason) {
 		stop, _ = c.Facts["reason"].(string)
@@ -1637,7 +1684,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	question := EscalationQuestion(reason)
 	var face map[string]any
-	whole := !askedAgain(reason) && !strings.HasPrefix(reason, screeningAsks)
+	whole := (!askedAgain(reason) || c.Status == CaseOpen) && !strings.HasPrefix(reason, screeningAsks)
 	if whole {
 		// the register writes the face on the facts Act judges, as the case
 		// reaches the human; a render reads it as stored
@@ -1655,6 +1702,10 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the face carries the agent's own words (a why line read from the
 		// stop's reason): the comment is sanitised as every outbound text
 		body = r.untrusted(t, IssueAsk(face))
+		if again := askedAgainLine(factString(c, "asked_again")); again != "" && !askedAgain(reason) {
+			// a case that asks its card's stop again says so above the stop
+			body = again + "\n\n" + body
+		}
 		// the stop's evidence follows the face as the agent wrote it, fenced
 		// so a mention rings no bell; the fence renders no link, so the
 		// links the sanitiser keeps follow it
@@ -1669,7 +1720,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
 		// hold-outs, so its ask is factoryd's words alone.
-		if t.Source != SourceProver {
+		if t.Source != SourceProver && !planAsk(c) {
 			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
 				view, _ := face["info"].(string)
 				face["info"] = strings.TrimSpace(view + "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal))
@@ -1693,7 +1744,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		body = reason
 	}
 	var id int64
-	if t.IssueNumber != 0 {
+	if t.IssueNumber != 0 && c.Kind != CaseMergeApproval && !planAsk(c) {
 		// a task without one (a report task) has its question on the card alone
 		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 			return 0, err
@@ -1720,6 +1771,12 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		step["choices"] = choices
 	}
 	asked := AskRow(c, t, reason, question, id, face, choices, up, r.Scrub.String)
+	if planAsk(c) && t.IssueNumber != 0 {
+		if id, err = r.planFaceComment(ctx, t, repo, c, asked, next); err != nil {
+			return 0, err
+		}
+		asked["comment"], step["comment"] = id, id
+	}
 	if !whole {
 		r.repeatFace(ctx, t, c, asked)
 	}
@@ -1753,8 +1810,20 @@ func AskRow(c Case, t Task, reason, question string, comment int64, face map[str
 	if caseBesideRun(c, t) || c.Kind == CasePlanHeld {
 		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
 	}
-	if c.Kind == CasePlanCriteria {
+	switch {
+	case c.Kind == CasePlanCriteria:
 		asked["approval"] = c.Facts["approval"]
+	case c.Kind == CaseMergeApproval:
+		// the promises a human judges first, which the inbox's message opens on
+		asked["approval"], asked["open"] = c.Facts["approval"], c.Facts["open"]
+	case planAsk(c):
+		// the planner's row again, which the plan's answer settles by its
+		// revision and index
+		for _, k := range []string{"revision", "index", "kind", "recommended", "grounds"} {
+			if v, ok := c.Facts[k]; ok {
+				asked[k] = v
+			}
+		}
 	}
 	maps.Copy(asked, face)
 	asked["question"] = textutil.Truncate(question, 300)
@@ -1772,7 +1841,12 @@ func AskRow(c Case, t Task, reason, question string, comment int64, face map[str
 // agent's view, note before it. fence fences agent text, scrub masks
 // secrets.
 func FaceRow(c Case, t Task, f CaseFacts, note string, up *HandUp, fence, scrub func(string) string) map[string]any {
-	row := FaceKeys(FaceOf(c, Facts{CaseFacts: f, Card: t, Recommend: up.recommend(fence, scrub)}))
+	rec := up.recommend(fence, scrub)
+	if c.Kind == CasePlanQuestion && rec.Action != "" {
+		// a rung recommends a plan question's choice by its words
+		rec.Action = planPrefix + rec.Action
+	}
+	row := FaceKeys(FaceOf(c, Facts{CaseFacts: f, Card: t, Recommend: rec}))
 	if view := agentView(note, up, fence, scrub); view != "" {
 		row["info"] = view
 	}

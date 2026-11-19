@@ -564,8 +564,9 @@ func init() {
 		CaseRedMain:          humanFace,
 		CaseRollHeld:         humanFace,
 		CaseConfigRefused:    humanFace,
-		CaseOther: work(FaceSpec{Ask: fixed("The card stopped on a problem it cannot fix by itself. How should it go on?"),
-			Why:     reasonWhy("The card stopped for a reason the factory has no rule for."),
+		CaseOther: work(FaceSpec{Ask: unasked("This card waits for a human, but none of its questions is open. How should it go on?",
+			fixed("The card stopped on a problem it cannot fix by itself. How should it go on?")),
+			Why:     unasked("The factory found the card waiting with nothing asked.", reasonWhy("The card stopped for a reason the factory has no rule for.")),
 			Answers: keys(ActResume, ActReplan, ActClose, ActNote)}),
 		CaseMonitorFlag: {Ask: fixed("The factory flagged something odd on this card. Is that fine?"),
 			Why: fixed("The factory watches every card for signs that its work is stuck."), Answers: keys(ActSettle, ActNote)},
@@ -683,7 +684,7 @@ var stopSentences = map[CaseKind]func(Facts) string{
 	CaseProjectCap:       capLine("This project's spending reached its limit%s for the month."),
 	CaseCheckinHuman:     fixed("The check of the last session handed the card to a human."),
 	CasePolicyClass:      fixed("The check of the last session found a change only a human may approve."),
-	CaseOther:            fixed("Its last session stopped on a problem that no rule of the factory covers."),
+	CaseOther:            unasked("The factory found no question of the card to ask again.", fixed("Its last session stopped on a problem that no rule of the factory covers.")),
 	CaseCheckinShare:     shareLine,
 	CaseCheckinFailed:    checkFailedLine,
 	CaseGateStop:         gateLine,
@@ -1171,6 +1172,18 @@ func firstSentence(s string) string {
 		return s[:b[0][2]+1]
 	}
 	return s
+}
+
+// unasked is words on a case whose stop is the factory's own sentence that
+// it asks again (askedAgain), which a card with no question to ask again
+// stops on, else what other says.
+func unasked(words string, other func(Facts) string) func(Facts) string {
+	return func(f Facts) string {
+		if askedAgain(factString(f.Case, "reason")) {
+			return words
+		}
+		return other(f)
+	}
 }
 
 // reasonWhy is a why line from the stop's own words, else fallback.

@@ -835,8 +835,12 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	for i := range tasks {
 		tasks[i].Accent = "teal"
 	}
+	// t-spec2 waits for the answer to its revision's question, faced
+	i := slices.IndexFunc(tasks, func(k factoryd.BoardTask) bool { return k.ID == "t-spec2" })
+	tasks[i].Status = "waiting-human"
 	r.tasks.tasks = tasks
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-spec2": {planRevision("t-spec2", 1, "sha-1")}}
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-spec2 1": {{Text: "Which region?", Choices: []string{"eu", "us"}}}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-spec2",
 		Project: "linkshort/linkshort", Status: "pending", Spec: json.RawMessage(`{"revision":1,"sha256":"sha-1"}`)})
 	ck, s := r.loggedIn(t)
@@ -850,7 +854,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	}
 	for id, wants := range map[string][]string{
 		"t-c7":    {htmx("/tasks/t-c7/resolve") + ` class="answer" data-answer="retry">` + filter},
-		"t-spec2": {htmx("/tasks/t-spec2/plan/changes") + ` class="answer" data-answer="revise" data-to="running">` + filter},
+		"t-spec2": {htmx("/tasks/t-spec2/plan/answer") + ` class="answer" data-answer="plan:eu" data-to="running">` + filter},
 		"t-ask":   {htmx("/tasks/t-ask/resolve") + ` class="answer" data-answer="resume" data-to="running">` + filter},
 		"t-c2": {
 			htmx("/tasks/t-c2/resolve") + ` class="answer" data-answer="edit_brief">` + filter,
@@ -1415,7 +1419,7 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kase.ID = 90
+	kase.ID, kase.Status = 90, factoryd.CaseAtHuman
 	r.openCases = map[string][]factoryd.Case{"t-m2": {kase}}
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m2", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 12, PRNumber: 12, Objective: "Add the column"}})
 	ck, _ := r.loggedIn(t)
@@ -1802,7 +1806,8 @@ func TestMergeAndResourceRequestsAskOnTheOpenedCard(t *testing.T) {
 	}{
 		{"board-merge.json", factoryd.ApprovalMerge, "Merge “Shard the feed cache”?",
 			`<dt>Model review</dt><dd><span class="quote">adds the shard without changing a read</span></dd>`,
-			map[string]string{factoryd.ActApproveMerge: "/approvals/41/approve", factoryd.ActDenyMerge: "/approvals/41/deny", factoryd.ActDenyMerge + "/reject": "/approvals/41/deny"}},
+			map[string]string{factoryd.ActApproveMerge: "/tasks/t-board-merge/resolve", factoryd.ActDenyMerge: "/tasks/t-board-merge/resolve",
+				factoryd.ActDenyMerge + "/reject": "/tasks/t-board-merge/resolve"}},
 		{"board-resource.json", factoryd.ApprovalResource, "Rent a cx33 server for 5 hours at about 0.07 EUR?",
 			`<h4>The server</h4><p>cx33, for load-test the feed cache.`,
 			map[string]string{factoryd.AnswerApprove: "/approvals/41/approve", factoryd.AnswerDeny: "/approvals/41/deny"}},
@@ -1855,8 +1860,8 @@ func TestMergeAndResourceRequestsAskOnTheOpenedCard(t *testing.T) {
 	}
 
 	// The same two kinds on the board's case path, seated as production
-	// holds them: a merge request's case at the human, as openRequestCase
-	// opens it, asks the merge on the case; the store opens no case of its
+	// holds them: a merge request's case at the human, once its climb
+	// faced it, asks the merge on the case; the store opens no case of its
 	// own for a resource request, so the request leads the asks of a card
 	// that holds another case.
 	for _, tc := range []struct {
@@ -1942,7 +1947,7 @@ func TestFactoryMergeFaceKeepsTheClose(t *testing.T) {
 		t.Errorf("the factory merge ask offers sending it back to an agent it has not:\n%s", esc)
 	}
 	reject := answerForm(t, page, "deny_merge/reject")
-	reject.Values.Set("note", "the shard leaks")
+	reject.Values.Set("deny_merge/reject.note", "the shard leaks")
 	if rec := r.do(post(reject.Action, reject.Values), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("the close = %d: %s", rec.Code, rec.Body)
 	}

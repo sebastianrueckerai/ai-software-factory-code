@@ -213,8 +213,8 @@ func TestTheBoardReadsEachAskingCardOnce(t *testing.T) {
 	}
 	r.tasks.mu.Lock()
 	defer r.tasks.mu.Unlock()
-	if !equalIDs(r.tasks.boardReads, "t-prove", "t-plan") {
-		t.Errorf("the board read %v, want the prover and then its plan", r.tasks.boardReads)
+	if !equalIDs(r.tasks.boardReads, "t-m", "t-prove", "t-plan") {
+		t.Errorf("the board read %v, want the card of the merge at the human, the prover and then its plan", r.tasks.boardReads)
 	}
 }
 

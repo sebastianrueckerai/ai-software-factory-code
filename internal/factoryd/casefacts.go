@@ -112,6 +112,10 @@ type CaseFacts struct {
 	// whose merge the policy keeps with a human (policy.Risk.HumanClasses).
 	RiskClass    string   `json:"risk_class,omitempty"`
 	HumanClasses []string `json:"human_classes,omitempty"`
+	// ApprovedOn, on a merge approval alone, is the earlier case of its
+	// pull request and head that rung 2's approve_merge resolved, whose
+	// merge did not land; 0 for none.
+	ApprovedOn int64 `json:"approved_on,omitempty"`
 	// NoIssue: a queued work card the intake never linked to an issue, a plan's row whose issue did not link; a report card has none by design.
 	NoIssue bool `json:"no_issue,omitempty"`
 	// Report: a report card, whose stops run the report again or end it.
@@ -345,6 +349,7 @@ func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, t Task, c Case) {
 	if c.Kind != CaseMergeApproval {
 		return
 	}
+	r.approvedOn(ctx, f, c)
 	pin, _ := toInt(c.Facts["policy_version"])
 	v, err := r.pinnedVersion(ctx, int64(pin))
 	if err != nil {
@@ -358,6 +363,32 @@ func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, t Task, c Case) {
 // merge, in CaseFacts.Partial, when the policy version the class came from
 // cannot be read.
 const partialHumanClasses = "human_classes"
+
+// approvedOn reads f.ApprovedOn for stored merge case c: the newest
+// earlier case of its key that rung 2's approve_merge resolved. A case of
+// that key opens again only when its merge did not land. A read that
+// fails is named in Partial (partialApprovedCases).
+func (r *Runner) approvedOn(ctx context.Context, f *CaseFacts, c Case) {
+	f.ApprovedOn = 0
+	if c.ID == 0 {
+		return
+	}
+	cases, err := r.store.CasesOf(ctx, c.TaskID)
+	if err != nil {
+		f.Partial = append(f.Partial, partialApprovedCases+": "+r.scrub(errMessage(err)))
+		return
+	}
+	for _, e := range cases {
+		if e.ID < c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil &&
+			e.Resolution.By == ChatUser && e.Resolution.Action == ActApproveMerge {
+			f.ApprovedOn = e.ID
+		}
+	}
+}
+
+// partialApprovedCases names the read of a merge's earlier cases, in
+// CaseFacts.Partial, when it fails.
+const partialApprovedCases = "approved_cases"
 
 // DepFact is one dependency of the card that is not done.
 type DepFact struct {

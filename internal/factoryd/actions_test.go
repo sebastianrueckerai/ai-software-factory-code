@@ -1554,6 +1554,66 @@ func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
 	}
 }
 
+// Rung 2 decides a merge at full auto alone: below it the merge rule is
+// human, and rung 2's approve_merge and deny_merge are refused naming the
+// state and the hand-up, and not offered. The human takes both at every
+// level.
+func TestRung2DecidesAMergeAtFullAutoAlone(t *testing.T) {
+	for _, state := range []string{policy.AutonomyManual, policy.AutonomyAssisted, policy.AutonomyAutonomous, policy.AutonomyFullAuto} {
+		f := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: state}
+		want := ""
+		if state != policy.AutonomyFullAuto {
+			want = "the merge rule is human at `" + state + "`: hand the case up (`hand_up`) with `approve_merge` or `deny_merge` as the recommendation"
+		}
+		for _, res := range []Resolution{{Action: ActApproveMerge}, {Action: ActDenyMerge, Note: "the rename is untested"}} {
+			a, _ := ActionByName(res.Action)
+			if got := a.refusal(f, 2, res); got != want {
+				t.Errorf("%s: rung 2's %s = %q, want %q", state, res.Action, got, want)
+			}
+			if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == res.Action }); got != (want == "") {
+				t.Errorf("%s: %s offered to rung 2 = %v, want %v", state, res.Action, got, want == "")
+			}
+			if got := a.refusal(f, 3, res); got != "" {
+				t.Errorf("%s: the human's %s = %q, want none", state, res.Action, got)
+			}
+		}
+	}
+}
+
+// Rung 2 approves a head once: on a case whose head rung 2 approved on an
+// earlier case of the same key, case 41, its approve_merge is refused
+// naming that case and what fits, and not offered, while its deny_merge
+// and the human's approve stay. Earlier cases that could not be read
+// refuse rung 2's approve too, naming the read.
+func TestRung2ApprovesAHeadOnceOnTheFacts(t *testing.T) {
+	approved := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: policy.AutonomyFullAuto, ApprovedOn: 41}
+	unread := approved
+	unread.ApprovedOn, unread.Partial = 0, []string{partialApprovedCases + ": connection reset"}
+	approve, _ := ActionByName(ActApproveMerge)
+	deny, _ := ActionByName(ActDenyMerge)
+	for _, tc := range []struct {
+		name string
+		f    CaseFacts
+		want string
+	}{
+		{"approved on case 41", approved, "rung 2 approved head `abcdef1` of pull request #9 on case 41 and its merge did not land: hand the case up (`hand_up`) with what the merge said"},
+		{"unread", unread, "the earlier cases of this merge could not be read (connection reset), so rung 2 cannot tell whether it approved head `abcdef1` before: hand the case up (`hand_up`) with `approve_merge` as the recommendation"},
+	} {
+		if got := approve.refusal(tc.f, 2, Resolution{Action: ActApproveMerge}); got != tc.want {
+			t.Errorf("%s: rung 2's approve_merge = %q, want %q", tc.name, got, tc.want)
+		}
+		if slices.ContainsFunc(Offered(tc.f, 2), func(o Action) bool { return o.Name == ActApproveMerge }) {
+			t.Errorf("%s: approve_merge is offered to rung 2", tc.name)
+		}
+		if got := deny.refusal(tc.f, 2, Resolution{Action: ActDenyMerge, Note: "the merge failed twice"}); got != "" {
+			t.Errorf("%s: rung 2's deny_merge = %q, want none", tc.name, got)
+		}
+		if got := approve.refusal(tc.f, 3, Resolution{Action: ActApproveMerge}); got != "" {
+			t.Errorf("%s: the human's approve_merge = %q, want none", tc.name, got)
+		}
+	}
+}
+
 // Rung 0 extends only through the audit's own draw at a cap, which writes
 // through the store and not through Act's table: no case offers rung 0 the
 // extend, at a session cap or an agent time cap, while rungs 1 and 2 and the

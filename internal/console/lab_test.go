@@ -459,7 +459,7 @@ func pokeScene(now time.Time) labScene {
 		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "Postgres", At: ago(20 * time.Minute)},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(603), At: ago(20 * time.Minute),
 			Content: "Answered #603 with “Postgres”; the card goes on."},
-		s.poke(606, ago(12*time.Minute), factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: map[string]any{"kind": factoryd.ApprovalMerge, "pr": float64(612), "class": "high"}}),
+		s.poke(606, ago(12*time.Minute), factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: s.mergeFaceRow(606, map[string]any{"approval": float64(1), "pr": float64(612), "class": "high"})}),
 		s.poke(600, ago(time.Minute), factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "done"}}))
 	s.seen[5] = int64(len(s.chat) - 1)
 	s.archived = []int64{1}
@@ -481,6 +481,29 @@ func (s labScene) poke(n int64, at time.Time, e factoryd.Event) factoryd.ChatMes
 	}
 	m.Conversation, m.At = 5, at
 	return m
+}
+
+// mergeFaceRow is the ask row the face of a merge case on the scene's card
+// of issue n writes as it reaches the human, facts its request's.
+func (s labScene) mergeFaceRow(n int64, facts map[string]any) map[string]any {
+	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.IssueNumber == n })
+	if i < 0 {
+		panic(fmt.Sprintf("lab: no card #%d", n))
+	}
+	t := s.tasks[i].Task
+	same := func(s string) string { return s }
+	c := factoryd.Case{TaskID: t.ID, Repository: t.Repository, Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Facts: facts}
+	face := factoryd.FaceRow(c, t, factoryd.FactsOf(c), "", nil, same, same)
+	ask, _ := face["ask"].(string)
+	b, err := json.Marshal(factoryd.AskRow(c, t, "", ask, 0, face, nil, nil, same))
+	var row map[string]any
+	if err == nil {
+		err = json.Unmarshal(b, &row)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("lab: the merge face of #%d: %v", n, err))
+	}
+	return row
 }
 
 // escalationScene is the busy board at autonomy autonomous with the

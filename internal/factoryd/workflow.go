@@ -112,13 +112,16 @@ type TaskSignal struct {
 // CaseSignal is case_resolved's payload: the case, its resolution, who
 // resolved it on which rung, and the issue comment that carries the
 // answer (0 when none), so the webhook's copy of that comment is not a
-// second answer.
+// second answer. Again is the case whose question this case asks again
+// (its fact asks_again), 0 for none: a run that waits on Again takes this
+// case as its own (versionAskedAgainCase).
 type CaseSignal struct {
 	CaseID  int64
 	Rung    int
 	By      string
 	Res     Resolution
 	Comment int64
+	Again   int64 `json:",omitempty"`
 }
 
 // Activity names, registered by Runner.RegisterActivities.
@@ -954,6 +957,14 @@ const (
 	// grants nothing. A run from before asks the cap, the answer waiting for
 	// a draw.
 	versionPlanAnswerGrant workflow.Version = 1
+	// versionAskedAgainCase (change id "asked-again-case", read by
+	// askedAgainCase where a wait takes a case_faced (takeFaced) or a
+	// case_resolved (awaitAnswer, planResolution) of a case that is not the
+	// wait's own but whose Again is): the case that asks the wait's question again, as the heal pass
+	// opens one, becomes the wait's case, its face the escalation and its
+	// resolution the answer. A run from before takes such a face as another
+	// case's and queues or drops such a resolution.
+	versionAskedAgainCase workflow.Version = 1
 )
 
 // keysCard tells whether the run's card is its key's card in its plan: a
@@ -963,6 +974,15 @@ const (
 func (t *taskRun) keysCard() bool {
 	return t.source == SourcePlan || t.planCard &&
 		workflow.GetVersion(t.ctx, "successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard) >= versionSuccessorIsItsKeysCard
+}
+
+// askedAgainCase tells whether case c, not the case the run waits on, asks
+// that case's question again, as its Again names it, and so becomes the
+// wait's case (versionAskedAgainCase). It goes last in a branch's
+// condition, so a history whose signals carry no Again records no marker.
+func (t *taskRun) askedAgainCase(c *CaseSignal) bool {
+	return t.caseID != 0 && c.CaseID != t.caseID && c.Again == t.caseID &&
+		workflow.GetVersion(t.ctx, "asked-again-case", workflow.DefaultVersion, versionAskedAgainCase) >= versionAskedAgainCase
 }
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -4107,8 +4127,10 @@ func (t *taskRun) newestAnchor() int64 {
 // signal is taken, so a run that waited on a case before the change takes
 // it as well): the comment of a face posted after the trip returned
 // becomes the escalation the wait counts replies after, and the comment of
-// the gate beside the checks whose ask the case is. It answers whether the
-// wait's own case was faced.
+// the gate beside the checks whose ask the case is. The face of the case
+// that asks the wait's question again makes that case the wait's
+// (versionAskedAgainCase). It answers whether the wait's own case was
+// faced.
 func (t *taskRun) takeFaced(sig TaskSignal, question string, stopped ...*besideRun) bool {
 	c := sig.Case
 	if c == nil || c.Comment == 0 || workflow.GetVersion(t.ctx, "case-faced", workflow.DefaultVersion, versionCaseFaced) < versionCaseFaced {
@@ -4119,6 +4141,9 @@ func (t *taskRun) takeFaced(sig TaskSignal, question string, stopped ...*besideR
 			f.comment = c.Comment
 			t.anchors = append(t.anchors, anchor{comment: c.Comment, question: EscalationQuestion(f.asked)})
 		}
+	}
+	if t.askedAgainCase(c) {
+		t.caseID = c.CaseID
 	}
 	if t.caseID == 0 || c.CaseID != t.caseID || c.Comment <= t.escalation {
 		return false
@@ -4156,8 +4181,9 @@ func (t *taskRun) handoverModel(model string, args map[string]any) string {
 
 // awaitAnswer is awaitHumanUntil's wait for the answer to the escalation
 // asked last, which asked question. A person's replan of a direct coding
-// card ends it with the switch to the planner. The case's
-// resolution (case_resolved) ends it at once, its
+// card ends it with the switch to the planner. The case's resolution
+// (case_resolved) ends it at once, as does that of the case that asks its
+// question again, which becomes the wait's (versionAskedAgainCase), its
 // note an answer under the comment that carries it, so the webhook's copy
 // of that comment is no second answer. A plain comment is a continue with
 // it as the note, and a wait that ends on its own withdraws its case.
@@ -4199,7 +4225,8 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		var done TaskSignal
 		for workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
 			switch c := done.Case; {
-			case c != nil && t.caseID != 0 && c.CaseID == t.caseID:
+			case c != nil && t.caseID != 0 && (c.CaseID == t.caseID || t.askedAgainCase(c)):
+				t.caseID = c.CaseID
 				res := c.Res
 				t.resolution, resolved = &res, true
 				if note := strings.TrimSpace(res.Note); note != "" || c.Comment != 0 {

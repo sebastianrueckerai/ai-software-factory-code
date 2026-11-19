@@ -123,8 +123,10 @@ func park(t *testing.T, s *PGStore, resolvedAgo time.Duration) Case {
 // ask consumed by an answer, its case ended past the at_human bound —
 // gets its ask back on the heal pass: the healed-run path opens the
 // ask's own case again, with its face on the card's issue, so the
-// console's answer paths find an ask to press. A second pass finds the
-// ask live and posts no second face.
+// console's answer paths find an ask to press. The face asks the stop's
+// own question, marked unjudged as sf/r names no project, under the
+// sentence that it asks again. A second pass finds the ask live and posts
+// no second face.
 func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask")
@@ -142,7 +144,17 @@ func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	reopened := ask
 	posted := g.forge.comments()
 	if len(posted) != 1 || !strings.HasPrefix(posted[0], "This card waited for a human with no question open. The factory asks its question on the board again.\n\n") {
-		t.Fatalf("posted %q; want the ask's face once, asking again after the wait", posted)
+		t.Fatalf("posted %q; want the ask's face once, asking the stop again after the wait", posted)
+	}
+	rows, err := g.s.TaskEventsOfKind(ctx, caseTask, EventQuestionAsked, 1)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("the newest ask = %+v, %v; want the stop's own face", rows, err)
+	}
+	asked, _ := rows[0].Detail["ask"].(string)
+	info, _ := rows[0].Detail["info"].(string)
+	if want := "The card used all 3 sessions. How should it go on?"; asked != want || !strings.Contains(posted[0], want) ||
+		info != "The factory agent did not judge it: sf/r names no project, so the factory cannot read its judgment budget." {
+		t.Fatalf("the newest ask = %q with the view %q, posted %q; want the stop's own ask %q, unjudged as sf/r names no project", asked, info, posted[0], want)
 	}
 	asks, err := g.s.AskAnchors(ctx, caseTask)
 	if err != nil || len(asks) == 0 {
@@ -159,6 +171,47 @@ func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	}
 	if posted := g.forge.comments(); len(posted) != 1 {
 		t.Fatalf("posted %q after two passes; want the one face: the ask is live again", posted)
+	}
+}
+
+// The heal pass's case names the case whose question it asks again, so the
+// run that still waits on that case hears the rungs' answer: card t1's
+// faced case was withdrawn past the at_human bound, one pass opens a case
+// with asks_again that case, rung 1 hands it up to rung 2, and rung 2's
+// continue at autonomous sends case_resolved of the new case with Again
+// the withdrawn one.
+func TestHealPassCaseCarriesTheCaseItAsksAgain(t *testing.T) {
+	ctx := context.Background()
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	if _, err := g.r.FaceStop(ctx, "t1", whichFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	first := onlyLiveCase(t, g.s, "t1")
+	if err := g.s.WithdrawCase(ctx, first.ID, "the run that asked it is gone"); err != nil {
+		t.Fatal(err)
+	}
+	tree := g.r.PgCfg().Policy().Tree
+	past := tree.WaitsOf("demo-app/demo-app").AtHuman + time.Minute
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE cases SET resolved_at = now() - $1::interval WHERE id = $2`,
+		fmt.Sprintf("%d seconds", int(past.Seconds())), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	wf := &fakeWorkflows{}
+	HealPass(ctx, g.s, wf, &Intake{Store: g.s, Forgejo: g.r.PgForgejo(), Workflows: wf, BotUser: "factory-agent",
+		Policy: func() policy.Tree { return tree }}, nil, noneCompleted, g.r)
+	g.settle()
+	healed := onlyLiveCase(t, g.s, "t1")
+	if again, _ := healed.Facts["asks_again"].(float64); healed.ID == first.ID || int64(again) != first.ID || len(g.stepsOfRung(t, healed.ID, 2)) != 1 {
+		t.Fatalf("the healed case %d, facts %v, steps %+v; want a new case asking case %d again with rung 2 on it", healed.ID, healed.Facts, g.steps(t, healed.ID), first.ID)
+	}
+	g.atAutonomy(policy.AutonomyAutonomous)
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: healed.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActContinue, Note: "use a.txt"}}); err != nil {
+		t.Fatal(err)
+	}
+	resolved := g.signalsOf(SignalCaseResolved)
+	if len(resolved) != 1 || resolved[0].sig.Case.CaseID != healed.ID || resolved[0].sig.Case.Again != first.ID {
+		t.Fatalf("case_resolved %+v; want case %d's with Again %d", resolved, healed.ID, first.ID)
 	}
 }
 
@@ -330,8 +383,8 @@ func planAwaitingConfirmation(t *testing.T, s *PGStore) int {
 
 // A plan whose newest revision waits on its confirmation under its
 // request, its case gone, gets that case back from its own ask row, with
-// the same key: the plan's answer path resolves it, and no askless ask is
-// put to the human.
+// the same key, open on the rungs with its wake: the plan's answer path
+// resolves it, and no askless ask is put to the human.
 func TestHealPassRestoresAPlansConfirmation(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask_restore")
@@ -340,8 +393,9 @@ func TestHealPassRestoresAPlansConfirmation(t *testing.T) {
 	g.pass(t)
 
 	restored := onlyOpenCase(t, g.s)
-	if restored.Kind != factoryd.CasePlanConfirmation || !strings.HasSuffix(restored.StateKey, "@r1") || restored.Status != CaseAtHuman {
-		t.Fatalf("the live case = %+v; want revision 1's confirmation at the human", restored)
+	if restored.Kind != factoryd.CasePlanConfirmation || !strings.HasSuffix(restored.StateKey, "@r1") || restored.Status != CaseOpen ||
+		restored.OwnerRung != 0 || restored.NextWakeAt == nil {
+		t.Fatalf("the live case = %+v; want revision 1's confirmation open at rung 0 with its wake, to climb to its face", restored)
 	}
 	cases, err := g.s.CasesOf(ctx, caseTask)
 	if err != nil {

@@ -24,7 +24,7 @@ func TestProposesByLevel(t *testing.T) {
 		{policy.AutonomyAutonomous, ActExtend, false},
 		{policy.AutonomyAutonomous, ActRetry, false},
 		{policy.AutonomyAutonomous, ActClose, false},
-		{policy.AutonomyAutonomous, ActApproveMerge, true},
+		{policy.AutonomyAutonomous, ActApproveMerge, false},
 		{policy.AutonomyAssisted, ActRetry, true},
 		{policy.AutonomyAssisted, ActRouteApproval, false},
 		{policy.AutonomyManual, ActRouteApproval, false},
@@ -36,9 +36,10 @@ func TestProposesByLevel(t *testing.T) {
 			t.Errorf("Proposes(%s, %s) = %v, want %v", tc.state, tc.action, got, tc.want)
 		}
 	}
+	// a merge decision below full auto is refused before it could propose
 	for _, a := range Actions {
-		if got := Proposes(policy.AutonomyAutonomous, a.Name); got != (a.Name == ActApproveMerge) {
-			t.Errorf("action %s proposes at autonomous = %v: only the merge approval does", a.Name, got)
+		if Proposes(policy.AutonomyAutonomous, a.Name) {
+			t.Errorf("action %s proposes at autonomous: none does", a.Name)
 		}
 	}
 }

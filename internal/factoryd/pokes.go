@@ -45,7 +45,7 @@ const (
 )
 
 // pokeKinds are the events a poke may answer.
-var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
+var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
 	EventPullRequestMerged, EventCardHoldStranded}
 
@@ -246,8 +246,9 @@ func pokeTo(tree policy.Tree, repository string) []string {
 
 // PokeOf is event e's poke, t the card it names, false for an event that
 // pokes nobody. A message about a card's ask is its face's words
-// (askMessage), with the ask of a criteria request, whose case's face asks
-// for it; a notice is one line of at most noticeMax runes. A helper
+// (askMessage), with the ask of a merge's, a plan's or a criteria request,
+// whose case's face asks for it; a notice is one line of at most noticeMax
+// runes. A helper
 // task's message names its step on parent, the card the step stands on:
 // its ask is the parent's, and says which step asks.
 func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
@@ -268,17 +269,25 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 			// the factory answered the ask as it asked it: no one is needed
 			return m, false
 		}
+		if revision, _ := toInt(e.Detail["revision"]); revision > 0 && str("case_kind") == "" {
+			// the planner's row: its case climbs, and its face's row asks
+			return m, false
+		}
 		m.Kind = MessageEscalation
 		why := str("why")
 		if q := cmp.Or(str("question"), str("ask")); why == "" && !strings.Contains(q, "\n") && utf8.RuneCountInString(name+q) <= askLead {
 			// an ask whose row stores no why says its question where it fits
 			why = q
 		}
-		if e.Detail["case_kind"] == string(CasePlanCriteria) {
-			// the face of a criteria request's case says the request's ask
+		suggested := suggestion(e.Detail, offersOf(e.Detail["offers"]))
+		switch e.Detail["case_kind"] {
+		case string(CasePlanCriteria), string(CasePlanQuestion), string(CasePlanConfirmation):
+			// the face of a request's case says the request's ask
 			step = str("ask")
+		case string(CaseMergeApproval):
+			step, why, suggested, m.Choices = mergePoke(e, t)
 		}
-		m.Content = askMessage(name, step, why, suggestion(e.Detail, offersOf(e.Detail["offers"])))
+		m.Content = askMessage(name, step, why, suggested)
 		m.Decider = str("decider_line")
 		if cs, ok := e.Detail["choices"].([]any); ok {
 			for _, c := range cs {
@@ -311,13 +320,6 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 				m.Content = notice(m.Content+fmt.Sprintf(" #%d repairs them.", repair), m.Content)
 			}
 		}
-	case EventApprovalRequested:
-		m.Kind = MessageEscalation
-		content, choices, ok := approvalPoke(e, t)
-		if !ok {
-			return m, false
-		}
-		m.Content, m.Choices = content, choices
 	case EventTaskEnded:
 		switch {
 		case t.Kind != "agent":
@@ -513,40 +515,27 @@ func RoutineDecider(routine string, n int, schedule string) string {
 	return fmt.Sprintf("routine %s · run %d · %s", routine, n, schedule)
 }
 
-// approvalPoke is an approval request's poke row, its content and its
-// choices, false for a kind that pokes nobody: its message from the face
-// of the request's case, and for a merge the answer the inbox can press.
-// A plan's request is its revision's bookkeeping, which pokes nobody: the
-// rows of its questions and its confirmation ask. A criteria request pokes
-// nobody either: its case climbs first, and its face's ask pokes. The row
-// is the request case's facts (RequestRow); a merge whose promises a human
-// judges first opens on the first one's page, as its card does.
-func approvalPoke(e Event, t Task) (string, []string, bool) {
-	kind, _ := e.Detail["kind"].(string)
+// mergePoke is what the inbox says of the face row e of a merge case on
+// card t: the face's ask and why, the answer a rung or the face suggests,
+// and the answer the inbox can press. A merge whose promises a human
+// judges first opens on the first one's page, as its card does, and
+// offers no press.
+func mergePoke(e Event, t Task) (ask, why, suggested string, choices []string) {
 	c := Case{TaskID: e.TaskID, Repository: e.Repository, Status: CaseAtHuman, Kind: CaseMergeApproval, Facts: e.Detail}
-	var choices []string
-	switch kind {
-	case ApprovalMerge:
-		red, _ := e.Detail["red_checks"].(bool)
-		factory, _ := e.Detail["factory"].(bool)
-		switch {
-		case !red:
-			choices = []string{LabelOf(ActApproveMerge)}
-		case factory:
-			choices = []string{LabelOf(ActRerunChecks)}
-		}
-		if open := factStrings(c, "open"); len(open) > 0 {
-			c, choices = OnPromise(c, PromiseFact{ID: open[0], Kind: CriterionHuman}), nil
-		}
-	default:
-		return "", nil, false
+	if open := factStrings(c, "open"); len(open) > 0 {
+		c = OnPromise(c, PromiseFact{ID: open[0], Kind: CriterionHuman})
+		face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t})
+		return face.Ask, face.Why, "", nil
 	}
-	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t})
-	suggested := ""
-	if face.Suggested != "" {
-		suggested = capitalize(face.SuggestedBy) + " suggests “" + LabelOf(face.Suggested) + "”."
+	offers := offersOf(e.Detail["offers"])
+	for _, o := range offers {
+		if o.Value == ActApproveMerge || o.Value == ActRerunChecks {
+			choices = []string{o.Label}
+		}
 	}
-	return askMessage(inboxName(e, t), face.Ask, face.Why, suggested), choices, true
+	ask, _ = e.Detail["ask"].(string)
+	why, _ = e.Detail["why"].(string)
+	return ask, why, suggestion(e.Detail, offers), choices
 }
 
 // inboxName is how the inbox names e's card (CardName), "A card" for a

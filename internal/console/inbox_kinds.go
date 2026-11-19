@@ -46,7 +46,7 @@ var inboxKinds = func() map[string]inboxKind {
 			return inboxView{Line: agentDid(r, deed{"read the roadmap for new cards", "reading the roadmap for new cards", "the roadmap"})}
 		}},
 	}
-	for _, birth := range []string{factoryd.EventQuestionAsked, factoryd.EventQuestionWithdrawn, factoryd.EventApprovalRequested,
+	for _, birth := range []string{factoryd.EventQuestionAsked, factoryd.EventQuestionWithdrawn,
 		factoryd.EventTaskEnded, factoryd.EventAllChildrenDone, factoryd.EventAutonomyChanged, factoryd.EventCardFiled,
 		factoryd.EventCardRetried, factoryd.EventSessionGranted, factoryd.EventChatBudgetSpent, factoryd.EventPullRequestMerged, factoryd.EventCardHoldStranded} {
 		k[birth] = inboxKind{ForHuman: true, Render: func(r inboxRow) inboxView { return inboxView{Short: opening(r.m.Content, inboxMax)} }}

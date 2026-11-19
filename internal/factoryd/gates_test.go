@@ -1779,14 +1779,16 @@ func TestRequestApprovalOpensTheCard(t *testing.T) {
 
 // A factory pull request card's merge request says what its approval
 // offers (roadmap 264): it is a factory pull request's, and whether its
-// checks were red, which its row carries to the inbox's poke too: the
-// rerun's label on red, the merge's on green, under the face's ask and why.
+// checks were red, which its case's face reads from the spec and carries
+// to the inbox's poke: the rerun's label on red, the merge's on green,
+// under the face's ask and why. Its row pokes nobody: the case climbs
+// first.
 func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 	task := gateTask
 	task.Source, task.Kind, task.IssueNumber = SourceTemplateUpdate, "agent", 36
 	for _, c := range []struct {
 		red     bool
-		content string
+		ask     string
 		choices []string
 	}{
 		{true, "#36 (Add a make check target) needs you. The checks of “Add a make check target” are red. Run them again, or close it? " +
@@ -1819,8 +1821,23 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 				}
 			}
 		}
-		if m, ok := PokeOf(e, task, Task{}); !ok || m.Content != c.content || !slices.Equal(m.Choices, c.choices) {
-			t.Fatalf("red %t: the poke = %+v, want %q with %q", c.red, m, c.content, c.choices)
+		if m, ok := PokeOf(e, task, Task{}); ok {
+			t.Fatalf("red %t: the request's row pokes %+v, want none", c.red, m)
+		}
+		k, err := RequestCase(pending[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		same := func(s string) string { return s }
+		face := FaceRow(k, task, FactsOf(k), "", nil, same, same)
+		ask, _ := face["ask"].(string)
+		b, _ := json.Marshal(AskRow(k, task, pending[0].Reason, ask, 0, face, nil, nil, same))
+		e = Event{Kind: EventQuestionAsked, TaskID: "t1"}
+		if err := json.Unmarshal(b, &e.Detail); err != nil {
+			t.Fatal(err)
+		}
+		if m, ok := PokeOf(e, task, Task{}); !ok || m.Content != c.ask || !slices.Equal(m.Choices, c.choices) {
+			t.Fatalf("red %t: the face's poke = %+v, want %q with %q", c.red, m, c.ask, c.choices)
 		}
 	}
 }
