@@ -1003,6 +1003,25 @@ func (g planGate) settling(rows []CriterionVerdict) []CriterionVerdict {
 	return slices.DeleteFunc(slices.Clone(rows), func(v CriterionVerdict) bool { return v.Source != CriteriaSourceApprover })
 }
 
+// settledBy is who settled the criteria that plan p's criteria request a
+// asks about, on rows: the person of the newest approver's row that stands
+// for one of them, a waiver or a verdict, else factoryd, whose gate's rows
+// alone settled them.
+func settledBy(p Plan, a ApprovalRequest, rows []CriterionVerdict) string {
+	var spec CriteriaSpec
+	if err := json.Unmarshal(a.Spec, &spec); err != nil {
+		return FactoryDecider
+	}
+	by, at := FactoryDecider, time.Time{}
+	for _, c := range p.Criteria {
+		v, ok := StandingRow(rows, c)
+		if ok && slices.Contains(spec.Criteria, c.ID) && v.Source == CriteriaSourceApprover && v.DecidedBy != "" && !v.CreatedAt.Before(at) {
+			by, at = v.DecidedBy, v.CreatedAt
+		}
+	}
+	return by
+}
+
 // cardsMark is the plan's revision and the states of its cards, each
 // id:status, when it ended and whether it was reverted, in order: a card
 // that runs again and ends in the same status changes it.
@@ -1832,7 +1851,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			return
 		}
 		for _, kind := range criteriaKinds {
-			if err := r.store.ResolveApprovals(ctx, parent, kind, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {
+			a, ok, err := r.store.NewestApproval(ctx, parent, kind)
+			if err != nil {
+				log.Printf("plan %s: the close check: %v", parent, err)
+				return
+			}
+			by := FactoryDecider
+			if ok && a.Status == "pending" {
+				by = settledBy(p, a, rows)
+			}
+			if err := r.store.ResolveApprovals(ctx, parent, kind, "approved", by, "every criterion is met or waived"); err != nil {
 				log.Printf("plan %s: close the %s approval: %v", parent, kind, err)
 			}
 		}
@@ -1945,11 +1973,13 @@ func holdPlanAsk(ctx context.Context, store Store, tl *Timeline, scrub *redact.S
 			}
 		}
 	}
-	c, opened, err := store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key, Status: CaseAtHuman,
+	c, opened, err := store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key,
 		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": ids, "promises": promises, "met_on_main": met}})
 	if err != nil || !opened {
 		return c, false, err
 	}
+	// its ask row takes the case through the door (askCase)
+	c.Status = CaseAtHuman
 	face := FaceRow(c, t, FactsOf(c), "", nil, untrusted, func(s string) string {
 		if scrub == nil {
 			return redact.New().String(s)

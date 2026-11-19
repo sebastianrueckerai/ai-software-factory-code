@@ -1259,8 +1259,8 @@ func TestFileChildrenFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 				}
 				return
 			}
-			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || len(wf.started) != 0 || got.EnforcedSpent() != 0 {
-				t.Fatalf("card = %+v, started %q; want a human's card waiting, no start, no spend", got, wf.started)
+			if got.Kind != "human" || got.Status != "waiting-agent" || got.Track != "" || len(wf.started) != 0 || got.EnforcedSpent() != 0 {
+				t.Fatalf("card = %+v, started %q; want a human's card waiting for its face, no start, no spend", got, wf.started)
 			}
 			want := HumanQuestion{Ask: "Fix the CI", Why: "The factory's push rule keeps agents out of workflow files, so a human does this card, and plan #1 waits for it",
 				Choices: choices(ActClose+"/"+variantDone, ActHandBack, KeyPark), Waits: "The plan waits for it.",
@@ -1310,8 +1310,8 @@ func TestFilePlanFilesAWorkflowCardForAHuman(t *testing.T) {
 	}
 	cards := cardsByKey(t, store)
 	human := cards["ci"]
-	if human.Kind != "human" || human.Status != "waiting-human" || human.Track != "" || slices.Contains(wf.started, human.ID) || human.EnforcedSpent() != 0 {
-		t.Fatalf("the workflow card = %+v, started %q; want a human's card waiting, never started", human, wf.started)
+	if human.Kind != "human" || human.Status != "waiting-agent" || human.Track != "" || slices.Contains(wf.started, human.ID) || human.EnforcedSpent() != 0 {
+		t.Fatalf("the workflow card = %+v, started %q; want a human's card waiting for its face, never started", human, wf.started)
 	}
 	for _, k := range []string{"foundation", "links-api", "redirects", "integration"} {
 		if cards[k].Kind != "agent" || cards[k].Status != "queued" || !slices.Contains(wf.started, cards[k].ID) {

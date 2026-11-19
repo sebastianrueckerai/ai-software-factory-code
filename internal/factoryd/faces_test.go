@@ -217,7 +217,7 @@ func actRefusal(x faced, a factoryd.Answer) string {
 	switch {
 	case a.Value != "", !table:
 		return ""
-	case factoryd.ChoiceCase(x.c, x.fx.Task.Kind) && a.Action != factoryd.ActClose:
+	case factoryd.ChoiceKind(x.c.Kind) && a.Action != factoryd.ActClose:
 		return "a human card takes one of its choices"
 	}
 	res, err := a.Press(x.facts, written(a), "")

@@ -283,12 +283,12 @@ func (r *Roller) stillRed(ctx context.Context, pause QueuePause, run ActionRun, 
 	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: pause.Since, FixTask: t.ID}); err != nil {
 		return false, err
 	}
-	log.Printf("roller: main is still red at %s (run %d) after %s merged: the merge queue of %s stays paused; human card %s, issue #%d", run.CommitSHA, run.ID, remedy, p.Repository, t.ID, t.IssueNumber)
+	log.Printf("roller: main is still red at %s (run %d) after %s merged: the merge queue of %s stays paused; human card %s", run.CommitSHA, run.ID, remedy, p.Repository, cardName(t))
 	if fix.ID == "" || fixMerged || fix.Status != "failed" && !stoppable(fix) {
 		return true, nil
 	}
-	return true, closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("Main is still red at commit %s after %s merged: the human card #%d replaces this card. Closing this issue.",
-		ShortSHA(run.CommitSHA), remedy, t.IssueNumber))
+	return true, closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("Main is still red at commit %s after %s merged: the human card %s replaces this card. Closing this issue.",
+		ShortSHA(run.CommitSHA), remedy, cardName(t)))
 }
 
 // newestMain is main's newest push run among runs, nil without one.
@@ -427,7 +427,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) erro
 	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: since, FixTask: t.ID}); err != nil {
 		return err
 	}
-	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, t.IssueNumber)
+	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s", run.CommitSHA, run.ID, p.Repository, card, cardName(t))
 	return nil
 }
 
@@ -495,7 +495,7 @@ func (r *Roller) endFixCard(ctx context.Context, pause QueuePause, green string)
 	switch {
 	case err != nil || !ok:
 		return err
-	case humanPauseCard(t) && t.Status == "waiting-human":
+	case humanPauseCard(t) && slices.Contains(humanCardWaits, t.Status):
 		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue.")
 	case t.Source != SourceMainFix || t.Status != "failed" && !stoppable(t):
 		return nil
@@ -736,7 +736,7 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		}
 		pr, opened = &created, created.Number
 	}
-	t, ref, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, r.Budget(), p, b, nil, Task{
+	t, _, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, r.Budget(), p, b, nil, Task{
 		ID: taskID, RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: pause.SHA, Source: SourceRevert,
 	}, pr.Number)
 	if err != nil {
@@ -745,7 +745,7 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		}
 		return err
 	}
-	log.Printf("roller: main red since %s with no fix landed: revert card %s, issue #%d, pull request #%d", pause.Since.Format(time.RFC3339), t.ID, ref.Number, pr.Number)
+	log.Printf("roller: main red since %s with no fix landed: revert card %s, pull request #%d", pause.Since.Format(time.RFC3339), cardName(t), pr.Number)
 	return r.replaceFix(ctx, pause, fix, t)
 }
 
@@ -836,8 +836,8 @@ func (r *Roller) replaceFix(ctx context.Context, pause QueuePause, fix, rev Task
 	if err != nil || botCloseRecorded(events, fix) {
 		return err
 	}
-	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("No fix landed by %s: the revert #%d replaces this card. Closing this issue.",
-		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), rev.IssueNumber))
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("No fix landed by %s: the revert %s replaces this card. Closing this issue.",
+		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), cardName(rev)))
 }
 
 // RerunWhy is why the re-run card of a red main whose jobs lost their

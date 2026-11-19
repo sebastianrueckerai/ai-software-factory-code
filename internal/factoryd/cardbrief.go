@@ -400,10 +400,15 @@ var continuesLine = regexp.MustCompile(`^Continues #\d+\.(?:\n\n|$)`)
 // ContinuesBody is the full text of a card that continues card old, a
 // successor, a retry, a hand-over or a restarted plan: "Continues #N."
 // first, then old's own text without the line it opened with when it
-// continued another card.
+// continued another card. A card with no issue, factoryd's own human card
+// before its face, gives its text alone.
 func ContinuesBody(old Task) string {
 	_, body, _ := strings.Cut(old.Objective, "\n\n")
-	return IssueObjective(fmt.Sprintf("Continues #%d.", old.IssueNumber), continuesLine.ReplaceAllString(body, ""))
+	body = continuesLine.ReplaceAllString(body, "")
+	if old.IssueNumber == 0 {
+		return body
+	}
+	return IssueObjective(fmt.Sprintf("Continues #%d.", old.IssueNumber), body)
 }
 
 // BriefRefusal is the filing door's refusal of a writer's brief: each

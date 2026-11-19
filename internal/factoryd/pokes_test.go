@@ -21,6 +21,9 @@ func TestPokeOf(t *testing.T) {
 	child := card
 	child.Parent = "t-plan"
 	plan := Task{ID: "t-plan", Kind: "agent", IssueNumber: 558, Objective: "Members page", Track: "plan"}
+	held := Task{ID: "t-h", Kind: "human", Status: "waiting-agent", Objective: "main is still red", Source: SourceStillRed}
+	faced := held
+	faced.Status, faced.IssueNumber = "waiting-human", 70
 	agentDid := func(kind, level string, more map[string]any) Event {
 		d := map[string]any{"autonomy": level, "merge_rule": "human", "decider": "agent"}
 		for k, v := range more {
@@ -92,6 +95,18 @@ func TestPokeOf(t *testing.T) {
 		{"a plan confirmation's face says why", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: faceAskRow(plan, Case{ID: 32, TaskID: plan.ID, Kind: CasePlanConfirmation, Status: CaseAtHuman,
 			Problem: "Confirmation of the spec and the criteria of plan revision 2:\nConfirm the plan fixes them.", Facts: map[string]any{"revision": 2, "index": 2, "kind": QuestionConfirmation}})}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Confirm plan “Members page” so its cards can start? The plan's cards and promises are fixed only once a human confirms them."}, true},
+		// factoryd's own human card climbs first: its held row pokes nobody,
+		// its face's row asks
+		{"a held human card's ask", Event{Kind: EventQuestionAsked, TaskID: "t-h", Detail: map[string]any{"question": "Main is still red at abc1234. Fix it, or revert?",
+			"source": SourceStillRed, "held": true, "case_id": float64(40)}}, held, ChatMessage{}, false},
+		{"a human card's face", Event{Kind: EventQuestionAsked, TaskID: "t-h", Detail: faceAskRow(faced, Case{ID: 40, TaskID: "t-h", Kind: CaseRedMain, Status: CaseAtHuman,
+			Problem: "Main is still red at abc1234. Fix it, or revert?", Facts: map[string]any{"ask": "Main is still red at abc1234. Fix it, or revert?",
+				"why": "The remedy merged and main stayed red.", "source": SourceStillRed}})}, faced,
+			ChatMessage{Kind: MessageEscalation, Content: "#70 (main is still red) needs you. The remedy merged and main stayed red."}, true},
+		// a held card's withdrawn ask reached nobody, so its withdrawal
+		// tells nobody either
+		{"a held card's withdrawal", Event{Kind: EventQuestionWithdrawn, TaskID: "t-h", Detail: map[string]any{"reason": "the factory closed pull request #1: x",
+			"held": true}}, held, ChatMessage{}, false},
 		// a criteria request's case climbs first: its face's ask is the poke
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria", "open": []any{"c1", "c2"}, "of": float64(3),
 			"problem": CriteriaGapReason([]string{"c1", "c2"})}}, plan, ChatMessage{}, false},
@@ -605,6 +620,10 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the flag's face follows rung 2's hand-up, which passes it through the door
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: flag.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 	record := func(kind string, detail map[string]any) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-1", IssueNumber: 603, Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
@@ -676,6 +695,9 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	for _, flag := range []string{"issue_open_after_end", "checkin_cut"} {
 		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: flag + "|x", Problem: flagAsks[flag]})
 		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
 			t.Fatal(err)
 		}
 		faced = append(faced, c.ID)

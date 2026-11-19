@@ -86,7 +86,7 @@ func TestRunCriteriaRunsTheGate(t *testing.T) {
 	plan := g.store.tasks["plan1"]
 	plan.Status = "done"
 	g.store.tasks["plan1"] = plan
-	c, _, err := g.store.OpenCase(ctx, Case{TaskID: "plan1", Repository: "sf/repo", Kind: CasePlanCriteria, Status: CaseAtHuman, StateKey: "criteria_rerun:9",
+	c, _, err := openAtHuman(ctx, g.store, Case{TaskID: "plan1", Repository: "sf/repo", Kind: CasePlanCriteria, StateKey: "criteria_rerun:9",
 		Problem: "criteria never judged", Facts: map[string]any{"approval": 9, "approval_kind": ApprovalCriteriaRerun, "runnable": []string{"size_bound", "door", "all_green", "reads_calm"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -425,7 +425,7 @@ func askedRig(t *testing.T) (*proofsAtMainRig, Case) {
 	plan := g.store.tasks["plan1"]
 	plan.Status = "done"
 	g.store.tasks["plan1"] = plan
-	c, _, err := g.store.OpenCase(context.Background(), Case{TaskID: "plan1", Repository: "sf/repo", Kind: CasePlanCriteria, Status: CaseAtHuman,
+	c, _, err := openAtHuman(context.Background(), g.store, Case{TaskID: "plan1", Repository: "sf/repo", Kind: CasePlanCriteria,
 		StateKey: "criteria_rerun:9", Problem: "criteria never judged",
 		Facts: map[string]any{"approval": 9, "approval_kind": ApprovalCriteriaRerun, "runnable": []string{"size_bound", "door", "all_green"}}})
 	if err != nil {

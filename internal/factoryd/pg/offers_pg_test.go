@@ -41,7 +41,7 @@ func offerValues(offers []AskOffer) []string {
 func TestACaseReachesTheHumanWithItsFaceStoredAndARefusalRefreshesIt(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)

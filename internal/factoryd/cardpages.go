@@ -295,7 +295,7 @@ func RequestAnswers(a ApprovalRequest, c Case) bool {
 	case CasePlanQuestion, CasePlanConfirmation:
 		var spec PlanSpec
 		revision := planCaseRevision(c)
-		return a.Kind == ApprovalPlan && (revision == 0 || json.Unmarshal(a.Spec, &spec) == nil && spec.Revision == revision)
+		return a.Kind == ApprovalPlan && json.Unmarshal(a.Spec, &spec) == nil && spec.Revision == revision
 	}
 	return false
 }

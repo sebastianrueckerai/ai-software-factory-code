@@ -179,8 +179,8 @@ func TestKindListsHoldEveryConstant(t *testing.T) {
 // identifier.
 func TestEveryCaseKindHasWords(t *testing.T) {
 	for _, k := range CaseKinds() {
-		if caseKindWords[k] == "" {
-			t.Errorf("case kind %s has no words in caseKindWords", k)
+		if kindRow(k).Words == "" {
+			t.Errorf("case kind %s has no words in the kind table", k)
 		}
 	}
 }

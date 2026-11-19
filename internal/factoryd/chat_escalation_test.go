@@ -9,13 +9,14 @@ import (
 	"testing"
 )
 
-// A card with an ID files under it, and its labels follow human.
+// A card with an ID files under it, and its labels follow human: on the
+// issue of a card that asks at once.
 func TestEscalateToHumanKeepsTheCardsIDAndLabels(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
 	store := newFakeStore()
 	got, err := EscalateToHuman(ctx, store, f, Repo{Owner: "sf", Name: "r"},
-		HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}, "factoryd", Task{ID: "t-given", Source: SourceAlert}, "bug")
+		HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}, "sebastian", Task{ID: "t-given", Source: SourceChat}, "bug")
 	if err != nil {
 		t.Fatal(err)
 	}

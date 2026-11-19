@@ -219,7 +219,7 @@ func (s *fakeStore) FailedRolls(ctx context.Context, repository string) ([]RollR
 
 func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "human" && t.Status == "waiting-human" && strings.Contains(t.Objective, marker) {
+		if t.Repository == repository && t.Kind == "human" && slices.Contains(humanCardWaits, t.Status) && strings.Contains(t.Objective, marker) {
 			return t, true, nil
 		}
 	}
@@ -1118,8 +1118,9 @@ func TestRollerRollsTheNewestTestedRunWhateverMainsHeadIs(t *testing.T) {
 // A green commit whose changed images are not all signed with the
 // factory's key (roadmap 46) rolls none of them: the gateway's signature
 // is by another key and the worker carries none, so no roll task is
-// filed, the commit's request is refused, and a human card names each
-// image and why. A second poll files nothing: each commit once.
+// filed, the commit's request is refused, and a human card, waiting for
+// its face, names each image and why. A second poll files nothing: each
+// commit once.
 func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	logs := captureLog(t)
 	run := pushRun(57, commitC1, "success")
@@ -1148,7 +1149,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	}
 	gw, worker := "sf/factory-gateway@"+sha256Of(gwNewIdx), "sf/opencode-worker@"+sha256Of(workerNewIdx)
 	ask := "Fix the signing of the images factoryd, gateway, worker, then close this card"
-	why := "Why: The factory deploys only images signed with its key, so these images stay off the cluster.\n\n---\n\n"
+	const why = "The factory deploys only images signed with its key, so these images stay off the cluster."
 	body := "```\n" + ask + "\n```\n\n" +
 		"Info: Main CI's run is green at commit c1c1c1c, and the factory rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.\n\n" +
 		"The run: https://git.example/sf/ai-software-factory-code/actions/runs/412\n\n" +
@@ -1161,8 +1162,8 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 		"Choices:\n- I did it\n- Not now\n\n" +
 		"The factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nFiled by the factory."
 	want := ask + "\n\n" + body
-	if len(f.issues) != 1 || f.issues[0] != ask+"\n\n"+why+body {
-		t.Fatalf("issues %q, want one:\n%s", f.issues, ask+"\n\n"+why+body)
+	if len(f.issues) != 0 {
+		t.Fatalf("issues %q, want none before the card's face", f.issues)
 	}
 	if len(store.rolls) != 1 {
 		t.Fatalf("roll requests %+v, want one", store.rolls)
@@ -1173,14 +1174,14 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 		map[string]string{"factoryd": sha256Of(gwNewIdx), "gateway": sha256Of(gwNewIdx), "worker": sha256Of(workerNewIdx)}) {
 		t.Fatalf("roll request %+v", req)
 	}
-	if card.Kind != "human" || card.Source != SourceRollRefused || card.Status != "waiting-human" || card.SHA != commitC1 ||
-		card.IssueNumber != 31 || card.Objective != want || len(store.tasks) != 1 {
-		t.Fatalf("card %+v of tasks %v, want the one human card", card, store.tasks)
+	if card.Kind != "human" || card.Source != SourceRollRefused || card.Status != "waiting-agent" || card.SHA != commitC1 ||
+		card.IssueNumber != 0 || card.Objective != want || card.Why != why || len(store.tasks) != 1 {
+		t.Fatalf("card %+v of tasks %v, want the one human card waiting for its face, its question as its objective:\n%s", card, store.tasks, want)
 	}
 	if len(wf.started) != 0 || len(f.pulls) != 0 {
 		t.Fatalf("a roll ran: starts %v, pull requests %v", wf.started, f.pulls)
 	}
-	if !strings.Contains(logs.String(), "refused, human card "+card.ID+", issue #31: "+ask) {
+	if !strings.Contains(logs.String(), "refused, human card "+card.ID+": "+ask) {
 		t.Fatalf("log %q", logs.String())
 	}
 	if n := slices.Index(f.calls, "GET /v2/token"); n < 0 || slices.Contains(f.calls[n+1:], "GET /v2/token") {
@@ -1193,7 +1194,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.issues) != 1 || len(store.rolls) != 1 || len(store.tasks) != 1 {
+	if len(f.issues) != 0 || len(store.rolls) != 1 || len(store.tasks) != 1 {
 		t.Fatalf("the second poll filed again: issues %d, rolls %d, tasks %d", len(f.issues), len(store.rolls), len(store.tasks))
 	}
 }
@@ -2965,9 +2966,10 @@ func TestARollTaskThatFailsEndsItsCommitsStatusFailed(t *testing.T) {
 }
 
 // The roll ladder's end: when a roll request settles failed and three
-// have failed since the last merged roll, the roller asks a person — the
-// question, Try the roll again / Not now / End the card as its buttons,
-// once: while the question stands no second card files.
+// have failed since the last merged roll, the roller files its card — the
+// question, Try the roll again / Not now / End the card as its buttons —
+// once, waiting for its face: while the question stands no second card
+// files.
 func TestRollEscalatesAfterAttempts(t *testing.T) {
 	f := &rollForgejo{files: map[string]map[string]string{codeRepo + "@main": mainPins()}}
 	roller, store, _ := newTestRoller(t, f)
@@ -2991,11 +2993,11 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 			asks = append(asks, t)
 		}
 	}
-	if len(asks) != 1 || asks[0].Status != "waiting-human" {
-		t.Fatalf("needs-you cards %+v, want one waiting", asks)
+	if len(asks) != 1 || asks[0].Status != "waiting-agent" || asks[0].IssueNumber != 0 {
+		t.Fatalf("ask cards %+v, want one waiting for its face with no issue", asks)
 	}
-	// factoryd's ask, never the chat agent's: its row wakes the project
-	// agent, which attaches its analysis
+	// factoryd's ask, never the chat agent's: its case climbs to the project
+	// agent, which analyses it
 	if asks[0].Source != SourceRollFailed || strings.Contains(asks[0].Objective, "agent asked") ||
 		!strings.Contains(asks[0].Objective, "The factory asks. ") {
 		t.Fatalf("the card %+v, want factoryd's roll-failed ask", asks[0])
@@ -3006,8 +3008,8 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 			asked = append(asked, e)
 		}
 	}
-	if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["source"] != SourceRollFailed {
-		t.Fatalf("question_asked rows %+v, want factoryd's", asked)
+	if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["source"] != SourceRollFailed || asked[0].Detail["held"] != true {
+		t.Fatalf("question_asked rows %+v, want factoryd's, held", asked)
 	}
 	for _, want := range []string{"Choices:", "- Try the roll again", "- Not now", "- End the card", "card #31"} {
 		if !strings.Contains(asks[0].Objective, want) {
@@ -3023,15 +3025,22 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(f.issues); n != 1 {
-		t.Fatalf("%d issues filed, want the one question", n)
+	n := 0
+	for _, t := range store.tasks {
+		if t.Kind == "human" && strings.Contains(t.Objective, "rolls failed since the last one merged") {
+			n++
+		}
+	}
+	if n != 1 || len(f.issues) != 0 {
+		t.Fatalf("%d ask cards, issues %q; want the one question and no issue", n, f.issues)
 	}
 }
 
 // The question's Try the roll again work: the failed attempts' requests go
-// — their commits unjudged again — the question's card closes as
-// factoryd's own, and the next poll's judge files one fresh roll of the
-// newest green images; a second poll files nothing more.
+// — their commits unjudged again — the question's card, waiting for its
+// face with no issue, has its close recorded as factoryd's own, and the
+// next poll's judge files one fresh roll of the newest green images; a
+// second poll files nothing more.
 func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(52, commitC1, "success")},
@@ -3061,8 +3070,8 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 			ask = t
 		}
 	}
-	if ask.ID == "" || ask.Status != "waiting-human" || ask.IssueNumber != 31 {
-		t.Fatalf("the question's card %+v, want the waiting ask on issue #31", ask)
+	if ask.ID == "" || ask.Status != "waiting-agent" || ask.IssueNumber != 0 {
+		t.Fatalf("the question's card %+v, want the ask waiting for its face with no issue", ask)
 	}
 	// a comment of the label on the card, even one recorded, is no answer
 	store.intakeEvents = append(store.intakeEvents,
@@ -3076,12 +3085,9 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	if err := RetryRoll(ctx, store, roller.Forgejo, ask); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(f.closed, []string{"31"}) || len(store.rolls) != 0 {
-		t.Fatalf("closed %v, roll requests %+v; want the question's issue closed and no request left", f.closed, store.rolls)
-	}
-	want := "31 A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts. This issue closes."
-	if !slices.Equal(f.comments, []string{want}) {
-		t.Fatalf("comments %q, want %q", f.comments, want)
+	want := "A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts. This issue closes."
+	if closes := factoryCloses(store, ask.ID); len(f.closed) != 0 || len(f.comments) != 0 || !slices.Equal(closes, []string{want}) || len(store.rolls) != 0 {
+		t.Fatalf("closed %v, comments %q, records %q, roll requests %+v; want the card's close recorded as %q and no request left", f.closed, f.comments, closes, store.rolls, want)
 	}
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -3097,7 +3103,7 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(f.closed, []string{"31"}) || len(f.comments) != 1 || len(f.issues) != 2 || len(wf.started) != 1 {
+	if len(f.closed) != 0 || len(f.comments) != 0 || len(f.issues) != 1 || len(wf.started) != 1 {
 		t.Fatalf("further poll: closed %v, %d comments, %d issues, started %v", f.closed, len(f.comments), len(f.issues), wf.started)
 	}
 }

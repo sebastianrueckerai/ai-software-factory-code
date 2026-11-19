@@ -273,7 +273,7 @@ func TestSetDependencyResolvesTheDependencyCase(t *testing.T) {
 	if err := g.s.AddTaskDeps(ctx, "t2", []string{"t1"}); err != nil {
 		t.Fatal(err)
 	}
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseDependencyFailed, StateKey: "d", Status: CaseAtHuman, Problem: "a dependency failed"})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseDependencyFailed, StateKey: "d", Problem: "a dependency failed"})
 	if err != nil {
 		t.Fatal(err)
 	}

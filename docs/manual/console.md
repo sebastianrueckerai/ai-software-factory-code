@@ -57,6 +57,11 @@ decimals: a task's model calls cost fractions of a cent.
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan child's drawer has a Plan row: the plan's `#n`, its name and the card's key.
+  factoryd's own human card sits in In progress while it is
+  `waiting-agent`, reads “with the factory agent” and counts as working,
+  not in Needs you: its case climbs to the project agent first. An answer on it is
+  refused, naming its case, until its face moves it to `waiting-human`;
+  rung 2's own turn on the case answers it.
 - The production hold: while a plan's group is open on the project's main,
   for the factory's own project or a project whose CI asked `/release`,
   the status strip shows the cell `production held · <time>` after the
@@ -88,6 +93,9 @@ decimals: a task's model calls cost fractions of a cent.
   case: it runs at autonomous and full auto and is a proposal at
   assisted and manual. A human's press runs the same action. The ask
   closes itself once no plan is open on main and after a Deploy now.
+  The ask waits for its case's face like every factoryd human card: rung
+  2 may deploy, and may wait only once no plan is open on main; its
+  issue is filed only when the case reaches the human.
   Each release of held production is recorded as the project's
   `production_released` row: `how` (`closed` when the last plan closed,
   by factoryd; `deploy_now` with the `commit` and its `decider`),
@@ -120,7 +128,8 @@ decimals: a task's model calls cost fractions of a cent.
   answers go to the planner, and its next revision with no open question
   files the cards, `queued` on the direct track, and the plan card ends
   done. A stale revision shows `the plan changed to revision <m>; reload`
-  on the card. “Ask for changes” posts a comment as the human, which the
+  on the card. Each question's page and the confirmation's page offer
+  “Ask for changes”, which posts a comment as the human, which the
   planner revises the plan with, and ends the revision's cases with that
   revise. A done plan lists its cards by issue and state. A done plan
   with rounds shows `round <k>: <n> cards, <d> done.` and what is still
@@ -380,12 +389,13 @@ decimals: a task's model calls cost fractions of a cent.
   `approve_merge` and `deny_merge` before any proposal, naming
   `attach_analysis`. The agent never approves a GitHub sync's pull
   request: a human approves the GitHub commits it carries, and its refusal
-  names `attach_analysis`. A merge request's row wakes nobody, and
-  neither does a plan's question, the planner's row or its face's: each
-  case climbs to rung 2, whose wake is the case's. In that wake the plan's
+  names `attach_analysis`. No ask row wakes the agent, and neither does a
+  merge request's row: each case climbs to rung 2, whose wake is the
+  case's `case_climbed` row, or reaches the human with no rung able to
+  run. In that wake the plan's
   `answer` and `request_changes` run as the agent at every level, and
   below full auto the plan's guard refuses them, naming `attach_analysis`.
-  A wake counts its asks and its cases apart. A project
+  A wake counts its cases. A project
   without a chat token gets no wake; the refusal names `tokens.chat`.
   `steer` reaches a running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation

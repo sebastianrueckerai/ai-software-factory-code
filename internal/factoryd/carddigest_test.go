@@ -149,6 +149,7 @@ func skeletonRig(t *testing.T) digestRig {
 		{ID: 2, TaskID: "t1410", Kind: CaseBudgetFloor, StateKey: "k-floor", Status: CaseAtHuman,
 			Money: &CaseMoney{Kind: string(CaseBudgetFloor), BudgetEUR: 5, SpentEUR: 4.92}},
 	}
+	g.store.caseSteps = map[int64][]CaseStep{2: {{CaseID: 2, Rung: 2, Outcome: StepHandedUp}}}
 	return g
 }
 
@@ -362,6 +363,7 @@ func TestCardDigestFlagsAnswerChangedNothing(t *testing.T) {
 		{ID: 3, TaskID: "t1410", Kind: CaseAgentEscalate, StateKey: "k1", Status: CaseAtHuman},
 		{ID: 4, TaskID: "t1410", Kind: CaseAgentEscalate, StateKey: "k2", Status: CaseOpen},
 	}
+	g.store.caseSteps = map[int64][]CaseStep{3: {{CaseID: 3, Rung: 2, Outcome: StepHandedUp}}}
 	if got, want := g.digest(t).Flags, []DigestFlag{{"answer_changed_nothing", "k1"}}; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
 	}
@@ -390,7 +392,30 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 		}, []DigestFlag{{"dependency_failed", "#7"}}},
 		{"an open case after the end", func(c *Task) { c.Status = "done" }, func(t *testing.T, g digestRig) {
 			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseSessionCap, StateKey: "k1", Status: CaseAtHuman}}
+			g.store.caseSteps = map[int64][]CaseStep{1: {{CaseID: 1, Rung: 2, Outcome: StepHandedUp}}}
 		}, []DigestFlag{{"issue_open_after_end", "session_cap"}}},
+		{"a case at the human no rung judged", nil, func(t *testing.T, g digestRig) {
+			g.store.cases = []Case{{ID: 7, TaskID: "t1410", Kind: CaseOther, StateKey: "k7", Status: CaseAtHuman, Problem: "p"},
+				{ID: 8, TaskID: "t1410", Kind: CaseOther, StateKey: "k8", Status: CaseAtHuman, Problem: "p"},
+				{ID: 9, TaskID: "t1410", Kind: CaseOther, StateKey: "k9", Status: CaseOpen, Problem: "p"}}
+			g.store.caseSteps = map[int64][]CaseStep{7: {{CaseID: 7, Rung: 0, Outcome: StepHandedUp}, {CaseID: 7, Rung: 3, Outcome: StepInProgress}},
+				8: {{CaseID: 8, Rung: 2, Outcome: StepHandedUp}}}
+		}, []DigestFlag{{"faced_unjudged", "7"}}},
+		{"a judgment budget case at the human", nil, func(t *testing.T, g digestRig) {
+			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseJudgmentBudget, StateKey: "k1", Status: CaseAtHuman, Problem: "p"}}
+		}, nil},
+		{"a case at the human no rung could judge", nil, func(t *testing.T, g digestRig) {
+			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseOther, StateKey: "k1", Status: CaseAtHuman, Problem: "p"}}
+			g.store.caseSteps = map[int64][]CaseStep{1: {{CaseID: 1, Rung: 0, Outcome: StepHandedUp, Found: "not judged: the model provider refused: the model refused the call (400)"}}}
+		}, nil},
+		{"a case at the human rung 2 handed up", nil, func(t *testing.T, g digestRig) {
+			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseOther, StateKey: "k1", Status: CaseAtHuman, Problem: "p"}}
+			g.store.caseSteps = map[int64][]CaseStep{1: {{CaseID: 1, Rung: 0, Outcome: StepHandedUp}, {CaseID: 1, Rung: 2, Outcome: StepHandedUp}}}
+		}, nil},
+		{"the flag's own case at the human no rung judged", nil, func(t *testing.T, g digestRig) {
+			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseMonitorFlag, StateKey: "faced_unjudged|7", Status: CaseAtHuman, Problem: "p",
+				Facts: map[string]any{"flag": "faced_unjudged", "detail": "7"}}}
+		}, nil},
 		{"a budget no event moved", func(c *Task) { c.BudgetEUR = 7 }, nil, []DigestFlag{{"budget_moved_no_event", "7.00 EUR not 5.00 EUR"}}},
 		{"a successor's budget, copied from its card", func(c *Task) { c.Source, c.BudgetEUR = SourceSuccessor, 7 }, nil, nil},
 		{"a retry's budget, copied from the card it replaces", func(c *Task) { c.Source, c.BudgetEUR = SourcePlan, 7 }, func(t *testing.T, g digestRig) {
@@ -1481,7 +1506,10 @@ func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
 			ownedWait{"rung_answer", 1, digestAt(10)}, true, []DigestFlag{{"wait_over_bound", "rung_answer since +0:10"}}},
 		{"a rung's step not yet due", nil, rungStep(CaseOpen, 1, 50), 46, ownedWait{}, false, nil},
 		{"a rung's step on a case that ended", nil, rungStep(CaseResolved, 1, 45), 46, ownedWait{}, false, nil},
-		{"the human's step past its due", nil, rungStep(CaseAtHuman, 3, 45), 46, ownedWait{}, false, nil},
+		{"the human's step past its due", nil, func(t *testing.T, g digestRig) {
+			rungStep(CaseAtHuman, 3, 45)(t, g)
+			g.store.caseSteps[1] = slices.Insert(g.store.caseSteps[1], 0, CaseStep{CaseID: 1, Rung: 2, StartedAt: digestAt(5), Outcome: StepHandedUp})
+		}, 46, ownedWait{}, false, nil},
 		{"a rung's step past its due on a queued card", func(c *Task) { c.Status, c.QueueReason, c.QueueSince = "queued", "waits on #7", &queued },
 			rungStep(CaseAtHuman, 1, 45), 46, ownedWait{"queued", 0, queued}, true, nil},
 	} {

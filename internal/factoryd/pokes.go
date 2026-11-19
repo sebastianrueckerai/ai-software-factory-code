@@ -269,8 +269,9 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 			// the factory answered the ask as it asked it: no one is needed
 			return m, false
 		}
-		if revision, _ := toInt(e.Detail["revision"]); revision > 0 && str("case_kind") == "" {
-			// the planner's row: its case climbs, and its face's row asks
+		if revision, _ := toInt(e.Detail["revision"]); revision > 0 && str("case_kind") == "" || bl("held") {
+			// the planner's row or factoryd's own human card's: its case
+			// climbs, and its face's row asks
 			return m, false
 		}
 		m.Kind = MessageEscalation
@@ -300,6 +301,9 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		// a row after the card's escalation: the inbox offers its answer
 		// row no more. A monitor's case sits beside the card's own ask, so
 		// its row names the flag; the case id stays in the event's detail
+		if bl("held") {
+			return m, false
+		}
 		who := capitalize(name)
 		if e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			who = "The flag on " + name

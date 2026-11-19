@@ -247,12 +247,23 @@ func NoLongerWaits(numbers []int64) string {
 // where the issue lacks it (CommentOnce): one close, one comment. The
 // sentence names what this call dropped: a retry after a failed record or a
 // partly done removal finds those edges gone and does not name them, and the
-// issue's timeline in Forgejo shows each removal.
+// issue's timeline in Forgejo shows each removal. A card with no issue gets
+// the record alone, with no forge call.
 func closeIssueAsFactory(ctx context.Context, store interface {
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
 	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(context.Context, string, int64) error
 }, forgejo *Forgejo, t Task, comment string) error {
+	if t.IssueNumber == 0 {
+		// a card with no issue, factoryd's own human card before its face:
+		// the record alone, once, which the heal pass ends the card on
+		events, err := store.IntakeEvents(ctx, t.ID)
+		if err != nil || botCloseRecorded(events, t) {
+			return err
+		}
+		_, err = store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeFactoryClosed, Author: "factoryd", Body: comment})
+		return err
+	}
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err

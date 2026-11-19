@@ -97,8 +97,8 @@ func TestBoardHasNoLaneColumn(t *testing.T) {
 			t.Errorf("the board still has %s", gone)
 		}
 	}
-	if !strings.Contains(body, `data-holds="queued waiting-deps waiting-image"`) || !strings.Contains(body, `data-holds="running closing in-review merged"`) {
-		t.Errorf("Queued does not hold waiting-deps, or In progress closing:\n%s", body)
+	if !strings.Contains(body, `data-holds="queued waiting-deps waiting-image"`) || !strings.Contains(body, `data-holds="running closing waiting-agent in-review merged"`) {
+		t.Errorf("Queued does not hold waiting-deps, or In progress closing and waiting-agent:\n%s", body)
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	for title, want := range map[string][]string{

@@ -439,7 +439,7 @@ type chainForgejo struct {
 	workflows  map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
 	invisible  map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues     []string                                  // "title\n\nbody" of every issue filed
-	fileIssue  int                                       // the status an issue's filing answers; 0 is 201
+	noteFail   int                                       // the status a comment's posting answers; 0 is 201
 	closeFail  int                                       // the status an issue's close answers; 0 closes it
 	open       map[string][]map[string]any               // repository -> its open issues
 	status     []string                                  // the sha of every combined status read
@@ -550,8 +550,6 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				open = append(open, f.open[repo]...)
 			}
 			reply(open)
-		case r.Method == "POST" && p == "/issues" && f.fileIssue != 0:
-			http.Error(w, "refused", f.fileIssue)
 		case r.Method == "POST" && p == "/issues":
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
@@ -589,6 +587,8 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				}
 			}
 			reply(out)
+		case r.Method == "POST" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments") && f.noteFail != 0:
+			http.Error(w, "refused", f.noteFail)
 		case r.Method == "POST" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
@@ -2014,9 +2014,10 @@ func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
 }
 
 // The stall ladder: a run stalled past its bound is re-run once, with no
-// card; a bound later, the head still pending, one human card asks with
-// three choices, naming what is pending since when, the run's link and
-// the cards it holds; a later tick adds nothing. No repair card files.
+// card; a bound later, the head still pending, one human card is filed
+// with three choices, naming what is pending since when, the run's link
+// and the cards it holds, waiting for its face with no issue; a later tick
+// adds nothing. No repair card files.
 func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	p, store, f, clock := stallRig(t, "running")
 	p.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
@@ -2043,8 +2044,8 @@ func TestAStallRerunsOnceThenAsks(t *testing.T) {
 		t.Fatalf("a bound after the re-run: reruns %q, stall cards %+v; want one card, no second re-run", f.reruns, cards)
 	}
 	card := cards[0]
-	if card.Kind != "human" || card.Status != "waiting-human" || card.Repository != demoRepo {
-		t.Fatalf("stall card %+v, want a human card of %s waiting on a person", card, demoRepo)
+	if card.Kind != "human" || card.Status != "waiting-agent" || card.Repository != demoRepo || card.IssueNumber != 0 {
+		t.Fatalf("stall card %+v, want a human card of %s waiting for its face with no issue", card, demoRepo)
 	}
 	q := askedQuestion(t, store, card.ID)
 	if !slices.Equal(q.Choices, stallChoices) {
@@ -2062,7 +2063,7 @@ func TestAStallRerunsOnceThenAsks(t *testing.T) {
 		t.Fatalf("repair cards %+v, want none for a stall", cards)
 	}
 	tickAt(t, p, clock, 5*time.Minute)
-	if len(f.reruns) != 1 || len(stallCards(store)) != 1 || len(f.issues) != 1 {
+	if len(f.reruns) != 1 || len(stallCards(store)) != 1 || len(f.issues) != 0 {
 		t.Fatalf("a later tick: reruns %q, issues %d; want nothing new", f.reruns, len(f.issues))
 	}
 }
@@ -2150,8 +2151,9 @@ func TestAStalledSkippedRunIsNotRerun(t *testing.T) {
 	}
 }
 
-// A green head resolves the alert and closes the open stall card as the
-// bot, its close recorded as factoryd's own first, once.
+// A green head resolves the alert and closes the open stall card, which
+// waits for its face with no issue: its close is factoryd's record alone,
+// once, with no forge call.
 func TestAGreenHeadClosesTheStallCard(t *testing.T) {
 	p, store, f, clock := stallRig(t, "success", "factory/roll")
 	tickAt(t, p, clock, 0)
@@ -2164,25 +2166,22 @@ func TestAGreenHeadClosesTheStallCard(t *testing.T) {
 		demoRepo: {demoCommit: {{"status": "success", "context": "factory/roll"}}},
 	}
 	tickAt(t, p, clock, time.Minute)
-	issue := fmt.Sprintf("%s#%d", demoRepo, cards[0].IssueNumber)
-	if !slices.Equal(f.closed, []string{issue}) || len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], issue+" ") {
-		t.Fatalf("closed %q, comments %q; want the card's issue closed with one comment", f.closed, f.comments)
-	}
-	if !botCloseRecorded(store.intakeEvents, cards[0]) {
-		t.Fatalf("intake events %+v, want the close recorded as factoryd's own", store.intakeEvents)
+	closes := factoryCloses(store, cards[0].ID)
+	if len(f.closed) != 0 || len(f.comments) != 0 || len(closes) != 1 || !strings.Contains(closes[0], "this stall no longer stands") {
+		t.Fatalf("closed %q, comments %q, records %q; want factoryd's one record and no forge call", f.closed, f.comments, closes)
 	}
 	if store.alerts[0].Verdict != VerdictReal {
 		t.Fatalf("alerts %+v, want the stall resolved", store.alerts)
 	}
-	// the close's webhook not in yet: a second green tick posts nothing new
+	// the heal pass has not ended the card yet: a second green tick records nothing new
 	tickAt(t, p, clock, time.Minute)
-	if len(f.comments) != 1 {
-		t.Fatalf("comments %q, want the one", f.comments)
+	if closes := factoryCloses(store, cards[0].ID); len(closes) != 1 || len(f.comments) != 0 {
+		t.Fatalf("records %q, comments %q; want the one record", closes, f.comments)
 	}
 }
 
-// A head that concludes red ends the stall too: the stall card closes,
-// and the red files its repair card as built.
+// A head that concludes red ends the stall too: the stall card's close is
+// recorded, and the red files its repair card as built.
 func TestARedHeadClosesTheStallCardAndRepairs(t *testing.T) {
 	p, store, f, clock := stallRig(t, "running")
 	f.rerun = http.StatusNotFound
@@ -2194,8 +2193,8 @@ func TestARedHeadClosesTheStallCardAndRepairs(t *testing.T) {
 	}
 	f.runs[demoRepo] = []map[string]any{chainRun(21, demoCommit, "failure")}
 	tickAt(t, p, clock, time.Minute)
-	if want := fmt.Sprintf("%s#%d", demoRepo, cards[0].IssueNumber); !slices.Equal(f.closed, []string{want}) {
-		t.Fatalf("closed %q, want the stall card's issue %s", f.closed, want)
+	if closes := factoryCloses(store, cards[0].ID); len(f.closed) != 0 || len(closes) != 1 {
+		t.Fatalf("closed %q, records %q; want the stall card's close recorded alone", f.closed, closes)
 	}
 	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "CI run 16 failure") {
 		t.Fatalf("repair cards %+v, want the red head's", repairs)
@@ -2325,15 +2324,14 @@ func TestASupersededHeadClosesTheStallCard(t *testing.T) {
 	}
 	f.runs[demoRepo] = []map[string]any{chainRun(22, demoNext, "success"), chainRun(21, demoCommit, "success")}
 	tickAt(t, p, clock, 15*time.Second)
-	issue := fmt.Sprintf("%s#%d", demoRepo, first.IssueNumber)
-	if !slices.Equal(f.closed, []string{issue}) || len(f.comments) != 1 || !strings.Contains(f.comments[0], "moved on to e5e5e5e") {
-		t.Fatalf("closed %q, comments %q; want A's card closed naming the new head", f.closed, f.comments)
+	if closes := factoryCloses(store, first.ID); len(f.closed) != 0 || len(closes) != 1 || !strings.Contains(closes[0], "moved on to e5e5e5e") {
+		t.Fatalf("closed %q, records %q; want A's card's close recorded naming the new head", f.closed, closes)
 	}
 	var gone ErrStallGone
 	if err := store.DismissChainStall(ctx, demoRepo, first.SHA, "sebastian"); !errors.As(err, &gone) || gone.Head != demoNext {
 		t.Fatalf("a dismissal on A's card = %v, want the head moved on to %s", err, demoNext)
 	}
-	// the close's webhook lands; B stays pending past its bound
+	// the heal pass ends A's card; B stays pending past its bound
 	closed := *clock
 	first.Status, first.FinishedAt = "done", &closed
 	store.tasks[first.ID] = first
@@ -2548,11 +2546,12 @@ func redRig(t *testing.T, proj Project, state string) (*ChainPoller, *fakeStore,
 }
 
 // A red head of a project without agents (the infra project, spec 6.7)
-// files its repair card in the human lane, labelled human, starting no
-// workflow: one per repository while it stands, ChainCard finds it, and
-// a second red tick files none. The card asks its question: the ask names
-// the red head, the info the run's link and the carried cards, and its
-// one question_asked row is the needs-you poke at the messengers' level.
+// files its repair card in the human lane, starting no workflow: one per
+// repository while it stands, ChainCard finds it, and a second red tick
+// files none. The card waits for its face with no issue and no label. Its
+// question: the ask names the red head, the info the run's link and the
+// carried cards; its one question_asked row is held, carrying the label
+// human for the face's issue, and pokes nobody.
 func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
@@ -2568,15 +2567,15 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 		t.Fatalf("repair cards %+v, want one", cards)
 	}
 	card := cards[0]
-	if card.Kind != "human" || card.Status != "waiting-human" || card.SHA != demoCommit ||
+	if card.Kind != "human" || card.Status != "waiting-agent" || card.IssueNumber != 0 || card.SHA != demoCommit ||
 		!strings.Contains(card.Objective, "required context flux/platform: failure") {
-		t.Fatalf("repair card %+v, want a human card on the red head naming Flux", card)
+		t.Fatalf("repair card %+v, want a human card on the red head naming Flux, waiting for its face", card)
 	}
 	if got, ok, err := store.ChainCard(ctx, demoRepo, SourceChainRepair); err != nil || !ok || got.ID != card.ID {
 		t.Fatalf("ChainCard = %s, %v, %v; want %s", got.ID, ok, err, card.ID)
 	}
-	if want := fmt.Sprintf("%s#%d human state/waiting-human", demoRepo, card.IssueNumber); !slices.Equal(f.labelled, []string{want}) {
-		t.Fatalf("labels %q, want %q", f.labelled, want)
+	if len(f.labelled) != 0 || len(f.issues) != 0 {
+		t.Fatalf("labels %q, issues %q; want none before the face", f.labelled, f.issues)
 	}
 	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 0 {
 		t.Fatalf("started %v, want no workflow for a human card", started)
@@ -2596,12 +2595,12 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 			asked = append(asked, e)
 		}
 	}
-	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != ask || asked[0].Detail["source"] != SourceChainRepair {
-		t.Fatalf("question_asked rows %+v, want the card's one", asked)
+	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != ask || asked[0].Detail["source"] != SourceChainRepair ||
+		asked[0].Detail["held"] != true || !slices.Equal(stringsOf(asked[0].Detail["labels"]), []string{"human"}) {
+		t.Fatalf("question_asked rows %+v, want the card's one, held, labelled human", asked)
 	}
-	if m, ok := PokeOf(asked[0], card, Task{}); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, fmt.Sprintf("#%d (%s) needs you. ", card.IssueNumber, CardTitle(card))) ||
-		deliveryLevel(m) != LevelNeedsYou {
-		t.Fatalf("the poke = %+v, %v; want the card's needs-you at the messengers' level", m, ok)
+	if m, ok := PokeOf(asked[0], card, Task{}); ok {
+		t.Fatalf("the poke = %+v, want none before the face", m)
 	}
 }
 
@@ -2627,9 +2626,10 @@ func TestTheHumanRepairCardNamesTheCarriedCards(t *testing.T) {
 }
 
 // A human repair card closes once the red it was filed for is gone: its
-// own commit turned green (Flux reconciled the same revision and healed),
-// its close recorded as factoryd's own first, one comment; a second green
-// tick posts none.
+// own commit turned green (Flux reconciled the same revision and healed).
+// It waits for its face with no issue, so its close is factoryd's one
+// record, naming the green, with no forge call; a second green tick
+// records none.
 func TestAHealedHeadClosesTheRepairCard(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
@@ -2643,13 +2643,8 @@ func TestAHealedHeadClosesTheRepairCard(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	issue := fmt.Sprintf("%s#%d", demoRepo, card.IssueNumber)
-	if !slices.Equal(f.closed, []string{issue, issue}) || len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], issue+" ") ||
-		!strings.Contains(f.comments[0], "concluded green") {
-		t.Fatalf("closed %q, comments %q; want the card's issue closed with one comment", f.closed, f.comments)
-	}
-	if !botCloseRecorded(store.intakeEvents, card) {
-		t.Fatalf("intake events %+v, want the close recorded as factoryd's own", store.intakeEvents)
+	if closes := factoryCloses(store, card.ID); len(f.closed) != 0 || len(f.comments) != 0 || len(closes) != 1 || !strings.Contains(closes[0], "concluded green") {
+		t.Fatalf("closed %q, comments %q, records %q; want factoryd's one record naming the green", f.closed, f.comments, closes)
 	}
 }
 
@@ -2675,9 +2670,8 @@ func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
 	human := repairCards(store)[demoRepo][0]
 	moveOn(f, "pending")
 	tick(p)
-	if want := fmt.Sprintf("%s#%d", demoRepo, human.IssueNumber); !slices.Equal(f.closed, []string{want}) ||
-		len(f.comments) != 1 || !strings.Contains(f.comments[0], "moved on to e5e5e5e") {
-		t.Fatalf("human card: closed %q, comments %q; want it closed naming the new head", f.closed, f.comments)
+	if closes := factoryCloses(store, human.ID); len(f.closed) != 0 || len(closes) != 1 || !strings.Contains(closes[0], "moved on to e5e5e5e") {
+		t.Fatalf("human card: closed %q, records %q; want its close recorded naming the new head", f.closed, closes)
 	}
 
 	p, store, f = redRig(t, seedProject(demoRepo), "failure")
@@ -2709,11 +2703,10 @@ func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
 	}
 }
 
-// A repair card whose filing left its issue behind, the task row never
-// written: the next red tick takes the bot's open issue of the card's
-// title on instead of filing a second, its labels the card's; an issue of
-// that title a task holds, or another poster's, is not taken.
-func TestARepairCardTakesOnTheIssueAFailedFilingLeft(t *testing.T) {
+// A human repair card files no issue, so its filing takes on none: the
+// open issues of its title, the bot's left behind among them, stay as they
+// are, unlabelled, for its face to take the bot's on.
+func TestAHumanRepairCardTakesOnNoIssueAtItsFiling(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
 	title := "Repair the deploy chain of sf/demo-app"
@@ -2727,11 +2720,8 @@ func TestARepairCardTakesOnTheIssueAFailedFilingLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 	cards := repairCards(store)[demoRepo]
-	if len(cards) != 1 || cards[0].IssueNumber != 8 || cards[0].Status != "waiting-human" || cards[0].Kind != "human" || len(f.issues) != 0 {
-		t.Fatalf("repair cards %+v, issues filed %q; want the card on the left-behind #8 and no new issue", cards, f.issues)
-	}
-	if want := []string{demoRepo + "#8 human state/waiting-human"}; !slices.Equal(f.labelled, want) {
-		t.Fatalf("labels %q, want %q", f.labelled, want)
+	if len(cards) != 1 || cards[0].IssueNumber != 0 || cards[0].Status != "waiting-agent" || cards[0].Kind != "human" || len(f.issues) != 0 || len(f.labelled) != 0 {
+		t.Fatalf("repair cards %+v, issues filed %q, labels %q; want the card with no issue, none filed, none labelled", cards, f.issues, f.labelled)
 	}
 }
 
@@ -2787,7 +2777,7 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 	f.statuses[demoRepo][demoNext] = []map[string]string{{"status": "failure", "context": "flux/platform"}}
 	tick(p)
 	cards := repairCards(store)[demoRepo]
-	if len(cards) != 2 || asked(store) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Status == "waiting-human" }) {
+	if len(cards) != 2 || asked(store) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Status == "waiting-agent" }) {
 		t.Fatalf("repair cards %+v, %d needs-you rows on a new red head; want a second card on %s and its row", cards, asked(store), demoNext)
 	}
 

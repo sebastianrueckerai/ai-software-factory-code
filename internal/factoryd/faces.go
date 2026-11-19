@@ -255,7 +255,7 @@ func faceSpecOf(c Case, f Facts) FaceSpec {
 		if s, ok := ApprovalFaces[f.ApprovalKind]; ok {
 			return s
 		}
-	case ChoiceCase(c, f.Card.Kind):
+	case ChoiceKind(c.Kind):
 		return humanFace
 	}
 	if s, ok := CaseFaces[c.Kind]; ok {
@@ -489,7 +489,7 @@ func answerHolds(a Answer, f Facts) bool {
 	switch {
 	case !ok || a.Value != "":
 		return true
-	case ChoiceCase(f.Case, f.Card.Kind) && a.Action != ActClose && a.Key() != ActNote+"/"+variantOwnWords:
+	case ChoiceKind(f.Case.Kind) && a.Action != ActClose && a.Key() != ActNote+"/"+variantOwnWords:
 		return false
 	}
 	written := map[string]string{}

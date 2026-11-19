@@ -63,6 +63,15 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 4 || strings.Contains(card, "suggested") || strings.Contains(card, "Accept plan") {
 		t.Errorf("want an answer per choice and the own words, none suggested, and no Accept:\n%s", card)
 	}
+	// the question's four answers fill the face, so Ask for changes is the
+	// page's one other action, below them
+	page := planDrawer(t, r, ck)
+	const changes = `action="/tasks/t-plan/plan/changes"`
+	_, other, _ := strings.Cut(page, `<details class="fold" data-sec="more">`)
+	if strings.Count(page, changes) != 1 || strings.LastIndex(page, `action="/tasks/t-plan/plan/answer"`) > strings.Index(page, changes) ||
+		!strings.Contains(other, changes) || !strings.Contains(other, "Ask for changes") || !strings.Contains(other, `name="text"`) {
+		t.Errorf("want one Ask for changes form with its note field under the other actions, below the answers:\n%s", page)
+	}
 	const comments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
 	answer := func(revision, index, text string) *httptest.ResponseRecorder {
 		return r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "revision": {revision}, "index": {index}, "answer": {text},
@@ -672,7 +681,7 @@ func TestAWakeAnswersAPlanOnlyWhereTheGuardPasses(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, trn, _ := planGuardRig(t, c.confirmation, c.takeOff...)
-			trn.a.level, trn.a.wake, trn.a.birth = c.level, true, factoryd.WakeAsk
+			trn.a.level, trn.a.wake, trn.a.birth = c.level, true, factoryd.EventCaseClimbed
 			res, proposal, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
 			wrote := len(r.fg.comments) > 0
 			if c.want == "" && (proposal != "" || !wrote || strings.HasPrefix(res, "Refused")) ||
@@ -779,7 +788,7 @@ func TestAnAgentsPlanAnswerRecordsTheAgentAndItsWake(t *testing.T) {
 	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
 	const changes = `{"task_id":"t-p","text":"split the API card"}`
 	r, trn, _ := planGuardRig(t, true)
-	trn.a.level, trn.a.wake, trn.a.birth, trn.conv = policy.AutonomyFullAuto, true, factoryd.WakeAsk, 7
+	trn.a.level, trn.a.wake, trn.a.birth, trn.conv = policy.AutonomyFullAuto, true, factoryd.EventCaseClimbed, 7
 	before := r.events.count()
 	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") {
 		t.Fatalf("result %q", res)
@@ -788,20 +797,20 @@ func TestAnAgentsPlanAnswerRecordsTheAgentAndItsWake(t *testing.T) {
 		t.Errorf("the signal's author: %v", r.fg.calls)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
-		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.WakeAsk,
+		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.EventCaseClimbed,
 			"autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
 	before = r.events.count()
 	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "request_changes", Arguments: changes}); !strings.HasPrefix(res, "Your change request is on plan #20") {
 		t.Fatalf("result %q", res)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanChangesRequested,
-		Detail: map[string]any{"birth": factoryd.WakeAsk, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+		Detail: map[string]any{"birth": factoryd.EventCaseClimbed, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
 }
 
 // The batch path stores the agent's answers as factory-chat's too.
 func TestAnAgentsBatchAnswerNamesTheAgent(t *testing.T) {
 	r, trn, _ := planGuardRig(t, false)
-	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.WakeAsk
+	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.EventCaseClimbed
 	res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`})
 	if !strings.HasPrefix(res, "Answered") || !slices.ContainsFunc(r.fg.calls, func(c string) bool {
 		return strings.HasPrefix(c, "SIGNAL plan_answered t-p 1") && strings.HasSuffix(c, " by "+factoryd.ChatUser)
@@ -963,7 +972,7 @@ func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				trn.a.s, trn.a.wake, trn.a.birth = s, true, factoryd.WakeAsk
+				trn.a.s, trn.a.wake, trn.a.birth = s, true, factoryd.EventCaseClimbed
 			}
 			humanTurn(t, r, trn, c.turn == "absorbed")
 			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})

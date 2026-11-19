@@ -26,6 +26,7 @@ func TestEveryFlagAsksInWords(t *testing.T) {
 		"answer_changed_nothing":  {"This card's last answer changed nothing.", noticed},
 		"budget_moved_no_event":   {"This card's budget reads 2.70 EUR, but its records add up to 2.00 EUR. Is that fine?", fine},
 		"checkin_cut":             {"This card's last session went unjudged because its check ended early.", noticed},
+		"faced_unjudged":          {"This card's question reached a human before the factory's agents judged it.", noticed},
 		"checkin_refused":         {"This card's last session went unjudged because its check was refused.", noticed},
 		"criterion_unproven":      {"A promise of the plan has no test result yet. Run the plan's tests now?", []string{"Run the tests now", "It is fine, go on", "Not now"}},
 		"dependency_failed":       {"A card this one waits for failed. Is that fine?", fine},

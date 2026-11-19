@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ const (
 	CaseBudgetFloor      CaseKind = "budget_floor"
 	CaseDayCap           CaseKind = "day_cap"
 	CaseMonthCap         CaseKind = "month_cap"
+	CaseFactoryMonthCap  CaseKind = "factory_month_cap"
 	CaseProjectCap       CaseKind = "project_cap"
 	CaseCheckinHuman     CaseKind = "checkin_human"
 	CaseCheckinShare     CaseKind = "checkin_share"
@@ -58,54 +60,120 @@ const (
 	// CasePlanHeld is a plan whose card a human closed while promises
 	// were open: it holds production deploys until it closes
 	CasePlanHeld CaseKind = "plan_held"
+	// CaseProviderFreeze is the ask of the card a provider's limit on a
+	// model class files
+	CaseProviderFreeze CaseKind = "provider_freeze"
 )
 
-// caseKindWords say a kind as a human reads it.
-var caseKindWords = map[CaseKind]string{
-	CaseSessionCap:       "session cap",
-	CaseAgentTimeCap:     "agent time cap",
-	CaseBudgetFloor:      "budget floor",
-	CaseDayCap:           "day cap",
-	CaseMonthCap:         "month cap",
-	CaseProjectCap:       "project cap",
-	CaseCheckinHuman:     "check-in with a human",
-	CaseCheckinShare:     "check-in spend",
-	CaseCheckinFailed:    "failed check-in",
-	CaseGateStop:         "gate stop",
-	CaseFindingsRepeated: "repeated findings",
-	CaseDependencyClosed: "closed dependency",
-	CaseDependencyFailed: "failed dependency",
-	CaseWaitExpired:      "expired wait",
-	CasePodNeverStarted:  "pod that never started",
-	CaseProviderRefused:  "provider refusal",
-	CaseNoAnswer:         "missing answer",
-	CaseContentFilter:    "content filter stop",
-	CaseImageWait:        "image wait",
-	CaseScreeningSuspect: "screening suspect",
-	CaseAgentEscalate:    "agent's escalation",
-	CaseAgentRequestInfo: "agent's request for information",
-	CasePlanQuestion:     "plan question",
-	CasePlanConfirmation: "plan confirmation",
-	CaseMergeApproval:    "merge approval",
-	CaseHumanCard:        "human card",
-	CaseOther:            "open problem",
-	CaseMonitorFlag:      "monitor flag",
-	CaseJudgmentBudget:   "judgment budget",
-	CasePolicyClass:      "policy class",
-	CaseRedMain:          "red main",
-	CaseRollHeld:         "held roll",
-	CaseConfigRefused:    "refused configuration",
-	CasePlanCriteria:     "plan's criteria",
-	CasePlanHeld:         "held plan",
+// caseKindRow is what the ladder does with a case of one kind.
+type caseKindRow struct {
+	Kind CaseKind
+	// Words say the kind as a human reads it.
+	Words string
+	// Rung0 names the rows of rung0 tried on the kind.
+	Rung0 []string
+	// NoRung1 is why rung 1 never judges the kind, "" when it may.
+	NoRung1 string
+	// Rung2 is what rung 2 does with the kind, and Rung2Why why it does no
+	// more than analyse it, or nothing.
+	Rung2, Rung2Why string
+	// Choices says its question's choices answer it.
+	Choices bool
+	// Exception is why a case of the kind passes the door with no step of
+	// rung 1 or rung 2, "" for none.
+	Exception string
+}
+
+// What rung 2 does with a case kind: decides it where the action table
+// lets it, analyses it for the human, who alone decides, or nothing.
+const (
+	rung2Decides  = "decides"
+	rung2Analyses = "analyses"
+	rung2Nothing  = "nothing"
+)
+
+// The reasons the kind table gives.
+const (
+	checkinJudged    = "the check-in judged the stop: its hand to the human is rung 1's step"
+	aboutTheBoard    = "it is about the board, not one card's session, which rung 1 reads"
+	choicesAnswer    = "its question's choices answer it, and rung 1 answers with the action table's actions"
+	noRungRunsBudget = "the judgment budget that pays the rungs is spent, so no rung can run"
+	noRungRunsCap    = "the factory's month cap refuses the agent's own model calls, so no rung can run"
+	authorAnswers    = "the agent asks its issue's author, whose answer alone the card's wait takes"
+	humanClosedPlan  = "a human closed the plan's card, and only a human says whether its open promises are dropped"
+	limitHoldsRungs  = "the provider's limit holds a model class, the rungs' own calls among its waiters, so no rung is sure to run"
+)
+
+// headRows are rung 0's rows for a stop at the card's head.
+var headRows = []string{"route_approval", "rerun_checks"}
+
+// caseKinds is the kind table, in the order the kinds are declared: for
+// every case kind, its words, its rows at rung 0, why rung 1 does not judge
+// it, what rung 2 does with it, whether its question's choices answer it,
+// and why it passes the door with no rung's step.
+var caseKinds = []caseKindRow{
+	{Kind: CaseSessionCap, Words: "session cap", Rung0: headRows, Rung2: rung2Decides},
+	{Kind: CaseAgentTimeCap, Words: "agent time cap", Rung0: headRows, Rung2: rung2Decides},
+	{Kind: CaseBudgetFloor, Words: "budget floor", Rung0: headRows, Rung2: rung2Decides},
+	{Kind: CaseDayCap, Words: "day cap", Rung0: []string{"cap_wait"}, NoRung1: "only a commit raises the day cap",
+		Rung2: rung2Analyses, Rung2Why: "only a commit raises the day cap"},
+	{Kind: CaseMonthCap, Words: "month cap", Rung0: []string{"cap_wait"}, NoRung1: "only a commit raises the month cap",
+		Rung2: rung2Analyses, Rung2Why: "only a commit raises the month cap"},
+	{Kind: CaseFactoryMonthCap, Words: "factory's month cap", NoRung1: noRungRunsCap, Rung2: rung2Nothing, Rung2Why: noRungRunsCap,
+		Choices: true, Exception: noRungRunsCap},
+	{Kind: CaseProjectCap, Words: "project cap", Rung0: []string{"cap_wait"}, NoRung1: "only a commit raises the project cap",
+		Rung2: rung2Analyses, Rung2Why: "only a commit raises the project cap"},
+	{Kind: CaseCheckinHuman, Words: "check-in with a human", NoRung1: checkinJudged, Rung2: rung2Decides},
+	{Kind: CaseCheckinShare, Words: "check-in spend", Rung0: headRows, Rung2: rung2Decides},
+	{Kind: CaseCheckinFailed, Words: "failed check-in", Rung0: headRows, Rung2: rung2Decides},
+	{Kind: CaseGateStop, Words: "gate stop", Rung0: append(slices.Clone(headRows), "wait_checks"), Rung2: rung2Decides},
+	{Kind: CaseFindingsRepeated, Words: "repeated findings", Rung2: rung2Decides},
+	{Kind: CaseDependencyClosed, Words: "closed dependency", NoRung1: aboutTheBoard, Rung2: rung2Decides},
+	{Kind: CaseDependencyFailed, Words: "failed dependency", Rung0: []string{"retry_dependency", "impasse"}, NoRung1: aboutTheBoard, Rung2: rung2Decides},
+	{Kind: CaseWaitExpired, Words: "expired wait", Rung2: rung2Decides},
+	{Kind: CasePodNeverStarted, Words: "pod that never started", Rung2: rung2Decides},
+	{Kind: CaseProviderRefused, Words: "provider refusal", Rung2: rung2Decides},
+	{Kind: CaseNoAnswer, Words: "missing answer", Rung2: rung2Decides},
+	{Kind: CaseContentFilter, Words: "content filter stop", Rung2: rung2Decides},
+	{Kind: CaseImageWait, Words: "image wait", Rung2: rung2Decides},
+	{Kind: CaseScreeningSuspect, Words: "screening suspect", Rung2: rung2Decides},
+	{Kind: CaseAgentEscalate, Words: "agent's escalation", Rung2: rung2Decides},
+	{Kind: CaseAgentRequestInfo, Words: "agent's request for information", NoRung1: authorAnswers, Rung2: rung2Nothing, Rung2Why: authorAnswers,
+		Exception: authorAnswers},
+	{Kind: CasePlanQuestion, Words: "plan question", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides},
+	{Kind: CasePlanConfirmation, Words: "plan confirmation", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides},
+	{Kind: CaseMergeApproval, Words: "merge approval", NoRung1: "a merge is the merge gate's question, not one card's session's, which rung 1 reads",
+		Rung2: rung2Decides},
+	{Kind: CaseHumanCard, Words: "human card", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
+	{Kind: CaseOther, Words: "open problem", Rung2: rung2Decides},
+	{Kind: CaseMonitorFlag, Words: "monitor flag", Rung0: []string{"close_ended", "expire_step"}, Rung2: rung2Decides},
+	{Kind: CaseJudgmentBudget, Words: "judgment budget", NoRung1: noRungRunsBudget, Rung2: rung2Nothing, Rung2Why: noRungRunsBudget,
+		Choices: true, Exception: noRungRunsBudget},
+	{Kind: CasePolicyClass, Words: "policy class", Rung0: []string{"route_approval"}, NoRung1: checkinJudged,
+		Rung2: rung2Analyses, Rung2Why: "the merge gate marks the policy class human"},
+	{Kind: CaseRedMain, Words: "red main", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
+	{Kind: CaseRollHeld, Words: "held roll", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
+	{Kind: CaseConfigRefused, Words: "refused configuration", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
+	{Kind: CasePlanCriteria, Words: "plan's criteria", Rung0: []string{"rerun_criteria_gate"},
+		NoRung1: "a plan's criteria are the criteria gate's question, not one card's session's, which rung 1 reads", Rung2: rung2Decides},
+	{Kind: CasePlanHeld, Words: "held plan", NoRung1: humanClosedPlan, Rung2: rung2Nothing, Rung2Why: humanClosedPlan, Exception: humanClosedPlan},
+	{Kind: CaseProviderFreeze, Words: "provider freeze", NoRung1: limitHoldsRungs, Rung2: rung2Nothing, Rung2Why: limitHoldsRungs,
+		Choices: true, Exception: limitHoldsRungs},
+}
+
+// kindRow is kind k's row of the kind table, the zero row for a kind it
+// does not hold.
+func kindRow(k CaseKind) caseKindRow {
+	if i := slices.IndexFunc(caseKinds, func(r caseKindRow) bool { return r.Kind == k }); i >= 0 {
+		return caseKinds[i]
+	}
+	return caseKindRow{}
 }
 
 // caseWords says case c of card as a human reads it, with no case id: the
 // kind in words, the card, and the problem cut short.
 func caseWords(card string, c Case) string {
-	kind, ok := caseKindWords[c.Kind]
-	if !ok {
-		kind = cmp.Or(strings.ReplaceAll(string(c.Kind), "_", " "), "ask")
-	}
+	kind := cmp.Or(kindRow(c.Kind).Words, strings.ReplaceAll(string(c.Kind), "_", " "), "ask")
 	words := "the " + kind
 	if card != "" {
 		words += " on " + card
@@ -266,17 +334,16 @@ func scanCase(row rowScanner) (Case, error) {
 
 // OpenCase inserts c unless an open or at_human case with the same
 // task, kind and state key exists; then it returns that case and false,
-// and changes nothing on it. An empty Status opens the case as open, owned
-// by rung 0, and at_human owns it to the human; it is due at c.NextWakeAt.
-// A status other than open or at_human is refused.
+// and changes nothing on it. The case opens open, owned by rung 0 and due
+// at c.NextWakeAt; any other status is refused, for only the door
+// (ToHuman) moves a case to the human.
 func (s *PGStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	return openCase(ctx, s.db, c)
 }
 
 func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
-	c.Status = cmp.Or(c.Status, CaseOpen)
-	if c.Status != CaseOpen && c.Status != CaseAtHuman {
-		return Case{}, false, fmt.Errorf("OpenCase opens a case only as open or at_human, not %s; ResolveCase or WithdrawCase ends it", c.Status)
+	if c.Status = cmp.Or(c.Status, CaseOpen); c.Status != CaseOpen {
+		return Case{}, false, errOpenOnly
 	}
 	if c.Facts == nil {
 		c.Facts = map[string]any{}
@@ -291,10 +358,6 @@ func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
 			return Case{}, false, err
 		}
 	}
-	owner := 3
-	if c.Status == CaseOpen {
-		owner = 0
-	}
 	// the live case the insert met may end before the select reads it:
 	// then the insert goes in on its second try
 	for try := 0; ; try++ {
@@ -303,7 +366,7 @@ func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
 			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9::bigint, 0), $10, $11)
 			 ON CONFLICT (task_id, kind, state_key) WHERE `+caseLive+` DO NOTHING
 			 RETURNING `+caseColumns,
-			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.Follows, owner, c.NextWakeAt))
+			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.Follows, 0, c.NextWakeAt))
 		if !errors.Is(err, sql.ErrNoRows) {
 			return got, err == nil, err
 		}
@@ -373,15 +436,63 @@ func (s *PGStore) AddRungCost(ctx context.Context, caseID int64, rung int, eur f
 	return oneRow(res, err, fmt.Sprintf("a step of rung %d on case %d", rung, caseID))
 }
 
-// SetCaseStatus moves live case id to status open or at_human;
-// ErrNotFound when the case is not live. ResolveCase and WithdrawCase
-// end a case.
-func (s *PGStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
-	if status != CaseOpen && status != CaseAtHuman {
-		return errors.New("SetCaseStatus moves a case only to open or at_human; ResolveCase or WithdrawCase ends it")
+// errOpenOnly refuses a case opened at any status but open.
+var errOpenOnly = errors.New("OpenCase opens a case only as open: the door moves it to the human")
+
+// ToHuman moves live case id to the human, the one writer of at_human:
+// owned by rung 3 with no wake, once doorRefusal passes it. A case at the
+// human already stays as it is. ErrNotFound when the case is not live.
+func (s *PGStore) ToHuman(ctx context.Context, id int64) error {
+	return toHuman(ctx, s.db, id)
+}
+
+// toHuman is ToHuman inside q, the events writer's transaction for a face's
+// ask row and the asks that reach the human at their opening.
+func toHuman(ctx context.Context, q rowQuerier, id int64) error {
+	c, err := scanCase(q.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM cases WHERE id = $1 AND `+caseLive, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE cases SET status = $2 WHERE id = $1 AND `+caseLive, id, status)
-	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+	if err != nil || c.Status == CaseAtHuman {
+		// a case at the human already moves nowhere
+		return err
+	}
+	var climbed bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM case_steps WHERE case_id = $1 AND (rung IN (1, 2)
+		OR rung = 0 AND EXISTS (SELECT 1 FROM unnest($2::text[]) mark WHERE starts_with(found, mark))))`, id, notJudgedMarks).Scan(&climbed); err != nil {
+		return err
+	}
+	if err := doorRefusal(c, climbed); err != nil {
+		return err
+	}
+	err = q.QueryRowContext(ctx, `UPDATE cases SET status = $2, owner_rung = 3, next_wake_at = NULL WHERE id = $1 AND `+caseLive+` RETURNING id`,
+		id, CaseAtHuman).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	return err
+}
+
+// doorRefusal is why case c may not reach the human, nil when it may: a
+// step lets it through (climbed), or the kind table names its kind an
+// exception.
+func doorRefusal(c Case, climbed bool) error {
+	if climbed || kindRow(c.Kind).Exception != "" {
+		return nil
+	}
+	return fmt.Errorf("case %d (%s) has no rung 1 or rung 2 step and no exception: the case climbs first", c.ID, c.Kind)
+}
+
+// notJudgedMarks lead rung 0's step on a case no rung could judge.
+var notJudgedMarks = []string{markJudgmentSpent, markJudgmentUnread, markProviderRefused}
+
+// climbed says a step among steps lets its case through the door: one of
+// rung 1 or rung 2, or rung 0's that marks the case not judged.
+func climbed(steps []CaseStep) bool {
+	return slices.ContainsFunc(steps, func(s CaseStep) bool {
+		return s.Rung == 1 || s.Rung == 2 ||
+			s.Rung == 0 && slices.ContainsFunc(notJudgedMarks, func(mark string) bool { return strings.HasPrefix(s.Found, mark) })
+	})
 }
 
 func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
@@ -512,10 +623,14 @@ func (s *PGStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Cas
 
 // ExpireSteps hands up every in-progress step whose due_at is before now,
 // its Found naming the bound its rung did not answer within after what it
-// found before, and answers them, oldest first.
+// found before, or what its rung took since, and answers them, oldest
+// first.
 func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error) {
 	// the constant outcome lets the partial index case_steps_due serve
-	rows, err := s.db.QueryContext(ctx, `SELECT id, started_at, due_at, found FROM case_steps WHERE outcome = '`+StepInProgress+`' AND due_at < $1`, now)
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.rung, s.started_at, s.due_at, s.found,
+		COALESCE((SELECT r.decision FROM case_steps r WHERE r.case_id = s.case_id AND r.rung = s.rung AND r.id > s.id AND r.outcome = '`+StepResolved+`'
+			ORDER BY r.id DESC LIMIT 1), '')
+		FROM case_steps s WHERE s.outcome = '`+StepInProgress+`' AND s.due_at < $1`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -524,12 +639,13 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 	var found []string
 	for rows.Next() {
 		var id int64
+		var rung int
 		var started, due time.Time
-		var before string
-		if err := rows.Scan(&id, &started, &due, &before); err != nil {
+		var before, took string
+		if err := rows.Scan(&id, &rung, &started, &due, &before, &took); err != nil {
 			return nil, err
 		}
-		ids, found = append(ids, id), append(found, stepExpired(before, started, due))
+		ids, found = append(ids, id), append(found, stepExpired(before, rung, took, started, due))
 	}
 	if err := rows.Err(); err != nil || len(ids) == 0 {
 		return nil, err
@@ -545,15 +661,39 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 		 SELECT `+caseStepColumns+` FROM ended ORDER BY id`, ids, found, StepHandedUp, StepInProgress)
 }
 
-// stepExpired is the Found of a step its rung did not answer by due, after
+// stepExpired is the Found of a step of rung that ended at due, after
 // found, what the step found before: its bound, due less its start, to the
-// minute as DurationText writes it.
-func stepExpired(found string, started, due time.Time) string {
-	expired := expiredMark + DurationText(due.Sub(started).Round(time.Minute))
+// minute as DurationText writes it, which its rung did not answer within,
+// or after which the card still waits on took, the choice the rung took
+// since (tookSince).
+func stepExpired(found string, rung int, took string, started, due time.Time) string {
+	expired := expiredWords(rung, took, due.Sub(started))
 	if found == "" {
 		return expired
 	}
 	return found + ", then " + expired
+}
+
+// expiredWords say how a step of rung ended at its bound, after bound: its
+// rung did not answer, or it took took, a choice that keeps the card
+// waiting.
+func expiredWords(rung int, took string, bound time.Duration) string {
+	if took != "" {
+		return fmt.Sprintf("rung %d took %s and the card still waits after %s", rung, took, DurationText(bound.Round(time.Minute)))
+	}
+	return expiredMark + DurationText(bound.Round(time.Minute))
+}
+
+// tookSince is the decision of the newest step of st's rung that resolved
+// after st on its case, among steps: a choice that kept the card waiting,
+// such as rerun_again. "" for none.
+func tookSince(steps []CaseStep, st CaseStep) string {
+	for k := len(steps) - 1; k >= 0; k-- {
+		if s := steps[k]; s.CaseID == st.CaseID && s.Rung == st.Rung && s.ID > st.ID && s.Outcome == StepResolved {
+			return s.Decision
+		}
+	}
+	return ""
 }
 
 // DurationText is d, whole minutes, as Go prints a duration less its zero

@@ -224,7 +224,7 @@ func TestBriefWakeAtReset(t *testing.T) {
 		resetAt.Add(8*time.Hour).Format("2006-01-02 15:04:05")+`"}}`, nil)
 
 	// the card frozen on the class: its session refused 40 minutes ago,
-	// a case at the human waiting for its brief
+	// a case rung 2 handed to the human, waiting for its brief
 	start := time.Now().Add(-time.Hour)
 	plRunningCard(t, r, "t-brief", 41, start)
 	refusedAt := start.Add(20 * time.Minute)
@@ -232,8 +232,14 @@ func TestBriefWakeAtReset(t *testing.T) {
 		"backoff_s": int(reset.Sub(refusedAt).Seconds()), "words": "Usage limit reached for 5 hour"})
 	plTimeline(t, r, "t-brief", frozen)
 	c, _, err := r.store.OpenCase(ctx, factoryd.Case{TaskID: "t-brief", Repository: parkRepo, Kind: factoryd.CaseOther,
-		StateKey: "stop", Status: factoryd.CaseAtHuman, Problem: "the stop", Facts: map[string]any{"reason": "the stop"}})
+		StateKey: "stop", Problem: "the stop", Facts: map[string]any{"reason": "the stop"}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.AppendCaseStep(ctx, factoryd.CaseStep{CaseID: c.ID, Rung: 2, Actor: factoryd.ChatUser, Outcome: factoryd.StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.ToHuman(ctx, c.ID); err != nil {
 		t.Fatal(err)
 	}
 	model := &factoryd.SupervisorModel{GatewayURL: gw.URL, Token: "factoryd-token", Budget: factoryd.TokenBudget{AnswerTokens: 512, HeadroomTokens: 512}}

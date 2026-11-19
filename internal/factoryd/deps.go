@@ -709,9 +709,9 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	switch {
 	case t.Kind != "human":
-		return 0, ErrNoGo(fmt.Sprintf("Card #%d is an agent card: the factory runs it.", t.IssueNumber))
-	case t.Status != "waiting-human":
-		return 0, ErrNoGo(fmt.Sprintf("Card #%d does not wait on you: it is %s.", t.IssueNumber, t.Status))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s is an agent card: the factory runs it.", cardName(t)))
+	case !slices.Contains(humanCardWaits, t.Status):
+		return 0, ErrNoGo(fmt.Sprintf("Card %s does not wait on you: it is %s.", cardName(t), t.Status))
 	}
 	// the card's directories: its plan card's, else its text's line
 	pc, _, planned, err := planCardOf(ctx, r.store, t)
@@ -734,7 +734,7 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	// the run row left the card: the go already filed its hand-over
 	if t.Source == SourceRoutine && !filed {
-		return 0, ErrNoGo(fmt.Sprintf("Card #%d was already handed over.", t.IssueNumber))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", cardName(t)))
 	}
 	name, labels := "", []string(nil)
 	if filed {
@@ -754,7 +754,8 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	b := BriefText{Title: CardTitle(t), Why: t.Why, Summary: t.Summary, Body: ContinuesBody(t)}
 	if filed {
-		parts := []string{b.Body}
+		// a card with no issue continues none, and its text may be empty
+		parts := slices.DeleteFunc([]string{b.Body}, func(s string) bool { return s == "" })
 		if rt, ok := v.Routine(run.Project, run.Routine); ok && rt.Skill != "" {
 			parts = append(parts, "Run the skill "+rt.Skill+".")
 		}
@@ -791,7 +792,7 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	// the claim lost: another hand filed this card's hand-over already
 	if claim == 0 {
-		return 0, ErrNoGo(fmt.Sprintf("Card #%d was already handed over.", t.IssueNumber))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", cardName(t)))
 	}
 	n, ref, err := FileAgentTask(ctx, into, r.forgejo, r.cfg.Workflows, r.timeline, p, b, labels, agent)
 	if err != nil {

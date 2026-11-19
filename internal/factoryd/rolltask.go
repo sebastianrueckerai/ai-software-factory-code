@@ -345,8 +345,8 @@ func (s *PGStore) RetryableRoll(ctx context.Context, repository string, backoff 
 // escalates twice while it does, and its answer, when one comes, is the
 // card's to consume.
 func (s *PGStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
-	return s.oneTask(ctx, `repository = $1 AND kind = 'human' AND status = 'waiting-human' AND objective LIKE '%' || $2 || '%'`,
-		repository, marker)
+	return s.oneTask(ctx, `repository = $1 AND kind = 'human' AND status = ANY($3) AND objective LIKE '%' || $2 || '%'`,
+		repository, marker, humanCardWaits)
 }
 
 // bumpDigest points the one pinned reference to image in a manifest at
@@ -1474,7 +1474,7 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 	if err != nil {
 		return errors.Join(err, r.Store.ForgetRollRequest(ctx, req.SHA))
 	}
-	log.Printf("roller: %s (run %d): refused, human card %s, issue #%d: %s", run.CommitSHA, run.ID, req.TaskID, t.IssueNumber, title)
+	log.Printf("roller: %s (run %d): refused, human card %s: %s", run.CommitSHA, run.ID, cardName(t), title)
 	r.rollStatus(ctx, req.SHA, "failure", "roll refused: "+strings.Join(rollNames(unsigned), ", ")+" not signed")
 	return nil
 }

@@ -47,3 +47,33 @@ const (
 	PgConsoleApproved = ConsoleApproved
 	PgLeftQueue       = leftQueue
 )
+
+// PgFaceStop is the tests' door into the human face of a stop, as Climb
+// faces it once rung 2 handed it up: the case opens as OpenTrip opens it, or
+// for a restart the card's newest live ask takes the ask, a step of rung 2
+// hands it up, and the face is production's (Face). No rung runs.
+func (r *Runner) PgFaceStop(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	var c Case
+	if reason == HealedReason {
+		c, err = r.store.NewestAskCase(ctx, t.ID)
+	} else {
+		var f CaseFacts
+		if f, err = r.tripFacts(ctx, t, "", ""); err == nil {
+			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
+				c, _, err = r.store.OpenCase(ctx, c)
+			}
+		}
+	}
+	if err != nil {
+		return 0, err
+	}
+	if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		return 0, err
+	}
+	out, err := r.Face(ctx, t, c, reason, replyNext(reason), choices, nil)
+	return out.Comment, err
+}

@@ -22,7 +22,7 @@ process:
 
 | labels | card |
 | --- | --- |
-| `human` (wins over the rest) | a person's card, `waiting-human`, no agent run, no track or process on the row |
+| `human` (wins over the rest) | a person's card, `waiting-agent` until its case's face, no agent run, no track or process on the row |
 | `agent` or `bug` | direct |
 | `plan` | plan where the project's process has a plan track, else no card |
 | `backlog` or `improvement` | no card: the issue holds an interest until a writer's label commits it |
@@ -174,7 +174,7 @@ A comment or review on anything the factory did not file — no task
 behind that issue number or branch — is silently dropped rather than
 erroring.
 
-A task's state (`queued`, `waiting-deps`, `running`, `waiting-human`,
+A task's state (`queued`, `waiting-deps`, `running`, `waiting-agent`, `waiting-human`,
 `waiting-image`, `waiting-poster`, `in-review`, `done`, `failed`, `closed`) is mirrored
 onto its issue as exactly one `state/*` label, swapped by `Forgejo.SetStateLabel` through the shared
 `mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
@@ -186,10 +186,35 @@ is created at boot by `EnsureProjectLabels` if missing, and on every
 project by its registration. Mirroring
 failures are logged and retried on the next transition, never fail the
 task itself. A webhook-created task is mirrored immediately after its
-row exists: `state/queued` for an agent card, and `state/waiting-human`
-for the human lane, which starts no workflow (a human card stands in
-Needs you for its whole life: `waiting-human` is its lifecycle, not a
-transient state on the way to `running`).
+row exists: `state/queued` for an agent card, and `state/waiting-agent`
+for the human lane, which starts no workflow.
+
+factoryd's own human cards (a stalled or red chain, main still red, a
+refused configuration, held production, a failed or refused roll, an
+alert, a routine's card, a factory pull request on a project without
+agents, a person's issue in the human lane and a plan's workflow card)
+are written with their question in `waiting-agent`, which Needs you does
+not list, and their ask row is marked `held`, so it pokes and wakes no
+one. The ask's case opens at rung 0 and climbs: rung 2, the factory
+agent, may take one of the card's choices, though it may end the card
+(close, check again, wait, dismiss) only once factoryd reads the card's
+condition gone, and never park it out of sight. A card rung 2 decides
+ends with no issue. Otherwise its face files the issue (a card that has
+one gets a comment), moves the card to `waiting-human` and pokes. The
+chat's escalation, the month cap's card and the judgment budget's card
+ask a human at once: the escalation's filing is rung 2's step, and the two
+caps' cases (`factory_month_cap`, `judgment_budget`) are the kind table's
+exceptions, since no rung can run while they stand. The table names two
+more exceptions: an agent's request to its issue's author
+(`agent_request_info`), whose answer alone the card's wait takes, and the
+ask of a plan whose card a human closed with promises open (`plan_held`),
+which only a human settles. Every case opens `open`, and only one door
+(`ToHuman`) moves a case to the human: it passes a case a rung 1 or rung 2
+step stands on, an exception's kind, or a case whose rung 0 step marks it
+not judged, and refuses any other, naming the case, its kind and that it
+climbs first. The monitor flags a case at the human that the door
+would refuse (`faced_unjudged`), and that flag's case is the human's,
+since only a commit fixes the door.
 
 ## Task workflow
 

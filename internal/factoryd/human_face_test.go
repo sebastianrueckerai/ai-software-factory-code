@@ -139,9 +139,12 @@ func TestAuthorWaitAsksTheAuthor(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). Every card
-// in Needs you holds a case at the human from its filing: each of the 18
-// human kinds as its filer files it, a human card whose question offers
-// no answers of its own, and a card whose agent asked the issue's author.
+// that waits on a human holds a case from its filing: each of the 18 human
+// kinds as its filer files it, a human card whose question offers no
+// answers of its own, and a card whose agent asked the issue's author. A
+// card that asks at once is in Needs you with its case at the human;
+// factoryd's own human card waits for its face with its case open. Each
+// case's face offers 2 to 4 answers.
 func TestEveryNeedsYouCardHoldsACase(t *testing.T) {
 	ctx := context.Background()
 	s, err := factoryd.OpenStore(ctx, schematest.DSN(t, "factoryd_human_face"))
@@ -197,13 +200,21 @@ func TestEveryNeedsYouCardHoldsACase(t *testing.T) {
 	}
 	for _, c := range cards {
 		got, ok, err := s.Task(ctx, c.card.ID)
-		if err != nil || !ok || got.Status != "waiting-human" && got.Status != "waiting-poster" {
-			t.Errorf("%s: the card reads %s, %v, %v; want it waiting on a human", c.name, got.Status, ok, err)
+		want, at := "waiting-human", factoryd.CaseAtHuman
+		switch {
+		case c.card.Status == "waiting-poster":
+			want = "waiting-poster"
+		case c.card.Kind == "human" && factoryd.HumanCardStatus(c.card.Source) == "waiting-agent":
+			// factoryd's own human card climbs first, out of Needs you
+			want, at = "waiting-agent", factoryd.CaseOpen
+		}
+		if err != nil || !ok || got.Status != want {
+			t.Errorf("%s: the card reads %s, %v, %v; want it %s", c.name, got.Status, ok, err, want)
 			continue
 		}
 		i := slices.IndexFunc(desk.Cases, func(k factoryd.Case) bool { return k.TaskID == c.card.ID })
-		if i < 0 || desk.Cases[i].Status != factoryd.CaseAtHuman {
-			t.Errorf("%s: no case at the human among %d live cases", c.name, len(desk.Cases))
+		if i < 0 || desk.Cases[i].Status != at {
+			t.Errorf("%s: no %s case among %d live cases", c.name, at, len(desk.Cases))
 			continue
 		}
 		if face := factoryd.CaseFace(desk.Cases[i], got, desk.Asks[desk.Cases[i].ID]); len(face.Offers) < 2 || len(face.Offers) > 4 {

@@ -337,6 +337,7 @@ var BootLabels = map[string]string{
 	"state/waiting-deps":   "#bfd4f2",
 	"state/running":        "#1f6feb",
 	"state/waiting-human":  "#d4a72c",
+	"state/waiting-agent":  "#c5def5",
 	"state/waiting-poster": "#fbca04",
 	"state/waiting-image":  "#f9d0c4",
 	"state/in-review":      "#8250df",
@@ -925,7 +926,9 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 
 // HealFactoryCloses finishes the closes factoryd recorded and did not
 // confirm (closeIssueAsFactory failed between the record and the close):
-// each unconfirmed record older than two minutes, 50 a pass. A record
+// each unconfirmed record of an issue older than two minutes, the wait for
+// Forgejo's webhook of the close, and each of a card with no issue at the
+// next pass, 50 a pass. A record
 // whose task is gone or has no splittable repository, or whose issue is
 // closed already, is confirmed without a write. A refusal from Forgejo
 // (forgejoTerminal) settles the record, which no retry changes; any other
@@ -951,6 +954,20 @@ func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
 	}
 	if !ok {
 		return in.Store.ConfirmFactoryClose(ctx, row.TaskID, row.CommentID)
+	}
+	if row.CommentID == 0 {
+		// the close of a card that had no issue: a human card ends on it,
+		// and one whose face filed its issue since has that issue closed
+		switch {
+		case t.Kind == "human" && t.IssueNumber != 0:
+			err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
+		case t.Kind == "human":
+			err = in.finishHumanTask(ctx, t, "done", "", in.BotUser, nil)
+		}
+		if err != nil {
+			return err
+		}
+		return in.Store.ConfirmFactoryClose(ctx, t.ID, 0)
 	}
 	t.IssueNumber = row.CommentID
 	repo, err := SplitRepo(t.Repository)
@@ -1120,10 +1137,9 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		ask, track = WorkflowQuestion(issue.Title), LabelHuman
 	}
 	if track == LabelHuman {
-		// no runner ever claims a person's card: it waits on a human from
-		// the start (architecture 5.6's board column) and closing its
-		// issue finishes it
-		task.Kind, task.Status, task.ReproCommand = "human", "waiting-human", ""
+		// no runner ever claims a person's card: closing its issue finishes
+		// it, and CreateHumanCard gives it its status
+		task.Kind, task.ReproCommand = "human", ""
 	} else {
 		class, ok := trackClass(p, track)
 		if !ok {
@@ -1150,7 +1166,9 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	var created error
 	if task.Kind == "human" {
-		_, _, created = in.Store.CreateHumanCard(ctx, task, HumanAsk{Q: ask, By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd})
+		var filed Task
+		filed, _, created = in.Store.CreateHumanCard(ctx, task, HumanAsk{Q: ask, By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd})
+		task.Status = filed.Status
 	} else {
 		created = in.Store.CreateTask(ctx, task)
 	}
@@ -1206,11 +1224,11 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
 	q := MovedQuestion(title, body, poster)
 	t.Kind = "human"
-	if _, moved, err = in.Store.CreateHumanCard(ctx, t, HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd}); err != nil || !moved {
+	if t, moved, err = in.Store.CreateHumanCard(ctx, t, HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd}); err != nil || !moved {
 		return moved, err
 	}
 	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
-	mirrorTaskState(ctx, in.Forgejo, t, "waiting-human")
+	mirrorTaskState(ctx, in.Forgejo, t, t.Status)
 	return true, nil
 }
 
@@ -1278,15 +1296,28 @@ func FileTask(ctx context.Context, store interface {
 	return fileOnIssue(ctx, forgejo, repo, b, labels, t, 0, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
 }
 
-// FileHumanCard is FileTask for human card t: it waits on a human from the
-// start and has no workflow, and its row lands with ask's row, in one
-// transaction. The bot's open issue of b's title that no task row holds is
-// taken on instead of a new one: a filing whose row the store refused left
-// it open on purpose, so the retry, which has a new task id, finds it. A
-// card of t's id that stands already refuses the filing by name, and the
+// FileHumanCard is FileTask for human card t: it has no workflow, and its
+// row lands with ask's row, in one transaction. A card that waits for its
+// case's face (HumanCardStatus) is filed with no issue, ask carrying the
+// labels its face files the issue with. One that asks at once gets its
+// issue now: the bot's open issue of b's title that no task row holds is
+// taken on instead of a new one, for a filing whose row the store refused
+// left it open on purpose, so the retry, which has a new task id, finds it.
+// A card of t's id that stands already refuses the filing by name, and the
 // issue filed or taken on for it is closed with a comment naming that card.
 func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
-	t.Kind, t.Status = "human", "waiting-human"
+	t.Kind, t.Status = "human", HumanCardStatus(t.Source)
+	if t.Status == "waiting-agent" {
+		if err := admitFiling(ctx, forgejo, repo, &t, b); err != nil {
+			return Task{}, IssueRef{}, err
+		}
+		t.Repository, ask.Labels = repo.String(), labels
+		got, created, err := store.CreateHumanCard(ctx, t, ask)
+		if err == nil && !created {
+			err = fmt.Errorf("card %s stands already (%s), so this second filing of it is refused: its case asks", cardName(got), got.Status)
+		}
+		return got, IssueRef{}, err
+	}
 	reuse, err := strandedIssue(ctx, store, forgejo, repo, b.Title)
 	if err != nil {
 		return Task{}, IssueRef{}, err
@@ -1356,16 +1387,9 @@ func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issu
 // filed for it, best effort, unless t is a human card: its issue stays open
 // for the retry to take on, and a human closes what no retry takes.
 func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
-	try, writer := writerTry(ctx)
-	var refs RefResolver
-	if writer {
-		docs, _ := ctx.Value(briefDocsKey{}).(Repo)
-		refs = &botRefs{ctx: ctx, f: forgejo, repo: repo, docs: docs}
-	}
-	if err := admit(&t, b, refs, try); err != nil {
+	if err := admitFiling(ctx, forgejo, repo, &t, b); err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t.Objective = cmp.Or(t.Objective, IssueObjective(b.Title, b.Body))
 	ref := IssueRef{Number: reuse}
 	if reuse == 0 {
 		var err error
@@ -1387,6 +1411,23 @@ func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, b BriefText, 
 		return Task{}, IssueRef{}, err
 	}
 	return got, ref, nil
+}
+
+// admitFiling passes brief b of card t on repo through the filing door, on
+// the writer's try ctx carries; a card filed without an objective takes
+// the brief's title and text.
+func admitFiling(ctx context.Context, forgejo *Forgejo, repo Repo, t *Task, b BriefText) error {
+	try, writer := writerTry(ctx)
+	var refs RefResolver
+	if writer {
+		docs, _ := ctx.Value(briefDocsKey{}).(Repo)
+		refs = &botRefs{ctx: ctx, f: forgejo, repo: repo, docs: docs}
+	}
+	if err := admit(t, b, refs, try); err != nil {
+		return err
+	}
+	t.Objective = cmp.Or(t.Objective, IssueObjective(b.Title, b.Body))
+	return nil
 }
 
 // FileAgentTask files agent task t on project p's repository through
@@ -1553,6 +1594,9 @@ func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
 		return in.closeFailed(ctx, id)
 	case t.Status == "merged":
 		return in.CloseMerged(ctx, id, by)
+	case t.Kind == "human" && t.IssueNumber == 0:
+		// no issue's close can end it, and it runs no workflow
+		return in.finishHumanTask(ctx, t, "done", "", by, nil)
 	}
 	return in.Workflows.Signal(ctx, id, SignalIssueClosed, TaskSignal{Author: by})
 }
@@ -1606,27 +1650,29 @@ func (in *Intake) decide(ctx context.Context, taskID, kind, author string, numbe
 // its verdict from the close: noise when the issue carries
 // LabelNoise, else real.
 func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, closer string, settle *Event) error {
-	if t.Status != "waiting-human" {
+	if !slices.Contains(humanCardWaits, t.Status) {
 		return nil
 	}
 	if t.Source == SourceAlert {
-		repo, err := SplitRepo(t.Repository)
-		if err != nil {
-			return err
-		}
-		labels, err := in.Forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
-		if err != nil {
-			return fmt.Errorf("labels of the alert's issue: %w", err)
-		}
 		verdict := VerdictReal
-		if slices.Contains(labels, LabelNoise) {
-			verdict = VerdictNoise
+		if t.IssueNumber != 0 {
+			repo, err := SplitRepo(t.Repository)
+			if err != nil {
+				return err
+			}
+			labels, err := in.Forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
+			if err != nil {
+				return fmt.Errorf("labels of the alert's issue: %w", err)
+			}
+			if slices.Contains(labels, LabelNoise) {
+				verdict = VerdictNoise
+			}
 		}
 		if err := in.Store.JudgeTaskAlerts(ctx, t.ID, AlertSigNoz, verdict, closer); err != nil {
 			return err
 		}
 	}
-	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, final); errors.Is(err, ErrNotFound) {
+	if err := in.Store.TransitionTask(ctx, t.ID, humanCardWaits, final); errors.Is(err, ErrNotFound) {
 		return nil
 	} else if err != nil {
 		return err
@@ -1663,11 +1709,15 @@ func (in *Intake) prDecided(ctx context.Context, t Task, pr int64, merged bool, 
 
 // WithdrawPRCard ends human card t, whose pull request pr factoryd closed
 // itself for why: no person decided, so its ask is withdrawn, and the card
-// ends closed.
+// ends closed. A held card's withdrawal is marked held: its ask reached
+// nobody.
 func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why string) error {
 	reason := fmt.Sprintf("the factory closed pull request #%d: %s", pr, why)
-	return in.endPRCard(ctx, t, "closed", reason, &Event{Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"reason": reason}})
+	detail := map[string]any{"reason": reason}
+	if t.Status == "waiting-agent" {
+		detail["held"] = true
+	}
+	return in.endPRCard(ctx, t, "closed", reason, &Event{Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail})
 }
 
 // endPRCard ends human card t, its pull request merged or closed, as final
@@ -1676,7 +1726,7 @@ func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why stri
 // missing): a close that fails leaves the card waiting, and a redelivery
 // or the heal pass ends it again.
 func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, settle *Event) error {
-	if t.Status != "waiting-human" {
+	if !slices.Contains(humanCardWaits, t.Status) {
 		return nil
 	}
 	if err := closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, capitalize(why)+". This card ends with it."); err != nil {
@@ -2180,15 +2230,15 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		return err
 	}
 	if t.Kind == "human" {
-		if t.IssueNumber == 0 {
-			return nil
-		}
-		if t.Kind == "human" && t.PRNumber != 0 {
+		if t.PRNumber != 0 {
 			if done, err := in.resyncPRCard(ctx, t, repo); err != nil {
 				log.Printf("heal pass: task %s: pull request #%d: %s", t.ID, t.PRNumber, maskedErr(err))
 			} else if done {
 				return nil
 			}
+		}
+		if t.IssueNumber == 0 {
+			return nil
 		}
 		closer, at, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		if err != nil || closer == "" {

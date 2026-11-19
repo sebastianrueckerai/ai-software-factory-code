@@ -207,14 +207,14 @@ func TestLabelOnAFiledCardMovesNothing(t *testing.T) {
 }
 
 // An issue whose reproduction command breaks the sandbox rule files no
-// agent card: a person's card asks the poster to file it again, once,
-// and nothing starts.
+// agent card: a person's card, which waits for its face on that issue,
+// asks the poster to file it again, once, and nothing starts.
 func TestBadReproFilesAPersonsCard(t *testing.T) {
 	in, store, _ := trackIntake(t, "maintenance", maintenanceTracks)
 	body := "It breaks\n\n```repro\ncd /tmp/x && make repro\n```"
 	post(t, in, "issues", issueOpenedBody(27, "sebastian", []string{"bug"}, "It breaks", body))
 	got := card(store, 27)
-	if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || got.ReproCommand != "" {
+	if got.Kind != "human" || got.Status != "waiting-agent" || got.Track != "" || got.ReproCommand != "" {
 		t.Fatalf("card = %+v, want a person's card", got)
 	}
 	if len(workflowsOf(in).started) != 0 {
@@ -306,14 +306,15 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "waiting-human" || got.Track != "" || got.Process != "" || len(got.RequiredCapabilities) != 0 || len(wf.started) != 1 {
+	if got.Status != "waiting-agent" || got.Track != "" || got.Process != "" || len(got.RequiredCapabilities) != 0 || len(wf.started) != 1 {
 		t.Fatalf("human task = %+v, started %v", got, wf.started)
 	}
 }
 
 // An agent card whose row cannot be stored leaves no issue open: FileTask
-// closes the issue it filed for it, and the filing's error stands. A human
-// card's issue stays open, for the retry to take on.
+// closes the issue it filed for it, and the filing's error stands. The
+// issue of a human card that asks at once stays open, for the retry to
+// take on.
 func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
@@ -332,8 +333,8 @@ func TestFileHumanCardLeavesTheIssueOfACardItCouldNotStoreOpen(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.createFails = 1
-	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
-		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "chat", Body: "body"}, []string{"human"},
+		Task{ID: "t-h", Source: SourceChat}, HumanAsk{Q: HumanQuestion{Ask: "Chat?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceChat, Via: ViaChat})
 	if err == nil || err.Error() != "insert failed" {
 		t.Fatalf("FileHumanCard = %v, want the store's error", err)
 	}

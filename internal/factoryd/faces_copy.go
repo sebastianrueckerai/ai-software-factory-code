@@ -329,7 +329,7 @@ var effectFills = map[string]func(Facts) string{
 	ActNote: waitEffect, KeyPark: waitEffect,
 	ActClose + "/" + variantDone: func(f Facts) string { return factString(f.Case, "check") },
 	ActApproveMerge: func(f Facts) string {
-		if ChoiceCase(f.Case, f.Card.Kind) {
+		if ChoiceKind(f.Case.Kind) {
 			return HumanMergeEffect("")
 		}
 		return ""
@@ -338,7 +338,7 @@ var effectFills = map[string]func(Facts) string{
 		switch {
 		case f.Kind == CaseMonitorFlag && f.Final != "":
 			return "Closes the card's issue."
-		case ChoiceCase(f.Case, f.Card.Kind) && f.Waiters > 0:
+		case ChoiceKind(f.Case.Kind) && f.Waiters > 0:
 			// the card ends closed (humanEnd), so its dependents ask first
 			return "Ends the card and closes its issue. The cards that wait for it ask you first."
 		case f.Card.ID != "" && f.Card.IssueNumber == 0:
@@ -560,6 +560,8 @@ func init() {
 		CasePlanCriteria:     criteriaFace,
 		CasePlanHeld:         heldPlanFace,
 		CaseHumanCard:        humanFace,
+		CaseFactoryMonthCap:  humanFace,
+		CaseProviderFreeze:   humanFace,
 		CaseJudgmentBudget:   humanFace,
 		CaseRedMain:          humanFace,
 		CaseRollHeld:         humanFace,
@@ -1514,7 +1516,7 @@ var planQuestionFace = FaceSpec{
 				out = append(out, planPrefix+c)
 			}
 		}
-		return append(out, AnswerPlanChoice+"/"+variantOwnWords)
+		return append(out, AnswerPlanChoice+"/"+variantOwnWords, AnswerRevisePlan)
 	},
 	Suggest: func(f Facts) (string, string, string) {
 		if r := factString(f.Case, "recommended"); offerable(r) {
@@ -2436,6 +2438,8 @@ func flagFaces() map[string]FaceSpec {
 			fitting: ActRunCriteria, question: "Run the plan's tests now?"},
 		"dependency_failed": {fact: fixed("A card this one waits for failed."), why: "This card cannot start while a card it waits for stays failed.",
 			fitting: ActRetry, question: "Try it again?"},
+		"faced_unjudged": {notice: true, fact: fixed("This card's question reached a human before the factory's agents judged it."),
+			why: "The factory's agents judge each question first, and only a change to the factory's code repairs one that skipped them."},
 		"finding_confirmed_twice": {fact: fixed("The review found the same fault twice on this card."),
 			why: "A fault the review finds twice may need a fresh start, not another session.", fitting: ActSalvage, question: "Rescue the work into a new card?"},
 		"grant_bought_nothing": {notice: true, fact: fixed("This card's last session, which a human or the project agent allowed, changed nothing."),

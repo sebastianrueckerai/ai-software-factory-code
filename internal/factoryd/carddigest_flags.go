@@ -290,6 +290,11 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 		if Final(t.Status) {
 			add("issue_open_after_end", string(c.Kind))
 		}
+		own := slices.DeleteFunc(slices.Clone(rows.caseSteps), func(s CaseStep) bool { return s.CaseID != c.ID })
+		// the flag's own case is never flagged: a broken door would open one more each pass
+		if c.Status == CaseAtHuman && c.Facts["flag"] != "faced_unjudged" && doorRefusal(c, climbed(own)) != nil {
+			add("faced_unjudged", fmt.Sprint(c.ID))
+		}
 	}
 	for _, dep := range deps {
 		if dep.Status == "failed" {

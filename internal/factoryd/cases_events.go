@@ -89,34 +89,37 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 	return nil
 }
 
-// askCase opens the case of question_asked event e at the human, or puts
-// the live case it asks again there with a step, and tells whether it
-// opened one. An ask with no words is refused, so a card that asks holds
-// a case at the human. An ask that names its case (OpenTrip's face) puts
-// that case at the human with its comment and appends the human's step,
-// while the case is live and the asking card's. One that names none,
-// another card's case or a case that ended goes by its words, but a plan's
-// face whose case ended opens none: its answer ended it. A planner's row
-// opens its case open at rung 0, due at the row, with no step: it climbs
-// to its face. One the factory answered as it asked it (settled) has no
-// wake, for that answer comes in the same filing.
+// askCase opens the case of question_asked event e, or appends a step to
+// the live case it asks again, and tells whether it opened one. An ask
+// that names its case (the face) puts that case at the human through the
+// door with its comment and appends the human's step, while the case is
+// live and the asking card's. One that names none, another card's case or
+// a case that ended goes by its words, but a plan's face whose case ended
+// opens none: its answer ended it. Every case opens open at rung 0, due at
+// the row, with no step: it climbs to its face. One the factory answered as
+// it asked it (settled) has no wake, for that answer comes in the same
+// filing. An ask that reaches the human at its opening (asksAtOnce) has no
+// wake either: the chat's escalation, with the agent's filing as rung 2's
+// step, for the agent worked the problem and chose to ask, and a kind the
+// kind table names an exception go through the door at once.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
-		comment, _ := toInt(e.Detail["comment"])
-		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $2
-			WHERE id = $1 AND task_id = $3 AND `+caseLive+` RETURNING id`, id, CaseAtHuman, e.TaskID).Scan(&id)
-		if err == nil {
-			if err := pendFaced(ctx, tx, int64(id), int64(comment)); err != nil {
+		mine, err := taskCase(ctx, tx, id, e.TaskID)
+		if mine && err == nil {
+			if err = toHuman(ctx, tx, int64(id)); err == nil {
+				comment, _ := toInt(e.Detail["comment"])
+				if err := pendFaced(ctx, tx, int64(id), int64(comment)); err != nil {
+					return false, err
+				}
+				step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
+				if reason, _ := e.Detail["reason"].(string); askedAgain(reason) {
+					step.Found = askedAgainFound(reason)
+				}
+				_, err = appendCaseStep(ctx, tx, step)
 				return false, err
 			}
-			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
-			if reason, _ := e.Detail["reason"].(string); askedAgain(reason) {
-				step.Found = askedAgainFound(reason)
-			}
-			_, err = appendCaseStep(ctx, tx, step)
-			return false, err
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		if err != nil && !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 		if revision, _ := toInt(e.Detail["revision"]); revision > 0 {
@@ -155,44 +158,63 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		}
 		step.CaseID = live.ID
 	}
+	atOnce := asksAtOnce(e, c.Kind)
 	opened, onRungs := false, false
 	if step.CaseID == 0 {
 		if c.Follows, err = newestEndedCase(ctx, tx, t.ID); err != nil {
 			return false, err
 		}
-		if _, settled := e.Detail["settled"]; c.Status == CaseOpen && !settled {
+		if _, settled := e.Detail["settled"]; !settled && !atOnce {
 			c.NextWakeAt = &e.At
 		}
 		var got Case
 		if got, opened, err = openCase(ctx, tx, c); err != nil {
 			return false, err
 		}
-		step.CaseID, onRungs = got.ID, got.Status == CaseOpen
+		step.CaseID, onRungs = got.ID, got.Status == CaseOpen && !(opened && atOnce)
 		if !opened && !healed {
 			step.Found = "asked again: " + c.Problem
 		}
 	}
-	if c.Status == CaseAtHuman {
-		// the ask puts its case at the human, a live case it asks again too
-		if _, err := tx.ExecContext(ctx, `UPDATE cases SET status = $2 WHERE id = $1 AND status = $3`, step.CaseID, CaseAtHuman, CaseOpen); err != nil {
-			return false, err
-		}
-		onRungs = false
-	}
 	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil || onRungs {
 		return opened, err
+	}
+	if opened && atOnce {
+		if e.Via == ViaChat {
+			recommendation, _ := e.Detail["recommendation"].(string)
+			why, _ := e.Detail["why"].(string)
+			if _, err := appendCaseStep(ctx, tx, CaseStep{CaseID: step.CaseID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp, Grounds: recommendation, Found: why}); err != nil {
+				return opened, err
+			}
+		}
+		if err := toHuman(ctx, tx, step.CaseID); err != nil {
+			return opened, err
+		}
 	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
 }
 
+// asksAtOnce says ask row e, whose case is of kind k, reaches the human at
+// its opening: the chat's escalation, whose agent worked the problem and
+// chose to ask, and a kind the kind table names an exception.
+func asksAtOnce(e Event, k CaseKind) bool {
+	return e.Via == ViaChat || kindRow(k).Exception != ""
+}
+
 // HumanCardKind is the kind of an ask's case of source-given kind on card t:
 // a human card's ask is the card's own whatever its asker, so the chat's
-// escalation is a human card and not an agent's; every other kind a source
-// gives stands.
+// escalation is a human card and not an agent's, and the month cap's card
+// is the factory's month cap, not an agent card's stop at it; every other
+// kind a source gives stands.
 func HumanCardKind(kind CaseKind, t Task) CaseKind {
-	if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
+	switch {
+	case t.Kind != "human":
+		return kind
+	case kind == CaseOther || kind == CaseAgentEscalate:
 		return CaseHumanCard
+	case kind == CaseMonthCap:
+		return CaseFactoryMonthCap
 	}
 	return kind
 }
@@ -219,10 +241,9 @@ func jsonStamp(id int64) string { return fmt.Sprintf(`{"case_id": %d}`, id) }
 var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseCheckinFailed}
 
 // caseFromAsk maps question_asked event e of task t to the case it opens
-// or appends to; head is the task's newest gate head, "" for none. A plan
-// question's case keys on its words and its revision, which its answer
-// finds it by: a later revision asking the same words opens its own. It
-// opens open, to climb to its face; every other ask's at the human.
+// or appends to, open; head is the task's newest gate head, "" for none. A
+// plan question's case keys on its words and its revision, which its answer
+// finds it by: a later revision asking the same words opens its own.
 func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	ask := askSentence(e)
 	if strings.TrimSpace(ask) == "" {
@@ -232,7 +253,7 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	revision, _ := toInt(e.Detail["revision"])
 	facts := map[string]any{}
 	maps.Copy(facts, e.Detail)
-	kind, status := CaseKind(""), CaseOpen
+	var kind CaseKind
 	switch {
 	case revision > 0 && str("kind") == QuestionConfirmation:
 		kind, head = CasePlanConfirmation, planHead(revision)
@@ -242,10 +263,9 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = CaseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		kind, status = HumanCardKind(kind, t), CaseAtHuman
+		kind = HumanCardKind(kind, t)
 	}
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: status,
-		Problem: ask, Facts: facts}
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseOpen, Problem: ask, Facts: facts}
 	if slices.Contains(cardMoneyKinds, kind) {
 		c.Money = &CaseMoney{Kind: string(kind), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR}
 	}
@@ -259,6 +279,7 @@ var caseSourceKinds = map[string]CaseKind{
 	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate, "author": CaseAgentRequestInfo,
 	"stale": CaseWaitExpired, depFailedSource: CaseDependencyFailed,
 	SourceChatBudget: CaseJudgmentBudget, SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
+	SourceFreezeCard: CaseProviderFreeze,
 }
 
 // CaseKindOf maps the ask's source and reason prefixes to a CaseKind,

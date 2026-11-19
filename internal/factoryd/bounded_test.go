@@ -487,7 +487,7 @@ func TestBoundedStartAdmitsNothingAtTheProjectBudget(t *testing.T) {
 func TestParkingOnAPersonPullsTheNextQueuedCard(t *testing.T) {
 	for name, park := range map[string]func(*testing.T, *Runner) error{
 		"escalation": func(_ *testing.T, r *Runner) error {
-			_, err := r.FaceStop(context.Background(), "t1", "a question", nil)
+			_, err := r.PgFaceStop(context.Background(), "t1", "a question", nil)
 			return err
 		},
 		"question to the author": func(t *testing.T, r *Runner) error {

@@ -653,6 +653,8 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseRedMain, "x", room, "No attempt starts", reply, nil, "a human card's own ask, never a trip"},
 		{CaseRollHeld, "x", room, "No attempt starts", reply, nil, "a human card's own ask, never a trip"},
 		{CaseConfigRefused, "x", room, "No attempt starts", reply, nil, "a human card's own ask, never a trip"},
+		{CaseFactoryMonthCap, "x", room, "No attempt starts", reply, nil, "a human card's own ask, at the human at its opening, never a trip"},
+		{CaseProviderFreeze, "x", room, "No attempt starts", reply, nil, "a human card's own ask, at the human at its opening, never a trip"},
 		{CaseWaitExpired, staleQuiet, room, "on its own form", "Reply on this issue", nil, "nothing writes a stale ask"},
 		{CaseMergeApproval, "x", room, "on its own form", "Reply on this issue", nil, "answered on the approval, never by a trip"},
 		{CasePlanCriteria, "x", room, "on its own form", "Reply on this issue", nil, "answered on the approval, never by a trip"},

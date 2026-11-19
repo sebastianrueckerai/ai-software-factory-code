@@ -73,9 +73,21 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", Track: policy.TrackDirect}); err != nil {
 		t.Fatal(err)
 	}
-	// two asks, each opening its case and naming it
+	// two faces, each of its case at the human and naming it
+	card, _, err := s.Task(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, ask := range []string{"first face", "second face"} {
-		if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"ask": ask}}); err != nil {
+		c, err := CaseFromAsk(card, Event{Kind: EventQuestionAsked, Detail: map[string]any{"ask": ask}}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c, _, err = openAtHuman(ctx, s, c); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+			Detail: map[string]any{"ask": ask, "case_id": c.ID}}); err != nil {
 			t.Fatal(err)
 		}
 	}

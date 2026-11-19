@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
@@ -353,11 +354,20 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 
 // escalate is the escalate tool: the question and its five parts (the
 // question format) filed as a human-lane card in Needs you, which the
-// inbox's poke carries to the project's members. The ask is the card's
+// inbox's poke carries to the project's humans. The ask is the card's
 // title and why its why line, which the filing door checks on the turn's
 // try. Each choice sits in the "say:" value namespace, so no label the
-// agent writes equals a factory control value.
+// agent writes equals a factory control value. A wake on a case refuses
+// it: the case reaches the human by its hand-up.
 func (t *turn) escalate(ask, why, info, recommendation, choice string, choices []string) (string, error) {
+	if cases := t.c.books.cases(t.key()); t.a.caseWake() && len(cases) > 0 {
+		ids := make([]string, len(cases))
+		for i, id := range cases {
+			ids[i] = strconv.FormatInt(id, 10)
+		}
+		return "", refuse(http.StatusConflict, fmt.Sprintf("You hold case %s: hand it up with `attach_analysis`, its `case_id` and your recommendation, and it reaches the human with your analysis; a second card would ask twice.",
+			textutil.AndList(ids)))
+	}
 	ask, why, info = strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info)
 	recommendation, choice = strings.TrimSpace(recommendation), strings.TrimSpace(choice)
 	for i := range choices {

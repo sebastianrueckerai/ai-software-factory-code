@@ -303,7 +303,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	// oldest queued cards start below, once per project, the sweep that
 	// re-derives what a missed pull would have started
 	pulls := map[string]bool{}
-	for _, status := range []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"} {
+	for _, status := range []string{"queued", "waiting-deps", "running", "in-review", "waiting-agent", "waiting-human", "waiting-poster", "waiting-image", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %s", status, maskedErr(err))
@@ -315,10 +315,8 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			}
 			if t.Kind == "human" {
 				// no workflow: only a close to take in
-				if status == "waiting-human" {
-					if err := in.Resync(ctx, t); err != nil {
-						log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
-					}
+				if err := in.Resync(ctx, t); err != nil {
+					log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
 				}
 				continue
 			}

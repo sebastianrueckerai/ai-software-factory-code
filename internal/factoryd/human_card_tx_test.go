@@ -35,7 +35,7 @@ func noHumanCard(t *testing.T, store *fakeStore, err error) {
 	}
 }
 
-func oneHumanCardWithItsAsk(t *testing.T, store *fakeStore) Task {
+func oneHumanCardWithItsAsk(t *testing.T, store *fakeStore, status string) Task {
 	t.Helper()
 	var cards []Task
 	for _, tk := range store.tasks {
@@ -47,30 +47,31 @@ func oneHumanCardWithItsAsk(t *testing.T, store *fakeStore) Task {
 			asks++
 		}
 	}
-	if len(cards) != 1 || cards[0].Status != "waiting-human" || asks != 1 {
-		t.Fatalf("cards %+v and %d ask rows, want one waiting-human card with its one ask", cards, asks)
+	if len(cards) != 1 || cards[0].Status != status || asks != 1 {
+		t.Fatalf("cards %+v and %d ask rows, want one %s card with its one ask", cards, asks, status)
 	}
 	return cards[0]
 }
 
-// EscalateToHuman: the filing activity's retry runs it again. The issue the
-// failed attempt filed stays open for the retry to take on.
+// EscalateToHuman of a card that asks at once, the chat's: the filing's
+// retry runs it again. The issue the failed attempt filed stays open for the
+// retry to take on.
 func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.recordFails = map[string]int{EventQuestionAsked: 1}
 	q := HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}
-	_, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{Source: SourceAlert})
+	_, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "sebastian", Task{Source: SourceChat})
 	noHumanCard(t, store, err)
 	if len(f.issues) != 1 || len(f.closed) != 0 {
 		t.Fatalf("issues %d, closed %q; want the one issue left open", len(f.issues), f.closed)
 	}
 	title, _, _ := strings.Cut(f.issues[0], "\n\n")
 	f.open = map[string][]map[string]any{"sf/r": {{"number": 31, "title": title, "user": map[string]any{"login": "factory-agent"}}}}
-	if _, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{Source: SourceAlert}); err != nil {
+	if _, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "sebastian", Task{Source: SourceChat}); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
-	if card := oneHumanCardWithItsAsk(t, store); len(f.issues) != 1 || card.IssueNumber != 31 {
+	if card := oneHumanCardWithItsAsk(t, store, "waiting-human"); len(f.issues) != 1 || card.IssueNumber != 31 {
 		t.Fatalf("issues %d, card %+v; want the retry on the one open issue #31", len(f.issues), card)
 	}
 }
@@ -92,7 +93,7 @@ func TestFileHumanTaskFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	if err := file(); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
-	if card := oneHumanCardWithItsAsk(t, store); len(fj.issues) != 1 || card.IssueNumber == 0 {
+	if card := oneHumanCardWithItsAsk(t, store, "waiting-human"); len(fj.issues) != 1 || card.IssueNumber == 0 {
 		t.Fatalf("issues %d, card %+v; want the stranded issue taken on, not filed again", len(fj.issues), card)
 	}
 }
@@ -124,7 +125,7 @@ func TestHumanCardRetryAfterStoreFailureKeepsOneOpenIssue(t *testing.T) {
 			if err := file(ctx, store, alarm, "t-2"); err != nil {
 				t.Fatalf("the retry: %v", err)
 			}
-			card := oneHumanCardWithItsAsk(t, store)
+			card := oneHumanCardWithItsAsk(t, store, "waiting-human")
 			if card.ID != "t-2" || card.IssueNumber != 41 || len(fj.issues) != 1 || len(fj.closed) != 0 {
 				t.Fatalf("card %+v, issues %d, closed %v; want t-2 on the one open issue #41", card, len(fj.issues), fj.closed)
 			}
@@ -159,7 +160,7 @@ func TestIntakeFilesNoHumanCardWhenItsTransactionFails(t *testing.T) {
 	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != 200 {
 		t.Fatalf("the redelivery answered %d", rr.Code)
 	}
-	if card := oneHumanCardWithItsAsk(t, store); card.IssueNumber != 7 {
+	if card := oneHumanCardWithItsAsk(t, store, "waiting-agent"); card.IssueNumber != 7 {
 		t.Fatalf("card %+v, want it on issue 7", card)
 	}
 	// the card's state goes onto the issue once the card exists
@@ -204,7 +205,7 @@ func TestHumanLaneMoveLeavesTheQueuedCardWhenItsTransactionFails(t *testing.T) {
 	if moved, err := in.humanLaneWithoutAgents(context.Background(), store.tasks["t-q"]); err != nil || !moved {
 		t.Fatalf("the retry: moved %v, err %v", moved, err)
 	}
-	if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || len(store.askedRows("t-q")) != 1 {
+	if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-agent" || len(store.askedRows("t-q")) != 1 {
 		t.Fatalf("card %+v, asks %+v; want it moved with its ask", got, store.askedRows("t-q"))
 	}
 	if touched := issueRequests(*requests, 7); !slices.Contains(touched, "/api/v1/repos/sf/ai-software-factory-code/issues/7/labels") {
@@ -246,7 +247,7 @@ func TestPlanHumanCardFilesNoCardWhenItsTransactionFails(t *testing.T) {
 			asks = append(asks, e)
 		}
 	}
-	if card.Kind != "human" || card.Status != "waiting-human" || card.IssueNumber == 0 || len(asks) != 1 || len(fj.issues) != base+1 {
+	if card.Kind != "human" || card.Status != "waiting-agent" || card.IssueNumber == 0 || len(asks) != 1 || len(fj.issues) != base+1 {
 		t.Fatalf("card %+v, asks %+v, %d issues; want one human card with its ask on its one issue", card, asks, len(fj.issues)-base)
 	}
 	if asks[0].IssueNumber != card.IssueNumber {
@@ -262,7 +263,7 @@ func TestFileHumanCardLeavesTheIssueOfTheLiveCardOpen(t *testing.T) {
 	store := newFakeStore()
 	store.tasks["t-h"] = Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 31}
 	_, _, err := FileHumanCard(context.Background(), notHeldStore{store}, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
-		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+		Task{ID: "t-h", Source: SourceChat}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "sebastian", Asker: "agent", Via: ViaChat})
 	const why = "card t-h stands already (#31, waiting-human), so this second filing of it is refused: the card's ask is on #31"
 	if err == nil || err.Error() != why {
 		t.Fatalf("FileHumanCard = %v, want %q", err, why)
@@ -287,7 +288,7 @@ func TestFileHumanCardSearchesForTheStrandedIssueAndNamesAFailedSearch(t *testin
 	t.Cleanup(srv.Close)
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	_, _, err := FileHumanCard(context.Background(), newFakeStore(), f, Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
-		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+		Task{ID: "t-h", Source: SourceChat}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "sebastian", Asker: "agent", Via: ViaChat})
 	if query != "open factory-agent config" {
 		t.Errorf("the search asked %q, want open issues of factory-agent matching config", query)
 	}
@@ -388,7 +389,7 @@ func TestFileHumanCardRefusesTheIdOfACardThatStands(t *testing.T) {
 	store := newFakeStore()
 	store.tasks["t-h"] = Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 7}
 	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
-		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+		Task{ID: "t-h", Source: SourceChat}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "sebastian", Asker: "agent", Via: ViaChat})
 	const why = "card t-h stands already (#7, waiting-human), so this second filing of it is refused and its issue #31 closed: the card's ask is on #7"
 	if err == nil || err.Error() != why {
 		t.Fatalf("FileHumanCard = %v, want %q", err, why)

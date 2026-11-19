@@ -162,15 +162,16 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 }
 
 // hold starts the clock of row's hold at the first merge unless it runs,
-// and asks a person: a standing ask hears of each new fix; else a new ask
-// is filed once a fix merged, or once HoldAskAfter passed since the
-// clock's start and since the last ask or its close. The ask's time is
-// written first, only where the row's ask and clock are still the ones
-// this pass read, and the ask goes out only where that write landed, so a
-// Deploy now or another pass meanwhile wins. An ask that does not go out
-// puts its time back, unless Forgejo refused it for good: then the next
-// comes HoldAskAfter later, not each minute. A new ask whose time is gone
-// from the row once filed was overtaken by a Deploy now, and closes.
+// and asks a person: a standing ask that has its issue hears of each new
+// fix; else a new ask is filed once a fix merged, or once HoldAskAfter
+// passed since the clock's start and since the last ask or its close. The
+// ask's time is written first, only where the row's ask and clock are
+// still the ones this pass read, and the ask goes out only where that write
+// landed, so a Deploy now or another pass meanwhile wins. An ask that does
+// not go out puts its time back; a note Forgejo refuses for good keeps it,
+// so the next comes HoldAskAfter later, not each minute. A new ask whose
+// time is gone from the row once filed was overtaken by a Deploy now, and
+// closes.
 func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, now time.Time) error {
 	repository, since := row.Repository, row.HeldSince
 	if since.IsZero() {
@@ -223,18 +224,21 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 	if landed, err := k.Store.PutReleaseHold(ctx, repository, since, now, row.AskedAt, since); err != nil || !landed {
 		return err
 	}
-	if standing {
+	switch {
+	case standing && card.IssueNumber != 0:
 		comment := "Fixes " + fixRefs(fixes) + " merged too and wait for production."
 		if len(fixes) == 1 {
 			comment = "Fix " + fixRefs(fixes) + " merged too and waits for production."
 		}
 		err = k.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, comment)
-	} else {
+	case standing:
+		// a card that waits for its face has no issue to say it on
+	default:
 		_, err = EscalateToHumanWith(ctx, k.Store, k.Forgejo, repo, q, "the production hold", Task{Source: SourceProductionHeld},
 			HoldFacts(plans, since))
 	}
 	if forgejoTerminal(err) {
-		log.Printf("release keeper: %s: Forgejo refused the ask, which is not filed: %v; the next ask comes after %s", repository, err, hours(HoldAskAfter))
+		log.Printf("release keeper: %s: Forgejo refused the standing ask's note for good: %v; the next ask comes after %s", repository, err, hours(HoldAskAfter))
 		return nil
 	}
 	if err != nil {

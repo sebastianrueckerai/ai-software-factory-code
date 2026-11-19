@@ -669,6 +669,10 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 		return p, named("note")
 	}
 	switch {
+	case row.Plan != nil && a.Action == factoryd.AnswerRevisePlan && row.Case.Kind == factoryd.CasePlanQuestion:
+		// a question's page sends the whole plan back with the human's words
+		p.Post = "/tasks/" + k.ID + "/plan/changes"
+		return p, named("text")
 	case row.Plan != nil && a.Action != factoryd.ActNote:
 		p.Post, p.Max = "/tasks/"+k.ID+"/plan/answer", maxPlanAnswer
 		p.Values = []hidden{{"revision", strconv.Itoa(row.Plan.Revision)}, {"index", strconv.Itoa(row.Plan.Index)}}
@@ -693,10 +697,10 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 			return nil, nil
 		}
 		return p, named("note")
-	case factoryd.ChoiceCase(row.Case, k.Kind) && a.Value == "" && a.Action == factoryd.ActClose:
+	case factoryd.ChoiceKind(row.Case.Kind) && a.Value == "" && a.Action == factoryd.ActClose:
 		// the card's own end, no choice of its question
 		return cardPress(v, k, a, key)
-	case factoryd.ChoiceCase(row.Case, k.Kind):
+	case factoryd.ChoiceKind(row.Case.Kind):
 		if !row.Answers {
 			return nil, nil
 		}

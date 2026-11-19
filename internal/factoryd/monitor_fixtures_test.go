@@ -244,12 +244,12 @@ func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
 	for name, open := range monitorStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
-			run, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Status: CaseAtHuman, Problem: "p"})
+			run, _, err := openAtHuman(ctx, s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Problem: "p"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
-				Status: CaseAtHuman, Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
+			if _, _, err := openAtHuman(ctx, s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+				Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
 				t.Fatal(err)
 			}
 			if got, err := s.NewestAskCase(ctx, "t1"); err != nil || got.ID != run.ID {

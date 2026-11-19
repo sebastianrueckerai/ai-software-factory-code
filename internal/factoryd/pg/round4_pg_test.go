@@ -98,7 +98,7 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 func TestTheWritersStoryShowsOnTheStoredFace(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", "the importer cannot read the snapshot", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", "the importer cannot read the snapshot", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
@@ -128,7 +128,7 @@ func TestTheWritersStoryShowsOnTheStoredFace(t *testing.T) {
 func TestAnAskStoresItsStorySoTheOffersPassLeavesIt(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := g.asks(t)[0].Detail["story"].(map[string]any); !ok {
@@ -220,11 +220,11 @@ func TestActGrantsCriteriaNeverJudged(t *testing.T) {
 func TestSetCaseFaceTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
-	if _, err := g.r.FaceStop(ctx, "t1", HealedReason, nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", HealedReason, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{{Value: ActNote, Label: "Not now", Effect: "marker"}}}); err != nil {
@@ -244,7 +244,7 @@ func TestSetCaseFaceTakesTheNewestAsk(t *testing.T) {
 func TestSetCaseFaceDropsTheSuggestionItNoLongerHolds(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")

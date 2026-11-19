@@ -1759,7 +1759,7 @@ func TestQueueLeftEscalationLinksTheJob(t *testing.T) {
 	red := checksResult(CombinedStatus{State: "failure", Statuses: []CommitStatus{
 		{Context: "pr / test", State: "failure", Description: "1 test failed", TargetURL: "/sf/r/actions/runs/96/jobs/0"}}},
 		runner.forgejo.PublicURL, func(string) ([]byte, error) { return []byte("--- FAIL: TestRace, see https://evil.test/x\n"), nil })
-	if _, err := runner.FaceStop(context.Background(), "t1", leftQueue+"\n\n"+red.Findings[0], nil); err != nil {
+	if _, err := runner.PgFaceStop(context.Background(), "t1", leftQueue+"\n\n"+red.Findings[0], nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(hub.comments) != 1 {

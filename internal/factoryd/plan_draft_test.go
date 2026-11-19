@@ -277,7 +277,7 @@ func TestEscalateNamesTheDraft(t *testing.T) {
 	if err := store.SetPlanDraft(ctx, "t-plan", json.RawMessage(`{}`), []string{"a", "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.FaceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
+	if _, err := runner.PgFaceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
 		t.Fatal(err)
 	}
 	if e := store.askedRows("t-plan"); len(e) != 1 || e[0].Body != timeCapAsk {

@@ -2102,7 +2102,7 @@ func init() {
 					"properties": map[string]any{
 						"action": map[string]any{"type": "string", "enum": humanActionNames()},
 						"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer takes them"},
-						"answer": map[string]any{"type": "string", "description": "a plan question's choice, or confirm or revise"}}}},
+						"answer": map[string]any{"type": "string", "description": "a plan question's choice, confirm or revise, or a human card's choice by its value"}}}},
 			required: []string{"task_id", "found"},
 			about:    "Record what you found on a card's ask, or hand your case up to the human.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {

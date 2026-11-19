@@ -145,9 +145,9 @@ var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting, Ans
 // that keeps the card waiting, or a draw on the agent's question, which
 // buys its answer room and answers nothing.
 func keepsOpen(c Case, t Task, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) && !ChoiceCase(c, t.Kind) ||
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) && !ChoiceKind(c.Kind) ||
 		res.Action == ActRunCriteria && c.Kind == CasePlanCriteria ||
-		ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action) || slices.Contains(questionKinds, c.Kind) && slices.Contains(capDraws, res.Action)
+		ChoiceKind(c.Kind) && slices.Contains(keepsWaiting, res.Action) || slices.Contains(questionKinds, c.Kind) && slices.Contains(capDraws, res.Action)
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
@@ -230,8 +230,8 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
 	// a hand-back is the table's, as a note is: it carries the human's words
-	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote && res.Action != ActHandBack
-	if ChoiceCase(c, t.Kind) && res.Action == ActNote && in.Rung != 0 {
+	choice := ChoiceKind(c.Kind) && res.Action != ActNote && res.Action != ActHandBack
+	if ChoiceKind(c.Kind) && res.Action == ActNote && in.Rung != 0 {
 		if why := r.wordsRefusal(ctx, t, c); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
@@ -489,7 +489,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			continue
 		}
 		for _, c := range r.withdrawReplaced(ctx, t, cases) {
-			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+			if c.Status != CaseAtHuman || !AnswersByOffers(c) {
 				continue
 			}
 			ask, found := r.CaseAsk(ctx, c)
@@ -577,7 +577,7 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 		return
 	}
 	c, err := r.store.CaseByID(ctx, caseID)
-	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c) {
 		return
 	}
 	if f, err := r.FactsAtCase(ctx, t, c); err == nil {
@@ -1018,7 +1018,11 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
 	case len(in.Res.Args) > 0:
 		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t)), nil
-	case in.Res.Action == ActClose:
+	}
+	if why := r.heldRefusal(ctx, t, in); why != "" {
+		return why, nil
+	}
+	if in.Res.Action == ActClose {
 		return "", nil // End the card ends any human card
 	}
 	ask, _ := r.CaseAsk(ctx, c)
@@ -1105,6 +1109,85 @@ func humanEndOf(ctx context.Context, store Store, t Task) (string, error) {
 		return "closed", nil
 	}
 	return "done", nil
+}
+
+// heldEnds are the choices that end a human card on no work of their own:
+// they hold only once the card's condition is gone.
+var heldEnds = []string{AnswerClose, AnswerCheckAgain, AnswerHoldWait, AnswerDismiss}
+
+// heldRefusal is why rung 2 may not take in on factoryd's own human card t,
+// which waits out of sight for its face: a choice that ends the card while
+// factoryd finds its condition standing, or with no check of it, one that
+// leaves the card waiting where no human sees it, and a hand-over to an
+// agent of a card its filer routed to a human. "" when rung 2 may.
+func (r *Runner) heldRefusal(ctx context.Context, t Task, in ActInput) string {
+	choice := in.Res.Action
+	if t.Status != "waiting-agent" || in.Rung != 2 {
+		return ""
+	}
+	up := "hand the case up (`hand_up`) with `" + choice + "` as the recommendation"
+	switch choice {
+	case AnswerPark, AnswerKeepWaiting:
+		return fmt.Sprintf("card %s waits out of sight until a human is asked, so `%s` would leave it there: %s", cardName(t), choice, up)
+	case AnswerGo:
+		return fmt.Sprintf("card %s's filer routed it to a human, so only a human hands it to an agent: %s", cardName(t), up)
+	}
+	if !slices.Contains(heldEnds, choice) {
+		return ""
+	}
+	gone, why, err := r.conditionGone(ctx, t)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("card %s's condition could not be read (%s), so `%s` ends nothing: %s", cardName(t), r.scrub(err.Error()), choice, up)
+	case !gone:
+		return why + ": " + up
+	}
+	return ""
+}
+
+// conditionGone tells whether the condition human card t was filed for is
+// gone, read from the fact its source's own closer ends it on; why says
+// what stands, or that no code checks a source with no such fact.
+func (r *Runner) conditionGone(ctx context.Context, t Task) (gone bool, why string, err error) {
+	stands := func(format string, args ...any) string {
+		return fmt.Sprintf("card %s's condition stands: ", cardName(t)) + fmt.Sprintf(format, args...)
+	}
+	short := t.SHA[:min(7, len(t.SHA))]
+	switch t.Source {
+	case SourceChainStall, SourceChainRepair:
+		sha, status, ok, err := r.store.ChainHeadRow(ctx, t.Repository)
+		if err != nil || !ok {
+			// with no head row no chain stands
+			return err == nil, "", err
+		}
+		standing := status == "pending" || status == "stalled"
+		if t.Source == SourceChainRepair {
+			standing = status != "success"
+		}
+		return sha != t.SHA || !standing, stands("the chain of %s is %s at %s", t.Repository, status, short), nil
+	case SourceStillRed, SourceRerun:
+		pause, paused, err := r.store.QueuePause(ctx, t.Repository)
+		return !paused || pause.FixTask != t.ID, stands("main of %s is red and its merge queue paused on it", t.Repository), err
+	case SourceConfig:
+		row, ok, err := r.store.AlertByFingerprint(ctx, AlertConfigRejected, t.SHA)
+		if err != nil || !ok {
+			return false, stands("the rejection of %s is not on record", short), err
+		}
+		current, _ := toInt(row.Detail["current"])
+		return row.Verdict != "" || r.cfg.Policy().ID > int64(current), stands("no valid commit loaded after %s", short), nil
+	case SourceProductionHeld:
+		groups, err := r.store.OpenGroups(ctx)
+		return len(groups[t.Repository]) == 0, stands("a plan is open on main of %s", t.Repository), err
+	case SourceAlert:
+		row, ok, err := r.store.AlertByFingerprint(ctx, AlertSigNoz, t.AlertFingerprint)
+		if err != nil || !ok {
+			return false, stands("its alert is not on record"), err
+		}
+		resolved, _ := row.Detail["resolved_at"].(string)
+		_, firing := firingSince(row)
+		return row.Detail["event"] != true && resolved != "" && !firing, stands("its alert fires, or is an event no resolve clears"), nil
+	}
+	return false, fmt.Sprintf("no code checks card %s's condition", cardName(t)), nil
 }
 
 // choiceRefusal says card t takes one of offers, with a note beside it.

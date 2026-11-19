@@ -196,15 +196,14 @@ func onlyTask(t *testing.T, store *fakeStore) Task {
 	return Task{}
 }
 
-// The weekly bump at its due: a human card on the code repository,
-// labelled routine, the brief's text as its body with the run's
-// provenance, waiting on a person, its card_created recorded. The run
-// stays open with its card and its routine_ran event names the card,
-// which pokes no one: the inbox of the project's approvers hears of it
-// once through the card's question_asked row, with the routine, the run
-// and the schedule as the decider line. A human card pokes under tell
-// quiet too. Hand-derived: the first issue is #71, the fixture's
-// approver sebastian.
+// The weekly bump at its due: a human card on the code repository, the
+// brief's text as its question with the run's provenance, waiting for its
+// face with no issue, its card_created recorded. The run stays open with
+// its card and its routine_ran event names the card, which pokes no one.
+// The card's question_asked row is held, so it pokes no one either; it
+// carries the labels human and routine and the decider line, the routine,
+// the run and the schedule, for the face's issue and poke. A human card
+// files the same under tell quiet. Hand-derived: no issue is filed.
 func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	ctx := context.Background()
 	r, store, issues, _ := routineRunner(t, routineTree(t))
@@ -213,34 +212,30 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(issues.issues) != 1 {
-		t.Fatalf("issues %d, want 1", len(issues.issues))
+	if len(issues.issues) != 0 || len(issues.labels) != 0 {
+		t.Fatalf("issues %d, labels %v; want none before the face", len(issues.issues), issues.labels)
 	}
 	card := onlyTask(t, store)
-	if card.Kind != "human" || card.Status != "waiting-human" || card.Source != SourceRoutine || card.IssueNumber != 71 || card.RiskClass != "standard" ||
+	if card.Kind != "human" || card.Status != "waiting-agent" || card.Source != SourceRoutine || card.IssueNumber != 0 || card.RiskClass != "standard" ||
 		card.Repository != "sf/ai-software-factory-code" || card.Author != "factory-agent" {
 		t.Fatalf("card %+v", card)
 	}
-	if want := (RoutineRunResult{Outcome: "filed", TaskID: card.ID, Issue: 71}); res != want {
+	if want := (RoutineRunResult{Outcome: "filed", TaskID: card.ID}); res != want {
 		t.Fatalf("result %+v, want %+v", res, want)
 	}
-	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
-		t.Errorf("labels = %v", got)
-	}
 	if created := recordedEvents(r, EventCardCreated); len(created) != 1 || created[0].TaskID != card.ID ||
-		!reflect.DeepEqual(created[0].Detail, map[string]any{"by": "factory-agent", "issue": int64(71), "budget_eur": 0.0}) {
+		!reflect.DeepEqual(created[0].Detail, map[string]any{"by": "factory-agent", "issue": int64(0), "budget_eur": 0.0}) {
 		t.Errorf("card_created %+v, want the card's one", created)
 	}
 	if ran := recordedEvents(r, EventRoutineRan); len(ran) != 1 || ran[0].Repository != "sf/ai-software-factory-code" || ran[0].TaskID != card.ID ||
-		ran[0].IssueNumber != 71 || ran[0].Actor != FactoryDecider || ran[0].Via != ViaFactoryd ||
+		ran[0].IssueNumber != 0 || ran[0].Actor != FactoryDecider || ran[0].Via != ViaFactoryd ||
 		!reflect.DeepEqual(ran[0].Detail, map[string]any{"project": codeProject, "routine": "weekly-bump", "run": 1, "outcome": "filed",
 			"schedule": "every Monday 06:00"}) {
 		t.Errorf("routine_ran %+v", ran)
 	}
-	title, text, _ := strings.Cut(issues.issues[0], "\n\n")
-	body, mirrored := strings.CutPrefix(text, "Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n")
-	if title != "Update the fixed versions of outside software every week" || !mirrored || card.Objective != title+"\n\n"+body {
-		t.Errorf("title %q, issue %q, objective %q", title, text, card.Objective)
+	title, body, _ := strings.Cut(card.Objective, "\n\n")
+	if title != "Update the fixed versions of outside software every week" || card.Why != "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update." {
+		t.Errorf("title %q, why %q, objective %q", title, card.Why, card.Objective)
 	}
 	if !strings.Contains(body, "```\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
 		!strings.Contains(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1\n\nChoices:\n- I did it\n- Have the factory do it\n- Not now\n\nThe factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.") {
@@ -255,20 +250,22 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	}
 	runs := store.routineRuns[codeProject+"/weekly-bump"]
 	if len(runs) != 1 || runs[0].Run != 1 || runs[0].Trigger != "cron" || runs[0].Outcome != "filed" || runs[0].TaskID != card.ID ||
-		runs[0].Issue != 71 || !runs[0].Ended.IsZero() {
+		runs[0].Issue != 0 || !runs[0].Ended.IsZero() {
 		t.Fatalf("runs %+v, want run 1 filed and open", runs)
 	}
 	if pokes := routinePokes(t, r, store); len(pokes) != 0 {
-		t.Fatalf("routine pokes %+v, want none: the card's question_asked row pokes", pokes)
+		t.Fatalf("routine pokes %+v, want none", pokes)
 	}
 	asked := recordedEvents(r, EventQuestionAsked)
 	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Update the fixed versions of outside software every week" ||
-		asked[0].Detail["why"] != "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update." || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"I did it", "Have the factory do it", "Not now"}) {
-		t.Fatalf("question_asked %+v, want the card's one", asked)
+		asked[0].Detail["why"] != "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update." || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"I did it", "Have the factory do it", "Not now"}) ||
+		asked[0].Detail["held"] != true || !reflect.DeepEqual(asked[0].Detail["labels"], []string{"human", "routine"}) {
+		t.Fatalf("question_asked %+v, want the card's one, held, labelled human and routine", asked)
 	}
-	// the poke names the routine (docs/routines.md rule 5)
-	if m, ok := PokeOf(asked[0], card, Task{}); !ok || m.Kind != MessageEscalation || m.Decider != "routine weekly-bump · run 1 · every Monday 06:00" {
-		t.Fatalf("the card's poke %+v, %v; want its decider line", m, ok)
+	// the face's poke names the routine (docs/routines.md rule 5) by the
+	// decider line it copies from this row
+	if m, ok := PokeOf(asked[0], card, Task{}); ok || asked[0].Detail["decider_line"] != "routine weekly-bump · run 1 · every Monday 06:00" {
+		t.Fatalf("the held row's poke %+v, %v, decider line %v; want no poke and the routine's line", m, ok, asked[0].Detail["decider_line"])
 	}
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -277,8 +274,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
 		t.Fatal(err)
 	}
-	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 {
-		t.Fatalf("question_asked under tell quiet %+v, want the human card's one", asked)
+	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 || asked[0].Detail["held"] != true {
+		t.Fatalf("question_asked under tell quiet %+v, want the human card's one, held", asked)
 	}
 }
 
@@ -289,8 +286,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 // the new card: the hold keeps holding and the run ends with the new
 // card, not the waiting one, which stays as it was for the close that
 // follows. A second go is refused: the run no longer names the card.
-// Hand-derived: the run's card is #71, the hand-over #72, the budget the
-// fixture's default 2.
+// Hand-derived: the run's card has no issue before its face, so the
+// hand-over is the first issue, #71; the budget the fixture's default 2.
 func TestGoHandsTheCardOver(t *testing.T) {
 	ctx := context.Background()
 	r, store, issues, wf := routineRunner(t, routineTree(t))
@@ -299,13 +296,13 @@ func TestGoHandsTheCardOver(t *testing.T) {
 	}
 	waiting := onlyTask(t, store)
 	issue, err := r.Go(ctx, waiting.ID, "sebastian")
-	if err != nil || issue != 72 {
-		t.Fatalf("Go = %d, %v; want #72", issue, err)
+	if err != nil || issue != 71 {
+		t.Fatalf("Go = %d, %v; want #71", issue, err)
 	}
 	if len(store.tasks) != 2 {
 		t.Fatalf("%d tasks, want the waiting card and its hand-over", len(store.tasks))
 	}
-	if again := store.tasks[waiting.ID]; again.Status != "waiting-human" || again.Kind != "human" {
+	if again := store.tasks[waiting.ID]; again.Status != "waiting-agent" || again.Kind != "human" {
 		t.Fatalf("the waiting card = %+v, want it as it was for the close", again)
 	}
 	var n Task
@@ -316,32 +313,33 @@ func TestGoHandsTheCardOver(t *testing.T) {
 	}
 	// the routine's card is the factory's own: its bot author stays behind
 	if n.Kind != "agent" || n.Status != "queued" || n.Track != policy.TrackDirect || n.Process != "maintenance" || n.Source != SourceRoutine ||
-		n.RiskClass != "standard" || n.BudgetEUR != 2 || n.IssueNumber != 72 || waiting.Author != "factory-agent" || n.Author != "" || n.AuthorWriter ||
+		n.RiskClass != "standard" || n.BudgetEUR != 2 || n.IssueNumber != 71 || waiting.Author != "factory-agent" || n.Author != "" || n.AuthorWriter ||
 		n.Repository != "sf/ai-software-factory-code" || !slices.Equal(n.RequiredCapabilities, []string{"coder"}) {
 		t.Fatalf("the hand-over = %+v", n)
 	}
 	title, body, _ := strings.Cut(waiting.Objective, "\n\n")
-	text := "Continues #71.\n\n" + body + "\n\nhanded over by sebastian"
+	// the waiting card has no issue, so the hand-over continues none
+	text := body + "\n\nhanded over by sebastian"
 	if want := title + "\n\n" + text; n.Objective != want {
 		t.Fatalf("objective %q, want %q", n.Objective, want)
 	}
-	if len(issues.issues) != 2 || issues.issues[1] != title+"\n\n"+"Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n"+text {
+	if len(issues.issues) != 1 || issues.issues[0] != title+"\n\n"+"Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n"+text {
 		t.Fatalf("issues %q, want the hand-over's issue carrying the objective", issues.issues)
 	}
-	if got := issues.labels[72]; !slices.Equal(got, []string{"routine", "state/queued"}) {
+	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "state/queued"}) {
 		t.Errorf("labels = %v", got)
 	}
 	if !slices.Equal(wf.started, []string{n.ID}) {
 		t.Errorf("started %v, want the hand-over's run", wf.started)
 	}
 	runs := store.routineRuns[codeProject+"/weekly-bump"]
-	if len(runs) != 1 || runs[0].TaskID != n.ID || runs[0].Issue != 72 || runs[0].Outcome != "filed" || !runs[0].Ended.IsZero() {
+	if len(runs) != 1 || runs[0].TaskID != n.ID || runs[0].Issue != 71 || runs[0].Outcome != "filed" || !runs[0].Ended.IsZero() {
 		t.Fatalf("runs %+v, want the open run on the hand-over", runs)
 	}
-	if _, err := r.Go(ctx, waiting.ID, "sebastian"); err == nil || err.Error() != "Card #71 was already handed over." {
+	if _, err := r.Go(ctx, waiting.ID, "sebastian"); err == nil || err.Error() != "Card "+waiting.ID+" was already handed over." {
 		t.Fatalf("the second go: %v, want the refusal", err)
 	}
-	if len(store.tasks) != 2 || len(issues.issues) != 2 {
+	if len(store.tasks) != 2 || len(issues.issues) != 1 {
 		t.Fatalf("the second go acted: %d tasks, %d issues", len(store.tasks), len(issues.issues))
 	}
 }
@@ -349,7 +347,7 @@ func TestGoHandsTheCardOver(t *testing.T) {
 // Two hands race the go of one waiting card: the filing is slow, the
 // second hand arrives while the first is still filing, and the hand-over
 // claim refuses it, so the agent card is filed at most once. Hand-derived:
-// the run's card is #71, the hand-over #72.
+// the run's card has no issue, so the refusal names it by its id.
 func TestGoFilesOnceWhenTwoHandsRace(t *testing.T) {
 	ctx := context.Background()
 	r, store, issues, _ := routineRunner(t, routineTree(t))
@@ -370,10 +368,10 @@ func TestGoFilesOnceWhenTwoHandsRace(t *testing.T) {
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
-	if racing == nil || racing.Error() != "Card #71 was already handed over." {
+	if racing == nil || racing.Error() != "Card "+waiting.ID+" was already handed over." {
 		t.Fatalf("the racing go: %v, want the refusal", racing)
 	}
-	if len(issues.issues) != 2 || len(store.tasks) != 2 {
+	if len(issues.issues) != 1 || len(store.tasks) != 2 {
 		t.Fatalf("%d issues, %d tasks: the racing go filed a second hand-over", len(issues.issues), len(store.tasks))
 	}
 }
@@ -399,11 +397,11 @@ func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 			n = c
 		}
 	}
-	if want := "Bump the dependencies\n\nContinues #71.\n\nhanded over by sebastian"; n.Objective != want {
+	if want := "Bump the dependencies\n\nhanded over by sebastian"; n.Objective != want {
 		t.Fatalf("objective %q, want %q", n.Objective, want)
 	}
-	if issues.issues[1] != "Bump the dependencies\n\n"+"Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n"+"Continues #71.\n\nhanded over by sebastian" {
-		t.Fatalf("the issue %q, want the objective", issues.issues[1])
+	if issues.issues[0] != "Bump the dependencies\n\n"+"Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n"+"handed over by sebastian" {
+		t.Fatalf("the issue %q, want the objective", issues.issues[0])
 	}
 	if err := store.CreateTask(ctx, Task{ID: "t-one", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
 		IssueNumber: 9, Source: "webhook", RiskClass: "standard", BudgetEUR: 1, Objective: "Tidy the docs"}); err != nil {
@@ -472,9 +470,9 @@ func TestGoRefusedAndAPlainCard(t *testing.T) {
 // nothing: the run ends held, names the card in its note and keeps no
 // task of its own, so the card's end finds the run that filed it. A held
 // run is board material and pokes nobody, under tell inbox too (rule 7).
-// File files a second card beside it: a new issue, since #781, the bot's
-// open issue of the same title, is the open card's. Once #781 ends, the
-// next run files.
+// File files a second card beside it, which waits out of sight with no
+// issue until its case reaches a human. Once #781 ends, the next run
+// files.
 func TestRoutineRunHeldWhileOpen(t *testing.T) {
 	ctx := context.Background()
 	onTime := time.Now().Truncate(time.Minute)
@@ -485,7 +483,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 	}{
 		{"hold", policy.WhileOpenHold, policy.TellInbox, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
 		{"hold quietly", policy.WhileOpenHold, policy.TellQuiet, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
-		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed", Issue: 71}, ""},
+		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed"}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -502,8 +500,8 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tt.whileOpen == policy.WhileOpenFile {
-				if len(store.tasks) != 2 || len(issues.issues) != 1 || store.tasks[res.TaskID].IssueNumber != 71 {
-					t.Fatalf("tasks %+v, issues %q, result %+v: want a second card on a new issue, #71", store.tasks, issues.issues, res)
+				if card := store.tasks[res.TaskID]; len(store.tasks) != 2 || len(issues.issues) != 0 || card.Status != "waiting-agent" || card.IssueNumber != 0 {
+					t.Fatalf("tasks %+v, issues %q, result %+v: want a second card, held with no issue", store.tasks, issues.issues, res)
 				}
 				tt.want.TaskID = res.TaskID
 			} else if len(issues.issues) != 0 || len(store.tasks) != 1 {
@@ -535,7 +533,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil ||
-		res.Outcome != "filed" || res.Issue != 71 || len(issues.issues) != 1 {
+		res.Outcome != "filed" || res.TaskID == "" || res.Issue != 0 || len(issues.issues) != 0 {
 		t.Fatalf("after #781 ended: result %+v, %v, issues %d", res, err, len(issues.issues))
 	}
 }
@@ -567,8 +565,8 @@ func TestRoutineRunSkipsOnce(t *testing.T) {
 		t.Fatalf("state %+v: the mark stays", st)
 	}
 	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime.Add(7 * 24 * time.Hour)}); err != nil ||
-		res.Outcome != "filed" || len(issues.issues) != 1 {
-		t.Fatalf("the run after: %+v, %v, issues %d", res, err, len(issues.issues))
+		res.Outcome != "filed" || len(store.tasks) != 1 || len(issues.issues) != 0 {
+		t.Fatalf("the run after: %+v, %v, tasks %d, issues %d", res, err, len(store.tasks), len(issues.issues))
 	}
 }
 
@@ -580,9 +578,9 @@ func TestRoutineRunMissed(t *testing.T) {
 	ctx := context.Background()
 	due := time.Date(2026, 10, 12, 6, 0, 0, 0, berlin) // Mon 06:00, days before the test runs
 	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: due}
-	r, _, issues, _ := routineRunner(t, routineTree(t))
-	if res, err := r.RoutineRun(ctx, in); err != nil || res.Outcome != "filed" || len(issues.issues) != 1 {
-		t.Fatalf("file-once: %+v, %v, issues %d", res, err, len(issues.issues))
+	r, filing, _, _ := routineRunner(t, routineTree(t))
+	if res, err := r.RoutineRun(ctx, in); err != nil || res.Outcome != "filed" || len(filing.tasks) != 1 {
+		t.Fatalf("file-once: %+v, %v, tasks %d", res, err, len(filing.tasks))
 	}
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -599,8 +597,8 @@ func TestRoutineRunMissed(t *testing.T) {
 		t.Fatalf("issues %d, pokes %d, run %+v", len(issues.issues), len(pokes), run)
 	}
 	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now()}); err != nil ||
-		res.Outcome != "filed" || len(issues.issues) != 1 {
-		t.Fatalf("on time: %+v, %v, issues %d", res, err, len(issues.issues))
+		res.Outcome != "filed" || len(store.tasks) != 1 {
+		t.Fatalf("on time: %+v, %v, tasks %d", res, err, len(store.tasks))
 	}
 }
 
@@ -679,10 +677,10 @@ func TestRoutineRunFilesAnAgentCardWithoutSkill(t *testing.T) {
 
 // The live toggle, read when the run fires: a weekly-bump flipped to run
 // on its own files the agent card of a routine with no skill (no skill
-// line in its words); an audit flipped to need the member files a
-// waiting human card that pokes under any tell; the undo follows the
+// line in its words); an audit flipped to need the human files a human
+// card that waits for its face, with its question and no issue; the undo follows the
 // config again; a pull-request routine ignores the toggle. Hand-derived:
-// both first issues are #71, the budget the fixture's default 2.
+// the agent card's issue is #71, the budget the fixture's default 2.
 func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	ctx := context.Background()
 	no, yes := false, true
@@ -731,19 +729,20 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 		t.Fatal(err)
 	}
 	card = onlyTask(t, store)
-	if card.Kind != "human" || card.Status != "waiting-human" || card.Source != SourceRoutine || card.RiskClass != "standard" || card.IssueNumber != 71 || card.Author != "factory-agent" {
+	if card.Kind != "human" || card.Status != "waiting-agent" || card.Source != SourceRoutine || card.RiskClass != "standard" || card.IssueNumber != 0 || card.Author != "factory-agent" {
 		t.Fatalf("the flipped audit's card %+v", card)
 	}
-	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
-		t.Errorf("labels = %v", got)
+	if len(issues.issues) != 0 {
+		t.Errorf("issues %q, want none before the face", issues.issues)
 	}
-	if body := issues.issues[0]; !strings.Contains(body, "Why: The routine audit files this card on its schedule.\n\n---\n\n") || !strings.Contains(body, "```\n\nInfo: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\n\nChoices:\n- I did it\n- Have the factory do it\n- Not now\n\nThe factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.") {
-		t.Errorf("the issue:\n%s", body)
+	if body := card.Objective; card.Why != "The routine audit files this card on its schedule." || !strings.Contains(body, "```\n\nInfo: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\n\nChoices:\n- I did it\n- Have the factory do it\n- Not now\n\nThe factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.") {
+		t.Errorf("the why line %q, the objective:\n%s", card.Why, body)
 	}
 	if len(wf.started) != 0 {
 		t.Errorf("a human card started %v", wf.started)
 	}
-	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Audit: bug hunt and architecture review" {
+	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Audit: bug hunt and architecture review" ||
+		asked[0].Detail["held"] != true || !reflect.DeepEqual(asked[0].Detail["labels"], []string{"human", "routine"}) {
 		t.Fatalf("question_asked %+v, want the flipped audit's one", asked)
 	}
 
@@ -757,7 +756,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
 		t.Fatal(err)
 	}
-	if card := onlyTask(t, store); card.Kind != "human" || card.Status != "waiting-human" {
+	if card := onlyTask(t, store); card.Kind != "human" || card.Status != "waiting-agent" {
 		t.Fatalf("the undone bump's card %+v", card)
 	}
 
@@ -894,8 +893,8 @@ func TestRoutineRunTwiceIsOnce(t *testing.T) {
 	if first.Outcome != "filed" || second != first {
 		t.Fatalf("first %+v, second %+v", first, second)
 	}
-	if pokes := routinePokes(t, r, store); len(issues.issues) != 1 || len(store.tasks) != 1 || len(store.routineRuns[codeProject+"/weekly-bump"]) != 1 || len(pokes) != 0 || len(recordedEvents(r, EventQuestionAsked)) != 1 {
-		t.Fatalf("issues %d, tasks %d, runs %d, pokes %d: want one each and the card's one question", len(issues.issues), len(store.tasks), len(store.routineRuns[codeProject+"/weekly-bump"]), len(pokes))
+	if pokes := routinePokes(t, r, store); len(issues.issues) != 0 || len(store.tasks) != 1 || len(store.routineRuns[codeProject+"/weekly-bump"]) != 1 || len(pokes) != 0 || len(recordedEvents(r, EventQuestionAsked)) != 1 {
+		t.Fatalf("issues %d, tasks %d, runs %d, pokes %d: want no issue, one card, one run, no poke and the card's one question", len(issues.issues), len(store.tasks), len(store.routineRuns[codeProject+"/weekly-bump"]), len(pokes))
 	}
 }
 
@@ -914,15 +913,13 @@ func TestRoutineRunOfARoutineGone(t *testing.T) {
 	}
 }
 
-// An attempt whose issue was filed and whose task row then failed leaves
-// the run open. Where that issue stayed open, its close failing too (or
-// factoryd stopping between the two), the retry takes it on, the bot's
-// open one of the card's title, and files no second.
-func TestRoutineRunRetryTakesOnTheIssueWhoseRowFailed(t *testing.T) {
+// An attempt whose task row failed leaves the run open and files no issue,
+// a routine's card waiting for its face with none; the retry files the
+// one card.
+func TestRoutineRunRetryFilesTheCardWhoseRowFailed(t *testing.T) {
 	ctx := context.Background()
-	captureLog(t)
 	r, store, issues, _ := routineRunner(t, routineTree(t))
-	store.createFails, issues.closeFails = 1, true
+	store.createFails = 1
 	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}
 	if _, err := r.RoutineRun(ctx, in); err == nil {
 		t.Fatal("a failed task row raised nothing")
@@ -932,7 +929,7 @@ func TestRoutineRunRetryTakesOnTheIssueWhoseRowFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := onlyTask(t, store)
-	if len(issues.issues) != 1 || card.IssueNumber != 71 || card.Status != "waiting-human" || res != (RoutineRunResult{Outcome: "filed", TaskID: card.ID, Issue: 71}) {
+	if len(issues.issues) != 0 || card.IssueNumber != 0 || card.Status != "waiting-agent" || res != (RoutineRunResult{Outcome: "filed", TaskID: card.ID}) {
 		t.Fatalf("issues %d, card %+v, result %+v", len(issues.issues), card, res)
 	}
 	if runs := store.routineRuns[codeProject+"/weekly-bump"]; len(runs) != 1 || runs[0].TaskID != card.ID {
@@ -973,14 +970,14 @@ func TestTaskEndedFinishesTheRun(t *testing.T) {
 // files, and the cron run after it is the one skipped.
 func TestRoutineRunNowLeavesTheSkip(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, _, _ := routineRunner(t, routineTree(t))
 	if err := store.SetRoutineSkip(ctx, codeProject, "weekly-bump", true, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	due := time.Now().Truncate(time.Minute)
 	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: TriggerRunNow, Due: due}); err != nil ||
-		res.Outcome != "filed" || len(issues.issues) != 1 {
-		t.Fatalf("the Run now: %+v %v, issues %d", res, err, len(issues.issues))
+		res.Outcome != "filed" || len(store.tasks) != 1 {
+		t.Fatalf("the Run now: %+v %v, tasks %d", res, err, len(store.tasks))
 	}
 	if st, _ := store.RoutineState(ctx, codeProject, "weekly-bump"); !st.SkipNext || st.SkipBy != "sebastian" {
 		t.Fatalf("state %+v: the Run now took the mark", st)
@@ -1071,7 +1068,11 @@ func TestRoutineRunLongWaitsListsCardsPastADay(t *testing.T) {
 	now := time.Now().UTC()
 	hand := func(id string, issue int64, title, ask string, status string, since time.Duration) time.Time {
 		store.tasks[id] = Task{ID: id, Repository: repo, IssueNumber: issue, Objective: title}
-		c, _, err := store.OpenCase(ctx, Case{TaskID: id, Repository: repo, Kind: CaseHumanCard, StateKey: id, Status: status, Problem: ask})
+		open := store.OpenCase
+		if status == CaseAtHuman {
+			open = func(ctx context.Context, c Case) (Case, bool, error) { return openAtHuman(ctx, store, c) }
+		}
+		c, _, err := open(ctx, Case{TaskID: id, Repository: repo, Kind: CaseHumanCard, StateKey: id, Problem: ask})
 		if err != nil {
 			t.Fatal(err)
 		}

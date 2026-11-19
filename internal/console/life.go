@@ -59,7 +59,12 @@ func sizingNote(m map[string]any) string {
 // Costs is whether the run shows a cost: a building or planning run.
 func (r run) Costs() bool { return r.Kind == "building" || r.Kind == "planning" }
 
-var runClasses = map[string]string{"queued": "st-closed", "planning": "st-running", "building": "st-running", "verifying": "st-review", "waiting on you": "st-waiting"}
+var runClasses = map[string]string{"queued": "st-closed", "planning": "st-running", "building": "st-running", "verifying": "st-review", "waiting on you": "st-waiting",
+	withTheAgent: "st-running"}
+
+// withTheAgent is the stage of factoryd's own human card while its case
+// climbs: the factory agent judges it before a human is asked.
+const withTheAgent = "with the factory agent"
 
 // runKind is the stage a status puts a card on track in, "" for a final
 // one: a running plan-track card plans, any other builds.
@@ -76,6 +81,8 @@ func runKind(status, track string) string {
 		return "verifying"
 	case "waiting-human", "waiting-poster":
 		return "waiting on you"
+	case "waiting-agent":
+		return withTheAgent
 	}
 	return ""
 }

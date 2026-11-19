@@ -658,11 +658,23 @@ func TestTheBoardsReadsPutHelperTasksOnTheirParent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// the sizing asks: its row carries its ask as a card's does, which its
-	// parent's page reads
-	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-size", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"question": "the sizing ran out of sessions", "ask": "the sizing ran out of sessions", "why": "it has no size yet",
-			"comment": 51, "source": "agent", "reason": "the sizing used its sessions"}}); err != nil {
+	// the sizing asks: its case opens and climbs, rung 2 hands it up, and
+	// its face's row carries its ask as a card's does, which its parent's
+	// page reads
+	sizingAsk := map[string]any{"question": "the sizing ran out of sessions", "ask": "the sizing ran out of sessions", "why": "it has no size yet",
+		"source": "agent", "reason": "the sizing used its sessions"}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-size", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: maps.Clone(sizingAsk)}); err != nil {
+		t.Fatal(err)
+	}
+	sizing, err := s.NewestAskCase(ctx, "t-size")
+	if err != nil || sizing.Status != CaseOpen {
+		t.Fatalf("the sizing's case = %+v, %v; want it open", sizing, err)
+	}
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: sizing.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
+	sizingAsk["case_id"], sizingAsk["comment"] = sizing.ID, 51
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-size", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: sizingAsk}); err != nil {
 		t.Fatal(err)
 	}
 	ids := func(tasks []BoardTask) []string {

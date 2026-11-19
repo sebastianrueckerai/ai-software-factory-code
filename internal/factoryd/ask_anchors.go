@@ -73,7 +73,13 @@ func askChoices(c Case, ask map[string]any) []string {
 	if _, choices := faceOf(c); len(choices) > 0 {
 		return choices
 	}
-	switch raw := ask["choices"].(type) {
+	return stringsOf(ask["choices"])
+}
+
+// stringsOf is a row's list of strings, as written or as read back from
+// its JSON.
+func stringsOf(v any) []string {
+	switch raw := v.(type) {
 	case []string:
 		return raw
 	case []any:

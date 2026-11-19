@@ -136,13 +136,13 @@ var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare,
 
 // replyAloneKinds are the cases an answer row that names no action ends
 // never: every ask whose ladder line reads "A reply alone starts no attempt",
-// the five caps and the budget floor. Such a row is the webhook's copy of
-// a comment on the card's issue; it stands as the recorded comment, the
-// run reads it as guidance and the card trips again at the cap or the
-// floor. A row that names its action — the console's and chat's Act
-// answers, an extend, a fund — and a session grant answer them as any
-// other case.
-var replyAloneKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseDayCap, CaseMonthCap, CaseProjectCap, CaseBudgetFloor}
+// the five caps and the budget floor, and the factory's month cap card,
+// whose choices answer it. Such a row is the webhook's copy of a comment on
+// the card's issue; it stands as the recorded comment, the run reads it as
+// guidance and the card trips again at the cap or the floor. A row that
+// names its action — the console's and chat's Act answers, an extend, a
+// fund — and a session grant answer them as any other case.
+var replyAloneKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseDayCap, CaseMonthCap, CaseFactoryMonthCap, CaseProjectCap, CaseBudgetFloor}
 
 // reportRuns refuses a handover, an extend and a replan on a report card:
 // its run takes none of them, and runs the report again on its own model
@@ -305,7 +305,7 @@ var Actions = []Action{
 			return "this card ended " + f.Final + ": a raise of its ceiling buys nothing, file a new card"
 		case slices.Contains(capKinds, f.Kind):
 			return capLiftsNot
-		case f.ApprovalKind != "" || slices.Contains(moneylessKinds, f.Kind):
+		case f.ApprovalKind != "" || moneyless(f.Kind):
 			return "this ask holds none of the card's money, so its ceiling is not what it waits on: answer the ask"
 		}
 		eur, _ := r.Args["eur"].(float64)
@@ -506,9 +506,11 @@ var capKinds = []CaseKind{CaseDayCap, CaseMonthCap, CaseProjectCap}
 // capLiftsNot is the refusal of money for a card at a spending limit.
 const capLiftsNot = "this card waits on a spending limit of the factory or the project, which money for the card does not lift: wait for the limit to reset, or close the card"
 
-// moneylessKinds are the cases that hold none of the card's money: a
+// moneyless says a case of kind k holds none of the card's money: a
 // merge's, a plan's and a human card's.
-var moneylessKinds = slices.Concat([]CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CasePlanCriteria}, choiceKinds)
+func moneyless(k CaseKind) bool {
+	return ChoiceKind(k) || slices.Contains([]CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CasePlanCriteria}, k)
+}
 
 // conflictRefusal refuses action, which runs the gates again, on a head
 // that no longer merges into main: the merge queue's turn meets the same

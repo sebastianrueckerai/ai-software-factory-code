@@ -23,6 +23,27 @@ func TestACaseNamesItsRequestByItsID(t *testing.T) {
 	}
 }
 
+// A plan request is answered by the plan cases of its own revision, read
+// from the case's facts or its state key: a case of another revision and a
+// case that names none answer no request.
+func TestAPlanRequestIsAnsweredByItsRevisionsCases(t *testing.T) {
+	q := ApprovalRequest{ID: 4, Kind: ApprovalPlan, Spec: []byte(`{"revision":2}`)}
+	for _, tc := range []struct {
+		name string
+		c    Case
+		want bool
+	}{
+		{"a question whose facts name the revision", Case{Kind: CasePlanQuestion, Facts: map[string]any{"revision": 2.0}}, true},
+		{"a confirmation whose state key names the revision", Case{Kind: CasePlanConfirmation, StateKey: "b2@r2"}, true},
+		{"a question of the revision before", Case{Kind: CasePlanQuestion, Facts: map[string]any{"revision": 1.0}}, false},
+		{"a question that names no revision", Case{Kind: CasePlanQuestion, StateKey: "a1"}, false},
+	} {
+		if got := RequestAnswers(q, tc.c); got != tc.want {
+			t.Errorf("%s: RequestAnswers = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A plan case whose facts name no revision sorts by its state key's
 // revision: the newest revision's facts-less question reads first, its
 // confirmation after it, and the older revision's question last.

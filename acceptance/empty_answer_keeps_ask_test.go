@@ -377,16 +377,31 @@ func (r *parkRig) seedWaitingCard(t *testing.T, id string, issue int64) {
 	}
 }
 
-// seedAgentTimeCapAsk opens the card's live agent-time cap ask, recorded
-// as the cap's own source writes it, and answers the case it opened.
+// seedAgentTimeCapAsk puts the card's live agent-time cap ask at the human
+// with its face on comment: the case the cap's ask opens, seated at the
+// human, and the face's ask row, which names it. It answers the case.
 func (r *parkRig) seedAgentTimeCapAsk(t *testing.T, taskID string, issue, comment int64) factoryd.Case {
 	t.Helper()
 	r.seedWaitingCard(t, taskID, issue)
 	ctx := context.Background()
+	ask := map[string]any{"question": parkTimeCapReason, "ask": parkTimeCapReason, "comment": comment, "source": "cap", "reason": parkTimeCapReason}
+	card, _, err := r.store.Task(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := factoryd.CaseFromAsk(card, factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: ask}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _, err = r.store.OpenCase(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.DB().ExecContext(ctx, `UPDATE cases SET status = 'at_human', owner_rung = 3, next_wake_at = NULL WHERE id = $1`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	ask["case_id"] = c.ID
 	if _, err := r.store.Record(ctx, factoryd.Event{Repository: parkRepo, TaskID: taskID, IssueNumber: issue,
-		Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd,
-		Detail: map[string]any{"question": parkTimeCapReason, "ask": parkTimeCapReason,
-			"comment": comment, "source": "cap", "reason": parkTimeCapReason}}); err != nil {
+		Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: ask}); err != nil {
 		t.Fatalf("record %s's agent-time cap ask: %v", taskID, err)
 	}
 	open, err := r.store.OpenCasesOf(ctx, taskID)

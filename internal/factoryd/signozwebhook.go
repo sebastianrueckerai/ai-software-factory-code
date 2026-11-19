@@ -354,7 +354,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 				return err
 			}
 		}
-		if filed && ok && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
+		if filed && ok && t.IssueNumber != 0 && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "Resolved at "+at); err != nil {
 				return err
 			}
@@ -412,8 +412,10 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 			}
 		}
 		msg := "The alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
-		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
-			return err
+		if t.IssueNumber != 0 {
+			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
+				return err
+			}
 		}
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
 	}
@@ -591,9 +593,10 @@ func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 
 // touched reports whether a person acted on human card t: an intake row, an
 // answer or park, a comment on its issue by anyone but the bot, or the
-// noise label, a verdict that waits on the person's close.
+// noise label, a verdict that waits on the person's close. A card with no
+// issue has only its rows.
 func (in *AlertIntake) touched(ctx context.Context, t Task, repo Repo) (bool, error) {
-	if touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser); err != nil || touched {
+	if touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser); err != nil || touched || t.IssueNumber == 0 {
 		return touched, err
 	}
 	comments, err := in.Forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
@@ -609,7 +612,7 @@ func (in *AlertIntake) touched(ctx context.Context, t Task, repo Repo) (bool, er
 
 func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) error {
 	t, ok, err := in.Store.Task(ctx, row.TaskID)
-	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
+	if err != nil || !ok || t.Kind != "human" || !slices.Contains(humanCardWaits, t.Status) {
 		return err
 	}
 	repo, err := SplitRepo(t.Repository)
@@ -686,7 +689,7 @@ func (in *AlertIntake) CloseCompletedJobs(ctx context.Context) error {
 
 func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf func(string) ([]JobState, error)) error {
 	t, ok, err := in.Store.Task(ctx, row.TaskID)
-	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
+	if err != nil || !ok || t.Kind != "human" || !slices.Contains(humanCardWaits, t.Status) {
 		return err
 	}
 	name := rowLabel(row, "k8s.object.name")
@@ -981,9 +984,9 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		return err
 	}
 	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": t.IssueNumber, "repro_base": t.ReproBase}); err != nil {
-		log.Printf("signoz webhook: alert row %d: record issue #%d: %v", row.ID, t.IssueNumber, err)
+		log.Printf("signoz webhook: alert row %d: record card %s: %v", row.ID, cardName(t), err)
 	}
-	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, t.IssueNumber, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
+	log.Printf("signoz webhook: alert %s in %s: card %s on %s", strconv.Quote(a.Labels["alertname"]), ns, cardName(t), repo) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
 }
 

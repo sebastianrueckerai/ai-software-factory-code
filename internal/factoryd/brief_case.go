@@ -88,7 +88,7 @@ func (b *BriefWriter) caseFacts(ctx context.Context, c Case, t Task) ([]byte, er
 	}
 	m := map[string]any{
 		"The card's life": life.Render(),
-		"case_kind":       caseKindWords[c.Kind],
+		"case_kind":       kindRow(c.Kind).Words,
 		"problem":         c.Problem,
 		"facts":           c.Facts,
 		"money":           c.Money,

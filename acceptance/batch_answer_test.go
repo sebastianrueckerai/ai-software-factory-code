@@ -694,6 +694,9 @@ func (s *accBatchStore) QueuePause(ctx context.Context, project string) (factory
 func (s *accBatchStore) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
 	panic("unused")
 }
+func (s *accBatchStore) ChainHeadRow(ctx context.Context, repository string) (string, string, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ClearQueuePause(ctx context.Context, project string) error { panic("unused") }
 func (s *accBatchStore) PutLiveSession(ctx context.Context, l factoryd.LiveSession) error {
 	panic("unused")
@@ -755,7 +758,7 @@ func (s *accBatchStore) EndCaseStep(ctx context.Context, st factoryd.CaseStep) e
 func (s *accBatchStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
 	panic("unused")
 }
-func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+func (s *accBatchStore) ToHuman(ctx context.Context, id int64) error {
 	panic("unused")
 }
 func (s *accBatchStore) StartRung1Step(ctx context.Context, taskID string, limit int, st factoryd.CaseStep) (int64, bool, error) {

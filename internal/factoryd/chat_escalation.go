@@ -16,13 +16,11 @@ import (
 const SourceChat = "chat"
 
 // EscalateToHuman files an escalation on repo as the bot: a human-lane
-// card in Needs you whose question carries its five parts (the question
-// format), and the question_asked row the inbox's poke carries to the
-// project's members. card gives the card its source and commit. A
-// SourceChat card is the chat agent's ask, by the member whose chat
-// asked; any other source is factoryd's own, by the part of it that
-// asks, and the waker wakes the project agent on it, a month cap's ask
-// excepted.
+// card whose question carries its five parts (the question format), and
+// its question_asked row. card gives the card its source and commit. A
+// SourceChat card is the chat agent's ask, by the human whose chat asked,
+// in Needs you at once; any other source is factoryd's own, by the part
+// of it that asks, and waits for its case's face (HumanCardStatus).
 func EscalateToHuman(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, q HumanQuestion, by string, card Task, labels ...string) (Task, error) {
 	return EscalateToHumanWith(ctx, store, forgejo, repo, q, by, card, nil, labels...)
 }
@@ -40,6 +38,26 @@ func EscalateToHumanWith(ctx context.Context, store humanCardStore, forgejo *For
 	t.ID, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "standard", IssueObjective(b.Title, b.Body), forgejo.BotUser
 	t, _, err := FileHumanCard(ctx, store, forgejo, repo, b, append([]string{"human"}, labels...), t, HumanAsk{Q: q, By: by, Asker: asker, Via: via, Facts: facts})
 	return t, err
+}
+
+// askAtOnce are the sources whose human card asks a human at its filing:
+// the chat's escalate, whose agent worked the problem and chose to ask, the
+// month cap's and the judgment budget's cards, whose cap refuses the rungs'
+// own calls, and the provider freeze's card, whose limit may hold them.
+var askAtOnce = []string{SourceChat, SourceMonthCap, SourceChatBudget, SourceFreezeCard}
+
+// humanCardWaits are the statuses a human card waits in before it ends:
+// for its case's face, and on a human.
+var humanCardWaits = []string{"waiting-agent", "waiting-human"}
+
+// HumanCardStatus is the status a human card of source is filed in:
+// waiting-human for a source that asks at once, else waiting-agent, out of
+// sight until its case's face files its issue and asks.
+func HumanCardStatus(source string) string {
+	if slices.Contains(askAtOnce, source) {
+		return "waiting-human"
+	}
+	return "waiting-agent"
 }
 
 // humanCardStore is the store side of every human card's filing: the card's
@@ -101,14 +119,18 @@ func questionBody(q HumanQuestion, footer string) string {
 
 // HumanAsk is the ask a human card is born with: the question_asked row the
 // case, the board and the inbox's poke read. By is who asks, Asker the source
-// the wake reads, Decider the poke's decider line ("" for none).
+// the wake reads, Decider the poke's decider line ("" for none), Labels the
+// issue's, which the face of a card filed with none puts on the issue it
+// files.
 type HumanAsk struct {
 	Q                       HumanQuestion
 	By, Asker, Via, Decider string
+	Labels                  []string
 	Facts                   map[string]any
 }
 
-// Event is the ask's question_asked row of card t.
+// Event is the ask's question_asked row of card t: held while t waits for
+// its case's face, so the case climbs and no one is poked or woken.
 func (a HumanAsk) Event(t Task) Event {
 	asked := map[string]any{}
 	maps.Copy(asked, a.Facts)
@@ -142,6 +164,12 @@ func (a HumanAsk) Event(t Task) Event {
 	}
 	if a.Decider != "" {
 		asked["decider_line"] = a.Decider
+	}
+	if len(a.Labels) > 0 {
+		asked["labels"] = a.Labels
+	}
+	if t.Status == "waiting-agent" {
+		asked["held"] = true
 	}
 	return Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: a.Via, Detail: asked}
 }

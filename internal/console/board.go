@@ -152,7 +152,7 @@ var columnTitles = []string{"Needs you", "Queued", "In progress", "Done"}
 var columnHolds = [][]string{
 	colNeedsYou: {"waiting-human", "waiting-poster"},
 	colQueued:   {"queued", "waiting-deps", "waiting-image"},
-	colProgress: {"running", "closing", "in-review", "merged"},
+	colProgress: {"running", "closing", "waiting-agent", "in-review", "merged"},
 	colDone:     {"done", "failed", "closed"},
 }
 
@@ -573,9 +573,10 @@ func fineStates(k card) []fine {
 // statusClasses are the pill's classes, one hue per state: running the
 // accent blue, a wait amber, review violet, merged teal, done green,
 // failed red, closed grey; waiting-poster wears the hollow pill. closing
-// counts as running.
+// and waiting-agent, the factory agent's turn on a human card, count as
+// running.
 var statusClasses = map[string]string{
-	"running": "st-running", "closing": "st-running", "queued": "st-queued",
+	"running": "st-running", "closing": "st-running", "waiting-agent": "st-running", "queued": "st-queued",
 	"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow",
 	"in-review": "st-review", "merged": "st-merged", "done": "st-done", "failed": "st-failed",
 	"closed":       "st-closed",
@@ -2146,7 +2147,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	// pending approval's task lives in its project, which here is shown's
 	for _, bt := range tasks {
 		t := bt.Task
-		human, col := v.humanLane(t), fiveColumn(t)
+		// factoryd's own human card works with the factory agent until its
+		// face asks a human
+		human, col := v.humanLane(t) && t.Status != "waiting-agent", fiveColumn(t)
 		// a done plan that waits on its failed card holds its case at the
 		// human: its row of Needs you carries the case
 		holds := cs.holds(t)

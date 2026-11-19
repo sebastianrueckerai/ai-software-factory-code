@@ -425,7 +425,7 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 			open, _ := cfg.OpenCasesOf(ctx, bt.ID)
 			for _, k := range open {
 				d.Cases = append(d.Cases, k)
-				if factoryd.AnswersByOffers(k, bt.Kind) {
+				if factoryd.AnswersByOffers(k) {
 					face := factoryd.FaceOf(k, factoryd.Facts{CaseFacts: factoryd.FactsOf(k), Card: bt.Task})
 					d.Asks[k.ID] = factoryd.CaseAsk{Detail: factoryd.FaceKeys(face)}
 				}

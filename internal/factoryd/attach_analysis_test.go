@@ -48,8 +48,8 @@ func seedAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64, q
 // human under key, and answers the case and the ask's event.
 func askOn(t *testing.T, s *PGStore, card Task, key, question string) (Case, Event) {
 	t.Helper()
-	c, _, err := s.OpenCase(t.Context(), Case{TaskID: card.ID, Repository: card.Repository, Kind: CaseAgentEscalate, StateKey: key,
-		Status: CaseAtHuman, Problem: question})
+	c, _, err := openAtHuman(t.Context(), s, Case{TaskID: card.ID, Repository: card.Repository, Kind: CaseAgentEscalate, StateKey: key,
+		Problem: question})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestAttachAnalysisShowsOnTheCard(t *testing.T) {
 func TestAttachAnalysisLeavesAMonitorsAskOut(t *testing.T) {
 	s := newAskStore(t)
 	own, seededRow := seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	flag, _, err := s.OpenCase(t.Context(), Case{TaskID: "t-1", Repository: "sf/wake", Kind: CaseMonitorFlag, StateKey: "flag", Status: CaseAtHuman,
+	flag, _, err := openAtHuman(t.Context(), s, Case{TaskID: "t-1", Repository: "sf/wake", Kind: CaseMonitorFlag, StateKey: "flag",
 		Problem: "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?"})
 	if err != nil {
 		t.Fatal(err)
@@ -277,16 +277,22 @@ func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 
 // seatFace records the face of live case c of card as its climb writes it:
 // the register's face row, which puts the case at the human.
-func seatFace(t *testing.T, s *PGStore, card Task, c Case, reason string) {
+func seatFace(t *testing.T, s *PGStore, card Task, c Case, reason string) Event {
 	t.Helper()
 	same := func(s string) string { return s }
+	// rung 2's hand-up lets the case through the door
+	if _, err := s.AppendCaseStep(t.Context(), CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 	c.Status = CaseAtHuman
 	face := FaceRow(c, card, FactsOf(c), "", nil, same, same)
 	ask, _ := face["ask"].(string)
-	if _, err := s.Record(t.Context(), Event{Repository: card.Repository, TaskID: card.ID, IssueNumber: card.IssueNumber, Kind: EventQuestionAsked,
-		Actor: FactoryDecider, Via: ViaFactoryd, Detail: AskRow(c, card, reason, ask, 0, face, nil, nil, same)}); err != nil {
+	e := Event{Repository: card.Repository, TaskID: card.ID, IssueNumber: card.IssueNumber, Kind: EventQuestionAsked,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: AskRow(c, card, reason, ask, 0, face, nil, nil, same)}
+	if _, err := s.Record(t.Context(), e); err != nil {
 		t.Fatal(err)
 	}
+	return e
 }
 
 // A merge case faced beside the card's run, the card in review: its ask,
@@ -401,14 +407,21 @@ func TestAttachAnalysisOnAPlanTakesItsOpenQuestion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, c := range climbing {
+			var inbox string
+			for i, c := range climbing {
 				if c.Status != CaseOpen {
 					t.Fatalf("case %d (%s) is %s, want it open at rung 0", c.ID, c.Kind, c.Status)
 				}
-				seatFace(t, s, card, c, c.Problem)
+				if e := seatFace(t, s, card, c, c.Problem); i == 0 {
+					inbox = seedRow(t, s, e, card)
+				}
 			}
 			if err := s.AttachAnalysis(ctx, card.ID, "A week of rows fits one page on a busy day.", "", sebastiansAnalysis); err != nil {
 				t.Fatalf("AttachAnalysis: %v", err)
+			}
+			// the first question's face row in the inbox stays as the Poker wrote it: the card shows the analysis
+			if got, want := askRow(t, s, "sf/wake", card.ID), "#42 (Members page) needs you. How far back does the feed page by default? The planner needs your answer before it can finish the plan."; got != want || inbox != want {
+				t.Fatalf("the inbox's row of the first question's face = %q, seeded as %q; want %q", got, inbox, want)
 			}
 			cases, err := s.OpenCasesOf(ctx, card.ID)
 			if err != nil {

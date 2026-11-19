@@ -43,6 +43,7 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
 	faces           map[int64]map[string]any // the face keys SetCaseFace stored last, by case
+	heads           map[string][2]string     // each repository's chain head row: its commit and status
 	pending         []PendingSignal          // the case signals no send delivered
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
@@ -1088,7 +1089,7 @@ func closeKey(e IntakeEvent) [2]any {
 func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for _, e := range s.intakeEvents {
-		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && s.clock().Sub(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && (e.CommentID == 0 || s.clock().Sub(e.CreatedAt) > olderThan) && len(out) < limit {
 			out = append(out, e)
 		}
 	}
@@ -1403,12 +1404,13 @@ func (s *fakeStore) SetAgentSummary(ctx context.Context, id, summary string) err
 // CreateHumanCard files card t and its ask as PGStore.CreateHumanCard does,
 // all or nothing: a failed row or a failed ask leaves no card.
 func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
+	t.Kind, t.Status = "human", HumanCardStatus(t.Source)
 	if have, ok := s.tasks[t.ID]; ok {
 		if have.Kind != "agent" || have.Status != "queued" {
 			return have, false, nil
 		}
 		moved := have
-		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process, moved.Hold = "human", "waiting-human", "", nil, "", "", nil
+		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process, moved.Hold = "human", t.Status, "", nil, "", "", nil
 		s.tasks[t.ID] = moved
 		if _, err := s.Record(ctx, ask.Event(t)); err != nil {
 			s.tasks[t.ID] = have
@@ -1577,13 +1579,24 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	if e.Kind == EventQuestionAsked {
 		id, _ := toInt(e.Detail["case_id"])
 		if id == 0 {
-			// a case the ask opens open climbs to its face
-			if c := s.askOpensCase(e); c.Status == CaseAtHuman {
+			// a case the ask opens climbs to its face, unless the ask
+			// reaches the human at its opening
+			if c, opened := s.askOpensCase(e); opened && asksAtOnce(e, c.Kind) {
 				id = int(c.ID)
+				if e.Via == ViaChat {
+					recommendation, _ := e.Detail["recommendation"].(string)
+					why, _ := e.Detail["why"].(string)
+					if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp, Grounds: recommendation, Found: why}); err != nil {
+						return 0, err
+					}
+				}
 			}
 		}
 		if id != 0 {
-			s.faced(int64(id), e)
+			if err := s.faced(int64(id), e); err != nil {
+				s.events = s.events[:len(s.events)-1]
+				return 0, err
+			}
 		}
 	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
@@ -1604,38 +1617,41 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 }
 
 // askOpensCase opens the case ask row e goes to when it names none, as the
-// events writer does, stamps the row with it and answers it; the zero Case
-// when the card is unknown or the ask has no words.
-func (s *fakeStore) askOpensCase(e Event) Case {
+// events writer does, stamps the row with it and answers it and whether it
+// opened it; the zero Case when the card is unknown or the ask has no words.
+func (s *fakeStore) askOpensCase(e Event) (Case, bool) {
 	t, ok := s.tasks[e.TaskID]
 	if !ok {
-		return Case{}
+		return Case{}, false
 	}
 	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
-		return Case{}
+		return Case{}, false
 	}
-	got, _, _ := s.OpenCase(context.Background(), c)
+	got, opened, _ := s.OpenCase(context.Background(), c)
 	last := &s.events[len(s.events)-1]
 	last.Detail = maps.Clone(last.Detail)
 	if last.Detail == nil {
 		last.Detail = map[string]any{}
 	}
 	last.Detail["case_id"] = got.ID
-	return got
+	return got, opened
 }
 
 // faced is the events writer's face of ask row e on its case: the case at
-// the human with the face's comment, and the face step that carries it.
-func (s *fakeStore) faced(caseID int64, e Event) {
+// the human through the door with the face's comment, and the face step
+// that carries it.
+func (s *fakeStore) faced(caseID int64, e Event) error {
 	i := slices.IndexFunc(s.cases, func(c Case) bool {
 		return c.ID == caseID && c.TaskID == e.TaskID && (c.Status == CaseOpen || c.Status == CaseAtHuman)
 	})
 	if i < 0 {
-		return
+		return nil
+	}
+	if err := s.ToHuman(context.Background(), caseID); err != nil {
+		return err
 	}
 	comment, _ := toInt(e.Detail["comment"])
-	s.cases[i].Status = CaseAtHuman
 	if comment != 0 {
 		s.cases[i].CommentID = int64(comment)
 	}
@@ -1644,6 +1660,7 @@ func (s *fakeStore) faced(caseID int64, e Event) {
 	}
 	s.caseSteps[caseID] = append(s.caseSteps[caseID], CaseStep{ID: int64(len(s.caseSteps[caseID]) + 1), CaseID: caseID, Rung: 3, Actor: FactoryDecider,
 		StartedAt: cmp.Or(e.At, time.Now()), CommentID: int64(comment), Outcome: StepHandedUp})
+	return nil
 }
 
 func (s *fakeStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
@@ -1836,6 +1853,9 @@ var _ Store = (*fakeStore)(nil)
 // with the next id, open when it names no status, owned by rung 0 when
 // open and by rung 3 at the human, due at its own wake.
 func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
+	if c.Status = cmp.Or(c.Status, CaseOpen); c.Status != CaseOpen {
+		return Case{}, false, errOpenOnly
+	}
 	live := func(o Case) bool { return o.Status == CaseOpen || o.Status == CaseAtHuman }
 	if i := slices.IndexFunc(s.cases, func(o Case) bool {
 		return o.TaskID == c.TaskID && o.Kind == c.Kind && o.StateKey == c.StateKey && live(o)
@@ -1846,11 +1866,7 @@ func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 		c.ID = max(c.ID, o.ID)
 	}
 	c.ID++
-	c.Status = cmp.Or(c.Status, CaseOpen)
-	c.OwnerRung, c.WakeOn = 3, []string{}
-	if c.Status == CaseOpen {
-		c.OwnerRung = 0
-	}
+	c.OwnerRung, c.WakeOn = 0, []string{}
 	s.cases = append(s.cases, c)
 	return c, true, nil
 }
@@ -1894,12 +1910,20 @@ func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, b
 	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget, SpentEUR: s.chatSpent}, nil
 }
 
-func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+// ToHuman moves live case id to the human as PGStore.ToHuman does: through
+// the door, owned by rung 3 with no wake.
+func (s *fakeStore) ToHuman(ctx context.Context, id int64) error {
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
 	if i < 0 {
 		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 	}
-	s.cases[i].Status = status
+	if s.cases[i].Status == CaseAtHuman {
+		return nil
+	}
+	if err := doorRefusal(s.cases[i], climbed(s.caseSteps[id])); err != nil {
+		return err
+	}
+	s.cases[i].Status, s.cases[i].OwnerRung, s.cases[i].NextWakeAt = CaseAtHuman, 3, nil
 	return nil
 }
 
@@ -2003,7 +2027,7 @@ func (s *fakeStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep,
 				continue
 			}
 			ended := time.Now()
-			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.Found, st.StartedAt, *st.DueAt), &ended
+			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.Found, st.Rung, tookSince(steps, st), st.StartedAt, *st.DueAt), &ended
 			s.caseSteps[id][i] = st
 			out = append(out, st)
 		}
@@ -2627,6 +2651,11 @@ func (s *fakeStore) QueuePause(ctx context.Context, project string) (QueuePause,
 	return p, ok, nil
 }
 
+func (s *fakeStore) ChainHeadRow(ctx context.Context, repository string) (string, string, bool, error) {
+	h, ok := s.heads[repository]
+	return h[0], h[1], ok, nil
+}
+
 func (s *fakeStore) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
 	if p, ok := s.pauses[project]; ok {
 		p.RevertTask = taskID
@@ -2916,13 +2945,13 @@ func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID 
 	s.alertsMu.Lock()
 	open := slices.ContainsFunc(s.alerts, func(a Alert) bool { return a.ID == alertID && a.Kind == AlertSigNoz && a.Verdict == "" })
 	s.alertsMu.Unlock()
-	if !ok || t.Status != "waiting-human" || !open {
+	if !ok || !slices.Contains(humanCardWaits, t.Status) || !open {
 		return fmt.Errorf("task %s or alert %d: %w", taskID, alertID, ErrNotFound)
 	}
 	if err := s.ResolveAlert(ctx, alertID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		return err
 	}
-	return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "closed")
+	return s.TransitionTask(ctx, taskID, humanCardWaits, "closed")
 }
 
 func (s *fakeStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
@@ -4602,6 +4631,49 @@ func TestFactoryCloseConfirmation(t *testing.T) {
 	var confirmed int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE confirmed_at IS NOT NULL`).Scan(&confirmed); err != nil || confirmed != 1 {
 		t.Fatalf("confirmed rows = %d, err %v, want 1", confirmed, err)
+	}
+}
+
+// The age bound waits for Forgejo's webhook of a close, which a close of a
+// card with no issue (comment_id 0) never gets: such a row is listed at
+// any age, one of an issue only past the bound. By hand, with the heal
+// pass's two minutes: the issue-less row 10 seconds old is listed, issue
+// #31's row 10 seconds old is not, and issue #32's row 3 minutes old is.
+func TestAFactoryCloseWithNoIssueIsListedAtOnce(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-fc", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 31, Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[int64]int64{}
+	for issue, age := range map[int64]string{0: "10 seconds", 31: "10 seconds", 32: "3 minutes"} {
+		id, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-fc", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: issue, Body: "closing"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE intake_events SET created_at = now() - $2::interval WHERE id = $1`, id, age); err != nil {
+			t.Fatal(err)
+		}
+		ids[issue] = id
+	}
+	got, err := s.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []int64
+	for _, e := range got {
+		listed = append(listed, e.CommentID)
+	}
+	slices.Sort(listed)
+	if !slices.Equal(listed, []int64{0, 32}) {
+		t.Fatalf("listed the closes of issues %v, want [0 32] (rows %v)", listed, ids)
 	}
 }
 
@@ -6356,4 +6428,27 @@ func (s *fakeStore) SetCaseFace(_ context.Context, caseID int64, keys map[string
 		}
 	}
 	return nil
+}
+
+// openAtHuman opens case c in s and seats it at the human as the door leaves
+// a case, owned by rung 3 with no wake: the seed of a test whose case reached
+// the human by a path the test does not drive.
+func openAtHuman(ctx context.Context, s Store, c Case) (Case, bool, error) {
+	got, opened, err := s.OpenCase(ctx, c)
+	if err != nil {
+		return got, opened, err
+	}
+	switch st := s.(type) {
+	case *fakeStore:
+		i := slices.IndexFunc(st.cases, func(o Case) bool { return o.ID == got.ID })
+		st.cases[i].Status, st.cases[i].OwnerRung, st.cases[i].NextWakeAt = CaseAtHuman, 3, nil
+		got = st.cases[i]
+	case *PGStore:
+		if _, err = st.db.ExecContext(ctx, `UPDATE cases SET status = 'at_human', owner_rung = 3, next_wake_at = NULL WHERE id = $1`, got.ID); err == nil {
+			got, err = st.CaseByID(ctx, got.ID)
+		}
+	default:
+		err = fmt.Errorf("openAtHuman: no seat for a %T", s)
+	}
+	return got, opened, err
 }

@@ -263,6 +263,34 @@ func TestQueuedOverBoundGoesToRung2WithoutRung1(t *testing.T) {
 	}
 }
 
+// A faced_unjudged flag is the human's, since only a commit fixes the door:
+// it goes to rung 2 with no rung 1 conversation, rung 2 may not settle it,
+// and its analysis takes it to the human.
+func TestFacedUnjudgedReachesTheHumanWithRung2sAnalysisOnly(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: monitorFlagPrefix + "faced_unjudged(7)", Head: "h2", Kind: CaseMonitorFlag,
+		StateKey: "faced_unjudged|7", Extra: map[string]any{"flag": "faced_unjudged"}}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if out.Rung != 2 || g.chat.calls != 0 || len(g.stepsOfRung(t, out.CaseID, 1)) != 0 {
+		t.Fatalf("outcome %+v, rung 1 calls %d; want rung 2 on the flag with rung 1 untouched", out, g.chat.calls)
+	}
+	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActSettle, Note: "a stray case"}})
+	want := "This ask is the human's by its kind (only a commit fixes the door): record your analysis and the answer you suggest with `attach_analysis`."
+	if err == nil || err.Error() != want {
+		t.Fatalf("Act settle = %v, want %q", err, want)
+	}
+	if _, err := g.r.HandUpRung2(ctx, "t1", out.CaseID, "case 7 faced with no rung 1 or rung 2 step", RungTwoRecommendation{Action: ActSettle, Grounds: "a stray case"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman {
+		t.Fatalf("the flag's case is %s, want it at the human", c.Status)
+	}
+}
+
 // A board-level case and a case only a human decides, which skip rung 1,
 // meet the spent judgment budget in startRung2: each faces the human with
 // the mark on its problem, rung 0's step naming the chat task's money and

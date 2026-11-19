@@ -345,14 +345,14 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 }
 
 // fileHumanTask files human task t on repo from question q through
-// FileHumanCard, the ask its title, labelled human and labels. number is
-// the issue's, filed or taken on (FileHumanCard). The card records
-// card_created and its ask on tl, decider its poke's decider line ("" for
-// none).
+// FileHumanCard, the ask its title, labelled human and labels, asked by
+// t's source. number is the issue's, filed or taken on (FileHumanCard), 0
+// for a card that waits for its face. The card records card_created and
+// its ask on tl, decider its poke's decider line ("" for none).
 func fileHumanTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
 	b := HumanCardText(q, "", false)
 	t.Objective = IssueObjective(b.Title, b.Body)
-	ask := HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
+	ask := HumanAsk{Q: q, By: t.Source, Asker: t.Source, Via: ViaFactoryd, Decider: decider}
 	t, ref, err := FileHumanCard(ctx, store, forgejo, repo, b, append([]string{"human"}, labels...), t, ask)
 	if err != nil {
 		return Task{}, 0, err

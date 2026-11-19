@@ -109,13 +109,29 @@ func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.
 		IssueNumber: issue, Objective: "needs you", SHA: "abc1234"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ra.pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
-		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1, "offers": q.Choices}}); err != nil {
+	// the card's case stands at the human with the face its ask row names
+	ask := map[string]any{"source": source, "ask": q.Ask, "comment": 1, "offers": q.Choices}
+	card, _, err := ra.pg.Task(ctx, id)
+	if err != nil {
 		t.Fatal(err)
 	}
-	k, err := ra.pg.NewestAskCase(ctx, id)
-	if err != nil || k.ID == 0 {
-		t.Fatalf("no case opened: %+v %v", k, err)
+	k, err := factoryd.CaseFromAsk(card, factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: ask}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k, _, err = ra.pg.OpenCase(ctx, k); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ra.pg.DB().ExecContext(ctx, `UPDATE cases SET status = 'at_human', owner_rung = 3, next_wake_at = NULL WHERE id = $1`, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	ask["case_id"] = k.ID
+	if _, err := ra.pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: ask}); err != nil {
+		t.Fatal(err)
+	}
+	if k, err = ra.pg.NewestAskCase(ctx, id); err != nil || k.ID == 0 || k.Status != factoryd.CaseAtHuman || k.CommentID != 1 {
+		t.Fatalf("no case at the human on comment 1: %+v %v", k, err)
 	}
 	ra.caseID = k.ID
 	return ra
@@ -351,7 +367,7 @@ func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 						_, s := r.loggedIn(t)
 						a := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: level}
 						if caller == "agent" {
-							a = actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.WakeAsk}
+							a = actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.EventCaseClimbed}
 						}
 						said, err := r.c.doAnswerCase(t.Context(), a, su.task, ra.caseID, "", value, nil, 0)
 						work := len(r.fg.patched) + len(*replans) + len(*deploys) + len(r.reran) + len(r.dismissed)
@@ -420,7 +436,7 @@ func TestAHumanCardCloseOrdersItsWorkAndMeetsTheLevel(t *testing.T) {
 
 	r, ra = newCard(t, policy.AutonomyManual)
 	_, s = r.loggedIn(t)
-	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyManual, wake: true, birth: factoryd.WakeAsk}
+	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyManual, wake: true, birth: factoryd.EventCaseClimbed}
 	if _, err := r.c.doClose(t.Context(), agent, "t-hq", "done by the agent"); err != nil || len(r.fg.patched) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
 		t.Fatalf("rung 2's close at manual: err %v, patched %v, case %s; want a proposal and the issue open", err, r.fg.patched, ra.caseNow(t).Status)
 	}
@@ -469,7 +485,7 @@ func TestIDidItWaitsAndEndTheCardTakesTheHumansWords(t *testing.T) {
 	}
 	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hd", CaseID: ra.caseID, Action: factoryd.AnswerDone})
 	nothing(t, "the human's chat", r, ra, err)
-	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto, wake: true, birth: factoryd.WakeAsk}
+	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto, wake: true, birth: factoryd.EventCaseClimbed}
 	_, err = r.c.doAnswerCase(t.Context(), agent, "t-hd", ra.caseID, "", factoryd.AnswerDone, nil, 0)
 	nothing(t, "the project agent", r, ra, err)
 
@@ -515,7 +531,7 @@ func TestTheFactorysPullRequestWaitsForAHumansPress(t *testing.T) {
 		for _, value := range []string{factoryd.ActApproveMerge, factoryd.ActDenyMerge} {
 			r, ra := newCard(t, level)
 			_, s := r.loggedIn(t)
-			agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.WakeAsk}
+			agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.EventCaseClimbed}
 			_, err := r.c.doAnswerCase(t.Context(), agent, "t-pr", ra.caseID, "The change is the template's own.", value, nil, 0)
 			if no := refusedWith(err); no == nil || no.status != http.StatusConflict || no.msg != why ||
 				slices.Contains(r.fg.calls, merge) || len(r.fg.closed) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
@@ -558,7 +574,7 @@ func TestAPressOnAnEndedCaseRunsNoWorkAtAnyLevel(t *testing.T) {
 						_, s := r.loggedIn(t)
 						a := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: level}
 						if caller == "agent" {
-							a = actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.WakeAsk}
+							a = actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.EventCaseClimbed}
 						}
 						_, err := r.c.doAnswerCase(t.Context(), a, "t-hq", ra.caseID, "", value, nil, 0)
 						no := refusedWith(err)
@@ -572,8 +588,8 @@ func TestAPressOnAnEndedCaseRunsNoWorkAtAnyLevel(t *testing.T) {
 	}
 }
 
-// A month cap's human card keeps the month cap kind, and its choices answer
-// it: "Decided, close" sends the choice's own value to the real Act, which
+// The factory's month cap card's case is of its own kind, and its choices
+// answer it: "Decided, close" sends the choice's own value to the real Act, which
 // closes the card's issue and resolves the case; the console renders the
 // choices as the old value forms, not as a continue with words.
 func TestAMonthCapHumanCardClosesByItsChoice(t *testing.T) {
@@ -584,8 +600,8 @@ func TestAMonthCapHumanCardClosesByItsChoice(t *testing.T) {
 		Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
 	ra := newRealAct(t, "t-hq", 51, factoryd.SourceMonthCap, q, policy.AutonomyManual)
 	ra.wire(r, "t-hq", false)
-	if k := ra.caseNow(t); k.Kind != factoryd.CaseMonthCap {
-		t.Fatalf("the case is %s, want the month cap kept", k.Kind)
+	if k := ra.caseNow(t); k.Kind != factoryd.CaseFactoryMonthCap {
+		t.Fatalf("the case is %s, want the factory's month cap", k.Kind)
 	}
 	ck, s := r.loggedIn(t)
 	face := escalationOf(t, r, ck, "t-hq")

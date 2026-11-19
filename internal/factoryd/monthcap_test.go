@@ -223,7 +223,7 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 				asked = append(asked, e)
 			}
 		}
-		if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != "Raise the cap?" || asked[0].Detail["by"] != "factoryd" ||
+		if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != "Raise the cap?" || asked[0].Detail["by"] != SourceMonthCap ||
 			asked[0].Detail["source"] != SourceMonthCap || number != 41 {
 			t.Fatalf("adopt=%v question_asked rows = %+v, issue %d", adopt, asked, number)
 		}

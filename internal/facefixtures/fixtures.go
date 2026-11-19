@@ -924,6 +924,10 @@ func (b *builder) caseKinds() {
 			b.out = append(b.out, b.humanIssue(GroupCase, name, b.next(), humanIssueTitle, humanIssueBody, factoryd.IssueQuestion(humanIssueTitle, humanIssueBody, "alice", true), 3*time.Hour))
 		case factoryd.CaseJudgmentBudget:
 			b.out = append(b.out, humanSourceOf(factoryd.SourceChatBudget).file(b, GroupCase, name, b.next()))
+		case factoryd.CaseFactoryMonthCap:
+			b.out = append(b.out, humanSourceOf(factoryd.SourceMonthCap).file(b, GroupCase, name, b.next()))
+		case factoryd.CaseProviderFreeze:
+			b.out = append(b.out, humanSourceOf(factoryd.SourceFreezeCard).file(b, GroupCase, name, b.next()))
 		case factoryd.CaseRedMain:
 			b.out = append(b.out, humanSourceOf(factoryd.SourceStillRed).file(b, GroupCase, name, b.next()))
 		case factoryd.CaseRollHeld:
@@ -1218,6 +1222,8 @@ var flagCards = map[string]flagCard{
 		wait: "queued", since: 2*time.Hour + 10*time.Minute, detail: factoryd.WorkBoundReason + "4 of 4 for " + factoryd.DurationText(2*time.Hour+10*time.Minute)},
 	"review_refused_not_run": {title: "Read the provider's limit in the digest and split the frozen clock on the face", body: "Read the provider's limit in the digest and split the frozen clock on the face.",
 		status: "in-review", detail: "review: behaviours: model review answer invalid (json: unknown field \"behaviors\"): {\"behaviors\": [\"policy.ReadOpening windows on…"},
+	"faced_unjudged": {title: "Show a plan's open questions one page each", body: "Show each open question of a plan on its own page of the opened card.",
+		status: "waiting-human", detail: "5120"},
 }
 
 func (b *builder) flags() {

@@ -94,6 +94,7 @@ var (
 	BriefTerminal             = factoryd.BriefTerminal
 	CapReached                = factoryd.CapReached
 	CaseMonthCap              = factoryd.CaseMonthCap
+	CaseFactoryMonthCap       = factoryd.CaseFactoryMonthCap
 	CasePlanCriteria          = factoryd.CasePlanCriteria
 	CatchDelta                = factoryd.CatchDelta
 	CatchDeltaFiled           = factoryd.CatchDeltaFiled
@@ -124,7 +125,7 @@ var (
 	CheckinAnswerTool         = factoryd.CheckinAnswerTool
 	CheckinSpendAsk           = factoryd.CheckinSpendAsk
 	CheckinStopCallCap        = factoryd.CheckinStopCallCap
-	ChoiceCase                = factoryd.ChoiceCase
+	ChoiceKind                = factoryd.ChoiceKind
 	ConsoleApproved           = factoryd.ConsoleApproved
 	CriterionInvariant        = factoryd.CriterionInvariant
 	CriterionTest             = factoryd.CriterionTest
