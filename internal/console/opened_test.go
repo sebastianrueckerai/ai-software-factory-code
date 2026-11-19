@@ -615,12 +615,12 @@ func TestAnInformationRequestAnswersInMyWords(t *testing.T) {
 	}
 }
 
-// Add money opens with the ask's amount filled in, the one number the ask
-// and its story price: on #2004's floor the ask's 2.68 EUR, on a floor
+// Add money opens with the card's amount filled in, the one number the
+// line under the question names: on #2004's floor 2.68 EUR, on a floor
 // without findings 0.38 EUR, and at the spend limit the raise's 0.38 EUR.
 // The small card's pick opens the card with that field open, and the
 // send funds the amount shown.
-func TestAddMoneyOpensWithTheAsksAmount(t *testing.T) {
+func TestAddMoneyOpensWithTheCardsAmount(t *testing.T) {
 	for _, tc := range []struct {
 		group, kind, key, amount string
 	}{
@@ -631,7 +631,10 @@ func TestAddMoneyOpensWithTheAsksAmount(t *testing.T) {
 		r, ck, _, target, body := openedEntry(t, tc.group, tc.kind, "&press="+tc.key)
 		send := answerForm(t, body, tc.key)
 		if got := send.Values.Get(tc.key + ".eur"); got != tc.amount {
-			t.Errorf("%s: %s opens with %q, want the ask's %s", tc.kind, send.Label, got, tc.amount)
+			t.Errorf("%s: %s opens with %q, want the card's %s", tc.kind, send.Label, got, tc.amount)
+		}
+		if ask := askBlockOf(t, body); !strings.Contains(ask, "needs "+tc.amount+" EUR more") {
+			t.Errorf("%s: no line under the question names the %s EUR the card needs:\n%s", tc.kind, tc.amount, ask)
 		}
 		if !strings.Contains(askBlockOf(t, body), `aria-expanded="true" aria-controls="f-`) {
 			t.Errorf("%s: the pick's press does not open the answer's field:\n%s", tc.kind, askBlockOf(t, body))

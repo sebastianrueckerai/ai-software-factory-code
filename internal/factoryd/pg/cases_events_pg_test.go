@@ -290,7 +290,7 @@ func answerOn(t *testing.T, s *PGStore, taskID string, issue int64, kind, actor,
 }
 
 // The reply-alone contract, seeded as a table of all six kinds: a live
-// ask of every kind whose ladder line reads "A reply alone starts none" —
+// ask of every kind whose ladder line reads "A reply alone starts no attempt" —
 // the five caps and the budget floor — stays at the human under a
 // question_answered row that names no action, the webhook's copy of a
 // comment on the card's issue, and each card's newest live ask is

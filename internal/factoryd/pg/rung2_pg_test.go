@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"slices"
 	"strings"
 	"testing"
@@ -372,10 +371,10 @@ func TestWakeTextIsMaskedThroughTheRealReads(t *testing.T) {
 	}
 }
 
-// Register entry 7: at an agent-time cap rung 2's first action is the extend
-// that raises agent time, a replan is offered and not refused, and a probe
-// that buys sessions alone is not what the extend lists.
-func TestRung2OffersTheExtendFirstAtAnAgentTimeCap(t *testing.T) {
+// Register entry 7: at an agent-time cap rung 2 is offered the extend that
+// raises agent time, a replan is offered and not refused, and a probe that
+// buys sessions alone is not what the extend lists.
+func TestRung2OffersTheExtendAtAnAgentTimeCap(t *testing.T) {
 	f := CaseFacts{Kind: CaseAgentTimeCap, PROpen: true, Head: "h2", Checks: "green", ReviewApproved: true, FloorFree: true,
 		SessionCap: 3, Attempts: 1, AgentTimeS: 1200, AgentTimeCapS: 1200, SessionLeastS: 300,
 		PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour, EUR: 20}}
@@ -383,25 +382,23 @@ func TestRung2OffersTheExtendFirstAtAnAgentTimeCap(t *testing.T) {
 	for _, a := range Offered(f, 2) {
 		names = append(names, a.Name)
 	}
-	if len(names) == 0 || names[0] != ActExtend || !slices.Contains(names, ActReplan) {
-		t.Fatalf("rung 2 is offered %v, want extend first and replan among them", names)
+	if !slices.Contains(names, ActExtend) || !slices.Contains(names, ActReplan) {
+		t.Fatalf("rung 2 is offered %v, want extend and replan among them", names)
 	}
-	if why := (&Runner{}).PgRungStatement(Case{Kind: CaseAgentTimeCap, Problem: "agent time"}, f, "digest", nil, 2); !strings.Contains(why, "\n- extend\n- ") ||
-		strings.Index(why, "- extend") > strings.Index(why, "- reverify") {
-		t.Fatalf("the statement lists %q, want extend ahead of reverify", why)
+	if why := (&Runner{}).PgRungStatement(Case{Kind: CaseAgentTimeCap, Problem: "agent time"}, f, "digest", nil, 2); !strings.Contains(why, "\n- extend\n- ") {
+		t.Fatalf("the statement lists %q, want extend as offered", why)
 	}
 }
 
 // Register entry 50, first half: a planner that stopped for time is extended
-// by rung 2 with the cut as its guidance: the extend is offered first, the
+// by rung 2 with the cut as its guidance: the extend is offered, the
 // draw of agent time is taken, and the session's note carries the cut.
 func TestRung2ExtendsAPlannerWithTheCutAsGuidance(t *testing.T) {
 	const cut = "land one card compiling, then one card per proof"
 	f := CaseFacts{Kind: CaseAgentTimeCap, Planner: true, FloorFree: true, SessionCap: 3, Attempts: 1,
 		AgentTimeS: 1200, AgentTimeCapS: 1200, SessionLeastS: 300, PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour}}
-	offered := Offered(f, 2)
-	if len(offered) == 0 || offered[0].Name != ActExtend {
-		t.Fatalf("rung 2 is offered %v, want extend first", offered)
+	if offered := Offered(f, 2); !slices.ContainsFunc(offered, func(a Action) bool { return a.Name == ActExtend }) {
+		t.Fatalf("rung 2 is offered %v, want extend among them", offered)
 	}
 	extend, _ := ActionByName(ActExtend)
 	res := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 1800}, Note: cut}
@@ -494,16 +491,6 @@ func TestHandUpRung2RefusesAnotherCardsCase(t *testing.T) {
 	want := fmt.Sprintf("`case_id` %d is no ask of this card. Its open asks, by `case_id`: %d.", other.ID, out.CaseID)
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
-	}
-}
-
-// An action table whose fitting action is missing lists the table as it is.
-func TestOrderedActionsWithoutTheFittingAction(t *testing.T) {
-	saved := factoryd.Actions
-	t.Cleanup(func() { factoryd.Actions = saved })
-	factoryd.Actions = slices.DeleteFunc(slices.Clone(saved), func(a Action) bool { return a.Name == ActExtend })
-	if got := orderedActions(CaseFacts{Kind: CaseAgentTimeCap}); len(got) != len(factoryd.Actions) {
-		t.Fatalf("%d actions, want the table's %d", len(got), len(factoryd.Actions))
 	}
 }
 

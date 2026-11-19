@@ -90,7 +90,7 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	}
 	var need string
 	if eur := shortfall(f); eur > 0 {
-		// the board's ask: a session like the last one, past what the card may spend
+		// the board's amount: a session like the last one, past what the card may spend
 		need = fmt.Sprintf("; the next session needs %s EUR more", textutil.EUR(eur))
 	}
 	line("Money: budget %s, spent %s, left %s EUR, ceiling %s EUR; card draw left %s; pool left %s%s.",
@@ -137,7 +137,7 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 		}
 		return b.String()
 	}
-	for _, a := range orderedActions(f) {
+	for _, a := range Actions {
 		if !a.Rungs[rung] {
 			continue
 		}

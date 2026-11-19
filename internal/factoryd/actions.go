@@ -135,7 +135,7 @@ func (f CaseFacts) authorGranted() CaseFacts {
 var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
 
 // replyAloneKinds are the cases an answer row that names no action ends
-// never: every ask whose ladder line reads "A reply alone starts none",
+// never: every ask whose ladder line reads "A reply alone starts no attempt",
 // the five caps and the budget floor. Such a row is the webhook's copy of
 // a comment on the card's issue; it stands as the recorded comment, the
 // run reads it as guidance and the card trips again at the cap or the
@@ -260,7 +260,7 @@ var Actions = []Action{
 		case f.Report:
 			return reportRuns
 		case f.Kind == CaseBudgetFloor:
-			return "this card waits on money, not a session: fund it"
+			return "this card waits on money, not a session"
 		case f.Kind == CaseMonthCap:
 			return "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`"
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
@@ -530,16 +530,15 @@ func timelineUnread(action string, rung int) string {
 	return why
 }
 
-// conflictFit is the answer, by the stop's kind, that starts the session a
-// merge conflict needs: an extend where the stop asks for a session, a
-// fund at the budget floor, the cap's own turn at a cap wait, else a
-// continue with a note.
+// conflictFit is what a merge conflict needs, by the stop's kind: a
+// session that merges main, which a stop on sessions, agent time or money
+// has no room for, the cap's own turn at a cap wait, else a continue with a
+// note. The door that refuses lists the answers the rung may take
+// (actRefusal, rungStatement).
 func conflictFit(f CaseFacts) string {
 	switch {
-	case slices.Contains(extendKinds, f.Kind):
-		return "extend the card for a session that merges main into the branch"
-	case f.Kind == CaseBudgetFloor:
-		return "fund the card for a session that merges main into the branch"
+	case slices.Contains(extendKinds, f.Kind), f.Kind == CaseBudgetFloor:
+		return "the card needs a session that merges main into the branch"
 	case f.Kind == CaseDayCap || f.Kind == CaseMonthCap || f.Kind == CaseProjectCap:
 		return "the card's next session, once the cap turns, merges main into the branch"
 	}
@@ -691,30 +690,12 @@ func (a Action) need(f CaseFacts) policy.Draw {
 	return d
 }
 
-// fittingActions is the action a stop's own kind asks for, which leads
-// every listing of the actions on a case of that kind.
-var fittingActions = map[CaseKind]string{CaseAgentTimeCap: ActExtend, CaseSessionCap: ActExtend, CaseBudgetFloor: ActFund}
-
-// orderedActions is the action table in order with the action the case's
-// kind asks for first.
-func orderedActions(f CaseFacts) []Action {
-	fit, ok := fittingActions[f.Kind]
-	if !ok {
-		return Actions
-	}
-	i := slices.IndexFunc(Actions, func(a Action) bool { return a.Name == fit })
-	if i < 0 {
-		return Actions
-	}
-	return slices.Concat(Actions[i:i+1], Actions[:i], Actions[i+1:])
-}
-
 // Offered lists the actions rung may take on facts f, in table order: its
 // rows whose Applies holds and whose draw fits rung's bounds, tried with
 // the smallest answers (probes) where an action needs arguments or a note.
 func Offered(f CaseFacts, rung int) []Action {
 	var out []Action
-	for _, a := range orderedActions(f) {
+	for _, a := range Actions {
 		if a.offerRefusal(f, rung) == "" {
 			out = append(out, a)
 		}
@@ -935,8 +916,8 @@ func (f CaseFacts) withDraw(r Resolution) CaseFacts {
 
 // sessionRoom is why f leaves no room to open a session, "" when it has
 // it: none running, an attempt under the cap, the agent time a session
-// needs (SessionLeastS), and the money an opening needs, with the action
-// that makes the room.
+// needs (SessionLeastS), and the money an opening needs. The door that
+// refuses lists the answers the rung may take (actRefusal).
 func sessionRoom(f CaseFacts) string {
 	limit, left, need := f.agentTime()
 	switch {
@@ -945,17 +926,17 @@ func sessionRoom(f CaseFacts) string {
 	case !f.Planner && capWaitDecision(f.CapWait) != "":
 		return "a cap binds before a session can start: " + f.CapWait
 	case f.Attempts >= f.SessionCap:
-		return fmt.Sprintf("the session cap of %d is reached: extend or close", f.SessionCap)
+		return fmt.Sprintf("the session cap of %d is reached", f.SessionCap)
 	case slices.Contains(f.Partial, "config"):
 		return "the agent time cap could not be read: try again in a minute, or close the card"
 	case left <= 0:
-		return fmt.Sprintf("the agent time cap of %s is reached: extend", minutesWord(limit))
+		return fmt.Sprintf("the agent time cap of %s is reached", minutesWord(limit))
 	case left < need:
-		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s: extend", minutesWord(limit), minutesWord(left), minutesWord(need))
+		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s", minutesWord(limit), minutesWord(left), minutesWord(need))
 	case slices.Contains(f.Partial, "floor"):
 		return "what an opening needs could not be read: try again in a minute, or close the card"
 	case f.unfunded():
-		return fmt.Sprintf("%s EUR is left for a session and an opening needs %s EUR: fund", textutil.EUR(f.SessionLeft()), textutil.EUR(f.FloorEUR))
+		return fmt.Sprintf("%s EUR is left for a session and an opening needs %s EUR", textutil.EUR(f.SessionLeft()), textutil.EUR(f.FloorEUR))
 	}
 	return ""
 }

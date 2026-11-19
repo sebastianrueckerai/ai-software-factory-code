@@ -14,10 +14,6 @@ func (r *Runner) PgRungStatement(c Case, f CaseFacts, digest string, steps []Cas
 	return r.rungStatement(c, f, digest, steps, rung)
 }
 
-// PgOrderedActions aliases the unexported orderedActions, for the moved
-// rung 2 test that empties the action table.
-func PgOrderedActions(f CaseFacts) []Action { return orderedActions(f) }
-
 // PgTaskRun is the workflow's unexported taskRun, whose card words the
 // moved cases_events test reads.
 type PgTaskRun = taskRun

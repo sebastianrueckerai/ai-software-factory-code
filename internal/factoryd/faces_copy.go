@@ -1008,8 +1008,8 @@ func leftLine(f Facts) string {
 	if f.MergeConflict != "" {
 		out = strings.TrimSpace(out + " " + conflictLine)
 	}
-	// at the budget floor the ask's amount and this price are one number: a
-	// session priced at the opening is named by the why
+	// at the budget floor a session priced at the opening costs what the
+	// why's amount buys, so the story names no second price
 	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 && (f.Kind != CaseBudgetFloor || pricedBySession(f.CaseFacts)) {
 		out = strings.TrimSpace(out + fmt.Sprintf(" One more session costs about %s EUR.", textutil.EUR(s.CostEUR)))
 	}
@@ -1086,34 +1086,34 @@ func limitWhy(f Facts) string {
 	return fmt.Sprintf("A card runs only the sessions it was given, and this one has used all %d.", f.SessionCap)
 }
 
+// budgetFaceAsk names the stop and no answer to it: the money left does
+// not pay the next session, at the spend limit where a fund would pass it,
+// with the findings open on the head.
 func budgetFaceAsk(f Facts) string {
-	n, need := openFindings(f.CaseFacts), textutil.EUR(shortfall(f.CaseFacts))
-	if ceilingPass(f.CaseFacts) > 0 {
-		if n > 0 {
-			return fmt.Sprintf("A higher spend limit and %s EUR more let the card fix its %s. How should it go on?", need, plural(n, "open "+openWord(f.CaseFacts)))
-		}
-		return fmt.Sprintf("The card is out of money and at its spend limit, and it needs %s EUR more. How should it go on?", need)
+	ask := "The card's money left does not pay its next session"
+	n, limit := openFindings(f.CaseFacts), ceilingPass(f.CaseFacts) > 0
+	open := fmt.Sprintf("%s %s open", plural(n, openWord(f.CaseFacts)), isAre(n))
+	switch {
+	case limit && n > 0:
+		ask += ", the card is at its spend limit, and " + open
+	case limit:
+		ask += ", and the card is at its spend limit"
+	case n > 0:
+		ask += ", and " + open
 	}
-	if n > 0 {
-		return fmt.Sprintf("Adding %s EUR lets the card fix its %s. How should it go on?", need, plural(n, "open "+openWord(f.CaseFacts)))
-	}
-	return fmt.Sprintf("The card is out of money, and adding %s EUR lets it run again. How should it go on?", need)
+	return ask + ". How should it go on?"
 }
 
 // budgetWhy says what the card has left, what the review and the audit
-// need of it, and what the next session needs to start where the
-// story names no price: with the price, the sums of the ask.
+// need of it, and what the card needs more for its next session: the
+// amount its money answer adds.
 func budgetWhy(f Facts) string {
-	switch reserve, priced := f.ReserveEUR > 0, pricedBySession(f.CaseFacts); {
-	case reserve && priced:
-		return fmt.Sprintf("The card has %s EUR left, and the review and the audit need %s EUR for themselves.", textutil.EUR(f.LeftEUR), textutil.EUR(f.ReserveEUR))
-	case priced:
-		return fmt.Sprintf("The card has %s EUR left.", textutil.EUR(f.LeftEUR))
-	case reserve:
-		return fmt.Sprintf("The card has %s EUR left, the review and the audit need %s EUR for themselves, and the next session needs %s EUR to start.",
-			textutil.EUR(f.LeftEUR), textutil.EUR(f.ReserveEUR), textutil.EUR(f.FloorEUR))
+	left, need := textutil.EUR(f.LeftEUR), textutil.EUR(shortfall(f.CaseFacts))
+	if f.ReserveEUR > 0 {
+		return fmt.Sprintf("The card has %s EUR left, the review and the audit need %s EUR for themselves, and the card needs %s EUR more to pay its next session.",
+			left, textutil.EUR(f.ReserveEUR), need)
 	}
-	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR to start.", textutil.EUR(f.LeftEUR), textutil.EUR(f.FloorEUR))
+	return fmt.Sprintf("The card has %s EUR left and needs %s EUR more to pay its next session.", left, need)
 }
 
 // capWhy names the limit and the file an approver changes it in, in the

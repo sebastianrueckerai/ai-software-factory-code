@@ -301,7 +301,7 @@ func TestBudgetFloorWithFindingsAsksOnce(t *testing.T) {
 	}
 	c := factoryd.Case{Kind: factoryd.CaseBudgetFloor, Facts: map[string]any{}}
 	face := factoryd.FaceOf(c, factoryd.Facts{CaseFacts: f, Card: factoryd.Task{Kind: "agent", Objective: "Prove the three money faults end to end"}})
-	if want := "Adding 2.00 EUR lets the card fix its 8 open review findings. How should it go on?"; face.Ask != want {
+	if want := "The card's money left does not pay its next session, and 8 review findings are open. How should it go on?"; face.Ask != want {
 		t.Errorf("ask %q, want %q", face.Ask, want)
 	}
 	shown := strings.Join([]string{face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left}, "\n")
@@ -490,16 +490,16 @@ func TestAGateStopNamesItsStepInWords(t *testing.T) {
 	}
 }
 
-// At its spend limit a card out of money asks for the raise of the limit,
-// the one answer that can happen, and offers no "Add money". One press
+// At its spend limit a card out of money says so and offers the raise of
+// the limit, not "Add money", which the limit refuses. One press
 // raises the limit by the 2.00 EUR the next session passes it by and adds
 // the 2.00 EUR it needs, and the effect says so.
-func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
+func TestBudgetFloorAtTheSpendLimitOffersTheRaise(t *testing.T) {
 	f := factoryd.CaseFacts{Kind: factoryd.CaseBudgetFloor, Attempts: 2, SessionCap: 3, BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: 4,
 		Head: "7eaf7c73121dd332c52b95bb5b024a08b3757146", PR: 9, PROpen: true, Pushed: true, Checks: "green",
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	face := factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseBudgetFloor}, factoryd.Facts{CaseFacts: f, Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 5}})
-	if want := "The card is out of money and at its spend limit, and it needs 2.00 EUR more. How should it go on?"; face.Ask != want {
+	if want := "The card's money left does not pay its next session, and the card is at its spend limit. How should it go on?"; face.Ask != want {
 		t.Errorf("ask %q, want %q", face.Ask, want)
 	}
 	raise := face.Answers[0]
@@ -514,8 +514,48 @@ func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
 	if got, want := labels(face.Answers), []string{"Raise the spend limit", "Start a fresh card on this work", "End the card", "Not now"}; !slices.Equal(got, want) {
 		t.Errorf("answers %v, want %v", got, want)
 	}
-	if want := "The card has 0.00 EUR left, and the next session needs 2.00 EUR to start."; face.Why != want {
+	if want := "The card has 0.00 EUR left and needs 2.00 EUR more to pay its next session."; face.Why != want {
 		t.Errorf("why %q, want %q", face.Why, want)
+	}
+}
+
+// A budget floor's question names its problem and no cure: the money left
+// does not pay the next session, with the spend limit where the fund would
+// pass it and the open findings where there are any. The amount stays on
+// the face: 0.00 EUR left of a 2.00 EUR opening needs 2.00 EUR, which the
+// why names and the money answer's field holds as its default. A budget of
+// 4.00 EUR and 2.00 EUR more passes a limit of 4.00 EUR by 2.00 EUR.
+func TestBudgetFloorNamesItsProblemAndKeepsTheAmount(t *testing.T) {
+	review, audit := factoryd.FindingID("the export skips archived cards"), factoryd.FindingID("a literal token in price_floor_test.go:88")
+	const lead = "The card's money left does not pay its next session"
+	for _, tc := range []struct {
+		name            string
+		ceiling         float64
+		review, audit   []string
+		ask, answer     string
+		field, fieldEUR string
+	}{
+		{"under the limit", 18, nil, nil, lead + ". How should it go on?", "Add money", "EUR to add", "2.00"},
+		{"with a finding", 18, nil, []string{audit}, lead + ", and 1 audit finding is open. How should it go on?", "Add money", "EUR to add", "2.00"},
+		{"at the limit", 4, nil, nil, lead + ", and the card is at its spend limit. How should it go on?", "Raise the spend limit", "EUR to raise the limit by", "2.00"},
+		{"at the limit with findings", 4, []string{review}, []string{audit},
+			lead + ", the card is at its spend limit, and 2 findings are open. How should it go on?", "Raise the spend limit", "EUR to raise the limit by", "2.00"},
+	} {
+		f := factoryd.CaseFacts{Kind: factoryd.CaseBudgetFloor, Attempts: 2, SessionCap: 3, BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: tc.ceiling,
+			Head: "7eaf7c73121dd332c52b95bb5b024a08b3757146", PR: 9, PROpen: true, Pushed: true, Checks: "green",
+			ReviewFindings: tc.review, AuditFindings: tc.audit, Findings: slices.Concat(tc.review, tc.audit),
+			PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+		facts := factoryd.Facts{CaseFacts: f, Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 5}}
+		face := factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseBudgetFloor}, facts)
+		if face.Ask != tc.ask {
+			t.Errorf("%s: ask %q, want %q", tc.name, face.Ask, tc.ask)
+		}
+		if want := "The card has 0.00 EUR left and needs 2.00 EUR more to pay its next session."; face.Why != want {
+			t.Errorf("%s: why %q, want %q", tc.name, face.Why, want)
+		}
+		if a := face.Answers[0]; a.Label != tc.answer || len(a.Fields) == 0 || a.Fields[0].Label != tc.field || a.Fields[0].Default(facts) != tc.fieldEUR {
+			t.Errorf("%s: the first answer is %+v, want %q with the field %q at %s", tc.name, a, tc.answer, tc.field, tc.fieldEUR)
+		}
 	}
 }
 
@@ -674,7 +714,7 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		{"day cap", capWait(policy.RefusedDayCap), "The factory's spending limit for today is reached. Wait for it to reset, or end the card?", wait},
 		{"month cap", capWait(policy.RefusedMonthCap), "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?", wait},
 		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait},
-		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card is out of money, and adding 0.38 EUR lets it run again. How should it go on?",
+		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card's money left does not pay its next session. How should it go on?",
 			[]string{"Add money", "End the card", "Not now"}},
 		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. How should it go on?",
 			[]string{"Allow more sessions", "End the card", "Not now"}},

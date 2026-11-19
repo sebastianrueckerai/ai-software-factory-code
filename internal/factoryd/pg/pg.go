@@ -267,7 +267,6 @@ var (
 	SourceConfig              = factoryd.SourceConfig
 	SourceRollRefused         = factoryd.SourceRollRefused
 	TripSize                  = factoryd.TripSize
-	orderedActions            = factoryd.PgOrderedActions
 	replanText                = factoryd.PgReplanText
 	replanClosers             = factoryd.PgReplanClosers
 	EventGateAudit            = factoryd.EventGateAudit

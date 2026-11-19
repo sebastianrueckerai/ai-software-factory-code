@@ -109,7 +109,7 @@ func TestAnswerRefusalNamesTheOfferedActions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	caseCard(r)
-	const why = "the session cap of 3 is reached: extend or close, and the human may take extend, fund, raise_ceiling, successor, replan and close"
+	const why = "the session cap of 3 is reached, and the human may take extend, fund, raise_ceiling, successor, replan and close"
 	r.actErr = factoryd.ErrActRefused(why)
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), why) {
@@ -615,7 +615,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 		}
 	}
 
-	if got, want := fits(capped, factoryd.Resolution{Action: factoryd.ActContinue, Note: "go on"}), "the session cap of 3 is reached: extend or close"; got != want {
+	if got, want := fits(capped, factoryd.Resolution{Action: factoryd.ActContinue, Note: "go on"}), "the session cap of 3 is reached"; got != want {
 		t.Errorf("a continue at the cap = %q, want the table's refusal %q", got, want)
 	}
 	ask := room

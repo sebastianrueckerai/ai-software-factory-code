@@ -138,10 +138,10 @@ func TestRung1StatementSaysThePullRequestNoLongerMerges(t *testing.T) {
 	f.ReviewApproved, f.MergeConflict = true, "the branch conflicts with its base: status 409"
 	got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1)
 	said := "The pull request does not merge into main: the branch conflicts with its base: status 409. Neither reverify nor route_approval clears it:" +
-		" extend the card for a session that merges main into the branch, or the card closes as superseded."
+		" the card needs a session that merges main into the branch, or the card closes as superseded."
 	refusal := func(name string) string {
 		return "- " + name + ": not offered: the pull request no longer merges into main (Forgejo refused to merge main into c1), so `" + name +
-			"` only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+			"` only runs the gates into the same refusal at the merge queue: the card needs a session that merges main into the branch," +
 			" or the card closes as superseded when main already carries its work\n"
 	}
 	for _, w := range []string{"PROBLEM\n" + said + "\n", refusal(ActRouteApproval), refusal(ActReverify), "- extend\n"} {
@@ -230,12 +230,13 @@ func TestHumanOnly(t *testing.T) {
 }
 
 // Rung 1's human-only check, the rung's statement, the face and the issue
-// comment name one amount on a budget floor: the board's ask, the price of
-// a session like the last one past what the card may spend, 2.62 + 0.40 -
-// 0.34 = 2.68 EUR. The rungs read it from the live facts, whatever the case
-// stored when it opened; the issue comment from the face of the case's
-// facts, by the board's label. At the spend limit the face asks to raise
-// it, and so does the issue: by the 2.68 EUR the limit lacks.
+// comment name one amount on a budget floor: the price of a session like
+// the last one past what the card may spend, 2.62 + 0.40 - 0.34 = 2.68 EUR.
+// The rungs read it from the live facts, whatever the case stored when it
+// opened; the face names it under its question, and the issue comment
+// beside the board's label of the answer that adds it. At the spend limit
+// that answer raises the limit by the 2.68 EUR it lacks. No branch holds
+// work, so the face offers no fresh card.
 func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	c := Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget"}}
 	f := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5.7, SpentEUR: 5.36, LeftEUR: 0.34, ReserveEUR: 0.4, FloorEUR: 0.6, CeilingEUR: 18,
@@ -246,8 +247,8 @@ func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	if got := (&Runner{}).rungStatement(c, f, "D", nil, 1); !strings.Contains(got, "; the next session needs 2.68 EUR more.\n") {
 		t.Errorf("the statement names no 2.68 EUR:\n%s", got)
 	}
-	if ask := FaceOf(c, Facts{CaseFacts: f}).Ask; !strings.Contains(ask, "adding 2.68 EUR") {
-		t.Errorf("the face asks %q, want 2.68 EUR", ask)
+	if why, want := FaceOf(c, Facts{CaseFacts: f}).Why, "The card has 0.34 EUR left, the review and the audit need 0.40 EUR for themselves, and the card needs 2.68 EUR more to pay its next session."; why != want {
+		t.Errorf("the face's why is %q, want %q", why, want)
 	}
 	opened := func(f CaseFacts) Case {
 		var facts map[string]any
@@ -256,12 +257,12 @@ func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 		return Case{Kind: CaseBudgetFloor, Facts: facts, Money: tripMoney(CaseBudgetFloor, f)}
 	}
 	fund, _ := AnswerOf(ActFund)
-	if next, want := tripNext(opened(f), BudgetRefused+": the card spent its budget"), "Press “"+fund.Label+"” (EUR to add: 2.68) on the board"; !strings.HasPrefix(next, want) {
+	if next, want := tripNext(opened(f), BudgetRefused+": the card spent its budget"), "Press “"+fund.Label+"” (EUR to add: 2.68), “End the card” or “Not now” on the board"; !strings.HasPrefix(next, want) {
 		t.Errorf("the issue's last line = %q, want it to start %q", next, want)
 	}
 	f.CeilingEUR = f.BudgetEUR
 	raise, _ := AnswerOf(ActRaiseCeiling)
-	if next, want := tripNext(opened(f), BudgetRefused+": the card spent its budget"), "Press “"+raise.Label+"” (EUR to raise the limit by: 2.68) on the board"; !strings.HasPrefix(next, want) {
+	if next, want := tripNext(opened(f), BudgetRefused+": the card spent its budget"), "Press “"+raise.Label+"” (EUR to raise the limit by: 2.68), “End the card” or “Not now” on the board"; !strings.HasPrefix(next, want) {
 		t.Errorf("at the spend limit the issue's last line = %q, want it to start %q", next, want)
 	}
 }

@@ -94,23 +94,23 @@ func TestResumeAppliesOnlyWithRoom(t *testing.T) {
 		want         string
 	}{
 		{"room", ActResume, room, Resolution{}, ""},
-		{"at the cap", ActResume, with(func(f *CaseFacts) { f.Attempts = 3 }), Resolution{}, "the session cap of 3 is reached: extend or close"},
-		{"below the floor", ActResume, with(func(f *CaseFacts) { f.LeftEUR = 0.2 }), Resolution{}, "0.20 EUR is left for a session and an opening needs 0.30 EUR: fund"},
+		{"at the cap", ActResume, with(func(f *CaseFacts) { f.Attempts = 3 }), Resolution{}, "the session cap of 3 is reached"},
+		{"below the floor", ActResume, with(func(f *CaseFacts) { f.LeftEUR = 0.2 }), Resolution{}, "0.20 EUR is left for a session and an opening needs 0.30 EUR"},
 		// 0.70 left less the 0.40 gate reserve is 0.30 for a session, under the 0.60 floor
 		{"under the reserve", ActResume, with(func(f *CaseFacts) { f.LeftEUR, f.ReserveEUR, f.FloorEUR = 0.7, 0.4, 0.6 }), Resolution{},
-			"0.30 EUR is left for a session and an opening needs 0.60 EUR: fund"},
+			"0.30 EUR is left for a session and an opening needs 0.60 EUR"},
 		{"running", ActResume, with(func(f *CaseFacts) { f.Running = true }), Resolution{}, "a session is running"},
 		// 1200 s cap, 1100 s used: 100 s left, under the 5 minutes a session needs
 		{"time short", ActResume, with(func(f *CaseFacts) { f.AgentTimeS = 1100 }), Resolution{},
-			"the agent time cap of 20 minutes leaves 2 minutes and a session needs 5 minutes: extend"},
-		{"time spent", ActResume, with(func(f *CaseFacts) { f.AgentTimeS = 1200 }), Resolution{}, "the agent time cap of 20 minutes is reached: extend"},
+			"the agent time cap of 20 minutes leaves 2 minutes and a session needs 5 minutes"},
+		{"time spent", ActResume, with(func(f *CaseFacts) { f.AgentTimeS = 1200 }), Resolution{}, "the agent time cap of 20 minutes is reached"},
 		{"cap unread", ActResume, with(func(f *CaseFacts) { f.AgentTimeCapS, f.Partial = 0, []string{"config"} }), Resolution{},
 			"the agent time cap could not be read: try again in a minute, or close the card"},
 		{"floor unread", ActResume, with(func(f *CaseFacts) { f.FloorEUR, f.Partial = 0, []string{"floor"} }), Resolution{},
 			"what an opening needs could not be read: try again in a minute, or close the card"},
 		{"handover same", ActHandover, room, Resolution{Args: map[string]any{"model": "same"}}, ""},
 		{"handover at the cap", ActHandover, with(func(f *CaseFacts) { f.Attempts = 3 }), Resolution{Args: map[string]any{"model": "stronger"}},
-			"the session cap of 3 is reached: extend or close"},
+			"the session cap of 3 is reached"},
 		{"handover to no rung", ActHandover, room, Resolution{Args: map[string]any{"model": "best"}},
 			`a handover names its model as same, stronger or cheaper, not "best"`},
 	} {
@@ -383,7 +383,7 @@ func TestARefusedExtendIsOfferedOnlyWhileAFitRemains(t *testing.T) {
 		}
 	}
 	got := actRefusal(timeCap, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}}, "#2109")
-	if !strings.Contains(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and the factory agent may take `extend`") {
+	if !strings.Contains(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and the factory agent may take ") {
 		t.Errorf("6354's refusal = %q, want the fit and the extend on offer", got)
 	}
 }
@@ -693,7 +693,7 @@ func TestExtendOfLinesAloneApplies(t *testing.T) {
 // An extend answers a cap: a session cap, a check-in's spend stop (an agent time
 // cap takes agent time, see TestExtendAtATimeCapTakesAgentTime), and the owner exits of a gate stop and of findings that repeat,
 // whose questions offer "Extend the card"; with no case it raises a live
-// card's caps. A stop on money names the fund, any other case asked a
+// card's caps. A stop on money says it waits on money, any other case asked a
 // question, which an extend does not answer, and the human is not offered
 // one there.
 func TestExtendAnswersACapAlone(t *testing.T) {
@@ -702,7 +702,7 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	for kind, want := range map[CaseKind]string{
 		CaseSessionCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
 		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
-		CaseBudgetFloor: "this card waits on money, not a session: fund it",
+		CaseBudgetFloor: "this card waits on money, not a session",
 		CaseMonthCap:    "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, one); got != want {
@@ -774,12 +774,21 @@ func TestEndedCardTakesNoExtendOrRaise(t *testing.T) {
 	}
 }
 
-// A card short of money is answered by a fund: an extend there names it.
-// At the month cap the gateway refuses every call until the cap moves, so
-// the refusal names the cap before the fund.
-func TestExtendOnAMoneyStopNamesTheFund(t *testing.T) {
+// An extend on a card short of money names the stop and no one answer to
+// it. At the month cap the gateway refuses every call until the cap moves,
+// so the refusal names the cap before the fund. Act's door adds every
+// answer the human may take: with 0.00 EUR left of a 2.00 EUR opening and
+// no pull request, the table's fund, raise_ceiling, replan, close and note,
+// in the table's order.
+func TestExtendOnAMoneyStopNamesTheStop(t *testing.T) {
+	floor := CaseFacts{Kind: CaseBudgetFloor, Attempts: 1, SessionCap: 3, BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: 18,
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	got := actRefusal(floor, ActInput{CaseID: 7, Rung: 3, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}}, "#5")
+	if want := "this card waits on money, not a session, and the human may take `fund`, `raise_ceiling`, `replan`, `close` and `note`"; got != want {
+		t.Errorf("the human's extend at the budget floor = %q, want %q", got, want)
+	}
 	for kind, want := range map[CaseKind]string{
-		CaseBudgetFloor: "this card waits on money, not a session: fund it",
+		CaseBudgetFloor: "this card waits on money, not a session",
 		CaseMonthCap:    "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
@@ -859,6 +868,47 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
 		"settle ends a monitor flag's ask alone, a held plan's ask, or the ask a park settles, and this ask is none of them"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
+	}
+}
+
+// No answer leads a stop's list: at a budget floor, a session cap and an
+// agent time cap the human is offered the action table's rows in the
+// table's order. The table holds reverify before extend and extend before
+// fund, so on an open pull request reverify stands ahead of the fund at the
+// floor and ahead of the extend at both caps.
+func TestOfferedListsTheTableInItsOrderAtEveryStop(t *testing.T) {
+	base := CaseFacts{Head: "abcdef123", PR: 9, PROpen: true, Pushed: true, Checks: "green", ReviewApproved: true,
+		Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300,
+		BudgetEUR: 4, SpentEUR: 1, LeftEUR: 3, FloorEUR: 2, CeilingEUR: 18,
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	for _, tc := range []struct {
+		kind CaseKind
+		at   func(*CaseFacts)
+		cure string
+	}{
+		{CaseBudgetFloor, func(f *CaseFacts) { f.SpentEUR, f.LeftEUR = 4, 0 }, ActFund},
+		{CaseSessionCap, func(f *CaseFacts) { f.Attempts = 3 }, ActExtend},
+		{CaseAgentTimeCap, func(f *CaseFacts) { f.AgentTimeS = 7200 }, ActExtend},
+	} {
+		f := base
+		f.Kind = tc.kind
+		tc.at(&f)
+		var names []string
+		for _, a := range Offered(f, 3) {
+			names = append(names, a.Name)
+		}
+		var table []string
+		for _, a := range Actions {
+			if slices.Contains(names, a.Name) {
+				table = append(table, a.Name)
+			}
+		}
+		if !slices.Equal(names, table) {
+			t.Errorf("%s: offered %v, want the table's order %v", tc.kind, names, table)
+		}
+		if r, c := slices.Index(names, ActReverify), slices.Index(names, tc.cure); r < 0 || c < 0 || r > c {
+			t.Errorf("%s: offered %v, want reverify ahead of %s", tc.kind, names, tc.cure)
+		}
 	}
 }
 
@@ -1152,8 +1202,8 @@ func TestRouteApprovalAtAPolicyClassNeedsNoApprovingReview(t *testing.T) {
 
 // A pull request that no longer merges into main refuses the answers that
 // only run the gates again into the same refusal, each naming the conflict
-// and the answer that fits the stop's kind: an extend at a cap, a fund at
-// the budget floor, the cap's turn at a cap wait, else a continue. With no
+// and what it needs by the stop's kind: a session that merges main at a cap
+// and at the budget floor, the cap's turn at a cap wait, else a continue. With no
 // conflict each applies, and an extend at the cap applies with the
 // conflict too.
 func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
@@ -1168,15 +1218,15 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 			t.Errorf("no conflict: %s applies = %q, want it to apply", name, got)
 		}
 		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so `" + name +
-			"` only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+			"` only runs the gates into the same refusal at the merge queue: the card needs a session that merges main into the branch," +
 			" or the card closes as superseded when main already carries its work"
 		if got := applies(t, name, conflict, note); got != want {
 			t.Errorf("conflict: %s applies = %q, want %q", name, got, want)
 		}
 	}
 	for kind, fit := range map[CaseKind]string{
-		CaseAgentTimeCap:  "extend the card for a session that merges main into the branch",
-		CaseBudgetFloor:   "fund the card for a session that merges main into the branch",
+		CaseAgentTimeCap:  "the card needs a session that merges main into the branch",
+		CaseBudgetFloor:   "the card needs a session that merges main into the branch",
 		CaseMonthCap:      "the card's next session, once the cap turns, merges main into the branch",
 		CaseAgentEscalate: "continue the card with a note for a session that merges main into the branch",
 	} {
@@ -1270,8 +1320,8 @@ func TestHandoverAtTheCapAppliesWithItsRidingDraw(t *testing.T) {
 		want string
 	}{
 		{"one session beside it", Resolution{Args: same, Fund: &policy.Draw{Sessions: 1}}, ""},
-		{"no draw", Resolution{Args: same}, "the session cap of 3 is reached: extend or close"},
-		{"agent time alone", Resolution{Args: same, Fund: &policy.Draw{AgentTime: time.Hour}}, "the session cap of 3 is reached: extend or close"},
+		{"no draw", Resolution{Args: same}, "the session cap of 3 is reached"},
+		{"agent time alone", Resolution{Args: same, Fund: &policy.Draw{AgentTime: time.Hour}}, "the session cap of 3 is reached"},
 	} {
 		if got := applies(t, ActHandover, atCap, c.r); got != c.want {
 			t.Errorf("%s: handover applies = %q, want %q", c.name, got, c.want)
@@ -1558,7 +1608,7 @@ func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
 		{"extend at the agent time cap", timeCap, extendTime, ""},
 		{"fund at the budget floor", floor, fund, ""},
 		{"fund at the day cap", dayCap, fund, capLiftsNot},
-		{"extend at the budget floor", floor, extend, "this card waits on money, not a session: fund it"},
+		{"extend at the budget floor", floor, extend, "this card waits on money, not a session"},
 	} {
 		f := room
 		c.at(&f)

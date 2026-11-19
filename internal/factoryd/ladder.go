@@ -1232,7 +1232,7 @@ func tripDep(kind CaseKind, f CaseFacts) *DepFact {
 
 // tripMoney is the money fact of a case of kind on facts f, nil for none:
 // the card's budget and what is spent, and at a budget floor what one
-// more session buys. The face reads the amount it asks from the live
+// more session buys. The face reads the amount it names from the live
 // facts (shortfall).
 func tripMoney(kind CaseKind, f CaseFacts) *CaseMoney {
 	switch {
@@ -1268,16 +1268,15 @@ func replyNext(reason string) string {
 // noRoom is the face's line at a stop of case c whose card has no room
 // for a session by its facts (CaseFacts.noSession, refund and waiting as
 // there): a reply starts none, the task waits on a cap that binds first,
-// or the line names the answer on c's face that gives the room, else the
-// stop asked next and the project chat's verb. With a limit unread a reply
-// may start none. "" when a session fits.
+// or the line names the stop asked next and the answers c's face holds
+// (boardMove). With a limit unread a reply may start none. "" when a
+// session fits.
 func noRoom(c Case, refund, waiting bool) string {
 	f := factsOf(c)
-	var lead, asked, verb string
-	var room []string
+	var lead, asked string
 	switch kind, read := f.noSession(refund, waiting); {
 	case !read:
-		return "The card's limits could not be read, so a reply alone may start no attempt: the project chat can extend or fund the card. Close this issue to end the task."
+		return "The card's limits could not be read, so a reply alone may start no attempt. " + boardMove(c) + " Close this issue to end the task."
 	case kind == CaseDayCap, kind == CaseMonthCap, kind == CaseProjectCap:
 		// the cap wait's own question line: when it lifts, what raises it
 		line := strings.ToUpper(f.CapWait[:1]) + f.CapWait[1:] + " A reply alone starts no attempt while the cap holds."
@@ -1286,19 +1285,24 @@ func noRoom(c Case, refund, waiting bool) string {
 		}
 		return line
 	case kind == CaseBudgetFloor:
-		lead, asked, verb, room = "The card's budget no longer funds a session.", "budget floor", "fund", []string{ActRaiseCeiling, ActFund}
+		lead, asked = "The card's budget no longer funds a session.", "budget floor"
 	case kind == CaseSessionCap:
-		lead, asked, verb, room = "The card's sessions are used up.", "session cap", "extend", []string{ActExtend}
+		lead, asked = "The card's sessions are used up.", "session cap"
 	case kind == CaseAgentTimeCap:
-		lead, asked, verb, room = "The card's agent time is spent.", "agent-time cap", "extend", []string{ActExtend}
+		lead, asked = "The card's agent time is spent.", "agent-time cap"
 	default:
 		return ""
 	}
-	move := "Ask the project chat to " + verb + " the card."
-	if press := boardAnswers(c, room...); press != "" {
-		move = "Press " + press + " on the board, or ask the project chat to " + verb + " the card."
+	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next. " + boardMove(c) + " Close this issue to end the task."
+}
+
+// boardMove is the issue's sentence of how case c is answered: every
+// answer its face holds, by label, and the project chat.
+func boardMove(c Case) string {
+	if press := boardAnswers(c); press != "" {
+		return "Press " + press + " on the board, or tell the project chat how the card goes on."
 	}
-	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next. " + move + " Close this issue to end the task."
+	return "Tell the project chat how the card goes on."
 }
 
 // boardAnswers names, for the issue, the answers the board shows on case
@@ -1350,16 +1354,6 @@ func flagNext(c Case, offers []AskOffer) string {
 	return lead + " Press " + orJoin(names) + " on the board."
 }
 
-// moveLine is the issue's line of what starts the next attempt of case c:
-// the board's answers of actions, and the project chat's verb.
-func moveLine(c Case, verb string, actions ...string) string {
-	start := "Ask the project chat to " + verb + " the card"
-	if press := boardAnswers(c, actions...); press != "" {
-		start = "Press " + press + " on the board, or ask the project chat to " + verb + " the card"
-	}
-	return start + ", to start a new attempt. A reply alone starts none. Close this issue to end the task."
-}
-
 // FactsOf is case c's facts, as its record holds them.
 func FactsOf(c Case) CaseFacts {
 	f := factsOf(c)
@@ -1377,16 +1371,16 @@ func factsOf(c Case) CaseFacts {
 }
 
 // tripNext is the last line of a trip's face for case c: at a cap or a
-// budget floor, where a reply is a continue that asks again, the face's
-// answer that buys the next attempt or the chat's extend or fund, for a
+// budget floor, where a reply is a continue that asks again, every answer
+// its face holds and the project chat (boardMove), for a
 // monitor flag the answers on its face (flagNext; AskHuman names those of
 // the face its row stores), and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:
 		return flagNext(c, offersOfAnswers(FaceOf(c, Facts{CaseFacts: FactsOf(c)}).Answers))
-	case CaseSessionCap, CaseAgentTimeCap:
-		return moveLine(c, "extend", ActExtend)
+	case CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor:
+		return boardMove(c) + " A reply alone starts no attempt. Close this issue to end the task."
 	case CaseCheckinFailed:
 		const failed = "The factory's own check-in failed, not the card's work. "
 		if no := noRoom(c, false, false); no != "" {
@@ -1435,8 +1429,6 @@ func tripNext(c Case, reason string) string {
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
 	case CaseDependencyClosed, CaseDependencyFailed:
 		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
-	case CaseBudgetFloor:
-		return moveLine(c, "fund", ActRaiseCeiling, ActFund)
 	}
 	return replyNext(reason)
 }

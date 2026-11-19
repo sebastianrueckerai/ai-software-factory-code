@@ -3793,8 +3793,8 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 // spent 0.10 is held and the ceiling -0.30: 0.90. With no hold and
 // 4.5004 spent, the ceiling 0.0996 is read down to 0.099, never up to
 // 0.100, so the raise is 0.60 - 0.099 = 0.501, rounded up to 0.51, and at
-// 5.51 (0.6096) the floor funds the session. The ask names the raise, and
-// "Add money" opens with it.
+// 5.51 (0.6096) the floor funds the session. The face's why names the
+// raise, and "Add money" opens with it.
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
@@ -3828,8 +3828,8 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		}
 		facts := Facts{CaseFacts: f, Card: k}
 		face := FaceOf(Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}, facts)
-		if want := fmt.Sprintf("adding %.2f EUR", raise); !strings.Contains(face.Ask, want) {
-			t.Errorf("%.4f of %.2f spent: ask = %q, want it to name %q", spent, budget, face.Ask, want)
+		if want := fmt.Sprintf("the card needs %.2f EUR more to pay its next session", raise); !strings.Contains(face.Why, want) {
+			t.Errorf("%.4f of %.2f spent: why = %q, want it to name %q", spent, budget, face.Why, want)
 		}
 		if eur := pressedFund(t, facts); eur != raise {
 			t.Fatalf("%.4f of %.2f spent: Add money opens with %.2f, want %.2f", spent, budget, eur, raise)

@@ -735,7 +735,7 @@ func TestTheOffersPassKeepsAQuestionsFaceWithItsCaps(t *testing.T) {
 	set(limit, 1)
 	asked()
 	set(limit, 4.99)
-	if got := pass(); got == nil || !strings.HasPrefix(fmt.Sprint(got), "The card is out of money") {
+	if got := pass(); got == nil || !strings.HasPrefix(fmt.Sprint(got), "The card's money left does not pay its next session") {
 		t.Errorf("the money ran out while the sessions were used up: the pass stored %v, want the budget floor's ask", got)
 	}
 	g.r.cfg.Prices = aliasPrices{}

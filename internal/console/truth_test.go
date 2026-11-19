@@ -143,11 +143,11 @@ func TestFinishedCardsOfferNothing(t *testing.T) {
 }
 
 // The findings an ask counts stand in the opened card's full brief, one
-// item each, and its hint counts them: #2004's ask counts 8 open audit
-// findings, and the fold lists the 8.
+// item each, and its hint counts them: #2004's ask says 8 audit findings
+// are open, and the fold lists the 8.
 func TestReviewsSectionShowsTheFindingsTheAskCites(t *testing.T) {
 	_, _, _, _, body := openedEntry(t, "case", string(factoryd.CaseBudgetFloor), "")
-	m := regexp.MustCompile(`(\d+) open (?:review |audit )?findings`).FindStringSubmatch(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(askBlockOf(t, body), ""))
+	m := regexp.MustCompile(`(\d+) audit findings are open`).FindStringSubmatch(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(askBlockOf(t, body), ""))
 	if m == nil {
 		t.Fatalf("the ask counts no findings:\n%s", askBlockOf(t, body))
 	}

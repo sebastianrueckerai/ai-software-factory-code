@@ -215,21 +215,21 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 
 // A reply at the session cap, the agent-time cap or the budget floor
 // starts no session: the run asks the stop again, and the face says a reply
-// alone starts none and names the face's answer that does: the floor's with
-// the 0.22 EUR the 0.08 a session may spend lacks of the 0.30 an opening
-// needs, well under the card's limit of 6 EUR.
+// alone starts none and names every answer the face holds: the floor's
+// "Add money" with the 0.22 EUR the 0.08 a session may spend lacks of the
+// 0.30 an opening needs, well under the card's limit of 6 EUR.
 func TestReplyAtACapStartsNone(t *testing.T) {
 	for name, tc := range map[string]struct {
-		usage    TaskUsage
-		refusal  string // SessionFunded's, "" to fund the session
-		asked    string
-		money    map[string]any
-		buysOnly string
+		usage   TaskUsage
+		refusal string // SessionFunded's, "" to fund the session
+		asked   string
+		money   map[string]any
+		press   string
 	}{
-		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", CapReachedLadder, nil, "Press “Allow more sessions” on the board"},
-		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", TimeCapReachedLadder, nil, "Press “Allow more sessions” on the board"},
+		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", CapReachedLadder, nil, "Press “Allow more sessions”, “End the card” or “Not now” on the board"},
+		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", TimeCapReachedLadder, nil, "Press “Allow more sessions”, “End the card” or “Not now” on the board"},
 		"budget floor": {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, BudgetRefused,
-			map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3, "ceiling_eur": 6}, "Press “Add money” (EUR to add: 0.22) on the board"},
+			map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3, "ceiling_eur": 6}, "Press “Add money” (EUR to add: 0.22), “End the card” or “Not now” on the board"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
@@ -247,8 +247,8 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 			if len(h.sessions) != 0 || asks != 2 {
 				t.Fatalf("sessions %d, asks %q; want none and the stop asked before and after the reply", len(h.sessions), h.escalated)
 			}
-			if face := stopFace(t, h, tc.asked, tc.money); !strings.Contains(face, "A reply alone starts none") || !strings.Contains(face, tc.buysOnly) {
-				t.Fatalf("face %q, want it to say a reply alone starts none and name %q", face, tc.buysOnly)
+			if face := stopFace(t, h, tc.asked, tc.money); !strings.Contains(face, "A reply alone starts no attempt") || !strings.Contains(face, tc.press) {
+				t.Fatalf("face %q, want it to say a reply alone starts none and name %q", face, tc.press)
 			}
 		})
 	}
