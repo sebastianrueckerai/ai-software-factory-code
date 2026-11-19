@@ -174,7 +174,8 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 			}
 			c.askFace(ctx, v, &f, k, *row)
 		} else {
-			f.Sent = k.Status == "waiting-human"
+			// as the opened card: a card a request waits on took no answer
+			f.Sent = k.Status == "waiting-human" && !slices.ContainsFunc(v.pending, func(a factoryd.ApprovalRequest) bool { return a.TaskID == k.ID })
 		}
 		return f
 	}

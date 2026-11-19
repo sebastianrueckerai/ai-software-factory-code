@@ -233,12 +233,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	v.cases = cs
 	var row *caseRow
 	if cs.holds(bt.Task) {
-		// a plan's case that names no open question of its pending revision
-		// asks nothing
-		n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID])
-		if _, part := factoryd.HoldoutOn(n.Case.Case); !factoryd.PlanCase(n.Case.Case) || part || n.Case.Plan != nil || len(o.Brief.Approvals) == 0 {
-			row = n.Case
-		}
+		row = c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID]).Case
 	}
 	onCase, helperPage := false, false
 	switch {

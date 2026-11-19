@@ -132,7 +132,8 @@ func (cs caseSet) faceAt(k factoryd.Case) time.Time {
 
 // caseNeed is card bt's row in Needs you with the page inView of its
 // pages (factoryd.CardPages) in view, the first when that page is no
-// longer there; the row waits since its oldest case was faced.
+// longer there; the row waits since its oldest case was faced A card
+// whose pages ask nothing has a row with no case.
 func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt factoryd.BoardTask, k card, cs caseSet, inView string) need {
 	// each request whose body answers a page, read once
 	read := map[int64]*approvalCard{}
@@ -145,6 +146,17 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		read[a.ID] = &ap
 		return ap.Request
 	})
+	// a plan's case that names no open question of its pending revision
+	// asks nothing, on the small card and on the opened one
+	if slices.ContainsFunc(v.pending, func(a factoryd.ApprovalRequest) bool { return a.TaskID == bt.ID }) {
+		pages = slices.DeleteFunc(pages, func(p factoryd.CardPage) bool {
+			_, part := factoryd.HoldoutOn(p.Case)
+			return factoryd.PlanCase(p.Case) && !part && planSlotOf(p.Face, p.Case) == nil
+		})
+	}
+	if len(pages) == 0 {
+		return need{Since: waitingSince(bt), Card: k, CSRF: v.csrf}
+	}
 	since := time.Time{}
 	for _, p := range pages {
 		if f := cs.faceAt(p.Case); since.IsZero() || f.Before(since) {
@@ -313,7 +325,7 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
 	n := c.caseNeed(ctx, v, button(r), bt, k, cs, key)
-	if n.Case.Key != key {
+	if n.Case == nil || n.Case.Key != key {
 		http.NotFound(w, r)
 		return
 	}

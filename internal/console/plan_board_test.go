@@ -301,8 +301,14 @@ func TestPlanFaceHoldsNoRawEscalation(t *testing.T) {
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
 	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	if !strings.Contains(card, `<strong class="title">The planner has a question about this plan. How should it go?</strong>`) || strings.Contains(card, strings.Repeat("a", 100)) {
-		t.Errorf("the plan's row is missing or holds its raw escalation:\n%s", card)
+	// the case names no question of the pending revision, so the row asks
+	// nothing, as the opened card
+	if !strings.Contains(card, `<strong class="title">Link shortener</strong>`) || strings.Contains(card, `class="ask-row"`) || strings.Contains(card, `class="sent"`) ||
+		strings.Contains(card, strings.Repeat("a", 100)) {
+		t.Errorf("the plan's row is missing, asks, or holds its raw escalation:\n%s", card)
+	}
+	if opened := drawer(t, r, ck, "t-plan", "overview"); strings.Contains(opened, `<section class="o-ask"`) || strings.Contains(opened, strings.Repeat("a", 100)) {
+		t.Errorf("the opened card asks though the small card asks nothing, or holds the raw escalation:\n%s", opened)
 	}
 }
 

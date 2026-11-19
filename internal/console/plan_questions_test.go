@@ -122,6 +122,11 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		!strings.Contains(card, `<p class="answered">How long are the results kept?: 30 days (sebastian)</p>`) {
 		t.Errorf("the card once answered:\n%s", card)
 	}
+	// and the small card agrees: it shows no question and no way to answers
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); strings.Contains(face, `class="ask-row"`) ||
+		strings.Contains(face, "answers ›") || strings.Contains(face, "The planner has a question") || strings.Contains(face, `class="sent"`) {
+		t.Errorf("the small card asks though the opened card asks nothing:\n%s", face)
+	}
 	// an answer stored whose signal failed: 502, the answer recorded,
 	// request_changes the way on
 	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error {
