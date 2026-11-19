@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -147,6 +148,10 @@ type CISpawner struct {
 	// vmTries counts the build VMs each live build job got: a job whose
 	// first VM never answered gets one more, its last try.
 	vmTries map[int64]int
+	// pullFails holds, for each waiting job, how many of its runner pods
+	// were torn down because they could not pull their image, and the last
+	// one's reason: at ciPullTries the job gets no further pod.
+	pullFails map[int64]pullFail
 	// smokeDone maps each smoke job decided (staging opened, the runner
 	// torn down, or never served) to the handle of the attempt decided,
 	// while Forgejo still lists the job: a re-run is a new attempt.
@@ -184,7 +189,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, pullFails: map[int64]pullFail{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -233,10 +238,17 @@ func (s *CISpawner) poll(ctx context.Context) {
 
 	s.serveSmoke(ctx, repos, &slots, fit)
 	s.jobs(ctx, repos, s.cfg.TrustedLabel)
+	waiting := map[int64]bool{}
+	defer func() { maps.DeleteFunc(s.pullFails, func(id int64, _ pullFail) bool { return !waiting[id] }) }()
 	for _, kind := range s.jobKinds() {
 		for _, rj := range s.jobs(ctx, repos, kind.label) {
 			job := rj.job
 			if job.Status != "waiting" {
+				continue
+			}
+			waiting[job.ID] = true
+			if f := s.pullFails[job.ID]; f.tries >= ciPullTries {
+				log.Printf("ci spawner: job %d (%s) stays queued: its runner pod could not pull its image in %d tries (%s)", job.ID, kind.label, f.tries, f.why)
 				continue
 			}
 			served, err := s.served(ctx, job.ID)
@@ -782,7 +794,8 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // reconcile tears down CI namespaces whose pod has finished — successfully,
 // on failure, or because activeDeadlineSeconds elapsed (kubelet marks that
 // Failed with reason DeadlineExceeded, already covered by phase !=
-// Succeeded && phase != Failed). A namespace whose pod never got created
+// Succeeded && phase != Failed) — and those whose pod cannot pull its
+// image (pullFailed), which would hold its storage until that deadline. A namespace whose pod never got created
 // (a setup crash between the namespace step and the pod step) reads as
 // "not found", torn down the same way. It reports how many namespaces are
 // still live; one whose status cannot be read counts as live, so the cap
@@ -807,25 +820,35 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 		if ns.Terminating {
 			continue // teardown already took it; no read, not live
 		}
-		phase, _, err := s.kube.PodStatus(ctx, ns.Name, ciPodName)
+		phase, _, wait, err := s.kube.PodStatus(ctx, ns.Name, ciPodName)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("ci spawner: reconcile %s status: %v", ns.Name, err)
 			live++
 			continue
 		}
-		if err == nil && phase != "Succeeded" && phase != "Failed" {
+		pull := err == nil && s.pullFailed(wait)
+		if err == nil && phase != "Succeeded" && phase != "Failed" && !pull {
 			live++
 			continue
 		}
 		if err == nil {
 			if id, perr := strconv.ParseInt(strings.TrimPrefix(ns.Name, s.cfg.NamespacePrefix), 10, 64); perr == nil {
-				if _, ready, _ := s.kube.PodInitFinished(ctx, ns.Name, ciPodName); phase == "Failed" && !ready && s.vmTries[id] == 1 {
+				if pull {
+					// no runner ran and its VM served nothing: the job waits
+					// for a new pod at once, which copies the pull secret anew
+					f := pullFail{tries: s.pullFails[id].tries + 1, why: wait.Reason + ": " + wait.Message}
+					s.pullFails[id] = f
+					delete(s.vmTries, id)
+					log.Printf("ci spawner: %s: the runner pod of job %d cannot pull its image (%s): torn down, and the job spawns again with a new copy of the pull secret (try %d of %d)",
+						ns.Name, id, f.why, f.tries, ciPullTries)
+				} else if _, ready, _ := s.kube.PodInitFinished(ctx, ns.Name, ciPodName); phase == "Failed" && !ready && s.vmTries[id] == 1 {
 					// its first VM never answered and the init container
 					// failed the pod before the runner took the job: the
 					// job is still waiting, for a second VM at once
 					log.Printf("ci spawner: %s: build vm never answered buildkitd, replaced once", ns.Name)
 				} else { // a runner ran: its job may still be listed waiting
 					delete(s.vmTries, id)
+					delete(s.pullFails, id)
 					s.tornDown[id] = s.now()
 					s.recordReady(ctx, ns.Name, id)
 				}
@@ -838,6 +861,30 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 		sweep(ctx)
 	}
 	return live
+}
+
+// ciPullWait is how long a runner pod may fail to pull its image before
+// the spawner gives its room back: the kubelet's own retries cover a
+// registry's short outage inside it.
+const ciPullWait = 3 * time.Minute
+
+// ciPullTries is how many runner pods of one job may fail their pull: the
+// second and third copy the pull secret anew, which covers a rotated
+// token, and a registry that stays down gets no pod after them.
+const ciPullTries = 3
+
+// pullFail counts a job's runner pods that could not pull their image; why
+// is the last one's waiting reason and the pull's message.
+type pullFail struct {
+	tries int
+	why   string
+}
+
+// pullFailed says a pod that waits in wait has failed its image pull for
+// longer than ciPullWait: it never starts, and holds its node's storage
+// until its deadline.
+func (s *CISpawner) pullFailed(wait PodWait) bool {
+	return (wait.Reason == "ErrImagePull" || wait.Reason == "ImagePullBackOff") && !wait.Since.IsZero() && s.now().Sub(wait.Since) > ciPullWait
 }
 
 // recordReady hands a build runner's buildkitd-ready time to its VM's

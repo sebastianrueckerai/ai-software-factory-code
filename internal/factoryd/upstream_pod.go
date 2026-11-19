@@ -373,7 +373,7 @@ func (u *UpstreamPod) wait(ctx context.Context, ns string) (string, int32, error
 	runCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	for {
-		phase, exit, err := u.Kube.PodStatus(runCtx, ns, upstreamPodName)
+		phase, exit, _, err := u.Kube.PodStatus(runCtx, ns, upstreamPodName)
 		if err != nil && ctx.Err() == nil && runCtx.Err() == nil {
 			return "", -1, fmt.Errorf("read the copy pod: %w", err)
 		}

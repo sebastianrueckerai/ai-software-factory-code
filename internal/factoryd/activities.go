@@ -1156,7 +1156,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
 		return SessionResult{}, named("live session", err)
 	} else if ok {
-		phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod)
+		phase, _, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod)
 		switch {
 		case perr != nil && !errors.Is(perr, ErrNotFound):
 			// an unknown status is no dead pod: nothing is deleted or

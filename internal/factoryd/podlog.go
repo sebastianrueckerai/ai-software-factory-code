@@ -132,7 +132,7 @@ func followPodLogCap(ctx context.Context, kube Kube, ns, pod, taskID string, see
 			if err != nil && !errors.Is(err, io.EOF) {
 				log.Printf("task %s: pod %s log: %v", taskID, pod, err)
 			}
-			phase, _, perr := kube.PodStatus(ctx, ns, pod)
+			phase, _, _, perr := kube.PodStatus(ctx, ns, pod)
 			switch {
 			case errors.Is(perr, ErrNotFound):
 				return

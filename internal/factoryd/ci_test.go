@@ -1012,9 +1012,9 @@ func (k rbacKube) Create(ctx context.Context, path string, obj map[string]any) e
 	return k.fakeKube.Create(ctx, path, obj)
 }
 
-func (k rbacKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {
+func (k rbacKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, PodWait, error) {
 	if !k.bound(namespace) {
-		return "", -1, fmt.Errorf("%w: GET pods/%s", ErrForbidden, name)
+		return "", -1, PodWait{}, fmt.Errorf("%w: GET pods/%s", ErrForbidden, name)
 	}
 	return k.fakeKube.PodStatus(ctx, namespace, name)
 }
@@ -1737,5 +1737,111 @@ func TestPullRequestJobsKeepGoUnderThePodLimit(t *testing.T) {
 	}
 	if limit := gi << 10; soft > limit*6/10 {
 		t.Fatalf("GOMEMLIMIT %d MiB is above 60 percent of the pod's %d MiB: the build's page cache and gVisor need the rest", soft, limit)
+	}
+}
+
+// pullRunner seats a spawner with one waiting job whose runner pod is
+// spawned at now, and answers the pod's namespace and a setter of what its
+// container waits in, since ago before now.
+func pullRunner(t *testing.T, job int64, now time.Time) (*CISpawner, *fakeKube, *ciHub, string, func(reason, message string, ago time.Duration)) {
+	t.Helper()
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: job, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.now = func() time.Time { return now }
+	spawner.poll(context.Background())
+	ns := fmt.Sprintf("factory-agents-ci-%d", job)
+	waits := func(reason, message string, ago time.Duration) {
+		kube.mu.Lock()
+		defer kube.mu.Unlock()
+		p := kube.pods[ns+"/"+ciPodName]
+		p.phase, p.wait = "Pending", PodWait{Reason: reason, Message: message, Since: now.Add(-ago)}
+	}
+	return spawner, kube, hub, ns, waits
+}
+
+const pullDenied = `Back-off pulling image "git.example/sf/ci-runner:1": unauthorized: authentication required`
+
+// A runner pod that has failed to pull its image for longer than
+// ciPullWait gives its room back: its namespace is deleted, and the job
+// spawns again with a copy of the pull secret as it reads then. The log
+// names the pod, the job, the reason and the pull's message.
+func TestCISpawnerTearsDownARunnerThatCannotPullItsImage(t *testing.T) {
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	spawner, kube, hub, ns, waits := pullRunner(t, 61, now)
+	waits("ImagePullBackOff", pullDenied, 4*time.Minute)
+	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": `{"auths":{"git.example":{"auth":"new"}}}`}
+	logs := captureLog(t)
+
+	spawner.poll(context.Background())
+
+	if !slices.Contains(kube.deletedNs, ns) {
+		t.Fatalf("deleted namespaces = %v, want %s: the pod's storage stays taken", kube.deletedNs, ns)
+	}
+	if len(hub.registered) != 2 || len(hub.deleted) != 1 {
+		t.Fatalf("registered %v, deleted %v: want the first runner removed and the job spawned again", hub.registered, hub.deleted)
+	}
+	if got := kube.secrets[ns+"/forgejo-registry"][".dockerconfigjson"]; got != `{"auths":{"git.example":{"auth":"new"}}}` {
+		t.Fatalf("the new namespace's pull secret = %q, want the copy of the secret as it reads now", got)
+	}
+	if p := kube.pods[ns+"/"+ciPodName]; p == nil || p.phase != "Running" {
+		t.Fatalf("the job's new pod = %+v, want one spawned again", p)
+	}
+	line := "ci spawner: " + ns + ": the runner pod of job 61 cannot pull its image (ImagePullBackOff: " + pullDenied + "): torn down, and the job spawns again with a new copy of the pull secret (try 1 of 3)"
+	if !strings.Contains(logs.String(), line) || strings.Contains(logs.String(), "storage") {
+		t.Fatalf("the log = %q, want %q and no word of storage", logs.String(), line)
+	}
+}
+
+// A pull that failed two minutes ago may still succeed, and a pod whose
+// container is being created has failed no pull: both stay.
+func TestCISpawnerLeavesARunnerWhosePullMayStillSucceed(t *testing.T) {
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct {
+		reason string
+		ago    time.Duration
+	}{
+		"ImagePullBackOff for 2 minutes":   {"ImagePullBackOff", 2 * time.Minute},
+		"ErrImagePull for 2 minutes":       {"ErrImagePull", 2 * time.Minute},
+		"ContainerCreating for 10 minutes": {"ContainerCreating", 10 * time.Minute},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spawner, kube, hub, ns, waits := pullRunner(t, 62, now)
+			waits(tc.reason, pullDenied, tc.ago)
+
+			spawner.poll(context.Background())
+
+			if _, ok := kube.namespaces[ns]; !ok || len(kube.deletedNs) != 0 || len(hub.registered) != 1 {
+				t.Fatalf("namespaces deleted %v, registered %v: want the pod left alone", kube.deletedNs, hub.registered)
+			}
+		})
+	}
+}
+
+// A job whose runner could not pull its image ciPullTries times stays
+// queued, and every poll's log says the image cannot be pulled and why,
+// not that storage is short.
+func TestCISpawnerStopsSpawningARunnerWhoseImageCannotBePulled(t *testing.T) {
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	spawner, kube, hub, ns, waits := pullRunner(t, 63, now)
+	ctx := context.Background()
+	for range 2 {
+		waits("ErrImagePull", pullDenied, 4*time.Minute)
+		spawner.poll(ctx)
+	}
+	if len(hub.registered) != 3 {
+		t.Fatalf("registered %v: want the job spawned three times", hub.registered)
+	}
+	waits("ErrImagePull", pullDenied, 4*time.Minute)
+	for poll := 1; poll <= 2; poll++ {
+		logs := captureLog(t)
+		spawner.poll(ctx)
+		if _, ok := kube.namespaces[ns]; ok || len(hub.registered) != 3 {
+			t.Fatalf("poll %d: namespace %v, registered %v: want the third pod torn down and no fourth", poll, kube.namespaces[ns], hub.registered)
+		}
+		line := "ci spawner: job 63 (pr-untrusted) stays queued: its runner pod could not pull its image in 3 tries (ErrImagePull: " + pullDenied + ")"
+		if strings.Count(logs.String(), line) != 1 || strings.Contains(logs.String(), "storage") {
+			t.Fatalf("poll %d: the log = %q, want %q once and no word of storage", poll, logs.String(), line)
+		}
 	}
 }

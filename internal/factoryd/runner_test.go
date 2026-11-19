@@ -99,6 +99,7 @@ func (r ctxReader) Read([]byte) (int, error) {
 type fakePod struct {
 	ns, name string
 	phase    string
+	wait     PodWait // what its container waits in
 	// logEnded is a phase Succeeded set by the scripted log's end: that
 	// log ends at once, before the runner has handled its lines, while a
 	// live pod's container runs on as they are read, so PodIP still
@@ -338,17 +339,17 @@ func (k *fakeKube) PodInitFinished(ctx context.Context, namespace, name string) 
 	return at, ok, nil
 }
 
-func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {
+func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, PodWait, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if err, ok := k.statusErr[namespace+"/"+name]; ok {
-		return "", -1, err
+		return "", -1, PodWait{}, err
 	}
 	p, ok := k.pods[namespace+"/"+name]
 	if !ok {
-		return "", -1, ErrNotFound
+		return "", -1, PodWait{}, ErrNotFound
 	}
-	return p.phase, 0, nil
+	return p.phase, 0, p.wait, nil
 }
 
 // PodIP answers loopback for every existing pod that has not ended (as
@@ -3481,7 +3482,7 @@ func TestFollowPodLogReadsAheadWithoutLimit(t *testing.T) {
 	pl := followPodLog(ctx, kube, "ns", "p", "t1", nil)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if phase, _, _ := kube.PodStatus(ctx, "ns", "p"); phase == "Succeeded" {
+		if phase, _, _, _ := kube.PodStatus(ctx, "ns", "p"); phase == "Succeeded" {
 			break
 		}
 		if time.Now().After(deadline) {

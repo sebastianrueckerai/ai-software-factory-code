@@ -428,8 +428,8 @@ func (accKube) CreatePod(context.Context, string, string, map[string]any) error 
 	return nil
 }
 func (accKube) DeletePod(context.Context, string, string) error { return nil }
-func (accKube) PodStatus(context.Context, string, string) (string, int32, error) {
-	return "", -1, factoryd.ErrNotFound
+func (accKube) PodStatus(context.Context, string, string) (string, int32, factoryd.PodWait, error) {
+	return "", -1, factoryd.PodWait{}, factoryd.ErrNotFound
 }
 func (accKube) PodIP(context.Context, string, string) (string, error) {
 	return "", factoryd.ErrNotFound
