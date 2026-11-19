@@ -208,8 +208,7 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	board := func() string {
 		return criteriaCard(t, r, ck)
 	}
-	rec := r.do(post("/approvals/30/criterion", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"criterion": {"c3"}, "verb": {"waived"}, "reason": {"the timeout is the provider's SLA"}}), ck)
+	rec := r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActAnswerCriteria+"/waive", "criterion", "c3", "note", "the timeout is the provider's SLA"))), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("waive = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -222,8 +221,7 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("a waiver decided the request itself: %+v", a)
 	}
-	rec = r.do(post("/approvals/30/criterion", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"criterion": {"c9"}, "verb": {"waived"}, "reason": {"no such one"}}), ck)
+	rec = r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActAnswerCriteria+"/waive", "criterion", "c9", "note", "no such one"))), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "The plan holds no criterion c9") {
 		t.Fatalf("an unknown criterion's waiver = %d %q", rec.Code, rec.Body.String())
 	}
@@ -243,7 +241,7 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("a refused press decided the request: %+v", a)
 	}
-	rec = r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec = r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActGrantCriteria))), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve = %d %q", rec.Code, rec.Body.String())
 	}
@@ -281,7 +279,7 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	if p := answerForm(t, drawer(t, r, ck, "t-plan", "overview"), factoryd.ActConfirmCriteria); p.Action != "/tasks/t-plan/resolve" || p.Label != "The work is enough" {
 		t.Errorf("the opened card's The work is enough posts %+v", p)
 	}
-	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActConfirmCriteria))), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("confirm = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -337,7 +335,7 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 	if card := drawer(t, r, ck, "t-plan", "overview"); !strings.Contains(card, `data-answer="confirm_criteria"`) {
 		t.Errorf("the criteria card lacks The work is enough when the cut card's successor merged:\n%s", card)
 	}
-	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActConfirmCriteria))), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("confirm = %d %q", rec.Code, rec.Body.String())
 	}
@@ -371,7 +369,7 @@ func TestCriteriaNeverJudgedGrantsOneCard(t *testing.T) {
 	if grant.Action != "/tasks/t-plan/resolve" || grant.Label != "Build the missing part" {
 		t.Fatalf("the opened card's grant posts %+v", grant)
 	}
-	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActGrantCriteria))), ck)
 	if rec.Code != http.StatusSeeOther || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
 		t.Fatalf("approve = %d %q, Act took %+v, want one grant_criteria", rec.Code, rec.Body.String(), r.acted)
 	}
@@ -412,13 +410,13 @@ func TestCriteriaRerunConfirmsOverAClosedCard(t *testing.T) {
 	if !regexp.MustCompile(`<textarea[^>]* name="confirm_criteria\.note"[^>]* required[ >]`).MatchString(card) || !strings.Contains(card, "What shows it") {
 		t.Errorf("the answer's form lacks its required evidence line:\n%s", card)
 	}
-	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActConfirmCriteria))), ck)
 	if want := "Cannot confirm the delivered cards: #41 is closed: a confirmation over closed cards needs your evidence. " +
 		"Type the line that shows main meets the promises, then confirm again."; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("an empty confirm = %d %q, want 400 with %q", rec.Code, rec.Body.String(), want)
 	}
 	const line = "main at 6e3b46e: the tests pass and ci / test is green"
-	rec = r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {line}}), ck)
+	rec = r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActConfirmCriteria, "note", line))), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("confirm with evidence = %d %q", rec.Code, rec.Body.String())
 	}
@@ -486,7 +484,7 @@ func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	card := criteriaCard(t, r, ck)
-	if strings.Contains(card, `action="/approvals/30/approve"`) {
+	if strings.Contains(card, `data-answer="grant_criteria"`) {
 		t.Errorf("the grant is offered with no criterion open:\n%s", card)
 	}
 	for _, want := range []string{`<p class="o-question">Every <span class="term">promise</span> of plan “Shortener” is met or dropped. Close it now?</p>`,
@@ -506,7 +504,7 @@ func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 		len(closes) != 1 || closes[0] != "t-plan by sebastian: " {
 		t.Errorf("Close the plan now = %d %q, closes %q; want the plan closed once with no note", rec.Code, rec.Body.String(), closes)
 	}
-	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActGrantCriteria))), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Cannot grant one more card: every criterion is met or waived already") {
 		t.Fatalf("a grant with nothing open = %d %q", rec.Code, rec.Body.String())
 	}
@@ -526,8 +524,7 @@ func TestCriteriaGapWaiveOfAMetOneRefuses(t *testing.T) {
 		return factoryd.ErrCriterionMet
 	}
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/approvals/30/criterion", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"criterion": {"c1"}, "verb": {"waived"}, "reason": {"it holds"}}), ck)
+	rec := r.do(post("/tasks/t-plan/resolve", inCode(askForm(s.csrf, 30, factoryd.ActAnswerCriteria+"/waive", "criterion", "c1", "note", "it holds"))), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Criterion c1 is met already. Reload the board.") {
 		t.Fatalf("a waiver of a met criterion = %d %q", rec.Code, rec.Body.String())
 	}
@@ -749,8 +746,7 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		r := newRig(t)
 		humanRig(r)
 		ck, s := r.loggedIn(t)
-		rec := r.do(post("/approvals/31/criterion", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-			"criterion": {"pages_ok"}, "verb": {"met"}, "reason": {""}}), ck)
+		rec := r.do(post("/tasks/t-int/resolve", inCode(askForm(s.csrf, 31, factoryd.ActAnswerCriteria, "criterion", "pages_ok"))), ck)
 		if rec.Code != http.StatusSeeOther || rec.Body.Len() != 0 {
 			t.Fatalf("the press = %d %q, want 303 with no body", rec.Code, rec.Body.String())
 		}
@@ -767,7 +763,7 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		ck, s := r.loggedIn(t)
 		r.fg.calls = nil
 		approve := func() *httptest.ResponseRecorder {
-			return r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+			return r.do(post("/tasks/t-int/resolve", inCode(askForm(s.csrf, 31, factoryd.ActApproveMerge))), ck)
 		}
 		met := func(cid string) {
 			r.tasks.mu.Lock()
@@ -1004,4 +1000,10 @@ func TestAMergeRequestWhoseSpecDoesNotReadSaysSo(t *testing.T) {
 	if !strings.Contains(body, "The console could not read the merge request: the request&#39;s spec does not read") || strings.Contains(body, "could not read the criterion rows") {
 		t.Errorf("the drawer does not name the spec that does not read:\n%s", body)
 	}
+}
+
+// inCode is form v as the board of the code project posts it.
+func inCode(v url.Values) url.Values {
+	v.Set("project", "ai-software-factory-code")
+	return v
 }

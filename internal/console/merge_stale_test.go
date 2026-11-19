@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -47,7 +46,7 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 		return nil
 	}
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-card/resolve", askForm(s.csrf, 31, factoryd.ActApproveMerge)), ck)
 	want := "The plan's revision 2 drops the card links-api, so it cannot merge, and “Send it back” is its answer."
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("a dropped card's approve = %d %q", rec.Code, rec.Body.String())
@@ -58,7 +57,7 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 
 	// revision 2 keeps the card verbatim: the approve goes through
 	r.tasks.plans["t-plan"][1].Plan = kept
-	rec = r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec = r.do(post("/tasks/t-card/resolve", askForm(s.csrf, 31, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a kept card's approve = %d %q", rec.Code, rec.Body.String())
 	}
@@ -68,7 +67,7 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 
 	// a revision that cannot be read refuses, and names what to do
 	r.tasks.plans["t-plan"][0].Plan = json.RawMessage(`{"cards":`)
-	rec = r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec = r.do(post("/tasks/t-card/resolve", askForm(s.csrf, 31, factoryd.ActApproveMerge)), ck)
 	if want := "The plan's revisions could not be read. Press the answer again, and if it fails again, send the plan back to the planner."; rec.Code != http.StatusInternalServerError ||
 		!strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("an unreadable revision's approve = %d %q", rec.Code, rec.Body.String())
@@ -113,7 +112,7 @@ func TestASuccessorsMergeApprovalReadsItsKey(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	approve := func() *httptest.ResponseRecorder {
-		return r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+		return r.do(post("/tasks/t-is/resolve", askForm(s.csrf, 31, factoryd.ActApproveMerge)), ck)
 	}
 	want := "The plan's revision 2 drops the card integration, so it cannot merge, and “Send it back” is its answer."
 	if rec := approve(); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
@@ -143,7 +142,7 @@ func TestApproveReadsTheGateRowsBeforeTheReview(t *testing.T) {
 		Project: "sf/code", PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"head_sha":"b7e04c19d2a3"}`)})
 	r.c.cfg.CheckMerge = func(context.Context, string, int64, string) error { return fmt.Errorf("the store is down") }
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-card/resolve", askForm(s.csrf, 31, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "The card's review and audit rows could not be read. Try the merge again.") {
 		t.Fatalf("approve = %d %q", rec.Code, rec.Body.String())
 	}

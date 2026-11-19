@@ -252,14 +252,14 @@ var actions = []action{
 		map[string]any{"replacement": 9}, failedPlanCard, url.Values{"action": {factoryd.ActRetry}}),
 	boardAction("approve resource", "/approvals/3/approve", factoryd.EventMergeApproved, "sf/code", "t-res",
 		map[string]any{"approval": 3, "kind": "resource"}, nil, url.Values{}),
-	boardAction("approve merge", "/approvals/4/approve", factoryd.EventMergeApproved, "sf/code", "t-m",
-		map[string]any{"pr": 9}, nil, url.Values{}),
+	boardAction("approve merge", "/tasks/t-m/resolve", factoryd.EventMergeApproved, "sf/code", "t-m",
+		map[string]any{"pr": 9}, nil, askForm("", 4, factoryd.ActApproveMerge)),
 	boardAction("deny resource", "/approvals/3/deny", factoryd.EventMergeDenied, "sf/code", "t-res",
 		map[string]any{"approval": 3, "kind": "resource"}, nil, url.Values{"note": {"wait for the envelope"}}),
-	boardAction("deny request changes", "/approvals/4/deny", factoryd.EventMergeDenied, "sf/code", "t-m",
-		map[string]any{"pr": 9, "action": "request_changes"}, nil, url.Values{"note": {"split it"}, "action": {"request_changes"}}),
-	boardAction("deny reject", "/approvals/4/deny", factoryd.EventMergeDenied, "sf/code", "t-m",
-		map[string]any{"pr": 9, "action": "reject"}, nil, url.Values{"note": {"not wanted"}, "action": {"reject"}}),
+	boardAction("deny request changes", "/tasks/t-m/resolve", factoryd.EventMergeDenied, "sf/code", "t-m",
+		map[string]any{"pr": 9, "action": "request_changes"}, nil, askForm("", 4, factoryd.ActDenyMerge, "note", "split it")),
+	boardAction("deny reject", "/tasks/t-m/resolve", factoryd.EventMergeDenied, "sf/code", "t-m",
+		map[string]any{"pr": 9, "action": "reject"}, nil, askForm("", 4, factoryd.ActDenyMerge+"/reject", "note", "not wanted")),
 	boardAction("editBrief", "/tasks/t-m/resolve", factoryd.EventCardEdited, "sf/code", "t-m",
 		map[string]any{"title": "Fix the cache eviction", "why": "So the board loads at once.", "summary": "The cache keeps its entries. A test reads them back."},
 		queuedCard, url.Values{"action": {factoryd.AnswerEditBrief}, "edit_brief.title": {"Fix the cache eviction"}, "edit_brief.why": {"So the board loads at once."},
@@ -353,8 +353,8 @@ func TestDenyBadActionLeavesNoRow(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, s := r.loggedIn(t)
 	before := ev.count()
-	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"no"}, "action": {"maybe"}}), ck)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "choose request changes or reject") {
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/maybe", "note", "no")), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "That is no answer of this card. Press one of the card's answers.") {
 		t.Fatalf("deny with no action = %d: %s", rec.Code, rec.Body)
 	}
 	if ev.count() != before {

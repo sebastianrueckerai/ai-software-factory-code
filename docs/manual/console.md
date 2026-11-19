@@ -204,8 +204,12 @@ decimals: a task's model calls cost fractions of a cent.
   them, its legend `<id> (<kind>): <verdict>`, and on a gate row blind or
   open beside the verdict. A human row shows its artifact, or its
   evidence, and the buttons “It is met”, “It is not met” and “Drop this
-  promise” (`POST /approvals/{id}/criterion`, verbs `met`, `not_met`,
-  `waived`), a gate row “Drop this promise” alone. “It is not met” sends
+  promise” (`POST /tasks/{id}/resolve` with the ask's `case_id` and the
+  action `answer_criteria`, `answer_criteria/not_met` or
+  `answer_criteria/waive`), a gate row “Drop this promise” alone. A merge,
+  a plan and a plan's promises take every answer at that door, the card's
+  ask; `POST /approvals/{id}/approve` and `/deny` take a resource request
+  alone. “It is not met” sends
   the card back with the human's words. “Merge it” stays off until every
   human row stands. The drawer shows an
   opened proof's original beside the pull request's version. “Merge it”

@@ -121,8 +121,6 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/deploy-now":          {need: approver, scope: scProject, what: "deploy a held production"},
 	"POST /approvals/{id}/approve":              {need: approver, scope: scApproval, what: "authorize spend"},
 	"POST /approvals/{id}/deny":                 {need: writer, scope: scApproval},
-	"POST /approvals/{id}/criterion":            {need: approver, scope: scApproval, what: "decide a criterion"},
-	"POST /approvals/{id}/confirm":              {need: approver, scope: scApproval, what: "confirm the delivered cards"},
 	"POST /approvals/{id}/rerun":                {need: writer, scope: scApproval},
 	"POST /resources/{id}/promote":              {need: factoryWriter | approver, scope: scFactory, what: "authorize spend"},
 	"POST /resources/{id}/release":              rFactory,

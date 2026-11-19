@@ -3002,7 +3002,7 @@ func TestMergeApproveReviewsThenSignals(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
 		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
 	}
@@ -3019,7 +3019,7 @@ func TestMergeApproveSignalsNothingWhenTheReviewFails(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.fg.calls, r.fg.failReview = nil, true
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("approve with a refused review = %d", rec.Code)
 	}
@@ -3030,7 +3030,7 @@ func TestMergeApproveSignalsNothingWhenTheReviewFails(t *testing.T) {
 	}
 	// the review went through but the signal did not: say so
 	r.fg.failReview, r.signalErr = false, errors.New("temporal unavailable")
-	rec = r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	rec = r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "review is on the pull request") {
 		t.Fatalf("approve with a failed signal = %d: %s", rec.Code, rec.Body)
 	}
@@ -3041,18 +3041,17 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.fg.calls = nil
 	for name, f := range map[string]url.Values{
-		"no reason":  {"action": {"request_changes"}, "note": {"  "}},
-		"bad action": {"action": {"merge-anyway"}, "note": {"x"}},
+		"no reason":  askForm(s.csrf, 4, factoryd.ActDenyMerge, "note", "  "),
+		"bad action": askForm(s.csrf, 4, factoryd.ActDenyMerge+"/merge-anyway", "note", "x"),
 	} {
-		f.Set("csrf", s.csrf)
-		if rec := r.do(post("/approvals/4/deny", f), ck); rec.Code != http.StatusBadRequest {
+		if rec := r.do(post("/tasks/t-m/resolve", f), ck); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d, want 400", name, rec.Code)
 		}
 	}
 	if len(r.fg.calls) != 0 || r.approvals.get(4).Status != "pending" {
 		t.Fatalf("a refused deny acted: %q", r.fg.calls)
 	}
-	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split the migration"}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge, "note", "split the migration")), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("request changes = %d: %s", rec.Code, rec.Body)
 	}
@@ -3063,13 +3062,13 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	if a := r.approvals.get(4); a.Status != "denied" || a.DecidedBy != "sebastian" || a.DecisionNote != "changes requested: split the migration" {
 		t.Fatalf("request = %+v", a)
 	}
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"x"}}), ck); rec.Code != http.StatusConflict {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "x")), ck); rec.Code != http.StatusConflict {
 		t.Fatalf("deny of a decided request = %d, want 409", rec.Code)
 	}
 
 	r.approvals.rows[1].Status = "pending"
 	r.fg.calls = nil
-	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"not wanted"}}), ck)
+	rec = r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "not wanted")), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject = %d: %s", rec.Code, rec.Body)
 	}
@@ -3081,6 +3080,16 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	if a := r.approvals.get(4); a.Status != "denied" || a.DecisionNote != "rejected: not wanted" {
 		t.Fatalf("request = %+v", a)
 	}
+}
+
+// askForm is the press of answer key on the case of approval request id, as
+// its card's ask posts it; fields are the answer's fields, name then value.
+func askForm(csrf string, request int64, key string, fields ...string) url.Values {
+	v := url.Values{"csrf": {csrf}, "case_id": {strconv.FormatInt(7000+request, 10)}, "action": {key}}
+	for i := 0; i+1 < len(fields); i += 2 {
+		v.Set(key+"."+fields[i], fields[i+1])
+	}
+	return v
 }
 
 // withRequestCards files the cards of the rig's two pending requests: the
@@ -3145,7 +3154,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
 	}
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"the template's CI file is not ours"}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "the template's CI file is not ours")), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
@@ -3550,7 +3559,7 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	r.fg.calls = nil
 	for _, req := range []*http.Request{
 		post("/approvals/3/approve", url.Values{"csrf": {s.csrf}}),
-		post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}),
+		post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)),
 		post("/resources/11/promote", url.Values{"csrf": {s.csrf}}),
 	} {
 		if rec := r.do(req, ck); rec.Code != http.StatusForbidden {
@@ -4038,17 +4047,17 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.fg.failReview = true
-	r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
 	r.fg.failReview = false
-	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve = %d", rec.Code)
 	}
 	r.approvals.rows[1].Status = "pending"
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split it"}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge, "note", "split it")), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("request changes = %d", rec.Code)
 	}
 	r.approvals.rows[1].Status = "pending"
-	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"not wanted"}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "not wanted")), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject = %d", rec.Code)
 	}
 	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusSeeOther {

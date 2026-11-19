@@ -327,9 +327,10 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 			}
 		}
 	}
-	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {"approve"}}
+	form := askForm(s.csrf, 31, factoryd.ActApproveMerge)
+	form.Set("project", "ai-software-factory-code")
 	before := r.events.count()
-	rec := r.do(htmxPost("/approvals/31/approve", form), ck)
+	rec := r.do(htmxPost("/tasks/t-card/resolve", form), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusNoContent || body != "" || rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("the htmx approve = %d (%q):\n%s", rec.Code, rec.Header().Get("HX-Trigger"), body)
 	}
@@ -337,7 +338,7 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 		t.Fatalf("the htmx approve merged %v, want t-card #9 by sebastian", approved)
 	}
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-card", detail: map[string]any{"pr": int64(9)}})
-	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
+	if rec := r.do(post("/tasks/t-card/resolve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
@@ -439,8 +440,9 @@ func TestAMergeAskHoldsNoTailOfItsLongParts(t *testing.T) {
 	}
 	// Merge it's send merges and lands one row on the card
 	before := r.events.count()
-	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"action": {"approve"}}), ck); rec.Code != http.StatusSeeOther {
+	send := askForm(s.csrf, 4, factoryd.ActApproveMerge)
+	send.Set("project", "ai-software-factory-code")
+	if rec := r.do(post("/tasks/t-m/resolve", send), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("the send = %d: %s", rec.Code, rec.Body)
 	}
 	if a := r.approvals.get(4); a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "" {
@@ -624,5 +626,35 @@ func TestAClimbingMergeRidesNoOtherCasesRow(t *testing.T) {
 		if !strings.Contains(got, "This card has waited too long for its turn. Is that fine?") || strings.Contains(got, "/approvals/4/") || strings.Contains(got, "Merge this card") {
 			t.Errorf("%s: want the flag's ask with nothing of the climbing merge:\n%s", where, got)
 		}
+	}
+}
+
+// A merge's, a plan's and a criteria request's answer has one door, its
+// case's: the request's own door takes a resource request alone, and no
+// route takes a promise's verdict or a plan's confirmation by request.
+func TestTheRequestDoorTakesAResourceRequestAlone(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	withRequestCards(r)
+	r.fg.calls = nil
+	for path, form := range map[string]url.Values{
+		"/approvals/4/approve": {"csrf": {s.csrf}},
+		"/approvals/4/deny":    {"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split it"}},
+	} {
+		rec := r.do(post(path, form), ck)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Open the card and press the answer there.") {
+			t.Errorf("POST %s = %d %q, want 409 naming the card's ask", path, rec.Code, rec.Body)
+		}
+	}
+	for _, path := range []string{"/approvals/4/criterion", "/approvals/4/confirm"} {
+		if rec := r.do(post(path, url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s = %d, want 404: the route is gone", path, rec.Code)
+		}
+	}
+	if len(r.fg.calls) != 0 || r.approvals.get(4).Status != "pending" {
+		t.Errorf("a refused press acted: %q, request %s", r.fg.calls, r.approvals.get(4).Status)
+	}
+	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther || r.approvals.get(3).Status != "approved" {
+		t.Errorf("the resource request's approve = %d, request %s", rec.Code, r.approvals.get(3).Status)
 	}
 }

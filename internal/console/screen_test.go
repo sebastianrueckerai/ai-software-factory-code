@@ -1004,18 +1004,18 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 		t.Errorf("the merge card's %d answers carry the filter %d times, want 3 each once:\n%s", forms, got, ask)
 	}
 	before := r.events.count()
-	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {"deny"}}), ck); rec.Code != http.StatusBadRequest ||
-		!strings.Contains(rec.Body.String(), "The answer deny is not one the card shows.") || r.approvals.get(4).Status != "pending" {
-		t.Errorf("an approve naming deny = %d %q, request %q", rec.Code, rec.Body, r.approvals.get(4).Status)
+	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {"deny"}}), ck); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "The answer deny is not one the card shows.") || r.approvals.get(3).Status != "pending" {
+		t.Errorf("an approve naming deny = %d %q, request %q", rec.Code, rec.Body, r.approvals.get(3).Status)
 	}
 	for _, tc := range []struct {
 		path string
 		form url.Values
 		want string
 	}{
-		{"/approvals/30/approve", url.Values{"project": {"linkshort"}, "action": {"approve"}}, "/?project=linkshort"},
+		{"/tasks/t-lm/resolve", url.Values{"project": {"linkshort"}, "case_id": {"7030"}, "action": {factoryd.ActApproveMerge}}, "/?project=linkshort"},
 		{"/approvals/3/approve", url.Values{"project": {"ai-software-factory-code"}, "q": {"load"}}, "/?project=ai-software-factory-code&q=load"},
-		{"/approvals/4/deny", url.Values{"project": {"ai-software-factory-code"}, "action": {"request_changes"}, "note": {"not now"}}, "/?project=ai-software-factory-code"},
+		{"/tasks/t-m/resolve", url.Values{"project": {"ai-software-factory-code"}, "case_id": {"7004"}, "action": {factoryd.ActDenyMerge}, "deny_merge.note": {"not now"}}, "/?project=ai-software-factory-code"},
 	} {
 		tc.form.Set("csrf", s.csrf)
 		if rec := r.do(post(tc.path, tc.form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {

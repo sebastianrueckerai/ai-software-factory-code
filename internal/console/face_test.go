@@ -1897,22 +1897,22 @@ func TestMergeAndResourceRequestsAskOnTheOpenedCard(t *testing.T) {
 	}
 }
 
-// An approve that names another action is refused rather than approving,
-// and leaves the request pending; a deny goes through its own door, where
-// it sends the change request.
+// A resource request's approve that names another action is refused rather
+// than approving, and leaves the request pending; a merge's deny goes
+// through its case's door, where it sends the change request.
 func TestTheDecideSendRefusesWhatItCannotLand(t *testing.T) {
 	r, _ := newRigWithEvents(t)
-	seatApprovalFixture(t, r, "board-merge.json")
+	fx := seatApprovalFixture(t, r, "board-merge.json")
 	ck, s := r.loggedIn(t)
 	for _, action := range []string{"deny", "request_changes", "close"} {
-		if code := r.do(post("/approvals/41/approve", url.Values{"csrf": {s.csrf}, "action": {action}, "note": {"the shard leaks"}}), ck).Code; code != http.StatusBadRequest {
+		if code := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "action": {action}, "note": {"the shard leaks"}}), ck).Code; code != http.StatusBadRequest {
 			t.Errorf("an approve naming %s = %d, want 400", action, code)
 		}
 	}
-	if a := r.approvals.get(41); a.Status != "pending" {
+	if a := r.approvals.get(3); a.Status != "pending" {
 		t.Fatalf("a refused approve left the request %s", a.Status)
 	}
-	if code := r.do(post("/approvals/41/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"the shard leaks"}}), ck).Code; code != http.StatusSeeOther {
+	if code := r.do(post("/tasks/"+fx.Card.TaskID+"/resolve", askForm(s.csrf, 41, factoryd.ActDenyMerge, "note", "the shard leaks")), ck).Code; code != http.StatusSeeOther {
 		t.Errorf("the deny = %d, want it to send the change request", code)
 	}
 }

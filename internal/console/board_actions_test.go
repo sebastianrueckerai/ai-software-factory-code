@@ -29,7 +29,7 @@ const leakedBoard = "https://user:pass@forge/x answered Authorization: Bearer ab
 func TestApproveGoesThroughActOnTheMergeCase(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
 	}
 	if calls := fmt.Sprint(r.fg.calls); !strings.Contains(calls, "POST /api/v1/repos/sf/code/pulls/9/reviews") || !strings.Contains(calls, "SIGNAL approved t-m #9 by sebastian") {

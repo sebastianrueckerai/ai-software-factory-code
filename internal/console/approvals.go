@@ -444,7 +444,7 @@ func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.Pla
 	return rev, p, true, nil
 }
 
-// approve approves the approval request the path names (doApprove); a
+// approve approves the resource request the path names (doApprove); a
 // deny has its own door (deny), so an approve that names another action is
 // refused rather than approving.
 func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
@@ -452,33 +452,36 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 		if action := r.PostFormValue("action"); action != "" && action != "approve" {
 			return "", refuse(http.StatusBadRequest, "The answer "+action+" is not one the card shows.")
 		}
+		if err := c.resourceRequest(ctx, a, id); err != nil {
+			return "", err
+		}
 		return c.doApprove(ctx, a, id)
 	})
 }
 
-// deny denies the approval request the path names with the human's
+// deny denies the resource request the path names with the human's
 // reason (doDeny).
 func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
+		if err := c.resourceRequest(ctx, a, id); err != nil {
+			return "", err
+		}
 		return c.doDeny(ctx, a, id, r.PostFormValue("action"), r.PostFormValue("note"))
 	})
 }
 
-// decideCriterion answers POST /approvals/{id}/criterion: doDecide with
-// the form's criterion, verb and reason, through decideButton.
-func (c *Console) decideCriterion(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doDecide(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("verb"), r.PostFormValue("reason"))
-	})
-}
-
-// confirm records the human's confirmation that the plan's delivered
-// cards meet its criteria, with the answer's note as its line
-// (doConfirmCriteria).
-func (c *Console) confirm(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doConfirmCriteria(ctx, a, id, strings.TrimSpace(r.PostFormValue("note")))
-	})
+// resourceRequest refuses pending request id unless it asks for a
+// resource: a merge's, a plan's and a criteria request's answer has one
+// door, its case's on the card.
+func (c *Console) resourceRequest(ctx context.Context, a actor, id int64) error {
+	q, err := c.pendingRequest(ctx, a, id)
+	if err != nil {
+		return err
+	}
+	if q.Kind != factoryd.ApprovalResource {
+		return refuse(http.StatusConflict, "This request takes its answer on its card's ask, not here. Open the card and press the answer there.")
+	}
+	return nil
 }
 
 // rerun runs the red checks of the factory pull request card whose merge
