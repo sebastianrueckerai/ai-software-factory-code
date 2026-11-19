@@ -69,24 +69,16 @@ var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-stor
 
 // Every opened card of the gallery meets the contract: the head, the ask
 // block, the summary and the folds in that order; at most 900 characters
-// of prose above the folds, effect, problem and quoted lines counted; 2 to 4 answers in the ask block,
-// or all five of an ask that has five (fiveAnswers), each a
-// button with its effect line, and beside an answer the viewer may not
-// press, or in place of all, the line that names who can; no field shows
-// before a press; every fold is
+// of prose above the folds, effect, problem and quoted lines counted; the
+// ask block shows every answer the card holds, two or more, as many as its
+// small card counts, where the small card shows one answer to press at
+// most and counts the rest; each answer is a button with its effect line,
+// and beside an answer the viewer may not press, or in place of all, the
+// line that names who can; no field shows before a press; every fold is
 // closed; every answer posts what it names on the card it stands on; no
-// label stands twice; a
-// plan's card has the plan
-// with its own row marked; every card says what each session got; a live
-// card can be ended; and the texts name none of the factory's own
-// machinery.
-// fiveAnswers are the gallery's asks with five answers, one more than a
-// small card holds, which the opened card shows whole: a planner's
-// question with three choices, the human's own words and the changes, and
-// an agent's question with three choices, the wait and the card's end, or
-// with the factory agent's own suggestion, two choices, the wait and the end.
-var fiveAnswers = []string{"case/plan_question", "board/a long suggested choice", "case/agent_escalate", "board/three open cases"}
-
+// label stands twice; a plan's card has the plan with its own row marked;
+// every card says what each session got; a live card can be ended; and the
+// texts name none of the factory's own machinery.
 func TestEveryOpenedCardMeetsTheContract(t *testing.T) {
 	for _, e := range galleryEntries() {
 		t.Run(e.Group+"/"+e.Kind, func(t *testing.T) {
@@ -108,11 +100,7 @@ func TestEveryOpenedCardMeetsTheContract(t *testing.T) {
 				_, ok, err := r.tasks.TaskByIssue(t.Context(), labCodeProject.Repository, n)
 				return ok && err == nil
 			}
-			most := 4
-			if slices.Contains(fiveAnswers, e.Group+"/"+e.Kind) {
-				most = 5
-			}
-			checkOpenedCard(t, rec.Body.String(), card, known, most)
+			checkOpenedCard(t, rec.Body.String(), card, known, smallCount(t, r, ck, target))
 		})
 	}
 }
@@ -164,10 +152,39 @@ func TestOpenedCardSaysItsAskOnce(t *testing.T) {
 	}
 }
 
+// smallCounts reads the answers a small card counts off its ask row: the
+// answers alone, or the others beside the one it shows.
+var smallCounts = regexp.MustCompile(`(\d+) (?:answers?|others?)`)
+
+// smallCount is how many answers the small card of card id counts on r's
+// board, -1 for a card with no small card or one that asks nothing.
+func smallCount(t *testing.T, r *rig, ck *http.Cookie, id string) int {
+	t.Helper()
+	page := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck).Body.String()
+	small, err := boardItems(page, "data-card", id)
+	if err != nil {
+		return -1
+	}
+	_, row, ok := strings.Cut(string(small), `<div class="ask-row">`)
+	if !ok {
+		return -1
+	}
+	row, _, _ = strings.Cut(row, "</div>")
+	m := smallCounts.FindStringSubmatch(row)
+	if m == nil {
+		// the one answer it shows is the card's only one
+		return 1
+	}
+	n, _ := strconv.Atoi(m[1])
+	if strings.Contains(row, `class="others">or `) {
+		n++
+	}
+	return n
+}
+
 // checkOpenedCard checks body, card's opened card, against the contract;
-// most is how many answers its ask block holds at most, and exactly when
-// that is more than a face's four.
-func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(int64) bool, most int) {
+// counted is how many answers its small card counts, -1 for none.
+func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(int64) bool, counted int) {
 	t.Helper()
 	o := openedOf(t, body)
 	var b strings.Builder
@@ -246,8 +263,10 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		switch who := classed(ask, "o-who"); {
 		case len(who) > 0 && len(answers) > 0 && !disabled:
 			t.Errorf("the ask block names who can answer beside answers the viewer may all press:\n%s", shown)
-		case len(answers) > most || most > 4 && len(answers) != most || len(who) == 0 && len(answers) < 2:
-			t.Errorf("the ask block holds %d answers, want 2 to 4, or the %d of an ask with more:\n%s", len(answers), most, shown)
+		case len(who) == 0 && len(answers) < 2:
+			t.Errorf("the ask block holds %d answers, want two or more:\n%s", len(answers), shown)
+		case counted >= 0 && len(answers) != counted:
+			t.Errorf("the ask block holds %d answers, and its small card counts %d:\n%s", len(answers), counted, shown)
 		}
 		for _, a := range answers {
 			picks, effects := classed(a, "pick"), classed(a, "effect")

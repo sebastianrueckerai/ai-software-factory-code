@@ -415,6 +415,28 @@ func TestARenderShowsEveryAnswerTheCardHoldsNow(t *testing.T) {
 	}
 }
 
+// A card the review stopped for repeated findings holds more sessions and
+// its end as answers. An ask stored without them shows both in its ask
+// block, after the stored offer, and under no fold.
+func TestARepeatedFindingsCardShowsItsLateAnswersInTheAsk(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("the review repeats", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseFindingsRepeated, roomyFacts(nil))
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"ask": "Go on?", "story": factoryd.Story{},
+		"offers": []factoryd.AskOffer{{Value: "note", Label: "Not now", Effect: "The card stays as it is."}}}}}
+	got := buttonsOf(t, r, "t-g")
+	if len(got) < 3 || got[0] != "note" || !slices.Contains(got[1:], "extend") || !slices.Contains(got[1:], "close") {
+		t.Fatalf("buttons = %v, want the stored note first, then extend and close among the answers the card holds now", got)
+	}
+	ck, _ := r.loggedIn(t)
+	ask, folds, _ := strings.Cut(drawer(t, r, ck, "t-g", "overview"), `<div class="o-folds">`)
+	for _, label := range []string{"Allow more sessions", "End the card"} {
+		if !strings.Contains(ask, label) || strings.Contains(folds, label) {
+			t.Errorf("“%s” stands outside the ask block or under a fold:\nthe ask:\n%s\nthe folds:\n%s", label, ask, folds)
+		}
+	}
+}
+
 // The chat's answer tool takes a merge case of a card in review: the case
 // answer has one gate, Act, which the rig records.
 func TestAnswerToolTakesAMergeCaseOfACardInReview(t *testing.T) {
