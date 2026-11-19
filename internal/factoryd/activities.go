@@ -843,7 +843,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	switch refused.Decision {
 	case policy.RefusedDayCap:
 		state = fmt.Sprintf("%s EUR of the day's %s EUR is free", textutil.EUR(max(free.Day, 0)), textutil.EUR(req.DayEUR))
-		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit."
+		act = "Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit."
 	case policy.RefusedMonthCap:
 		state = fmt.Sprintf("%s EUR of the month's %s EUR is free", textutil.EUR(max(free.Month, 0)), textutil.EUR(req.MonthEUR))
 		act = "Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer."

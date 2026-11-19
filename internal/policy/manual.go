@@ -124,7 +124,7 @@ var spendRailRows = []spendRow{
 	{"budget.day_eur",
 		"all tasks together per UTC day",
 		"0 stops all spend. A negative one is refused: \"policy: budget.day_eur must not be negative (0 stops all spend)\"",
-		"the gateway refuses with decision refused_day_cap. The card reads \"the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit.\" with the state \"%s EUR of the day's %s EUR is free\""},
+		"the gateway refuses with decision refused_day_cap. The card reads \"the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\" with the state \"%s EUR of the day's %s EUR is free\""},
 	{"budget.month_eur",
 		"all tasks together per UTC calendar month; the same key in a project's file, projects/<project>.yaml, caps that project's tasks together",
 		"0 stops all spend. A negative one is refused as the day's",

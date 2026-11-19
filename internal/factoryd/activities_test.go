@@ -3974,7 +3974,7 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 		decision, opening string
 		free              policy.Free
 	}{
-		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit.\n" +
+		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" +
 			"0.01 EUR of the day's 20.00 EUR is free", policy.Free{Day: 0.01, Month: inf, Project: inf}},
 		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
 			"0.01 EUR of the month's 50.00 EUR is free", policy.Free{Day: inf, Month: 0.01, Project: inf}},

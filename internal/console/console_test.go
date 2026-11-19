@@ -2693,7 +2693,7 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
 	}...)
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) {
-		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit.\n" +
+		return "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" +
 			"0.01 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
 	}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {

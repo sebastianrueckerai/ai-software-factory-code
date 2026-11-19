@@ -68,7 +68,7 @@ var wantTrip = map[string][]string{
 	"limits.no_push_spend":      {`"this session spent %s EUR of the %s EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed"`},
 	"budget.task_default_eur":   {`"free headroom %s EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d"`},
 	"budget.task_max_eur":       nil, // the cut is silent; only the load refuses
-	"budget.day_eur": {`"the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit."`,
+	"budget.day_eur": {`"the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit."`,
 		`"%s EUR of the day's %s EUR is free"`},
 	"budget.month_eur": {`"; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"`,
 		`"the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer."`,
