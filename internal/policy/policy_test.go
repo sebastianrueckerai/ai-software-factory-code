@@ -1657,6 +1657,7 @@ func TestHeldClassHoldsTheChatTasksCallsUnderTheCard(t *testing.T) {
 		{"an analyzer card's brief on the same alias", chat, PurposeBrief, "big", []string{"analyzer"}, "analyzer"},
 		{"a big card's check-in", chat, PurposeCheckin, "big", []string{"big"}, "big"},
 		{"a card class with no provider before one with it", chat, PurposeBrief, "big", []string{"plain", "big"}, "big"},
+		{"a human card's brief, held under every class that runs the alias", chat, PurposeBrief, "big", []string{"analyzer", "big", "plain", "small"}, "analyzer"},
 		{"a card class on another alias", chat, PurposeBrief, "big", []string{"small"}, ""},
 		{"a brief that names no card", chat, PurposeBrief, "big", nil, ""},
 		{"an empty model", chat, PurposeBrief, "", []string{"big"}, ""},
@@ -1667,6 +1668,19 @@ func TestHeldClassHoldsTheChatTasksCallsUnderTheCard(t *testing.T) {
 		class, entry := doc.HeldClass(tc.classes, tc.purpose, tc.model, tc.card)
 		if class != tc.want || (entry == nil) != (tc.want == "") {
 			t.Errorf("%s: HeldClass = %q, %+v; want %q", tc.name, class, entry, tc.want)
+		}
+	}
+}
+
+func TestBriefClasses(t *testing.T) {
+	doc := Document{Classes: map[string]Class{"coder": {}, "big": {}, "analyzer": {}}}
+	if got := doc.BriefClasses([]string{"coder"}); !slices.Equal(got, []string{"coder"}) {
+		t.Errorf("a card's own classes = %q, want [coder]", got)
+	}
+	want := []string{"analyzer", "big", "coder"}
+	for _, own := range [][]string{nil, {}} {
+		if got := doc.BriefClasses(own); !slices.Equal(got, want) {
+			t.Errorf("BriefClasses(%q) = %q, want %q", own, got, want)
 		}
 	}
 }

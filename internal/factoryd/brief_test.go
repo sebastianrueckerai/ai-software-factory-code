@@ -1090,3 +1090,72 @@ func TestBriefWakeAtReset(t *testing.T) {
 		t.Fatalf("the frozen check-in's step = %+v; want no refused mark and a decision, so no flag", step)
 	}
 }
+
+// A human card holds no capability class: its case brief names the first
+// class by name that names a brief alias and carries every class in the
+// card header.
+func TestBriefWriterBriefsAHumanCardAsThePolicysClassesBrief(t *testing.T) {
+	var model, card string
+	answer, _ := json.Marshal(map[string]any{"background": "bg", "recommendation": "rec"})
+	reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Model string `json:"model"`
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &in)
+		model, card = in.Model, r.Header.Get(gateway.HeaderFactoryCard)
+		_, _ = w.Write(reply)
+	}))
+	defer gw.Close()
+	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman, Problem: "p"}
+	store := briefCaseStore(c)
+	store.tasks["t1"] = Task{ID: "t1", Repository: "o/r", Kind: "human"}
+	w := briefCaseWriter(store, gw)
+	cur := w.Current
+	w.Current = func() policy.Version {
+		v := cur()
+		v.Document.Classes = map[string]policy.Class{"alpha": {}, "beta": {SupervisorModel: "bb"}, policy.ClassCoder: {SupervisorModel: "supervisor"}}
+		return v
+	}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if model != "bb" || card != "alpha,beta,coder" {
+		t.Fatalf("the call's model %q card %q, want bb and alpha,beta,coder", model, card)
+	}
+	if got := store.caseBrief[5]; got != [2]string{"bg", "rec"} || len(store.caseFailed) != 0 {
+		t.Fatalf("brief %v failed %v, want it written", got, store.caseFailed)
+	}
+}
+
+// A human card's needs-you row is briefed under the policy's classes too.
+func TestBriefWriterBriefsAHumanCardsRowAsThePolicysClassesBrief(t *testing.T) {
+	var model, card string
+	reply := `{"choices":[{"message":{"content":"{\"brief\": \"b\", \"detail\": \"d\"}"}}]}`
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Model string `json:"model"`
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &in)
+		model, card = in.Model, r.Header.Get(gateway.HeaderFactoryCard)
+		_, _ = w.Write([]byte(reply))
+	}))
+	defer gw.Close()
+	row := ApprovalRequest{ID: 7, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r",
+		Spec: planSpec(t), Reason: "a question", CreatedAt: time.Unix(0, 0).UTC()}
+	store := &fakeBriefStore{tasks: map[string]Task{"t1": {ID: "t1", Repository: "o/r"}},
+		rows: []ApprovalRequest{row}, brief: map[int64][2]string{}, failed: map[int64]string{}}
+	w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version {
+		v := briefVersion(gw.URL)
+		v.Document.Classes = map[string]policy.Class{"alpha": {}, "beta": {SupervisorModel: "bb"}, policy.ClassCoder: {SupervisorModel: "supervisor"}}
+		return v
+	}}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if model != "bb" || card != "alpha,beta,coder" || store.brief[7] != [2]string{"b", "d"} {
+		t.Fatalf("model %q card %q brief %v, want bb, alpha,beta,coder and the brief written", model, card, store.brief[7])
+	}
+}
