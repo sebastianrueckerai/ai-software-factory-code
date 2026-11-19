@@ -1188,7 +1188,9 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 		return factoryd.ActResult{}, factoryd.ErrActRefused(refusal)
 	}
 	out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
-	if factoryd.IsBoardAction(in.Res.Action) {
+	// a board action's work, and the work of a merge case's re-run, which
+	// decides the request: the request's decision ends the case
+	if factoryd.IsBoardAction(in.Res.Action) || in.Work != nil && in.Res.Action == factoryd.ActRerunChecks {
 		_, err := in.Work(ctx)
 		return out, err
 	}
