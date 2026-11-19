@@ -789,3 +789,37 @@ func TestAPromisesAnswerMovesNoCard(t *testing.T) {
 		t.Fatal("the criteria request's card offers no Drop this promise")
 	}
 }
+
+// A freeze card's title is true while the card is open and once it is
+// done, its texts say the freeze in plain words and hold no API path, and
+// a card that runs no session does not say one is still to come.
+func TestAFreezeCardReadsTrueOpenAndDone(t *testing.T) {
+	seen := 0
+	for _, e := range galleryEntries() {
+		if e.Group != "card" || !strings.HasPrefix(e.Kind, "provider freeze") {
+			continue
+		}
+		seen++
+		r := newRig(t)
+		ck, _ := r.loggedIn(t)
+		page := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+e.Seat(r)+"/drawer?tab=overview", nil), ck).Body.String()
+		title := ""
+		for _, n := range classed(openedOf(t, page), "o-title") {
+			title += textOutside(n, func(*html.Node) bool { return false })
+		}
+		if want := "Model calls of the coder class froze at the provider's limit."; title != want {
+			t.Errorf("%s: the title = %q, want %q", e.Kind, title, want)
+		}
+		if !strings.Contains(page, `<span class="hint">no session</span>`) {
+			t.Errorf("%s: the fold of the sessions does not say “no session”:\n%s", e.Kind, page)
+		}
+		for _, not := range []string{"no session yet", "/api/v1", `\bhold('s)?\b`, "dated refusal", "work slot"} {
+			if regexp.MustCompile(not).MatchString(page) {
+				t.Errorf("%s: the opened card holds %q:\n%s", e.Kind, not, page)
+			}
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("the gallery holds %d freeze cards, want the open one, the one a press closed and the one its watcher gave up", seen)
+	}
+}

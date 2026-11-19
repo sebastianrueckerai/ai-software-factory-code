@@ -1665,7 +1665,7 @@ func (b *builder) cards() {
 			return factoryd.FreezePressedFace("coder", "sebastian", b.now.Add(-10*time.Minute), reset)
 		}},
 		{"provider freeze its watcher gave up", func(n int64) string {
-			return factoryd.FreezeRefusedFace("coder", n, fmt.Sprintf("GET /api/v1/repos/%s/issues/%d: forgejo: not found", Repository, n), reset, since)
+			return factoryd.FreezeRefusedFace("coder", n, reset, since)
 		}},
 	} {
 		n := b.next()

@@ -435,7 +435,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		}
 	}
 	o.Glosses = glosses(seen)
-	o.SessionsHint, o.MoreHint = sessionsHint(o.Sessions), moreHint(o.More)
+	o.SessionsHint, o.MoreHint = sessionsHint(k, o.Sessions), moreHint(o.More)
 	return o
 }
 
@@ -977,9 +977,13 @@ func moreHint(more []answerView) string {
 	return fmt.Sprintf("%s, and %d more", more[0].Label, len(more)-1)
 }
 
-// sessionsHint is the hint of what each session got.
-func sessionsHint(s []sessionFold) string {
-	if len(s) == 0 {
+// sessionsHint is the hint of what each session of card k got: a human's
+// card runs none, and an ended card no more.
+func sessionsHint(k card, s []sessionFold) string {
+	switch {
+	case len(s) == 0 && (k.Kind == "human" || factoryd.Final(k.Status)):
+		return "no session"
+	case len(s) == 0:
 		return "no session yet"
 	}
 	return fmt.Sprintf("%d %s", len(s), plural(len(s), "session"))

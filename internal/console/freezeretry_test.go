@@ -32,7 +32,7 @@ func TestFreezeCardShowsRetryNow(t *testing.T) {
 	r := newRig(t)
 	resumed := freezeCard("t-fz-resumed", "sf/code", 23, "waiting-human")
 	resumed.Objective = factoryd.IssueObjective(resumed.Question.Ask, "Class: coder\n\nThe class resumed on its own at 2026-11-21T17:00:00Z: the freeze held 5h 00m. "+
-		"The card closes itself at 2026-11-21T17:05:00Z.\n\nThe freeze started at 2026-11-21T12:00:00Z.\nThe hold's reset was 2026-11-21T17:00:00Z.")
+		"The card closes itself at 2026-11-21T17:05:00Z.\n\nThe freeze started at 2026-11-21T12:00:00Z.\nThe reset the provider named was 2026-11-21T17:00:00Z.")
 	r.tasks.tasks = []factoryd.BoardTask{freezeCard("t-fz", "sf/code", 21, "waiting-human"), freezeCard("t-fz-done", "sf/code", 22, "done"), resumed}
 	ck, s := r.loggedIn(t)
 	opened := func(ck *http.Cookie, id string) string {
@@ -88,7 +88,7 @@ func TestRetryNowPressesTheRetrySwitch(t *testing.T) {
 	if bodies := r.fg.commentBodies("/api/v1/repos/sf/code/issues/21/comments"); len(bodies) != 0 || len(r.fg.patched) != 0 {
 		t.Fatalf("comments %q, patched %v; want none: the press is Act's", bodies, r.fg.patched)
 	}
-	const ended = "the freeze of #21 ended, the card is done: no hold waits on a retry, and a new limit on the class opens a freeze card again"
+	const ended = "the freeze of #21 ended, the card is done: nothing waits for a retry, and a new limit on the class opens a freeze card again"
 	r.actErr = factoryd.ErrActRefused(ended)
 	if rec := press(ck, s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != ended {
 		t.Errorf("a refused press: %d %q", rec.Code, rec.Body)
@@ -98,9 +98,9 @@ func TestRetryNowPressesTheRetrySwitch(t *testing.T) {
 		"The hold cleared, but part of the press failed: wake t-z: temporal unavailable. A frozen card it did not wake starts at its reset, and a freeze card it did not close closes five minutes after its class resumed." {
 		t.Errorf("a press that failed past the clear: %d %q", rec.Code, rec.Body)
 	}
-	r.actErr = errors.New("clear the coder class's hold: status 502: bad gateway")
+	r.actErr = errors.New("end the coder class's freeze: status 502: bad gateway")
 	if rec := press(ck, s.csrf); rec.Code != http.StatusInternalServerError || strings.TrimSpace(rec.Body.String()) !=
-		"The freeze could not be ended: clear the coder class's hold: status 502: bad gateway. Press Retry now again, or wait for the reset on the card." {
+		"The freeze could not be ended: end the coder class's freeze: status 502: bad gateway. Press Retry now again, or wait for the reset on the card." {
 		t.Errorf("a failed press: %d %q", rec.Code, rec.Body)
 	}
 }

@@ -205,7 +205,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 				fc, ok := plFreezeCard(ctx, t, r.store)
 				names := "2 cards of the class wait"
 				if status == "done" {
-					names = parkMember + " cleared the class's hold."
+					names = parkMember + " ended the freeze, and the waiting cards call the provider again."
 				}
 				if face := "The class resets at " + reset.Format(time.RFC3339); !ok || fc.Status != status || !strings.Contains(fc.Objective, face) ||
 					!strings.Contains(fc.Objective, names) || plFreezeCards(t, r.store.DB()) != 1 || len(fj.issues) != 1 {
@@ -294,7 +294,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			// each press closed the card with its own comment naming who
 			// pressed, and left its row: who, how, the class, the card it
 			// closed and the two cards it woke
-			pressSaid := fmt.Sprintf("#issues/%d %s's retry press cleared the %s class's hold: the freeze card closes at once.", fc.IssueNumber, parkMember, policy.ClassCoder)
+			pressSaid := fmt.Sprintf("#issues/%d %s's retry press cleared the %s class's freeze: the freeze card closes at once.", fc.IssueNumber, parkMember, policy.ClassCoder)
 			if n := len(slices.DeleteFunc(slices.Clone(fj.comments), func(c string) bool { return c != pressSaid })); n != 2 {
 				t.Errorf("the card's comments %q hold %d press closes, want one per press: %q", fj.comments, n, pressSaid)
 			}

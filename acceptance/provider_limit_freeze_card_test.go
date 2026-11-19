@@ -318,7 +318,7 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	if got := fj.patches[reopened.IssueNumber]; got != "closed" {
 		t.Errorf("issue #%d's last patch = %q, want closed", reopened.IssueNumber, got)
 	}
-	pressSaid := fmt.Sprintf("#issues/%d sebastian's retry press cleared the big class's hold: the freeze card closes at once.", reopened.IssueNumber)
+	pressSaid := fmt.Sprintf("#issues/%d sebastian's retry press cleared the big class's freeze: the freeze card closes at once.", reopened.IssueNumber)
 	if !slices.Contains(fj.comments, pressSaid) {
 		t.Errorf("the issue's comments %q lack the press's close naming who pressed: %q", fj.comments, pressSaid)
 	}

@@ -36,5 +36,6 @@ var Terms = map[string]string{
 	"factoryd":        "Factoryd is the factory's main service, and it keeps every card's state and starts the AI agents.",
 	"signoz":          "SigNoz is the monitoring tool that watches the running services and raises an alert when a measure passes its limit.",
 	"gate supervisor": "The gate supervisor is an AI step that looks at a step of the work that ran past its time limit and says what to do.",
+	"model class":     "A model class is the group of AI models the factory uses for one kind of work, such as writing code or reviewing it.",
 	"escalation pool": "The escalation pool is the extra runs, work time and money per project and month the factory may grant a stuck card without a human.",
 }
