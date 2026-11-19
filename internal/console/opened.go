@@ -233,8 +233,8 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	v.cases = cs
 	var row *caseRow
 	if cs.holds(bt.Task) {
-		// a plan's case that names no question of a revision is answered
-		// by the plan's request
+		// a plan's case that names no open question of its pending revision
+		// asks nothing
 		n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID])
 		if _, part := factoryd.HoldoutOn(n.Case.Case); !factoryd.PlanCase(n.Case.Case) || part || n.Case.Plan != nil || len(o.Brief.Approvals) == 0 {
 			row = n.Case
@@ -318,11 +318,9 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	case casesRead && k.Status == "waiting-human" && len(o.Brief.Approvals) == 0:
 		o.Sent = true
 	}
-	// a plan's request asks through its cases alone, and a merge's and a
-	// criteria request only once their case is at the human
-	asking := slices.DeleteFunc(slices.Clone(o.Brief.Approvals), func(ap approvalCard) bool {
-		return ap.Kind == factoryd.ApprovalPlan || waitsForFace(ap.ApprovalRequest) && !cs.faced(ap.ApprovalRequest)
-	})
+	// a merge's, a plan's and a criteria request ask through their cases
+	// alone; a resource request opens no case and asks by itself
+	asking := slices.DeleteFunc(slices.Clone(o.Brief.Approvals), func(ap approvalCard) bool { return waitsForFace(ap.ApprovalRequest) })
 	if o.Ask == nil && !o.Sent && len(asking) > 0 {
 		pending := make([]factoryd.ApprovalRequest, len(asking))
 		for i, ap := range asking {
@@ -349,7 +347,6 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(kase), Card: bt.Task, Case: kase}
 		o.Ask.Answers = c.answersOf(ctx, v, k, ask, face, f, press, r.URL.Query().Get("press"), seen)
 		o.Ask.whoMay()
-		requestAsk(o.Ask, ap)
 		o.Brief.Evidence = c.evidenceOf(ctx, v, k, face)
 	}
 	for _, a := range factoryd.MoreOf(bt.Task, facts) {
@@ -795,10 +792,10 @@ func requestAsk(ask *askBlock, ap approvalCard) {
 }
 
 // requestPress is the press of answer a by key on approval request ap of
-// card k, which no case of the card holds: its decision on the request,
-// a plan's confirmation to the plan, changes to a plan that asks for no
-// confirmation yet to its issue; nil for an answer the request does not
-// take, or one only an approver may press that the viewer may not.
+// card k: a resource request's decision, which no case holds, and the
+// re-run of a factory pull request's checks; nil for an answer the request
+// does not take, or one only an approver may press that the viewer may
+// not.
 func requestPress(v *boardView, k card, ap approvalCard, a factoryd.Answer, key string) (*pressForm, func(string) string) {
 	if approverOnly(v, k, ap, a) {
 		return nil, nil
@@ -825,37 +822,12 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 		}
 	}
 	switch {
-	case a.Action == factoryd.ActApproveMerge, a.Action == factoryd.AnswerApprove, a.Action == factoryd.ActGrantCriteria:
+	case a.Action == factoryd.AnswerApprove:
 		p.Post, p.Values = base+"approve", []hidden{{"action", "approve"}}
-	case a.Action == factoryd.ActDenyMerge && a.Variant == "reject":
-		p.Post, p.Values = base+"deny", []hidden{{"action", "reject"}}
-	case a.Action == factoryd.ActDenyMerge:
-		p.Post, p.Values = base+"deny", []hidden{{"action", "request_changes"}}
 	case a.Action == factoryd.AnswerDeny:
 		p.Post = base + "deny"
 	case a.Action == factoryd.ActRerunChecks && ap.Rerun():
 		p.Post = base + "rerun"
-	case a.Action == factoryd.ActConfirmCriteria:
-		p.Post = base + "confirm"
-	case a.Action == factoryd.ActAnswerCriteria:
-		p.Post, p.Values, p.Max = base+"criterion", []hidden{{"verb", cmp.Or(map[string]string{"waive": "waived"}[a.Variant], a.Variant, "met")}}, maxCriterionReason
-		return p, named("reason")
-	case (a.Action == factoryd.AnswerConfirmPlan || a.Action == factoryd.AnswerRevisePlan) && ap.Confirm != nil:
-		p.Post, p.Max = "/tasks/"+k.ID+"/plan/answer", maxPlanAnswer
-		p.Values = []hidden{{"revision", strconv.Itoa(ap.PlanSpec.Revision)}, {"index", strconv.Itoa(ap.Confirm.Index)}}
-		if a.Action == factoryd.AnswerRevisePlan {
-			p.Values = append(p.Values, hidden{"decision", "revise"})
-			return p, named("answer")
-		}
-		p.Values = append(p.Values, hidden{"decision", "confirm"})
-	case a.Action == factoryd.AnswerRevisePlan:
-		p.Post = "/tasks/" + k.ID + "/plan/changes"
-		return p, named("text")
-	case a.Action == factoryd.AnswerClosePlan:
-		return planClosePress(p, k)
-	case a.Key() == factoryd.KeyPark:
-		// Not now on a request no case holds: the card keeps waiting
-		p.Post, p.Values = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.KeyPark}}
 	default:
 		return nil, nil
 	}

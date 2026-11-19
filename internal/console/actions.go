@@ -1319,16 +1319,11 @@ func retryRule(t factoryd.Task) accessRule {
 
 // doCardAnswer presses card id's own action key, one its Other actions
 // list (factoryd.MoreOf) where no case holds the card: its door, after the
-// action's access rule, with the press's fields read by field. Not now
-// (factoryd.KeyPark) on a request no case holds leaves the card as it is.
+// action's access rule, with the press's fields read by field.
 func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, field func(string) string) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err
-	}
-	if key == factoryd.KeyPark {
-		// Not now on a request no case holds: the card keeps waiting
-		return "", nil
 	}
 	more := factoryd.MoreOf(t, factoryd.Facts{})
 	i := slices.IndexFunc(more, func(m factoryd.Answer) bool { return m.Key() == key })

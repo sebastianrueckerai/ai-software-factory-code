@@ -2212,13 +2212,13 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if a.Project != shown.Repository {
 			continue
 		}
-		// the card's row holds its approvals, unless the card has ended and has no row
+		// the card's row holds its requests
 		if cs.holds(v.byID[a.TaskID]) {
 			continue
 		}
-		// a merge's, a plan's or a plan's criteria request waits for its
-		// case to reach the human, whose pages the card's row carries
-		if waitsForFace(a) && !cs.faced(a) {
+		// a merge's, a plan's or a plan's criteria request shows through its
+		// case alone, whose pages the card's row carries
+		if waitsForFace(a) {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)

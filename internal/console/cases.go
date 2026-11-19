@@ -233,8 +233,9 @@ func casesInView(r *http.Request) map[string]string {
 	return out
 }
 
-// waitsForFace says request a waits for its case's face before any page
-// lists it: a merge's, a plan's and a plan's criteria request's.
+// waitsForFace says request a shows through its case's pages alone, once
+// the case is at the human: a merge's, a plan's and a plan's criteria
+// request's. A resource request opens no case and has its own page.
 func waitsForFace(a factoryd.ApprovalRequest) bool {
 	return a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan || a.Kind == factoryd.ApprovalCriteria ||
 		a.Kind == factoryd.ApprovalCriteriaRerun
@@ -254,8 +255,7 @@ func (c *Console) climbing(ctx context.Context, q factoryd.ApprovalRequest) (fac
 	return open[i], true, nil
 }
 
-// faced says a case at the human holds request a, its card on the board or
-// not: a request waitsForFace names waits for its case's face.
+// faced says a case at the human holds request a.
 func (cs caseSet) faced(a factoryd.ApprovalRequest) bool {
 	return slices.ContainsFunc(cs.desk.Cases, func(k factoryd.Case) bool {
 		return k.Status == factoryd.CaseAtHuman && k.TaskID == a.TaskID && factoryd.RequestAnswers(a, k)

@@ -255,9 +255,9 @@ func pickBy(by string) string {
 	return by + "'s pick"
 }
 
-// approvalFace is approval a's small card in Needs you, where no case of
-// its card holds it: the register's face of the request, its suggestion
-// the one button where the viewer may approve.
+// approvalFace is resource request a's small card in Needs you, where no
+// row of its card holds it: the register's face of the request, its
+// suggestion the one button where the viewer may approve.
 func (c *Console) approvalFace(ctx context.Context, v *boardView, a approvalCard) faceView {
 	f := faceView{ID: a.TaskID, Needs: true, Since: a.Waiting(), Open: a.Writer}
 	if a.Issue > 0 {

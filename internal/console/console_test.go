@@ -474,6 +474,9 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 type fakeTasks struct {
 	mu    sync.Mutex
 	tasks []factoryd.BoardTask
+	// offBoard are cards the store holds beside a test's own: the card of
+	// the rig's pending merge request, which every request has
+	offBoard []factoryd.BoardTask
 	// marked are the issues MarkChatFiled was asked for, "repo#n why"
 	marked []string
 	// byIssue are the TaskByIssue reads, "repo#n"
@@ -535,12 +538,24 @@ func (s *fakeTasks) Dependencies(_ context.Context, id string) ([]factoryd.Depen
 	return append(open, done...), nil
 }
 
+// stored are the store's cards: the test's, and those of offBoard the test
+// names none of. The caller holds the lock.
+func (s *fakeTasks) stored() []factoryd.BoardTask {
+	out := slices.Clone(s.tasks)
+	for _, t := range s.offBoard {
+		if !slices.ContainsFunc(s.tasks, func(o factoryd.BoardTask) bool { return o.ID == t.ID }) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func (s *fakeTasks) TaskStatuses(_ context.Context, ids []string) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]string{}
 	for _, id := range ids {
-		for _, t := range s.tasks {
+		for _, t := range s.stored() {
 			if t.ID == id {
 				out[id] = t.Status
 			}
@@ -772,7 +787,7 @@ func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, err
 	if s.read != nil {
 		s.read(s, id)
 	}
-	for _, t := range s.tasks {
+	for _, t := range s.stored() {
 		if t.ID == id {
 			return t.Task, true, nil
 		}
@@ -855,11 +870,12 @@ func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.boardReads = append(s.boardReads, id)
-	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
+	all := s.stored()
+	i := slices.IndexFunc(all, func(t factoryd.BoardTask) bool { return t.ID == id })
 	if i < 0 {
 		return factoryd.BoardTask{}, false, nil
 	}
-	bt := s.tasks[i]
+	bt := all[i]
 	bt.Helpers = factoryd.HelpersOf(s.tasks, id)
 	return bt, true, nil
 }
@@ -1520,7 +1536,7 @@ func (r *rig) requestCases(_ context.Context, taskID string) []requestCase {
 			if err != nil {
 				k = factoryd.Case{TaskID: taskID, Repository: q.Project, Kind: kind, Facts: map[string]any{"approval": q.ID}}
 			}
-			k.ID, k.Status = 7000+q.ID, factoryd.CaseAtHuman
+			k.ID, k.Status, k.OpenedAt = 7000+q.ID, factoryd.CaseAtHuman, q.CreatedAt
 			out = append(out, requestCase{q, k})
 		}
 	}
@@ -1535,7 +1551,8 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	repoWriters := map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}
-	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{by: repoWriters}, objects: fakeObjects{}, ledger: &fakeLedger{files: map[string]policy.ProjectConfig{}, processes: testProcesses()},
+	reviewed := factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}}
+	r := &rig{fg: fg, tasks: &fakeTasks{offBoard: []factoryd.BoardTask{reviewed}}, writers: &fakeWriters{by: repoWriters}, objects: fakeObjects{}, ledger: &fakeLedger{files: map[string]policy.ProjectConfig{}, processes: testProcesses()},
 		approvals: &fakeApprovals{rows: []factoryd.ApprovalRequest{
 			{ID: 3, Kind: "resource", TaskID: "t-res", Project: "sf/code", Status: "pending", MonthlyEUR: &monthly,
 				Reason: "load test (beyond the envelope: a lease of 300 minutes exceeds the envelope's 4 h)",
@@ -3346,8 +3363,9 @@ func TestNilActorRedChecksBoard(t *testing.T) {
 		t.Fatalf("boardOf through a sessionless actor: %v", err)
 	}
 	needs := d.Columns[colNeedsYou].Needs
-	i := slices.IndexFunc(needs, func(n need) bool { return n.Approval != nil && n.Approval.ID == 4 })
-	if i < 0 || !needs[i].Approval.HeadUnread || needs[i].Approval.Healed {
+	// the request rides on its case's row of its card
+	i := slices.IndexFunc(needs, func(n need) bool { return n.Case != nil && n.Case.Approval != nil && n.Case.Approval.ID == 4 })
+	if i < 0 || !needs[i].Case.Approval.HeadUnread || needs[i].Case.Approval.Healed {
 		t.Fatalf("the merge card = %+v: want the head unread, not healed", needs)
 	}
 	if len(r.fg.calls) != 0 {
@@ -4157,8 +4175,8 @@ func TestCapFactsOfReadsTheEscalationOfTheBoardTask(t *testing.T) {
 	}
 }
 
-// The pulse's board text is read with no session. A pending merge request
-// on red checks stands in that text as it is, and the read asks Forgejo
+// The pulse's board text is read with no session. The card of a pending
+// merge request on red checks stands in that text, and the read asks Forgejo
 // nothing as a member, where the opened card of a logged-in human reads
 // the head's checks again.
 func TestThePulsesBoardTextShowsARedMergeRequestWithNoSession(t *testing.T) {
@@ -4176,8 +4194,9 @@ func TestThePulsesBoardTextShowsARedMergeRequestWithNoSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pulse's board read: %v", err)
 	}
-	if !strings.Contains(text, "pull request #11") {
-		t.Errorf("the pulse's board text lacks the red merge request:\n%s", text)
+	// the request shows through its card, which stands in Needs you
+	if !strings.Contains(text, "Needs you (1):\n  #9 t-m \"\" in-review") {
+		t.Errorf("the pulse's board text lacks the card of the red merge request:\n%s", text)
 	}
 	if len(r.fg.calls) != 0 {
 		t.Errorf("the pulse's read asked Forgejo as a member: %v", r.fg.calls)

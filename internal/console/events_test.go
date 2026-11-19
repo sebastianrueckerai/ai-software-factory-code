@@ -1033,10 +1033,10 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 				t.Errorf("board%s: the fragment of %s = %d\n%s\nwant the board's face\n%s", page, id, rec.Code, rec.Body, face)
 			}
 		}
-		// the code project: t-run, t-b, t-blk, the human task t-h and the
-		// escalated t-e's case row; linkshort: the plan, its cards 2 to 5
-		// and 7, the second spec and t-q
-		if want := map[string]int{"": 5, "?project=linkshort": 8}[page]; faces != want {
+		// the code project: t-run, t-b, t-blk, the human task t-h, the
+		// escalated t-e's case row and the merge request's card t-m;
+		// linkshort: the plan, its cards 2 to 5 and 7, the second spec and t-q
+		if want := map[string]int{"": 6, "?project=linkshort": 8}[page]; faces != want {
 			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}

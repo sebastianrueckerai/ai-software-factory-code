@@ -105,9 +105,9 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 			t.Errorf("the header of %s lacks the count %s, its menu or its body", title, counts[title])
 		}
 		for _, id := range items {
-			// a card's face carries a place, which names one column; an
-			// approval request's face, t-m's and t-res's, carries none
-			if id != "t-m" && id != "t-res" && strings.Count(body, `data-card="`+id+`" data-place="`) != 1 {
+			// a card's face carries a place, which names one column; the
+			// resource request's own face, t-res's, carries none
+			if id != "t-res" && strings.Count(body, `data-card="`+id+`" data-place="`) != 1 {
 				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`" data-place="`))
 			}
 		}
@@ -122,7 +122,8 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	// the one ask here that suggests an answer is the merge its model
 	// review approved: Needs you holds that press alone, the other answers
 	// are the opened cards'
-	if strings.Count(needs, "<form") != 1 || !strings.Contains(needs, `action="/approvals/4/approve"`) {
+	if strings.Count(needs, "<form") != 1 || !strings.Contains(needs, `action="/tasks/t-m/resolve"`) ||
+		!strings.Contains(needs, `<input type="hidden" name="case_id" value="7004"><input type="hidden" name="action" value="approve_merge">`) {
 		t.Errorf("Needs you holds a form other than the merge's press:\n%s", needs)
 	}
 	if !strings.Contains(drawer(t, r, ck, "t-esc", "overview"), `action="/tasks/t-esc/resolve"`) {

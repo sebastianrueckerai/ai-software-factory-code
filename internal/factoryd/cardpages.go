@@ -325,24 +325,6 @@ func (r Request) planFacts() PlanFacts {
 	return p
 }
 
-// questionCase is the case plan request r's first open question opens, as
-// its ask opens it; false when no question but the confirmation waits.
-func (r Request) questionCase() (Case, bool) {
-	for i, q := range r.PlanQuestions {
-		if q.Answered() || q.Kind == QuestionConfirmation {
-			continue
-		}
-		choices := make([]any, len(q.Choices))
-		for j, ch := range q.Choices {
-			choices[j] = ch
-		}
-		return Case{TaskID: r.TaskID, Repository: r.Project, Kind: CasePlanQuestion, Status: CaseAtHuman, Problem: q.Text,
-			Facts: map[string]any{"revision": float64(r.PlanSpec.Revision), "index": float64(i + 1), "question": q.Text, "choices": choices,
-				"recommended": q.Recommended, "grounds": q.Grounds}}, true
-	}
-	return Case{}, false
-}
-
 // onPromises is criteria case c as request r's rows read now: the promises
 // still open, those of them nothing judged yet and the plan's count, so its
 // ask counts them and Drop this promise picks among them, whether every
@@ -630,10 +612,10 @@ func (p CardPage) Key() string {
 // page numbered by its request's id negated, which opens no case of its
 // own; then each case, a page per part of its ask that its request's rows
 // hold, then a page of its own unless its parts are all a criteria
-// request asks. A card with none shows a page per pending request of its
-// own: a plan's first open question, else the request's own face. asks
-// are the cases' newest asks, pending every pending request, read reads
-// one with its rows.
+// request asks. A card with none shows a page per pending resource request
+// of its own; a merge's, a plan's and a criteria request show through
+// their cases alone. asks are the cases' newest asks, pending every
+// pending request, read reads one with its rows.
 func CardPages(card BoardTask, cases []Case, asks map[int64]CaseAsk, pending []ApprovalRequest, read func(ApprovalRequest) Request) []CardPage {
 	requests := map[int64]*Request{}
 	request := func(a ApprovalRequest) *Request {
@@ -647,7 +629,7 @@ func CardPages(card BoardTask, cases []Case, asks map[int64]CaseAsk, pending []A
 	var out []CardPage
 	if len(cases) == 0 {
 		for _, a := range pending {
-			if a.TaskID == card.ID {
+			if a.TaskID == card.ID && a.Kind == ApprovalResource {
 				out = append(out, requestPage(card, request(a)))
 			}
 		}
@@ -754,34 +736,12 @@ func rungsAsk(ask CaseAsk, page Case, recommended bool) CaseAsk {
 	return out
 }
 
-// requestPage is the page of request r of card, which no case of the card
-// holds: a plan's first open question, else the request's own face.
+// requestPage is the page of resource request r of card, which opens no
+// case: the request's own face.
 func requestPage(card BoardTask, r *Request) CardPage {
-	if q, ok := r.questionCase(); ok {
-		return CardPage{Case: q, Request: r, Owner: card, Face: CaseFace(q, card.Task, CaseAsk{})}
-	}
 	k, err := RequestCase(r.ApprovalRequest)
-	switch {
-	case r.Kind == ApprovalPlan:
-		k = OnPlan(Case{Kind: CasePlanConfirmation, TaskID: r.TaskID, Repository: r.Project}, r.planFacts())
-	case err != nil:
+	if err != nil {
 		k = Case{TaskID: r.TaskID, Repository: r.Project, Facts: map[string]any{"approval": r.ID, "approval_kind": r.Kind}}
 	}
-	switch {
-	case r.Healed:
-		k = healed(k)
-	case r.Kind == ApprovalCriteria || r.Kind == ApprovalCriteriaRerun:
-		k = r.onPromises(k)
-	}
-	face := CaseFace(k, card.Task, CaseAsk{})
-	if r.Healed {
-		face.Story.Left = healedLeft
-	}
-	for i, o := range face.Offers {
-		if o.Value == ActNote {
-			// no case keeps a note here: Not now writes nothing
-			face.Offers[i].Value = KeyPark
-		}
-	}
-	return CardPage{Case: k, Request: r, Owner: card, Face: face}
+	return CardPage{Case: k, Request: r, Owner: card, Face: CaseFace(k, card.Task, CaseAsk{})}
 }

@@ -62,8 +62,9 @@ func TestNeedsYouShowsOneRowPerCardAndACarouselForMany(t *testing.T) {
 	seatCases(r)
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	if n := strings.Count(needs, ` data-case="`); n != 2 {
-		t.Fatalf("Needs you holds %d case rows, want one per card (2):\n%s", n, needs)
+	// t-a, t-b and the card of the rig's merge request
+	if n := strings.Count(needs, ` data-case="`); n != 3 {
+		t.Fatalf("Needs you holds %d case rows, want one per card (3):\n%s", n, needs)
 	}
 	a, b := strings.Index(needs, `data-card="t-a"`), strings.Index(needs, `data-card="t-b"`)
 	if a < 0 || b < 0 || a > b {
@@ -196,6 +197,7 @@ func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 // A board read reads the cases in one call and builds no digest.
 func TestBoardReadMakesOneCaseReadAndNoDigest(t *testing.T) {
 	r := newRig(t)
+	r.approvals.rows = nil
 	var tasks []factoryd.Task
 	r.openCases = map[string][]factoryd.Case{}
 	for i := range 10 {
@@ -491,18 +493,18 @@ func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
 	}
 }
 
-// A card that has ended keeps no row, so its pending approval, which the
-// end missed, shows on its own.
-func TestAFinalCardsApprovalStillShows(t *testing.T) {
+// A merge request shows through its case alone, on its card's row. A card
+// that has ended keeps no row, and its end denies its requests, so a
+// request the end has not reached yet has no row of its own.
+func TestAnEndedCardsMergeRequestHasNoRowOfItsOwn(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 62, Kind: factoryd.ApprovalMerge, TaskID: "t-done", Project: "sf/code",
 		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
 	r.openCases = map[string][]factoryd.Case{"t-done": {{ID: 6, TaskID: "t-done", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, Problem: "flag"}}}
 	ck, _ := r.loggedIn(t)
-	needs := needsOf(t, r, ck, "/")
-	if face := faceOf(t, needs, "t-done"); strings.Count(needs, `data-card="t-done"`) != 1 || !strings.Contains(face, `<strong class="title">Merge this card&#39;s pull request?</strong>`) || strings.Contains(face, `data-case=`) {
-		t.Errorf("the ended card's pending approval is not on the board alone:\n%s", needs)
+	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `data-card="t-done"`) {
+		t.Errorf("the ended card's merge request stands in Needs you:\n%s", needs)
 	}
 }
 
