@@ -204,7 +204,9 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 	}
 	f.title(c.linkRefs(ctx, v, k.Repository, lead), lead)
 	f.Why = c.linkRefs(ctx, v, k.Repository, face.Why)
-	a := &askView{Position: row.At, Of: row.Of, Others: len(face.Offers)}
+	facts := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case}
+	late, _ := lateAnswers(v, k, row, facts)
+	a := &askView{Position: row.At, Of: row.Of, Others: len(face.Offers) + len(late)}
 	if row.Of > 1 {
 		base := fmt.Sprintf("/projects/%s/cards/%s/cases/", row.Project, k.ID)
 		if row.PrevKey != "" {
@@ -220,7 +222,7 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 		return
 	}
 	o := face.Offers[i]
-	answer, ok := factoryd.AnswerFor(o.Value, factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case})
+	answer, ok := factoryd.AnswerFor(o.Value, facts)
 	if !ok {
 		answer, _ = factoryd.AnswerOf(o.Value)
 	}

@@ -83,8 +83,9 @@ var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-stor
 // fiveAnswers are the gallery's asks with five answers, one more than a
 // small card holds, which the opened card shows whole: a planner's
 // question with three choices, the human's own words and the changes, and
-// an agent's question with three choices, the wait and the card's end.
-var fiveAnswers = []string{"case/plan_question", "board/a long suggested choice"}
+// an agent's question with three choices, the wait and the card's end, or
+// with the factory agent's own suggestion, two choices, the wait and the end.
+var fiveAnswers = []string{"case/plan_question", "board/a long suggested choice", "case/agent_escalate", "board/three open cases"}
 
 func TestEveryOpenedCardMeetsTheContract(t *testing.T) {
 	for _, e := range galleryEntries() {

@@ -295,31 +295,17 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		// so of the card's own actions only its end stands beside it
 		onCase = row.Case.Kind != factoryd.CaseMonitorFlag || row.Owner != nil
 		helperPage = row.Owner != nil
-		// a face holds four answers, and the opened card hides none of an
-		// ask that has more: they stand with the face's answers. An answer
-		// that holds only since the face was written is another action
-		live := factoryd.FaceOf(row.Case, f)
-		asks := 0
-		if len(live.Over) > 0 {
-			asks = len(live.Answers) + len(live.Over)
-		}
-		for i, a := range slices.Concat(live.Answers, live.Over, live.More) {
-			has := func(m answerView) bool { return m.Label == a.Label }
-			if !mayAnswer(v, k, a.Action) || slices.ContainsFunc(row.Face.Offers, func(m factoryd.AskOffer) bool { return m.Value == a.Key() || m.Label == a.Label }) ||
-				slices.ContainsFunc(o.More, has) || slices.ContainsFunc(o.Ask.Answers, has) {
-				continue
-			}
-			view := c.answerOf(ctx, v, k, k.ID, a.Key(), a, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
+		late := func(a factoryd.Answer) answerView {
+			return c.answerOf(ctx, v, k, k.ID, a.Key(), a, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return casePress(v, k, *row, a, key)
 			}, seen)
-			switch {
-			case row.Approval != nil && view.Press == nil && view.Thread == "":
-				// a request's page holds only the answers its request takes
-			case i < asks:
-				o.Ask.Answers = append(o.Ask.Answers, view)
-			default:
-				o.More = append(o.More, view)
-			}
+		}
+		asks, more := lateAnswers(v, k, *row, f)
+		for _, a := range asks {
+			o.Ask.Answers = append(o.Ask.Answers, late(a))
+		}
+		for _, a := range more {
+			o.More = append(o.More, late(a))
 		}
 		o.Brief.Evidence = c.evidenceOf(ctx, v, k, row.Face)
 		if k.Reason != "" {
@@ -510,6 +496,31 @@ func (c *Console) askOf(ctx context.Context, v *boardView, k card, head *faceVie
 // presser is the form that sends answer a by key, and the name each of its
 // fields posts under; nil where the card cannot take it.
 type presser func(a factoryd.Answer, key string) (*pressForm, func(field string) string)
+
+// lateAnswers are the answers case row holds now on facts f that its stored
+// face lacks and the viewer of v may take: asks, the answers of the ask,
+// which stand in the ask block after the stored ones, and more, the card's
+// other actions. A request's page holds only the answers its request takes.
+func lateAnswers(v *boardView, k card, row caseRow, f factoryd.Facts) (asks, more []factoryd.Answer) {
+	live := factoryd.FaceOf(row.Case, f)
+	own := len(live.Answers) + len(live.Over)
+	for i, a := range slices.Concat(live.Answers, live.Over, live.More) {
+		same := func(o factoryd.Answer) bool { return o.Label == a.Label }
+		if !mayAnswer(v, k, a.Action) || slices.ContainsFunc(row.Face.Offers, func(o factoryd.AskOffer) bool { return o.Value == a.Key() || o.Label == a.Label }) ||
+			slices.ContainsFunc(asks, same) || slices.ContainsFunc(more, same) {
+			continue
+		}
+		if p, _ := casePress(v, k, row, a, a.Key()); row.Approval != nil && p == nil && a.Action != factoryd.AnswerThread {
+			continue
+		}
+		if i < own {
+			asks = append(asks, a)
+		} else {
+			more = append(more, a)
+		}
+	}
+	return asks, more
+}
 
 // answersOf are the answers of face on card k on facts f, the suggested
 // one first, each with the press that sends it; pressed is the answer

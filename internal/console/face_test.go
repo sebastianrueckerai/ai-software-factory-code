@@ -936,8 +936,8 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	if face := faceOf(t, board, "t-ch"); !strings.Contains(face, `<strong class="title">A replica or a shard?</strong>`) ||
-		!strings.Contains(face, `<a class="others" href="#card=t-ch">4 answers ›</a>`) || strings.Contains(face, "<form") {
-		t.Errorf("the small card of t-ch =\n%s\nwant its ask and the four answers on its page behind the open", face)
+		!strings.Contains(face, `<a class="others" href="#card=t-ch">5 answers ›</a>`) || strings.Contains(face, "<form") {
+		t.Errorf("the small card of t-ch =\n%s\nwant its ask and the five answers on its page behind the open: three choices, the wait and the card's end", face)
 	}
 	esc := escalationOf(t, r, ck, "t-ch")
 	if !strings.Contains(esc, `<p class="o-question">A replica or a shard?</p>`) {

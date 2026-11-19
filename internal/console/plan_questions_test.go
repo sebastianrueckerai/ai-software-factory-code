@@ -49,6 +49,11 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		!strings.Contains(face, `<span class="pos" aria-live="polite">1 of 2</span>`) || strings.Contains(face, "<form") {
 		t.Errorf("the small card does not ask the first of two questions, or holds a form:\n%s", face)
 	}
+	// three choices, the human's own words and Ask for changes: the small
+	// card counts the five answers the opened card shows
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); !strings.Contains(face, `>5 answers ›</a>`) {
+		t.Errorf("the small card does not count the opened card's five answers:\n%s", face)
+	}
 	board := func() string { return approvalFaceOf(t, planDrawer(t, r, ck), "t-plan") }
 	card := board()
 	for _, want := range []string{`<p class="o-label">Your call · 1 of 2`, `<p class="o-question">How often does the checker probe a site?</p>`,

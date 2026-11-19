@@ -395,16 +395,23 @@ func TestTheRecommendedButtonIsTheCarriedActionNeverParsedText(t *testing.T) {
 	}
 }
 
-// A render reads the offers the ask stored and nothing else: the facts
-// would offer more, the stored list is what shows.
-func TestARenderShowsTheStoredOffersOnly(t *testing.T) {
+// A render shows every answer the card holds now in its ask block: the
+// offers the ask stored first, in their order, then an answer that holds
+// since the face was written. No fold holds an answer of the ask.
+func TestARenderShowsEveryAnswerTheCardHoldsNow(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
 	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
 	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"ask": "Go on?", "story": factoryd.Story{},
 		"offers": []factoryd.AskOffer{{Value: "close", Label: "End the card", Effect: "Ends the card."}, {Value: "note", Label: "Not now", Effect: "The card stays as it is."}}}}}
-	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, []string{"close", "note"}) {
-		t.Fatalf("buttons = %v, want the stored close and note", got)
+	// the gate stop's answers are reverify, continue, replan and close; with
+	// every session used and no pull request only replan and close hold
+	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, []string{"close", "note", "replan"}) {
+		t.Fatalf("buttons = %v, want the stored close and note, then replan", got)
+	}
+	ck, _ := r.loggedIn(t)
+	if _, folds, _ := strings.Cut(drawer(t, r, ck, "t-g", "overview"), `<div class="o-folds">`); strings.Contains(folds, "Send back to the planner") {
+		t.Errorf("a fold holds an answer of the ask:\n%s", folds)
 	}
 }
 
