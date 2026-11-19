@@ -3263,9 +3263,8 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	}
 	// the button path reads the head's current checks as the viewer who
 	// asked for the board (#1013), the one forge call a read makes: the
-	// opened card reads the request for its brief and for its case's page
-	equal(t, "the head's reads", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
-		"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
+	// opened card reads the request once, for its brief and its case's page
+	equal(t, "the head's reads", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
 }
 
 // A merge request is about the one head it recorded (#1091): when the

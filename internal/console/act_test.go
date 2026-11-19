@@ -120,6 +120,20 @@ func TestAnswerRefusalNamesTheOfferedActions(t *testing.T) {
 	}
 }
 
+// A press Act refuses shows the human each answer by its label, never by
+// the key an agent types.
+func TestARefusedPressNamesTheAnswersByTheirLabels(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	caseCard(r)
+	r.actErr = factoryd.ErrActRefused("the session cap of 3 is reached (the card's answers at this stop: `extend`, `close` and `note`), and the human may take `extend` and `close`")
+	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"5"}, "action": {"continue"}, "continue.note": {"go on"}}), ck)
+	want := "the session cap of 3 is reached (the card's answers at this stop: “Allow more sessions”, “End the card” and “Not now”), and the human may take “Allow more sessions” and “End the card”\n"
+	if rec.Code != http.StatusConflict || rec.Body.String() != want {
+		t.Fatalf("the refused press = %d %q, want 409 %q", rec.Code, rec.Body, want)
+	}
+}
+
 // The chat's answer carries its action and the money beside it: a human's
 // re-verify with 1 EUR drawn beside it, on rung 3.
 func TestChatAnswerCarriesActionAndFund(t *testing.T) {

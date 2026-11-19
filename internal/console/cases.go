@@ -137,7 +137,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	// each request whose body answers a page, read once
 	read := map[int64]*approvalCard{}
 	pages := factoryd.CardPages(bt, cs.byCard[bt.ID], cs.desk.Asks, v.pending, func(a factoryd.ApprovalRequest) factoryd.Request {
-		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
+		ap, ok := v.requests[a.ID]
+		if !ok {
+			ap = c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
+		}
 		ap.Filter, ap.Writer = v.filter, v.writes
 		read[a.ID] = &ap
 		return ap.Request

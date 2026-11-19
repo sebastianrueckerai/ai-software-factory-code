@@ -209,6 +209,10 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			continue
 		}
 		ap := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
+		if v.requests == nil {
+			v.requests = map[int64]approvalCard{}
+		}
+		v.requests[a.ID] = ap
 		ap.Filter, ap.Writer, ap.IDSuffix = k.Filter, true, "-d"
 		if a.Kind == factoryd.ApprovalMerge && a.DecisionNote != "" {
 			o.Problems = append(o.Problems, a.DecisionNote)

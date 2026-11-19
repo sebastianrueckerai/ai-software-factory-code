@@ -1661,6 +1661,9 @@ type boardView struct {
 	cases   caseSet
 	plans   map[string]planRead
 	rollups map[string]rollup
+	// requests are the requests the opened card read for its brief, which
+	// its case's page reads no second time
+	requests map[int64]approvalCard
 }
 
 // viewOf reads what every card of a render shares, and the projects agents
