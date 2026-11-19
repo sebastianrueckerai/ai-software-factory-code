@@ -1462,9 +1462,31 @@ func TestAnAgentCardsMonthCapStopClimbs(t *testing.T) {
 func TestARerunOfAMergeCasesChecksGoesThroughActOnce(t *testing.T) {
 	g, _, _, _, c := mergeWakeRig(t, policy.AutonomyAutonomous)
 	ctx := context.Background()
-	g.forge.checks["h2"] = "failure"
 	work := func(ctx context.Context) (int64, error) {
 		return 0, factoryd.RerunFactoryChecks(ctx, g.s, g.signals, "t1", 9, "sebastian")
+	}
+	pending := func() bool {
+		t.Helper()
+		var status string
+		if err := g.s.PgDB().QueryRowContext(ctx, `SELECT status FROM approval_requests WHERE task_id = 't1' AND kind = $1`, ApprovalMerge).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		return status == "pending"
+	}
+	// on a green head Act refuses before any work: a human reads the state
+	// and the answers that fit, the keys as their labels
+	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}, Work: work})
+	const green = "the checks on the head are green, so there is nothing to run again, and the human may take “Merge it” or “Reject and close it”"
+	if err == nil || factoryd.ForHuman(err.Error()) != green || len(g.signalsOf(factoryd.SignalRerunChecks)) != 0 || !pending() {
+		t.Fatalf("the re-run on a green head = %q, signals %+v, pending %t; want %q, no signal and the request still pending",
+			factoryd.ForHuman(fmt.Sprint(err)), g.signalsOf(factoryd.SignalRerunChecks), pending(), green)
+	}
+	// a re-run with no work would end the case and tell the run nothing it
+	// reads: Act refuses it
+	g.forge.checks["h2"] = "failure"
+	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}})
+	if want := "`rerun_checks` on a merge ask is the console's work: take it from the board or the chat"; err == nil || err.Error() != want || !pending() {
+		t.Fatalf("the re-run with no work = %v, pending %t; want %q and the request still pending", err, pending(), want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}, Work: work}); err != nil {
 		t.Fatalf("the re-run: %v", err)

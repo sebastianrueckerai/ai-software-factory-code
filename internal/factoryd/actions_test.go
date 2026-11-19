@@ -190,7 +190,7 @@ func TestRerunChecksOnceOnAHead(t *testing.T) {
 	}{
 		{"red", red, ""},
 		{"run again before", again, "the checks on this head were run again once already"},
-		{"green", green, "the checks on the head are green, not red"},
+		{"green", green, "the checks on the head are green, so there is nothing to run again"},
 	} {
 		if got := applies(t, ActRerunChecks, c.f, Resolution{}); got != c.want {
 			t.Errorf("%s: rerun_checks applies = %q, want %q", c.name, got, c.want)

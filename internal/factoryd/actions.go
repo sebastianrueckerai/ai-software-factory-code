@@ -209,7 +209,7 @@ var Actions = []Action{
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Checks != "red":
-			return fmt.Sprintf("the checks on the head are %s, not red", cmp.Or(f.Checks, "unread"))
+			return fmt.Sprintf("the checks on the head are %s, so there is nothing to run again", cmp.Or(f.Checks, "unread"))
 		case f.RerunOnHead:
 			return "the checks on this head were run again once already"
 		}

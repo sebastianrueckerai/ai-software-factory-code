@@ -3687,11 +3687,9 @@ func (c *Console) rerunChecks(ctx context.Context, a actor, q factoryd.ApprovalR
 			return "", refuse(http.StatusInternalServerError, "cannot read the merge request")
 		}
 	}
-	switch {
-	case !spec.Factory:
+	// Act read the head's checks before this work: only a red head comes here
+	if !spec.Factory {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The factory did not open pull request #%d, so it runs no checks again. Its checks run again when its author pushes, and `approve_merge` or `deny_merge` decides it.", q.PRNumber))
-	case !spec.RedChecks:
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are green, so nothing runs again: `approve_merge` merges it, and `deny_merge` with `reject` closes it.", q.PRNumber))
 	}
 	if err := c.cfg.RerunChecks(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
 		log.Printf("console: %s re-ran the checks of PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)

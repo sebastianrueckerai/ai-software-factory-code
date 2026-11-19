@@ -3170,12 +3170,17 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	if strings.Contains(got, `name="action" value="rerun_checks"`) || strings.Contains(got, "Send it back") || strings.Contains(got, "fund") {
 		t.Errorf("the green factory request offers a re-run, a return or a fund:\n%s", got)
 	}
+	// Act reads the head's checks and refuses a re-run on a green head (its
+	// own test holds the sentence): the press shows Act's words with the
+	// answers' labels, and nothing runs
 	r.fg.calls = nil
+	r.actErr = factoryd.ErrActRefused("the checks on the head are green, so there is nothing to run again, and the human may take `approve_merge` or `deny_merge` with `reject`")
 	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are green, so nothing runs again: “Merge it” merges it, and “Reject and close it” closes it.") ||
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "the checks on the head are green, so there is nothing to run again, and the human may take “Merge it” or “Reject and close it”") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run on green = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}
+	r.actErr = nil
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"high","head_sha":"abc123"}`)
 	rec = r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "The factory did not open pull request #9, so it runs no checks again. Its checks run again when its author pushes, and “Merge it” or “Send it back” decides it.") ||

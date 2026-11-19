@@ -320,6 +320,10 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 	if IsBoardAction(res.Action) && in.Work == nil {
 		return ActResult{}, ErrActRefused("`" + res.Action + "` is the console's work: take it from the board or the chat")
 	}
+	if res.Action == ActRerunChecks && c.Kind == CaseMergeApproval && in.Work == nil {
+		// the run waits on the request's own signal, which the console's work sends
+		return ActResult{}, ErrActRefused("`" + ActRerunChecks + "` on a merge ask is the console's work: take it from the board or the chat")
+	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
 	var draw *CaseDraw
@@ -1006,6 +1010,13 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 		return why + ", and " + who(in.Rung) + " may " + remedy
 	}
 	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" && mergeRuleRefusal(f, in.Rung, a.Name) == "" {
+		return why + ", and " + who(in.Rung) + " may wait for them to settle or close it (`deny_merge` with `reject`)"
+	}
+	if ok && a.Name == ActRerunChecks && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "red" {
+		// the merge ask's own answers on a head with nothing to run again
+		if f.Checks == "green" {
+			return why + ", and " + who(in.Rung) + " may take `approve_merge` or `deny_merge` with `reject`"
+		}
 		return why + ", and " + who(in.Rung) + " may wait for them to settle or close it (`deny_merge` with `reject`)"
 	}
 	var names []string
