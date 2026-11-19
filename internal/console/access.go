@@ -250,7 +250,12 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		return q.Project, fmt.Sprintf("approval request %d", q.ID), nil
+		// the refusal names the request's card, not the request's number
+		subject := "the card of this request"
+		if t, ok, err := c.cfg.Tasks.Task(ctx, q.TaskID); err == nil && ok {
+			subject = "card " + cardRef(button(r), t)
+		}
+		return q.Project, subject, nil
 	case scTask:
 		t, ok, err := c.cfg.Tasks.Task(ctx, r.PathValue("id"))
 		switch {

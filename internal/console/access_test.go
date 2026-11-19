@@ -26,6 +26,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	members(r)
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
+	// the card of the pending resource request 3, which its door's refusal names
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}})
 	bk, bs := memberLogin(t, r, "bob")
 	ak, as := memberLogin(t, r, "alice")
 
@@ -82,7 +84,7 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		cookie, csrf, name := bk, bs.csrf, "ai-software-factory-code"
 		subject, user := "card #5", "bob"
 		if rule.scope == scApproval {
-			subject = "approval request 3"
+			subject = "card #21"
 		}
 		if rule.scope == scProject || rule.scope == scChat {
 			cookie, csrf, name, subject, user = ak, as.csrf, "demo", "demo", "alice"
@@ -239,7 +241,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		cookie, s, name := ak, as, "ai-software-factory-code"
 		subject := "card #5"
 		if rule.scope == scApproval {
-			subject = "approval request 3"
+			subject = "card #21"
 		}
 		if rule.scope == scProject {
 			cookie, s, name, subject = bk, bs, "demo", "demo"
