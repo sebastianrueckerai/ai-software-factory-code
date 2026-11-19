@@ -77,11 +77,14 @@ type memStore struct {
 	events []EventRow
 	// failEvents refuses every event row
 	failEvents bool
-	spends     map[string]float64
-	ledger     []ledgerRow
-	usages     []policy.Usage // each ledger row's
-	holds      map[int64]policy.Hold
-	nextID     int64
+	// unbounded counts the event rows written with no deadline within
+	// five seconds
+	unbounded int
+	spends    map[string]float64
+	ledger    []ledgerRow
+	usages    []policy.Usage // each ledger row's
+	holds     map[int64]policy.Hold
+	nextID    int64
 	// reqs are the hold requests in order
 	reqs []policy.HoldRequest
 	// day is today's ledger total before this test's calls, month the
@@ -286,9 +289,12 @@ func (m *memStore) auditRows() []AuditRow {
 	return append([]AuditRow(nil), m.audits...)
 }
 
-func (m *memStore) InsertEvent(_ context.Context, row EventRow) error {
+func (m *memStore) InsertEvent(ctx context.Context, row EventRow) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if by, ok := ctx.Deadline(); !ok || time.Until(by) > 5*time.Second {
+		m.unbounded++
+	}
 	if m.failEvents {
 		return errors.New("the store is away")
 	}
@@ -3649,5 +3655,14 @@ func TestHoldClearPath(t *testing.T) {
 	}
 	if events = store.eventRows(); len(events) != 4 || events[3].Kind != "class_frozen" {
 		t.Fatalf("events after the failed clear = %+v, want the new arm as the fourth and last row", events)
+	}
+
+	// every row was written under a deadline of a few seconds: a store
+	// that stalls holds the calls of the gateway no longer than that
+	store.mu.Lock()
+	unbounded := store.unbounded
+	store.mu.Unlock()
+	if unbounded != 0 {
+		t.Fatalf("%d event rows were written with no deadline within five seconds, want none", unbounded)
 	}
 }

@@ -3841,3 +3841,24 @@ func TestFreezeCardAFailedReadOfTheStandingFreezesLosesNoArm(t *testing.T) {
 		}
 	}
 }
+
+// Hand-derived from a lapse and its re-arm that land just before a press:
+// #1 is frozen to R1 since 12:00. At 14:00 the gateway's hold lapses, the
+// probe's dated refusal of R1 arms it again, and a human presses, all
+// before the watcher's next pass. The press closes #1 with its comment.
+// The pass then reads the lapse, the re-arm and the press's row in one
+// batch. The press's row is after both arms, so the press answered them:
+// no arm opens #1 again. Without a fault #1 stays closed by the press with
+// the press's one comment, its end counted once, and the press's resume
+// that held wakes the frozen card once. A press that was lost leaves #1
+// open: the pass puts it on its resumed face, which takes no press, and it
+// closes itself at 14:05 with the self-resume's comment and no end
+// counted.
+func TestFreezeCardFaultsOfALapseAndItsReArmRightBeforeThePress(t *testing.T) {
+	freezeScenario(t, frozenCard, func(h *freezeTable) {
+		h.row("class_resumed", 5)
+		h.row("class_frozen", 5)
+		h.press()
+		h.pass()
+	}, "#1 done pressed R1 | open  | 1 comments, 1 ends, 1 wakes", lostPress("#1 done resumed R1 | open  | 1 comments, 0 ends, 1 wakes"))
+}
