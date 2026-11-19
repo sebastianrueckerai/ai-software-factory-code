@@ -31,7 +31,7 @@ func freezeCard(id, repository string, issue int64, status string) factoryd.Boar
 func TestFreezeCardShowsRetryNow(t *testing.T) {
 	r := newRig(t)
 	resumed := freezeCard("t-fz-resumed", "sf/code", 23, "waiting-human")
-	resumed.Objective = factoryd.IssueObjective(resumed.Question.Ask, "Class: coder\n\nThe class resumed on its own at 2026-11-21T17:00:00Z: the freeze held 5h 00m. "+
+	resumed.Objective = factoryd.IssueObjective(resumed.Question.Ask, "Class: coder\n\nThe model class resumed on its own at 2026-11-21T17:00:00Z: the freeze held 5h 00m. "+
 		"The card closes itself at 2026-11-21T17:05:00Z.\n\nThe freeze started at 2026-11-21T12:00:00Z.\nThe reset the provider named was 2026-11-21T17:00:00Z.")
 	r.tasks.tasks = []factoryd.BoardTask{freezeCard("t-fz", "sf/code", 21, "waiting-human"), freezeCard("t-fz-done", "sf/code", 22, "done"), resumed}
 	ck, s := r.loggedIn(t)

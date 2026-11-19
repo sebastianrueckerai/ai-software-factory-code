@@ -397,7 +397,7 @@ func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
 		!strings.Contains(fj.comments[0], ", for more than 1 minute.") {
 		t.Fatalf("comments %q, want the one provider-limit ask", fj.comments)
 	}
-	for _, want := range []string{"Add a fallback", "switch the class's model", "keep waiting", "The work cards ask nothing"} {
+	for _, want := range []string{"Add a second model the class can fall back on", "switch the class's model", "keep waiting", "The work cards ask nothing"} {
 		if !strings.Contains(fj.comments[0], want) {
 			t.Errorf("the ask lacks %q: %s", want, fj.comments[0])
 		}

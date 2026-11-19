@@ -205,7 +205,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 				fc, ok := plFreezeCard(ctx, t, r.store)
 				names := "2 cards of the class wait"
 				if status == "done" {
-					names = parkMember + " ended the freeze, and the waiting cards call the provider again."
+					names = parkMember + " ended the freeze of the " + policy.ClassCoder + " model class, and the waiting cards call the provider again."
 				}
 				if face := "The class resets at " + reset.Format(time.RFC3339); !ok || fc.Status != status || !strings.Contains(fc.Objective, face) ||
 					!strings.Contains(fc.Objective, names) || plFreezeCards(t, r.store.DB()) != 1 || len(fj.issues) != 1 {

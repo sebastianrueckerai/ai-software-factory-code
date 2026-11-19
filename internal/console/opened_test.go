@@ -829,6 +829,12 @@ func TestAFreezeCardReadsTrueOpenAndDone(t *testing.T) {
 		if want := "Model calls of the coder class froze at the provider's limit."; title != want {
 			t.Errorf("%s: the title = %q, want %q", e.Kind, title, want)
 		}
+		if !strings.Contains(page, "model class") {
+			t.Errorf("%s: no text of the card says “model class”:\n%s", e.Kind, page)
+		}
+		if gaveUp := strings.HasSuffix(e.Kind, "gave up"); gaveUp != strings.Contains(page, "Forgejo no longer has the issue or refuses to change it, so check that issue ") {
+			t.Errorf("%s: the card of a refused issue, and no other, says why and what to check:\n%s", e.Kind, page)
+		}
 		if !strings.Contains(page, `<span class="hint">no session</span>`) {
 			t.Errorf("%s: the fold of the sessions does not say “no session”:\n%s", e.Kind, page)
 		}

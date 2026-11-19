@@ -405,7 +405,7 @@ func TestFreezeCardOnePerClass(t *testing.T) {
 			continue
 		}
 		asks++
-		for _, want := range []string{"Add a fallback", "switch the class's model", "keep waiting"} {
+		for _, want := range []string{"Add a second model the class can fall back on", "switch the class's model", "keep waiting"} {
 			if !strings.Contains(c, want) {
 				t.Errorf("the ask lacks %q: %s", want, c)
 			}
@@ -415,7 +415,7 @@ func TestFreezeCardOnePerClass(t *testing.T) {
 		t.Fatalf("the freeze card asked %d times, want once", asks)
 	}
 	spoken, _, _ := store.Task(ctx, card2ID(store, repo))
-	if !strings.Contains(spoken.Objective, "Add a fallback") {
+	if !strings.Contains(spoken.Objective, "Add a second model") {
 		t.Errorf("the ask is not on the card's face:\n%s", spoken.Objective)
 	}
 	if err := w.Check(ctx); err != nil {
@@ -818,7 +818,7 @@ func TestFreezeCardRestartMidFreezeSpeaksOnce(t *testing.T) {
 		t.Fatalf("the freeze card asked %d times after the restart, want once", asks)
 	}
 	spoken, _, _ := store.Task(ctx, card.ID)
-	if !strings.Contains(spoken.Objective, "Add a fallback") {
+	if !strings.Contains(spoken.Objective, "Add a second model") {
 		t.Errorf("the ask is not on the card's face:\n%s", spoken.Objective)
 	}
 	freezeAsks(t, store)
@@ -1223,7 +1223,7 @@ func TestFreezeCardAdoptedWithNoCaseAsks(t *testing.T) {
 		}
 	}
 	const face = "Class: big\n\n" +
-		"The provider's limit freezes the class: the provider refuses every model call of the class until the limit resets.\n\n" +
+		"The provider's limit freezes the model class: the provider refuses every model call of the class until the limit resets.\n\n" +
 		"The provider said:\n\n```\nquota exhausted\n```\n\n" +
 		"The class resets at 2026-11-21T17:00:00Z (in 5h 00m). 2 cards of the class wait.\nThe freeze started at 2026-11-21T11:00:00Z.\n\n" +
 		"This card is a notice: it does no work and takes no place among the running cards. It updates when the provider names a new reset, and closes itself five minutes after the class resumes."
@@ -1329,8 +1329,8 @@ func TestFreezeCardAdoptedAfterItSpokeStaysQuiet(t *testing.T) {
 	}
 	got := store.tasks["t-old-freeze"].Objective
 	if !strings.HasSuffix(got, "\n\nThe provider's limit has held the big class since 2026-11-21T12:00:00Z, for more than 24 hours. "+
-		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
-		strings.Count(got, "Add a fallback") != 1 || strings.Contains(got, "waits.provider_limit") {
+		"Add a second model the class can fall back on, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
+		strings.Count(got, "Add a second model") != 1 || strings.Contains(got, "Add a fallback") || strings.Contains(got, "waits.provider_limit") {
 		t.Errorf("the adopted card's face:\n%s", got)
 	}
 	if len(fj.comments) != 0 {
@@ -1418,7 +1418,7 @@ func TestFreezeCardAskKnowsTheFaceAsItStands(t *testing.T) {
 	}
 	card, _, _ := store.Task(ctx, cardOfClass(store, repo, "big"))
 	if got := info(); !strings.HasSuffix(got, "The provider's limit has held the big class since 2026-11-21T12:00:00Z, for more than 24 hours. "+
-		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
+		"Add a second model the class can fall back on, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
 		card.Objective != "Model calls of the big class froze at the provider's limit\n\n"+got {
 		t.Fatalf("after the card spoke the ask knows:\n%s\nand the face:\n%s", got, card.Objective)
 	}
@@ -1426,7 +1426,7 @@ func TestFreezeCardAskKnowsTheFaceAsItStands(t *testing.T) {
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := info(); got != "Class: big\n\nThe class resumed on its own at 2026-11-22T13:00:00Z: the freeze held 25h 00m. The card closes itself at 2026-11-22T13:05:00Z.\n\n"+
+	if got := info(); got != "Class: big\n\nThe model class resumed on its own at 2026-11-22T13:00:00Z: the freeze held 25h 00m. The card closes itself at 2026-11-22T13:05:00Z.\n\n"+
 		"The freeze started at 2026-11-21T12:00:00Z.\nThe reset the provider named was 2026-11-23T05:00:00+08:00." {
 		t.Fatalf("after the resume the ask knows:\n%s", got)
 	}
@@ -1645,7 +1645,7 @@ func TestFreezeCardRecheckLapseStaysQuiet(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := freezeCardOn(t, store, 1)
-	if c.Status != "waiting-human" || !strings.Contains(c.Objective, "in 5h 00m") || !strings.Contains(c.Objective, "Add a fallback") ||
+	if c.Status != "waiting-human" || !strings.Contains(c.Objective, "in 5h 00m") || !strings.Contains(c.Objective, "Add a second model") ||
 		strings.Contains(c.Objective, freezeResumedSentence) || len(fj.comments) != 1 {
 		t.Fatalf("after the lapse the card stands %s, comments %q:\n%s", c.Status, fj.comments, c.Objective)
 	}
@@ -1915,7 +1915,7 @@ func TestFreezeCardAsksOnceAcrossReArms(t *testing.T) {
 			asks++
 		}
 	}
-	if c := freezeCardOn(t, store, 1); asks != 1 || !strings.Contains(c.Objective, "in 14h 00m") || !strings.Contains(c.Objective, "Add a fallback") {
+	if c := freezeCardOn(t, store, 1); asks != 1 || !strings.Contains(c.Objective, "in 14h 00m") || !strings.Contains(c.Objective, "Add a second model") {
 		t.Fatalf("the card asked %d times, comments %q:\n%s", asks, fj.comments, c.Objective)
 	}
 }
@@ -2029,7 +2029,7 @@ func TestFreezeCardRefusedIssueEndsTheCard(t *testing.T) {
 	}
 	if c := freezeCardOn(t, store, 3); len(fj.issues) != 3 || c.Status != "waiting-human" || !objectiveHasClassLine(c.Objective, "small") ||
 		!strings.Contains(c.Objective, "free quota exhausted") || !strings.Contains(c.Objective, "The class resets at 2026-11-22T18:00:00Z (in 5h 00m)") ||
-		!strings.Contains(c.Objective, "Add a fallback") || asks != 1 {
+		!strings.Contains(c.Objective, "Add a second model") || asks != 1 {
 		t.Fatalf("small's replacement on %d issues stands %s, asked %d times:\n%s", len(fj.issues), c.Status, asks, c.Objective)
 	}
 }
@@ -2706,7 +2706,7 @@ func TestFreezeCardReopenedCardAsksForItsOwnFreeze(t *testing.T) {
 			pass(51*time.Hour+time.Minute, false, 1, 2)
 			for _, since := range []string{"2026-11-21T12:00:00Z", "2026-11-22T14:02:00Z"} {
 				if n := commentsSaying(fj, "#1 The provider's limit has held the big class since "+since+
-					", for more than 24 hours. Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing."); n != 1 {
+					", for more than 24 hours. Add a second model the class can fall back on, switch the class's model in policy, or keep waiting. The work cards ask nothing."); n != 1 {
 					t.Fatalf("%d asks name the freeze since %s, want one: %q", n, since, fj.comments)
 				}
 			}

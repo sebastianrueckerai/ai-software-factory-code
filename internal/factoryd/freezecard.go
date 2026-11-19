@@ -27,7 +27,7 @@ const freezeResumeHold = 5 * time.Minute
 
 // freezeResumedSentence is the resumed face's tell: the sentence a done
 // freeze card carries only when its episode ended on a self-resume.
-const freezeResumedSentence = "The class resumed on its own"
+const freezeResumedSentence = "The model class resumed on its own"
 
 // freezeResumedFace is the card's face once its class resumed on its
 // own: the held time and the close the face schedules.
@@ -73,7 +73,7 @@ const freezePressedSentence = "The retry press closed this card"
 // refusal before it opens the card again and a limit after it files a new
 // card; a face with no reset bounds nothing, and a new limit files anew.
 func freezePressedBody(class, by string, at time.Time, reset string) string {
-	body := fmt.Sprintf("Class: %s\n\n%s at %s: %s ended the freeze, and the waiting cards call the provider again.", class, freezePressedSentence, stamp(at), by)
+	body := fmt.Sprintf("Class: %s\n\n%s at %s: %s ended the freeze of the %s model class, and the waiting cards call the provider again.", class, freezePressedSentence, stamp(at), by, class)
 	if _, err := time.Parse(time.RFC3339, reset); err == nil {
 		body += fmt.Sprintf("\n\nThe class resets at %s (the reset the provider named): if the provider refuses a call before then, this card opens again, and a limit after then files a new card.", reset)
 	}
@@ -115,7 +115,7 @@ const freezeSpokeLead = "The provider's limit has held the "
 // a card the press closed and a re-arm opened again says its own.
 func freezeSpoken(class string, limit time.Duration, since time.Time) string {
 	return fmt.Sprintf(freezeSpokeLead+"%s class since %s, for more than %s. "+
-		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.",
+		"Add a second model the class can fall back on, switch the class's model in policy, or keep waiting. The work cards ask nothing.",
 		class, stamp(since), minutesWord(limit))
 }
 
@@ -931,7 +931,8 @@ func countHumanEnd(ctx context.Context, m *telemetry.Metrics, store interface {
 // for good; the cause stands in the card's row and the log. While the class is frozen it keeps the reset and the
 // start of its freeze, which the card filed in its place takes on.
 func freezeRefusedBody(st *freezeClass) string {
-	body := fmt.Sprintf("Class: %s\n\n%s #%d for good, so the card ended: a new card speaks for the class while it is frozen.", st.class, freezeRefusedSentence, st.issue)
+	body := fmt.Sprintf("Class: %s\n\n%s #%d for good, so the card ended: a new card speaks for the %s model class while it is frozen. "+
+		"Forgejo no longer has the issue or refuses to change it, so check that issue #%d still exists.", st.class, freezeRefusedSentence, st.issue, st.class, st.issue)
 	if reset, err := time.Parse(time.RFC3339, st.reset); err == nil && st.resumedAt.IsZero() {
 		body += fmt.Sprintf(freezeRefusedReset+"%s (the reset the provider named).\n%s%s.", stamp(reset), freezeStarted, stamp(st.frozenAt))
 	}
@@ -1516,7 +1517,7 @@ func (w *FreezeCard) findClosedCard(ctx context.Context, st *freezeClass, at tim
 func freezeCardBody(ev FreezeEvent, count int, now, since time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Class: %s\n\n", ev.Class)
-	b.WriteString("The provider's limit freezes the class: the provider refuses every model call of the class until the limit resets.\n\n")
+	b.WriteString("The provider's limit freezes the model class: the provider refuses every model call of the class until the limit resets.\n\n")
 	b.WriteString("The provider said:\n\n" + fenced(ev.Words) + "\n\n")
 	if reset, err := time.Parse(time.RFC3339, ev.Reset); err == nil {
 		fmt.Fprintf(&b, "The class resets at %s (%s). ", stamp(reset), freezeCountdown(reset, now))
