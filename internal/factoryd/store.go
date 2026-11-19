@@ -193,9 +193,10 @@ func (t Task) Left() float64 { return policy.Left(t.BudgetEUR, t.SpentEUR, t.Hel
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
 // and the runner's RunState ask it; it folds Source alone, no row read.
-func (t Task) Report() bool {
-	return t.Source == SourceScreening || t.Source == SourceSizing || t.Source == SourceProver
-}
+func (t Task) Report() bool { return slices.Contains(reportSources, t.Source) }
+
+// reportSources are the sources of a report task.
+var reportSources = []string{SourceScreening, SourceSizing, SourceProver}
 
 // Standing is the issue author's standing: telemetry for an
 // alert card, writer for an author who could write the repository,
@@ -1673,12 +1674,16 @@ func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue 
 // the store's clock), the wait for Forgejo's webhook of the close, and one
 // of a card with no issue (comment_id 0), which no webhook confirms, at
 // any age. HealFactoryCloses, the temporal heal pass that answers them, is
-// its sole caller.
+// its sole caller. No row of a freeze card is listed: its closes are its
+// watcher's (UnconfirmedFreezeCloses), and its record off its issue
+// (comment_id 0) is the card's earlier end, not the close of a card with
+// no issue.
 func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
 		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND (comment_id = 0 OR created_at < now() - $2 * interval '1 second')
-		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit)
+		   AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = intake_events.task_id AND t.source = $4)
+		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit, SourceFreezeCard)
 	return scanIntakeEvents(rows, err)
 }
 

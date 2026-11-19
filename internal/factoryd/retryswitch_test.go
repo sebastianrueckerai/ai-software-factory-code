@@ -223,7 +223,7 @@ func rowKinds(store *freezeStore) []string {
 // and each press leaves its freeze_retried row: who, how, the class, the
 // cards closed and woken. The switch refuses a work card and a done freeze
 // card by their state, and a press with no hold armed and no frozen card
-// is a quiet success.
+// leaves its class_resumed row and closes its card alone.
 func TestRetrySwitchEndsFreeze(t *testing.T) {
 	for _, entry := range []struct {
 		name    string
@@ -308,7 +308,7 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 	}
 	// sf/acme's face counts t1, t2 and the queued t4, not t6, which the
 	// hold of small holds; sf/other's counts t5
-	if a, o := cards[acme].Objective, cards[other].Objective; !strings.Contains(a, "3 cards of the class wait") || !strings.Contains(o, "1 cards of the class wait") {
+	if a, o := cards[acme].Objective, cards[other].Objective; !strings.Contains(a, "3 cards of the class wait") || !strings.Contains(o, "1 card of the class waits.") {
 		t.Fatalf("the faces count wrong:\n%s\n\n%s", a, o)
 	}
 	cardStatus := func(repo string) string {
@@ -527,7 +527,8 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 	}
 
 	// the premium class's open card with no hold armed and no frozen card:
-	// a quiet success that closes the card alone
+	// the press leaves its class_resumed row on the card and closes the
+	// card alone
 	premium := Task{ID: "fc-premium", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, Repository: acme, IssueNumber: 90,
 		Objective: freezeCardTitle("premium") + "\n\n" + freezeClassMarker("premium")}
 	if err := store.CreateTask(ctx, premium); err != nil {
@@ -537,8 +538,9 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 	if err := sw.RetryFreeze(ctx, premium.ID, "sebastian", ViaButton); err != nil {
 		t.Fatalf("the empty press: %v", err)
 	}
-	if got, _, _ := store.Task(ctx, premium.ID); len(store.rows) != 6 || len(signalled) != 0 || cardStatus(acme) != "waiting-human" || got.Status != "done" {
-		t.Fatalf("the empty press: rows %q, woke %q, sf/acme's card %s, premium's %s; want only premium's card closed", rowKinds(store), signalled, cardStatus(acme), got.Status)
+	if got, _, _ := store.Task(ctx, premium.ID); len(store.rows) != 7 || store.rows[6].Kind != "class_resumed" || store.rows[6].Class != "premium" || store.rows[6].TaskID != premium.ID ||
+		len(signalled) != 0 || cardStatus(acme) != "waiting-human" || got.Status != "done" {
+		t.Fatalf("the empty press: rows %+v, woke %q, sf/acme's card %s, premium's %s; want a seventh row, premium's class_resumed on its card, and only premium's card closed", store.rows, signalled, cardStatus(acme), got.Status)
 	}
 	if !slices.ContainsFunc(fj.comments, func(c string) bool {
 		return strings.Contains(c, "sebastian's retry press cleared the premium class's hold")

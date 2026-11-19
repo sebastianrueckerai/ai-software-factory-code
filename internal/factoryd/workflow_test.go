@@ -3241,6 +3241,19 @@ func TestWorkflowReportProviderWaitEndsOnTheClose(t *testing.T) {
 	}
 }
 
+// Hand-derived from a report task frozen to a provider's reset 88 hours
+// out: the close its card's end sends a minute into the hold ends the
+// task closed at that minute, after its one session, and no session runs
+// at the reset.
+func TestWorkflowReportLimitHoldEndsOnTheClose(t *testing.T) {
+	h, began, _ := reportHarness(t, ReportResult{Refused: ProviderWait{Status: 429, Reason: "provider limit for class analyzer", Until: oct(14, 20, 0).Add(88 * time.Hour), Words: "free quota exhausted"}})
+	h.env.SetStartTime(oct(14, 20, 0))
+	h.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: FactoryDecider})
+	if final := h.run(t); final != "closed" || len(*began) != 1 || h.finishAt.Sub((*began)[0]) != time.Minute {
+		t.Fatalf("final = %q after %d sessions at %v, want closed after one, at the close", final, len(*began), h.finishAt.Sub((*began)[0]))
+	}
+}
+
 // A Forgejo or LiteLLM outage longer than any bounded retry must not strand
 // the task: Finish and the other short activities retry for a day, backoff
 // capped at five minutes; only a refusal ends them sooner. (The test
