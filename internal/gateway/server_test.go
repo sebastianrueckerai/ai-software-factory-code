@@ -80,11 +80,13 @@ type memStore struct {
 	// unbounded counts the event rows written with no deadline within
 	// five seconds
 	unbounded int
-	spends    map[string]float64
-	ledger    []ledgerRow
-	usages    []policy.Usage // each ledger row's
-	holds     map[int64]policy.Hold
-	nextID    int64
+	// onEvent is called with the kind of each event row before it lands
+	onEvent func(kind string)
+	spends  map[string]float64
+	ledger  []ledgerRow
+	usages  []policy.Usage // each ledger row's
+	holds   map[int64]policy.Hold
+	nextID  int64
 	// reqs are the hold requests in order
 	reqs []policy.HoldRequest
 	// day is today's ledger total before this test's calls, month the
@@ -294,6 +296,9 @@ func (m *memStore) InsertEvent(ctx context.Context, row EventRow) error {
 	defer m.mu.Unlock()
 	if by, ok := ctx.Deadline(); !ok || time.Until(by) > 5*time.Second {
 		m.unbounded++
+	}
+	if m.onEvent != nil {
+		m.onEvent(row.Kind)
 	}
 	if m.failEvents {
 		return errors.New("the store is away")
@@ -3665,4 +3670,85 @@ func TestHoldClearPath(t *testing.T) {
 	if unbounded != 0 {
 		t.Fatalf("%d event rows were written with no deadline within five seconds, want none", unbounded)
 	}
+}
+
+// TestHoldChangesOnlyWithItsRow: the rows are the truth of a class's hold,
+// so an arm, a lapse and a clear each write their row under the hold's
+// lock and change the hold only when the row stands. The store refuses
+// the arm's row at 16:00: no hold stands, and the next call probes the
+// upstream again, whose refusal arms the hold with its row once the store
+// answers. The hold lapses at 16:15, the arm plus provider_recheck, and
+// the store refuses the lapse's row: the hold stays and the call at 16:16
+// is answered locally. Once the store answers, the call at 16:17 writes
+// the class_resumed and probes the upstream. No row is written with the
+// hold's lock free.
+func TestHoldChangesOnlyWithItsRow(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore()
+	store.tasks["42"] = Task{Classes: []string{"big"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big", Repository: "sf/code"}
+	store.setPolicy(providerLimitPolicy())
+	s := NewServer(ServerOptions{
+		Auth:          fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:         store,
+		Minter:        &fakeMinter{},
+		LiteLLMURL:    stub.URL,
+		Prices:        testPrices,
+		FactorydToken: testFactorydToken,
+	})
+	base := time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	h := s.Routes("test")
+	var unlocked []string
+	store.onEvent = func(kind string) {
+		if s.holdMu.TryLock() {
+			s.holdMu.Unlock()
+			unlocked = append(unlocked, kind)
+		}
+	}
+	fail := func(on bool) {
+		store.mu.Lock()
+		store.failEvents = on
+		store.mu.Unlock()
+	}
+	refusal := `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50","type":"rate_limit_error","param":null,"code":"429"}}`
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: refusal})
+	call := func(what string, wantHits, wantRows int) {
+		t.Helper()
+		rr := doChat(t, h, chatBody("big"))
+		if rr.Header().Get(HeaderDecision) != RefusedProviderLimit || len(stub.auths) != wantHits || len(store.eventRows()) != wantRows {
+			t.Fatalf("%s = %d %q with %d upstream hits and the rows %+v, want a refused_provider_limit, %d hits and %d rows",
+				what, rr.Code, rr.Header().Get(HeaderDecision), len(stub.auths), store.eventRows(), wantHits, wantRows)
+		}
+	}
+
+	fail(true)
+	call("the call whose arm's row the store refused", 1, 0)
+	call("the next call, with no hold armed", 2, 0)
+	fail(false)
+	call("the call whose arm's row stands", 3, 1)
+	call("the call under the hold", 3, 1)
+
+	s.now = func() time.Time { return base.Add(16 * time.Minute) }
+	fail(true)
+	call("the call whose lapse's row the store refused", 3, 1)
+	fail(false)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`})
+	s.now = func() time.Time { return base.Add(17 * time.Minute) }
+	if rr := doChat(t, h, chatBody("big")); rr.Code != http.StatusOK || len(stub.auths) != 4 {
+		t.Fatalf("the call whose lapse's row stands = %d %s with %d upstream hits, want the probe served, the fourth hit", rr.Code, rr.Body.String(), len(stub.auths))
+	}
+	if kinds := strings.Join(eventKinds(store.eventRows()), " "); kinds != "class_frozen class_resumed" {
+		t.Fatalf("rows = %q, want the arm and the lapse", kinds)
+	}
+	if len(unlocked) != 0 {
+		t.Fatalf("the rows %q were written with the hold's lock free, want every row under it", unlocked)
+	}
+}
+
+func eventKinds(rows []EventRow) []string {
+	var out []string
+	for _, r := range rows {
+		out = append(out, r.Kind)
+	}
+	return out
 }
