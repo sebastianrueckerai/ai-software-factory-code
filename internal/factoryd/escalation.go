@@ -241,10 +241,13 @@ func NoLongerWaits(numbers []int64) string {
 // (IntakeFactoryClosed), the sentence naming what it dropped added to it, so
 // an empty comment posts that sentence alone, then posts comment unless it
 // is "", closes the issue and confirms the record. A later step that fails
-// returns, the record left unconfirmed for the next call or the heal; only a
+// returns, the record left unconfirmed for the next call, the heal or, for a
+// freeze card, its watcher; only a
 // comment Forgejo refuses (forgejoTerminal) is logged, and the close goes
 // on. A call that finds the record posts the recorded comment, not its own,
-// where the issue lacks it (CommentOnce): one close, one comment. The
+// where the issue lacks it: one close, one comment, also for a card whose
+// earlier close, off its issue since a reopen, said the same words
+// (finishClose). The
 // sentence names what this call dropped: a retry after a failed record or a
 // partly done removal finds those edges gone and does not name them, and the
 // issue's timeline in Forgejo shows each removal. A card with no issue gets
@@ -279,6 +282,7 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 	if err != nil {
 		return err
 	}
+	closes := 0
 	if id == 0 {
 		events, err := store.IntakeEvents(ctx, t.ID)
 		if err != nil {
@@ -288,13 +292,36 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 		if i := slices.IndexFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber }); i >= 0 {
 			comment = events[i].Body
 		}
+		for _, e := range events {
+			if e.Kind == IntakeFactoryClosed && e.Body == comment {
+				closes++
+			}
+		}
+	}
+	return finishClose(ctx, store, forgejo, t, comment, closes)
+}
+
+// finishClose is the Forgejo side of a close factoryd recorded: it posts
+// comment unless it is "", closes the issue and confirms the record. The
+// call that made the record passes closes 0 and posts a new comment. A
+// later call passes how many closes the card recorded with these words,
+// this one and those a reopen took off the issue, and posts the comment
+// unless the issue holds that many (CommentTimes): each close has its own
+// comment, and a call made again posts none twice. Only a comment Forgejo
+// refuses (forgejoTerminal) is logged, and the close goes on.
+func finishClose(ctx context.Context, store interface {
+	ConfirmFactoryClose(context.Context, string, int64) error
+}, forgejo *Forgejo, t Task, comment string, closes int) error {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
 	}
 	switch {
 	case comment == "":
-	case id > 0:
+	case closes == 0:
 		_, err = forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
 	default:
-		err = forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
+		err = forgejo.CommentTimes(ctx, repo.Owner, repo.Name, t.IssueNumber, comment, closes)
 	}
 	if forgejoTerminal(err) {
 		log.Printf("task %s: issue #%d closes without its comment, which Forgejo refused: %v", t.ID, t.IssueNumber, err)

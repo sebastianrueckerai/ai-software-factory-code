@@ -76,8 +76,9 @@ func (e *PartialPressError) Unwrap() error { return e.Err }
 // class_resumed event on the card's row. It reads the frozen cards first,
 // so a read that fails moves nothing, and a hold the gateway did not clear
 // moves nothing else; once the hold cleared, the press runs to its end
-// whatever becomes of the caller. With no hold armed and no frozen card it
-// is a quiet success.
+// whatever becomes of the caller. The gateway writes the row also when it
+// holds no hold, as after its restart: the row ends the freeze in the rows
+// the watcher reads, so the press's close stands.
 func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by, via string) error {
 	card, ok, err := s.Freeze.Store.Task(ctx, cardID)
 	if err != nil {
@@ -127,7 +128,8 @@ func (s *RetrySwitch) retryFreeze(ctx context.Context, cardID, class, by, via st
 	}
 	woken, frozen, failed := s.Freeze.wake(ctx, cards)
 	errs = append(errs, failed...)
-	log.Printf("retry switch: %s cleared the %s class's hold, %d freeze cards closed, %d of %d frozen cards woken", by, class, closed, woken, frozen)
+	log.Printf("retry switch: %s cleared the %s class's hold, %s closed, %d of %d frozen cards woken", by, class,
+		textutil.Plural(closed, "freeze card", "freeze cards"), woken, frozen)
 	s.Freeze.Timeline.RecordRow(ctx, cardID, EventFreezeRetried, by, via, map[string]any{"class": class, "closed": closed, "woken": woken, "frozen": frozen})
 	if len(errs) > 0 {
 		return &PartialPressError{Err: errors.Join(errs...)}

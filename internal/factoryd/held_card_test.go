@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -223,5 +226,32 @@ func TestAFaceTakesOnTheIssueAFailedFaceLeft(t *testing.T) {
 	}
 	if got.IssueNumber != 44 || store.tasks["t-h"].IssueNumber != 44 || len(f.issues) != 0 || !reflect.DeepEqual(f.labelled, []string{"sf/r#44 human state/waiting-human"}) {
 		t.Fatalf("card on #%d (stored #%d), issues %q, labels %q; want #44 taken on, labelled, no issue filed", got.IssueNumber, store.tasks["t-h"].IssueNumber, f.issues, f.labelled)
+	}
+}
+
+// A freeze card's close record off its issue (comment_id 0) is the card's
+// earlier end, not the close of a card that had no issue. The watcher's
+// reopen confirms such a record (ReopenFreezeCard); this one is not
+// confirmed, as a record a reopen left before that change. The heal pass
+// lists no row of a freeze card, so it leaves the card's issue open and
+// the card waiting, and calls Forgejo for neither issue.
+func TestTheHealLeavesAFreezeCardsForgottenCloseOffItsIssue(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.CreateTask(ctx, Task{ID: "fz", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, Repository: "linkshort/linkshort", IssueNumber: 5, Track: "direct"})
+	store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "fz", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, Body: "factoryd: the press closed this card.", CreatedAt: time.Now().Add(-time.Minute)})
+	for i := range store.intakeEvents {
+		store.intakeEvents[i].CommentID = 0
+	}
+	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}, failCall: "GET issues/0", failStatus: http.StatusNotFound}
+	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+	if err := in.HealFactoryCloses(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fj.issues[5].state != "open" || slices.ContainsFunc(fj.calls, func(c string) bool { return strings.Contains(c, "issues/") }) || store.tasks["fz"].Status != "waiting-human" {
+		t.Fatalf("issue #5 %s, calls %q, card %s; want no issue called and the card waiting-human", fj.issues[5].state, fj.calls, store.tasks["fz"].Status)
+	}
+	if left, err := store.UnconfirmedFactoryCloses(ctx, 0, 10); err != nil || len(left) != 0 {
+		t.Fatalf("the heal's unconfirmed closes = %+v, %v; want no row of a freeze card", left, err)
 	}
 }

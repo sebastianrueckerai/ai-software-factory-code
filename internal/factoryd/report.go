@@ -38,6 +38,9 @@ const maxReport = 64 << 10
 
 // openReport opens parent's report task of source and class at sha, once
 // per parent and source, and starts its workflow unless it has finished.
+// A report task the factory closed because its card was gone did not
+// finish, and it runs again for the card that asks now. One a human
+// closed stands as the report's answer.
 // Like every agent card it is on a track, the direct one, though it runs
 // its own class. Its brief is its source's, its text the parent's, which
 // its session reads.
@@ -49,7 +52,18 @@ func openReport(ctx context.Context, store Store, workflows Workflows, budget po
 	if err != nil {
 		return Task{}, fmt.Errorf("open the %s task of %s: %w", source, parent.ID, err)
 	}
-	if !Final(t.Status) {
+	switch {
+	case t.Status == "closed" && strings.HasPrefix(t.ClosingReason, ReasonCardGone):
+		// the card's earlier end closed its report task (endOrphanReport);
+		// the card lives again and needs the report: a new run
+		if err := store.TransitionTask(ctx, t.ID, []string{"closed"}, "queued"); err != nil {
+			return Task{}, fmt.Errorf("open the %s task %s again: %w", source, t.ID, err)
+		}
+		t.Status = "queued"
+		if err := workflows.Reopen(ctx, t.ID, "", TaskSignal{}); err != nil {
+			return Task{}, fmt.Errorf("start the %s task %s again: %w", source, t.ID, err)
+		}
+	case !Final(t.Status):
 		if err := workflows.Start(ctx, t.ID); err != nil {
 			return Task{}, fmt.Errorf("start the %s task %s: %w", source, t.ID, err)
 		}
@@ -310,21 +324,38 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 // reportOf opens t's report task of source, an analyzer session at t's
 // commit, and waits until it is final.
 func (r *Runner) reportOf(ctx context.Context, t Task, source string) (Task, error) {
-	child, err := openReport(ctx, r.store, r.cfg.Workflows, r.cfg.Policy().Document.Budget, t, source, policy.ClassAnalyzer, t.SHA)
-	if err != nil {
-		return Task{}, err
-	}
-	for !Final(child.Status) {
-		select {
-		case <-ctx.Done():
-			return Task{}, ctx.Err()
-		case <-time.After(r.cfg.ChecksPoll):
-		}
-		if child, _, err = r.task(ctx, child.ID); err != nil {
+	return awaitReport(ctx, r.store, r.cfg.Workflows, r.cfg.Policy().Document.Budget, r.cfg.ChecksPoll, t, source)
+}
+
+// awaitReport is reportOf over its store and workflows, polling each poll.
+// A report task that ends closed under the wait was ended for a card that
+// was gone when the heal pass read it and lives now: it is opened once
+// more.
+func awaitReport(ctx context.Context, store Store, workflows Workflows, budget policy.Budget, poll time.Duration, t Task, source string) (Task, error) {
+	for again := false; ; again = true {
+		child, err := openReport(ctx, store, workflows, budget, t, source, policy.ClassAnalyzer, t.SHA)
+		if err != nil {
 			return Task{}, err
 		}
+		for !Final(child.Status) {
+			select {
+			case <-ctx.Done():
+				return Task{}, ctx.Err()
+			case <-time.After(poll):
+			}
+			got, ok, err := store.Task(ctx, child.ID)
+			if err != nil {
+				return Task{}, err
+			}
+			if !ok {
+				return Task{}, terminalError("task %s not found", child.ID)
+			}
+			child = got
+		}
+		if child.Status != "closed" || !strings.HasPrefix(child.ClosingReason, ReasonCardGone) || again {
+			return child, nil
+		}
 	}
-	return child, nil
 }
 
 // Screen is the screening stage: it opens the task's

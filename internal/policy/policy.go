@@ -1634,6 +1634,16 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 	return ""
 }
 
+// BriefClasses are the classes a card's brief is written under: the card's
+// own, or every class of the policy, by name, for a human card that holds
+// none.
+func (d Document) BriefClasses(classes []string) []string {
+	if len(classes) > 0 {
+		return classes
+	}
+	return slices.Sorted(maps.Keys(d.Classes))
+}
+
 // PurposeModels are the aliases factoryd may call for purpose on a task
 // of classes: the chat's turn classes for the chat's operator calls, every
 // class's alias of the purpose for the rungs' check-in calls and the brief

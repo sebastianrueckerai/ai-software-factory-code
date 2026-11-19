@@ -228,6 +228,27 @@ func (tl *Timeline) RecordFact(ctx context.Context, e Event) {
 // done (one factoryd replica).
 var allDoneMu sync.Mutex
 
+// ReasonCardGone opens the closing reason of a report task the factory
+// ended because its card was gone.
+const ReasonCardGone = "its card is gone: "
+
+// cardGone tells why report task c's card is gone, "" while it is not:
+// closed, or failed for a screening or a sizing, whose gate belongs to
+// the card's run. A failed plan keeps its prover, which a replan of the
+// plan takes up again, and a done plan's prover still writes its proofs.
+func cardGone(ctx context.Context, store Store, c Task) (string, error) {
+	parent, ok, err := store.Task(ctx, c.Parent)
+	switch {
+	case err != nil:
+		return "", err
+	case !ok:
+		return ReasonCardGone + c.Parent + " is not there", nil
+	case parent.Status == "closed" || parent.Status == "failed" && c.Source != SourceProver:
+		return ReasonCardGone + cardName(parent) + " ended " + parent.Status, nil
+	}
+	return "", nil
+}
+
 // taskEnded records task t's end in state final, with why when one is
 // told (a failure's reason as its issue comment carries it, which its
 // poke tells), and on each card a hold keeps until t that a failed or

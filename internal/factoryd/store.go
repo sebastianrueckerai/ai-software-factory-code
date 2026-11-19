@@ -1639,22 +1639,18 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 	return err
 }
 
+// askInfoSQL rewrites the info ($2) of card $1's newest ask of kind $3
+// from source $4. An info that is the stored one writes nothing.
+const askInfoSQL = `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
+			AND detail->>'info' IS DISTINCT FROM $2::text`
+
 // SetAskInfo rewrites the info of card taskID's newest ask from source:
 // its own question_asked row, which the opened card reads, and
-// not a proposal's row beside it. An info that is the stored one writes nothing.
+// not a proposal's row beside it.
 func (s *PGStore) SetAskInfo(ctx context.Context, taskID, source, info string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
-		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
-			AND detail->>'info' IS DISTINCT FROM $2::text`,
-		taskID, info, EventQuestionAsked, source); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := s.db.ExecContext(ctx, askInfoSQL, taskID, info, EventQuestionAsked, source)
+	return err
 }
 
 // caseFaceSQL stores face keys $2 on the newest ask row of case $1
@@ -1707,12 +1703,16 @@ func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue 
 // the store's clock), the wait for Forgejo's webhook of the close, and one
 // of a card with no issue (comment_id 0), which no webhook confirms, at
 // any age. HealFactoryCloses, the temporal heal pass that answers them, is
-// its sole caller.
+// its sole caller. No row of a freeze card is listed: its closes are its
+// watcher's (UnconfirmedFreezeCloses), and its record off its issue
+// (comment_id 0) is the card's earlier end, not the close of a card with
+// no issue.
 func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
 		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND (comment_id = 0 OR created_at < now() - $2 * interval '1 second')
-		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit)
+		   AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = intake_events.task_id AND t.source = $4)
+		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit, SourceFreezeCard)
 	return scanIntakeEvents(rows, err)
 }
 

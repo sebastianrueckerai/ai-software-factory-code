@@ -931,63 +931,90 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 // next pass, 50 a pass. A record
 // whose task is gone or has no splittable repository, or whose issue is
 // closed already, is confirmed without a write. A refusal from Forgejo
-// (forgejoTerminal) settles the record, which no retry changes; any other
-// error joins and the record waits for the next pass.
+// (forgejoTerminal) settles the record; any other error joins and the
+// record waits for the next pass. A freeze card's close is not listed:
+// its watcher finishes it in its own pass (FreezeCard.closeOwed).
 func (in *Intake) HealFactoryCloses(ctx context.Context) error {
-	rows, err := in.Store.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 50)
+	rows, err := in.Store.UnconfirmedFactoryCloses(ctx, closeHealAge, 50)
 	if err != nil {
 		return err
 	}
 	var errs []error
 	for _, row := range rows {
-		if err := in.healFactoryClose(ctx, row); err != nil {
+		heal := func() error { return healFactoryClose(ctx, in.Store, in.Forgejo, row, forgejoTerminal) }
+		if row.CommentID == 0 {
+			heal = func() error { return in.healIssuelessClose(ctx, row) }
+		}
+		if err := heal(); err != nil {
 			errs = append(errs, fmt.Errorf("close of #%d of task %s: %w", row.CommentID, row.TaskID, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
+// healIssuelessClose finishes the close row records of a card that had no
+// issue (comment_id 0): a human card ends on it, and one whose face filed
+// its issue since has that issue closed. A record whose task is gone is
+// confirmed. No freeze card's row comes here: the heal's read lists none.
+func (in *Intake) healIssuelessClose(ctx context.Context, row IntakeEvent) error {
 	t, ok, err := in.Store.Task(ctx, row.TaskID)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return in.Store.ConfirmFactoryClose(ctx, row.TaskID, row.CommentID)
+	switch {
+	case !ok:
+	case t.Kind == "human" && t.IssueNumber != 0:
+		err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
+	case t.Kind == "human":
+		err = in.finishHumanTask(ctx, t, "done", "", in.BotUser, nil)
 	}
-	if row.CommentID == 0 {
-		// the close of a card that had no issue: a human card ends on it,
-		// and one whose face filed its issue since has that issue closed
-		switch {
-		case t.Kind == "human" && t.IssueNumber != 0:
-			err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
-		case t.Kind == "human":
-			err = in.finishHumanTask(ctx, t, "done", "", in.BotUser, nil)
-		}
-		if err != nil {
-			return err
-		}
-		return in.Store.ConfirmFactoryClose(ctx, t.ID, 0)
+	if err != nil {
+		return err
+	}
+	return in.Store.ConfirmFactoryClose(ctx, row.TaskID, 0)
+}
+
+// closeHealAge is how long a recorded close stays unconfirmed before a
+// pass finishes it: the call that recorded it is over by then.
+const closeHealAge = 2 * time.Minute
+
+// healFactoryClose finishes the close row records: it closes the issue
+// where Forgejo reads it open, with the recorded comment
+// (closeIssueAsFactory), and confirms the record. A Forgejo answer that
+// settles is logged and the record confirmed, as no call changes it; any
+// other error is returned and the record stays for the next pass.
+func healFactoryClose(ctx context.Context, store interface {
+	taskReader
+	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
+	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
+	ConfirmFactoryClose(context.Context, string, int64) error
+}, forgejo *Forgejo, row IntakeEvent, settles func(error) bool) error {
+	t, ok, err := store.Task(ctx, row.TaskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return store.ConfirmFactoryClose(ctx, row.TaskID, row.CommentID)
 	}
 	t.IssueNumber = row.CommentID
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		log.Printf("heal pass: task %s: issue #%d closes nowhere, the close is settled: %s", t.ID, row.CommentID, maskedErr(err))
-		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+		return store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
 	}
-	closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, row.CommentID)
+	closed, err := forgejo.IssueClosed(ctx, repo.Owner, repo.Name, row.CommentID)
 	if err == nil && !closed {
-		err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
+		err = closeIssueAsFactory(ctx, store, forgejo, t, row.Body)
 	}
-	if forgejoTerminal(err) {
+	if err != nil && settles(err) {
 		log.Printf("heal pass: task %s: Forgejo refuses to close issue #%d, the close is settled: %s", t.ID, row.CommentID, maskedErr(err))
-		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+		return store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
 	}
 	if err != nil {
 		return err
 	}
 	if closed {
-		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+		return store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
 	}
 	return nil
 }

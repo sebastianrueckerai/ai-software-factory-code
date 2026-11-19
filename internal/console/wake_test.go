@@ -97,8 +97,9 @@ func TestAWakesFailureStaysInItsThread(t *testing.T) {
 // A wake turn whose call the model refuses hands up at once the cases its
 // thread's wakes named, so no rung 2 step waits out its bound for an answer
 // that cannot come: a 400 calls the hook with case 7 and the refusal's
-// words. A model that cannot be reached (503) refuses nothing: the hook is
-// not called, and the step keeps its bound.
+// words, and so does a 429 the router's retries did not clear, such as the
+// provider's spent weekly limit. A model that cannot be reached (503)
+// refuses nothing: the hook is not called, and the step keeps its bound.
 func TestARefusedWakeHandsItsCasesUp(t *testing.T) {
 	for _, tc := range []struct {
 		status string
@@ -106,6 +107,7 @@ func TestARefusedWakeHandsItsCasesUp(t *testing.T) {
 		detail string
 	}{
 		{"STATUS 400 bad request", [][]int64{{7}}, "the model refused the call (400): bad request"},
+		{"STATUS 429 Weekly/Monthly Limit Exhausted", [][]int64{{7}}, "the model refused the call (429): Weekly/Monthly Limit Exhausted"},
 		{"STATUS 503 upstream down", nil, ""},
 	} {
 		t.Run(tc.status, func(t *testing.T) {

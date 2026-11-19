@@ -1829,11 +1829,24 @@ func (f *Forgejo) Attachment(ctx context.Context, uuid string, limit int) ([]byt
 // body is there: a step retried after a failed post posts it then, and
 // never twice.
 func (f *Forgejo) CommentOnce(ctx context.Context, owner, repo string, number int64, body string) error {
+	return f.CommentTimes(ctx, owner, repo, number, body, 1)
+}
+
+// CommentTimes posts body on issue number unless times comments of exactly
+// that body are there: the comment of the times-th event that says the
+// same words, posted then and never twice.
+func (f *Forgejo) CommentTimes(ctx context.Context, owner, repo string, number int64, body string, times int) error {
 	have, err := f.ListIssueComments(ctx, owner, repo, number)
 	if err != nil {
 		return err
 	}
-	if slices.ContainsFunc(have, func(c IssueComment) bool { return c.Body == body }) {
+	said := 0
+	for _, c := range have {
+		if c.Body == body {
+			said++
+		}
+	}
+	if said >= times {
 		return nil
 	}
 	_, err = f.CreateIssueComment(ctx, owner, repo, number, body)

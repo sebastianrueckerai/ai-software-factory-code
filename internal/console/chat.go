@@ -1331,6 +1331,11 @@ func (t *turn) run(id, notice string) {
 					" Retrying will not change it; the refusal needs a fix.")
 				return
 			}
+			if errors.As(err, &status) && status.Code == http.StatusTooManyRequests {
+				// the router's retries did not clear the provider's limit: a
+				// wake's cases get no rung 2 answer from this turn
+				t.refused("the model refused the call (429): " + status.Body)
+			}
 			t.fail("The model could not be reached; try again.")
 			return
 		}
