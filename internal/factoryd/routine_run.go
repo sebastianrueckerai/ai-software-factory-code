@@ -79,7 +79,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	if open, ok, err := r.Routines.OpenRoutineTask(ctx, in.Project, in.Routine); err != nil {
 		return RoutineRunResult{}, err
 	} else if ok && rt.WhileOpenRule() == policy.WhileOpenHold {
-		return end("held", fmt.Sprintf("held: %s is still open", cardName(open)), "")
+		return end("held", fmt.Sprintf("held: %s is still open", shownName(open)), "")
 	}
 
 	brief, _ := v.Brief(rt.Brief)

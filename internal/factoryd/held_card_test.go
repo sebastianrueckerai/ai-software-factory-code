@@ -74,7 +74,7 @@ func TestFactorydsHumanCardWaitsForItsFace(t *testing.T) {
 	}
 	_, err = EscalateToHuman(ctx, store, silentForge(t), Repo{Owner: "sf", Name: "r"}, HumanQuestion{Ask: "The chain is pending. Re-run it?", Why: "w", Info: "i"},
 		"the chain poller", Task{ID: "t-held", Source: SourceChainStall, SHA: "c2c2"})
-	if want := "card “The chain is pending. Re-run it?” stands already (waiting-agent), so this second filing of it is refused: its case asks"; err == nil || err.Error() != want || len(store.events) != 1 {
+	if want := "card t-held stands already (waiting-agent), so this second filing of it is refused: its case asks"; err == nil || err.Error() != want || len(store.events) != 1 {
 		t.Fatalf("a second filing = %v with %d rows, want %q and no second ask", err, len(store.events), want)
 	}
 	chatAsk := Event{Kind: EventQuestionAsked, Via: ViaChat, Detail: map[string]any{"ask": "Write the criteria?", "source": "agent"}}

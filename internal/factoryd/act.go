@@ -691,7 +691,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 	if err != nil {
 		return ActResult{}, err
 	}
-	out := ActResult{Case: c, Did: step.Did, Proposed: true, Text: fmt.Sprintf("Proposed %s on %s: the human confirms it on the card.", res.Action, cardName(t))}
+	out := ActResult{Case: c, Did: step.Did, Proposed: true, Text: fmt.Sprintf("Proposed %s on %s: the human confirms it on the card.", res.Action, shownName(t))}
 	if live, err := r.store.CaseByID(ctx, c.ID); err == nil {
 		out.Case = live
 	}
@@ -1425,7 +1425,7 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 // posted alone.
 func (r *Runner) closeEnded(ctx context.Context, t Task, in ActInput, posted bool) (CaseAction, error) {
 	if t.IssueNumber == 0 {
-		return CaseAction{Action: ActClose, Result: fmt.Sprintf("Card %s has no issue to close.", cardName(t))}, nil
+		return CaseAction{Action: ActClose, Result: fmt.Sprintf("Card %s has no issue to close.", shownName(t))}, nil
 	}
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
@@ -1666,7 +1666,7 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 	ref := caseRef(in.Via, cardName(t), c)
 	switch {
 	case c.ID == 0:
-		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
+		text = fmt.Sprintf("Card %s took %s.", shownName(t), res.Sentence())
 	case res.Action == ActNote:
 		text = fmt.Sprintf("The note is on %s, which stays open.", ref)
 	case keepsOpen(c, t, res):
@@ -1684,15 +1684,16 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 	return text
 }
 
-// cardName is how a refusal, a comment or a result names card t: its
+// cardName is how a refusal or a log line names card t: its issue, else
+// its task id.
+func cardName(t Task) string { return cardRef(Event{TaskID: t.ID}, t) }
+
+// shownName is how a comment or a result a human reads names card t: its
 // issue; its title, quoted, for a card with no issue, as one that waits
 // for its face is; its task id for a card with neither.
-func cardName(t Task) string {
+func shownName(t Task) string {
 	if t.IssueNumber != 0 {
 		return fmt.Sprintf("#%d", t.IssueNumber)
 	}
 	return cmp.Or(CardName(t, 0), t.ID)
 }
-
-// logName is how a log line names card t: its issue, else its task id.
-func logName(t Task) string { return cardRef(Event{TaskID: t.ID}, t) }

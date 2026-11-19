@@ -920,7 +920,7 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 			return err
 		}
 		countOutcome(ctx, a.Metrics, a.Store, t, "done")
-		log.Printf("config: commit %s ended card %s of rejected commit %s, done", v.Commit, logName(t), t.SHA)
+		log.Printf("config: commit %s ended card %s of rejected commit %s, done", v.Commit, cardName(t), t.SHA)
 	}
 	return nil
 }

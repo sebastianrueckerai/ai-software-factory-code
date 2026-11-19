@@ -176,7 +176,7 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 	if len(cards) == 1 {
 		verb = "comes"
 	}
-	return fmt.Sprintf("Plan #%d's %s %s off main: the merge queue waits for the revert, card %s.", p.IssueNumber, plural(len(cards), "merged card"), verb, cardName(Task{ID: id, IssueNumber: issue})), nil
+	return fmt.Sprintf("Plan #%d's %s %s off main: the merge queue waits for the revert, card %s.", p.IssueNumber, plural(len(cards), "merged card"), verb, shownName(Task{ID: id, IssueNumber: issue})), nil
 }
 
 // revertUnstarted ends plan p's pending replan that waits with off_main
@@ -449,7 +449,7 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 		}
 	} else {
 		step, detail = stepGroupRevertEnded, map[string]any{"card": t.ID, "state": final, "cards": pause.Reverts}
-		msg := fmt.Sprintf("The revert of plan #%d did not land (card %s ended %s): its cards stay on main.", p.IssueNumber, cardName(t), final)
+		msg := fmt.Sprintf("The revert of plan #%d did not land (card %s ended %s): its cards stay on main.", p.IssueNumber, shownName(t), final)
 		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, msg); forgejoTerminal(err) {
 			log.Printf("plan %s: Forgejo refused the comment that its revert did not land: %v", p.ID, err)
 		} else if err != nil {
@@ -595,7 +595,7 @@ func (r *Runner) handOverRevert(ctx context.Context, t Task) (bool, error) {
 			return false, err
 		}
 	}
-	return true, r.Finish(ctx, t.ID, "closed", fmt.Sprintf("the plain revert's checks failed: card %s takes it over", cardName(card)))
+	return true, r.Finish(ctx, t.ID, "closed", fmt.Sprintf("the plain revert's checks failed: card %s takes it over", shownName(card)))
 }
 
 // fileHandover files agent card id that takes over plain revert card t,

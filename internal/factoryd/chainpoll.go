@@ -1512,7 +1512,7 @@ func (p *ChainPoller) askStall(ctx context.Context, proj Project, sha string, si
 		log.Printf("chain poller: %s: file the stall card: %v", repository, err)
 		return
 	}
-	log.Printf("chain poller: %s: head %s pending since %s: stall card %s", repository, sha, since.UTC().Format(time.RFC3339), logName(t))
+	log.Printf("chain poller: %s: head %s pending since %s: stall card %s", repository, sha, since.UTC().Format(time.RFC3339), cardName(t))
 }
 
 // settleChainCards closes repository's open stall and repair cards once
@@ -1552,7 +1552,7 @@ func (p *ChainPoller) closeChainCard(ctx context.Context, repository string, car
 		what = "the red this card was filed for"
 	}
 	if err := closeIssueAsFactory(ctx, p.Store, p.Forgejo, card, capitalize(why)+", so "+what+" no longer stands. Closing this issue."); err != nil {
-		log.Printf("chain poller: %s: close card %s: %v", repository, logName(card), err)
+		log.Printf("chain poller: %s: close card %s: %v", repository, cardName(card), err)
 	}
 }
 
@@ -1669,7 +1669,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	if ok {
 		switch held, err := p.repairHeld(ctx, card, run.CommitSHA); {
 		case err != nil:
-			log.Printf("chain poller: %s: read the close of repair card %s: %v", repository, logName(card), err)
+			log.Printf("chain poller: %s: read the close of repair card %s: %v", repository, cardName(card), err)
 			return
 		case held:
 			return
@@ -1699,7 +1699,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 			log.Printf("chain poller: %s: file the repair card: %v", repository, err)
 			return
 		}
-		log.Printf("chain poller: %s: head %s red: human repair card %s", repository, run.CommitSHA, logName(t))
+		log.Printf("chain poller: %s: head %s red: human repair card %s", repository, run.CommitSHA, cardName(t))
 		return
 	}
 	b := RepairCard(repository, run.CommitSHA, findings, runURL, issues)
