@@ -218,8 +218,9 @@ type Config struct {
 		ResetCap(ctx context.Context, cap, repository, login string, seen int64) (policy.CapReset, error)
 		CapResets(ctx context.Context, from, to time.Time) ([]policy.CapReset, error)
 	}
-	// WakeCapWaits signals every card that waits on a cap to check at once.
-	WakeCapWaits func(context.Context) error
+	// WakeCapWaits signals every card that waits on a cap to check at once,
+	// for why, what it runs for (factoryd.CapWaits.Wake).
+	WakeCapWaits func(ctx context.Context, why string) error
 	// Backstop reads LiteLLM's own budget, the cap under the factory's
 	// (factoryd.LiteLLMAdmin.ProxyBudget).
 	Backstop func(context.Context) (factoryd.Backstop, error)

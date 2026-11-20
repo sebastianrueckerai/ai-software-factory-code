@@ -338,8 +338,8 @@ func TestPolicyLoaderWakesEachLoadedHead(t *testing.T) {
 			calls = append(calls, "loaded "+v.Commit)
 			return nil
 		},
-		Wake: func(_ context.Context, v policy.Version) error {
-			calls = append(calls, "wake "+v.Commit)
+		Wake: func(_ context.Context, why string) error {
+			calls = append(calls, "wake: "+why)
 			return fail
 		}}
 	src.push("c1", testFiles(testPolicyYAML))
@@ -358,7 +358,7 @@ func TestPolicyLoaderWakesEachLoadedHead(t *testing.T) {
 	if err := l.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"loaded c1", "wake c1", "loaded c2", "wake c2", "loaded c2", "wake c2"}
+	want := []string{"loaded c1", "wake: config: version 1 loaded", "loaded c2", "wake: config: version 2 loaded", "loaded c2", "wake: config: version 2 loaded"}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}

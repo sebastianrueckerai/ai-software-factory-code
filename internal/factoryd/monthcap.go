@@ -390,7 +390,8 @@ func fileHumanTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 	return t, ref.Number, nil
 }
 
-// CapWaits wakes the cards waiting on a cap when a policy version loads.
+// CapWaits wakes the cards waiting on a cap when a policy version loads
+// or a human resets a cap's count.
 type CapWaits struct {
 	Store interface {
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
@@ -400,9 +401,10 @@ type CapWaits struct {
 	Signal func(ctx context.Context, taskID string) error
 }
 
-// Wake signals every waiting-human card whose last ask is a cap wait.
-// It signals them all even when one fails, and returns the failures.
-func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
+// Wake signals every waiting-human card whose last ask is a cap wait, for
+// why, what it runs for, which its log line opens with. It signals them
+// all even when one fails, and returns the failures.
+func (c *CapWaits) Wake(ctx context.Context, why string) error {
 	tasks, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		return fmt.Errorf("list the waiting cards: %w", err)
@@ -424,7 +426,7 @@ func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
 		}
 		woken++
 	}
-	log.Printf("config: version %d loaded, %d cap waits woken", v.ID, woken)
+	log.Printf("%s, %d cap waits woken", why, woken)
 	return errors.Join(errs...)
 }
 

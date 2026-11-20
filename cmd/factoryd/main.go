@@ -695,7 +695,7 @@ func main() {
 		Resources:    cloudres.AgentStore(store.CloudResources()),
 		Jobs:         factoryd.ClusterJobs{Kube: kube},
 		Caps:         store,
-		WakeCapWaits: func(ctx context.Context) error { return capWaits.Wake(ctx, policyLoader.Current()) },
+		WakeCapWaits: capWaits.Wake,
 		Backstop:     litellm.ProxyBudget,
 		Alerts:       store,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {

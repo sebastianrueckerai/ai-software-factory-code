@@ -67,14 +67,15 @@ func (f *fakeCaps) CapResets(_ context.Context, from, to time.Time) ([]policy.Ca
 }
 
 // capRig is the members rig (alice writes and approves the factory's code,
-// bob approves demo) with a fake reset store and a counted wake.
-func capRig(t *testing.T) (*rig, *fakeCaps, *int) {
+// bob approves demo) with a fake reset store and a wake that records what
+// it ran for.
+func capRig(t *testing.T) (*rig, *fakeCaps, *[]string) {
 	t.Helper()
 	r := newRig(t)
 	members(r)
-	caps, wakes := &fakeCaps{}, new(int)
+	caps, wakes := &fakeCaps{}, new([]string)
 	r.c.cfg.Caps = caps
-	r.c.cfg.WakeCapWaits = func(context.Context) error { *wakes++; return nil }
+	r.c.cfg.WakeCapWaits = func(_ context.Context, why string) error { *wakes = append(*wakes, why); return nil }
 	return r, caps, wakes
 }
 
@@ -88,7 +89,7 @@ func TestCapResetDay(t *testing.T) {
 		t.Fatalf("reset = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
 	}
 	equal(t, "the resets", caps.calls, []capCall{{"day", "", "alice", 0}})
-	equal(t, "the wakes", *wakes, 1)
+	equal(t, "the wakes", *wakes, []string{"console: alice reset the day cap's count (reset 1)"})
 }
 
 func TestCapResetMonth(t *testing.T) {
@@ -115,15 +116,15 @@ func TestCapResetProject(t *testing.T) {
 	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "Project demo has no month cap of its own.\n" || rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("a reset without demo's cap = %d %q, trigger %q; want 409 with board-refresh", rec.Code, rec.Body, rec.Header().Get("HX-Trigger"))
 	}
-	if len(caps.calls) != 0 || *wakes != 0 {
-		t.Fatalf("a reset without demo's cap wrote %v and woke %d times", caps.calls, *wakes)
+	if len(caps.calls) != 0 || len(*wakes) != 0 {
+		t.Fatalf("a reset without demo's cap wrote %v and woke for %q", caps.calls, *wakes)
 	}
 	r.ledger.monthCaps = map[string]float64{"demo": 30}
 	if rec := press(); !pressRefreshes(rec) {
 		t.Fatalf("reset = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
 	}
 	equal(t, "the resets", caps.calls, []capCall{{"project", "demo/demo", "bob", 0}})
-	equal(t, "the wakes", *wakes, 1)
+	equal(t, "the wakes", *wakes, []string{"console: bob reset the project cap's count of demo/demo (reset 1)"})
 }
 
 func TestCapResetAccess(t *testing.T) {
@@ -154,8 +155,8 @@ func TestCapResetAccess(t *testing.T) {
 	if rec := r.do(req); rec.Code != http.StatusUnauthorized {
 		t.Errorf("a bearer token alone = %d %q, want 401", rec.Code, rec.Body)
 	}
-	if len(caps.calls) != 0 || *wakes != 0 {
-		t.Errorf("a refused reset wrote %v and woke %d times", caps.calls, *wakes)
+	if len(caps.calls) != 0 || len(*wakes) != 0 {
+		t.Errorf("a refused reset wrote %v and woke for %q", caps.calls, *wakes)
 	}
 }
 
@@ -170,7 +171,7 @@ func TestCapResetWithoutAStoreIsRefused(t *testing.T) {
 
 func TestCapResetWakeFailureStillResets(t *testing.T) {
 	r, caps, _ := capRig(t)
-	r.c.cfg.WakeCapWaits = func(context.Context) error { return errors.New("signal down") }
+	r.c.cfg.WakeCapWaits = func(context.Context, string) error { return errors.New("signal down") }
 	ck, s := memberLogin(t, r, "alice")
 	req := post("/caps/day/reset", url.Values{"csrf": {s.csrf}, "seen": {"0"}})
 	req.Header.Set("HX-Request", "true")
@@ -208,7 +209,7 @@ func TestCapResetOnANewerReset(t *testing.T) {
 		t.Fatalf("the second press on the same view = %d %q, trigger %q; want 409 %q with board-refresh", rec.Code, rec.Body, rec.Header().Get("HX-Trigger"), line)
 	}
 	equal(t, "the resets after the refused press", len(caps.resets), 1)
-	equal(t, "the wakes after the refused press", *wakes, 1)
+	equal(t, "the wakes after the refused press", len(*wakes), 1)
 	if rec := press("/caps/day/reset", "0", false, ck, s.csrf); rec.Code != http.StatusConflict || rec.Body.String() != line || rec.Header().Get("HX-Trigger") != "" {
 		t.Fatalf("a form post on the same view = %d %q, trigger %q; want 409 %q alone", rec.Code, rec.Body, rec.Header().Get("HX-Trigger"), line)
 	}
@@ -216,7 +217,7 @@ func TestCapResetOnANewerReset(t *testing.T) {
 		t.Fatalf("a press that saw reset 1 = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
 	}
 	equal(t, "the resets after a press that saw the first", len(caps.resets), 2)
-	equal(t, "the wakes after a press that saw the first", *wakes, 2)
+	equal(t, "the wakes after a press that saw the first", len(*wakes), 2)
 
 	r.ledger.monthCaps = map[string]float64{"demo": 30}
 	caps.resets = append(caps.resets, policy.CapReset{ID: 9, Cap: policy.CapProject, Repository: "demo/demo", At: time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC), Login: "alice"})

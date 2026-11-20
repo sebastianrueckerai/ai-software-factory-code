@@ -81,9 +81,9 @@ type PolicyLoader struct {
 	// loader asks again at the next poll while it fails. nil: nothing.
 	Loaded func(ctx context.Context, v policy.Version) error
 	// Wake runs once per loaded head, after Loaded (the cap waits learn of
-	// the new version). A failure leaves the head unsettled: both run again
-	// at the next poll. nil: nothing.
-	Wake func(ctx context.Context, v policy.Version) error
+	// the new version), why naming the version. A failure leaves the head
+	// unsettled: both run again at the next poll. nil: nothing.
+	Wake func(ctx context.Context, why string) error
 	// ReadFailing raises readFailureStreak failed reads in a row, once a
 	// streak. nil: logged only.
 	ReadFailing func(ctx context.Context, err error) error
@@ -261,7 +261,7 @@ func (l *PolicyLoader) settle(ctx context.Context, head string) error {
 		}
 	}
 	if l.Wake != nil {
-		if err := l.Wake(ctx, cur); err != nil {
+		if err := l.Wake(ctx, fmt.Sprintf("config: version %d loaded", cur.ID)); err != nil {
 			log.Printf("config: wake the cap waits for commit %s: %v", head, err)
 			return err
 		}

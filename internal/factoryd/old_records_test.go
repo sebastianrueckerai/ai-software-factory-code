@@ -27,7 +27,7 @@ func TestCapWaitsWakeReadsTheAskCases(t *testing.T) {
 	asked("a1", 2, "The agent asks: which one?", time.Date(2026, 10, 31, 21, 0, 0, 0, time.UTC))
 	var sent []string
 	w := &CapWaits{Store: store, Signal: func(_ context.Context, id string) error { sent = append(sent, id); return nil }}
-	if err := w.Wake(ctx, policy.Version{ID: 8}); err != nil || !slices.Equal(sent, []string{"m1"}) {
+	if err := w.Wake(ctx, "config: version 8 loaded"); err != nil || !slices.Equal(sent, []string{"m1"}) {
 		t.Fatalf("Wake = %v, signalled %v; want m1 alone", err, sent)
 	}
 	asks, err := store.AskAnchors(ctx, "m1")

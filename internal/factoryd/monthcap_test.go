@@ -258,10 +258,11 @@ func capWaitStore(t *testing.T) *fakeStore {
 	return store
 }
 
-// A policy load signals the waiting cards whose last escalation is a cap
-// wait, the month's (m1) and the day's (d1), and no other: not an agent's
-// ask (a1), not a cap wait a later ask followed (l1), not a done card
-// (x1). A signal that fails leaves the others signalled and Wake failing.
+// A wake signals the waiting cards whose last escalation is a cap wait,
+// the month's (m1) and the day's (d1), and no other: not an agent's ask
+// (a1), not a cap wait a later ask followed (l1), not a done card (x1),
+// and its log line says what it ran for. A signal that fails leaves the
+// others signalled and Wake failing.
 func TestCapWaitsWake(t *testing.T) {
 	var sent []string
 	var broken string
@@ -272,11 +273,15 @@ func TestCapWaitsWake(t *testing.T) {
 		sent = append(sent, id)
 		return nil
 	}}
-	if err := w.Wake(context.Background(), policy.Version{ID: 8}); err != nil || !slices.Equal(sent, []string{"d1", "m1"}) {
+	lines := logs(t)
+	if err := w.Wake(context.Background(), "console: alice reset the day cap's count (reset 4)"); err != nil || !slices.Equal(sent, []string{"d1", "m1"}) {
 		t.Fatalf("Wake = %v, signalled %v; want d1 and m1", err, sent)
 	}
+	if want := "console: alice reset the day cap's count (reset 4), 2 cap waits woken\n"; !strings.HasSuffix(lines.String(), want) {
+		t.Fatalf("Wake logged %q, want it to end %q", lines.String(), want)
+	}
 	sent, broken = nil, "d1"
-	err := w.Wake(context.Background(), policy.Version{ID: 8})
+	err := w.Wake(context.Background(), "config: version 8 loaded")
 	if err == nil || !strings.Contains(err.Error(), "task d1") || !slices.Equal(sent, []string{"m1"}) {
 		t.Fatalf("Wake with d1 failing = %v, signalled %v; want m1 signalled and d1 named", err, sent)
 	}

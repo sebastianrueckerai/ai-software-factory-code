@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -89,7 +90,11 @@ func (c *Console) resetCap(w http.ResponseWriter, r *http.Request, cap, reposito
 	if c.cfg.WakeCapWaits != nil {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
 		defer cancel()
-		if err := c.cfg.WakeCapWaits(ctx); err != nil {
+		why := "console: " + reset.Login + " reset the " + cap + " cap's count"
+		if repository != "" {
+			why += " of " + repository
+		}
+		if err := c.cfg.WakeCapWaits(ctx, fmt.Sprintf("%s (reset %d)", why, reset.ID)); err != nil {
 			log.Printf("console: wake the cap waits after reset %d: %v", reset.ID, err)
 		}
 	}
