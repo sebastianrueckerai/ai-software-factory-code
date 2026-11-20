@@ -247,12 +247,12 @@ async function viewChange(p, query, fails) {
   await page.waitForTimeout(600);
   if (new URL(page.url()).searchParams.get("q")) fails.push(label + ": Back leaves q in the URL (" + page.url() + ")");
   if ((await page.locator(cards).count()) < shown.length + 1) fails.push(label + ": Back does not read the entry's board");
-  await page.locator("#status-line > summary").click();
+  await page.locator("#status-line > summary > .cell.state").click();
   await page.waitForTimeout(200);
   if (!(await page.locator("#status-panel").isVisible())) fails.push(label + ": the strip does not open the panel");
   if ((await page.locator("#status-line .cell.hold").count()) !== 1) fails.push(label + ": the strip lacks the production hold cell");
   if ((await page.locator("#status-panel form[action$=deploy-now] button", { hasText: "Deploy now" }).count()) !== 1) fails.push(label + ": the panel lacks Deploy now");
-  await page.locator("#status-line > summary").click();
+  await page.locator("#status-line > summary > .cell.state").click();
   await page.waitForTimeout(200);
   if (!(await page.locator("#status-panel").isHidden())) fails.push(label + ": the strip does not close the panel");
   const r11 = await page.evaluate(() => ({
@@ -1906,8 +1906,8 @@ async function text(page) {
     if (idle === busy) fails.push("gap: the reopened stream reads no board again (" + String(idle).slice(0, 60) + ")");
     await pp.ctx.close();
   }
-  // the caps (C47): at the desk the busy strip shows the day with its
-  // reset's ↺ and the month on its first row, every cell one slim line;
+  // the caps (C47): at the desk the busy strip is one slim row with the
+  // day, its reset's ↺, and the month;
   // the panel's Reset opens its confirm, which names the money and stays
   // open through the board's refreshes, and Cancel closes it; on the
   // phone the press is 44 px high
@@ -1920,12 +1920,12 @@ async function text(page) {
     if (vp.width === 1440) {
       const strip = await rp.page.evaluate(() => {
         const cells = Array.from(document.querySelectorAll("#status-line > summary > .cell")), box = (c) => c.getBoundingClientRect();
-        const first = box(cells[0]).top, spend = cells.filter((c) => c.classList.contains("spend"));
-        return { spend: spend.map((c) => c.textContent.replace(/\s+/g, " ").trim()), firstRow: spend.every((c) => box(c).top === first),
+        const spend = cells.filter((c) => c.classList.contains("spend"));
+        return { spend: spend.map((c) => c.textContent.replace(/\s+/g, " ").trim()), rows: new Set(cells.map((c) => box(c).top)).size,
           tall: cells.filter((c) => box(c).height > 40).map((c) => c.textContent.trim().slice(0, 30)) };
       });
-      if (strip.spend.length !== 2 || !/↺ today/.test(strip.spend[0]) || !/\/ 120\.00 EUR/.test(strip.spend[1]) || !strip.firstRow) fails.push(label + ": the strip's first row lacks the day's reset or the month: " + strip.spend.join(" | "));
-      if (strip.tall.length) fails.push(label + ": strip cells taller than one slim line: " + strip.tall.join(", "));
+      if (strip.spend.length !== 2 || !/↺ today 17\.00 \/ 20\.00 EUR/.test(strip.spend[0]) || !/^61\.40 \/ 120\.00 EUR/.test(strip.spend[1])) fails.push(label + ": the strip lacks the day's reset or the month: " + strip.spend.join(" | "));
+      if (strip.rows !== 1 || strip.tall.length) fails.push(label + ": the busy strip takes " + strip.rows + " rows, cells taller than one line: " + strip.tall.join(", "));
     }
     await rp.page.locator("#status-line > summary > .cell.state").click();
     const rst = rp.page.locator("#status-panel details.rst").first();

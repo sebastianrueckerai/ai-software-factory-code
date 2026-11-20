@@ -124,7 +124,7 @@ async function main() {
         await shot("board-tall-1440.png", tall, "/", doIt);
         // the status in detail opens on the strip's click
         await shot("status-open-1440.png", desk, "/", async (p) => {
-          await p.page.locator("#status-line > summary").click();
+          await p.page.locator("#status-line > summary > .cell.state").click();
           await p.idle();
         }, false);
         // a cap's Reset opens its confirm under the row (C47)

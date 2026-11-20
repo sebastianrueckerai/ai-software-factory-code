@@ -227,17 +227,19 @@ func TestStatusLineFigures(t *testing.T) {
 		return body[start : start+strings.Index(body[start:], `</summary>
 <div class="sp"`)]
 	}
-	const title = `title="spend this UTC month against the month cap: the project file's when it sets one, else the factory's, holds included"`
+	title := func(pct int) string {
+		return fmt.Sprintf(`title="spend this UTC month, %d percent of the month cap: the project file's when it sets one, else the factory's, holds included"`, pct)
+	}
 	gauge := func(pct int) string {
 		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span>`, pct, pct)
 	}
-	day := `<span class="cell spend" title="spend this UTC day against the day cap, holds included; it resets at 00:00 UTC"><span><span class="of">today</span> <b class="n">0.00 EUR</b> <span class="of">/ 20.00 EUR</span></span>` +
-		`<span class="gauge"><meter min="0" max="100" value="0" aria-label="Spend of the day cap">0 percent</meter></span><span class="pct">0%</span></span>` + "\n"
+	day := `<span class="cell spend" title="spend this UTC day, 0 percent of the day cap, holds included; it resets at 00:00 UTC"><span><span class="of">today</span> <b class="n">0.00</b> <span class="of">/ 20.00 EUR</span></span>` +
+		`<span class="gauge"><meter min="0" max="100" value="0" aria-label="Spend of the day cap">0 percent</meter></span></span>` + "\n"
 	code := `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">2</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">6</b> need you</span></a>
-` + day + `<span class="cell spend" ` + title + `><a href="/costs"><span><b class="n">5.50 EUR</b> <span class="of">/ 50.00 EUR</span></span>` + gauge(11) + `</a><span class="pct">11%</span></span>
+` + day + `<span class="cell spend" ` + title(11) + `><a href="/costs"><span><b class="n">5.50</b> <span class="of">/ 50.00 EUR</span></span>` + gauge(11) + `</a></span>
 `
 	if got := line(""); got != code {
 		t.Errorf("board: status line\n%s\nwant\n%s", got, code)
@@ -250,7 +252,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">1</b> need you</span></a>
-`+day+`<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">3.00 EUR</b> <span class="of">/ 12.00 EUR</span></span>`+gauge(25)+`</a><span class="pct">25%</span></span>
+`+day+`<span class="cell spend" `+title(25)+`><a href="/costs"><span><b class="n">3.00</b> <span class="of">/ 12.00 EUR</span></span>`+gauge(25)+`</a></span>
 `; got != want {
 		t.Errorf("demo-app: status line\n%s\nwant\n%s", got, want)
 	}
@@ -258,7 +260,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>
-`+day+`<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">5.50 EUR</b> <span class="of">/ 50.00 EUR</span></span>`+gauge(11)+`</a><span class="pct">11%</span></span>
+`+day+`<span class="cell spend" `+title(11)+`><a href="/costs"><span><b class="n">5.50</b> <span class="of">/ 50.00 EUR</span></span>`+gauge(11)+`</a></span>
 `; got != want {
 		t.Errorf("linkshort: status line\n%s\nwant\n%s", got, want)
 	}
@@ -1764,10 +1766,11 @@ func statusOf(t *testing.T, body string) (strip, spend string) {
 	return body[start:panel], body[from : from+strings.Index(body[from:], "</section>")]
 }
 
-// The strip always shows the day cell under a day cap (20 EUR): 2 EUR is
-// 10 percent, plain; 17 EUR is 85, amber; 10 EUR with a refusal today is
-// red and says the cap refuses calls. The panel's notes name the reset
-// beside the period's turn.
+// The strip always shows the day cell under a day cap (20 EUR), slim: one
+// EUR, a gauge and its percent in the title. 2 EUR is 10 percent, plain;
+// 17 EUR is 85, amber; 10 EUR with a refusal today is red and says the cap
+// refuses calls. The panel's notes name the reset beside the period's
+// turn.
 func TestStripDayAlways(t *testing.T) {
 	r, ck := screenRig(t)
 	board := func(e policy.Enforced) (string, string) {
@@ -1775,18 +1778,17 @@ func TestStripDayAlways(t *testing.T) {
 		r.ledger.enforced = e
 		return statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
 	}
-	const title = `title="spend this UTC day against the day cap, holds included; it resets at 00:00 UTC`
-	cell := func(class, title, eur string, pct int) string {
-		return fmt.Sprintf(`<span class="cell spend%s" %s"><span><span class="of">today</span> <b class="n">%s EUR</b> <span class="of">/ 20.00 EUR</span></span>`+
-			`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the day cap">%d percent</meter></span><span class="pct">%d%%</span></span>`, class, title, eur, pct, pct, pct)
+	cell := func(class, eur string, pct int, more string) string {
+		return fmt.Sprintf(`<span class="cell spend%s" title="spend this UTC day, %d percent of the day cap, holds included; it resets at 00:00 UTC%s"><span><span class="of">today</span> <b class="n">%s</b> <span class="of">/ 20.00 EUR</span></span>`+
+			`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the day cap">%d percent</meter></span></span>`, class, pct, more, eur, pct, pct)
 	}
 	for _, tc := range []struct {
 		e    policy.Enforced
 		want string
 	}{
-		{policy.Enforced{Day: 2}, cell("", title, "2.00", 10)},
-		{policy.Enforced{Day: 17}, cell(" warn", title, "17.00", 85)},
-		{policy.Enforced{Day: 10, DayHit: true}, cell(" over", title+"; the day cap refuses calls until then", "10.00", 50)},
+		{policy.Enforced{Day: 2}, cell("", "2.00", 10, "")},
+		{policy.Enforced{Day: 17}, cell(" warn", "17.00", 85, "")},
+		{policy.Enforced{Day: 10, DayHit: true}, cell(" over", "10.00", 50, "; the day cap refuses calls until then")},
 	} {
 		if strip, _ := board(tc.e); !strings.Contains(strip, tc.want) {
 			t.Errorf("day %.2f, hit %v: the strip\n%s\nlacks\n%s", tc.e.Day, tc.e.DayHit, strip, tc.want)
@@ -1864,8 +1866,8 @@ func TestStripShowsReset(t *testing.T) {
 		Month: 12, MonthReset: &policy.CapReset{ID: 4, Cap: policy.CapMonth, At: at, Login: "sebastian", BeforeEUR: 48}}
 	strip, spend := statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
 	for _, want := range []string{
-		`; sebastian reset its count at 14:02 UTC, 19.62 EUR before"><span><span class="of">↺ today</span> <b class="n">0.40 EUR</b>`,
-		`; sebastian reset its count at 14:02 UTC, 48.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">12.00 EUR</b>`,
+		`; sebastian reset its count at 14:02 UTC, 19.62 EUR before"><span><span class="of">↺ today</span> <b class="n">0.40</b>`,
+		`; sebastian reset its count at 14:02 UTC, 48.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">12.00</b>`,
 	} {
 		if !strings.Contains(strip, want) {
 			t.Errorf("the strip lacks %s:\n%s", want, strip)
@@ -1887,7 +1889,7 @@ func TestStripShowsReset(t *testing.T) {
 	r.chat.spend = []spendRow{{"sf/code", at.Add(-time.Hour), 30, false}, {"sf/code", at.Add(time.Minute), 10, false}}
 	r.chat.resets = map[string]*policy.CapReset{"sf/code": {ID: 5, Cap: policy.CapProject, Repository: "sf/code", At: at, Login: "sebastian", BeforeEUR: 30}}
 	strip, spend = statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
-	if want := `; sebastian reset its count at 14:02 UTC, 30.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">10.00 EUR</b>`; !strings.Contains(strip, want) {
+	if want := `; sebastian reset its count at 14:02 UTC, 30.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">10.00</b>`; !strings.Contains(strip, want) {
 		t.Errorf("under the project's cap, the strip lacks %s:\n%s", want, strip)
 	}
 	if want := `<p class="trace">counted since 14:02 UTC, when sebastian reset this month · 30.00 EUR before · 40.00 EUR in all this month</p>`; !strings.Contains(spend, want) {
