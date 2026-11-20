@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -132,22 +133,25 @@ func TestCapResetWakeFailureStillResets(t *testing.T) {
 	equal(t, "the resets", caps.calls, []capCall{{"day", "", "alice"}})
 }
 
-// A reset is a human's press: no chat tool and no MCP tool names it.
+// A reset is a human's press: no chat tool and no MCP tool names it, and
+// its two routes need a human's roles.
 func TestNoAgentToolResets(t *testing.T) {
+	resetWords := []string{"reset", "cap_reset", "caps"}
+	check := func(kind, name string) {
+		if slices.Contains(resetWords, name) {
+			t.Errorf("%s %q names a cap reset", kind, name)
+		}
+	}
 	for key := range accessTable {
-		if !strings.HasPrefix(key, "POST ") && strings.Contains(key, "cap") {
-			t.Errorf("the access table's tool %q names a cap", key)
+		if !strings.HasPrefix(key, "POST ") && !strings.HasPrefix(key, "GET ") {
+			check("access-table tool", key)
 		}
 	}
 	for _, tool := range tools {
-		if strings.Contains(tool.name, "cap") {
-			t.Errorf("chat tool %q names a cap", tool.name)
-		}
+		check("chat tool", tool.name)
 	}
 	for _, name := range policy.ChatTools {
-		if strings.Contains(name, "cap") {
-			t.Errorf("policy chat tool %q names a cap", name)
-		}
+		check("policy chat tool", name)
 	}
 	_, srv, bearer := mcpRig(t)
 	res, err := opened(t, srv, &door{auth: "Bearer " + bearer}).ListTools(context.Background(), nil)
@@ -155,8 +159,19 @@ func TestNoAgentToolResets(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tool := range res.Tools {
-		if strings.Contains(tool.Name, "cap") || strings.Contains(tool.Name, "reset") {
-			t.Errorf("MCP tool %q names a reset", tool.Name)
+		check("MCP tool", tool.Name)
+	}
+
+	posts := map[string]bool{}
+	for _, p := range (&Console{}).postRoutes() {
+		posts[p.pattern] = true
+	}
+	for pattern, want := range map[string]accessRule{
+		"POST /caps/{cap}/reset":          {need: factoryWriter, scope: scFactory, what: "reset a factory cap's count"},
+		"POST /projects/{name}/cap/reset": {need: approver, scope: scProject, what: "reset the project's month count"},
+	} {
+		if !posts[pattern] || accessTable[pattern] != want {
+			t.Errorf("%s: a POST route %v with rule %+v, want %+v", pattern, posts[pattern], accessTable[pattern], want)
 		}
 	}
 }

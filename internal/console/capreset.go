@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -44,7 +45,9 @@ func (c *Console) resetCap(w http.ResponseWriter, r *http.Request, cap, reposito
 		return
 	}
 	if c.cfg.WakeCapWaits != nil {
-		if err := c.cfg.WakeCapWaits(context.WithoutCancel(r.Context())); err != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if err := c.cfg.WakeCapWaits(ctx); err != nil {
 			log.Printf("console: wake the cap waits after reset %d: %v", reset.ID, err)
 		}
 	}
