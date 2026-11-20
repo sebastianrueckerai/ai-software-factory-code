@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -162,6 +163,42 @@ func (m *Monitor) WakeCases(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// Retake runs rung 0 again on every case at the human of a project whose
+// kind rung 0 tries a firing row on (firesOn), its own pass once a minute:
+// a row that fires on the case's facts now takes it from the human
+// (retake). Every other case is skipped unread. A repository no project
+// names is not read, as the sweep reads none of its cards.
+func (m *Monitor) Retake(ctx context.Context) error {
+	var errs []error
+	tree := m.Policy()
+	for _, name := range slices.Sorted(maps.Keys(tree.Projects)) {
+		cases, err := m.Store.OpenCasesIn(ctx, tree.Projects[name].Repository)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("cases of %s: %w", name, err))
+			continue
+		}
+		for _, c := range cases {
+			if c.Status != CaseAtHuman || !firesOn(c.Kind) {
+				continue
+			}
+			if err := m.retake(ctx, c); err != nil {
+				errs = append(errs, fmt.Errorf("case %d of card %s: %w", c.ID, c.TaskID, err))
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// retake is Runner.retake on case c, one card at a time with the passes.
+func (m *Monitor) retake(ctx context.Context, c Case) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Runner.retake(ctx, c)
+}
+
 // logged runs card on card taskID and logs what fails. It answers only the
 // end of ctx.
 func (m *Monitor) logged(ctx context.Context, taskID string) error {
@@ -237,10 +274,10 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			// no face asked anyone: the case ends with no row
 			err = m.Runner.EndCase(ctx, c.ID, reason)
 		} else {
-			// the row names its case, which the events writer withdraws,
-			// and settles the case's ask in the inbox
-			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": c.Problem}})
+			// the issue's comment withdraws the question where the face
+			// asked it; the row names its case, which the events writer
+			// withdraws, and settles the case's ask in the inbox
+			err = m.withdrawAtHuman(ctx, d, c, reason)
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
@@ -255,6 +292,27 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// withdrawAtHuman withdraws monitor case c at the human of digest d's card
+// for reason: the comment that withdraws its question (postWithdrawal),
+// then the question_withdrawn row that names the case and the comment.
+func (m *Monitor) withdrawAtHuman(ctx context.Context, d CardDigest, c Case, reason string) error {
+	t, _, err := m.Runner.task(ctx, c.TaskID)
+	if err != nil {
+		return err
+	}
+	detail := map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": c.Problem}
+	id, err := m.Runner.postWithdrawal(ctx, t, c, reason)
+	if err != nil {
+		return err
+	}
+	if id != 0 {
+		detail["withdrawal"] = id
+	}
+	_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail})
+	return err
 }
 
 // closedOnForge tells whether taskID's issue, whose close no event row

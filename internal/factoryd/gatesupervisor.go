@@ -279,7 +279,7 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 // live ask an answer on the card ends still waits on it and stays where
 // it is; a flag beside it holds no card.
 func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, c Case) (int64, error) {
-	t, repo, err := r.task(ctx, taskID)
+	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
@@ -293,12 +293,9 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "in-review")
 	}
-	var id int64
-	if t.IssueNumber != 0 {
-		body := fmt.Sprintf("This card withdraws its question above because %s. It needs no answer.", why)
-		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
-			return 0, err
-		}
+	id, err := r.postWithdrawal(ctx, t, c, why)
+	if err != nil {
+		return 0, err
 	}
 	detail := map[string]any{"question": textutil.Truncate(EscalationQuestion(reason), 300), "comment": comment, "reason": why}
 	if id != 0 {
@@ -310,6 +307,23 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 	r.record(ctx, taskID, "question_withdrawn", detail)
 	r.timeline.RecordRow(ctx, taskID, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, detail)
 	return id, nil
+}
+
+// postWithdrawal posts on card t's issue the comment that withdraws case
+// c's question for why, exactly where c's face posted it: its face asks
+// by a comment (facesByComment) and posted one. A merge, a plan's ask, a
+// human card whose issue is its face and a case never faced get none. It
+// answers the comment's id, 0 for none.
+func (r *Runner) postWithdrawal(ctx context.Context, t Task, c Case, why string) (int64, error) {
+	if !facesByComment(t, c) || c.CommentID == 0 {
+		return 0, nil
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return 0, err
+	}
+	return r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber,
+		fmt.Sprintf("This card withdraws its question above because %s. It needs no answer.", why))
 }
 
 // gateBundle reads what the supervisor needs for the activity, and the

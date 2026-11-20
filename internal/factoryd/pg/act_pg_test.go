@@ -559,6 +559,8 @@ func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 // factoryd withdraws a case the card outgrew on rung 0, withdraw being
 // the factory's own: the case reads withdrawn by factoryd with the
 // reason, its step says so, and no comment, answer row or signal follows.
+// The case is at the human, so its question_withdrawn row says why, and it
+// was never faced, so the row names no withdrawal comment.
 func TestActWithdrawsTheCase(t *testing.T) {
 	g := newActRig(t)
 	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: FactoryDecider, Rung: 0,
@@ -575,6 +577,51 @@ func TestActWithdrawsTheCase(t *testing.T) {
 	}
 	if len(g.forge.comments) != 0 || len(g.signals.got) != 0 || len(g.rows(t, EventQuestionAnswered)) != 0 {
 		t.Fatalf("comments %q, signals %+v: want none", g.forge.comments, g.signals.got)
+	}
+	if rows := g.rows(t, EventQuestionWithdrawn); len(rows) != 1 || rows[0].Detail["reason"] != "the card moved past its cap" || rows[0].Detail["withdrawal"] != nil {
+		t.Fatalf("withdrawals %+v; want one with the reason and no comment", rows)
+	}
+}
+
+// Rung 0's withdrawal of a case at the human posts its note exactly where
+// the case's face asked. A session cap faced at comment 400 gets the note
+// as comment 501, which its question_withdrawn row names. A merge approval
+// gets none and its row names none: a merge's face posts no comment, and
+// its kind alone keeps the note off, even beside a face step naming 400.
+func TestActWithdrawalPostsItsNoteWhereTheFaceAsked(t *testing.T) {
+	for _, tc := range []struct {
+		kind       CaseKind
+		comments   []string
+		withdrawal any
+	}{
+		{CaseSessionCap, []string{"This card withdraws its question above because the stop cleared. It needs no answer."}, float64(501)},
+		{CaseMergeApproval, nil, nil},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			ctx := context.Background()
+			g := newActRig(t)
+			c := g.c
+			if tc.kind == CaseMergeApproval {
+				var err error
+				if c, _, err = openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMergeApproval, StateKey: "merge",
+					Problem: "Merge #9?"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 3, Actor: FactoryDecider, CommentID: 400, Outcome: StepInProgress}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: FactoryDecider, Rung: 0,
+				Res: Resolution{Action: ActWithdraw, Note: "the stop cleared"}}); err != nil {
+				t.Fatal(err)
+			}
+			if got := caseByID(t, g.s, c.ID); got.Status != CaseWithdrawn || !slices.Equal(g.forge.comments, tc.comments) {
+				t.Fatalf("case %s, comments %q; want it withdrawn and the comments %q", got.Status, g.forge.comments, tc.comments)
+			}
+			if rows := g.rows(t, EventQuestionWithdrawn); len(rows) != 1 || rows[0].Detail["case_id"] != float64(c.ID) || rows[0].Detail["withdrawal"] != tc.withdrawal {
+				t.Fatalf("withdrawals %+v; want one naming case %d and the comment %v", rows, c.ID, tc.withdrawal)
+			}
+		})
 	}
 }
 

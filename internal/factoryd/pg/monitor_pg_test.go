@@ -936,7 +936,9 @@ func TestActSignalsNoRunForAMonitorCase(t *testing.T) {
 // stays. Two checkin_cut cases on a card with no check-in go as the flag
 // no longer holds, while the queue's case opens and rung 2 hands it on.
 // Once the card is admitted, the queue's case goes as the wait ended, and
-// nothing opens.
+// nothing opens. A note on #12 withdraws the queue's question where its face,
+// comment 501, asked it: comment 502, which its row names. The stale case,
+// never faced, gets no note.
 func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	g := newMonitorRig(t)
 	g.rung1Off()
@@ -986,12 +988,13 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
 	g.pass(t)
 	withdrawn(caseByID(t, g.s, queue.ID), "the wait ended")
-	if cases := g.flagCases(t, "t1"); len(cases) != 3 || len(g.forge.comments[12]) != 1 {
-		t.Fatalf("t1's flag cases = %v, comments %q; want the three withdrawn and the queue's one face", cases, g.forge.comments[12])
+	const note = "This card withdraws its question above because the wait ended. It needs no answer."
+	if cases := g.flagCases(t, "t1"); len(cases) != 3 || len(g.forge.comments[12]) != 2 || g.forge.comments[12][1] != note {
+		t.Fatalf("t1's flag cases = %v, comments %q; want the three withdrawn, the queue's face and then %q", cases, g.forge.comments[12], note)
 	}
 	rows := (actRig{s: g.s}).rows(t, EventQuestionWithdrawn)
-	if len(rows) != 2 || rows[0].Detail["case_id"] != float64(stale.ID) || rows[0].Detail["reason"] != "the flag no longer holds" ||
-		rows[1].Detail["case_id"] != float64(queue.ID) || rows[1].Detail["reason"] != "the wait ended" {
+	if len(rows) != 2 || rows[0].Detail["case_id"] != float64(stale.ID) || rows[0].Detail["reason"] != "the flag no longer holds" || rows[0].Detail["withdrawal"] != nil ||
+		rows[1].Detail["case_id"] != float64(queue.ID) || rows[1].Detail["reason"] != "the wait ended" || rows[1].Detail["withdrawal"] != float64(502) {
 		t.Fatalf("withdrawal rows = %+v, want one naming case %d as the flag no longer holds, then case %d as the wait ended", rows, stale.ID, queue.ID)
 	}
 	if got := caseByID(t, g.s, run.ID); got.Status != CaseAtHuman {

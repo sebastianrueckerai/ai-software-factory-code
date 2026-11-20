@@ -157,7 +157,9 @@ func keepsOpen(c Case, t Task, res Resolution) bool {
 // comment. It ends the case and writes the draw and the step in one
 // transaction, which weighs the draw against its rung's bounds again
 // under the project's lock. Then it posts factoryd's comment when the
-// caller posted none, records the answer and signals the run. A note
+// caller posted none, records the answer and signals the run: rung 0's
+// answer on a case at the human withdraws the question on the issue and
+// records the withdrawal. A note
 // records a step and ends nothing. A human card's case takes a value of its question's
 // choices, which Act records and runs nothing for, deploy_now excepted, which
 // runs outside the run. Rung 0 is factoryd's,
@@ -417,7 +419,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 		}
 	}
 	out.Text = actText(in, t, c, res, out.Did)
-	if !answers {
+	// rung 0 answers a case at the human only once a row fires on it anew
+	// (retake): to the human, a withdrawal among them, the question is
+	// withdrawn
+	taken := in.Rung == 0 && c.Status == CaseAtHuman
+	if !answers && !taken {
 		return out, nil
 	}
 	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && !slices.Contains(boardActions, res.Action) && in.By != FactoryDecider && in.By != CheckinDecider {
@@ -425,11 +431,22 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}
 	}
+	said := cmp.Or(strings.TrimSpace(res.Note), res.Sentence())
 	kind := EventQuestionAnswered
-	if draw != nil && draw.Extend.Sessions > 0 {
+	detail := map[string]any{"action": res.Action, "case_id": c.ID, "answer": said}
+	switch {
+	case taken:
+		question, _ := faceOf(c)
+		kind, detail = EventQuestionWithdrawn, map[string]any{"action": res.Action, "case_id": c.ID, "case_kind": string(c.Kind), "reason": said,
+			"question": textutil.Truncate(EscalationQuestion(question), 300)}
+		if id, err := r.postWithdrawal(ctx, t, c, said); err != nil {
+			log.Printf("task %s: the withdrawal comment of case %d: %v", t.ID, c.ID, err)
+		} else if id != 0 {
+			detail["withdrawal"] = id
+		}
+	case draw != nil && draw.Extend.Sessions > 0:
 		kind = EventSessionGranted
 	}
-	detail := map[string]any{"action": res.Action, "case_id": c.ID, "answer": cmp.Or(strings.TrimSpace(res.Note), res.Sentence())}
 	if out.Comment != 0 {
 		detail["comment"] = out.Comment
 	}
@@ -438,7 +455,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 	}
 	beside(detail, in.Detail)
 	r.timeline.RecordRow(ctx, t.ID, kind, in.By, via, detail)
-	if !runHears(t, c) {
+	if !answers || !runHears(t, c) {
 		return out, nil
 	}
 	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c, out.Comment))

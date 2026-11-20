@@ -84,6 +84,37 @@ func TestWorkflowRollGoesStraightToChecks(t *testing.T) {
 	}
 }
 
+// A roll's checks wait past its bound waits on the human, and rung 0 takes
+// the stop from the human once every check on the head is green: its
+// case_resolved, the factory's on rung 0 with no comment and the finding as
+// its note, runs the wait again on r1, and the roll merges as before.
+func TestWorkflowRollWaitsAgainWhenRungZeroTakesItsChecksStop(t *testing.T) {
+	g, _ := newRollHarness(t, "r1")
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	var waits []string
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30 * time.Minute).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			waits = append(waits, sha)
+			return ChecksResult{State: ChecksSuccess}, nil
+		}).Once()
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			waits = append(waits, sha)
+			return ChecksResult{State: ChecksSuccess}, nil
+		})
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "a roll task makes no model call: its gate trip goes to a human"})
+	g.tripAfter(11*time.Minute, ActivityWaitChecks, 1)
+	took := Resolution{Action: ActWaitChecks, Note: "every check on head r1 is green, so the factory resumed the checks wait"}
+	g.signalAfter(time.Hour, SignalCaseResolved, TaskSignal{Author: FactoryDecider, Case: &CaseSignal{CaseID: 701, Rung: 0, By: FactoryDecider, Res: took}})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(waits, []string{"r1", "r1"}) || len(g.escalated) != 1 || !slices.Equal(g.merges, []string{"9 r1 sebastian"}) {
+		t.Fatalf("checks waited on %q, asked %q, merges %v; want the wait run again on r1 after the one ask, and r1 merged", waits, g.escalated, g.merges)
+	}
+}
+
 // A roll ends done when its rollout is confirmed: the
 // approval's merge is not its end — the run waits for the images it
 // merged to run on their Deployments (AwaitRollout) and finishes done
