@@ -568,7 +568,7 @@ func TestRunSessionKeepsTheAgentsLastWord(t *testing.T) {
 func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	refusal := "free headroom 0.000100 EUR (task 1.900000, day 19.000000, month 0.000100) fits 25 output tokens after at most 4000 input tokens, below the minimum call of 1024; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	refusal := "free headroom 0.000100 EUR (task 1.900000, day 19.000000, month 0.000100) fits 25 output tokens after at most 4000 input tokens, below the minimum call of 1024; the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"
 	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: refusal}}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
@@ -792,7 +792,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "add the stats page", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom -0.000100 EUR (task 1.900000, day 19.000000, month 49.000000, project -0.000100) fits 0 output tokens after at most 4000 input tokens, below the minimum call of 1024; " +
-		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
+		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"
 	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedProjectCap, Reason: refusal}}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))

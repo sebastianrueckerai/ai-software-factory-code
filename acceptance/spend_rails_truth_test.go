@@ -70,9 +70,9 @@ var wantTrip = map[string][]string{
 	"budget.task_max_eur":       nil, // the cut is silent; only the load refuses
 	"budget.day_eur": {`"the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit."`,
 		`"%s EUR of the day's %s EUR is free"`},
-	"budget.month_eur": {`"; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"`,
+	"budget.month_eur": {`"; the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"`,
 		`"the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer."`,
-		`"; the project cap budget.month_eur in projects/<project>.yaml is spent, and only a human raises it, by a commit"`,
+		`"; the project cap budget.month_eur in projects/<project>.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"`,
 		`"the project's month cap is reached"`, `"The project's month cap is reached"`},
 	"budget.session_floor_cheap_eur": {`"the remaining budget cannot fund a call: Raise the budget and answer, or close the card."`,
 		`"The card spent %s EUR of its %s EUR budget, %s EUR is held for the review and the audit, which need %s EUR"`},

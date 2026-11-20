@@ -1685,7 +1685,7 @@ func TestProjectCapAcrossTasks(t *testing.T) {
 		rr := call(task, "0.1")
 		if rr.Code != http.StatusPaymentRequired || rr.Header().Get(HeaderDecision) != policy.RefusedProjectCap ||
 			!strings.Contains(rr.Body.String(), "project -0.12) fits 0 output tokens") ||
-			!strings.Contains(rr.Body.String(), "; the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit") {
+			!strings.Contains(rr.Body.String(), "; the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit") {
 			t.Fatalf("%s after the project's 1.125 = %d %s %s, want 402 refused_project_cap naming projects/linkshort.yaml", task, rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
 		}
 	}

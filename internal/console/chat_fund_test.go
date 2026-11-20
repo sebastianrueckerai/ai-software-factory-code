@@ -165,7 +165,7 @@ func TestChatBudgetNetsHolds(t *testing.T) {
 // cap and what raises it, the gateway's reason the next line; it asks for
 // no fund of the chat and offers none.
 func TestChatCapStopNamesTheCap(t *testing.T) {
-	const reason = "free headroom 0.00 EUR (month 0.000000 of 300.000000); the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	const reason = "free headroom 0.00 EUR (month 0.000000 of 300.000000); the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"
 	for _, tc := range []struct{ decision, first string }{
 		{policy.RefusedDayCap, "The factory's day cap is used up: the chat goes on when the UTC day turns, or once a commit raises budget.day_eur in policy.yaml."},
 		{policy.RefusedMonthCap, "The factory's month cap is used up: the chat goes on when the UTC month turns, or once a commit raises budget.month_eur in policy.yaml."},

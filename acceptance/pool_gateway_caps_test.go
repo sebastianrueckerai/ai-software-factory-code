@@ -156,7 +156,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 			},
 			decision: policy.RefusedMonthCap,
 			reason: refusal + "day 100.00, month 0.50, project 100.00" + tail +
-				"; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit",
+				"; the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit",
 		},
 		{
 			bound: "the month cap, spend beside a hold counted once",
@@ -166,7 +166,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 			},
 			decision: policy.RefusedMonthCap,
 			reason: refusal + "day 99.00, month 0.50, project 100.00" + tail +
-				"; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit",
+				"; the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit",
 		},
 		{
 			bound: "the project's own cap, spend alone",
@@ -175,7 +175,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 			},
 			decision: policy.RefusedProjectCap,
 			reason: refusal + "day 100.00, month 500.50, project 0.50" + tail +
-				"; the project cap budget.month_eur in projects/" + accProjectName + ".yaml is spent, and only a human raises it, by a commit",
+				"; the project cap budget.month_eur in projects/" + accProjectName + ".yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit",
 		},
 		{
 			bound: "the project's own cap, spend beside a hold counted once",
@@ -185,7 +185,7 @@ func gwCapsRefusals(t *testing.T, what string, v policy.Version) {
 			},
 			decision: policy.RefusedProjectCap,
 			reason: refusal + "day 99.00, month 500.50, project 0.50" + tail +
-				"; the project cap budget.month_eur in projects/" + accProjectName + ".yaml is spent, and only a human raises it, by a commit",
+				"; the project cap budget.month_eur in projects/" + accProjectName + ".yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit",
 		},
 	} {
 		store := newAccGatewayStore(gwCaller, gwOtherRepo, gwOwnRepo)

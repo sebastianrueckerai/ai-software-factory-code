@@ -491,7 +491,7 @@ func TestFindingsStopNamesTheBoardsMoves(t *testing.T) {
 // wait's face says which. The capped session made calls, so it counts.
 func TestCapWaitReplyByAgentTime(t *testing.T) {
 	const project = "free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 40.000000, project 0.000001); " +
-		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
+		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"
 	for capName, c := range map[string]struct {
 		refusal CapRefusal
 		outcome SessionOutcome

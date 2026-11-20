@@ -404,17 +404,17 @@ func TestFitResource(t *testing.T) {
 	project := HoldRequest{TaskID: "t", Kind: KindResource, Ref: "server", EUR: 0.0384, Project: "linkshort"}
 	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 1, Project: 0.0383}, project); !errors.As(err, &ref) || ref.Decision != RefusedProjectCap ||
 		ref.Reason != "server: worst case 0.04 EUR exceeds the free headroom 0.04 EUR by less than 0.01 EUR (task 1.00, day 1.00, month 1.00, project 0.04); "+
-			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human raises it, by a commit" {
+			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human resets its count in the console's status panel or raises it by a commit" {
 		t.Fatalf("reservation past the project's month = %v", err)
 	}
 	project.Kind, project.Ref = KindTool, ToolWebScrape
 	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 1, Project: 0.0383}, project); !errors.As(err, &ref) || ref.Decision != RefusedProjectCap ||
-		!strings.HasSuffix(ref.Reason, "; the tool call's worst case exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human raises it, by a commit") {
+		!strings.HasSuffix(ref.Reason, "; the tool call's worst case exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human resets its count in the console's status panel or raises it by a commit") {
 		t.Fatalf("tool call past the project's month = %v", err)
 	}
 	if _, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}, Project: "linkshort"}); !errors.As(err, &ref) ||
 		ref.Reason != "free headroom less than 0.01 EUR (task 1.00, day 1.00, month 1.00, project less than 0.01) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024; "+
-			"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit" {
+			"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit" {
 		t.Fatalf("model call past the project's month = %v", err)
 	}
 	if _, err := Fit(Free{Task: 0.001, Day: 1, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}}); !errors.As(err, &ref) ||

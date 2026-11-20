@@ -104,3 +104,14 @@ func TestGateReserveStopIsTheSessions(t *testing.T) {
 		t.Errorf("day-cap refusal = %q, want the reason unchanged: the stop belongs to a budget refusal alone", got)
 	}
 }
+
+// A spent month cap names both of a human's ways out: the reset of its
+// count in the console's status panel, or a commit that raises it.
+func TestMonthCapRefusalNamesTheReset(t *testing.T) {
+	var r *Refusal
+	_, err := Fit(Free{Task: 1, Day: 1, Month: 0.001, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}})
+	if !errors.As(err, &r) || r.Decision != RefusedMonthCap ||
+		!strings.HasSuffix(r.Reason, "; the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit") {
+		t.Fatalf("model call past the month = %v, want the reset and the commit named", err)
+	}
+}

@@ -2803,7 +2803,7 @@ func TestWorkflowCapWaitChecksSoonOnAPassedSettles(t *testing.T) {
 // the first after the 22:30 raise, starts attempt 1 with no answer.
 func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
 	const refusal = "free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 40.000000, project 0.000001); " +
-		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
+		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"
 	refused := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedProjectCap, Reason: refusal}, At: oct31(21, 10, 0)}
 	capped := SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: capRefused(refused.Refusal), Capped: &refused}
 	h, run := capHarness(t, 0, capped, pushed("s2", "c1"))

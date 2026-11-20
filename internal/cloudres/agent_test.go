@@ -330,7 +330,7 @@ func TestReserveProjectCap(t *testing.T) {
 	var ref *policy.Refusal
 	if !errors.As(err, &ref) || ref.Decision != policy.RefusedProjectCap ||
 		ref.Reason != "cx23: worst case 0.02 EUR exceeds the free headroom 0.01 EUR by 0.01 EUR (task 20.00, day 19.98, month 49.98, project 0.01); "+
-			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/app.yaml), and only a human raises it, by a commit" {
+			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/app.yaml), and only a human resets its count in the console's status panel or raises it by a commit" {
 		t.Fatalf("second = %v, want refused_project_cap", err)
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE owner_ref = 't2'`); n != 0 {

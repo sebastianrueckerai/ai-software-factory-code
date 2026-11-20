@@ -139,9 +139,10 @@ type Refusal struct {
 
 // refusal is the headroom refusal decision with reason; the month cap's
 // and project's cap's say what it refused and name the key a human raises,
-// the project's in its file, and the premium cap's names its key. Only a
-// model call finds a cap spent: a reservation or a tool call's worst case
-// may exceed what is left while smaller calls still fit.
+// the project's in its file, beside the reset of its count, and the
+// premium cap's names its key. Only a model call finds a cap spent: a
+// reservation or a tool call's worst case may exceed what is left while
+// smaller calls still fit.
 func refusal(decision, kind, project, reason string) *Refusal {
 	if decision == RefusedPremiumCap {
 		return &Refusal{Decision: decision, Reason: reason + "; the premium cap budget.premium_month_eur in policy.yaml cannot pay for it"}
@@ -160,7 +161,7 @@ func refusal(decision, kind, project, reason string) *Refusal {
 		default:
 			reason += "; " + limit + " is spent"
 		}
-		reason += ", and only a human raises it, by a commit"
+		reason += ", and only a human resets its count in the console's status panel or raises it by a commit"
 	}
 	return &Refusal{Decision: decision, Reason: reason}
 }
@@ -544,21 +545,87 @@ func (f Free) stop(decision, reason string) string {
 	return reason
 }
 
-// MonthSpentSQL is the spend over the ledger in the UTC calendar month of
-// at, a timestamptz expression; a standing line is its project's monthly
-// cost, not variable spend.
-func MonthSpentSQL(at string) string {
-	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0)`
+// The caps a human resets: the day's (budget.day_eur), the month's
+// (budget.month_eur) and a project's (budget.month_eur in its file).
+const (
+	CapDay     = "day"
+	CapMonth   = "month"
+	CapProject = "project"
+)
+
+// periodStartSQL is the start of cap's UTC period of at, a timestamptz
+// expression: the day's counts the day, the month's and a project's the
+// calendar month.
+func periodStartSQL(cap, at string) string {
+	unit := "month"
+	if cap == CapDay {
+		unit = "day"
+	}
+	return `(date_trunc('` + unit + `', ` + at + ` AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`
 }
 
-// daySpentSQL is the spend over the ledger on the UTC day of at, a
-// timestamptz expression, standing lines left out; heldSQL is every
-// outstanding hold, which counts against the day and the month.
+// capResetsSQL is the FROM and WHERE of cap's resets in its UTC period of
+// at, a timestamptz expression, of repository, an SQL expression: an empty
+// SQL string for the day's and the month's.
+func capResetsSQL(cap, repository, at string) string {
+	return `FROM cap_resets cr WHERE cr.cap = '` + cap + `' AND cr.repository = ` + repository + ` AND cr.at >= ` + periodStartSQL(cap, at)
+}
+
+// CapCountStartSQL is where cap's count starts in its UTC period of at, a
+// timestamptz expression: the newest reset of cap and repository (an SQL
+// expression, an empty SQL string for the day's and the month's) in the
+// period, else the period's start. A reset of an earlier period moves
+// nothing.
+func CapCountStartSQL(cap, repository, at string) string {
+	return `COALESCE((SELECT max(cr.at) ` + capResetsSQL(cap, repository, at) + `), ` + periodStartSQL(cap, at) + `)`
+}
+
+// dayRowsSQL and monthRowsSQL are the ledger rows of the UTC day and the
+// UTC calendar month of at, a timestamptz expression, standing lines left
+// out: a standing line is its project's monthly cost, not variable spend.
+func dayRowsSQL(at string) string {
+	return `day = (` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'`
+}
+
+func monthRowsSQL(at string) string {
+	return `day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'`
+}
+
+// ledgerSumSQL is the spend of the ledger rows where holds, 0 without one.
+func ledgerSumSQL(where string) string {
+	return `COALESCE((SELECT sum(eur) FROM ledger WHERE ` + where + `), 0)`
+}
+
+// MonthSpentSQL is the month cap's count over the ledger: the month's rows
+// of at, a timestamptz expression, booked since the count started.
+func MonthSpentSQL(at string) string {
+	return ledgerSumSQL(monthRowsSQL(at) + ` AND created_at >= ` + CapCountStartSQL(CapMonth, "''", at))
+}
+
+// daySpentSQL is the day cap's count over the ledger: the day's rows of
+// at, a timestamptz expression, booked since the count started; heldSQL is
+// every outstanding hold, which counts against the day and the month.
 func daySpentSQL(at string) string {
-	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day = (` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0)`
+	return ledgerSumSQL(dayRowsSQL(at) + ` AND created_at >= ` + CapCountStartSQL(CapDay, "''", at))
 }
 
 const heldSQL = `COALESCE((SELECT sum(eur) FROM holds), 0)`
+
+// projectSpentSQL is the project cap's count over the ledger: the month's
+// rows of at, a timestamptz expression, of the tasks of repository, an SQL
+// expression, booked since the count started. A standing line's task id
+// is standing:<repository>: it joins no task.
+func projectSpentSQL(repository, at string) string {
+	return `COALESCE((SELECT sum(l.eur) FROM ledger l JOIN tasks p ON p.id = l.task_id
+		WHERE p.repository = ` + repository + ` AND l.day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date
+		AND l.created_at >= ` + CapCountStartSQL(CapProject, repository, at) + `), 0)`
+}
+
+// projectHeldSQL is every outstanding hold of the tasks of repository, an
+// SQL expression.
+func projectHeldSQL(repository string) string {
+	return `COALESCE((SELECT sum(h.eur) FROM holds h JOIN tasks p ON p.id = h.task_id WHERE p.repository = ` + repository + `), 0)`
+}
 
 // premiumRef holds a ledger or hold row on Premium: an agent's ref is the
 // alias, factoryd's purpose/alias.
@@ -601,10 +668,10 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 // task's, the UTC day's, the UTC calendar month's and the task's
 // project's month headroom: FreeHeadroom's figures, and the attempt
 // floor's (factoryd's SessionFunded) on the pool. The
-// project's is r.ProjectEUR less the month's ledger rows and the
-// outstanding holds of every task of the task's repository, read only
-// under a cap (+Inf otherwise). Every outstanding hold counts against the
-// day and the month. A call under a premium cap (r.PremiumEUR) also reads
+// project's is r.ProjectEUR less the month's ledger rows since the
+// project's newest reset and the outstanding holds of every task of the
+// task's repository, read only under a cap (+Inf otherwise). Every
+// outstanding hold counts against the day and the month. A call under a premium cap (r.PremiumEUR) also reads
 // the premium month headroom: the cap less the month's spend and the
 // outstanding holds on Premium. The task's headroom holds r's gate
 // reserve out (ReserveEUR): a session's call fits budget - spent -
@@ -639,12 +706,9 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 	if math.IsInf(r.ProjectEUR, 1) {
 		return t, f, nil
 	}
-	// a standing line's task id is standing:<repository>: it joins no task
 	var spent, held float64
 	if err := q.QueryRowContext(ctx,
-		`SELECT COALESCE((SELECT sum(l.eur) FROM ledger l JOIN tasks p ON p.id = l.task_id
-		                  WHERE p.repository = t.repository AND l.day >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC')::date), 0)::float8,
-		        COALESCE((SELECT sum(h.eur) FROM holds h JOIN tasks p ON p.id = h.task_id WHERE p.repository = t.repository), 0)::float8
+		`SELECT `+projectSpentSQL("t.repository", "$2::timestamptz")+`::float8, `+projectHeldSQL("t.repository")+`::float8
 		 FROM tasks t WHERE t.id = $1`, taskID, at).Scan(&spent, &held); err != nil {
 		return TaskFree{}, Free{}, err
 	}

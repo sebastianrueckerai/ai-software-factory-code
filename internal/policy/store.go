@@ -154,15 +154,34 @@ type CostLine struct {
 const DateLayout = "2006-01-02"
 
 // Enforced is the spend the caps count at one moment: the ledger's spend
-// of the UTC day and month and on the premium class in the month, each
-// with the outstanding holds that count against it, standing lines left
-// out (holds.go's expressions, so these figures and the caps stop
-// together).
+// of the UTC day and month since their counts started and on the premium
+// class in the month, each with the outstanding holds that count against
+// it, standing lines left out (holds.go's expressions, so these figures
+// and the caps stop together).
 type Enforced struct {
 	Day, Month, Premium float64
+	// DayAll and MonthAll are the period's whole spend with the holds, a
+	// reset or not.
+	DayAll, MonthAll float64
 	// DayHit, MonthHit and PremiumHit say the cap is hit: the gateway
-	// refused a call at it in the cap's current UTC period.
+	// refused a call at it since its count started.
 	DayHit, MonthHit, PremiumHit bool
+	// DayReset and MonthReset are the newest reset of the current period,
+	// nil without one.
+	DayReset, MonthReset *CapReset
+}
+
+// CapReset is a human's reset of a cap's count at At: the cap's count
+// restarts there, the policy's cap stays. Repository is the project's
+// for CapProject, "" otherwise; BeforeEUR is the count the reset ended,
+// holds included.
+type CapReset struct {
+	ID         int64
+	Cap        string
+	Repository string
+	At         time.Time
+	Login      string
+	BeforeEUR  float64
 }
 
 // CapHit is whether a cap is hit: spend at or past it, or a refusal at
@@ -170,23 +189,104 @@ type Enforced struct {
 func CapHit(spent, cap float64, refused bool) bool { return refused || cap > 0 && spent >= cap }
 
 // refusedSince is whether the audit holds a refusal with decision since
-// the UTC day (unit "day") or month (unit "month") of at.
-func refusedSince(decision, unit, at string) string {
-	return `EXISTS (SELECT 1 FROM audit WHERE decision = '` + decision + `' AND ts >= date_trunc('` + unit + `', ` + at + ` AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`
+// since, a timestamptz expression.
+func refusedSince(decision, since string) string {
+	return `EXISTS (SELECT 1 FROM audit WHERE decision = '` + decision + `' AND ts >= ` + since + `)`
+}
+
+// newestResetSQL is cap's newest reset in its UTC period of at, a
+// timestamptz expression, for a LEFT JOIN LATERAL: no row without one.
+func newestResetSQL(cap, at string) string {
+	return `SELECT cr.id, cr.at, cr.login, cr.before_eur::float8 ` + capResetsSQL(cap, "''", at) + ` ORDER BY cr.at DESC, cr.id DESC LIMIT 1`
 }
 
 // LedgerEnforced reads the enforced spend of the UTC day and month of at.
 func LedgerEnforced(ctx context.Context, db *sql.DB, at time.Time) (Enforced, error) {
 	var e Enforced
+	day, month := CapReset{Cap: CapDay}, CapReset{Cap: CapMonth}
 	err := db.QueryRowContext(ctx,
 		`SELECT (`+daySpentSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
 		        (`+MonthSpentSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
 		        (`+PremiumMonthSpentSQL("$1::timestamptz")+` + COALESCE((SELECT sum(eur) FROM holds WHERE `+premiumRef+`), 0))::float8,
-		        `+refusedSince(RefusedDayCap, "day", "$1::timestamptz")+`,
-		        `+refusedSince(RefusedMonthCap, "month", "$1::timestamptz")+`,
-		        `+refusedSince(RefusedPremiumCap, "month", "$1::timestamptz"),
-		at).Scan(&e.Day, &e.Month, &e.Premium, &e.DayHit, &e.MonthHit, &e.PremiumHit)
-	return e, err
+		        (`+ledgerSumSQL(dayRowsSQL("$1::timestamptz"))+` + `+heldSQL+`)::float8,
+		        (`+ledgerSumSQL(monthRowsSQL("$1::timestamptz"))+` + `+heldSQL+`)::float8,
+		        `+refusedSince(RefusedDayCap, CapCountStartSQL(CapDay, "''", "$1::timestamptz"))+`,
+		        `+refusedSince(RefusedMonthCap, CapCountStartSQL(CapMonth, "''", "$1::timestamptz"))+`,
+		        `+refusedSince(RefusedPremiumCap, periodStartSQL(CapMonth, "$1::timestamptz"))+`,
+		        COALESCE(d.id, 0), COALESCE(d.at, 'epoch'), COALESCE(d.login, ''), COALESCE(d.before_eur, 0),
+		        COALESCE(m.id, 0), COALESCE(m.at, 'epoch'), COALESCE(m.login, ''), COALESCE(m.before_eur, 0)
+		   FROM (SELECT 1) one
+		   LEFT JOIN LATERAL (`+newestResetSQL(CapDay, "$1::timestamptz")+`) d ON true
+		   LEFT JOIN LATERAL (`+newestResetSQL(CapMonth, "$1::timestamptz")+`) m ON true`,
+		at).Scan(&e.Day, &e.Month, &e.Premium, &e.DayAll, &e.MonthAll, &e.DayHit, &e.MonthHit, &e.PremiumHit,
+		&day.ID, &day.At, &day.Login, &day.BeforeEUR, &month.ID, &month.At, &month.Login, &month.BeforeEUR)
+	if err != nil {
+		return Enforced{}, err
+	}
+	if day.ID != 0 {
+		e.DayReset = &day
+	}
+	if month.ID != 0 {
+		e.MonthReset = &month
+	}
+	return e, nil
+}
+
+// ResetCap restarts cap's count for login at the headroom's clock, inside
+// the cap's current UTC period: the day's and the month's with repository
+// "", a project's with its repository. The policy's cap stays. Under
+// LockHeadroom, no hold lands between the count the reset ends and the
+// reset.
+func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string) (CapReset, error) {
+	count, ok := map[string]string{
+		CapDay:     daySpentSQL("$3::timestamptz") + ` + ` + heldSQL,
+		CapMonth:   MonthSpentSQL("$3::timestamptz") + ` + ` + heldSQL,
+		CapProject: projectSpentSQL("$2", "$3::timestamptz") + ` + ` + projectHeldSQL("$2"),
+	}[cap]
+	if !ok {
+		return CapReset{}, fmt.Errorf("reset cap %q: only the caps %s, %s and %s reset", cap, CapDay, CapMonth, CapProject)
+	}
+	if (cap == CapProject) != (repository != "") {
+		return CapReset{}, fmt.Errorf("reset cap %s of repository %q: the %s cap resets with its repository, the %s and %s caps without one", cap, repository, CapProject, CapDay, CapMonth)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return CapReset{}, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	if err := LockHeadroom(ctx, tx); err != nil {
+		return CapReset{}, err
+	}
+	r := CapReset{Cap: cap, Repository: repository, Login: login}
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO cap_resets (cap, repository, at, login, before_eur) VALUES ($1, $2, $3, $4, `+count+`)
+		 RETURNING id, at, before_eur::float8`, cap, repository, now(), login).Scan(&r.ID, &r.At, &r.BeforeEUR); err != nil {
+		return CapReset{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CapReset{}, err
+	}
+	return r, nil
+}
+
+// CapResets are the resets with at in [from, to), newest first.
+func CapResets(ctx context.Context, db *sql.DB, from, to time.Time) ([]CapReset, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, cap, repository, at, login, before_eur::float8 FROM cap_resets
+		 WHERE at >= $1 AND at < $2 ORDER BY at DESC, id DESC`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CapReset
+	for rows.Next() {
+		var r CapReset
+		if err := rows.Scan(&r.ID, &r.Cap, &r.Repository, &r.At, &r.Login, &r.BeforeEUR); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func LedgerCosts(ctx context.Context, db *sql.DB, from, to time.Time) (Costs, error) {
