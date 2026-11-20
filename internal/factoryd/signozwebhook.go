@@ -162,7 +162,7 @@ type AlertBook interface {
 	Store
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
-	CloseClearedCard(ctx context.Context, alertID int64, taskID string) error
+	CloseClearedCard(ctx context.Context, alertID int64, taskID, reason string) error
 	// SetAskFace writes card t's objective and why line, merges facts into
 	// its live case caseID and stores face on its ask row, in one
 	// transaction.
@@ -630,9 +630,10 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 
 // endCard judges row unjudged by factoryd and closes its human card t,
 // recording why as the end's reason and the note as the issue's last
-// comment. A card that left waiting-human meanwhile stays as it is.
+// comment, the card storing the note's first sentence as why it closed. A
+// card that left waiting-human meanwhile stays as it is.
 func (in *AlertIntake) endCard(ctx context.Context, row Alert, t Task, reason, note string) error {
-	if err := in.Store.CloseClearedCard(ctx, row.ID, t.ID); err != nil {
+	if err := in.Store.CloseClearedCard(ctx, row.ID, t.ID, closeBodyReason(note)); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}

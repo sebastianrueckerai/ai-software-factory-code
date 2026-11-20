@@ -196,7 +196,7 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 				fj.comments = nil
 				reopened := []int64{7}
 				if path == "issue close" {
-					if err := r.planHolder().endDonePlan(ctx, s.tasks["t-plan"]); err != nil {
+					if err := r.planHolder().endDonePlan(ctx, s.tasks["t-plan"], "sebastian"); err != nil {
 						t.Fatal(err)
 					}
 				} else {
@@ -454,7 +454,7 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 	held := newFakeStore()
 	lastRoundCriteriaPlan(t, held, "t-plan", "sf/code", 4)
 	holder := planHolder{store: held, forgejo: f, untrusted: func(_ Task, s string) string { return s }}
-	if err := holder.endDonePlan(ctx, held.tasks["t-plan"]); err == nil || len(stub.writes) != 0 {
+	if err := holder.endDonePlan(ctx, held.tasks["t-plan"], "sebastian"); err == nil || len(stub.writes) != 0 {
 		t.Fatalf("the hold of a done plan's issue with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
 	}
 	r, s, _ := tenCriteriaPlan(t, "done")
@@ -522,7 +522,8 @@ func TestMetCriteriaWaitForARunningCard(t *testing.T) {
 	}
 }
 
-// The finish takes a failed plan whose close recorded its row too.
+// The finish takes a failed plan whose close recorded its row too, and the
+// plan stores the close's words as why it closed.
 func TestCriteriaPassFinishesAFailedPlanClose(t *testing.T) {
 	ctx := context.Background()
 	r, s, fj := tenCriteriaPlan(t, "done")
@@ -531,8 +532,9 @@ func TestCriteriaPassFinishesAFailedPlanClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.CriteriaPass(ctx)
-	if got, status := commentBodies(fj), s.tasks["t-plan"].Status; len(got) != 1 || status != "closed" || fj.issues[1].state != "closed" {
-		t.Errorf("comments %q, status %q, issue %q; want the words once, closed, closed", got, status, fj.issues[1].state)
+	const words = "closed by sebastian: moved on; its merged cards stay on main"
+	if got, plan := commentBodies(fj), s.tasks["t-plan"]; len(got) != 1 || plan.Status != "closed" || plan.ClosingReason != words || fj.issues[1].state != "closed" {
+		t.Errorf("comments %q, status %q for %q, issue %q; want the words once, closed for the words, closed", got, plan.Status, plan.ClosingReason, fj.issues[1].state)
 	}
 }
 
@@ -559,11 +561,11 @@ func TestPlanMergedByARowAloneHolds(t *testing.T) {
 }
 
 // A failed plan that factoryd closed itself keeps its card failed (the
-// bot's close does not end it): a person's Close ends it closed, and the
-// sweep does the same without one.
+// bot's close does not end it): a person's Close ends it closed, for that
+// person, and the sweep does the same without one, for the factory.
 func TestFailedPlanClosedByFactorydEnds(t *testing.T) {
 	ctx := context.Background()
-	for _, byPerson := range []bool{true, false} {
+	for byPerson, reason := range map[bool]string{true: "closed by mallory", false: "closed by the factory"} {
 		r, s, fj := plannedCards(t, nil, "done")
 		unmergeCard(s, "card-1")
 		setStatus(s, "t-plan", "failed")
@@ -575,8 +577,8 @@ func TestFailedPlanClosedByFactorydEnds(t *testing.T) {
 		} else {
 			r.CriteriaPass(ctx)
 		}
-		if got := s.tasks["t-plan"].Status; got != "closed" {
-			t.Errorf("by a person %t: status %q, want closed", byPerson, got)
+		if got := s.tasks["t-plan"]; got.Status != "closed" || got.ClosingReason != reason {
+			t.Errorf("by a person %t: status %q for %q, want closed for %q", byPerson, got.Status, got.ClosingReason, reason)
 		}
 		if len(fj.comments) != 0 {
 			t.Errorf("by a person %t: comments %q, want none (a close without words posts no empty comment)", byPerson, commentBodies(fj))

@@ -1559,7 +1559,7 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 		}
 		return in.finishHumanTask(ctx, t, final, "", closer, nil)
 	case t.Status == "failed":
-		return in.closeFailed(ctx, t.ID)
+		return in.closeFailed(ctx, t.ID, "", closer)
 	case t.Status == "merged":
 		return nil
 	}
@@ -1574,7 +1574,7 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 				tree = in.Policy()
 			}
 			return sanitize.Outbound(s, OutboundHosts(tree, in.Forgejo.PublicURL, t.Repository))
-		}}.endDonePlan(ctx, t)
+		}}.endDonePlan(ctx, t, closer)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
@@ -1609,7 +1609,8 @@ func (in *Intake) healClosed(ctx context.Context, t Task, closer string, at time
 }
 
 // CloseCard is the console's Close of card id, which has no issue, for
-// by: a failed card ends closed in the store, a merged one
+// by: a failed card ends closed in the store, for the close answer the
+// console recorded first (RecordCloseAnswer), a merged one
 // through CloseMerged; any other through its workflow, signalled as by
 // its issue's close.
 func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
@@ -1618,7 +1619,7 @@ func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
 	case err != nil:
 		return err
 	case t.Status == "failed":
-		return in.closeFailed(ctx, id)
+		return in.closeFailed(ctx, id, "", "")
 	case t.Status == "merged":
 		return in.CloseMerged(ctx, id, by)
 	case t.Kind == "human" && t.IssueNumber == 0:
@@ -1651,9 +1652,23 @@ func closeCounts(ctx context.Context, store interface {
 	return false, nil
 }
 
-// closeFailed ends failed card id closed in the store.
-func (in *Intake) closeFailed(ctx context.Context, id string) error {
-	return in.Store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+// RecordCloseAnswer records by's close answer on card id, with note, ahead
+// of the console's close of the card (IntakeCloseAnswer), and answers the
+// row's id.
+func (in *Intake) RecordCloseAnswer(ctx context.Context, id, by, note string) (int64, error) {
+	return recordCloseAnswer(ctx, in.Store, id, by, note)
+}
+
+// DropCloseAnswer deletes close answer row id, whose close failed.
+func (in *Intake) DropCloseAnswer(ctx context.Context, id int64) error {
+	return in.Store.DeleteIntakeEvent(ctx, id)
+}
+
+// closeFailed ends failed card id closed in the store for reason, or with
+// none for why its records say closer's close of its issue ended it
+// (endClosed).
+func (in *Intake) closeFailed(ctx context.Context, id, reason, closer string) error {
+	return endClosed(ctx, in.Store, id, []string{"failed"}, reason, closer, in.BotUser)
 }
 
 // decide records a decision — issue number closed, pull request number
@@ -1673,9 +1688,9 @@ func (in *Intake) decide(ctx context.Context, taskID, kind, author string, numbe
 // (humanEndOf), and its pull request's merge or close ends it as well
 // (endPRCard). settle, when set, is the events row that
 // settles the card's ask, written once, by the end that moved the card. A
-// card another end moved first is left as it is. A SigNoz alert's gets
-// its verdict from the close: noise when the issue carries
-// LabelNoise, else real.
+// card another end moved first is left as it is. A card that ends closed
+// stores why (endClosed). A SigNoz alert's gets its verdict from the
+// close: noise when the issue carries LabelNoise, else real.
 func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, closer string, settle *Event) error {
 	if !slices.Contains(humanCardWaits, t.Status) {
 		return nil
@@ -1699,7 +1714,13 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, close
 			return err
 		}
 	}
-	if err := in.Store.TransitionTask(ctx, t.ID, humanCardWaits, final); errors.Is(err, ErrNotFound) {
+	var err error
+	if final == "closed" {
+		err = endClosed(ctx, in.Store, t.ID, humanCardWaits, why, closer, in.BotUser)
+	} else {
+		err = in.Store.TransitionTask(ctx, t.ID, humanCardWaits, final)
+	}
+	if errors.Is(err, ErrNotFound) {
 		return nil
 	} else if err != nil {
 		return err

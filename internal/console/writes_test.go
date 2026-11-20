@@ -108,10 +108,10 @@ func writesOf(f *fakeForgejo) []string {
 }
 
 // close proposes; Do it comments the note on the card's issue as the
-// member and then closes the issue as them, which intake turns into the
-// card's end, with one card_closed row via chat. A final card refuses with
-// its state. The face's Close button runs the same action: one row via
-// button and a 303 to the filtered board.
+// human, records the close answer and then closes the issue as them, which
+// intake turns into the card's end, with one card_closed row via chat. A
+// final card refuses with its state. The face's Close button runs the same
+// action: one row via button and a 303 to the filtered board.
 func TestChatClose(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
@@ -122,6 +122,8 @@ func TestChatClose(t *testing.T) {
 		`done {}`})
 	equal(t, "Do it", done, ran("close", args, "Closed #5; factoryd ends the card."))
 	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/5/comments", "PATCH /api/v1/repos/sf/code/issues/5"})
+	equal(t, "the close answer", r.closeAnswers, []string{`t-m by sebastian "Superseded by #7." after [POST /api/v1/repos/sf/code/issues/5/comments]`})
+	equal(t, "the dropped close answers", r.dropped, []int64(nil))
 	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/5/comments"], "Superseded by #7.")
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"state":"closed"}`})
 	chatRows(t, r.events, before, "sebastian",
@@ -1584,8 +1586,8 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 }
 
 // A card without an issue closes through factoryd's CloseCard alone
-// (roadmap 170), by the chat and the close POST: one card_closed row each,
-// no Forgejo call.
+// (roadmap 170), by the chat and the close POST, each close answer
+// recorded first: one card_closed row each, no Forgejo call.
 func TestCloseACardWithoutAnIssue(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.tasks.mu.Lock()
@@ -1602,9 +1604,11 @@ func TestCloseACardWithoutAnIssue(t *testing.T) {
 
 	ck, s := r.loggedIn(t)
 	before = r.events.count()
-	rec := r.do(post("/tasks/t-nf/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-nf/resolve", url.Values{"action": {factoryd.ActClose}, "close.note": {"Moved to the local plan."},
+		"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
-	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-nf", detail: map[string]any{"note": ""}})
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-nf", detail: map[string]any{"note": "Moved to the local plan."}})
+	equal(t, "the close answers", r.closeAnswers, []string{`t-n by sebastian "" after []`, `t-nf by sebastian "Moved to the local plan." after []`})
 	equal(t, "CloseCard", r.closed, []string{"t-n by sebastian", "t-nf by sebastian"})
 	equal(t, "Forgejo", writesOf(r.fg), []string(nil))
 }
@@ -1733,7 +1737,8 @@ func TestCloseRefusedForGoodNamesTheEdge(t *testing.T) {
 }
 
 // An edge Forgejo keeps despite the removal leaves its 412 on the close:
-// the refusal carries Forgejo's own reason.
+// the refusal carries Forgejo's own reason, and the close answer recorded
+// ahead of the close is deleted, so no later close reads it.
 func TestCloseRefusalNamesForgejosReason(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
@@ -1742,6 +1747,8 @@ func TestCloseRefusalNamesForgejosReason(t *testing.T) {
 	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
 		"Forgejo refused to close the issue: cannot close this issue because it still has open dependencies. Try again in a moment."})
+	equal(t, "the close answers", len(r.closeAnswers), 1)
+	equal(t, "the dropped close answers", r.dropped, []int64{1})
 }
 
 // A plan's Close takes the plan issue's own dependencies off first, as any

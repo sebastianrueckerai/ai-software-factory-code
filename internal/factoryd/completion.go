@@ -56,7 +56,8 @@ var closable = []string{"queued", "waiting-deps", "running", "in-review", "waiti
 // restarted at closing finishes with it. A merged card spends nothing
 // already, its credentials gone at the merge: the re-check runs while it
 // stays merged and one move ends it, so a failure leaves it merged for
-// the next end to retry, never closing.
+// the next end to retry, never closing. A card that ends closed stores why
+// (endClosed).
 func (c *Completion) Complete(ctx context.Context, taskID, state, final, reason string) error {
 	t, _, err := c.Store.Task(ctx, taskID)
 	if err != nil {
@@ -72,7 +73,16 @@ func (c *Completion) Complete(ctx context.Context, taskID, state, final, reason 
 	if err := c.reconcile(ctx, taskID); err != nil {
 		return err
 	}
-	if err := c.Store.TransitionTask(ctx, taskID, []string{from}, state); err != nil {
+	if state == "closed" {
+		bot := ""
+		if c.Forgejo != nil {
+			bot = c.Forgejo.BotUser
+		}
+		err = endClosed(ctx, c.Store, taskID, []string{from}, reason, "", bot)
+	} else {
+		err = c.Store.TransitionTask(ctx, taskID, []string{from}, state)
+	}
+	if err != nil {
 		return err
 	}
 	c.finished(ctx, taskID, state)

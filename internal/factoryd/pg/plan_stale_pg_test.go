@@ -195,7 +195,7 @@ func TestPGStorePlanDeliveredTakesAClosedCard(t *testing.T) {
 	if ok, open, err := PlanDelivered(ctx, s, "t-plan"); err != nil || ok || open.ID != "t-last" {
 		t.Fatalf("PlanDelivered with a running card = %v, %q, %v; want false on t-last", ok, open.ID, err)
 	}
-	if err := s.TransitionTask(ctx, "t-last", []string{"running"}, "closed"); err != nil {
+	if err := s.EndClosed(ctx, "t-last", []string{"running"}, "closed in Forgejo by sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	succ := Task{ID: SuccessorID("t-last"), Kind: "agent", Status: "running", Repository: "sf/r", BudgetEUR: 1, Track: "direct", Source: SourceSuccessor,

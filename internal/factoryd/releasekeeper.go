@@ -81,7 +81,7 @@ type ReleaseStore interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
-	TransitionTask(ctx context.Context, id string, from []string, to string) error
+	EndClosed(ctx context.Context, id string, from []string, reason string) error
 }
 
 // ReleaseKeeper keeps production's hold while a plan is open on main, for
@@ -579,8 +579,9 @@ func (k *ReleaseKeeper) pushRuns(ctx context.Context, repository string) (Projec
 
 // closeAsk closes repository's standing ask with comment, where one stands.
 // An issue Forgejo refuses to close for good (deleted, refused) ends the
-// card closed in the store all the same, so a later hold files its own
-// asks; the refusal is still the error.
+// card closed in the store all the same, for the comment's first sentence
+// (closeBodyReason), so a later hold files its own asks; the refusal is
+// still the error.
 func (k *ReleaseKeeper) closeAsk(ctx context.Context, repository, comment string) error {
 	card, ok, err := k.Store.ChainCard(ctx, repository, SourceProductionHeld)
 	if err != nil || !ok || Final(card.Status) {
@@ -590,7 +591,7 @@ func (k *ReleaseKeeper) closeAsk(ctx context.Context, repository, comment string
 	if !forgejoTerminal(err) {
 		return err
 	}
-	if end := k.Store.TransitionTask(ctx, card.ID, []string{card.Status}, "closed"); end != nil {
+	if end := k.Store.EndClosed(ctx, card.ID, []string{card.Status}, closeBodyReason(comment)); end != nil {
 		return end
 	}
 	return err

@@ -1736,6 +1736,7 @@ func faced(t *testing.T, r *alertRig, id string) {
 
 // A cleared alert's held card, untouched as it has no issue, closes with
 // no forge call: factoryd records its close, which the next heal confirms.
+// The card stores the record's first sentence as why it closed.
 func TestAClearedAlertClosesItsHeldCard(t *testing.T) {
 	ctx := context.Background()
 	r := heldClearedRig(t)
@@ -1745,8 +1746,9 @@ func TestAClearedAlertClosesItsHeldCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := r.store.alertRows()[0]
-	if row.Verdict != VerdictUnjudged || row.Detail["closed"] != "cleared" || r.store.tasks[task.ID].Status != "closed" {
-		t.Fatalf("row %+v, task %s; want the row closed cleared, the card closed", row, r.store.tasks[task.ID].Status)
+	if got := r.store.tasks[task.ID]; row.Verdict != VerdictUnjudged || row.Detail["closed"] != "cleared" || got.Status != "closed" ||
+		got.ClosingReason != "The alert cleared at "+resolvedAt+"." {
+		t.Fatalf("row %+v, task %s for %q; want the row closed cleared, the card closed for the alert's clearing", row, got.Status, got.ClosingReason)
 	}
 	want := []string{"The alert cleared at " + resolvedAt + ". Nobody touched the card, so it closes."}
 	if got := factoryCloses(r.store, task.ID); !slices.Equal(got, want) || len(r.fj.issues) != 0 || len(r.fj.comments) != 0 || r.fj.reads != 0 {
@@ -2011,7 +2013,7 @@ func TestAClearedAlertAlreadyJudgedKeepsItsCard(t *testing.T) {
 	if err := r.store.ResolveAlert(context.Background(), row.ID, AlertSigNoz, VerdictReal, "sebastian", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.store.CloseClearedCard(context.Background(), row.ID, task.ID); !errors.Is(err, ErrNotFound) {
+	if err := r.store.CloseClearedCard(context.Background(), row.ID, task.ID, "The alert cleared."); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 	if got := r.store.tasks[task.ID].Status; got != "waiting-human" {

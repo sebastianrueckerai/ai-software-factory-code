@@ -554,6 +554,9 @@ func (s *accBatchStore) TransitionTask(ctx context.Context, id string, from []st
 func (s *accBatchStore) CloseTask(ctx context.Context, id string, from []string, final, reason string) error {
 	panic("unused")
 }
+func (s *accBatchStore) EndClosed(ctx context.Context, id string, from []string, reason string) error {
+	panic("unused")
+}
 func (s *accBatchStore) MarkStarted(ctx context.Context, id string) error { panic("unused") }
 func (s *accBatchStore) ListTasksByStatus(ctx context.Context, status string) ([]factoryd.Task, error) {
 	panic("unused")
@@ -602,6 +605,9 @@ func (s *accBatchStore) SetQuestionProposal(ctx context.Context, taskID string, 
 	panic("unused")
 }
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) DeleteIntakeEvent(ctx context.Context, id int64) error {
 	panic("unused")
 }
 func (s *accBatchStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error {

@@ -1439,8 +1439,23 @@ func (r *Runner) replanDependency(ctx context.Context, t Task, id string) ([]Cas
 // closeCard closes card t for in.By: its issue as factoryd's recorded
 // close, which the webhook then ends the card on, with factoryd's comment
 // unless the caller posts its own after the close, or with no issue a
-// signal to its run. An ended card's close is closeEnded's.
-func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool) (CaseAction, error) {
+// signal to its run. An ended card's close is closeEnded's. The close
+// answer is recorded first (recordCloseAnswer), so the end the close
+// drives says why before Act writes the answer's rows; a close that fails
+// deletes it, so no later close reads it.
+func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool) (_ CaseAction, err error) {
+	answer, err := recordCloseAnswer(ctx, r.store, t.ID, in.By, in.Res.Note)
+	if err != nil {
+		return CaseAction{}, err
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if derr := r.store.DeleteIntakeEvent(context.WithoutCancel(ctx), answer); derr != nil {
+			log.Printf("task %s: delete the close answer of %s's failed close: %v", t.ID, in.By, derr)
+		}
+	}()
 	if Final(t.Status) {
 		return r.closeEnded(ctx, t, in, posted)
 	}

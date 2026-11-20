@@ -150,7 +150,7 @@ func TestPGStoreCardHold(t *testing.T) {
 	if ended, err := s.EndCardHold(ctx, "t-q2", ""); err != nil || ended {
 		t.Fatalf("the release of a closing card = %v, %v; want nothing ended", ended, err)
 	}
-	if err := s.TransitionTask(ctx, "t-q2", []string{"closing"}, "closed"); err != nil {
+	if err := s.EndClosed(ctx, "t-q2", []string{"closing"}, "the human closed it"); err != nil {
 		t.Fatal(err)
 	}
 	// the held t-noissue moves to the human lane, where no hold holds

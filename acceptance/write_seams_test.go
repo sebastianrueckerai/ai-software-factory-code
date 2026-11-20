@@ -97,6 +97,8 @@ func (w *writeSeams) wire(cfg *console.Config) {
 		w.log("close %s by %s", id, by)
 		return nil
 	}
+	cfg.RecordCloseAnswer = func(context.Context, string, string, string) (int64, error) { return 1, nil }
+	cfg.DropCloseAnswer = func(context.Context, int64) error { return nil }
 	cfg.HoldCard = func(_ context.Context, id, release, reason, by string) (bool, error) {
 		w.log("hold %s on %q by %s: %s", id, release, by, reason)
 		return true, nil

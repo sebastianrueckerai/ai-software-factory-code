@@ -399,9 +399,10 @@ func (k card) helperRuns() bool { return k.Helper != nil && k.Helper.Status == "
 // stateOf sets face f's state from card k: its word in its hue, its one
 // time, and while it is active the marks of an exceptional state. A card
 // whose helper task runs names the helper's step, a merged card where its
-// chain stands, a failed one its failure, a done one the chain covered
-// how it went live. A finished card on which work still runs wears the
-// hue of running work.
+// chain stands, a failed one its failure, a closed one why it closed (a
+// reason that says "closed …" alone), a done one the chain covered how it
+// went live. A finished card on which work still runs wears the hue of
+// running work.
 func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card) {
 	word := template.HTML(template.HTMLEscapeString(c.stateWord(ctx, v, k.Task))) // #nosec G203 -- stateWord is escaped
 	f.Hue = k.StatusClass
@@ -427,6 +428,13 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 		}
 	case k.Status == "failed" && k.Failure != "":
 		word += ": " + c.linkRefs(ctx, v, k.Repository, sanitize.Outbound(scrubText(k.Failure), v.policy.Document.LinkHosts))
+	case k.Status == "closed" && k.ClosingReason != "":
+		why := c.linkRefs(ctx, v, k.Repository, sanitize.Outbound(scrubText(k.ClosingReason), v.policy.Document.LinkHosts))
+		if strings.HasPrefix(k.ClosingReason, "closed ") {
+			word = why
+		} else {
+			word += ": " + why
+		}
 	}
 	f.State = word
 	switch {

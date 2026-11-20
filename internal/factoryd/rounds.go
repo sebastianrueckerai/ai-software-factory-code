@@ -271,7 +271,7 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		if _, pending, err := r.pendingReplan(ctx, t); err != nil || pending {
 			return err
 		}
-		return r.planHolder().endDonePlan(ctx, t)
+		return r.planHolder().endDonePlan(ctx, t, closer)
 	}
 	cards, err := PlanWaits(ctx, r.store, parent)
 	if err != nil || !roundComplete(p, cards) {
@@ -281,12 +281,12 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 	if err != nil || pending && step.Origin != ReplanRound {
 		return err
 	}
-	counts, _, closed, err := r.personClosedIssue(ctx, t, repo)
+	counts, closer, closed, err := r.personClosedIssue(ctx, t, repo)
 	if err != nil {
 		return err
 	}
 	if counts {
-		return r.planHolder().endDonePlan(ctx, t)
+		return r.planHolder().endDonePlan(ctx, t, closer)
 	}
 	if !pending {
 		wrote, err := r.timeline.AppendUnlessPending(ctx, t.ID, stepReplan,
@@ -364,14 +364,15 @@ type planHolder struct {
 	untrusted func(Task, string) string
 }
 
-// endDonePlan takes a close that counts of done plan t's issue: the card
-// ends closed once its plan_closed row stands (a close on the board wrote
-// it) or no promise is open. A plan that still holds production with open
+// endDonePlan takes a close that counts, closer's, of done plan t's
+// issue: the card ends closed, for why its records say (endClosed), once
+// its plan_closed row stands (a close on the board wrote it) or no promise
+// is open. A plan that still holds production with open
 // promises stays done: it asks on the board what the close check of a
 // closed plan asks (holdPlanAsk), its issue hears that ask once
 // (HeldPlanComment) and opens again, since a close of the issue drops
 // nothing. A comment that failed is tried again with the next close.
-func (h planHolder) endDonePlan(ctx context.Context, t Task) error {
+func (h planHolder) endDonePlan(ctx context.Context, t Task, closer string) error {
 	_, closed, err := h.store.PlanClosed(ctx, t.ID)
 	if err != nil {
 		return err
@@ -404,7 +405,7 @@ func (h planHolder) endDonePlan(ctx context.Context, t Task) error {
 			return h.forgejo.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		}
 	}
-	return h.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+	return endClosed(ctx, h.store, t.ID, []string{"done"}, "", closer, h.forgejo.BotUser)
 }
 
 // planHolder is the runner's hold of a done plan's issue.

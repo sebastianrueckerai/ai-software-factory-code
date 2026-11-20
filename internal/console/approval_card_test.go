@@ -174,16 +174,30 @@ func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
 }
 
 // The opened card's head reads the card's state like the face's: a merged
-// card's says its chain's state, a done card's says done.
+// card's says its chain's state, a done card's says done, a closed card's
+// says why it closed when it stored why: a reason that says "closed …"
+// alone, any other after "closed: ".
 func TestDrawerPillReadsTheState(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("",
 		factoryd.Task{ID: "t-merged", Kind: "agent", Status: "merged", Repository: "sf/code", IssueNumber: 7, PRNumber: 9},
-		factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
+		factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 8, PRNumber: 10},
+		factoryd.Task{ID: "t-closed", Kind: "agent", Status: "closed", Repository: "sf/code", IssueNumber: 11, ClosingReason: "closed by sebastian: Superseded."},
+		factoryd.Task{ID: "t-forge", Kind: "agent", Status: "closed", Repository: "sf/code", IssueNumber: 13, ClosingReason: "closed in Forgejo by alice"},
+		factoryd.Task{ID: "t-cleared", Kind: "human", Status: "closed", Repository: "sf/code", IssueNumber: 14, ClosingReason: "The alert cleared at 2026-11-19T22:35:56Z."},
+		factoryd.Task{ID: "t-replan", Kind: "agent", Status: "closed", Repository: "sf/code", IssueNumber: 15, ClosingReason: "stopped for the replan of the plan"},
+		factoryd.Task{ID: "t-down", Kind: "agent", Status: "closed", Repository: "sf/code", IssueNumber: 16, ClosingReason: "closedown of the service"},
+		factoryd.Task{ID: "t-shut", Kind: "agent", Status: "closed", Repository: "sf/code", IssueNumber: 12})
 	ck, _ := r.loggedIn(t)
 	for id, want := range map[string]string{
-		"t-merged": `<p class="o-line"><span class="it"><span class="st st-merged"><i class="dot" aria-hidden="true"></i>waiting for the chain</span></span>`,
-		"t-done":   `<p class="o-line"><span class="it st">done</span>`,
+		"t-merged":  `<p class="o-line"><span class="it"><span class="st st-merged"><i class="dot" aria-hidden="true"></i>waiting for the chain</span></span>`,
+		"t-done":    `<p class="o-line"><span class="it st">done</span>`,
+		"t-closed":  `<p class="o-line"><span class="it st">closed by sebastian: Superseded.</span>`,
+		"t-forge":   `<p class="o-line"><span class="it st">closed in Forgejo by alice</span>`,
+		"t-cleared": `<p class="o-line"><span class="it st">closed: The alert cleared at 2026-11-19T22:35:56Z.</span>`,
+		"t-replan":  `<p class="o-line"><span class="it st">closed: stopped for the replan of the plan</span>`,
+		"t-down":    `<p class="o-line"><span class="it st">closed: closedown of the service</span>`,
+		"t-shut":    `<p class="o-line"><span class="it st">closed</span>`,
 	} {
 		body := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
 		if !strings.Contains(body, want) {

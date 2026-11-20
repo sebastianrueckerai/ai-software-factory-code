@@ -365,6 +365,9 @@ type Store interface {
 	// the card's run decided, final for reason: a run restarted at closing
 	// finishes with it.
 	CloseTask(ctx context.Context, id string, from []string, final, reason string) error
+	// EndClosed is TransitionTask's move to closed, the one way a card
+	// ends closed, which stores reason, why it closed.
+	EndClosed(ctx context.Context, id string, from []string, reason string) error
 	// MarkStarted moves a queued, waiting-deps, running, in-review,
 	// waiting-human, waiting-poster or waiting-image task to running.
 	MarkStarted(ctx context.Context, id string) error
@@ -466,6 +469,9 @@ type Store interface {
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// DeleteIntakeEvent deletes intake row id: a close answer whose close
+	// failed (closeCard).
+	DeleteIntakeEvent(ctx context.Context, id int64) error
 	// SetQuestionInfo replaces the info of the question task's escalation
 	// at comment commentID asked.
 	SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error
@@ -1635,6 +1641,11 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 	return id, err
 }
 
+func (s *PGStore) DeleteIntakeEvent(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM intake_events WHERE id = $1`, id)
+	return err
+}
+
 func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($3::text))
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4 AND detail->>'comment' = $2 ORDER BY id DESC LIMIT 1)`,
@@ -2542,14 +2553,31 @@ const (
 // TransitionTask moves task id from one of from to to, and answers
 // ErrNotFound — wrapped with the from list — when the card is not in
 // from. The runner's SetState and every status change of the gates, the
-// queues, the intake's ends and the heal passes call it.
+// queues, the intake's ends and the heal passes call it. A card ends
+// closed through EndClosed alone, which stores why.
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+	if to == "closed" {
+		return fmt.Errorf("task %s: a card ends closed through EndClosed, which stores why it closed", id)
+	}
 	changed, err := s.changeStatus(ctx, transitionSet, transitionWhere, id, to, from)
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
 		return fmt.Errorf("%w (not in %v, cannot move to %s)", err, from, to)
+	}
+	return nil
+}
+
+// EndClosed moves task id from one of from to closed, as TransitionTask
+// moves it, and stores reason, why it closed, as its closing reason.
+func (s *PGStore) EndClosed(ctx context.Context, id string, from []string, reason string) error {
+	changed, err := s.changeStatus(ctx, transitionSet+`, closing_reason = $4`, transitionWhere, id, "closed", from, reason)
+	if err == nil && !changed {
+		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("%w (not in %v, cannot move to closed)", err, from)
 	}
 	return nil
 }

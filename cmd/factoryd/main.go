@@ -654,7 +654,9 @@ func main() {
 		CloseFactoryPR: func(ctx context.Context, taskID string, pr int64, by, words string) error {
 			return factoryd.CloseFactoryPR(ctx, store, workflows, taskID, pr, by, words)
 		},
-		CloseCard: webhookIntake.CloseCard,
+		CloseCard:         webhookIntake.CloseCard,
+		RecordCloseAnswer: webhookIntake.RecordCloseAnswer,
+		DropCloseAnswer:   webhookIntake.DropCloseAnswer,
 		Replan: func(ctx context.Context, taskID, by, comment string, offMain bool) (string, error) {
 			return runner.Replan(ctx, taskID, factoryd.ReplanAsk{By: by, Comment: comment, OffMain: offMain})
 		},
