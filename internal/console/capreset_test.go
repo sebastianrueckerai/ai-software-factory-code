@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -133,13 +132,24 @@ func TestCapResetWakeFailureStillResets(t *testing.T) {
 	equal(t, "the resets", caps.calls, []capCall{{"day", "", "alice"}})
 }
 
+// namesReset reports whether a tool name says reset, the one verb of a
+// cap's restart; the only tool that does is the board filter's own.
+func namesReset(name string) bool {
+	return name != "board_view_reset" && strings.Contains(strings.ToLower(name), "reset")
+}
+
 // A reset is a human's press: no chat tool and no MCP tool names it, and
 // its two routes need a human's roles.
 func TestNoAgentToolResets(t *testing.T) {
-	resetWords := []string{"reset", "cap_reset", "caps"}
+	// board_view_reset clears a board filter, not a cap's count.
 	check := func(kind, name string) {
-		if slices.Contains(resetWords, name) {
-			t.Errorf("%s %q names a cap reset", kind, name)
+		if namesReset(name) {
+			t.Errorf("%s %q names a reset", kind, name)
+		}
+	}
+	for name, want := range map[string]bool{"reset_cap": true, "cap-reset": true, "ResetCaps": true, "caps": false, "board_view_reset": false} {
+		if namesReset(name) != want {
+			t.Errorf("namesReset(%q) = %v, want %v", name, !want, want)
 		}
 	}
 	for key := range accessTable {
