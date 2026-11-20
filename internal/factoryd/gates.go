@@ -1856,9 +1856,9 @@ func callNote(err error) string {
 // reviewUnblocks are what lifts each money refusal of the gateway, in the
 // month-cap question's sentence.
 var reviewUnblocks = map[string]string{
-	policy.RefusedMonthCap:   "The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.",
-	policy.RefusedProjectCap: "The gateway refuses every further call of the project (refused_project_cap) until the project's cap is raised or the month ends.",
-	policy.RefusedDayCap:     "The gateway refuses every further call (refused_day_cap) until the day cap is raised or the UTC day ends.",
+	policy.RefusedMonthCap:   "The gateway refuses every further call (refused_month_cap) until a human resets the month's count in the console's status panel, the cap is raised by a commit, or the month ends.",
+	policy.RefusedProjectCap: "The gateway refuses every further call of the project (refused_project_cap) until a human resets the project's month count in the console's status panel, the project's cap is raised by a commit, or the month ends.",
+	policy.RefusedDayCap:     "The gateway refuses every further call (refused_day_cap) until a human resets the day's count in the console's status panel, the day cap is raised by a commit, or the UTC day ends.",
 	policy.RefusedPremiumCap: "The gateway refuses every further premium call (refused_premium_cap) until the premium cap is raised or the month ends.",
 	policy.RefusedBudget:     "The gateway refuses the card's further calls (refused_budget) until its budget is raised.",
 }

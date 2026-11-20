@@ -597,14 +597,14 @@ func ledgerSumSQL(where string) string {
 	return `COALESCE((SELECT sum(l.eur) FROM ledger l WHERE ` + where + `), 0)`
 }
 
-// countedSQL is whether ledger row l is in cap's count of at, a
+// CountedSQL is whether ledger row l is in cap's count of at, a
 // timestamptz expression, of repository, an SQL expression: booked since
 // the count started. In a count a reset started, a settlement counts only
 // when its task finished since (finished, an SQL expression, NULL while it
 // runs): the reset forgave the rows of a task that finished before it, so
 // it forgives their correction, booked up to factoryd's SpendSettleWindow
 // later, too.
-func countedSQL(cap, repository, at, finished string) string {
+func CountedSQL(cap, repository, at, finished string) string {
 	start := CapCountStartSQL(cap, repository, at)
 	return `l.created_at >= ` + start + ` AND (l.kind <> 'settlement' OR ` + start + ` = ` + periodStartSQL(cap, at) +
 		` OR COALESCE(` + finished + `, 'infinity') >= ` + start + `)`
@@ -614,28 +614,28 @@ func countedSQL(cap, repository, at, finished string) string {
 const rowFinishedSQL = `(SELECT ft.finished_at FROM tasks ft WHERE ft.id = l.task_id)`
 
 // MonthSpentSQL is the month cap's count over the ledger: the month's rows
-// of at, a timestamptz expression, in the count (countedSQL).
+// of at, a timestamptz expression, in the count (CountedSQL).
 func MonthSpentSQL(at string) string {
-	return ledgerSumSQL(monthRowsSQL(at) + ` AND ` + countedSQL(CapMonth, "''", at, rowFinishedSQL))
+	return ledgerSumSQL(monthRowsSQL(at) + ` AND ` + CountedSQL(CapMonth, "''", at, rowFinishedSQL))
 }
 
 // daySpentSQL is the day cap's count over the ledger: the day's rows of
-// at, a timestamptz expression, in the count (countedSQL); heldSQL is
+// at, a timestamptz expression, in the count (CountedSQL); heldSQL is
 // every outstanding hold, which counts against the day and the month.
 func daySpentSQL(at string) string {
-	return ledgerSumSQL(dayRowsSQL(at) + ` AND ` + countedSQL(CapDay, "''", at, rowFinishedSQL))
+	return ledgerSumSQL(dayRowsSQL(at) + ` AND ` + CountedSQL(CapDay, "''", at, rowFinishedSQL))
 }
 
 const heldSQL = `COALESCE((SELECT sum(eur) FROM holds), 0)`
 
 // projectSpentSQL is the project cap's count over the ledger: the month's
 // rows of at, a timestamptz expression, of the tasks of repository, an SQL
-// expression, in the count (countedSQL). A standing line's task id is
+// expression, in the count (CountedSQL). A standing line's task id is
 // standing:<repository>: it joins no task.
 func projectSpentSQL(repository, at string) string {
 	return `COALESCE((SELECT sum(l.eur) FROM ledger l JOIN tasks p ON p.id = l.task_id
 		WHERE p.repository = ` + repository + ` AND l.day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date
-		AND ` + countedSQL(CapProject, repository, at, "p.finished_at") + `), 0)`
+		AND ` + CountedSQL(CapProject, repository, at, "p.finished_at") + `), 0)`
 }
 
 // projectHeldSQL is every outstanding hold of the tasks of repository, an

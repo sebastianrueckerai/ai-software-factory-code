@@ -88,7 +88,7 @@ func TestMonthAlarm(t *testing.T) {
 	for _, want := range []string{"This month's spending reached the factory's limit of 50.00 EUR\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
-		"The gateway refuses every further call until the month ends or the cap is raised.", "The newest refusal:\n\n```\n" + gatewayRefusal + "\n```"} {
+		"The gateway refuses every further call until the month ends, a human resets the month's count in the console's status panel, or the cap is raised by a commit.", "The newest refusal:\n\n```\n" + gatewayRefusal + "\n```"} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
 		}

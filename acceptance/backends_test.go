@@ -655,6 +655,11 @@ func (s *acceptanceStore) Enforced(context.Context, time.Time) (policy.Enforced,
 	return policy.Enforced{}, nil
 }
 
+// CapResetAfter: the acceptance store keeps no resets.
+func (s *acceptanceStore) CapResetAfter(context.Context, string, string, time.Time) (*policy.CapReset, error) {
+	return nil, nil
+}
+
 // TaskEvents: the acceptance store keeps no event rows.
 func (s *acceptanceStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
 	return nil, nil

@@ -3396,6 +3396,61 @@ func TestCapResumeProjectCap(t *testing.T) {
 	}
 }
 
+// countedPrices is stubPrices counting its reads: SessionFunded reads the
+// price of every attempt it judges.
+type countedPrices struct {
+	stubPrices
+	reads int
+}
+
+func (p *countedPrices) Price(ctx context.Context, alias string) (policy.Price, error) {
+	p.reads++
+	return p.stubPrices.Price(ctx, alias)
+}
+
+// A wait on the day cap refused at 13:00 under a version that settled at
+// 12:00 ends on no check: the cap as enforced refused it, so the floor is
+// not read, though 39 EUR of the day are free. A month reset at 14:00
+// lifts no day cap. A day reset at 14:02 changes no version yet restarts
+// the count: the check reads the floor, which funds, and the end names
+// the reset. A project's wait ends on a reset of its own repository's
+// count alone.
+func TestCapResumeAfterReset(t *testing.T) {
+	g := newCapRig(t)
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 20, h, m, 0, 0, time.UTC) }
+	g.at, g.v.ActivatedAt, g.day = at(14, 10), at(12, 0).Add(-30*time.Second), 1
+	prices := &countedPrices{stubPrices: g.r.cfg.Prices.(stubPrices)}
+	g.r.cfg.Prices = prices
+	day := CapCheck{Decision: policy.RefusedDayCap, RefusedAt: at(13, 0)}
+	if res := g.check(t, day); res.Resume || prices.reads != 0 {
+		t.Fatalf("no reset: %+v after %d price reads, want the wait on and no floor read", res, prices.reads)
+	}
+	g.store.capResets = []policy.CapReset{{ID: 1, Cap: policy.CapMonth, At: at(14, 0), Login: "anna", BeforeEUR: 300}}
+	if res := g.check(t, day); res.Resume || prices.reads != 0 {
+		t.Fatalf("a month reset: %+v after %d price reads, want the day's wait on and no floor read", res, prices.reads)
+	}
+	g.store.capResets = append(g.store.capResets, policy.CapReset{ID: 2, Cap: policy.CapDay, At: at(14, 2), Login: "sebastian", BeforeEUR: 19.62})
+	if res := g.check(t, day); !res.Resume || prices.reads == 0 {
+		t.Fatalf("a day reset at 14:02: %+v after %d price reads, want the floor read and the wait's end", res, prices.reads)
+	}
+	if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["cap"] != policy.RefusedDayCap || step["why"] != "the day cap's count was reset at 14:02 UTC by sebastian" {
+		t.Fatalf("cap_resumed = %v", step)
+	}
+
+	project := CapCheck{Decision: policy.RefusedProjectCap, RefusedAt: at(13, 0)}
+	g.store.capResets = []policy.CapReset{{ID: 3, Cap: policy.CapProject, Repository: "sf/other", At: at(14, 2), Login: "anna", BeforeEUR: 3}}
+	if res := g.check(t, project); res.Resume {
+		t.Fatalf("another project's reset: %+v, want the wait on", res)
+	}
+	g.store.capResets = append(g.store.capResets, policy.CapReset{ID: 4, Cap: policy.CapProject, Repository: "sf/app", At: at(14, 5), Login: "anna", BeforeEUR: 3})
+	if res := g.check(t, project); !res.Resume {
+		t.Fatalf("the project's reset: %+v, want the wait's end", res)
+	}
+	if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["why"] != "the project's month cap's count was reset at 14:05 UTC by anna" {
+		t.Fatalf("cap_resumed = %v", step)
+	}
+}
+
 // A wait ends when the floor now refuses for another reason, which its own
 // question names: 5 - 4.9 = 0.10 EUR of the task's budget is under the
 // floor of 0.60 while the month has 56 EUR free. An unpriced model, and a
@@ -3512,32 +3567,35 @@ func TestMonthTurn(t *testing.T) {
 // The reasons of a wait on a cap, written out: the day's is the pinned
 // dayReason, and a project's names its file from the state, else "the
 // project's file". The first line is the card's question row, cut at 300
-// characters, for a project of a realistic name.
+// characters: every cap's row holds its actions within them, a project's for a
+// project of a realistic name.
 func TestCapWaitReason(t *testing.T) {
 	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	day := "free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55)"
 	if got := CapWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), day, oct(15, 0, 0)); got != dayReason {
 		t.Errorf("day reason = %q, want %q", got, dayReason)
 	}
-	const month = "the month cap is reached: the card resumes on its own once the money left under the month cap funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card.\n" +
+	const month = "the month cap is reached: the card resumes on its own once a session fits under the cap, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Reset the month's count in the console's status panel, or raise the month cap in policy.yaml, to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_month_cap): spent"
 	if got := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", nov1); got != month {
 		t.Errorf("month reason = %q, want %q", got, month)
 	}
 	state := "0.01 EUR of the project's 3.00 EUR month in projects/linkshort.yaml is free"
-	const project = "the project's month cap is reached: the card resumes on its own once the money left under the project's month cap funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the project's month cap in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+	const project = "the project's month cap is reached: the card resumes on its own once a session fits under the cap, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Reset its count in the console's status panel, or raise it in projects/linkshort.yaml, to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_project_cap): "
 	got := CapWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), state, nov1)
 	if got != project+state {
 		t.Errorf("project reason = %q, want %q", got, project+state)
 	}
-	if q := EscalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
-		t.Errorf("project question row = %q (%d), want the actions within 300 characters", q, len(q))
+	for _, reason := range []string{dayReason, month, got} {
+		if q := EscalationQuestion(reason); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
+			t.Errorf("question row = %q (%d), want the actions within 300 characters", q, len(q))
+		}
 	}
 	noFile := CapWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), "spent", nov1)
-	if want := "Raise the project's month cap in the project's file to resume it sooner"; !strings.Contains(noFile, want) {
+	if want := "Reset its count in the console's status panel, or raise it in the project's file, to resume it sooner"; !strings.Contains(noFile, want) {
 		t.Errorf("project reason without a file = %q, want %q", noFile, want)
 	}
 }
@@ -3974,11 +4032,11 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 		decision, opening string
 		free              policy.Free
 	}{
-		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" +
+		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or reset the day's count in the console's status panel, or raise the day cap in policy.yaml by a commit.\n" +
 			"0.01 EUR of the day's 20.00 EUR is free", policy.Free{Day: 0.01, Month: inf, Project: inf}},
-		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+		{policy.RefusedMonthCap, "the month cap cannot fund a call: Reset the month's count in the console's status panel, or raise the month cap in policy.yaml by a commit, and answer, or wait for the next UTC month and answer.\n" +
 			"0.01 EUR of the month's 50.00 EUR is free", policy.Free{Day: inf, Month: 0.01, Project: inf}},
-		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Raise the project's month cap in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Reset the project's month count in the console's status panel, or raise the project's month cap in projects/app.yaml by a commit, and answer, or wait for the next UTC month and answer.\n" +
 			"0.01 EUR of the project's 3.00 EUR month in projects/app.yaml is free", policy.Free{Day: inf, Month: inf, Project: 0.01}},
 	} {
 		t.Run(tc.decision, func(t *testing.T) {

@@ -2323,8 +2323,8 @@ var (
 		At: oct(14, 20, 43)}
 	dayCapped = SessionResult{Outcome: OutcomeDayCap, SessionID: "s1", Capped: &dayRefusal,
 		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_day_cap"}}
-	dayQuestion = "the day cap is reached: the card resumes on its own once the money left under the day cap " +
-		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
+	dayQuestion = "the day cap is reached: the card resumes on its own once a session fits under the cap" +
+		", at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Reset the day's count in the console's status panel, or raise the day cap in policy.yaml, to resume it sooner, or close the card."
 	dayReason = dayQuestion + "\nthe gateway refused this task's spend (refused_day_cap): free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55)"
 
 	// monthRefusal is card #1352's: the gateway's own hold under policy
@@ -2335,8 +2335,8 @@ var (
 	// with the cap's reason and the refusal
 	monthCapped = SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: capRefused(monthRefusal.Refusal), Capped: &monthRefusal,
 		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_month_cap"}}
-	monthQuestion = "the month cap is reached: the card resumes on its own once the money left under the month cap " +
-		"funds a session, at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card."
+	monthQuestion = "the month cap is reached: the card resumes on its own once a session fits under the cap" +
+		", at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Reset the month's count in the console's status panel, or raise the month cap in policy.yaml, to resume it sooner, or close the card."
 	monthReason = monthQuestion + "\nthe gateway refused this task's spend (refused_month_cap): free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 0.000001)"
 )
 
@@ -2397,7 +2397,7 @@ func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(oct(15, 0, 0)) {
-				return "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" + state, nil
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or reset the day's count in the console's status panel, or raise the day cap in policy.yaml by a commit.\n" + state, nil
 			}
 			return "", nil
 		})
@@ -2631,7 +2631,7 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(run.funded) {
-				return "the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" + state, nil
+				return "the month cap cannot fund a call: Reset the month's count in the console's status panel, or raise the month cap in policy.yaml by a commit, and answer, or wait for the next UTC month and answer.\n" + state, nil
 			}
 			return "", nil
 		})
@@ -2641,8 +2641,8 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	want := "the month cap is reached: the card resumes on its own once the money left under the month cap funds a session, at the latest when the UTC month turns at " +
-		"2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card.\n" +
+	want := "the month cap is reached: the card resumes on its own once a session fits under the cap, at the latest when the UTC month turns at " +
+		"2026-11-01T00:00:00Z. Reset the month's count in the console's status panel, or raise the month cap in policy.yaml, to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_month_cap): " + state
 	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != SourceMonthCap {
 		t.Fatalf("escalations = %q, want the month cap's wait once: %q", h.escalated, want)
@@ -2815,8 +2815,8 @@ func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	want := "the project's month cap is reached: the card resumes on its own once the money left under the project's month cap funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the project's month cap in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+	want := "the project's month cap is reached: the card resumes on its own once a session fits under the cap, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Reset its count in the console's status panel, or raise it in projects/linkshort.yaml, to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_project_cap): " + refusal
 	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "project_cap" {
 		t.Fatalf("escalations = %q, want the project cap's wait once: %q", h.escalated, want)

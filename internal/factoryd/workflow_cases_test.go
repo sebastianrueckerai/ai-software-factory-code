@@ -199,7 +199,7 @@ func TestWorkflowWithdrawsTheCaseWhenTheCapTurns(t *testing.T) {
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(oct(15, 0, 0)) {
-				return "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap.\nspent", nil
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom.\nspent", nil
 			}
 			return "", nil
 		})

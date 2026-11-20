@@ -22,7 +22,7 @@ func chatStore(t *testing.T) *PGStore {
 	}
 	t.Cleanup(func() { s.db.Close() })
 	s.SetSealKey([]byte("0123456789abcdef0123456789abcdef"))
-	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_attachments, chat_conversations, chat_proposals, chat_seen, ledger, events CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_attachments, chat_conversations, chat_proposals, chat_seen, ledger, events, audit, cap_resets CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return s
@@ -215,8 +215,63 @@ func TestPGStoreProjectMonthSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != (ProjectSpend{EUR: 2.25, ChatEUR: 0.75}) {
-		t.Fatalf("spend = %+v, want 2.25 with the chat's 0.75", got)
+	if got != (ProjectSpend{EUR: 2.25, ChatEUR: 0.75, AllEUR: 2.25}) {
+		t.Fatalf("spend = %+v, want 2.25 with the chat's 0.75, 2.25 in all", got)
+	}
+}
+
+// A project's month counts from its newest reset, as the gateway's
+// project headroom does: a's chat booked 30 EUR at the month's start and
+// was refused at the cap, a human reset a's count, and a's card booked
+// 10 EUR after it. a counts 10, none of it the chat's, 40 in all, no hit,
+// and the reset ended a count of 30. b's 5 EUR count whole, with no
+// reset. The press is the real clock's, the rows around it.
+func TestProjectMonthSpendFollowsReset(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	now := time.Now().UTC()
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	chat, err := s.EnsureChatTask(ctx, "a", "a", 50, month)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range []Task{{ID: "t-ra", Kind: "agent", Status: "running", Repository: "a", IssueNumber: 1, Track: "direct"},
+		{ID: "t-rb", Kind: "agent", Status: "running", Repository: "b", IssueNumber: 1, Track: "direct"}} {
+		if err := s.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	book := func(task string, at time.Time, eur float64) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur, created_at) VALUES ($1, $2, 'model', 'x', $3, $4)`,
+			task, at.UTC().Format(policy.DateLayout), eur, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	book(chat.ID, month, 30)
+	book("t-rb", month, 5)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (ts, task_id, decision, reason) VALUES ($1, 't-ra', $2, 'x')`, month, policy.RefusedProjectCap); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ProjectMonthSpend(ctx, "a", time.Now()); err != nil || got != (ProjectSpend{EUR: 30, ChatEUR: 30, AllEUR: 30, Hit: true}) {
+		t.Fatalf("before the reset = %+v, %v, want 30 EUR, all of it the chat's, hit", got, err)
+	}
+	r, err := s.ResetCap(ctx, policy.CapProject, "a", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book("t-ra", r.At.Add(time.Millisecond), 10)
+	got, err := s.ProjectMonthSpend(ctx, "a", r.At)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reset == nil || *got.Reset != (policy.CapReset{ID: r.ID, Cap: policy.CapProject, Repository: "a", At: r.At, Login: "sebastian", BeforeEUR: 30}) {
+		t.Fatalf("reset = %+v, want %+v with 30 EUR before", got.Reset, r)
+	}
+	if got.Reset = nil; got != (ProjectSpend{EUR: 10, AllEUR: 40}) {
+		t.Fatalf("after the reset = %+v, want 10 EUR counted, none of it the chat's, 40 in all, no hit", got)
+	}
+	if got, err := s.ProjectMonthSpend(ctx, "b", r.At); err != nil || got != (ProjectSpend{EUR: 5, AllEUR: 5}) {
+		t.Fatalf("b = %+v, %v, want 5 EUR whole and no reset", got, err)
 	}
 }
 

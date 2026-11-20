@@ -70,11 +70,19 @@ type BoardDigestPlan struct {
 	Unreadable                 bool
 }
 
-// BoardDigestCap is a cap by name, the spend it counts and its size.
+// BoardDigestCap is a cap by name, the spend it counts and its size, and
+// the reset its count starts at, nil without one.
 type BoardDigestCap struct {
 	Name             string
 	SpentEUR, CapEUR float64
 	Hit              bool
+	Reset            *policy.CapReset
+}
+
+// CapResetWords says reset r: its time in UTC, who pressed it and the
+// count it ended.
+func CapResetWords(r policy.CapReset) string {
+	return fmt.Sprintf("reset %s UTC by %s, %s EUR before", r.At.UTC().Format("15:04"), r.Login, textutil.EUR(r.BeforeEUR))
 }
 
 // BoardDigest builds repository's board digest at the runner's clock: one
@@ -124,13 +132,14 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 		return BoardDigest{}, err
 	}
 	month, day := v.Document.Budget.MonthEUR, v.Document.Budget.DayEUR
-	b.Caps = []BoardDigestCap{{"month", e.Month, month, policy.CapHit(e.Month, month, e.MonthHit)}, {"day", e.Day, day, policy.CapHit(e.Day, day, e.DayHit)}}
+	b.Caps = []BoardDigestCap{{"month", e.Month, month, policy.CapHit(e.Month, month, e.MonthHit), e.MonthReset},
+		{"day", e.Day, day, policy.CapHit(e.Day, day, e.DayHit), e.DayReset}}
 	if _, cap := v.ProjectCap(repository); !math.IsInf(cap, 1) {
 		spent, err := r.store.ProjectMonthSpend(ctx, repository, now)
 		if err != nil {
 			return BoardDigest{}, err
 		}
-		b.Caps = append(b.Caps, BoardDigestCap{"project", spent.EUR, cap, policy.CapHit(spent.EUR, cap, spent.Hit)})
+		b.Caps = append(b.Caps, BoardDigestCap{"project", spent.EUR, cap, policy.CapHit(spent.EUR, cap, spent.Hit), spent.Reset})
 	}
 	return b, nil
 }
@@ -265,6 +274,9 @@ func (b BoardDigest) Render() string {
 		caps[i] = fmt.Sprintf("%s %s of %s EUR", c.Name, textutil.EUR(c.SpentEUR), textutil.EUR(c.CapEUR))
 		if c.Hit {
 			caps[i] += " (hit)"
+		}
+		if c.Reset != nil {
+			caps[i] += " (" + CapResetWords(*c.Reset) + ")"
 		}
 	}
 	s.WriteString("caps:\n" + strings.Join(caps, " · ") + "\n")

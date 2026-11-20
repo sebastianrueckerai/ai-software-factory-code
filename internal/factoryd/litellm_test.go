@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // keyHub serves the wire shapes recorded from the live proxy (1.102.1):
@@ -155,5 +157,73 @@ func TestLiteLLMSpendByTaskListsEveryKeyOnce(t *testing.T) {
 	}
 	if strings.Join(hub.lists, ",") != "1,2" {
 		t.Fatalf("list pages = %v, want 1,2 once each", hub.lists)
+	}
+}
+
+// proxyBudgetAnswer is LiteLLM 1.102.4's /user/info for the proxy-wide
+// budget's user: UserInfoResponse, whose user_info is the
+// LiteLLM_UserTable row the proxy keeps max_budget and budget_duration on
+// at its start, and the proxy's spend.
+const proxyBudgetAnswer = `{"user_id":"litellm-proxy-budget","user_info":{"user_id":"litellm-proxy-budget","user_alias":null,"team_id":null,
+"sso_user_id":null,"organization_id":null,"object_permission_id":null,"teams":[],"user_role":null,"max_budget":1875.0,"spend":1238.59,
+"user_email":null,"models":[],"metadata":{},"max_parallel_requests":null,"tpm_limit":null,"rpm_limit":null,"budget_duration":"1mo",
+"budget_reset_at":"2026-12-01T00:00:00Z","allowed_cache_controls":[],"policies":[],"model_spend":{},"model_max_budget":{},
+"created_at":"2026-09-26T08:14:00Z","updated_at":"2026-11-20T14:01:57Z","organization_memberships":null,"object_permission":null},
+"keys":[],"teams":[]}`
+
+// The backstop is the proxy budget user's spend and max_budget, read
+// under the master key and kept for 60 s: a second read within them asks
+// nothing, one at 60 s asks again. A failed read is its error, and keeps
+// no answer: the next read asks again.
+func TestProxyBudget(t *testing.T) {
+	var calls, status atomic.Int32
+	status.Store(http.StatusOK)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/user/info" || r.URL.Query().Get("user_id") != "litellm-proxy-budget" ||
+			r.Header.Get("Authorization") != "Bearer mk" {
+			t.Errorf("call %s %s?%s with %q, want GET /user/info?user_id=litellm-proxy-budget under the master key",
+				r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(int(status.Load()))
+		io.WriteString(w, proxyBudgetAnswer)
+	}))
+	t.Cleanup(srv.Close)
+	now := time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
+	l := &LiteLLMAdmin{BaseURL: srv.URL, MasterKey: "mk", now: func() time.Time { return now }}
+	read := func(want int32) {
+		t.Helper()
+		b, err := l.ProxyBudget(context.Background())
+		if err != nil || b != (Backstop{SpendUSD: 1238.59, MaxUSD: 1875}) || calls.Load() != want {
+			t.Fatalf("ProxyBudget at %s = %+v, %v after %d requests, want 1238.59 of 1875 USD after %d", now.Format(time.TimeOnly), b, err, calls.Load(), want)
+		}
+	}
+	read(1)
+	now = now.Add(59 * time.Second)
+	read(1)
+	now = now.Add(time.Second)
+	read(2)
+	status.Store(http.StatusInternalServerError)
+	now = now.Add(time.Minute)
+	if b, err := l.ProxyBudget(context.Background()); err == nil || !strings.Contains(err.Error(), "status 500") || calls.Load() != 3 {
+		t.Fatalf("ProxyBudget on a 500 = %+v, %v after %d requests, want the error after 3", b, err, calls.Load())
+	}
+	status.Store(http.StatusOK)
+	read(4)
+}
+
+// A proxy budget user without max_budget, or with 0 (LiteLLM's none),
+// sets no backstop: the read is an error, not a limit of 0 USD that every
+// spend would pass.
+func TestProxyBudgetWithoutMaxBudget(t *testing.T) {
+	for _, max := range []string{"null", "0.0"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"user_id":"litellm-proxy-budget","user_info":{"user_id":"litellm-proxy-budget","max_budget":`+max+`,"spend":12.5},"keys":[],"teams":[]}`)
+		}))
+		l := &LiteLLMAdmin{BaseURL: srv.URL, MasterKey: "mk"}
+		if b, err := l.ProxyBudget(context.Background()); err == nil || !strings.Contains(err.Error(), "max_budget") {
+			t.Errorf("ProxyBudget with max_budget %s = %+v, %v, want an error naming max_budget", max, b, err)
+		}
+		srv.Close()
 	}
 }

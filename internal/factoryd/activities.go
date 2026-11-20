@@ -843,14 +843,14 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	switch refused.Decision {
 	case policy.RefusedDayCap:
 		state = fmt.Sprintf("%s EUR of the day's %s EUR is free", textutil.EUR(max(free.Day, 0)), textutil.EUR(req.DayEUR))
-		act = "Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit."
+		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or reset the day's count in the console's status panel, or raise the day cap in policy.yaml by a commit."
 	case policy.RefusedMonthCap:
 		state = fmt.Sprintf("%s EUR of the month's %s EUR is free", textutil.EUR(max(free.Month, 0)), textutil.EUR(req.MonthEUR))
-		act = "Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
+		act = "Reset the month's count in the console's status panel, or raise the month cap in policy.yaml by a commit, and answer, or wait for the next UTC month and answer."
 	case policy.RefusedProjectCap:
 		file := "projects/" + req.Project + ".yaml"
 		state = fmt.Sprintf("%s EUR of the project's %s EUR month in %s is free", textutil.EUR(max(free.Project, 0)), textutil.EUR(req.ProjectEUR), file)
-		act = "Raise the project's month cap in " + file + " by a commit and answer, or wait for the next UTC month and answer."
+		act = "Reset the project's month count in the console's status panel, or raise the project's month cap in " + file + " by a commit, and answer, or wait for the next UTC month and answer."
 	default:
 		if own.Holds > 0 {
 			if free.Reserve > 0 {
@@ -981,8 +981,9 @@ type CapResumed struct {
 // once the cap no longer binds the session that runs next. The gateway may
 // enforce the previous policy version for PolicyTTL after a load, so no
 // wait ends before the version in force settles (Settles), nor on a
-// refusal that came after it did: the cap as enforced refused it, and a
-// floor that funds meanwhile would loop sessions with no wait. Past that,
+// refusal that came after it did, unless a human reset the cap's count
+// since: the cap as enforced refused it, and a floor that funds meanwhile
+// would loop sessions with no wait. Past that,
 // the session's start must be funded as SessionFunded reads it, every
 // outstanding hold netted as the gateway nets it; the cap still refusing,
 // or a model that cannot be priced, waits for the turn, and any other
@@ -999,10 +1000,16 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			return CapResumed{}, nil
 		}
 		v := r.cfg.Policy()
+		var reset *policy.CapReset
+		var err error
 		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); r.Clock().Before(settles) {
 			return CapResumed{Settles: settles}, nil
 		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
-			return CapResumed{}, nil
+			// a reset changes no version, yet restarts the count the
+			// refusal came under
+			if reset, err = r.resetSince(ctx, in.TaskID, o.cap, in.RefusedAt); err != nil || reset == nil {
+				return CapResumed{}, err
+			}
 		}
 		refusal, err := r.SessionFunded(ctx, in.TaskID, in.Model)
 		if err != nil {
@@ -1015,12 +1022,32 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			return CapResumed{}, nil
 		}
 		why = fmt.Sprintf("the %s no longer binds a session (policy version %d)", o.name, v.ID)
+		if reset != nil {
+			why = fmt.Sprintf("the %s's count was reset at %s UTC by %s", o.name, reset.At.UTC().Format("15:04"), reset.Login)
+		}
 		if refusal != "" {
 			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
 		}
 	}
 	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})
 	return CapResumed{Resume: true}, nil
+}
+
+// resetSince is the newest reset of cap after t, a project's of task
+// taskID's repository; nil without one.
+func (r *Runner) resetSince(ctx context.Context, taskID, cap string, t time.Time) (*policy.CapReset, error) {
+	repository := ""
+	if cap == policy.CapProject {
+		task, ok, err := r.store.Task(ctx, taskID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, terminalError("no task row for %s", taskID)
+		}
+		repository = task.Repository
+	}
+	return r.store.CapResetAfter(ctx, cap, repository, t)
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own

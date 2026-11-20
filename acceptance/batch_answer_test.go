@@ -673,6 +673,9 @@ func (s *accBatchStore) OpenPlans(context.Context, string) ([]factoryd.Task, err
 func (s *accBatchStore) Enforced(context.Context, time.Time) (policy.Enforced, error) {
 	panic("unused")
 }
+func (s *accBatchStore) CapResetAfter(context.Context, string, string, time.Time) (*policy.CapReset, error) {
+	panic("unused")
+}
 func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	panic("unused")
 }

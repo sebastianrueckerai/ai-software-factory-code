@@ -740,7 +740,7 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 		CaseSessionCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
 		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
 		CaseBudgetFloor: "this card waits on money, not a session (the card's answers at this stop: `close` and `note`)",
-		CaseMonthCap:    "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`",
+		CaseMonthCap:    "this card waits on the month cap, not a session: reset the month's count in the console's status panel, raise the month cap in policy.yaml by a commit, or wait for the month to turn, then `fund` or `retry`",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, one); got != want {
 			t.Errorf("an extend on %q = %q, want %q", kind, got, want)
@@ -828,7 +828,7 @@ func TestExtendOnAMoneyStopNamesTheStop(t *testing.T) {
 	}
 	for kind, want := range map[CaseKind]string{
 		CaseBudgetFloor: "this card waits on money, not a session (the card's answers at this stop: `close` and `note`)",
-		CaseMonthCap:    "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`",
+		CaseMonthCap:    "this card waits on the month cap, not a session: reset the month's count in the console's status panel, raise the month cap in policy.yaml by a commit, or wait for the month to turn, then `fund` or `retry`",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
 			t.Errorf("an extend on %s = %q, want %q", kind, got, want)
@@ -1887,9 +1887,9 @@ func TestARefusalListsTheAnswersOfTheStopItNames(t *testing.T) {
 func TestACapWaitRefusalNamesTheWaitAndTheLift(t *testing.T) {
 	line, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)), "\n")
 	f := CaseFacts{Kind: CaseSessionCap, FloorEUR: 1, LeftEUR: 0.2, SessionCap: 3, Attempts: 1, AgentTimeS: 100, AgentTimeCapS: 1200, SessionLeastS: 300, CapWait: line}
-	want := "the day cap is reached: the card resumes on its own once the money left under the day cap funds a session, " +
-		"at the latest when the UTC day turns at 2026-11-12T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
-	if got := sessionRoom(f); got != want || !strings.Contains(line, "turns at 2026-11-12T00:00:00Z") || !strings.Contains(line, "Raise the day cap in policy.yaml") {
+	want := "the day cap is reached: the card resumes on its own once a session fits under the cap, " +
+		"at the latest when the UTC day turns at 2026-11-12T00:00:00Z. Reset the day's count in the console's status panel, or raise the day cap in policy.yaml, to resume it sooner, or close the card."
+	if got := sessionRoom(f); got != want || !strings.Contains(line, "turns at 2026-11-12T00:00:00Z") || !strings.Contains(line, "Reset the day's count in the console's status panel, or raise the day cap in policy.yaml") {
 		t.Errorf("the refusal = %q, want %q, whose line names the turn and the lift", got, want)
 	}
 }

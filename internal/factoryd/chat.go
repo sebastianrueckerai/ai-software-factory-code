@@ -1328,26 +1328,42 @@ func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, 
 	return out, nil
 }
 
-// ProjectSpend is a project's ledger spend in one UTC month, and the part
-// its chat tasks booked. Hit says the gateway refused a call at the
-// project's month cap in that month.
+// ProjectSpend is a project's ledger spend in one UTC month: EUR is the
+// project cap's count, from the project's newest reset in the month
+// (Reset, nil without one), ChatEUR the part of it its chat tasks
+// booked, and AllEUR the month's whole. Hit says the gateway refused a
+// call at the project's month cap since its count started.
 type ProjectSpend struct {
-	EUR, ChatEUR float64
-	Hit          bool
+	EUR, ChatEUR, AllEUR float64
+	Hit                  bool
+	Reset                *policy.CapReset
 }
 
 // ProjectMonthSpend is repository's spend over the ledger in the UTC month
 // of at, as the gateway's project headroom counts it.
 func (s *PGStore) ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error) {
 	var p ProjectSpend
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(sum(l.eur), 0)::float8, COALESCE(sum(l.eur) FILTER (WHERE t.kind = $3), 0)::float8,
+	r := policy.CapReset{Cap: policy.CapProject, Repository: repository}
+	counted := policy.CountedSQL(policy.CapProject, "$1", "$2::timestamptz", "t.finished_at")
+	err := s.db.QueryRowContext(ctx, `SELECT s.eur, s.chat, s.whole,
 		EXISTS (SELECT 1 FROM audit a JOIN tasks r ON r.id = a.task_id
-			WHERE a.decision = $4 AND r.repository = $1 AND a.ts >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-		FROM ledger l JOIN tasks t ON t.id = l.task_id
-		WHERE t.repository = $1 AND l.day >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC')::date
-		AND l.day < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month')::date`,
-		repository, at, KindChat, policy.RefusedProjectCap).Scan(&p.EUR, &p.ChatEUR, &p.Hit)
-	return p, err
+			WHERE a.decision = $4 AND r.repository = $1 AND a.ts >= `+policy.CapCountStartSQL(policy.CapProject, "$1", "$2::timestamptz")+`),
+		COALESCE(n.id, 0), COALESCE(n.at, 'epoch'), COALESCE(n.login, ''), COALESCE(n.before_eur, 0)
+		FROM (SELECT COALESCE(sum(l.eur) FILTER (WHERE `+counted+`), 0)::float8 AS eur,
+				COALESCE(sum(l.eur) FILTER (WHERE t.kind = $3 AND `+counted+`), 0)::float8 AS chat,
+				COALESCE(sum(l.eur), 0)::float8 AS whole
+			FROM ledger l JOIN tasks t ON t.id = l.task_id
+			WHERE t.repository = $1 AND l.day >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC')::date
+			AND l.day < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month')::date) s
+		LEFT JOIN LATERAL (`+policy.NewestResetSQL(policy.CapProject, "$1", "$2::timestamptz")+`) n ON true`,
+		repository, at, KindChat, policy.RefusedProjectCap).Scan(&p.EUR, &p.ChatEUR, &p.AllEUR, &p.Hit, &r.ID, &r.At, &r.Login, &r.BeforeEUR)
+	if err != nil {
+		return ProjectSpend{}, err
+	}
+	if r.ID != 0 {
+		p.Reset = &r
+	}
+	return p, nil
 }
 
 // TaskSpendSince is task id's ledger spend booked at or after since.

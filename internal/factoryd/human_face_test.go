@@ -44,7 +44,7 @@ var humanKinds = []struct {
 	{"still red", []string{"I did it", "Not now"}, true, mainRun, stays + " The merge queue stays paused until a push run of main is green."},
 	{"config rejected", []string{"I did it", "Not now"}, true,
 		"Closes the card. The factory checks each new commit of factory/, and a valid one takes effect within 30 seconds.", stays + " The configuration before it stays in force."},
-	{"month cap", []string{"Noted", "Not now"}, true, "", stays + " Every model call waits until the limit is raised or the month ends."},
+	{"month cap", []string{"Noted", "Not now"}, true, "", stays + " Every model call waits until a human resets the month's count in the console's status panel, the limit is raised by a commit, or the month ends."},
 	{"judgment budget", []string{"Add money to the chat", "Not now", "Noted"}, true, "", stays + " Every stopped card comes to you until the budget is raised or the month ends."},
 	{"production held", []string{"Not now", "Deploy now", "Send back to the planner", "Take the plan off main"}, true, "",
 		stays + " Production of code stays held while plan “empty commit fires gate” (#1947) is open on main."},

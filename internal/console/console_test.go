@@ -2693,7 +2693,7 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
 	}...)
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) {
-		return "the day cap cannot fund a call: Answer, and the attempt waits on its own until money is left under the day cap, or raise the day cap in policy.yaml by a commit.\n" +
+		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or reset the day's count in the console's status panel, or raise the day cap in policy.yaml by a commit.\n" +
 			"0.01 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
 	}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
@@ -2705,9 +2705,9 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 // the project's, is taken the same way: the cap resets on its own.
 func TestAnswerTakenAtAMonthCap(t *testing.T) {
 	for _, why := range []string{
-		"the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+		"the month cap cannot fund a call: Reset the month's count in the console's status panel, or raise the month cap in policy.yaml by a commit, and answer, or wait for the next UTC month and answer.\n" +
 			"0.01 EUR of the month's 50.00 EUR (budget.month_eur) is free",
-		"the project's month cap cannot fund a call: Raise the project's month cap in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+		"the project's month cap cannot fund a call: Reset the project's month count in the console's status panel, or raise the project's month cap in projects/app.yaml by a commit, and answer, or wait for the next UTC month and answer.\n" +
 			"0.01 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
 	} {
 		r := newRig(t)

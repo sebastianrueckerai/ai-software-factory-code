@@ -194,10 +194,12 @@ func refusedSince(decision, since string) string {
 	return `EXISTS (SELECT 1 FROM audit WHERE decision = '` + decision + `' AND ts >= ` + since + `)`
 }
 
-// newestResetSQL is cap's newest reset in its UTC period of at, a
-// timestamptz expression, for a LEFT JOIN LATERAL: no row without one.
-func newestResetSQL(cap, at string) string {
-	return `SELECT cr.id, cr.at, cr.login, cr.before_eur::float8 ` + capResetsSQL(cap, "''", at) + ` ORDER BY cr.at DESC, cr.id DESC LIMIT 1`
+// NewestResetSQL is cap's newest reset of repository, an SQL expression
+// (an empty SQL string for the day's and the month's), in its UTC period
+// of at, a timestamptz expression: id, at, login and before_eur for a
+// LEFT JOIN LATERAL, no row without one.
+func NewestResetSQL(cap, repository, at string) string {
+	return `SELECT cr.id, cr.at, cr.login, cr.before_eur::float8 ` + capResetsSQL(cap, repository, at) + ` ORDER BY cr.at DESC, cr.id DESC LIMIT 1`
 }
 
 // LedgerEnforced reads the enforced spend of the UTC day and month of at.
@@ -216,8 +218,8 @@ func LedgerEnforced(ctx context.Context, db *sql.DB, at time.Time) (Enforced, er
 		        COALESCE(d.id, 0), COALESCE(d.at, 'epoch'), COALESCE(d.login, ''), COALESCE(d.before_eur, 0),
 		        COALESCE(m.id, 0), COALESCE(m.at, 'epoch'), COALESCE(m.login, ''), COALESCE(m.before_eur, 0)
 		   FROM (SELECT 1) one
-		   LEFT JOIN LATERAL (`+newestResetSQL(CapDay, "$1::timestamptz")+`) d ON true
-		   LEFT JOIN LATERAL (`+newestResetSQL(CapMonth, "$1::timestamptz")+`) m ON true`,
+		   LEFT JOIN LATERAL (`+NewestResetSQL(CapDay, "''", "$1::timestamptz")+`) d ON true
+		   LEFT JOIN LATERAL (`+NewestResetSQL(CapMonth, "''", "$1::timestamptz")+`) m ON true`,
 		at).Scan(&e.Day, &e.Month, &e.Premium, &e.DayAll, &e.MonthAll, &e.DayHit, &e.MonthHit, &e.PremiumHit,
 		&day.ID, &day.At, &day.Login, &day.BeforeEUR, &month.ID, &month.At, &month.Login, &month.BeforeEUR)
 	if err != nil {

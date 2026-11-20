@@ -227,8 +227,8 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 			Waits:    "Model calls fail until the guard's limit is raised.",
 		}
 	}
-	info := "The gateway refuses every further call until the month ends or the cap is raised. " +
-		"A task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
+	info := "The gateway refuses every further call until the month ends, a human resets the month's count in the console's status panel, or the cap is raised by a commit. " +
+		"A task it refused waits on its card and resumes on its own once the count is reset, the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
 		"like any setting: " + link + "\n\nClose this issue once decided."
 	if refusal != "" {
 		info += "\n\nThe newest refusal:\n\n" + fenced(refusal)
@@ -241,7 +241,7 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 			info,
 		Choices:  choices(ActClose+"/"+variantNoted, KeyPark),
 		Happened: fmt.Sprintf("The factory spent %s EUR of its %s EUR limit in %s.", textutil.EUR(eur), textutil.EUR(limit), monthWords(month)),
-		Waits:    "Every model call waits until the limit is raised or the month ends.",
+		Waits:    "Every model call waits until a human resets the month's count in the console's status panel, the limit is raised by a commit, or the month ends.",
 	}
 }
 

@@ -269,6 +269,30 @@ func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
 	}
 }
 
+// A cap whose count a human reset names the press after its figures: its
+// time in UTC, who, and the count it ended. The month without one names
+// none.
+func TestBoardDigestNamesReset(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3, Budget: &policy.ProjectBudget{MonthEUR: 10}})
+	v := g.r.cfg.Policy()
+	v.Document.Budget.DayEUR = 100
+	g.r.cfg.Policy = func() policy.Version { return v }
+	g.r.now = func() time.Time { return time.Date(2026, 11, 2, 14, 30, 0, 0, time.UTC) }
+	day := &policy.CapReset{ID: 1, Cap: policy.CapDay, At: time.Date(2026, 11, 2, 14, 2, 0, 0, time.UTC), Login: "sebastian", BeforeEUR: 19.62}
+	g.store.enforced = policy.Enforced{Day: 0.40, Month: 20.02, DayAll: 20.02, MonthAll: 20.02, DayReset: day}
+	g.store.projectSpend = map[string]float64{"sf/app": 0.5}
+	g.store.projectReset = map[string]*policy.CapReset{"sf/app": {ID: 2, Cap: policy.CapProject, Repository: "sf/app",
+		At: time.Date(2026, 11, 1, 9, 15, 0, 0, time.UTC), Login: "anna", BeforeEUR: 9.75}}
+	b := g.digest(t)
+	if b.Caps[0].Reset != nil || b.Caps[1].Reset != day || b.Caps[2].Reset != g.store.projectReset["sf/app"] {
+		t.Fatalf("Caps = %+v, want the day's and the project's reset", b.Caps)
+	}
+	if got, want := b.Render(), "caps:\nmonth 20.02 of 600.00 EUR · day 0.40 of 100.00 EUR (reset 14:02 UTC by sebastian, 19.62 EUR before) · "+
+		"project 0.50 of 10.00 EUR (reset 09:15 UTC by anna, 9.75 EUR before)\n"; !strings.HasSuffix(got, want) {
+		t.Fatalf("Render =\n%s\nwant it to end\n%s", got, want)
+	}
+}
+
 func TestBoardDigestPlanLineCountsTheProofs(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
 	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })

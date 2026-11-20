@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,60 @@ type LiteLLMAdmin struct {
 	MasterKey string
 	HTTP      *http.Client // nil = a call-sized timeout
 	PageSize  int          // key/list page size, default 100
+
+	now        func() time.Time // nil = time.Now
+	mu         sync.Mutex       // guards the two below
+	backstop   Backstop         // ProxyBudget's last read
+	backstopAt time.Time        // when it was read, zero for none
+}
+
+// Backstop is LiteLLM's proxy-wide budget, the absolute monthly limit
+// behind the policy's caps: the spend of its budget period and its
+// max_budget, in USD.
+type Backstop struct {
+	SpendUSD, MaxUSD float64
+}
+
+// backstopTTL is how long a read of the backstop serves.
+const backstopTTL = time.Minute
+
+// ProxyBudget reads the backstop off the user LiteLLM keeps the
+// proxy-wide max_budget and its spend on, litellm-proxy-budget: /user/info
+// answers its row as user_info (verified against litellm 1.102.4). A read
+// serves for backstopTTL; a failed one keeps nothing. A row without a
+// max_budget above 0 sets no backstop, an error.
+func (l *LiteLLMAdmin) ProxyBudget(ctx context.Context) (Backstop, error) {
+	now := time.Now
+	if l.now != nil {
+		now = l.now
+	}
+	l.mu.Lock()
+	b, at := l.backstop, l.backstopAt
+	l.mu.Unlock()
+	if !at.IsZero() && now().Sub(at) < backstopTTL {
+		return b, nil
+	}
+	body, err := l.call(ctx, http.MethodGet, "/user/info?user_id=litellm-proxy-budget", nil)
+	if err != nil {
+		return Backstop{}, err
+	}
+	var info struct {
+		UserInfo *struct {
+			Spend     float64  `json:"spend"`
+			MaxBudget *float64 `json:"max_budget"`
+		} `json:"user_info"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return Backstop{}, fmt.Errorf("litellm user/info: %w", err)
+	}
+	if info.UserInfo == nil || info.UserInfo.MaxBudget == nil || *info.UserInfo.MaxBudget <= 0 {
+		return Backstop{}, fmt.Errorf("litellm user/info: litellm-proxy-budget has no max_budget above 0, so no backstop is set")
+	}
+	b = Backstop{SpendUSD: info.UserInfo.Spend, MaxUSD: *info.UserInfo.MaxBudget}
+	l.mu.Lock()
+	l.backstop, l.backstopAt = b, now()
+	l.mu.Unlock()
+	return b, nil
 }
 
 type liteKey struct {

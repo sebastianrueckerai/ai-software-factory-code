@@ -1861,12 +1861,12 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 	}{
 		{"month cap", Review{Note: month}, []string{"the project's merge rule is human", "no model review verdict: " + month},
 			base + ". The model review did not run: " + month,
-			[]string{"The model review did not run: " + month + ". The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.",
+			[]string{"The model review did not run: " + month + ". The gateway refuses every further call (refused_month_cap) until a human resets the month's count in the console's status panel, the cap is raised by a commit, or the month ends.",
 				"the project's merge rule is human"}},
 		{"day cap of the parts", Review{Note: day}, nil,
 			base + ". The model review did not run: " + day,
 			[]string{"The model review did not run: parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR. " +
-				"The gateway refuses every further call (refused_day_cap) until the day cap is raised or the UTC day ends."}},
+				"The gateway refuses every further call (refused_day_cap) until a human resets the day's count in the console's status panel, the day cap is raised by a commit, or the UTC day ends."}},
 		{"no money refusal", Review{Note: invalid}, []string{"schema migration"},
 			base + ". The model review did not run: " + invalid,
 			[]string{"The model review did not run: " + invalid + ".", "schema migration"}},

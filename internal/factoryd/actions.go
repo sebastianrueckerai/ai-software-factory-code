@@ -262,7 +262,7 @@ var Actions = []Action{
 		case f.Kind == CaseBudgetFloor:
 			return "this card waits on money, not a session" + stopAnswers(CaseBudgetFloor, f)
 		case f.Kind == CaseMonthCap:
-			return "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`"
+			return "this card waits on the month cap, not a session: reset the month's count in the console's status panel, raise the month cap in policy.yaml by a commit, or wait for the month to turn, then `fund` or `retry`"
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
 		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0:

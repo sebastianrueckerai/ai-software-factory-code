@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -698,6 +699,34 @@ func (s *PGStore) Costs(ctx context.Context, from, to time.Time) (policy.Costs, 
 // against the day, month and premium caps (policy.LedgerEnforced).
 func (s *PGStore) Enforced(ctx context.Context, at time.Time) (policy.Enforced, error) {
 	return policy.LedgerEnforced(ctx, s.db, at)
+}
+
+// ResetCap restarts cap's count for login (policy.ResetCap): the day's
+// and the month's with repository "", a project's with its repository.
+func (s *PGStore) ResetCap(ctx context.Context, cap, repository, login string) (policy.CapReset, error) {
+	return policy.ResetCap(ctx, s.db, cap, repository, login)
+}
+
+// CapResets are the resets with at in [from, to), newest first
+// (policy.CapResets).
+func (s *PGStore) CapResets(ctx context.Context, from, to time.Time) ([]policy.CapReset, error) {
+	return policy.CapResets(ctx, s.db, from, to)
+}
+
+// CapResetAfter is the newest reset of cap, of repository for a
+// project's ("" for the day's and the month's), after t; nil without
+// one.
+func (s *PGStore) CapResetAfter(ctx context.Context, cap, repository string, t time.Time) (*policy.CapReset, error) {
+	r := policy.CapReset{Cap: cap, Repository: repository}
+	err := s.db.QueryRowContext(ctx, `SELECT id, at, login, before_eur::float8 FROM cap_resets
+		WHERE cap = $1 AND repository = $2 AND at > $3 ORDER BY at DESC, id DESC LIMIT 1`, cap, repository, t).Scan(&r.ID, &r.At, &r.Login, &r.BeforeEUR)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // ModelCalls are task taskID's model calls, oldest first

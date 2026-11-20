@@ -536,7 +536,7 @@ func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 		CapWait: line, PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour}}
 	resume, _ := ActionByName(ActResume)
 	why := resume.PgRefusal(f, 2, Resolution{Action: ActResume})
-	if why == "" || !strings.Contains(why, "the day cap is reached: the card resumes on its own once the money left under the day cap funds a session, at the latest when the UTC day turns at 2026-11-12T00:00:00Z.") {
+	if why == "" || !strings.Contains(why, "the day cap is reached: the card resumes on its own once a session fits under the cap, at the latest when the UTC day turns at 2026-11-12T00:00:00Z.") {
 		t.Fatalf("resume refusal = %q, want the day cap's line", why)
 	}
 	for _, a := range Offered(f, 2) {

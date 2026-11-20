@@ -798,6 +798,9 @@ type Store interface {
 	// Enforced is the spend the day and month caps count at at, the
 	// ledger's with the open holds (policy.LedgerEnforced).
 	Enforced(ctx context.Context, at time.Time) (policy.Enforced, error)
+	// CapResetAfter is the newest reset of cap, of repository for a
+	// project's, after t; nil without one.
+	CapResetAfter(ctx context.Context, cap, repository string, t time.Time) (*policy.CapReset, error)
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
@@ -2004,10 +2007,10 @@ func (s *PGStore) NewestCallAt(ctx context.Context, taskID string) (time.Time, e
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
-// lines left out, as the gateway's month headroom counts it. The reason and time are the month's
-// newest refused_month_cap of a model call; MonthAlarm.Check and the question facts of a card
-// stopped at the cap read it, for only a model call finds the cap spent: a reservation or a
-// tool call may be refused while euros remain.
+// lines left out, as the gateway's month headroom counts it: from the month's newest reset. The
+// reason and time are the newest refused_month_cap of a model call since; MonthAlarm.Check and
+// the question facts of a card stopped at the cap read it, for only a model call finds the cap
+// spent: a reservation or a tool call may be refused while euros remain.
 func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	var m MonthSpend
 	var reason sql.NullString
@@ -2018,7 +2021,7 @@ func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, err
 		        r.reason, r.ts
 		   FROM (SELECT 1) one
 		   LEFT JOIN LATERAL (SELECT reason, ts FROM audit WHERE decision = $1 AND tool = ''
-		                    AND ts >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+		                    AND ts >= `+policy.CapCountStartSQL(policy.CapMonth, "''", "$2::timestamptz")+`
 		                    AND ts < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
 		                  ORDER BY ts DESC, id DESC LIMIT 1) r ON true`,
 		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &reason, &refusedAt)

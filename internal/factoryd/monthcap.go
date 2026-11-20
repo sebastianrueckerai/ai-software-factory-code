@@ -41,11 +41,12 @@ const (
 
 // capOpenings is, by the refusal's decision, the opening of the reasons of
 // a card stopped at the cap (waiting for a human, and resuming on its own),
-// the source of its ask (escalationSource), its period and its name.
-var capOpenings = map[string]struct{ waits, resumes, source, period, name string }{
-	policy.RefusedDayCap:     {DayCapReached, dayCapResumes, "day_cap", "day", "day cap"},
-	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month", "month cap"},
-	policy.RefusedProjectCap: {projectCapReached, projectCapResumes, "project_cap", "month", "project's month cap"},
+// the source of its ask (escalationSource), its period, its name and the
+// cap a human resets (policy.ResetCap).
+var capOpenings = map[string]struct{ waits, resumes, source, period, name, cap string }{
+	policy.RefusedDayCap:     {DayCapReached, dayCapResumes, "day_cap", "day", "day cap", policy.CapDay},
+	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month", "month cap", policy.CapMonth},
+	policy.RefusedProjectCap: {projectCapReached, projectCapResumes, "project_cap", "month", "project's month cap", policy.CapProject},
 }
 
 // capGateway says the gateway refused a session's call at the cap
@@ -112,18 +113,20 @@ var projectFile = regexp.MustCompile(ProjectFilePattern)
 // question row (escalationQuestion), with the actions; the second names by
 // and its state.
 func CapWaitReason(decision, by, state string, until time.Time) string {
-	var what, cap, file string
+	var count, cap, file string
 	switch decision {
 	case policy.RefusedDayCap:
-		what, cap, file = "the money left under the day cap", "the day cap", "policy.yaml"
+		count, cap, file = "the day's count", "the day cap", "policy.yaml"
 	case policy.RefusedMonthCap:
-		what, cap, file = "the money left under the month cap", "the month cap", "policy.yaml"
+		count, cap, file = "the month's count", "the month cap", "policy.yaml"
 	default:
-		what, cap, file = "the money left under the project's month cap", "the project's month cap", cmp.Or(projectFile.FindString(state), "the project's file")
+		// the project's words are short: the question row with the file
+		// stays within 300 characters
+		count, cap, file = "its count", "it", cmp.Or(projectFile.FindString(state), "the project's file")
 	}
 	o := capOpenings[decision]
-	return fmt.Sprintf("%s once %s funds a session, at the latest when the UTC %s turns at %s. "+
-		"Raise %s in %s to resume it sooner, or close the card.\n%s: %s", o.resumes, what, o.period, stamp(until), cap, file, by, state)
+	return fmt.Sprintf("%s once a session fits under the cap, at the latest when the UTC %s turns at %s. "+
+		"Reset %s in the console's status panel, or raise %s in %s, to resume it sooner, or close the card.\n%s: %s", o.resumes, o.period, stamp(until), count, cap, file, by, state)
 }
 
 // capWaitDecision is the decision whose resumes opening reason starts
