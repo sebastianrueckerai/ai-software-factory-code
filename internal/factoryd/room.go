@@ -76,12 +76,13 @@ func RoomFor(f CaseFacts, n int, money bool) Room {
 		TimeLeft:   seconds(f.AgentTimeCapS - f.AgentTimeS),
 		MoneyLeft:  f.SessionLeft(),
 	}
+	priced := money && est.EUR > 0
 	moneyRoom := math.MaxInt
-	if money && est.EUR > 0 {
+	if priced {
 		moneyRoom = int(math.Floor(r.MoneyLeft / est.EUR))
 	}
 	r.Now, r.Starts, r.AgentTime = SessionRoom(r.StartsLeft, r.TimeLeft, est.Time, moneyRoom, n)
-	if money && est.EUR > 0 {
+	if priced {
 		r.EUR = fundFor(float64(r.Now+n)*est.EUR, r.MoneyLeft)
 	}
 	r.Limit = float64(max(0, Cents(f.BudgetEUR+r.EUR-f.CeilingEUR))) / 100
