@@ -1859,11 +1859,23 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 // since sebastian's reset at 14:02 UTC after 19.62 make 20.02 today; under
 // the factory's month cap 12 since a reset after 48 make 60; under the
 // project's own cap, 10 booked after its reset and 30 before make 40.
-// The board reads one pinned clock, 16:00 UTC on the reset's day.
+// The board reads one pinned clock, 16:00 UTC on the reset's day. Each
+// cap's Reset names the reset it shows, the one a press saw.
 func TestStripShowsReset(t *testing.T) {
 	r, ck := screenRig(t)
 	now, at := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC), time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
 	r.c.clock = func() time.Time { return now }
+	r.c.cfg.Caps = &fakeCaps{}
+	seen := func(spend, action, id string) {
+		t.Helper()
+		if want := `action="` + action + `" hx-post="` + action + `"><input type="hidden" name="csrf" value="`; !strings.Contains(spend, want) {
+			t.Fatalf("the panel lacks the press %s:\n%s", action, spend)
+		}
+		form := spend[strings.Index(spend, `action="`+action+`"`):]
+		if want := `<input type="hidden" name="seen" value="` + id + `">`; !strings.Contains(form[:strings.Index(form, "</form>")], want) {
+			t.Errorf("the press %s lacks %s:\n%s", action, want, form)
+		}
+	}
 	r.ledger.enforced = policy.Enforced{Day: 0.40, DayReset: &policy.CapReset{ID: 3, Cap: policy.CapDay, At: at, Login: "sebastian", BeforeEUR: 19.62},
 		Month: 12, MonthReset: &policy.CapReset{ID: 4, Cap: policy.CapMonth, At: at, Login: "sebastian", BeforeEUR: 48}}
 	strip, spend := statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
@@ -1885,6 +1897,8 @@ func TestStripShowsReset(t *testing.T) {
 			t.Errorf("the panel lacks %s:\n%s", want, spend)
 		}
 	}
+	seen(spend, "/caps/day/reset", "3")
+	seen(spend, "/caps/month/reset", "4")
 
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code"}}
 	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 60}
@@ -1897,6 +1911,8 @@ func TestStripShowsReset(t *testing.T) {
 	if want := `<p class="trace">counted since 14:02 UTC, when sebastian reset this month · 30.00 EUR before · 40.00 EUR in all this month</p>`; !strings.Contains(spend, want) {
 		t.Errorf("under the project's cap, the panel lacks %s:\n%s", want, spend)
 	}
+	seen(spend, "/caps/day/reset", "3")
+	seen(spend, "/projects/ai-software-factory-code/cap/reset", "5")
 }
 
 // Reset stands under a cap's row for who may reset it: a writer of the
@@ -1907,7 +1923,8 @@ func TestResetButtonsByRight(t *testing.T) {
 	r, _, _ := capRig(t)
 	const day, month, project = `action="/caps/day/reset"`, `action="/caps/month/reset"`, `action="/projects/demo/cap/reset"`
 	// spendOf is user's Spend section of the board at query; each press's
-	// form there carries the session's CSRF field first
+	// form there carries the session's CSRF field first, then the newest
+	// reset it saw, none
 	spendOf := func(user, query string) string {
 		t.Helper()
 		ck, s := memberLogin(t, r, user)
@@ -1918,8 +1935,8 @@ func TestResetButtonsByRight(t *testing.T) {
 		_, spend := statusOf(t, rec.Body.String())
 		for _, a := range []string{day, month, project} {
 			path := strings.TrimSuffix(strings.TrimPrefix(a, `action="`), `"`)
-			if form := a + ` hx-post="` + path + `"><input type="hidden" name="csrf" value="` + s.csrf + `">`; strings.Contains(spend, a) && !strings.Contains(spend, form) {
-				t.Errorf("%s's press %s lacks the CSRF field:\n%s", user, path, spend)
+			if form := a + ` hx-post="` + path + `"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="seen" value="0">`; strings.Contains(spend, a) && !strings.Contains(spend, form) {
+				t.Errorf("%s's press %s lacks the CSRF field or the seen reset 0:\n%s", user, path, spend)
 			}
 		}
 		return spend

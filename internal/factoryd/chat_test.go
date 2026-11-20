@@ -255,7 +255,7 @@ func TestProjectMonthSpendFollowsReset(t *testing.T) {
 	if got, err := s.ProjectMonthSpend(ctx, "a", time.Now()); err != nil || got != (ProjectSpend{EUR: 30, ChatEUR: 30, AllEUR: 30, Hit: true}) {
 		t.Fatalf("before the reset = %+v, %v, want 30 EUR, all of it the chat's, hit", got, err)
 	}
-	r, err := s.ResetCap(ctx, policy.CapProject, "a", "sebastian")
+	r, err := s.ResetCap(ctx, policy.CapProject, "a", "sebastian", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

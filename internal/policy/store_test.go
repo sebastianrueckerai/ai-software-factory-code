@@ -1154,9 +1154,18 @@ func book(t *testing.T, db *sql.DB, task, at, eur string) {
 	}
 }
 
+// resetCap is sebastian's press on cap's count as it stands at the
+// headroom's clock: it saw the cap's newest reset of the period.
 func resetCap(t *testing.T, db *sql.DB, cap, repository string) CapReset {
 	t.Helper()
-	r, err := ResetCap(context.Background(), db, cap, repository, "sebastian")
+	ctx := context.Background()
+	var seen int64
+	if n, err := NewestCapReset(ctx, db, cap, repository, now()); err != nil {
+		t.Fatal(err)
+	} else if n != nil {
+		seen = n.ID
+	}
+	r, err := ResetCap(ctx, db, cap, repository, "sebastian", seen)
 	if err != nil {
 		t.Fatalf("reset %s %q: %v", cap, repository, err)
 	}
@@ -1356,13 +1365,51 @@ func TestResetCapRefuses(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	for _, tc := range []struct{ cap, repository string }{{"premium", ""}, {CapProject, ""}, {CapDay, "a"}, {CapMonth, "a"}} {
-		if r, err := ResetCap(ctx, db, tc.cap, tc.repository, "sebastian"); err == nil {
+		if r, err := ResetCap(ctx, db, tc.cap, tc.repository, "sebastian", 0); err == nil {
 			t.Errorf("reset %s %q = %+v, want it refused", tc.cap, tc.repository, r)
 		}
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM cap_resets`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("cap_resets holds %d rows (%v), want none", n, err)
+	}
+}
+
+// A press names the newest reset of its cap it saw: a second press on the
+// same view is refused with the reset that came first and writes no row,
+// and a press that saw it passes. Another cap's reset, another
+// repository's and one of an earlier period stay out of the check.
+func TestResetRefusesAPressOnAnOlderCount(t *testing.T) {
+	db, ctx := testDB(t), context.Background()
+	rows := func(cap string) (n int) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT count(*) FROM cap_resets WHERE cap = $1`, cap).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	clock(t, "2026-11-20 14:02")
+	first, err := ResetCap(ctx, db, CapDay, "", "sebastian", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock(t, "2026-11-20 14:03")
+	var stale *StaleResetError
+	if _, err := ResetCap(ctx, db, CapDay, "", "alice", 0); !errors.As(err, &stale) || !sameReset(stale.Newest, first) || rows(CapDay) != 1 {
+		t.Fatalf("a second press on the same view = %v, %d day rows; want refused with %+v and one row", err, rows(CapDay), first)
+	}
+	for _, other := range []struct{ cap, repository string }{{CapMonth, ""}, {CapProject, "a"}, {CapProject, "b"}} {
+		if _, err := ResetCap(ctx, db, other.cap, other.repository, "alice", 0); err != nil {
+			t.Fatalf("the first press on %s %q = %v, want it to pass", other.cap, other.repository, err)
+		}
+	}
+	second, err := ResetCap(ctx, db, CapDay, "", "alice", first.ID)
+	if err != nil || second.ID == first.ID || second.Login != "alice" || rows(CapDay) != 2 {
+		t.Fatalf("a press that saw %d = (%+v, %v), %d day rows; want alice's new reset, two rows", first.ID, second, err, rows(CapDay))
+	}
+	clock(t, "2026-11-21 00:05")
+	if _, err := ResetCap(ctx, db, CapDay, "", "alice", 0); err != nil {
+		t.Fatalf("the first press of a new day = %v, want it to pass", err)
 	}
 }
 

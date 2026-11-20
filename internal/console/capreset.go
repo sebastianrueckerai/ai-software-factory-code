@@ -2,10 +2,13 @@ package console
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -30,15 +33,35 @@ func (c *Console) projectCapReset(w http.ResponseWriter, r *http.Request) {
 	c.resetCap(w, r, policy.CapProject, p.Repository)
 }
 
+// capCounts name each cap's count as its press does.
+var capCounts = map[string]string{policy.CapDay: "today's count", policy.CapMonth: "this month's count", policy.CapProject: "the project's month count"}
+
 // resetCap restarts cap's count for the session's human and wakes the
-// cards that wait on a cap. A failed wake is logged: the waits check on
-// their own.
+// cards that wait on a cap, when the form's seen is the newest reset of
+// the cap its panel showed (0 for none). A newer one refuses the press
+// with a 409 that names it and refreshes the board, so the panel shows
+// it. A failed wake is logged: the waits check on their own.
 func (c *Console) resetCap(w http.ResponseWriter, r *http.Request, cap, repository string) {
 	if c.cfg.Caps == nil {
 		http.Error(w, "The caps' counts cannot be reset here.", http.StatusServiceUnavailable)
 		return
 	}
-	reset, err := c.cfg.Caps.ResetCap(r.Context(), cap, repository, current(r).user)
+	seen, err := strconv.ParseInt(r.FormValue("seen"), 10, 64)
+	if err != nil || seen < 0 {
+		http.Error(w, "The form names no reset it saw. Reload the board and press Reset again.", http.StatusBadRequest)
+		return
+	}
+	reset, err := c.cfg.Caps.ResetCap(r.Context(), cap, repository, current(r).user, seen)
+	var stale *policy.StaleResetError
+	if errors.As(err, &stale) {
+		if r.Header.Get("HX-Request") != "" {
+			w.Header().Set("HX-Trigger", "board-refresh")
+		}
+		n := stale.Newest
+		c.fail(w, r, refuse(http.StatusConflict, n.Login+" reset "+capCounts[cap]+" at "+factoryd.ResetStamp(n.At, c.clock())+
+			"; the panel now shows it. Press Reset again to reset it once more."))
+		return
+	}
 	if err != nil {
 		log.Printf("console: reset the %s cap: %v", cap, err)
 		c.fail(w, r, refuse(http.StatusInternalServerError, "The "+cap+" cap's count could not be reset: "+errText(err)+". Press Reset again."))

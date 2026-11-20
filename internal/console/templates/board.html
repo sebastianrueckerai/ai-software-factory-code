@@ -55,7 +55,7 @@
 {{end}}{{if .GitHub}}<a class="lchip" href="{{.GitHubURL}}" target="_blank" rel="noopener" data-tip="GitHub: {{.GitHub}}">github</a>{{end}}{{if $.PolicyCommit}}<a class="lchip" href="{{$.PolicyTreeURL}}" target="_blank" rel="noopener" data-tip="version {{$.PolicyVersion}} · {{$.PolicyCommit}}">config</a>{{end}}{{if .Waiting}}<span class="lchip wait" data-tip="{{.Waiting}} cards wait on a provider answer; the strip's need-you cell links here"><i class="dot" aria-hidden="true"></i>provider · {{.Waiting}} waiting</span>{{end}}{{if not .Dependencies}}<p class="none">unknown</p>{{end}}</div>{{else}}<p class="none">unknown</p>{{end}}</section>
 </div>{{end}}{{end}}
 
-{{define "cap-reset"}}<details class="rst{{if .Hit}} hit{{end}}"><summary aria-label="{{.Label}}">Reset</summary><form method="post" action="{{.Action}}" hx-post="{{.Action}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<p>{{.Words}}</p><button type="submit" class="primary">Reset: up to {{eur .CapEUR}} EUR more</button><button type="button" data-cancel>Cancel</button></form></details>{{end}}
+{{define "cap-reset"}}<details class="rst{{if .Hit}} hit{{end}}"><summary aria-label="{{.Label}}">Reset</summary><form method="post" action="{{.Action}}" hx-post="{{.Action}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="seen" value="{{.Seen}}">{{template "filter" .Filter}}<p>{{.Words}}</p><button type="submit" class="primary">Reset: up to {{eur .CapEUR}} EUR more</button><button type="button" data-cancel>Cancel</button></form></details>{{end}}
 
 {{define "board-fragment"}}{{template "board" .}}{{if .Status.Project}}
 <div id="status-line" hx-swap-oob="innerHTML">{{template "status" .}}</div>{{end}}{{end}}

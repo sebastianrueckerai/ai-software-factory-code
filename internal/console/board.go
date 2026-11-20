@@ -1179,13 +1179,15 @@ func resetLineOf(r *policy.CapReset, all float64, period string, now time.Time) 
 
 // capPress is a cap's Reset under its row in the panel: the route its
 // confirm posts to, the summary's label, the confirm's words and the cap
-// they name, its row's hit, and the form's CSRF and filter.
+// they name, its row's hit, the form's CSRF and filter, and Seen, the id
+// of the cap's newest reset of the period the panel shows, 0 for none.
 type capPress struct {
 	Action, Label, Words string
 	CapEUR               float64
 	Hit                  bool
 	CSRF                 string
 	Filter               boardFilter
+	Seen                 int64
 }
 
 // holdLine is the hold as the strip and the panel show it.
@@ -2408,18 +2410,22 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		}
 	}
 	if c.cfg.Caps != nil {
-		press := func(action, label, cap string, capEUR float64, hit bool) *capPress {
-			return &capPress{Action: action, Label: label, Words: resetWords(cap, capEUR, now, s.Backstop), CapEUR: capEUR, Hit: hit, CSRF: d.CSRF, Filter: f}
+		press := func(action, label, cap string, capEUR float64, hit bool, shown *policy.CapReset) *capPress {
+			cp := &capPress{Action: action, Label: label, Words: resetWords(cap, capEUR, now, s.Backstop), CapEUR: capEUR, Hit: hit, CSRF: d.CSRF, Filter: f}
+			if shown != nil {
+				cp.Seen = shown.ID
+			}
+			return cp
 		}
 		if d.Factory && s.DayCapEUR > 0 {
-			s.DayPress = press("/caps/day/reset", "Reset today's count", policy.CapDay, s.DayCapEUR, s.DayHit)
+			s.DayPress = press("/caps/day/reset", "Reset today's count", policy.CapDay, s.DayCapEUR, s.DayHit, e.DayReset)
 		}
 		switch {
 		case s.CapEUR <= 0:
 		case s.FactoryCap && d.Factory:
-			s.MonthPress = press("/caps/month/reset", "Reset this month's count", policy.CapMonth, s.CapEUR, s.Spend.Hit)
+			s.MonthPress = press("/caps/month/reset", "Reset this month's count", policy.CapMonth, s.CapEUR, s.Spend.Hit, s.Spend.Reset)
 		case !s.FactoryCap && s.Approver:
-			s.MonthPress = press("/projects/"+p.Name+"/cap/reset", "Reset the project's month count", policy.CapProject, s.CapEUR, s.Spend.Hit)
+			s.MonthPress = press("/projects/"+p.Name+"/cap/reset", "Reset the project's month count", policy.CapProject, s.CapEUR, s.Spend.Hit, s.Spend.Reset)
 		}
 	}
 	if stop, err := c.chatStopNow(ctx, p); err != nil {

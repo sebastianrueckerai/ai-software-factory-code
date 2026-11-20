@@ -701,9 +701,10 @@ func (s *PGStore) Enforced(ctx context.Context, at time.Time) (policy.Enforced, 
 }
 
 // ResetCap restarts cap's count for login (policy.ResetCap): the day's
-// and the month's with repository "", a project's with its repository.
-func (s *PGStore) ResetCap(ctx context.Context, cap, repository, login string) (policy.CapReset, error) {
-	return policy.ResetCap(ctx, s.db, cap, repository, login)
+// and the month's with repository "", a project's with its repository,
+// when seen is the newest reset of the cap in its period, 0 for none.
+func (s *PGStore) ResetCap(ctx context.Context, cap, repository, login string, seen int64) (policy.CapReset, error) {
+	return policy.ResetCap(ctx, s.db, cap, repository, login, seen)
 }
 
 // CapResets are the resets with at in [from, to), newest first

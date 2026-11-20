@@ -89,7 +89,10 @@ decimals: a task's model calls cost fractions of a cent.
   code (`POST /caps/{day|month}/reset`), a project's month cap for its
   approver (`POST /projects/{name}/cap/reset`). Its confirm opens inline,
   says what may still be spent before the period turns, and posts only
-  from its own press. No agent tool resets a cap.
+  from its own press, with the newest reset of the cap the panel showed:
+  once another human or another tab reset the count since, the press is
+  refused with a 409 that names who reset it and when, and the board
+  refreshes to show it. No agent tool resets a cap.
 - The held-production ask: a human card that asks the project's approvers
   what to do about the hold. factoryd files it once production has waited
   6 hours (the clock starts at the plan's first merge and again at each

@@ -215,7 +215,7 @@ type Config struct {
 	// Caps restarts a cap's count and reads the restarts
 	// (factoryd.PGStore); nil refuses the reset forms with 503.
 	Caps interface {
-		ResetCap(ctx context.Context, cap, repository, login string) (policy.CapReset, error)
+		ResetCap(ctx context.Context, cap, repository, login string, seen int64) (policy.CapReset, error)
 		CapResets(ctx context.Context, from, to time.Time) ([]policy.CapReset, error)
 	}
 	// WakeCapWaits signals every card that waits on a cap to check at once.

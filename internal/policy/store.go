@@ -234,12 +234,23 @@ func LedgerEnforced(ctx context.Context, db *sql.DB, at time.Time) (Enforced, er
 	return e, nil
 }
 
+// StaleResetError refuses a reset pressed on a count that another reset
+// has restarted since: Newest is the cap's newest reset in its period,
+// which the press did not see.
+type StaleResetError struct{ Newest CapReset }
+
+func (e *StaleResetError) Error() string {
+	return fmt.Sprintf("the %s cap's count was reset by %s at %s (reset %d) after the press saw it", e.Newest.Cap, e.Newest.Login, e.Newest.At.UTC().Format(time.RFC3339), e.Newest.ID)
+}
+
 // ResetCap restarts cap's count for login at the headroom's clock, inside
 // the cap's current UTC period: the day's and the month's with repository
-// "", a project's with its repository. The policy's cap stays. Under
-// LockHeadroom, no hold lands between the count the reset ends and the
-// reset.
-func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string) (CapReset, error) {
+// "", a project's with its repository. The policy's cap stays. seen is
+// the id of the newest reset of the cap in the period the press saw, 0
+// for none: a newer one refuses the reset with *StaleResetError. Under
+// LockHeadroom, no hold and no other reset lands between the count the
+// reset ends and the reset.
+func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string, seen int64) (CapReset, error) {
 	count, ok := map[string]string{
 		CapDay:     daySpentSQL("$3::timestamptz") + ` + ` + heldSQL,
 		CapMonth:   MonthSpentSQL("$3::timestamptz") + ` + ` + heldSQL,
@@ -259,10 +270,18 @@ func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string) (C
 	if err := LockHeadroom(ctx, tx); err != nil {
 		return CapReset{}, err
 	}
+	at := now()
+	newest, err := NewestCapReset(ctx, tx, cap, repository, at)
+	if err != nil {
+		return CapReset{}, err
+	}
+	if newest != nil && newest.ID != seen {
+		return CapReset{}, &StaleResetError{Newest: *newest}
+	}
 	r := CapReset{Cap: cap, Repository: repository, Login: login}
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO cap_resets (cap, repository, at, login, before_eur) VALUES ($1, $2, $3, $4, `+count+`)
-		 RETURNING id, at, before_eur::float8`, cap, repository, now(), login).Scan(&r.ID, &r.At, &r.BeforeEUR); err != nil {
+		 RETURNING id, at, before_eur::float8`, cap, repository, at, login).Scan(&r.ID, &r.At, &r.BeforeEUR); err != nil {
 		return CapReset{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -274,7 +293,7 @@ func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string) (C
 // NewestCapReset is cap's newest reset of repository ("" for the day's
 // and the month's) in its UTC period of at (NewestResetSQL), nil without
 // one.
-func NewestCapReset(ctx context.Context, db *sql.DB, cap, repository string, at time.Time) (*CapReset, error) {
+func NewestCapReset(ctx context.Context, db rowQuerier, cap, repository string, at time.Time) (*CapReset, error) {
 	if cap != CapDay && cap != CapMonth && cap != CapProject {
 		return nil, fmt.Errorf("newest reset of cap %q: only the caps %s, %s and %s reset", cap, CapDay, CapMonth, CapProject)
 	}

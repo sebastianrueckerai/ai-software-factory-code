@@ -5383,7 +5383,7 @@ func TestMonthSpendFollowsReset(t *testing.T) {
 	if m, err := s.MonthSpend(ctx, now); err != nil || m.EUR != 30 || m.AllEUR != 30 || m.Refusal != "before" || !m.RefusedAt.Equal(month) || m.Reset != nil {
 		t.Fatalf("before the reset = (%+v, %v), want 30 EUR, 30 in all, the refusal at the month's start and no reset", m, err)
 	}
-	r, err := s.ResetCap(ctx, policy.CapMonth, "", "sebastian")
+	r, err := s.ResetCap(ctx, policy.CapMonth, "", "sebastian", 0)
 	if err != nil || r.BeforeEUR != 30 {
 		t.Fatalf("reset = (%+v, %v), want 30 EUR before", r, err)
 	}
