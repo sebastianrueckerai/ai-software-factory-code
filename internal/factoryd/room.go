@@ -77,7 +77,7 @@ func RoomFor(f CaseFacts, n int, money bool) Room {
 		MoneyLeft:  f.SessionLeft(),
 	}
 	moneyRoom := math.MaxInt
-	if est.EUR > 0 {
+	if money && est.EUR > 0 {
 		moneyRoom = int(math.Floor(r.MoneyLeft / est.EUR))
 	}
 	r.Now, r.Starts, r.AgentTime = SessionRoom(r.StartsLeft, r.TimeLeft, est.Time, moneyRoom, n)

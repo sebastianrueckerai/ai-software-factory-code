@@ -47,7 +47,7 @@ func TestRoomForRaisesTheLimitFirst(t *testing.T) {
 
 func TestRoomForMoneyLeftOut(t *testing.T) {
 	r := RoomFor(roomFacts(5, 72, 0.70), 1, false)
-	if r.EUR != 0 || r.Starts != 0 || r.AgentTime != 0 {
+	if r.Now != 2 || r.Starts != 1 || r.AgentTime != 12*time.Minute || r.EUR != 0 || r.Limit != 0 || math.Abs(r.MoneyLeft-0.40) > 1e-9 {
 		t.Errorf("got %+v", r)
 	}
 }
