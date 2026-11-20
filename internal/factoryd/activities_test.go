@@ -3451,6 +3451,45 @@ func TestCapResumeAfterReset(t *testing.T) {
 	}
 }
 
+// A wait's own check that ends it names the newest reset of the cap's
+// period when that is newer than the version in force, as the check
+// before the ask does: today's day reset at 14:02, a month reset of 18
+// November, dated. Yesterday's reset, and one older than the version,
+// leave the version's words.
+func TestCapResumeNamesTheResetOnTheWaitsChecks(t *testing.T) {
+	at := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, time.UTC) }
+	for _, tc := range []struct {
+		name, decision string
+		reset          policy.CapReset
+		why            string
+	}{
+		{"today's day reset", policy.RefusedDayCap, policy.CapReset{Cap: policy.CapDay, At: at(20, 14, 2), Login: "sebastian"},
+			"the day cap's count was reset at 14:02 UTC by sebastian"},
+		{"yesterday's day reset", policy.RefusedDayCap, policy.CapReset{Cap: policy.CapDay, At: at(19, 18, 0), Login: "sebastian"},
+			"the day cap no longer binds a session (policy version 7)"},
+		{"a reset older than the version", policy.RefusedDayCap, policy.CapReset{Cap: policy.CapDay, At: at(20, 11, 0), Login: "sebastian"},
+			"the day cap no longer binds a session (policy version 7)"},
+		{"the month's reset of 18 November", policy.RefusedMonthCap, policy.CapReset{Cap: policy.CapMonth, At: at(18, 9, 0), Login: "anna"},
+			"the month cap's count was reset at 18 Nov 09:00 UTC by anna"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newCapRig(t)
+			g.at, g.v.ActivatedAt = at(20, 14, 10), at(20, 12, 0)
+			if tc.decision == policy.RefusedMonthCap {
+				g.v.ActivatedAt = at(17, 12, 0)
+			}
+			tc.reset.ID = 1
+			g.store.capResets = []policy.CapReset{tc.reset}
+			if res := g.check(t, CapCheck{Decision: tc.decision}); !res.Resume {
+				t.Fatalf("%+v, want the wait's end", res)
+			}
+			if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["why"] != tc.why {
+				t.Fatalf("cap_resumed why = %v, want %q", step["why"], tc.why)
+			}
+		})
+	}
+}
+
 // A wait ends when the floor now refuses for another reason, which its own
 // question names: 5 - 4.9 = 0.10 EUR of the task's budget is under the
 // floor of 0.60 while the month has 56 EUR free. An unpriced model, and a

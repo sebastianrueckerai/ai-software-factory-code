@@ -2007,26 +2007,35 @@ func (s *PGStore) NewestCallAt(ctx context.Context, taskID string) (time.Time, e
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
-// lines left out, as the gateway's month headroom counts it: from the month's newest reset. The
-// reason and time are the newest refused_month_cap of a model call since; MonthAlarm.Check and
-// the question facts of a card stopped at the cap read it, for only a model call finds the cap
-// spent: a reservation or a tool call may be refused while euros remain.
+// lines left out, as the gateway's month headroom counts it: from the month's newest reset, which
+// it reads too. The reason and time are the newest refused_month_cap of a model call since;
+// MonthAlarm.Check and the question facts of a card stopped at the cap read it, for only a model
+// call finds the cap spent: a reservation or a tool call may be refused while euros remain.
 func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	var m MonthSpend
 	var reason sql.NullString
 	var refusedAt sql.NullTime
+	r := policy.CapReset{Cap: policy.CapMonth}
 	err := s.db.QueryRowContext(ctx,
 		`SELECT to_char($2::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM'),
 		        `+policy.MonthSpentSQL("$2::timestamptz")+`::float8,
-		        r.reason, r.ts
+		        r.reason, r.ts,
+		        COALESCE(n.id, 0), COALESCE(n.at, 'epoch'), COALESCE(n.login, ''), COALESCE(n.before_eur, 0)
 		   FROM (SELECT 1) one
 		   LEFT JOIN LATERAL (SELECT reason, ts FROM audit WHERE decision = $1 AND tool = ''
 		                    AND ts >= `+policy.CapCountStartSQL(policy.CapMonth, "''", "$2::timestamptz")+`
 		                    AND ts < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
-		                  ORDER BY ts DESC, id DESC LIMIT 1) r ON true`,
-		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &reason, &refusedAt)
+		                  ORDER BY ts DESC, id DESC LIMIT 1) r ON true
+		   LEFT JOIN LATERAL (`+policy.NewestResetSQL(policy.CapMonth, "''", "$2::timestamptz")+`) n ON true`,
+		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &reason, &refusedAt, &r.ID, &r.At, &r.Login, &r.BeforeEUR)
+	if err != nil {
+		return MonthSpend{}, err
+	}
 	m.Refusal, m.RefusedAt = reason.String, refusedAt.Time
-	return m, err
+	if r.ID != 0 {
+		m.Reset = &r
+	}
+	return m, nil
 }
 
 // SetTaskModelAlias sets the model the gateway routes the card's model

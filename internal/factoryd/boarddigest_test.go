@@ -270,7 +270,8 @@ func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
 }
 
 // A cap whose count a human reset names the press after its figures: its
-// time in UTC, who, and the count it ended. The month without one names
+// time in UTC, dated when it was pressed on an earlier UTC day than the
+// digest's, who, and the count it ended. The month without one names
 // none.
 func TestBoardDigestNamesReset(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3, Budget: &policy.ProjectBudget{MonthEUR: 10}})
@@ -288,7 +289,7 @@ func TestBoardDigestNamesReset(t *testing.T) {
 		t.Fatalf("Caps = %+v, want the day's and the project's reset", b.Caps)
 	}
 	if got, want := b.Render(), "caps:\nmonth 20.02 of 600.00 EUR · day 0.40 of 100.00 EUR (reset 14:02 UTC by sebastian, 19.62 EUR before) · "+
-		"project 0.50 of 10.00 EUR (reset 09:15 UTC by anna, 9.75 EUR before)\n"; !strings.HasSuffix(got, want) {
+		"project 0.50 of 10.00 EUR (reset 1 Nov 09:15 UTC by anna, 9.75 EUR before)\n"; !strings.HasSuffix(got, want) {
 		t.Fatalf("Render =\n%s\nwant it to end\n%s", got, want)
 	}
 }

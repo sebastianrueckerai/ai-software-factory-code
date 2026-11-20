@@ -988,7 +988,8 @@ type CapResumed struct {
 // outstanding hold netted as the gateway nets it; the cap still refusing,
 // or a model that cannot be priced, waits for the turn, and any other
 // refusal ends the wait, the attempt's own floor asking its question. An
-// end is on the timeline.
+// end is on the timeline, naming the reset of the cap's count that lifted
+// it.
 func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error) {
 	o, known := capOpenings[in.Decision]
 	if !known {
@@ -1022,11 +1023,22 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			return CapResumed{}, nil
 		}
 		why = fmt.Sprintf("the %s no longer binds a session (policy version %d)", o.name, v.ID)
-		if reset != nil {
-			why = fmt.Sprintf("the %s's count was reset at %s UTC by %s", o.name, reset.At.UTC().Format("15:04"), reset.Login)
-		}
 		if refusal != "" {
 			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
+		} else if reset == nil {
+			// a wait's own check: the period's newest reset is the likelier
+			// lift when it is newer than the version in force; the
+			// microsecond keeps one at the period's first instant
+			start := capPeriodStart(in.Decision, r.Clock()).Add(-time.Microsecond)
+			if reset, err = r.resetSince(ctx, in.TaskID, o.cap, start); err != nil {
+				return CapResumed{}, err
+			}
+			if reset != nil && reset.At.Before(v.ActivatedAt) {
+				reset = nil
+			}
+		}
+		if reset != nil && refusal == "" {
+			why = fmt.Sprintf("the %s's count was reset at %s by %s", o.name, resetStamp(reset.At, r.Clock()), reset.Login)
 		}
 	}
 	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})

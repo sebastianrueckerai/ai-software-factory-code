@@ -398,6 +398,59 @@ func TestMonthAlarmClosesTheCardARaiseLifted(t *testing.T) {
 	}
 }
 
+// Hand-derived: the cap of 544 is reached at 544 spent, with one card and
+// the alert 2026-10/100/544. A human resets the month's count, 0.40 EUR is
+// counted since: the card closes, as on a raise, and no early alert comes
+// again. 544 spent since the reset is the cap's hit again: the alert
+// 2026-10/100/544/reset-7 and a second card, whose why names the reset
+// and the month's turn.
+func TestMonthAlarmFollowsTheReset(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 544)
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first := taskOf(t, store, "2026-10/100/544")
+	pressed := time.Now().UTC().Truncate(time.Minute)
+	reset := &policy.CapReset{ID: 7, Cap: policy.CapMonth, At: pressed, Login: "sebastian", BeforeEUR: 544}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 0.40, Reset: reset}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2026-10/50", "2026-10/80", "2026-10/100/544"}
+	if got := monthAlerts(store); !slices.Equal(got, want) || len(fj.issues) != 1 {
+		t.Fatalf("after the reset: alerts %v, issues %d, want %v and 1", got, len(fj.issues), want)
+	}
+	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "done" {
+		t.Fatalf("first card = %s, want done", got.Status)
+	}
+	if got, want := closeComments(t, store, first.ID), []string{"sebastian reset the month's count at " + pressed.Format("15:04") + " UTC, so the cap card closes."}; !slices.Equal(got, want) {
+		t.Fatalf("close comments = %q, want %q", got, want)
+	}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544, Reset: reset}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, "2026-10/100/544/reset-7")
+	if got := monthAlerts(store); !slices.Equal(got, want) || len(fj.issues) != 2 {
+		t.Fatalf("at the cap again: alerts %v, issues %d, want %v and 2", got, len(fj.issues), want)
+	}
+	if got := taskOf(t, store, "2026-10/100/544/reset-7"); got.Status != "waiting-human" || got.ID == first.ID {
+		t.Fatalf("second card = %+v", got)
+	}
+	if why := "Why: The gateway refuses every further model call until a human resets the month's count in the status panel or the UTC month turns."; !strings.Contains(fj.issues[1], why) {
+		t.Errorf("the second card lacks %q:\n%s", why, fj.issues[1])
+	}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskOf(t, store, "2026-10/100/544/reset-7"); got.Status != "waiting-human" || len(fj.issues) != 2 {
+		t.Fatalf("the next check: second card %s, %d issues, want it open and no third", got.Status, len(fj.issues))
+	}
+}
+
 // Hand-derived from a raise past the cap card's 544 EUR to 600: the cap
 // card closes, and the webhook of factoryd's own close ends the human card
 // before the alarm moves its row. The pass ends with no error, the card

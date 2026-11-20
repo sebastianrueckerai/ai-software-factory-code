@@ -711,16 +711,20 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		over    func(*factoryd.CaseFacts)
 		ask     string
 		answers []string
+		why     string // a cap's, "" for another stop's
 	}{
-		{"day cap", capWait(policy.RefusedDayCap), "The factory's spending limit for today is reached. Wait for it to reset, or end the card?", wait},
-		{"month cap", capWait(policy.RefusedMonthCap), "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?", wait},
-		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait},
+		{"day cap", capWait(policy.RefusedDayCap), "The factory's spending limit for today is reached. Wait for it to reset, or end the card?", wait,
+			"Reset the day's count in the status panel, or wait until the UTC day turns, and the agent's question comes back to you."},
+		{"month cap", capWait(policy.RefusedMonthCap), "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?", wait,
+			"Reset the month's count in the status panel, or wait until the UTC month turns, and the agent's question comes back to you."},
+		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait,
+			"Reset the project's month count in the status panel, or wait until the UTC month turns, and the agent's question comes back to you."},
 		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card's money left does not pay its next session. How should it go on?",
-			[]string{"Add money", "End the card", "Not now"}},
+			[]string{"Add money", "End the card", "Not now"}, ""},
 		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. How should it go on?",
-			[]string{"Allow more sessions", "End the card", "Not now"}},
+			[]string{"Allow more sessions", "End the card", "Not now"}, ""},
 		{"agent time cap", func(f *factoryd.CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }, "The card used its agent time of 2 hours. How should it go on?",
-			[]string{"Allow more sessions", "End the card", "Not now"}},
+			[]string{"Allow more sessions", "End the card", "Not now"}, ""},
 	} {
 		y := x
 		tc.over(&y.facts.CaseFacts)
@@ -737,9 +741,9 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 				t.Errorf("%s: the face offers %q, which Act refuses: %s", tc.cap, a.Label, why)
 			}
 		}
-		if len(tc.answers) == 2 && (!strings.HasPrefix(face.Answers[0].Effect, "The card waits, and the agent's question comes back to you when the limit resets on ") ||
-			!strings.HasSuffix(face.Why, ", and the agent's question comes back to you when it resets.")) {
-			t.Errorf("%s: Not now says %q and the why %q; want the question back at the reset", tc.cap, face.Answers[0].Effect, face.Why)
+		if tc.why != "" && (!strings.HasPrefix(face.Answers[0].Effect, "The card waits, and the agent's question comes back to you when the limit resets on ") ||
+			face.Why != tc.why) {
+			t.Errorf("%s: Not now says %q and the why %q; want the question back at the reset and the why %q", tc.cap, face.Answers[0].Effect, face.Why, tc.why)
 		}
 	}
 }
@@ -908,23 +912,20 @@ func TestARetryOnAFrozenCardReadsRetryNow(t *testing.T) {
 	}
 }
 
-// A cap's why line names the limit and the file an approver changes it in:
-// the factory's file for the day and the month, the project's file, by its
-// path where the stop names it, for a project's month.
-func TestACapsWhyNamesTheFileOfItsLimit(t *testing.T) {
-	const goes = ", and the card goes on by itself when it resets."
+// A cap's why line names the count a human resets in the status panel
+// first and the turn of the cap's UTC period second, in one sentence
+// within the contract's 160 runes.
+func TestACapsWhyNamesTheResetAndTheTurn(t *testing.T) {
 	for name, c := range map[string]struct {
 		f    factoryd.Facts
 		want string
 	}{
-		"day":   {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseDayCap}}, "An approver changes the daily limit in the factory's file policy.yaml" + goes},
-		"month": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseMonthCap}}, "An approver changes the monthly limit in the factory's file policy.yaml" + goes},
+		"day": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseDayCap}},
+			"Reset the day's count in the status panel, or wait until the UTC day turns, and the card goes on by itself."},
+		"month": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseMonthCap}},
+			"Reset the month's count in the status panel, or wait until the UTC month turns, and the card goes on by itself."},
 		"project": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap, CapWait: "the month cap budget.month_eur in projects/demo-app.yaml is spent"}},
-			"An approver changes the project's monthly limit in the project's file projects/demo-app.yaml" + goes},
-		"project, no file named": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap}}, "An approver changes the project's monthly limit in the project's file" + goes},
-		// the console links a path by the pattern the why reads it with
-		"project, a name no project file has": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap, CapWait: "the month cap budget.month_eur in projects/my_app.v2.yaml is spent"}},
-			"An approver changes the project's monthly limit in the project's file" + goes},
+			"Reset the project's month count in the status panel, or wait until the UTC month turns, and the card goes on by itself."},
 	} {
 		c.f.Case = factoryd.Case{Kind: c.f.Kind}
 		got := factoryd.FaceOf(c.f.Case, c.f).Why

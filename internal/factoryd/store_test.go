@@ -5345,9 +5345,10 @@ func monthStore(t *testing.T) *PGStore {
 }
 
 // The month alarm counts from the month's newest reset, as the gateway's
-// month headroom does: 30 EUR and a model call refused at the cap before
-// the reset leave the count at the 10 EUR booked after it, with no
-// refusal; a refusal after the reset is the month's again. The press is
+// month headroom does, and reads that reset: 30 EUR and a model call
+// refused at the cap before the reset leave the count at the 10 EUR
+// booked after it, with no refusal; a refusal after the reset is the
+// month's again. The press is
 // the real clock's, the rows around it.
 func TestMonthSpendFollowsReset(t *testing.T) {
 	s, ctx := monthStore(t), context.Background()
@@ -5369,16 +5370,16 @@ func TestMonthSpendFollowsReset(t *testing.T) {
 	}
 	book("m1", month, 30)
 	refuse("before", month)
-	if m, err := s.MonthSpend(ctx, now); err != nil || m.EUR != 30 || m.Refusal != "before" || !m.RefusedAt.Equal(month) {
-		t.Fatalf("before the reset = (%+v, %v), want 30 EUR and the refusal at the month's start", m, err)
+	if m, err := s.MonthSpend(ctx, now); err != nil || m.EUR != 30 || m.Refusal != "before" || !m.RefusedAt.Equal(month) || m.Reset != nil {
+		t.Fatalf("before the reset = (%+v, %v), want 30 EUR, the refusal at the month's start and no reset", m, err)
 	}
 	r, err := s.ResetCap(ctx, policy.CapMonth, "", "sebastian")
 	if err != nil || r.BeforeEUR != 30 {
 		t.Fatalf("reset = (%+v, %v), want 30 EUR before", r, err)
 	}
 	book("m2", r.At.Add(time.Millisecond), 10)
-	if m, err := s.MonthSpend(ctx, r.At); err != nil || m.EUR != 10 || m.Refusal != "" || !m.RefusedAt.IsZero() {
-		t.Fatalf("after the reset = (%+v, %v), want 10 EUR and no refusal", m, err)
+	if m, err := s.MonthSpend(ctx, r.At); err != nil || m.EUR != 10 || m.Refusal != "" || !m.RefusedAt.IsZero() || m.Reset == nil || *m.Reset != r {
+		t.Fatalf("after the reset = (%+v, %v), want 10 EUR, no refusal and the reset %+v", m, err, r)
 	}
 	refuse("after", r.At.Add(2*time.Millisecond))
 	if m, err := s.MonthSpend(ctx, r.At); err != nil || m.EUR != 10 || m.Refusal != "after" || !m.RefusedAt.Equal(r.At.Add(2*time.Millisecond)) {

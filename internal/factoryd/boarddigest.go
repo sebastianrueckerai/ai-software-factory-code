@@ -13,10 +13,11 @@ import (
 	"time"
 )
 
-// BoardDigest is a project's board as a few lines: its live cards with
-// their flags, the queue with what holds each card, the work slots, the
-// open plans by their cards' statuses, and the caps.
+// BoardDigest is a project's board as a few lines at At: its live cards
+// with their flags, the queue with what holds each card, the work slots,
+// the open plans by their cards' statuses, and the caps.
 type BoardDigest struct {
+	At    time.Time
 	Cards []BoardDigestCard   // live cards: not done, failed or closed, and not in the queue
 	Queue []BoardDigestQueued // queued cards no slot took yet, in filing order
 	Slots BoardDigestSlots
@@ -79,10 +80,19 @@ type BoardDigestCap struct {
 	Reset            *policy.CapReset
 }
 
-// CapResetWords says reset r: its time in UTC, who pressed it and the
-// count it ended.
-func CapResetWords(r policy.CapReset) string {
-	return fmt.Sprintf("reset %s UTC by %s, %s EUR before", r.At.UTC().Format("15:04"), r.Login, textutil.EUR(r.BeforeEUR))
+// CapResetWords says reset r as of now: its time in UTC (resetStamp), who
+// pressed it and the count it ended.
+func CapResetWords(r policy.CapReset, now time.Time) string {
+	return fmt.Sprintf("reset %s by %s, %s EUR before", resetStamp(r.At, now), r.Login, textutil.EUR(r.BeforeEUR))
+}
+
+// resetStamp is the time in UTC of a reset pressed at at, dated when that
+// was on another UTC day than now's.
+func resetStamp(at, now time.Time) string {
+	if at.UTC().Format(time.DateOnly) != now.UTC().Format(time.DateOnly) {
+		return at.UTC().Format("2 Jan 15:04") + " UTC"
+	}
+	return at.UTC().Format("15:04") + " UTC"
 }
 
 // BoardDigest builds repository's board digest at the runner's clock: one
@@ -101,7 +111,7 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 	if err != nil {
 		return BoardDigest{}, err
 	}
-	b := BoardDigest{Slots: BoardDigestSlots{Held: held, Bound: v.WorkInProgressOf(repository)}}
+	b := BoardDigest{At: now, Slots: BoardDigestSlots{Held: held, Bound: v.WorkInProgressOf(repository)}}
 	for _, t := range live {
 		if !waitsForSlot(t.Task) {
 			card, err := r.boardCard(ctx, t.ID, now)
@@ -276,7 +286,7 @@ func (b BoardDigest) Render() string {
 			caps[i] += " (hit)"
 		}
 		if c.Reset != nil {
-			caps[i] += " (" + CapResetWords(*c.Reset) + ")"
+			caps[i] += " (" + CapResetWords(*c.Reset, b.At) + ")"
 		}
 	}
 	s.WriteString("caps:\n" + strings.Join(caps, " · ") + "\n")

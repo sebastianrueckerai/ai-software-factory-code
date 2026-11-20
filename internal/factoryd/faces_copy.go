@@ -1119,18 +1119,18 @@ func budgetWhy(f Facts) string {
 	return fmt.Sprintf("The card has %s EUR left and needs %s EUR more to pay its next session.", left, need)
 }
 
-// capWhy names the limit and the file an approver changes it in, in the
-// words the console links to that file (the factory's file, the project's
-// file).
+// capWhy names the count a human resets in the status panel, then the
+// turn of the cap's UTC period; the ask and the wait's reason name the
+// commit that raises the cap.
 func capWhy(f Facts) string {
-	limit, where := "the daily limit", "the factory's file policy.yaml"
+	count, period := "the day's count", "day"
 	switch f.Kind {
 	case CaseMonthCap:
-		limit = "the monthly limit"
+		count, period = "the month's count", "month"
 	case CaseProjectCap:
-		limit, where = "the project's monthly limit", strings.TrimSpace("the project's file "+projectFile.FindString(f.CapWait+" "+factString(f.Case, "reason")))
+		count, period = "the project's month count", "month"
 	}
-	return fmt.Sprintf("An approver changes %s in %s, and %s when it resets.", limit, where, onward(f, "the card goes on by itself"))
+	return fmt.Sprintf("Reset %s in the status panel, or wait until the UTC %s turns, and %s.", count, period, onward(f, "the card goes on by itself"))
 }
 
 // factString is fact key of case c as a string.

@@ -92,6 +92,15 @@ func monthTurn(at time.Time) time.Time {
 	return time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
 }
 
+// capPeriodStart is the first instant of the period of the cap decision
+// refused that at falls in.
+func capPeriodStart(decision string, at time.Time) time.Time {
+	if decision == policy.RefusedDayCap {
+		return dayTurn(at).AddDate(0, 0, -1)
+	}
+	return monthTurn(at).AddDate(0, -1, 0)
+}
+
 // CapTurn is when the cap decision refused resets on its own after at.
 func CapTurn(decision string, at time.Time) time.Time {
 	if decision == policy.RefusedDayCap {
@@ -154,14 +163,16 @@ func capWaitOf(asks []AskAnchor) (reason string, until time.Time) {
 }
 
 // MonthSpend is the UTC calendar month's variable spend: Month as
-// YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's
-// newest refused_month_cap of a model call, made at RefusedAt ("" for none):
-// the gateway's headroom, or LiteLLM's proxy-wide budget.
+// YYYY-MM, EUR booked in the ledger since the month's newest reset (Reset,
+// nil without one), and Refusal the reason of the newest refused_month_cap
+// of a model call since, made at RefusedAt ("" for none): the gateway's
+// headroom, or LiteLLM's proxy-wide budget.
 type MonthSpend struct {
 	Month     string
 	EUR       float64
 	Refusal   string
 	RefusedAt time.Time
+	Reset     *policy.CapReset
 }
 
 // MonthBook is what the month alarm reads and keeps.
@@ -229,14 +240,14 @@ func (a *MonthAlarm) Loop(ctx context.Context, every time.Duration) {
 // gateway enforced the version in force (gateway.PolicyTTL after it
 // activated). A cap of 0 stops all spend by design and raises nothing.
 func (a *MonthAlarm) Check(ctx context.Context) error {
-	v := a.Current()
+	v, now := a.Current(), time.Now()
 	limit := v.Document.Budget.MonthEUR
-	m, err := a.Store.MonthSpend(ctx, time.Now())
+	m, err := a.Store.MonthSpend(ctx, now)
 	if err != nil {
 		return err
 	}
 	m.Refusal = a.Scrub.String(m.Refusal)
-	closeErr := a.closeLifted(ctx, v, m, limit)
+	closeErr := a.closeLifted(ctx, v, m, limit, now)
 	if limit <= 0 {
 		return closeErr
 	}
@@ -247,7 +258,7 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 		}
 		fp := m.Month + "/" + strconv.Itoa(pct)
 		if pct == 100 {
-			fp += "/" + strconv.FormatFloat(limit, 'f', -1, 64)
+			fp += "/" + strconv.FormatFloat(limit, 'f', -1, 64) + resetMark(m.Reset)
 		}
 		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertMonthCap, fp)
 		if err != nil {
@@ -270,10 +281,21 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 	return closeErr
 }
 
+// resetMark ends the fingerprint of the cap's alert under month reset r:
+// a hit after a reset files its own card, as one after a raise does. ""
+// for none.
+func resetMark(r *policy.CapReset) string {
+	if r == nil {
+		return ""
+	}
+	return "/reset-" + strconv.FormatInt(r.ID, 10)
+}
+
 // closeLifted closes every open cap card whose month has ended, and those of
-// this month whose cap a raise lifted above the card's. A card that fails to
-// close does not stop the others; the failures are joined.
-func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthSpend, limit float64) error {
+// this month whose cap a raise lifted above the card's or whose alert came
+// before the month's newest reset. A card that fails to close does not stop
+// the others; the failures are joined.
+func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthSpend, limit float64, now time.Time) error {
 	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		return err
@@ -299,6 +321,8 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 			msg = fmt.Sprintf("The UTC month %s ended, so the cap card closes.", month)
 		case month == m.Month && limit > capEUR:
 			msg = fmt.Sprintf("The month cap is %s EUR in policy version %d, so the cap card closes.", textutil.EUR(limit), v.ID)
+		case month == m.Month && m.Reset != nil && !strings.HasSuffix(row.Fingerprint, resetMark(m.Reset)):
+			msg = fmt.Sprintf("%s reset the month's count at %s, so the cap card closes.", m.Reset.Login, resetStamp(m.Reset.At, now))
 		default:
 			continue
 		}
