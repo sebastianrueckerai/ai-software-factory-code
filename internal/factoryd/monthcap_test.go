@@ -399,23 +399,24 @@ func TestMonthAlarmClosesTheCardARaiseLifted(t *testing.T) {
 }
 
 // Hand-derived: the cap of 544 is reached at 544 spent, with one card and
-// the alert 2026-10/100/544. A human resets the month's count, 0.40 EUR is
-// counted since: the card closes, as on a raise, and no early alert comes
-// again. 544 spent since the reset is the cap's hit again: the alert
-// 2026-10/100/544/reset-7 and a second card, whose why names the reset
-// and the month's turn.
+// the alerts 2026-10/50, /80 and /100/544. A human resets the month's
+// count, 0.40 EUR is counted since and 544.40 in all: the card closes, as
+// on a raise, and no alert comes. 544 counted since the reset, 1088.40 in
+// all, raises the count's own alerts, each marked reset-7, and a second
+// card that states the whole month, the count since the reset and the
+// reset, and whose why names the reset and the month's turn.
 func TestMonthAlarmFollowsTheReset(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 544)
-	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544, AllEUR: 544}
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
 	first := taskOf(t, store, "2026-10/100/544")
 	pressed := time.Now().UTC().Truncate(time.Minute)
 	reset := &policy.CapReset{ID: 7, Cap: policy.CapMonth, At: pressed, Login: "sebastian", BeforeEUR: 544}
-	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 0.40, Reset: reset}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 0.40, AllEUR: 544.40, Reset: reset}
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -426,28 +427,58 @@ func TestMonthAlarmFollowsTheReset(t *testing.T) {
 	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "done" {
 		t.Fatalf("first card = %s, want done", got.Status)
 	}
-	if got, want := closeComments(t, store, first.ID), []string{"sebastian reset the month's count at " + pressed.Format("15:04") + " UTC, so the cap card closes."}; !slices.Equal(got, want) {
+	hhmm := pressed.Format("15:04")
+	if got, want := closeComments(t, store, first.ID), []string{"sebastian reset the month's count at " + hhmm + " UTC, so the cap card closes."}; !slices.Equal(got, want) {
 		t.Fatalf("close comments = %q, want %q", got, want)
 	}
-	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544, Reset: reset}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544, AllEUR: 1088.40, Reset: reset}
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want = append(want, "2026-10/100/544/reset-7")
+	want = append(want, "2026-10/50/reset-7", "2026-10/80/reset-7", "2026-10/100/544/reset-7")
 	if got := monthAlerts(store); !slices.Equal(got, want) || len(fj.issues) != 2 {
 		t.Fatalf("at the cap again: alerts %v, issues %d, want %v and 2", got, len(fj.issues), want)
 	}
 	if got := taskOf(t, store, "2026-10/100/544/reset-7"); got.Status != "waiting-human" || got.ID == first.ID {
 		t.Fatalf("second card = %+v", got)
 	}
-	if why := "Why: The gateway refuses every further model call until a human resets the month's count in the status panel or the UTC month turns."; !strings.Contains(fj.issues[1], why) {
-		t.Errorf("the second card lacks %q:\n%s", why, fj.issues[1])
+	for _, want := range []string{
+		"Why: The gateway refuses every further model call until a human resets the month's count in the status panel or the UTC month turns.",
+		"is 1088.40 EUR; counted since " + hhmm + " UTC, when sebastian reset the month's count: 544.00 EUR of the cap of 544.00 EUR (`budget.month_eur`).",
+	} {
+		if !strings.Contains(fj.issues[1], want) {
+			t.Errorf("the second card lacks %q:\n%s", want, fj.issues[1])
+		}
 	}
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := taskOf(t, store, "2026-10/100/544/reset-7"); got.Status != "waiting-human" || len(fj.issues) != 2 {
 		t.Fatalf("the next check: second card %s, %d issues, want it open and no third", got.Status, len(fj.issues))
+	}
+}
+
+// LiteLLM's outer guard counts the whole month, which a reset does not
+// move: its card, filed at 300 of 544 EUR, stays open after a reset.
+func TestMonthAlarmKeepsTheOuterGuardsCardOnAReset(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 544)
+	refusal := gateway.ProxyBudgetRefusal + "Budget has been exceeded!"
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 300, AllEUR: 300, Refusal: refusal, RefusedAt: refusedAt}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "LiteLLM's outer guard refused model calls at 300.00 EUR") {
+		t.Fatalf("issues = %q, want the outer guard's card", fj.issues)
+	}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 0.40, AllEUR: 300.40,
+		Reset: &policy.CapReset{ID: 7, Cap: policy.CapMonth, At: time.Now().UTC(), Login: "sebastian", BeforeEUR: 300}}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "waiting-human" {
+		t.Fatalf("the outer guard's card = %s after a reset, want it open", got.Status)
 	}
 }
 

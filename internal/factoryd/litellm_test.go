@@ -160,10 +160,11 @@ func TestLiteLLMSpendByTaskListsEveryKeyOnce(t *testing.T) {
 	}
 }
 
-// proxyBudgetAnswer is LiteLLM 1.102.4's /user/info for the proxy-wide
-// budget's user: UserInfoResponse, whose user_info is the
-// LiteLLM_UserTable row the proxy keeps max_budget and budget_duration on
-// at its start, and the proxy's spend.
+// proxyBudgetAnswer is /user/info for the proxy-wide budget's user as read
+// off the LiteLLM 1.102.4 source, not recorded from a live proxy:
+// UserInfoResponse, whose user_info is the LiteLLM_UserTable row the proxy
+// keeps max_budget and budget_duration on at its start, and the proxy's
+// spend.
 const proxyBudgetAnswer = `{"user_id":"litellm-proxy-budget","user_info":{"user_id":"litellm-proxy-budget","user_alias":null,"team_id":null,
 "sso_user_id":null,"organization_id":null,"object_permission_id":null,"teams":[],"user_role":null,"max_budget":1875.0,"spend":1238.59,
 "user_email":null,"models":[],"metadata":{},"max_parallel_requests":null,"tpm_limit":null,"rpm_limit":null,"budget_duration":"1mo",

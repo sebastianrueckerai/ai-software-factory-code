@@ -211,7 +211,7 @@ func LedgerEnforced(ctx context.Context, db *sql.DB, at time.Time) (Enforced, er
 		        (`+MonthSpentSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
 		        (`+PremiumMonthSpentSQL("$1::timestamptz")+` + COALESCE((SELECT sum(eur) FROM holds WHERE `+premiumRef+`), 0))::float8,
 		        (`+ledgerSumSQL(dayRowsSQL("$1::timestamptz"))+` + `+heldSQL+`)::float8,
-		        (`+ledgerSumSQL(monthRowsSQL("$1::timestamptz"))+` + `+heldSQL+`)::float8,
+		        (`+MonthAllSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
 		        `+refusedSince(RefusedDayCap, CapCountStartSQL(CapDay, "''", "$1::timestamptz"))+`,
 		        `+refusedSince(RefusedMonthCap, CapCountStartSQL(CapMonth, "''", "$1::timestamptz"))+`,
 		        `+refusedSince(RefusedPremiumCap, periodStartSQL(CapMonth, "$1::timestamptz"))+`,
@@ -269,6 +269,24 @@ func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string) (C
 		return CapReset{}, err
 	}
 	return r, nil
+}
+
+// NewestCapReset is cap's newest reset of repository ("" for the day's
+// and the month's) in its UTC period of at (NewestResetSQL), nil without
+// one.
+func NewestCapReset(ctx context.Context, db *sql.DB, cap, repository string, at time.Time) (*CapReset, error) {
+	if cap != CapDay && cap != CapMonth && cap != CapProject {
+		return nil, fmt.Errorf("newest reset of cap %q: only the caps %s, %s and %s reset", cap, CapDay, CapMonth, CapProject)
+	}
+	r := CapReset{Cap: cap, Repository: repository}
+	err := db.QueryRowContext(ctx, NewestResetSQL(cap, "$1", "$2::timestamptz"), repository, at).Scan(&r.ID, &r.At, &r.Login, &r.BeforeEUR)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // CapResets are the resets with at in [from, to), newest first.

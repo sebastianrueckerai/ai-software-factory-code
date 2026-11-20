@@ -206,41 +206,62 @@ func ConfigRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 	}
 }
 
-// MonthCapCardQuestion is the board card of the month cap reached at eur
-// of limit in month; refusal is the gateway's newest refusal, if any. When
-// that refusal is LiteLLM's outer guard and eur is below limit, the guard
+// MonthCapCardQuestion is the board card of the month cap limit reached in
+// month m at now: its whole spend, and the count since a reset when one
+// started it; m.Refusal is the gateway's newest refusal, if any. When that
+// refusal is LiteLLM's outer guard and the count is below limit, the guard
 // fired under the cap and link is the file that sets it.
-func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
-	if outerGuardRefused(refusal, eur, limit) {
-		b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%s EUR", textutil.EUR(limit)), Of: fmt.Sprintf("%s EUR", textutil.EUR(eur))})
+func MonthCapCardQuestion(limit float64, m MonthSpend, link string, now time.Time) HumanQuestion {
+	whole, count, capEUR := textutil.EUR(m.whole()), textutil.EUR(m.EUR), textutil.EUR(limit)
+	since := ""
+	if m.Reset != nil {
+		since = fmt.Sprintf("counted since %s, when %s reset the month's count", resetStamp(m.Reset.At, now), m.Reset.Login)
+	}
+	if outerGuardRefused(m.Refusal, m.EUR, limit) {
+		of := whole + " EUR"
+		spend := fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %s EUR, below the cap of %s EUR (`budget.month_eur`), "+
+			"yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call. Either `max_budget` sits under 1.25 times the cap, "+
+			"or LiteLLM's USD counter ran ahead of the ledger in EUR. scripts/budget-backstop-check tells them apart: it fails when `max_budget` is under 1.25 times `budget.month_eur`. "+
+			"If it passes, the counter ran ahead and `max_budget` needs the raise all the same.", m.Month, whole, capEUR)
+		happened := fmt.Sprintf("LiteLLM refused a model call at %s EUR of spend this month, below the cap of %s EUR.", whole, capEUR)
+		if m.Reset != nil {
+			of = count + " EUR since a reset"
+			spend = fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %s EUR; %s: %s EUR, below the cap of %s EUR (`budget.month_eur`). "+
+				"Yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call: it counts the whole month, and a reset of the count does not move it.",
+				m.Month, whole, since, count, capEUR)
+			happened = fmt.Sprintf("LiteLLM refused a model call at %s EUR of spend this month, %s EUR of it since %s reset the month's count.", whole, count, m.Reset.Login)
+		}
+		b := SourceBriefs[SourceMonthCap](BriefFacts{Name: capEUR + " EUR", Of: of})
 		return HumanQuestion{
 			Ask: b.Title,
 			Why: b.Why,
-			Info: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %s EUR, below the cap of %s EUR (`budget.month_eur`), "+
-				"yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call. Either `max_budget` sits under 1.25 times the cap, "+
-				"or LiteLLM's USD counter ran ahead of the ledger in EUR. scripts/budget-backstop-check tells them apart: it fails when `max_budget` is under 1.25 times `budget.month_eur`. "+
-				"If it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, textutil.EUR(eur), textutil.EUR(limit)) +
-				"\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
-				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
+			Info: spend + "\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
+				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(m.Refusal),
 			Choices:  choices(ActClose+"/"+variantNoted, KeyPark),
-			Happened: fmt.Sprintf("LiteLLM refused a model call at %s EUR of spend this month, below the cap of %s EUR.", textutil.EUR(eur), textutil.EUR(limit)),
+			Happened: happened,
 			Waits:    "Model calls fail until the guard's limit is raised.",
 		}
+	}
+	spend := fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %s EUR of the cap of %s EUR (`budget.month_eur`). ", m.Month, whole, capEUR)
+	happened := fmt.Sprintf("The factory spent %s EUR of its %s EUR limit in %s.", whole, capEUR, monthWords(m.Month))
+	if m.Reset != nil {
+		spend = fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %s EUR; %s: %s EUR of the cap of %s EUR (`budget.month_eur`). ",
+			m.Month, whole, since, count, capEUR)
+		happened = fmt.Sprintf("The factory spent %s EUR of its %s EUR limit since %s reset the month's count, %s EUR in %s.", count, capEUR, m.Reset.Login, whole, monthWords(m.Month))
 	}
 	info := "The gateway refuses every further call until the month ends, a human resets the month's count in the console's status panel, or the cap is raised by a commit. " +
 		"A task it refused waits on its card and resumes on its own once the count is reset, the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
 		"like any setting: " + link + "\n\nClose this issue once decided."
-	if refusal != "" {
-		info += "\n\nThe newest refusal:\n\n" + fenced(refusal)
+	if m.Refusal != "" {
+		info += "\n\nThe newest refusal:\n\n" + fenced(m.Refusal)
 	}
-	b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%s EUR", textutil.EUR(limit))})
+	b := SourceBriefs[SourceMonthCap](BriefFacts{Name: capEUR + " EUR"})
 	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %s EUR of the cap of %s EUR (`budget.month_eur`). ", month, textutil.EUR(eur), textutil.EUR(limit)) +
-			info,
+		Ask:      b.Title,
+		Why:      b.Why,
+		Info:     spend + info,
 		Choices:  choices(ActClose+"/"+variantNoted, KeyPark),
-		Happened: fmt.Sprintf("The factory spent %s EUR of its %s EUR limit in %s.", textutil.EUR(eur), textutil.EUR(limit), monthWords(month)),
+		Happened: happened,
 		Waits:    "Every model call waits until a human resets the month's count in the console's status panel, the limit is raised by a commit, or the month ends.",
 	}
 }

@@ -3425,6 +3425,10 @@ func TestCapResumeAfterReset(t *testing.T) {
 	if res := g.check(t, day); res.Resume || prices.reads != 0 {
 		t.Fatalf("no reset: %+v after %d price reads, want the wait on and no floor read", res, prices.reads)
 	}
+	g.store.capResets = []policy.CapReset{{ID: 1, Cap: policy.CapDay, At: at(12, 30), Login: "anna", BeforeEUR: 12}}
+	if res := g.check(t, day); res.Resume || prices.reads != 0 {
+		t.Fatalf("a day reset before the refusal: %+v after %d price reads, want the wait on and no floor read", res, prices.reads)
+	}
 	g.store.capResets = []policy.CapReset{{ID: 1, Cap: policy.CapMonth, At: at(14, 0), Login: "anna", BeforeEUR: 300}}
 	if res := g.check(t, day); res.Resume || prices.reads != 0 {
 		t.Fatalf("a month reset: %+v after %d price reads, want the day's wait on and no floor read", res, prices.reads)
@@ -3454,8 +3458,9 @@ func TestCapResumeAfterReset(t *testing.T) {
 // A wait's own check that ends it names the newest reset of the cap's
 // period when that is newer than the version in force, as the check
 // before the ask does: today's day reset at 14:02, a month reset of 18
-// November, dated. Yesterday's reset, and one older than the version,
-// leave the version's words.
+// November, dated. Yesterday's reset, one older than the version, and a
+// read of the resets that fails leave the version's words: the read only
+// words the end.
 func TestCapResumeNamesTheResetOnTheWaitsChecks(t *testing.T) {
 	at := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, time.UTC) }
 	for _, tc := range []struct {
@@ -3471,6 +3476,7 @@ func TestCapResumeNamesTheResetOnTheWaitsChecks(t *testing.T) {
 			"the day cap no longer binds a session (policy version 7)"},
 		{"the month's reset of 18 November", policy.RefusedMonthCap, policy.CapReset{Cap: policy.CapMonth, At: at(18, 9, 0), Login: "anna"},
 			"the month cap's count was reset at 18 Nov 09:00 UTC by anna"},
+		{"a failed read", policy.RefusedDayCap, policy.CapReset{}, "the day cap no longer binds a session (policy version 7)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newCapRig(t)
@@ -3480,6 +3486,9 @@ func TestCapResumeNamesTheResetOnTheWaitsChecks(t *testing.T) {
 			}
 			tc.reset.ID = 1
 			g.store.capResets = []policy.CapReset{tc.reset}
+			if tc.reset.Cap == "" {
+				g.store.capResetErr = errors.New("the database is gone")
+			}
 			if res := g.check(t, CapCheck{Decision: tc.decision}); !res.Resume {
 				t.Fatalf("%+v, want the wait's end", res)
 			}

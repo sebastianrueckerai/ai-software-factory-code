@@ -1381,6 +1381,38 @@ func TestCapResets(t *testing.T) {
 	}
 }
 
+// NewestCapReset is the newest reset of the cap, and of a project's
+// repository, in the cap's UTC period: yesterday's day reset and last
+// month's month reset are none, the newer of two counts, and another
+// repository's stays out.
+func TestNewestCapReset(t *testing.T) {
+	db, ctx := testDB(t), context.Background()
+	clock(t, "2026-10-31 18:00")
+	resetCap(t, db, CapMonth, "")
+	clock(t, "2026-11-19 23:00")
+	resetCap(t, db, CapDay, "")
+	clock(t, "2026-11-20 09:00")
+	resetCap(t, db, CapProject, "a")
+	clock(t, "2026-11-20 14:02")
+	newer := resetCap(t, db, CapProject, "a")
+	other := resetCap(t, db, CapProject, "b")
+	at := clock(t, "2026-11-20 14:10")
+	for _, tc := range []struct {
+		cap, repository string
+		want            *CapReset
+	}{
+		{CapDay, "", nil}, {CapMonth, "", nil}, {CapProject, "a", &newer}, {CapProject, "b", &other}, {CapProject, "c", nil},
+	} {
+		got, err := NewestCapReset(ctx, db, tc.cap, tc.repository, at)
+		if err != nil || (got == nil) != (tc.want == nil) || got != nil && !sameReset(*got, *tc.want) {
+			t.Errorf("%s %q = (%+v, %v), want %+v", tc.cap, tc.repository, got, err, tc.want)
+		}
+	}
+	if _, err := NewestCapReset(ctx, db, "premium", "", at); err == nil {
+		t.Error("the premium cap's newest reset is no error")
+	}
+}
+
 // settle books task's final settlement of eur at at on day, its finish
 // day, as factoryd's final settlement does; finished stamps its finish.
 func settle(t *testing.T, db *sql.DB, task, finished, at, eur string) {

@@ -344,6 +344,7 @@ type (
 	LiteLLMAdmin          = factoryd.LiteLLMAdmin
 	MergeSpec             = factoryd.MergeSpec
 	ModelLadder           = factoryd.ModelLadder
+	MonthSpend            = factoryd.MonthSpend
 	PGStore               = factoryd.PGStore
 	Plan                  = factoryd.Plan
 	PlanAnswer            = factoryd.PlanAnswer

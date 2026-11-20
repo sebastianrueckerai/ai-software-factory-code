@@ -1119,18 +1119,22 @@ func budgetWhy(f Facts) string {
 	return fmt.Sprintf("The card has %s EUR left and needs %s EUR more to pay its next session.", left, need)
 }
 
-// capWhy names the count a human resets in the status panel, then the
-// turn of the cap's UTC period; the ask and the wait's reason name the
-// commit that raises the cap.
+// capWhy names the count a human resets in the status panel to resume the
+// card sooner, then the turn of the cap's UTC period; the ask and the
+// wait's reason name the commit that raises the cap. At an agent's
+// question, the question comes back.
 func capWhy(f Facts) string {
-	count, period := "the day's count", "day"
+	count, turn := "today's count", "at 00:00 UTC"
 	switch f.Kind {
 	case CaseMonthCap:
-		count, period = "the month's count", "month"
+		count, turn = "the month's count", "when the month turns"
 	case CaseProjectCap:
-		count, period = "the project's month count", "month"
+		count, turn = "the project's month count", "when the month turns"
 	}
-	return fmt.Sprintf("Reset %s in the status panel, or wait until the UTC %s turns, and %s.", count, period, onward(f, "the card goes on by itself"))
+	if slices.Contains(questionKinds, f.Case.Kind) {
+		return fmt.Sprintf("Reset %s in the status panel to have the agent's question back sooner, or it comes back %s.", count, turn)
+	}
+	return fmt.Sprintf("Reset %s in the status panel to resume it sooner, or it resumes %s.", count, turn)
 }
 
 // factString is fact key of case c as a string.

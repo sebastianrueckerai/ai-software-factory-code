@@ -613,6 +613,10 @@ func CountedSQL(cap, repository, at, finished string) string {
 // rowFinishedSQL is the finish of ledger row l's task, NULL while it runs.
 const rowFinishedSQL = `(SELECT ft.finished_at FROM tasks ft WHERE ft.id = l.task_id)`
 
+// MonthAllSQL is the month's whole spend over the ledger: every row of the
+// UTC month of at, a timestamptz expression, a reset or not.
+func MonthAllSQL(at string) string { return ledgerSumSQL(monthRowsSQL(at)) }
+
 // MonthSpentSQL is the month cap's count over the ledger: the month's rows
 // of at, a timestamptz expression, in the count (CountedSQL).
 func MonthSpentSQL(at string) string {

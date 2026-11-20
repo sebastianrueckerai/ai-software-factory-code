@@ -1008,8 +1008,11 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
 			// a reset changes no version, yet restarts the count the
 			// refusal came under
-			if reset, err = r.resetSince(ctx, in.TaskID, o.cap, in.RefusedAt); err != nil || reset == nil {
+			if reset, err = r.newestReset(ctx, in.TaskID, o.cap); err != nil {
 				return CapResumed{}, err
+			}
+			if reset == nil || !reset.At.After(in.RefusedAt) {
+				return CapResumed{}, nil
 			}
 		}
 		refusal, err := r.SessionFunded(ctx, in.TaskID, in.Model)
@@ -1027,14 +1030,13 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
 		} else if reset == nil {
 			// a wait's own check: the period's newest reset is the likelier
-			// lift when it is newer than the version in force; the
-			// microsecond keeps one at the period's first instant
-			start := capPeriodStart(in.Decision, r.Clock()).Add(-time.Microsecond)
-			if reset, err = r.resetSince(ctx, in.TaskID, o.cap, start); err != nil {
-				return CapResumed{}, err
-			}
-			if reset != nil && reset.At.Before(v.ActivatedAt) {
-				reset = nil
+			// lift when it is newer than the version in force; it only
+			// words the end, so a failed read leaves the version's words
+			found, err := r.newestReset(ctx, in.TaskID, o.cap)
+			if err != nil {
+				log.Printf("task %s: the %s's newest reset: %v", in.TaskID, o.name, err)
+			} else if found != nil && !found.At.Before(v.ActivatedAt) {
+				reset = found
 			}
 		}
 		if reset != nil && refusal == "" {
@@ -1045,9 +1047,10 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 	return CapResumed{Resume: true}, nil
 }
 
-// resetSince is the newest reset of cap after t, a project's of task
-// taskID's repository; nil without one.
-func (r *Runner) resetSince(ctx context.Context, taskID, cap string, t time.Time) (*policy.CapReset, error) {
+// newestReset is the newest reset of cap in its UTC period at the
+// runner's clock, a project's of task taskID's repository; nil without
+// one.
+func (r *Runner) newestReset(ctx context.Context, taskID, cap string) (*policy.CapReset, error) {
 	repository := ""
 	if cap == policy.CapProject {
 		task, ok, err := r.store.Task(ctx, taskID)
@@ -1059,7 +1062,7 @@ func (r *Runner) resetSince(ctx context.Context, taskID, cap string, t time.Time
 		}
 		repository = task.Repository
 	}
-	return r.store.CapResetAfter(ctx, cap, repository, t)
+	return r.store.NewestCapReset(ctx, cap, repository, r.Clock())
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own

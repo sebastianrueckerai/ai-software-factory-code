@@ -714,11 +714,11 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		why     string // a cap's, "" for another stop's
 	}{
 		{"day cap", capWait(policy.RefusedDayCap), "The factory's spending limit for today is reached. Wait for it to reset, or end the card?", wait,
-			"Reset the day's count in the status panel, or wait until the UTC day turns, and the agent's question comes back to you."},
+			"Reset today's count in the status panel to have the agent's question back sooner, or it comes back at 00:00 UTC."},
 		{"month cap", capWait(policy.RefusedMonthCap), "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?", wait,
-			"Reset the month's count in the status panel, or wait until the UTC month turns, and the agent's question comes back to you."},
+			"Reset the month's count in the status panel to have the agent's question back sooner, or it comes back when the month turns."},
 		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait,
-			"Reset the project's month count in the status panel, or wait until the UTC month turns, and the agent's question comes back to you."},
+			"Reset the project's month count in the status panel to have the agent's question back sooner, or it comes back when the month turns."},
 		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card's money left does not pay its next session. How should it go on?",
 			[]string{"Add money", "End the card", "Not now"}, ""},
 		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. How should it go on?",
@@ -912,20 +912,20 @@ func TestARetryOnAFrozenCardReadsRetryNow(t *testing.T) {
 	}
 }
 
-// A cap's why line names the count a human resets in the status panel
-// first and the turn of the cap's UTC period second, in one sentence
-// within the contract's 160 runes.
+// A cap's why line is C47's: the count a human resets in the status panel
+// to resume the card sooner, then the turn of the cap's UTC period, in one
+// sentence within the contract's 160 runes.
 func TestACapsWhyNamesTheResetAndTheTurn(t *testing.T) {
 	for name, c := range map[string]struct {
 		f    factoryd.Facts
 		want string
 	}{
 		"day": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseDayCap}},
-			"Reset the day's count in the status panel, or wait until the UTC day turns, and the card goes on by itself."},
+			"Reset today's count in the status panel to resume it sooner, or it resumes at 00:00 UTC."},
 		"month": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseMonthCap}},
-			"Reset the month's count in the status panel, or wait until the UTC month turns, and the card goes on by itself."},
+			"Reset the month's count in the status panel to resume it sooner, or it resumes when the month turns."},
 		"project": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap, CapWait: "the month cap budget.month_eur in projects/demo-app.yaml is spent"}},
-			"Reset the project's month count in the status panel, or wait until the UTC month turns, and the card goes on by itself."},
+			"Reset the project's month count in the status panel to resume it sooner, or it resumes when the month turns."},
 	} {
 		c.f.Case = factoryd.Case{Kind: c.f.Kind}
 		got := factoryd.FaceOf(c.f.Case, c.f).Why

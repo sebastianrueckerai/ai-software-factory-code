@@ -124,17 +124,15 @@ func (v *boardView) refsOf(ctx context.Context, c *Console, repo string) renderR
 	return r
 }
 
-// forgeRef is a CI run, a commit or a file of the factory's configuration
-// named in words, as the factory's texts name them: "CI run 3384", "commit
-// 3c9a1e0", "the factory's file policy.yaml", "the project's file
-// projects/demo.yaml". A hash holds a digit, which keeps a word of the
-// letters a to f a word: "commit defaced".
-var forgeRef = regexp.MustCompile(`\bCI run (\d+)\b|\b[Cc]ommit ([0-9a-f]{7,40})\b|\bthe (?:factory|project)'s file (policy\.yaml|` + factoryd.ProjectFilePattern + `)`)
+// forgeRef is a CI run or a commit named in words, as the factory's texts
+// name them: "CI run 3384", "commit 3c9a1e0". A hash holds a digit, which
+// keeps a word of the letters a to f a word: "commit defaced".
+var forgeRef = regexp.MustCompile(`\bCI run (\d+)\b|\b[Cc]ommit ([0-9a-f]{7,40})\b`)
 
 // issueLinks is text, which holds no code and no link, with each #N
-// linked and named, each CI run and commit named in words linked to its
-// page of r's repository on the forge, and each file of the factory's
-// configuration to its page there, where the console knows the address.
+// linked and named, and each CI run and commit named in words linked to
+// its page of r's repository on the forge, where the console knows the
+// address.
 func (c *Console) issueLinks(v *boardView, r *cardRefs, text string) string {
 	base := ""
 	if c.cfg.ForgejoPublicURL != "" && r.t.Repository != "" {
@@ -145,10 +143,6 @@ func (c *Console) issueLinks(v *boardView, r *cardRefs, text string) string {
 	for _, m := range forgeRef.FindAllStringSubmatchIndex(text, -1) {
 		from, href := m[0], ""
 		switch {
-		case m[6] >= 0:
-			if from = m[6]; c.cfg.ConfigRepo != "" {
-				href = strings.TrimSuffix(c.cfg.ConfigRepo, "/") + "/src/branch/main/" + c.cfg.ConfigDir + "/" + text[m[6]:m[7]]
-			}
 		case base == "":
 		case m[2] >= 0:
 			href = base + "/actions/runs/" + text[m[2]:m[3]]

@@ -692,7 +692,7 @@ var humanSources = []humanSource{
 		return fx
 	}, factoryd.BriefFacts{}},
 	{factoryd.SourceMonthCap, func(b *builder, group, name string, n int64) Fixture {
-		q := factoryd.MonthCapCardQuestion(450, b.now.UTC().Format("2006-01"), 450.12, "https://git.example/sf/infra/src/commit/9d2e4f1/factory/policy.yaml#L12", "")
+		q := factoryd.MonthCapCardQuestion(450, factoryd.MonthSpend{Month: b.now.UTC().Format("2006-01"), EUR: 450.12}, "https://git.example/sf/infra/src/commit/9d2e4f1/factory/policy.yaml#L12", b.now)
 		return b.filedHuman(group, name, n, factoryd.SourceMonthCap, "", q, 35*time.Minute)
 	}, factoryd.BriefFacts{Name: "450.00 EUR"}},
 	{factoryd.SourceFreezeCard, func(b *builder, group, name string, n int64) Fixture {

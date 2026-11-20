@@ -122,8 +122,10 @@ type fakeStore struct {
 	resolved []int64
 	// enforced is Enforced's answer
 	enforced policy.Enforced
-	// capResets are the resets CapResetAfter reads
-	capResets []policy.CapReset
+	// capResets are the resets NewestCapReset reads, capResetErr its
+	// failure
+	capResets   []policy.CapReset
+	capResetErr error
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
 	// unbounded when nil; openings are Opening's answers by ref
@@ -1473,12 +1475,20 @@ func (s *fakeStore) ProjectMonthSpend(ctx context.Context, repository string, at
 	return ProjectSpend{EUR: s.projectSpend[repository], Reset: s.projectReset[repository]}, nil
 }
 
-// CapResetAfter is the newest of the test's resets of cap and repository
-// after t.
-func (s *fakeStore) CapResetAfter(ctx context.Context, cap, repository string, t time.Time) (*policy.CapReset, error) {
+// NewestCapReset is the newest of the test's resets of cap and repository
+// in the cap's UTC period of at.
+func (s *fakeStore) NewestCapReset(ctx context.Context, cap, repository string, at time.Time) (*policy.CapReset, error) {
+	if s.capResetErr != nil {
+		return nil, s.capResetErr
+	}
+	y, m, d := at.UTC().Date()
+	start := time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+	if cap == policy.CapDay {
+		start = time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}
 	var newest *policy.CapReset
 	for _, r := range s.capResets {
-		if r.Cap == cap && r.Repository == repository && r.At.After(t) && (newest == nil || r.At.After(newest.At)) {
+		if r.Cap == cap && r.Repository == repository && !r.At.Before(start) && (newest == nil || r.At.After(newest.At)) {
 			newest = &r
 		}
 	}
@@ -5345,10 +5355,10 @@ func monthStore(t *testing.T) *PGStore {
 }
 
 // The month alarm counts from the month's newest reset, as the gateway's
-// month headroom does, and reads that reset: 30 EUR and a model call
-// refused at the cap before the reset leave the count at the 10 EUR
-// booked after it, with no refusal; a refusal after the reset is the
-// month's again. The press is
+// month headroom does, and reads that reset and the month's whole: 30 EUR
+// and a model call refused at the cap before the reset leave the count at
+// the 10 EUR booked after it, 40 in all, with no refusal; a refusal after
+// the reset is the month's again. The press is
 // the real clock's, the rows around it.
 func TestMonthSpendFollowsReset(t *testing.T) {
 	s, ctx := monthStore(t), context.Background()
@@ -5370,59 +5380,20 @@ func TestMonthSpendFollowsReset(t *testing.T) {
 	}
 	book("m1", month, 30)
 	refuse("before", month)
-	if m, err := s.MonthSpend(ctx, now); err != nil || m.EUR != 30 || m.Refusal != "before" || !m.RefusedAt.Equal(month) || m.Reset != nil {
-		t.Fatalf("before the reset = (%+v, %v), want 30 EUR, the refusal at the month's start and no reset", m, err)
+	if m, err := s.MonthSpend(ctx, now); err != nil || m.EUR != 30 || m.AllEUR != 30 || m.Refusal != "before" || !m.RefusedAt.Equal(month) || m.Reset != nil {
+		t.Fatalf("before the reset = (%+v, %v), want 30 EUR, 30 in all, the refusal at the month's start and no reset", m, err)
 	}
 	r, err := s.ResetCap(ctx, policy.CapMonth, "", "sebastian")
 	if err != nil || r.BeforeEUR != 30 {
 		t.Fatalf("reset = (%+v, %v), want 30 EUR before", r, err)
 	}
 	book("m2", r.At.Add(time.Millisecond), 10)
-	if m, err := s.MonthSpend(ctx, r.At); err != nil || m.EUR != 10 || m.Refusal != "" || !m.RefusedAt.IsZero() || m.Reset == nil || *m.Reset != r {
-		t.Fatalf("after the reset = (%+v, %v), want 10 EUR, no refusal and the reset %+v", m, err, r)
+	if m, err := s.MonthSpend(ctx, r.At); err != nil || m.EUR != 10 || m.AllEUR != 40 || m.Refusal != "" || !m.RefusedAt.IsZero() || m.Reset == nil || *m.Reset != r {
+		t.Fatalf("after the reset = (%+v, %v), want 10 EUR counted, 40 in all, no refusal and the reset %+v", m, err, r)
 	}
 	refuse("after", r.At.Add(2*time.Millisecond))
 	if m, err := s.MonthSpend(ctx, r.At); err != nil || m.EUR != 10 || m.Refusal != "after" || !m.RefusedAt.Equal(r.At.Add(2*time.Millisecond)) {
 		t.Fatalf("after a refusal past the reset = (%+v, %v), want 10 EUR and the refusal after it", m, err)
-	}
-}
-
-// CapResetAfter is the newest reset of the cap, and of a project's
-// repository, after a time: one at the time itself, another cap's and
-// another repository's stay out.
-func TestPGStoreCapResetAfter(t *testing.T) {
-	s, ctx := monthStore(t), context.Background()
-	at := func(h, m int) time.Time { return time.Date(2026, 11, 20, h, m, 0, 0, time.UTC) }
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO cap_resets (cap, repository, at, login, before_eur) VALUES
-		('day', '', $1, 'anna', 1), ('day', '', $2, 'sebastian', 19.62), ('month', '', $3, 'anna', 300),
-		('project', 'a', $3, 'anna', 3), ('project', 'b', $2, 'bob', 5)`, at(13, 0), at(14, 2), at(15, 0)); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		cap, repository string
-		after           time.Time
-		login           string // "" for none
-	}{
-		{policy.CapDay, "", at(12, 0), "sebastian"},
-		{policy.CapDay, "", at(14, 2), ""},
-		{policy.CapMonth, "", at(14, 2), "anna"},
-		{policy.CapProject, "a", at(14, 2), "anna"},
-		{policy.CapProject, "b", at(14, 2), ""},
-		{policy.CapProject, "c", at(12, 0), ""},
-	} {
-		r, err := s.CapResetAfter(ctx, tc.cap, tc.repository, tc.after)
-		switch {
-		case err != nil:
-			t.Fatalf("%s %q after %s: %v", tc.cap, tc.repository, tc.after, err)
-		case tc.login == "" && r != nil:
-			t.Errorf("%s %q after %s = %+v, want none", tc.cap, tc.repository, tc.after, r)
-		case tc.login != "" && (r == nil || r.Login != tc.login || r.Cap != tc.cap || r.Repository != tc.repository):
-			t.Errorf("%s %q after %s = %+v, want %s's", tc.cap, tc.repository, tc.after, r, tc.login)
-		}
-	}
-	r, err := s.CapResetAfter(ctx, policy.CapDay, "", at(12, 0))
-	if err != nil || r == nil || !r.At.Equal(at(14, 2)) || r.BeforeEUR != 19.62 || r.ID == 0 {
-		t.Fatalf("the day's newest = %+v, %v, want sebastian's at 14:02 with 19.62 EUR before", r, err)
 	}
 }
 

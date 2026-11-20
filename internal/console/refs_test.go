@@ -191,25 +191,6 @@ func TestLinkRefsLinksRunsAndCommits(t *testing.T) {
 			`<a class="ref-link" href="https://git.example/sf/code/commit/deface1" target="_blank" rel="noopener">commit deface1</a> mends it.`))
 }
 
-// The file an approver changes a limit in is linked to its page in the
-// factory's configuration, where the console knows that address: the
-// factory's file and a project's file, as the cap's why line names them.
-func TestLinkRefsLinksTheFactorysFiles(t *testing.T) {
-	r, ctx, v := refsRig(t)
-	const text = "An approver changes the monthly limit in the factory's file policy.yaml, and the project's monthly limit in the project's file projects/demo-app.yaml."
-	r.c.cfg.ConfigRepo = ""
-	equal(t, "no address, no link", r.c.linkRefs(ctx, v, "sf/code", text),
-		template.HTML("An approver changes the monthly limit in the factory&#39;s file policy.yaml, and the project&#39;s monthly limit in the project&#39;s file projects/demo-app.yaml."))
-	r.c.cfg.ConfigRepo, r.c.cfg.ConfigDir = "https://git.example/sf/infra/", "factory"
-	equal(t, "both files", r.c.linkRefs(ctx, v, "sf/code", text),
-		template.HTML(`An approver changes the monthly limit in the factory&#39;s file `+
-			`<a class="ref-link" href="https://git.example/sf/infra/src/branch/main/factory/policy.yaml" target="_blank" rel="noopener">policy.yaml</a>`+
-			`, and the project&#39;s monthly limit in the project&#39;s file `+
-			`<a class="ref-link" href="https://git.example/sf/infra/src/branch/main/factory/projects/demo-app.yaml" target="_blank" rel="noopener">projects/demo-app.yaml</a>.`))
-	equal(t, "a file of the product stays text", r.c.linkRefs(ctx, v, "sf/code", "The card edits policy.yaml of the product."),
-		template.HTML("The card edits policy.yaml of the product."))
-}
-
 // A commit the view holds whole is linked by its whole hash, and the text
 // keeps the short one: a card's merge commit, a case's fact and the head of
 // a pending merge request.

@@ -47,7 +47,7 @@ const backstopTTL = time.Minute
 
 // ProxyBudget reads the backstop off the user LiteLLM keeps the
 // proxy-wide max_budget and its spend on, litellm-proxy-budget: /user/info
-// answers its row as user_info (verified against litellm 1.102.4). A read
+// answers its row as user_info (read off the litellm 1.102.4 source). A read
 // serves for backstopTTL; a failed one keeps nothing. A row without a
 // max_budget above 0 sets no backstop, an error.
 func (l *LiteLLMAdmin) ProxyBudget(ctx context.Context) (Backstop, error) {

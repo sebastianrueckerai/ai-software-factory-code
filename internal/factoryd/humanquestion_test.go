@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -59,7 +60,7 @@ func TestHumanCardQuestions(t *testing.T) {
 			"CI run 1208 on main failed in ci / test, and each failed job lost its runner while it ran."},
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
 			"Fix the rejected configuration in factory/ and push", []QuestionChoice{did, notNow}, "The factory refused commit c9c9c9c9c9 of factory/. Version 1 stays current."},
-		"month cap": {MonthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
+		"month cap": {MonthCapCardQuestion(50, MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: "refused"}, "https://git/policy#L7", time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)),
 			"This month's spending reached the factory's limit of 50.00 EUR", []QuestionChoice{noted, notNow},
 			"The factory spent 49.98 EUR of its 50.00 EUR limit in September."},
 		"routine": {RoutineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
@@ -175,5 +176,55 @@ func TestARoutinesWhyLeadsItsCards(t *testing.T) {
 	rt.Why = ""
 	if b := RoutineCard(rt, "brief"); b.Why != "The routine bump files this card on its schedule." {
 		t.Errorf("the why of a routine with none = %q", b.Why)
+	}
+}
+
+// The month cap's card after a reset states the whole month, then the
+// count since the reset and the press, which its story names too. Hand-
+// derived at 20 November 15:00 UTC with a cap of 800: the count of 800
+// since sebastian's 14:02 reset, 1700 in all.
+func TestMonthCapCardNamesTheReset(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	reset := &policy.CapReset{ID: 3, Cap: policy.CapMonth, At: time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC), Login: "sebastian", BeforeEUR: 900}
+	q := MonthCapCardQuestion(800, MonthSpend{Month: "2026-11", EUR: 800, AllEUR: 1700, Reset: reset}, "https://git/policy#L7", now)
+	if want := "The factory's variable spend in 2026-11 (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is 1700.00 EUR; " +
+		"counted since 14:02 UTC, when sebastian reset the month's count: 800.00 EUR of the cap of 800.00 EUR (`budget.month_eur`). "; !strings.HasPrefix(q.Info, want) {
+		t.Errorf("info = %q, want it to open %q", q.Info, want)
+	}
+	if want := "The factory spent 800.00 EUR of its 800.00 EUR limit since sebastian reset the month's count, 1700.00 EUR in November."; q.Happened != want {
+		t.Errorf("happened = %q, want %q", q.Happened, want)
+	}
+}
+
+// LiteLLM's outer guard after a reset: the guard counts the whole month,
+// which the reset does not move, so the card names that cause and the
+// guard's file, not a counter that ran ahead. Hand-derived with a cap of
+// 800: 300 counted since anna's reset of 18 November 09:00, 1500 in all.
+func TestOuterGuardCardNamesTheReset(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	reset := &policy.CapReset{ID: 3, Cap: policy.CapMonth, At: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC), Login: "anna", BeforeEUR: 1200}
+	m := MonthSpend{Month: "2026-11", EUR: 300, AllEUR: 1500, Refusal: gateway.ProxyBudgetRefusal + "Budget has been exceeded!", Reset: reset}
+	q := MonthCapCardQuestion(800, m, "https://git/helmrelease.yaml", now)
+	if want := "LiteLLM's outer guard refused model calls at 300.00 EUR since a reset, below the month cap of 800.00 EUR"; q.Ask != want {
+		t.Errorf("ask = %q, want %q", q.Ask, want)
+	}
+	for _, want := range []string{
+		"The factory's variable spend this month (2026-11, UTC) is 1500.00 EUR; counted since 18 Nov 09:00 UTC, when anna reset the month's count: 300.00 EUR, " +
+			"below the cap of 800.00 EUR (`budget.month_eur`). Yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call: " +
+			"it counts the whole month, and a reset of the count does not move it.",
+		"Raise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: https://git/helmrelease.yaml",
+	} {
+		if !strings.Contains(q.Info, want) {
+			t.Errorf("info lacks %q:\n%s", want, q.Info)
+		}
+	}
+	if strings.Contains(q.Info, "ran ahead") {
+		t.Errorf("info blames LiteLLM's counter after a reset:\n%s", q.Info)
+	}
+	if want := "LiteLLM refused a model call at 1500.00 EUR of spend this month, 300.00 EUR of it since anna reset the month's count."; q.Happened != want {
+		t.Errorf("happened = %q, want %q", q.Happened, want)
+	}
+	if refusals := CheckBrief(BriefText{Title: q.Ask, Why: q.Why}, BriefAsk, nil); len(refusals) > 0 {
+		t.Errorf("the door refuses the ask %q: %q", q.Ask, refusals)
 	}
 }

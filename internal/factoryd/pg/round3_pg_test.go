@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 )
 
 // restart_plan's work closes the plan with the real store write: the request
@@ -75,7 +76,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 				t.Fatal(err)
 			}
 			h, _, _ := g.r.PgTask(ctx, "h1")
-			if err := recordAsk(ctx, g.r.PgTimeline(), h, MonthCapCardQuestion(100, "2026-11", 100, "", ""), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
+			if err := recordAsk(ctx, g.r.PgTimeline(), h, MonthCapCardQuestion(100, MonthSpend{Month: "2026-11", EUR: 100}, "", time.Time{}), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
 				t.Fatal(err)
 			}
 			cases, _ := g.s.OpenCasesOf(ctx, "h1")
