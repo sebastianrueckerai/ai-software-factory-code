@@ -2854,8 +2854,9 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 }
 
 // The costs page lists the cap resets of its window, newest first, a
-// project's by the project's name: of three, the one a minute before the
-// window's first day starts is left out. The costs tool reads the same
+// project's by the project's name: the window ends on the console's
+// clock's day, 10 March 2026, and starts 25 February, so of three, the
+// one a minute before that day starts is left out. The costs tool reads the same
 // two after its ledger. A failed read of the resets leaves the page and
 // the tool their ledger and says so in one line.
 func TestCostsListsResets(t *testing.T) {
@@ -2866,9 +2867,8 @@ func TestCostsListsResets(t *testing.T) {
 	if body := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck).Body.String(); strings.Contains(body, "<caption>Resets") {
 		t.Error("/costs without a reset shows the resets' table")
 	}
-	now := time.Now().UTC()
-	first := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -13)
-	today := time.Date(now.Year(), now.Month(), now.Day(), 14, 2, 0, 0, time.UTC)
+	r.c.clock = func() time.Time { return time.Date(2026, 3, 10, 15, 0, 0, 0, time.UTC) }
+	first, today := time.Date(2026, 2, 25, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 10, 14, 2, 0, 0, time.UTC)
 	caps.resets = []policy.CapReset{
 		{ID: 3, Cap: policy.CapDay, At: today, Login: "sebastian", BeforeEUR: 19.62},
 		{ID: 2, Cap: policy.CapProject, Repository: "demo-app/demo-app", At: first, Login: "alice", BeforeEUR: 30},

@@ -351,13 +351,13 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 	case fok && tok:
 		winFrom, winTo = f, t
 	case fok:
-		_, winTo = costsWindow(time.Now())
+		_, winTo = costsWindow(c.clock())
 		winFrom = f
 	case tok:
-		winFrom, _ = costsWindow(time.Now())
+		winFrom, _ = costsWindow(c.clock())
 		winTo = t
 	default:
-		winFrom, winTo = costsWindow(time.Now())
+		winFrom, winTo = costsWindow(c.clock())
 	}
 	ledger, err := c.cfg.Costs.Costs(ctx, winFrom, winTo)
 	if err != nil {

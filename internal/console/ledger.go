@@ -39,7 +39,7 @@ type resetRow struct {
 // line saying they could not be read. Query params from and to are
 // YYYY-MM-DD dates, both included; each defaults as before.
 func (c *Console) costs(w http.ResponseWriter, r *http.Request) {
-	to := time.Now().UTC()
+	to := c.clock().UTC()
 	from := to.AddDate(0, 0, -(costDays - 1))
 	q := r.URL.Query()
 	if v := q.Get("from"); v != "" {
