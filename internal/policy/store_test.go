@@ -1447,11 +1447,12 @@ func TestResetForgivesAnEarlierTasksSettlement(t *testing.T) {
 	}
 }
 
-// A task that finishes after the press settles into the new count.
-// Hand-derived: t booked 2.00 at 13:00, the 14:02 press ends a count of
-// 2.00, t books 1.50 at 14:10, finishes at 14:20 and settles -1.00 at
-// 14:40: the day's count is 0.50 of the day's 2.50.
-func TestResetCountsALaterTasksSettlement(t *testing.T) {
+// A negative settlement of a task that booked before the press corrects
+// rows the press forgave, so it stays out of the new count. Hand-derived:
+// t booked 2.00 at 13:00, the 14:02 press ends a count of 2.00, t books
+// 1.50 at 14:10, finishes at 14:20 and settles -1.00 at 14:40: the day's
+// count is 1.50 of the day's 2.50.
+func TestResetLeavesOutANegativeSettlementAcrossIt(t *testing.T) {
 	db := testDB(t)
 	runningTasks(t, db, map[string]string{"t": ""})
 	book(t, db, "t", "2026-11-20 13:00", "2.00")
@@ -1460,7 +1461,39 @@ func TestResetCountsALaterTasksSettlement(t *testing.T) {
 	book(t, db, "t", "2026-11-20 14:10", "1.50")
 	settle(t, db, "t", "2026-11-20 14:20", "2026-11-20 14:40", "-1.00")
 	clock(t, "2026-11-20 15:00")
-	if e := enforcedNow(t, db); !near(e.Day, 0.5) || !near(e.DayAll, 2.5) {
-		t.Fatalf("enforced = %+v, want day 0.50 of 2.50", e)
+	if e := enforcedNow(t, db); !near(e.Day, 1.5) || !near(e.DayAll, 2.5) {
+		t.Fatalf("enforced = %+v, want day 1.50 of 2.50", e)
+	}
+}
+
+// A task that finishes after the press settles into the new count, but
+// for a negative settlement of a task that booked before it; the day's,
+// the month's and the project's counts agree. Hand-derived, all in a's
+// tasks, the three caps reset at 14:02: t books 2.00 at 13:00 and 1.50 at
+// 14:10 and settles -1.00, out; u books 0.80 at 14:15 alone and settles
+// -0.30, in; v books 1.00 at 12:00 and 0.50 at 14:12 and settles +0.20,
+// in. The count is 1.50 + 0.80 - 0.30 + 0.50 + 0.20 = 2.70 of the whole
+// 4.70, and a project cap of 10 leaves 7.30.
+func TestResetCountsTheSettlementsOfItsCount(t *testing.T) {
+	db := testDB(t)
+	runningTasks(t, db, map[string]string{"t": "a", "u": "a", "v": "a"})
+	book(t, db, "v", "2026-11-20 12:00", "1.00")
+	book(t, db, "t", "2026-11-20 13:00", "2.00")
+	clock(t, "2026-11-20 14:02")
+	for _, cap := range []struct{ cap, repository string }{{CapDay, ""}, {CapMonth, ""}, {CapProject, "a"}} {
+		resetCap(t, db, cap.cap, cap.repository)
+	}
+	book(t, db, "t", "2026-11-20 14:10", "1.50")
+	book(t, db, "v", "2026-11-20 14:12", "0.50")
+	book(t, db, "u", "2026-11-20 14:15", "0.80")
+	settle(t, db, "t", "2026-11-20 14:20", "2026-11-20 14:40", "-1.00")
+	settle(t, db, "u", "2026-11-20 14:25", "2026-11-20 14:45", "-0.30")
+	settle(t, db, "v", "2026-11-20 14:30", "2026-11-20 14:50", "0.20")
+	clock(t, "2026-11-20 15:00")
+	if e := enforcedNow(t, db); !near(e.Day, 2.7) || !near(e.Month, 2.7) || !near(e.DayAll, 4.7) || !near(e.MonthAll, 4.7) {
+		t.Fatalf("enforced = %+v, want day and month 2.70 of 4.70", e)
+	}
+	if f := readFree(t, db, HoldRequest{TaskID: "u", DayEUR: 100, MonthEUR: 100, Project: "a", ProjectEUR: 10}); !near(f.Project, 7.3) {
+		t.Fatalf("free = %+v, want project 7.30", f)
 	}
 }

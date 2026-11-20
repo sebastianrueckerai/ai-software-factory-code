@@ -603,11 +603,14 @@ func ledgerSumSQL(where string) string {
 // when its task finished since (finished, an SQL expression, NULL while it
 // runs): the reset forgave the rows of a task that finished before it, so
 // it forgives their correction, booked up to factoryd's SpendSettleWindow
-// later, too.
+// later, too. A negative settlement also needs its task to have booked no
+// row before the start: it corrects the task's whole spend, the forgiven
+// rows too, and would lower the new count by what it never held.
 func CountedSQL(cap, repository, at, finished string) string {
 	start := CapCountStartSQL(cap, repository, at)
 	return `l.created_at >= ` + start + ` AND (l.kind <> 'settlement' OR ` + start + ` = ` + periodStartSQL(cap, at) +
-		` OR COALESCE(` + finished + `, 'infinity') >= ` + start + `)`
+		` OR (COALESCE(` + finished + `, 'infinity') >= ` + start +
+		` AND (l.eur >= 0 OR NOT EXISTS (SELECT 1 FROM ledger lb WHERE lb.task_id = l.task_id AND lb.created_at < ` + start + `))))`
 }
 
 // rowFinishedSQL is the finish of ledger row l's task, NULL while it runs.
