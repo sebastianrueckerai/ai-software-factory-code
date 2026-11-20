@@ -93,7 +93,7 @@ const mustHave = {
     "↻ routines", "within", "Update the fixed versions of outside software every week", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "#779"],
   idle: ["idle", "0 working", "0 need you", "144.16 of 120.00 EUR", "#455", "#178", "Done", "#618", "#597", "failed"],
-  fire: ["#610", "Fund", "2 waiting on the provider",
+  fire: ["#610", "LiteLLM backstop hit", "2 waiting on the provider",
     "#620", "#615", "#621", "#604", "#609", "failed", "cx33", "load test of the event stream",
     "#623", "waits for #610", "#602"],
   quiet: ["4 working", "0 need you", "4.10 of 120.00 EUR", "#624", "#625", "#622", "#621", "#620", "done",
@@ -1905,6 +1905,47 @@ async function text(page) {
     const idle = await pp.page.evaluate(() => document.getElementById("status-line").innerText);
     if (idle === busy) fails.push("gap: the reopened stream reads no board again (" + String(idle).slice(0, 60) + ")");
     await pp.ctx.close();
+  }
+  // the caps (C47): at the desk the busy strip shows the day with its
+  // reset's ↺ and the month on its first row, every cell one slim line;
+  // the panel's Reset opens its confirm, which names the money and stays
+  // open through the board's refreshes, and Cancel closes it; on the
+  // phone the press is 44 px high
+  await seed("busy");
+  for (const vp of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    const label = "reset at " + vp.width;
+    const rp = await open(browser, vp);
+    await rp.page.goto(base + "/", { waitUntil: "load" });
+    await rp.page.waitForTimeout(600);
+    if (vp.width === 1440) {
+      const strip = await rp.page.evaluate(() => {
+        const cells = Array.from(document.querySelectorAll("#status-line > summary > .cell")), box = (c) => c.getBoundingClientRect();
+        const first = box(cells[0]).top, spend = cells.filter((c) => c.classList.contains("spend"));
+        return { spend: spend.map((c) => c.textContent.replace(/\s+/g, " ").trim()), firstRow: spend.every((c) => box(c).top === first),
+          tall: cells.filter((c) => box(c).height > 40).map((c) => c.textContent.trim().slice(0, 30)) };
+      });
+      if (strip.spend.length !== 2 || !/↺ today/.test(strip.spend[0]) || !/\/ 120\.00 EUR/.test(strip.spend[1]) || !strip.firstRow) fails.push(label + ": the strip's first row lacks the day's reset or the month: " + strip.spend.join(" | "));
+      if (strip.tall.length) fails.push(label + ": strip cells taller than one slim line: " + strip.tall.join(", "));
+    }
+    await rp.page.locator("#status-line > summary > .cell.state").click();
+    const rst = rp.page.locator("#status-panel details.rst").first();
+    if (!(await rst.count())) {
+      fails.push(label + ": the panel holds no Reset");
+      await rp.ctx.close();
+      continue;
+    }
+    const press = rst.locator("summary");
+    if (vp.width === 390 && (await press.boundingBox()).height < 43.5) fails.push(label + ": the Reset press is under 44 px");
+    await press.click();
+    await rp.page.evaluate(() => document.activeElement.blur());
+    await rp.page.waitForTimeout(2500);
+    const form = rst.locator("form");
+    if (!(await form.isVisible())) fails.push(label + ": the press opens no confirm, or a refresh closed it");
+    else if (!/Reset: up to \d+\.\d\d EUR more/.test(await form.innerText())) fails.push(label + ": the confirm lacks Reset: up to");
+    await rst.locator("button[data-cancel]").click();
+    await rp.page.waitForTimeout(200);
+    if (await form.isVisible()) fails.push(label + ": Cancel leaves the confirm open");
+    await rp.ctx.close();
   }
   // a narrow desk at 960: the strip's cells wrap where they do not fit, the
   // board's head fits its row, the documents' head wraps in its panel

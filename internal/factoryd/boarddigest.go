@@ -80,15 +80,15 @@ type BoardDigestCap struct {
 	Reset            *policy.CapReset
 }
 
-// CapResetWords says reset r as of now: its time in UTC (resetStamp), who
+// CapResetWords says reset r as of now: its time in UTC (ResetStamp), who
 // pressed it and the count it ended.
 func CapResetWords(r policy.CapReset, now time.Time) string {
-	return fmt.Sprintf("reset %s by %s, %s EUR before", resetStamp(r.At, now), r.Login, textutil.EUR(r.BeforeEUR))
+	return fmt.Sprintf("reset %s by %s, %s EUR before", ResetStamp(r.At, now), r.Login, textutil.EUR(r.BeforeEUR))
 }
 
-// resetStamp is the time in UTC of a reset pressed at at, dated when that
+// ResetStamp is the time in UTC of a reset pressed at at, dated when that
 // was on another UTC day than now's.
-func resetStamp(at, now time.Time) string {
+func ResetStamp(at, now time.Time) string {
 	if at.UTC().Format(time.DateOnly) != now.UTC().Format(time.DateOnly) {
 		return at.UTC().Format("2 Jan 15:04") + " UTC"
 	}

@@ -138,19 +138,19 @@ type budgetEvent struct {
 // false for a refusal of another kind: a row of kind budget in the
 // thread, its first line plain and the gateway's reason the next. The
 // chat task's own budget records the ask (askFund) and offers the fund;
-// a factory cap names the cap and what raises it. The open view gets the
-// row at once with its fund control, then done.
+// a cap names the cap, the reset of its count and what raises it. The
+// open view gets the row at once with its fund control, then done.
 func (t *turn) stop(refusal *policy.Refusal) bool {
 	row := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageBudget}
 	switch refusal.Decision {
 	case policy.RefusedBudget:
 		row.BirthKind = factoryd.EventChatBudgetSpent
 	case policy.RefusedDayCap:
-		row.Content = "The factory's day cap is used up: the chat goes on when the UTC day turns, or once a commit raises budget.day_eur in policy.yaml."
+		row.Content = "The factory's day cap is used up: the chat goes on when the UTC day turns, once a human resets the day's count in the status panel, or once a commit raises budget.day_eur in policy.yaml."
 	case policy.RefusedMonthCap:
-		row.Content = "The factory's month cap is used up: the chat goes on when the UTC month turns, or once a commit raises budget.month_eur in policy.yaml."
+		row.Content = "The factory's month cap is used up: the chat goes on when the UTC month turns, once a human resets the month's count in the status panel, or once a commit raises budget.month_eur in policy.yaml."
 	case policy.RefusedProjectCap:
-		row.Content = "The project's month cap is used up: the chat goes on when the UTC month turns, or once a commit raises budget.month_eur in projects/" +
+		row.Content = "The project's month cap is used up: the chat goes on when the UTC month turns, once an approver of the project resets its month count in the status panel, or once a commit raises budget.month_eur in projects/" +
 			t.p.Name + ".yaml."
 	default:
 		return false

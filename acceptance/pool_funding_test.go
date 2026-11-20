@@ -341,7 +341,7 @@ func TestPoolReadouts(t *testing.T) {
 	drawn := "2 of 30 sessions, 1 h 20 min of 30 h agent time and 3.00 of 10.00 EUR drawn this UTC month"
 	readAll("the file's pool", drawn)
 	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, "pool: "+drawn) {
-		t.Fatalf("the face's pool cell:\n%s", face)
+		t.Fatalf("the face's pool line:\n%s", face)
 	}
 	for _, tool := range []string{"settings", "policy"} {
 		if read := chatRead(t, r, path, ck, csrf, "sebastian", tool); !strings.Contains(read, drawn) {
@@ -362,7 +362,7 @@ func TestPoolReadouts(t *testing.T) {
 			t.Fatalf("%s reads the failed read as zero:\n%s", name, body)
 		}
 	}
-	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, `class="cell pool warn"`) {
+	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, `<p class="problem" role="alert">the month&#39;s pool could not be read</p>`) {
 		t.Fatalf("the face's unread pool is no warning:\n%s", face)
 	}
 	if read := chatRead(t, r, path, ck, csrf, "sebastian", "settings"); !strings.Contains(read, unreadable) {

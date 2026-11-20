@@ -383,8 +383,12 @@ type labScene struct {
 	// today is the factory's enforced spend this UTC day, holds included,
 	// 0 for the ledger's own day; dayHit says the gateway refused a call
 	// at the day cap
-	today     float64
-	dayHit    bool
+	today  float64
+	dayHit bool
+	// dayReset is a human's reset of the day's count in force, nil for
+	// none; backstop is LiteLLM's own budget, nil for one never read
+	dayReset  *policy.CapReset
+	backstop  *factoryd.Backstop
 	github    string
 	alerts    []factoryd.Alert
 	resources []cloudres.Resource
@@ -915,7 +919,15 @@ func (r *rig) seedScene(s labScene) string {
 	} else {
 		r.ledger.costs = labCosts(now, s.spend, s.tasks)
 	}
-	r.ledger.enforced.Day, r.ledger.enforced.DayHit = 0, s.dayHit
+	r.ledger.enforced.Day, r.ledger.enforced.DayHit, r.ledger.enforced.DayReset = 0, s.dayHit, s.dayReset
+	caps := &fakeCaps{}
+	if s.dayReset != nil {
+		caps.resets = []policy.CapReset{*s.dayReset}
+	}
+	r.c.cfg.Caps, r.c.cfg.Backstop = caps, nil
+	if b := s.backstop; b != nil {
+		r.c.cfg.Backstop = func(context.Context) (factoryd.Backstop, error) { return *b, nil }
+	}
 	if s.today > 0 {
 		r.ledger.enforced.Day = s.today
 		for _, d := range r.ledger.costs.Days {
@@ -1119,7 +1131,9 @@ func busyScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
 	s := labScene{drawer: labID(606), github: "1 open pull request", spend: 61.40, chatSpend: 3.85, today: 17,
-		objects: map[string]string{}, questions: map[string][]factoryd.PlanQuestion{}}
+		dayReset: &policy.CapReset{ID: 1, Cap: policy.CapDay, At: now.UTC().Truncate(24 * time.Hour).Add(14*time.Hour + 2*time.Minute), Login: "sebastian", BeforeEUR: 19.62},
+		backstop: &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875},
+		objects:  map[string]string{}, questions: map[string][]factoryd.PlanQuestion{}}
 
 	merge := labCard(now, 607, "in-review", "direct", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
 		"The proposals live in the console's memory, so a restart between a proposal and its Do it loses it. Store them in a table "+
@@ -1669,7 +1683,8 @@ func historyScene(now time.Time) labScene {
 func fireScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
-	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, today: 20, dayHit: true, objects: map[string]string{}}
+	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, today: 20, dayHit: true, backstop: &factoryd.Backstop{SpendUSD: 1875, MaxUSD: 1875},
+		objects: map[string]string{}}
 
 	stale := labCard(now, 619, "running", "direct", 90*time.Minute, "Load test: the event stream under 200 followers",
 		"Open 200 followers on one project's stream and measure the heartbeat's board reads.")

@@ -1221,7 +1221,8 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 }
 
 // Enforced is the fake's enforced spend: the month's as set, the day's
-// summed of its costs days and the premium's its premium figure.
+// summed of its costs days and the premium's its premium figure; a
+// period's whole, unless set, is its count and the count its reset ended.
 func (l *fakeLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced, error) {
 	e := l.enforced
 	e.Premium = l.premium
@@ -1230,6 +1231,16 @@ func (l *fakeLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced,
 			e.Day += d.Total
 		}
 	}
+	whole := func(all *float64, count float64, r *policy.CapReset) {
+		if *all == 0 {
+			*all = count
+			if r != nil {
+				*all += r.BeforeEUR
+			}
+		}
+	}
+	whole(&e.DayAll, e.Day, e.DayReset)
+	whole(&e.MonthAll, e.Month, e.MonthReset)
 	return e, nil
 }
 
@@ -2877,6 +2888,40 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	}
 	if strings.Index(body, today) > strings.Index(body, "2026-09-20") {
 		t.Error("days are not newest first")
+	}
+}
+
+// The costs page lists the cap resets of its window, newest first, a
+// project's by the project's name: of three, the one a minute before the
+// window's first day starts is left out. The costs tool reads the same
+// two after its ledger.
+func TestCostsListsResets(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	caps := &fakeCaps{}
+	r.c.cfg.Caps = caps
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck).Body.String(); strings.Contains(body, "<caption>Resets") {
+		t.Error("/costs without a reset shows the resets' table")
+	}
+	now := time.Now().UTC()
+	first := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -13)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 14, 2, 0, 0, time.UTC)
+	caps.resets = []policy.CapReset{
+		{ID: 3, Cap: policy.CapDay, At: today, Login: "sebastian", BeforeEUR: 19.62},
+		{ID: 2, Cap: policy.CapProject, Repository: "demo-app/demo-app", At: first, Login: "alice", BeforeEUR: 30},
+		{ID: 1, Cap: policy.CapMonth, At: first.Add(-time.Minute), Login: "sebastian", BeforeEUR: 800},
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck).Body.String()
+	rows := `<tr><th scope="row">` + today.Format("2006-01-02") + ` 14:02</th><td>day</td><td></td><td>sebastian</td><td class="num">19.62</td></tr>
+<tr><th scope="row">` + first.Format("2006-01-02") + ` 00:00</th><td>project</td><td>demo-app</td><td>alice</td><td class="num">30.00</td></tr>
+</tbody>`
+	if !strings.Contains(body, "<caption>Resets</caption>") || !strings.Contains(body, rows) || strings.Contains(body, "800.00") {
+		t.Errorf("/costs lacks the window's two resets\n%s\nin\n%s", rows, body)
+	}
+	text, err := r.c.costsByText(context.Background(), actor{}, "day", first.Format(policy.DateLayout), today.Format(policy.DateLayout))
+	if want := "No spend recorded.\nResets of the caps' counts:\n  " + today.Format("2006-01-02") + " 14:02 UTC day by sebastian, 19.62 EUR before\n  " +
+		first.Format("2006-01-02") + " 00:00 UTC project demo-app by alice, 30.00 EUR before"; err != nil || text != want {
+		t.Errorf("the costs tool = (%q, %v), want %q", text, err, want)
 	}
 }
 

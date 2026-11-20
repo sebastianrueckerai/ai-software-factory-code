@@ -1,6 +1,8 @@
 package console
 
 import (
+	"cmp"
+	"context"
 	"encoding/json"
 	"log"
 	"maps"
@@ -23,10 +25,19 @@ type costRow struct {
 	Total float64
 }
 
+// resetRow is a cap reset as the costs page lists it: Project is the
+// project's name for a project's cap (its repository once no file names
+// it), "" for the factory's.
+type resetRow struct {
+	When, Cap, Project, By string
+	Before                 float64
+}
+
 // costs shows the ledger per day and per task over a window of UTC days,
-// the last 14 by default, today included, and the window's last day's
-// total against the policy's day cap. Query params from and to are
-// YYYY-MM-DD dates, both included; each defaults as before.
+// the last 14 by default, today included, the window's last day's total
+// against the policy's day cap, and the cap resets of the window. Query
+// params from and to are YYYY-MM-DD dates, both included; each defaults
+// as before.
 func (c *Console) costs(w http.ResponseWriter, r *http.Request) {
 	to := time.Now().UTC()
 	from := to.AddDate(0, 0, -(costDays - 1))
@@ -77,10 +88,37 @@ func (c *Console) costs(w http.ResponseWriter, r *http.Request) {
 			todayTotal = d.Total
 		}
 	}
+	resets, err := c.capResets(r.Context(), v, from, to)
+	if err != nil {
+		log.Printf("console: cap resets: %v", err)
+		http.Error(w, "cannot read the cap resets", http.StatusInternalServerError)
+		return
+	}
 	s := current(r)
 	c.render(w, "costs.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true,
 		"From": ledger.From, "To": ledger.To, "Kinds": ledgerKinds, "Days": rows, "Tasks": ledger.Tasks,
-		"Today": todayTotal, "DayCap": v.Document.Budget.DayEUR, "PolicyID": v.ID})
+		"Today": todayTotal, "DayCap": v.Document.Budget.DayEUR, "PolicyID": v.ID, "Resets": resets})
+}
+
+// capResets are the cap resets of the UTC days from to to, both included,
+// newest first, a project's named as policy v names it; none without a
+// store.
+func (c *Console) capResets(ctx context.Context, v policy.Version, from, to time.Time) ([]resetRow, error) {
+	if c.cfg.Caps == nil {
+		return nil, nil
+	}
+	day := 24 * time.Hour
+	rs, err := c.cfg.Caps.CapResets(ctx, from.UTC().Truncate(day), to.UTC().Truncate(day).Add(day))
+	var out []resetRow
+	for _, x := range rs {
+		project := ""
+		if x.Repository != "" {
+			name, _, _ := v.ProjectOf(x.Repository)
+			project = cmp.Or(name, x.Repository)
+		}
+		out = append(out, resetRow{When: x.At.UTC().Format("2006-01-02 15:04"), Cap: x.Cap, Project: project, By: x.Login, Before: x.BeforeEUR})
+	}
+	return out, err
 }
 
 // policy shows the enforced version; edits happen in Git.

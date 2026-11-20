@@ -76,6 +76,20 @@ decimals: a task's model calls cost fractions of a cent.
   push run concluded `failure` or `cancelled`, Deploy now waits for a
   green run on main (a run still running is taken). The board's text for
   the agent starts with the hold.
+- The caps: the status strip always shows the day's count against the day
+  cap and the month's against the month cap, amber from 80 percent and red
+  once hit, with ↺ while a reset restarted the count in the period; any
+  other limit shows only once it is hit, as one red cell (premium cap hit,
+  pool drawn out, judgment budget spent, LiteLLM backstop hit). The status
+  panel's Spend section holds each cap's row, a trace line under a row
+  whose count a reset restarted (who, when, the count before and the
+  period's whole), LiteLLM's backstop as its own row and the escalation
+  pool's words. Reset under a row restarts that cap's count, never the
+  cap: the day's and the factory month's for a writer of the factory's
+  code (`POST /caps/{day|month}/reset`), a project's month cap for its
+  approver (`POST /projects/{name}/cap/reset`). Its confirm opens inline,
+  says what may still be spent before the period turns, and posts only
+  from its own press. No agent tool resets a cap.
 - The held-production ask: a human card that asks the project's approvers
   what to do about the hold. factoryd files it once production has waited
   6 hours (the clock starts at the plan's first merge and again at each
@@ -245,7 +259,8 @@ decimals: a task's model calls cost fractions of a cent.
   factoryd's namespace (`Forgejo.Writers`).
 - `/costs`: the ledger per day and kind and per task for 14 days, each
   task with its lines per kind and ref (a model review is its own line,
-  `model review/<alias>`), today against the day cap. `/policy`: the version in force, linked to its file
+  `model review/<alias>`), today against the day cap, and the window's
+  cap resets. `/policy`: the version in force, linked to its file
   in the infra repository for edits.
 - The project agent (stage 15 phase 4a, architecture 5.7): a writer of a
   project chats at `POST /projects/{name}/chat` (form field `message`;

@@ -1435,7 +1435,7 @@ func init() {
 			params: map[string]any{"by": enum("the whole ledger by day, card or tier", "day", "card", "tier"),
 				"from_date": str("the first UTC day, YYYY-MM-DD (default the month's first)"),
 				"to_date":   str("the last UTC day, YYYY-MM-DD (default today)")},
-			about: "The project's spend this month against its cap, or the whole ledger by day, card or tier.",
+			about: "The project's spend this month against its cap, or the ledger by day, card or tier with cap resets.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
 				if in.By != "" {
 					s, err := t.c.costsByText(t.r.Context(), t.a, in.By, in.FromDate, in.ToDate)

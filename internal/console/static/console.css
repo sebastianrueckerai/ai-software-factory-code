@@ -610,8 +610,8 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .spend.over .gauge { --fill: var(--st-failed); }
 .spend.over .n, .spend.over .pct { color: var(--st-failed); }
 .pct { font: 12px var(--font-mono); color: var(--text-muted); min-width: 4ch; }
-/* the pool's sentence wraps where the strip is narrower than it */
-.cell.pool { white-space: normal; padding-block: 6px; }
+/* a limit other than the day's and the month's shows only once it is hit */
+.cell.hit { color: var(--st-failed); }
 .cell.routine, .cell.gh { margin-left: auto; }
 .cell.routine + .cell.gh { margin-left: 0; }
 /* the status in detail: two quiet columns split by a hairline */
@@ -628,6 +628,17 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .sp-g.over .fig { color: var(--st-failed); }
 .sp-note { margin: 0; color: var(--st-failed); font-size: 12.5px; }
 .sp-note.warn { color: var(--need-text); }
+/* a quiet line under a Spend row: a reset's trace, the pool's words */
+.trace { margin: -4px 0 8px; color: var(--text-muted); font: 11.5px/1.5 var(--font-mono); }
+/* a cap's Reset: a quiet 24 px press under its row, red on a hit row; its
+   confirm opens inline under it and names the money on its press */
+.rst { margin: -4px 0 10px; }
+.rst > summary { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border: 1px solid var(--btn-line); border-radius: 3px; color: var(--text); font-size: 12px; font-weight: 500; list-style: none; cursor: pointer; }
+.rst > summary::-webkit-details-marker { display: none; }
+.rst > summary:hover, .rst[open] > summary { background: var(--bg-hover); }
+.rst.hit > summary { color: var(--st-failed); border-color: var(--st-failed); }
+.rst form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 6px; padding: 10px 12px; border: 1px solid var(--line-strong); background: var(--bg-raised); }
+.rst form p { flex-basis: 100%; margin: 0; color: var(--text); font-size: 12.5px; line-height: 1.5; }
 .sp-dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; font-size: 12.5px; }
 .sp-dl dt { color: var(--text-faint); font-weight: 400; }
 .sp-dl dd { margin: 0; color: var(--text-muted); }
@@ -944,6 +955,7 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .cell.spend { flex-basis: 100%; }
   .cell.spend > a { flex: 1; }
   .cell.spend .gauge { flex: 1; width: auto; }
+  .rst > summary, .rst button { height: 44px; }
   .sp { grid-template-columns: 1fr; }
   .sp > section { border-left: 0; border-top: 1px solid var(--line); }
   .sp > section:first-child { border-top: 0; }

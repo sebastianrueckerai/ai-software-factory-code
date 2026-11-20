@@ -629,9 +629,9 @@ func TestMCPChatSendFailureLandsAsRow(t *testing.T) {
 
 func TestMCPChatSendBudgetStop(t *testing.T) {
 	r, chat, g := newChatRig(t)
-	const reason = "free headroom 0.00 EUR (day 20.000000 of 20.000000); the day cap budget.day_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	const reason = "free headroom 0.00 EUR (day 20.000000 of 20.000000); the day cap budget.day_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"
 	g.replies = [][]string{{refuseFor(policy.RefusedDayCap, reason)}}
-	stop := "The factory's day cap is used up: the chat goes on when the UTC day turns, or once a commit raises budget.day_eur in policy.yaml.\n" + reason
+	stop := "The factory's day cap is used up: the chat goes on when the UTC day turns, once a human resets the day's count in the status panel, or once a commit raises budget.day_eur in policy.yaml.\n" + reason
 	var a struct {
 		Budget, Error string
 		Ended         bool

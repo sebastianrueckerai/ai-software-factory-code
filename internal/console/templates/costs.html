@@ -19,5 +19,12 @@
 {{end}}{{else}}<tr><td colspan="2">No spend recorded.</td></tr>{{end}}
 </tbody>
 </table></div>
-</div>
+{{with .Resets}}<div class="tscroll"><table>
+<caption>Resets</caption>
+<thead><tr><th scope="col">when (UTC)</th><th scope="col">cap</th><th scope="col">project</th><th scope="col">by</th><th scope="col" class="num">count before EUR</th></tr></thead>
+<tbody>
+{{range .}}<tr><th scope="row">{{.When}}</th><td>{{.Cap}}</td><td>{{.Project}}</td><td>{{.By}}</td><td class="num">{{eur .Before}}</td></tr>
+{{end}}</tbody>
+</table></div>
+{{end}}</div>
 {{template "foot"}}

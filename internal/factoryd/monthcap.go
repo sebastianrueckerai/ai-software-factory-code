@@ -324,7 +324,7 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 		case month == m.Month && limit > capEUR:
 			msg = fmt.Sprintf("The month cap is %s EUR in policy version %d, so the cap card closes.", textutil.EUR(limit), v.ID)
 		case month == m.Month && m.Reset != nil && !strings.HasSuffix(row.Fingerprint, resetMark(m.Reset)) && !outerGuardRefused(refusal, spent, capEUR):
-			msg = fmt.Sprintf("%s reset the month's count at %s, so the cap card closes.", m.Reset.Login, resetStamp(m.Reset.At, now))
+			msg = fmt.Sprintf("%s reset the month's count at %s, so the cap card closes.", m.Reset.Login, ResetStamp(m.Reset.At, now))
 		default:
 			continue
 		}

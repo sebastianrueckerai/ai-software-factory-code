@@ -15,9 +15,12 @@ import (
 
 type capCall struct{ cap, repository, login string }
 
+// fakeCaps records the resets pressed and answers resets as the store's
+// read does: those in the window, newest first as given.
 type fakeCaps struct {
-	mu    sync.Mutex
-	calls []capCall
+	mu     sync.Mutex
+	calls  []capCall
+	resets []policy.CapReset
 }
 
 func (f *fakeCaps) ResetCap(_ context.Context, cap, repository, login string) (policy.CapReset, error) {
@@ -27,8 +30,16 @@ func (f *fakeCaps) ResetCap(_ context.Context, cap, repository, login string) (p
 	return policy.CapReset{ID: int64(len(f.calls)), Cap: cap, Repository: repository, Login: login, At: time.Now()}, nil
 }
 
-func (f *fakeCaps) CapResets(context.Context, time.Time, time.Time) ([]policy.CapReset, error) {
-	return nil, nil
+func (f *fakeCaps) CapResets(_ context.Context, from, to time.Time) ([]policy.CapReset, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []policy.CapReset
+	for _, r := range f.resets {
+		if !r.At.Before(from) && r.At.Before(to) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // capRig is the members rig (alice writes and approves the factory's code,

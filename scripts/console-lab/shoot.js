@@ -127,6 +127,13 @@ async function main() {
           await p.page.locator("#status-line > summary").click();
           await p.idle();
         }, false);
+        // a cap's Reset opens its confirm under the row (C47)
+        if (s === "busy" && theme === "dark") await shot("reset-confirm-390.png", phone, "/", async (p) => {
+          await p.page.locator("#status-line > summary > .cell.state").click();
+          await p.page.locator("#status-panel details.rst > summary").first().click();
+          await p.page.locator("#status-panel details.rst form").first().scrollIntoViewIfNeeded();
+          await p.idle();
+        }, false);
         if (drawer) {
           const tab = (title) => async (p) => {
             await p.page.locator("#drawer").getByRole("tab", { name: title, exact: true }).click();

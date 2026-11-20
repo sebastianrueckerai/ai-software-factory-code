@@ -167,9 +167,9 @@ func TestChatBudgetNetsHolds(t *testing.T) {
 func TestChatCapStopNamesTheCap(t *testing.T) {
 	const reason = "free headroom 0.00 EUR (month 0.000000 of 300.000000); the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"
 	for _, tc := range []struct{ decision, first string }{
-		{policy.RefusedDayCap, "The factory's day cap is used up: the chat goes on when the UTC day turns, or once a commit raises budget.day_eur in policy.yaml."},
-		{policy.RefusedMonthCap, "The factory's month cap is used up: the chat goes on when the UTC month turns, or once a commit raises budget.month_eur in policy.yaml."},
-		{policy.RefusedProjectCap, "The project's month cap is used up: the chat goes on when the UTC month turns, or once a commit raises budget.month_eur in projects/ai-software-factory-code.yaml."},
+		{policy.RefusedDayCap, "The factory's day cap is used up: the chat goes on when the UTC day turns, once a human resets the day's count in the status panel, or once a commit raises budget.day_eur in policy.yaml."},
+		{policy.RefusedMonthCap, "The factory's month cap is used up: the chat goes on when the UTC month turns, once a human resets the month's count in the status panel, or once a commit raises budget.month_eur in policy.yaml."},
+		{policy.RefusedProjectCap, "The project's month cap is used up: the chat goes on when the UTC month turns, once an approver of the project resets its month count in the status panel, or once a commit raises budget.month_eur in projects/ai-software-factory-code.yaml."},
 	} {
 		t.Run(tc.decision, func(t *testing.T) {
 			r, _, g := newChatRig(t)

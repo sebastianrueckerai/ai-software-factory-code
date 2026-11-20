@@ -84,6 +84,8 @@ type fakeChat struct {
 	totals   map[string][2]float64
 	next     int64
 	spend    []spendRow
+	// resets are the newest project cap resets of this month by repository
+	resets map[string]*policy.CapReset
 	// atts are the stored image rows, any member's, in arrival order
 	atts []storedAttachment
 	// proposals are the proposals and undos, in the order stored; takes
@@ -825,15 +827,23 @@ func (f *fakeChat) ProposalStates(_ context.Context, repository, login string, t
 	return out, nil
 }
 
+// ProjectMonthSpend sums repository's rows in the UTC month of at as the
+// store does: AllEUR all of them, EUR and ChatEUR those booked from its
+// project cap's reset on (resets), which Reset names.
 func (f *fakeChat) ProjectMonthSpend(_ context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error) {
-	var s factoryd.ProjectSpend
+	s := factoryd.ProjectSpend{Reset: f.resets[repository]}
 	y, m, _ := at.UTC().Date()
 	for _, row := range f.spend {
-		if ry, rm, _ := row.day.UTC().Date(); row.repository == repository && ry == y && rm == m {
-			s.EUR += row.eur
-			if row.chat {
-				s.ChatEUR += row.eur
-			}
+		if ry, rm, _ := row.day.UTC().Date(); row.repository != repository || ry != y || rm != m {
+			continue
+		}
+		s.AllEUR += row.eur
+		if s.Reset != nil && row.day.Before(s.Reset.At) {
+			continue
+		}
+		s.EUR += row.eur
+		if row.chat {
+			s.ChatEUR += row.eur
 		}
 	}
 	return s, nil

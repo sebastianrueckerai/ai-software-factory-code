@@ -215,7 +215,7 @@ func MonthCapCardQuestion(limit float64, m MonthSpend, link string, now time.Tim
 	whole, count, capEUR := textutil.EUR(m.whole()), textutil.EUR(m.EUR), textutil.EUR(limit)
 	since := ""
 	if m.Reset != nil {
-		since = fmt.Sprintf("counted since %s, when %s reset the month's count", resetStamp(m.Reset.At, now), m.Reset.Login)
+		since = fmt.Sprintf("counted since %s, when %s reset the month's count", ResetStamp(m.Reset.At, now), m.Reset.Login)
 	}
 	if outerGuardRefused(m.Refusal, m.EUR, limit) {
 		of := whole + " EUR"

@@ -327,10 +327,11 @@ func costsDaysRefuse() (string, error) {
 }
 
 // costsByText breaks the ledger down by day, card (task) or tier over
-// that window, in EUR, with the totals line. A tier is a model alias, the
-// ref of a model row after its purpose/ prefix; the other kinds stand as
-// their kind. from and to are YYYY-MM-DD dates, both included; when either
-// is empty the window is costsWindow's current month.
+// that window, in EUR, with the totals line, and lists the window's cap
+// resets as the costs page does. A tier is a model alias, the ref of a
+// model row after its purpose/ prefix; the other kinds stand as their
+// kind. from and to are YYYY-MM-DD dates, both included; when either is
+// empty the window is costsWindow's current month.
 func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string) (string, error) {
 	switch by {
 	case "day", "card", "tier":
@@ -397,12 +398,25 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 			grand += tiers[k]
 		}
 	}
+	v, _ := c.inForce(ctx)
+	resets, err := c.capResets(ctx, v, winFrom, winTo)
+	if err != nil {
+		log.Printf("console: cap resets: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the cap resets")
+	}
+	var after string
+	for _, x := range resets {
+		after += fmt.Sprintf("\n  %s UTC %s by %s, %s EUR before", x.When, strings.TrimSpace(x.Cap+" "+x.Project), x.By, textutil.EUR(x.Before))
+	}
+	if after != "" {
+		after = "\nResets of the caps' counts:" + after
+	}
 	if len(lines) == 0 {
-		return "No spend recorded.", nil
+		return "No spend recorded." + after, nil
 	}
 	head := map[string]string{"day": "By day", "card": "By card", "tier": "By tier"}[by]
 	return head + " " + ledger.From + " to " + ledger.To + ", EUR:\n" +
-		strings.Join(lines, "\n") + fmt.Sprintf("\ntotal: %s EUR", textutil.EUR(grand)), nil
+		strings.Join(lines, "\n") + fmt.Sprintf("\ntotal: %s EUR", textutil.EUR(grand)) + after, nil
 }
 
 // tailWords is a breakdown's parts behind their total, " (model 1.00, ci 0.10)" style.

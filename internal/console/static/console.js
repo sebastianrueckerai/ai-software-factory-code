@@ -365,11 +365,12 @@ document.addEventListener("DOMContentLoaded", offerTracks);
     }).catch(swapBoard);
   }
   // counters are the status line and the columns' counts as the server
-  // read them, set whatever the board's state: neither holds a form
+  // read them, set whatever the board's state
   function counters(d) {
     var line = document.getElementById("status-line"), counts = document.querySelectorAll("#board .count");
-    // a swap under the keyboard's focus would drop it: that panel waits for the next
-    if (line && !line.contains(document.activeElement)) {
+    // a swap under the keyboard's focus or an open confirm would drop it:
+    // that panel waits for the next
+    if (line && !line.contains(document.activeElement) && !confirming(line)) {
       line.innerHTML = d.status;
     }
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].innerHTML = n; });
@@ -1815,9 +1816,21 @@ document.addEventListener("click", function (e) {
   navigator.clipboard.writeText(el.textContent).then(function () { say("Copied"); }, pick);
 });
 
-// A confirm's Cancel closes the fold that holds it.
+// A confirm's Cancel closes the fold that holds it, and so does its
+// press once sent; while one stands open the board's refreshes leave the
+// status line as it is.
 document.addEventListener("click", function (e) {
   var b = e.target.closest && e.target.closest("button[data-cancel]");
   var d = b && b.closest("details.rst");
   if (d) d.removeAttribute("open");
+});
+document.addEventListener("submit", function (e) {
+  var d = e.target.closest("details.rst");
+  if (d) d.removeAttribute("open");
+});
+function confirming(line) {
+  return !!line.querySelector("details.rst[open]");
+}
+document.addEventListener("htmx:oobBeforeSwap", function (e) {
+  if (e.detail.target.id === "status-line" && confirming(e.detail.target)) e.preventDefault();
 });

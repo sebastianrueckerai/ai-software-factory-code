@@ -12,9 +12,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// Under a premium cap the strip and the Spend panel show the premium
-// class's spend this month against it, and the chat's policy read names
-// the cap; without one, no premium meter and no line.
+// Under a premium cap the Spend panel shows the premium class's spend
+// this month against it, and the chat's policy read names the cap;
+// without one, no premium meter and no line. The strip names the premium
+// cap only once it is hit.
 func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 	r, ck := screenRig(t)
 	r.ledger.premiumCap, r.ledger.premium = 50, 12.5
@@ -28,7 +29,7 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 		t.Errorf("premium %.2f of %.2f, want 12.50 of 50", d.Status.PremiumEUR, d.Status.PremiumCapEUR)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`aria-label="Premium spend of its month cap">25 percent</meter>`, `<span class="lbl">premium this month</span>`} {
+	for _, want := range []string{`aria-label="premium this month">25 percent</meter>`, `<span class="lbl">premium this month</span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
@@ -37,7 +38,7 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 		t.Errorf("policy read = (%q, %v), want the premium cap", text, err)
 	}
 	r.ledger.premiumCap = 0
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, "Premium spend") || strings.Contains(body, "premium this month") {
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, "premium this month") {
 		t.Error("the board shows a premium meter without a premium cap")
 	}
 }
@@ -122,6 +123,59 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 	for id, w := range want {
 		if got[id] != w {
 			t.Errorf("%s: stage %q for %q, want %q for %q", id, got[id][0], got[id][1], w[0], w[1])
+		}
+	}
+}
+
+// The confirm of a Reset says what the count becomes, the most that may
+// run before the cap's period turns and what stays: at 14:02 UTC on 20
+// November the day turns in 9 h 58 min and the month in 10 d 9 h 58 min.
+// LiteLLM's backstop, 1875.00 - 1238.59 = 636.41 USD left, joins the
+// sentence only under a cap above what it leaves.
+func TestResetConfirmWords(t *testing.T) {
+	now := time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
+	backstop := &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875}
+	const day = "Today's count starts again from 0.00 EUR. Up to 100.00 EUR more may be spent before 00:00 UTC, in 9 h 58 min. The day cap stays 100.00 EUR; the month cap still holds."
+	for _, tc := range []struct {
+		cap      string
+		eur      float64
+		backstop *factoryd.Backstop
+		want     string
+	}{
+		{policy.CapDay, 100, nil, day},
+		{policy.CapDay, 100, backstop, day},
+		{policy.CapMonth, 800, nil, "This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds."},
+		{policy.CapMonth, 800, backstop, "This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds. LiteLLM's backstop leaves 636.41 USD this month."},
+		{policy.CapProject, 30, backstop, "The project's month count starts again from 0.00 EUR. Up to 30.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The project's month cap stays 30.00 EUR; the factory's caps still hold."},
+	} {
+		if got := resetWords(tc.cap, tc.eur, now, tc.backstop); got != tc.want {
+			t.Errorf("resetWords(%s, %.2f, backstop %v) =\n%s\nwant\n%s", tc.cap, tc.eur, tc.backstop != nil, got, tc.want)
+		}
+	}
+}
+
+// The agent's spend words say the month's whole spend as the spend this
+// month and, once a reset restarted the cap's count, the count apart with
+// the reset: under the factory's cap 12 counted since sebastian's reset
+// at 48 make 60 in the month; under a project's, the cards' and the
+// chat's split is the count's.
+func TestSpendWordsSayTheWholeMonthAndTheCount(t *testing.T) {
+	now := time.Now().UTC()
+	reset := &policy.CapReset{Cap: policy.CapMonth, At: time.Date(now.Year(), now.Month(), now.Day(), 14, 2, 0, 0, time.UTC), Login: "sebastian", BeforeEUR: 48}
+	for _, tc := range []struct {
+		spend   factoryd.ProjectSpend
+		factory bool
+		want    string
+	}{
+		{factoryd.ProjectSpend{EUR: 48.5, AllEUR: 48.5}, true, "spend this month 48.50 of 50.00 EUR, the factory's whole ledger"},
+		{factoryd.ProjectSpend{EUR: 12, AllEUR: 60, Hit: true, Reset: reset}, true,
+			"spend this month 60.00 EUR; the month cap's count 12.00 of 50.00 EUR (cap hit) (reset 14:02 UTC by sebastian, 48.00 EUR before), the factory's whole ledger"},
+		{factoryd.ProjectSpend{EUR: 3, ChatEUR: 1, AllEUR: 3}, false, "spend this month 3.00 of 50.00 EUR: the cards 2.00 EUR, the chat 1.00 EUR"},
+		{factoryd.ProjectSpend{EUR: 10, ChatEUR: 2, AllEUR: 58, Reset: reset}, false,
+			"spend this month 58.00 EUR; the month cap's count 10.00 of 50.00 EUR (reset 14:02 UTC by sebastian, 48.00 EUR before): the cards 8.00 EUR, the chat 2.00 EUR"},
+	} {
+		if got := spendWords(tc.spend, 50, tc.factory); got != tc.want {
+			t.Errorf("spendWords(%+v, factory %v) =\n%s\nwant\n%s", tc.spend, tc.factory, got, tc.want)
 		}
 	}
 }

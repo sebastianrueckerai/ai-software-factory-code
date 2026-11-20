@@ -1040,7 +1040,7 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			}
 		}
 		if reset != nil && refusal == "" {
-			why = fmt.Sprintf("the %s's count was reset at %s by %s", o.name, resetStamp(reset.At, r.Clock()), reset.Login)
+			why = fmt.Sprintf("the %s's count was reset at %s by %s", o.name, ResetStamp(reset.At, r.Clock()), reset.Login)
 		}
 	}
 	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})
