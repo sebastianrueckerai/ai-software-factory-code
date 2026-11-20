@@ -1,7 +1,6 @@
 package console
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -21,21 +20,11 @@ import (
 const budgetRefusal = "the remaining budget cannot fund a call: 0.17 EUR of the 2.00 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 
 // cappedCard is a waiting card of sf/code whose remaining budget of 2 EUR
-// cannot fund a call, with both floors refusing it until a raise.
+// cannot fund a call.
 func cappedCard(r *rig, t *testing.T) {
 	t.Helper()
 	r.tasks.set(budgetRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
-	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, ""), nil }
-}
-
-// raisedFloor is the floor's answer for a card that is funded once its
-// budget is raised above 2 EUR: budgetRefusal until then, after it raised.
-func (r *rig) raisedFloor(ctx context.Context, id, raised string) string {
-	if task, _, _ := r.tasks.Task(ctx, id); task.BudgetEUR > 2 {
-		return raised
-	}
-	return budgetRefusal
 }
 
 // Card #704 (roadmap 243): its remaining budget cannot fund a session's

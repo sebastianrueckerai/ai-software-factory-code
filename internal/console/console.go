@@ -404,11 +404,6 @@ type Config struct {
 	// aside, the zero Case for none (factoryd's PGStore). New refuses a
 	// Config without it.
 	NewestAskCase func(ctx context.Context, taskID string) (factoryd.Case, error)
-	// SessionFunded is the floor of a session's start (roadmap 243, plan A):
-	// "" when the task's free headroom can fund a session's opening calls and
-	// its rung's floor on model, else the refusal (factoryd's
-	// Runner.SessionFunded); nil offers no fund and checks no answer.
-	SessionFunded func(ctx context.Context, taskID, model string) (string, error)
 	// GateReserve is the policy's gate reserve in force, which a session's
 	// ceiling holds out of a card's budget; nil reads none.
 	GateReserve func() float64

@@ -74,7 +74,6 @@ func needRig(t *testing.T) *rig {
 	r := fundRig(t)
 	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, SpentEUR: 1.83, ModelAlias: "factory/small"})
-	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return needRefusal, nil }
 	return r
 }
 

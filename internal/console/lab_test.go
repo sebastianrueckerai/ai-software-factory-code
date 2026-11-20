@@ -109,14 +109,6 @@ func TestLab(t *testing.T) {
 		}
 		return factoryd.ErrNotFound
 	}
-	// the capped card of the fire scene is below the fund's floor, so its approvers get the Fund action (roadmap 210)
-	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
-		if id == labID(610) {
-			return "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-				"0.52 EUR of the 2.00 EUR budget remains, and a session's first call on factory/big needs 0.60 EUR", nil
-		}
-		return "", nil
-	}
 	r.c.cfg.Kustomization = func(_ context.Context, namespace, _ string) (factoryd.FluxState, error) {
 		if namespace == "demo-prod" {
 			return factoryd.FluxState{Ready: "False",

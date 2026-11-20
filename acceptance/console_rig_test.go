@@ -141,22 +141,20 @@ type AcceptanceRig struct {
 	pool       *policy.Escalation
 	// The pool-funding seams: the login the fake Forgejo answers
 	// (LoginAs), the repositories' writers — anna is a member of the code
-	// project too —, the session floors whose budget refusals a fund
-	// answers (SetSessionFloor), the autonomy the loaded policy holds
+	// project too —, the autonomy the loaded policy holds
 	// (SetLoadedAutonomy), the draws read's failure (FailPoolReads), the
 	// model-spend total the pool never reads (SetProjectSpend), and the
 	// answers Act took with the refusal it answers (RefuseActs).
-	user         string
-	writers      map[string][]string
-	sessionFloor map[string]float64
-	autonomy     string
-	mergeRule    string
-	approvers    []string
-	drawnErr     error
-	spend        *factoryd.ProjectSpend
-	acted        []factoryd.ActInput
-	actRefusal   string
-	ws           *writeSeams
+	user       string
+	writers    map[string][]string
+	autonomy   string
+	mergeRule  string
+	approvers  []string
+	drawnErr   error
+	spend      *factoryd.ProjectSpend
+	acted      []factoryd.ActInput
+	actRefusal string
+	ws         *writeSeams
 	// the loaded policy's own shape of the code project for the write
 	// tools: whether its objects are the factory's, whether its process
 	// holds a dependencies block, and the routines its file names
@@ -226,7 +224,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
 		timelines: acceptObjects{}, prNext: 100, // the counted pull numbers, 101 first
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
-		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams(),
+		mergeRule: policy.MergeHuman, ws: newWriteSeams(),
 		receipts: map[string]factoryd.MergeReceipt{}, cases: map[string][]factoryd.Case{},
 		caseSteps: map[int64][]factoryd.CaseStep{}, caseAsks: map[int64]factoryd.CaseAsk{},
 		plans: map[string][]factoryd.PlanRevision{}, questions: map[string][]factoryd.PlanQuestion{}, caseNext: 4000}
@@ -259,9 +257,6 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 			a.mu.Lock()
 			defer a.mu.Unlock()
 			return slices.Contains(a.writers[repository], user), nil
-		},
-		SessionFunded: func(_ context.Context, id, _ string) (string, error) {
-			return a.sessionFunded(id), nil
 		},
 		AttachAnalysis: a.AttachAnalysis,
 		// every project's chat token: the project agent's own decisions go out with it
@@ -1121,41 +1116,6 @@ func (a *AcceptanceRig) RaiseTaskBudget(_ context.Context, id string, eur float6
 		}
 	}
 	return 0, 0, factoryd.ErrNotFound
-}
-
-// accNeedRefusal is the budget refusal a card at or under its floor owes
-// one of its sessions' opening calls, in the store's own opening so
-// factoryd.BudgetRefusal sees it.
-const accNeedRefusal = "the remaining budget cannot fund a call: 1.000 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 2.000 EUR. Raise the budget (Fund on the board) and answer, or close the card."
-
-// SetSessionFloor makes card id owe its session's opening calls while its
-// budget stands at or under eur: the why a fund answers, as the factory's
-// own SessionFunded does.
-func (a *AcceptanceRig) SetSessionFloor(id string, eur float64) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.sessionFloor[id] = eur
-}
-
-// sessionFunded is the rig's SessionFunded: the floor's refusal while the
-// card's budget stands at or under it, "" once a raise carries the card
-// over and for a card without a floor.
-func (a *AcceptanceRig) sessionFunded(id string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	floor, seeded := a.sessionFloor[id]
-	if !seeded {
-		return ""
-	}
-	for i := range a.tasks {
-		if a.tasks[i].ID == id {
-			if a.tasks[i].BudgetEUR <= floor {
-				return accNeedRefusal
-			}
-			return ""
-		}
-	}
-	return ""
 }
 
 // SetCardBudget holds card id's budget at eur.
