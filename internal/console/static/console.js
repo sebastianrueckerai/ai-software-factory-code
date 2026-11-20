@@ -1814,3 +1814,10 @@ document.addEventListener("click", function (e) {
   if (!navigator.clipboard) return pick();
   navigator.clipboard.writeText(el.textContent).then(function () { say("Copied"); }, pick);
 });
+
+// A confirm's Cancel closes the fold that holds it.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest && e.target.closest("button[data-cancel]");
+  var d = b && b.closest("details.rst");
+  if (d) d.removeAttribute("open");
+});

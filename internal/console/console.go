@@ -212,6 +212,17 @@ type Config struct {
 	CloseFactoryPR FactoryCloser
 	Resources      Resources
 	Alerts         Alerts
+	// Caps restarts a cap's count and reads the restarts
+	// (factoryd.PGStore); nil refuses the reset forms with 503.
+	Caps interface {
+		ResetCap(ctx context.Context, cap, repository, login string) (policy.CapReset, error)
+		CapResets(ctx context.Context, from, to time.Time) ([]policy.CapReset, error)
+	}
+	// WakeCapWaits signals every card that waits on a cap to check at once.
+	WakeCapWaits func(context.Context) error
+	// Backstop reads LiteLLM's own budget, the cap under the factory's
+	// (factoryd.LiteLLMAdmin.ProxyBudget).
+	Backstop func(context.Context) (factoryd.Backstop, error)
 	// DeploymentHealth reads a Deployment of the project's namespaces
 	// (factoryd.DeploymentHealthText); its refusals are
 	// *factoryd.HealthRefusal.
@@ -614,6 +625,8 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/plan/holdout", http.HandlerFunc(c.planHoldout), nil},
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
+		{"POST /caps/{cap}/reset", http.HandlerFunc(c.factoryCapReset), nil},
+		{"POST /projects/{name}/cap/reset", http.HandlerFunc(c.projectCapReset), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},

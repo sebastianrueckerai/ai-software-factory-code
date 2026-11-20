@@ -692,9 +692,12 @@ func main() {
 		GoCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.Go(ctx, taskID, by)
 		},
-		Resources: cloudres.AgentStore(store.CloudResources()),
-		Jobs:      factoryd.ClusterJobs{Kube: kube},
-		Alerts:    store,
+		Resources:    cloudres.AgentStore(store.CloudResources()),
+		Jobs:         factoryd.ClusterJobs{Kube: kube},
+		Caps:         store,
+		WakeCapWaits: func(ctx context.Context) error { return capWaits.Wake(ctx, policyLoader.Current()) },
+		Backstop:     litellm.ProxyBudget,
+		Alerts:       store,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
 			return factoryd.DeploymentHealthText(ctx, kube, p, deployment, namespace, time.Now())
 		},
