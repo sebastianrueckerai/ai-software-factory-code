@@ -174,8 +174,9 @@ const proxyBudgetAnswer = `{"user_id":"litellm-proxy-budget","user_info":{"user_
 
 // The backstop is the proxy budget user's spend and max_budget, read
 // under the master key and kept for 60 s: a second read within them asks
-// nothing, one at 60 s asks again. A failed read is its error, and keeps
-// no answer: the next read asks again.
+// nothing, one at 60 s asks again. A failed read is its error, kept for
+// 60 s too, so a slow or failing LiteLLM costs one request a minute; a
+// read its caller cancelled keeps nothing.
 func TestProxyBudget(t *testing.T) {
 	var calls, status atomic.Int32
 	status.Store(http.StatusOK)
@@ -206,11 +207,25 @@ func TestProxyBudget(t *testing.T) {
 	read(2)
 	status.Store(http.StatusInternalServerError)
 	now = now.Add(time.Minute)
-	if b, err := l.ProxyBudget(context.Background()); err == nil || !strings.Contains(err.Error(), "status 500") || calls.Load() != 3 {
-		t.Fatalf("ProxyBudget on a 500 = %+v, %v after %d requests, want the error after 3", b, err, calls.Load())
+	failed := func(when string) {
+		t.Helper()
+		if b, err := l.ProxyBudget(context.Background()); err == nil || !strings.Contains(err.Error(), "status 500") || calls.Load() != 3 {
+			t.Fatalf("ProxyBudget %s = %+v, %v after %d requests, want the 500's error after 3", when, b, err, calls.Load())
+		}
 	}
+	failed("on a 500")
 	status.Store(http.StatusOK)
+	now = now.Add(59 * time.Second)
+	failed("59 s after a 500")
+	now = now.Add(time.Second)
 	read(4)
+	now = now.Add(time.Minute)
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := l.ProxyBudget(gone); err == nil || calls.Load() != 4 {
+		t.Fatalf("ProxyBudget for a caller gone = %v after %d requests, want an error and no request", err, calls.Load())
+	}
+	read(5)
 }
 
 // A proxy budget user without max_budget, or with 0 (LiteLLM's none),

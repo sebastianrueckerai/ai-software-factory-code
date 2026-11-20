@@ -207,8 +207,8 @@ func TestChatStopLiftsOnAFundOrAPolicyRaise(t *testing.T) {
 	if answer := chatRead(t, r, ck, chatPath); answer.Budget == nil || answer.Messages[1].Settled {
 		t.Fatalf("GET /chat after the stop: budget %+v, the stop %+v; want the fund and the stop open", answer.Budget, answer.Messages[1])
 	}
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `>judgment budget spent</span>`) {
-		t.Fatal("the board lacks the stopped chat's cell")
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `<span class="cell hit" title="the judgment budget is spent: the chat stands until it is raised or the month turns">judgment budget spent</span>`) {
+		t.Fatal("the board lacks the stopped chat's red cell")
 	}
 	rec := r.do(post("/projects/ai-software-factory-code/chat/fund", url.Values{"csrf": {s.csrf}, "eur": {"3"}, "reason": {"the month is young"}}), ck)
 	if rec.Code != http.StatusSeeOther {

@@ -16,11 +16,12 @@ import (
 type capCall struct{ cap, repository, login string }
 
 // fakeCaps records the resets pressed and answers resets as the store's
-// read does: those in the window, newest first as given.
+// read does: those in the window, newest first as given, or err.
 type fakeCaps struct {
 	mu     sync.Mutex
 	calls  []capCall
 	resets []policy.CapReset
+	err    error
 }
 
 func (f *fakeCaps) ResetCap(_ context.Context, cap, repository, login string) (policy.CapReset, error) {
@@ -33,6 +34,9 @@ func (f *fakeCaps) ResetCap(_ context.Context, cap, repository, login string) (p
 func (f *fakeCaps) CapResets(_ context.Context, from, to time.Time) ([]policy.CapReset, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
 	var out []policy.CapReset
 	for _, r := range f.resets {
 		if !r.At.Before(from) && r.At.Before(to) {

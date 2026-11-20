@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1858,10 +1859,11 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 // since sebastian's reset at 14:02 UTC after 19.62 make 20.02 today; under
 // the factory's month cap 12 since a reset after 48 make 60; under the
 // project's own cap, 10 booked after its reset and 30 before make 40.
+// The board reads one pinned clock, 16:00 UTC on the reset's day.
 func TestStripShowsReset(t *testing.T) {
 	r, ck := screenRig(t)
-	now := time.Now().UTC()
-	at := time.Date(now.Year(), now.Month(), now.Day(), 14, 2, 0, 0, time.UTC)
+	now, at := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC), time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
+	r.c.clock = func() time.Time { return now }
 	r.ledger.enforced = policy.Enforced{Day: 0.40, DayReset: &policy.CapReset{ID: 3, Cap: policy.CapDay, At: at, Login: "sebastian", BeforeEUR: 19.62},
 		Month: 12, MonthReset: &policy.CapReset{ID: 4, Cap: policy.CapMonth, At: at, Login: "sebastian", BeforeEUR: 48}}
 	strip, spend := statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
@@ -1904,14 +1906,22 @@ func TestStripShowsReset(t *testing.T) {
 func TestResetButtonsByRight(t *testing.T) {
 	r, _, _ := capRig(t)
 	const day, month, project = `action="/caps/day/reset"`, `action="/caps/month/reset"`, `action="/projects/demo/cap/reset"`
+	// spendOf is user's Spend section of the board at query; each press's
+	// form there carries the session's CSRF field first
 	spendOf := func(user, query string) string {
 		t.Helper()
-		ck, _ := memberLogin(t, r, user)
+		ck, s := memberLogin(t, r, user)
 		rec := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s's board%s = %d", user, query, rec.Code)
 		}
 		_, spend := statusOf(t, rec.Body.String())
+		for _, a := range []string{day, month, project} {
+			path := strings.TrimSuffix(strings.TrimPrefix(a, `action="`), `"`)
+			if form := a + ` hx-post="` + path + `"><input type="hidden" name="csrf" value="` + s.csrf + `">`; strings.Contains(spend, a) && !strings.Contains(spend, form) {
+				t.Errorf("%s's press %s lacks the CSRF field:\n%s", user, path, spend)
+			}
+		}
 		return spend
 	}
 	presses := func(spend string) []string {
@@ -1944,4 +1954,30 @@ func TestResetButtonsByRight(t *testing.T) {
 	r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
 	equal(t, "bob's presses on the factory's board he reads", presses(spendOf("bob", "?project=ai-software-factory-code")), []string(nil))
 	r.c.cfg.HTTP = plain
+}
+
+// A LiteLLM that hangs costs the board at most backstopWait once a
+// minute: the first board answers within it and says the backstop could
+// not be read; the next, within the read's minute, asks LiteLLM nothing
+// and answers at once with the same line.
+func TestASlowBackstopLeavesTheBoardOnTime(t *testing.T) {
+	r, ck := screenRig(t)
+	var asked atomic.Int32
+	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		asked.Add(1)
+		<-req.Context().Done()
+	}))
+	t.Cleanup(hang.Close)
+	r.c.cfg.Backstop = (&factoryd.LiteLLMAdmin{BaseURL: hang.URL, MasterKey: "mk"}).ProxyBudget
+	const problem = `<p class="problem" role="alert">LiteLLM&#39;s backstop could not be read</p>`
+	for i, bound := range []time.Duration{backstopWait + time.Second, time.Second} {
+		start := time.Now()
+		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+		if took := time.Since(start); took > bound || !strings.Contains(body, problem) {
+			t.Fatalf("board %d took %v, want under %v with the backstop's problem line; it holds the line: %v", i+1, took, bound, strings.Contains(body, problem))
+		}
+	}
+	if n := asked.Load(); n != 1 {
+		t.Errorf("LiteLLM was asked %d times, want once", n)
+	}
 }

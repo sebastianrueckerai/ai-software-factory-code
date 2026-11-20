@@ -328,7 +328,7 @@ func costsDaysRefuse() (string, error) {
 
 // costsByText breaks the ledger down by day, card (task) or tier over
 // that window, in EUR, with the totals line, and lists the window's cap
-// resets as the costs page does. A tier is a model alias, the ref of a
+// resets as the costs page does, or says they could not be read. A tier is a model alias, the ref of a
 // model row after its purpose/ prefix; the other kinds stand as their
 // kind. from and to are YYYY-MM-DD dates, both included; when either is
 // empty the window is costsWindow's current month.
@@ -399,16 +399,16 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 		}
 	}
 	v, _ := c.inForce(ctx)
+	var after string
 	resets, err := c.capResets(ctx, v, winFrom, winTo)
 	if err != nil {
 		log.Printf("console: cap resets: %v", err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the cap resets")
+		after = "\n" + resetsUnread
 	}
-	var after string
 	for _, x := range resets {
 		after += fmt.Sprintf("\n  %s UTC %s by %s, %s EUR before", x.When, strings.TrimSpace(x.Cap+" "+x.Project), x.By, textutil.EUR(x.Before))
 	}
-	if after != "" {
+	if len(resets) > 0 {
 		after = "\nResets of the caps' counts:" + after
 	}
 	if len(lines) == 0 {

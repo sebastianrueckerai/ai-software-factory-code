@@ -491,6 +491,8 @@ type Console struct {
 	// stops holds each chat thread's running turn that a member may stop
 	// (the chat-stop plan): the turn's cancel and who stopped it.
 	stops *stopGate
+	// clock is the status line's time, which a test pins
+	clock func() time.Time
 	// refreshMu serializes token refreshes across requests: two concurrent
 	// requests presenting the same refresh token would both try to use it,
 	// Forgejo invalidates refresh tokens on use (INVALIDATE_REFRESH_TOKENS
@@ -751,7 +753,8 @@ func New(cfg Config) (*Console, error) {
 	if cfg.AttachAnalysis != nil {
 		cfg.AttachAnalysis = stampedAttach(cfg.AttachAnalysis)
 	}
-	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate(), stops: newStopGate(), ended: make(chan struct{})}
+	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate(), stops: newStopGate(), ended: make(chan struct{}),
+		clock: time.Now}
 	gets, err := c.getRoutes()
 	if err != nil {
 		return nil, err

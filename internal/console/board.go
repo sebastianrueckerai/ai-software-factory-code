@@ -112,10 +112,8 @@ var funcs = template.FuncMap{
 		}
 		return ""
 	},
-	// resetAt is a cap reset's time as the strip and the panel name it
-	"resetAt": func(at time.Time) string { return factoryd.ResetStamp(at, time.Now()) },
-	"inc":     func(i int) int { return i + 1 },
-	"join":    strings.Join,
+	"inc":  func(i int) int { return i + 1 },
+	"join": strings.Join,
 }
 
 // alertSupervisor is what the supervisor did on a machine alert.
@@ -1115,11 +1113,11 @@ type statusLine struct {
 	// enforced month spend, not the project's own.
 	FactoryCap bool
 	// TodayEUR is the factory's enforced spend this UTC day, holds
-	// included, counted since DayReset when a human reset the day's count
-	// (nil for none); DayAllEUR is the day's whole and DayCapEUR the
-	// policy's day cap.
-	TodayEUR, DayAllEUR, DayCapEUR float64
-	DayReset                       *policy.CapReset
+	// included, counted since DayReset when a human reset the day's count,
+	// and DayCapEUR the policy's day cap. DayReset and MonthReset are the
+	// resets in force as the strip and the panel say them, nil for none.
+	TodayEUR, DayCapEUR  float64
+	DayReset, MonthReset *resetLine
 	// DayHit and PremiumHit: the cap is hit (policy.CapHit); the month's
 	// is Spend.Hit.
 	DayHit, PremiumHit bool
@@ -1162,6 +1160,21 @@ type statusLine struct {
 	DepsUp       bool
 	// Hold is what holds the project's production, nil when nothing does.
 	Hold *holdLine
+}
+
+// resetLine is a reset in force of a cap: the clause its strip cell's
+// title appends and the trace line under its row in the panel.
+type resetLine struct{ Title, Trace string }
+
+// resetLineOf is reset r of the cap counted in period ("today", "this
+// month"), whose whole is all, as read at now; nil for no reset.
+func resetLineOf(r *policy.CapReset, all float64, period string, now time.Time) *resetLine {
+	if r == nil {
+		return nil
+	}
+	at, before := factoryd.ResetStamp(r.At, now), textutil.EUR(r.BeforeEUR)
+	return &resetLine{Title: fmt.Sprintf("; %s reset its count at %s, %s EUR before", r.Login, at, before),
+		Trace: fmt.Sprintf("counted since %s, when %s reset %s · %s EUR before · %s EUR in all %s", at, r.Login, period, before, textutil.EUR(all), period)}
 }
 
 // capPress is a cap's Reset under its row in the panel: the route its
@@ -2324,6 +2337,10 @@ func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter,
 	return out, nil
 }
 
+// backstopWait bounds the board's read of LiteLLM's backstop: a slow
+// LiteLLM leaves the panel its problem line, not the board waiting.
+const backstopWait = 2 * time.Second
+
 // statusLine completes the board's status line with the project's state
 // word, its spend this UTC month (its chat's included) and its month cap:
 // its file's budget.month_eur, else the policy's; the spent state of its
@@ -2356,30 +2373,34 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			s.DepsUp = len(deps) > 0 && !s.DepsDown && !s.DepsDegraded
 		}
 	}
-	var err error
-	e, err := c.cfg.Costs.Enforced(ctx, time.Now().UTC())
+	now := c.clock()
+	e, err := c.cfg.Costs.Enforced(ctx, now.UTC())
 	if err != nil {
 		log.Printf("console: the enforced spend: %v", err)
 		d.Problems = append(d.Problems, "the spend against the caps could not be read")
 	}
-	if s.Spend, s.CapEUR, s.FactoryCap, err = c.monthFigures(ctx, v.policy, p, e); err != nil {
+	if s.Spend, s.CapEUR, s.FactoryCap, err = c.monthFigures(ctx, v.policy, p, e, now); err != nil {
 		log.Printf("console: the spend of %s this month: %v", p.Repository, err)
 		d.Problems = append(d.Problems, "the project's spend this month could not be read")
 	}
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
 		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
-		if s.Pool = c.ProjectPool(ctx, v.policy, p, time.Now()); !s.Pool.Readable {
+		if s.Pool = c.ProjectPool(ctx, v.policy, p, now); !s.Pool.Readable {
 			d.Problems = append(d.Problems, "the month's pool could not be read")
 		}
 	}
-	s.TodayEUR, s.DayAllEUR, s.DayReset, s.DayHit = e.Day, e.DayAll, e.DayReset, policy.CapHit(e.Day, s.DayCapEUR, e.DayHit)
+	s.TodayEUR, s.DayHit = e.Day, policy.CapHit(e.Day, s.DayCapEUR, e.DayHit)
+	s.DayReset, s.MonthReset = resetLineOf(e.DayReset, e.DayAll, "today", now), resetLineOf(s.Spend.Reset, s.Spend.AllEUR, "this month", now)
 	if s.PremiumCapEUR > 0 {
 		s.PremiumEUR, s.PremiumHit = e.Premium, policy.CapHit(e.Premium, s.PremiumCapEUR, e.PremiumHit)
 	}
 	s.Approver = v.approves(p.Repository)
 	if c.cfg.Backstop != nil {
-		if b, err := c.cfg.Backstop(ctx); err != nil {
+		bctx, cancel := context.WithTimeout(ctx, backstopWait)
+		b, err := c.cfg.Backstop(bctx)
+		cancel()
+		if err != nil {
 			log.Printf("console: LiteLLM's backstop: %v", err)
 			d.Problems = append(d.Problems, "LiteLLM's backstop could not be read")
 		} else {
@@ -2387,19 +2408,18 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		}
 	}
 	if c.cfg.Caps != nil {
-		now := time.Now()
+		press := func(action, label, cap string, capEUR float64, hit bool) *capPress {
+			return &capPress{Action: action, Label: label, Words: resetWords(cap, capEUR, now, s.Backstop), CapEUR: capEUR, Hit: hit, CSRF: d.CSRF, Filter: f}
+		}
 		if d.Factory && s.DayCapEUR > 0 {
-			s.DayPress = &capPress{Action: "/caps/day/reset", Label: "Reset today's count", Words: resetWords(policy.CapDay, s.DayCapEUR, now, s.Backstop),
-				CapEUR: s.DayCapEUR, Hit: s.DayHit, CSRF: d.CSRF, Filter: f}
+			s.DayPress = press("/caps/day/reset", "Reset today's count", policy.CapDay, s.DayCapEUR, s.DayHit)
 		}
 		switch {
 		case s.CapEUR <= 0:
 		case s.FactoryCap && d.Factory:
-			s.MonthPress = &capPress{Action: "/caps/month/reset", Label: "Reset this month's count", Words: resetWords(policy.CapMonth, s.CapEUR, now, s.Backstop),
-				CapEUR: s.CapEUR, Hit: s.Spend.Hit, CSRF: d.CSRF, Filter: f}
+			s.MonthPress = press("/caps/month/reset", "Reset this month's count", policy.CapMonth, s.CapEUR, s.Spend.Hit)
 		case !s.FactoryCap && s.Approver:
-			s.MonthPress = &capPress{Action: "/projects/" + p.Name + "/cap/reset", Label: "Reset the project's month count",
-				Words: resetWords(policy.CapProject, s.CapEUR, now, s.Backstop), CapEUR: s.CapEUR, Hit: s.Spend.Hit, CSRF: d.CSRF, Filter: f}
+			s.MonthPress = press("/projects/"+p.Name+"/cap/reset", "Reset the project's month count", policy.CapProject, s.CapEUR, s.Spend.Hit)
 		}
 	}
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
@@ -2585,14 +2605,15 @@ func runWords(l factoryd.RoutineRun) string {
 // a digit, so the segment is a plain word.
 func cellWord(name string) string { return name[strings.LastIndex(name, "-")+1:] }
 
-// monthFigures is the status's month spend and cap: the project file's
-// budget.month_eur against the project's own spend, else the policy's
-// month_eur against the enforced month spend e counts — the factory's
-// whole ledger with its holds — so the meter reads what the cap stops.
-// The third return says the cap is the factory's, not a project file's.
-func (c *Console) monthFigures(ctx context.Context, v policy.Version, p factoryd.Project, e policy.Enforced) (factoryd.ProjectSpend, float64, bool, error) {
+// monthFigures is the status's month spend and cap at now: the project
+// file's budget.month_eur against the project's own spend, else the
+// policy's month_eur against the enforced month spend e counts — the
+// factory's whole ledger with its holds — so the meter reads what the cap
+// stops. The third return says the cap is the factory's, not a project
+// file's.
+func (c *Console) monthFigures(ctx context.Context, v policy.Version, p factoryd.Project, e policy.Enforced, now time.Time) (factoryd.ProjectSpend, float64, bool, error) {
 	if _, eur := v.ProjectCap(p.Repository); !math.IsInf(eur, 1) {
-		spend, err := c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now())
+		spend, err := c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, now)
 		spend.Hit = policy.CapHit(spend.EUR, eur, spend.Hit)
 		return spend, eur, false, err
 	}
@@ -2601,24 +2622,33 @@ func (c *Console) monthFigures(ctx context.Context, v policy.Version, p factoryd
 }
 
 // spendWords is spend against the month cap as the project agent reads
-// it: under the factory's cap the whole enforced ledger, without the
-// project's own split, which does not sum to it. Once a reset restarted
-// the cap's count, the spend this month is the month's whole and the
-// count stands apart with the reset, as the board digest names it.
-func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool) string {
-	count := fmt.Sprintf("%s of %s EUR", textutil.EUR(spend.EUR), textutil.EUR(capEUR))
-	if spend.Hit {
-		count += " (cap hit)"
-	}
-	split := fmt.Sprintf(": the cards %s EUR, the chat %s EUR", textutil.EUR(spend.EUR-spend.ChatEUR), textutil.EUR(spend.ChatEUR))
-	if factory {
-		split = ", the factory's whole ledger"
-	}
+// it at now: under the factory's cap the whole enforced ledger, without
+// the project's own split, which does not sum to it. Once a reset
+// restarted the cap's count, the spend this month is the month's whole and
+// the count since the reset (CapResetWords) stands apart.
+func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool, now time.Time) string {
+	cards := fmt.Sprintf("the cards %s EUR, the chat %s EUR", textutil.EUR(spend.EUR-spend.ChatEUR), textutil.EUR(spend.ChatEUR))
 	if spend.Reset == nil {
-		return "spend this month " + count + split
+		head := fmt.Sprintf("spend this month %s of %s EUR", textutil.EUR(spend.EUR), textutil.EUR(capEUR))
+		if spend.Hit {
+			head += " (cap hit)"
+		}
+		if factory {
+			return head + ", the factory's whole ledger"
+		}
+		return head + ": " + cards
 	}
-	return fmt.Sprintf("spend this month %s EUR; the month cap's count %s (%s)%s", textutil.EUR(spend.AllEUR), count,
-		factoryd.CapResetWords(*spend.Reset, time.Now()), split)
+	whole, count := "", textutil.EUR(spend.EUR)+" EUR"
+	if factory {
+		whole = ", the factory's whole ledger"
+	} else {
+		count += ", " + cards
+	}
+	if spend.Hit {
+		count += ", cap hit"
+	}
+	return fmt.Sprintf("spend this month %s EUR%s; counted against the %s EUR cap since the %s: %s", textutil.EUR(spend.AllEUR), whole,
+		textutil.EUR(capEUR), factoryd.CapResetWords(*spend.Reset, now), count)
 }
 
 // resetWords is the confirm of a Reset of cap at now, capEUR the cap: what
@@ -2626,20 +2656,18 @@ func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool) strin
 // and what stays, and LiteLLM's backstop, b, when it leaves less.
 func resetWords(cap string, capEUR float64, now time.Time, b *factoryd.Backstop) string {
 	eur := textutil.EUR(capEUR)
-	turn := factoryd.CapTurn(policy.RefusedMonthCap, now)
-	before, left := turn.Format("2 January")+" 00:00 UTC", minutes(turn.Sub(now))
-	var w string
+	decision, count, before, stays := policy.RefusedMonthCap, "This month's count", "", "The month cap stays "+eur+" EUR; the day cap still holds."
 	switch cap {
 	case policy.CapDay:
-		w = fmt.Sprintf("Today's count starts again from 0.00 EUR. Up to %s EUR more may be spent before 00:00 UTC, in %s. The day cap stays %s EUR; the month cap still holds.",
-			eur, minutes(factoryd.CapTurn(policy.RefusedDayCap, now).Sub(now)), eur)
-	case policy.CapMonth:
-		w = fmt.Sprintf("This month's count starts again from 0.00 EUR. Up to %s EUR more may be spent before %s, in %s. The month cap stays %s EUR; the day cap still holds.",
-			eur, before, left, eur)
-	default:
-		w = fmt.Sprintf("The project's month count starts again from 0.00 EUR. Up to %s EUR more may be spent before %s, in %s. The project's month cap stays %s EUR; the factory's caps still hold.",
-			eur, before, left, eur)
+		decision, count, before, stays = policy.RefusedDayCap, "Today's count", "00:00 UTC", "The day cap stays "+eur+" EUR; the month cap still holds."
+	case policy.CapProject:
+		count, stays = "The project's month count", "The project's month cap stays "+eur+" EUR; the factory's caps still hold."
 	}
+	turn := factoryd.CapTurn(decision, now)
+	if before == "" {
+		before = turn.Format("2 January") + " 00:00 UTC"
+	}
+	w := fmt.Sprintf("%s starts again from 0.00 EUR. Up to %s EUR more may be spent before %s, in %s. %s", count, eur, before, minutes(turn.Sub(now)), stays)
 	if b != nil && b.MaxUSD-b.SpendUSD < capEUR {
 		w += fmt.Sprintf(" LiteLLM's backstop leaves %s USD this month.", textutil.EUR(max(b.MaxUSD-b.SpendUSD, 0)))
 	}

@@ -2600,7 +2600,7 @@ func (t *turn) snapshot() (string, error) {
 	if s.Pool.Words != "" {
 		pool = "; pool: " + s.Pool.Words
 	}
-	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap), pool, github), nil
+	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap, t.c.clock()), pool, github), nil
 }
 
 // noBoard is the status of project p, which has no board: with agents
@@ -2616,16 +2616,17 @@ func noBoard(p factoryd.Project) string {
 // spendLine is project p's spend this UTC month against its month cap,
 // the chat's own part apart under its file's cap.
 func (c *Console) spendLine(ctx context.Context, p factoryd.Project) (string, error) {
-	e, err := c.cfg.Costs.Enforced(ctx, time.Now().UTC())
+	now := c.clock()
+	e, err := c.cfg.Costs.Enforced(ctx, now.UTC())
 	if err != nil {
 		return "", err
 	}
 	v, _ := c.inForce(ctx)
-	spend, cap, factory, err := c.monthFigures(ctx, v, p, e)
+	spend, cap, factory, err := c.monthFigures(ctx, v, p, e, now)
 	if err != nil {
 		return "", err
 	}
-	return spendWords(spend, cap, factory), nil
+	return spendWords(spend, cap, factory, now), nil
 }
 
 // objectArgs is a tool call's arguments as the conversation keeps and

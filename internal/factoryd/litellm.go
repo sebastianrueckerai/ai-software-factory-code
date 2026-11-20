@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,10 +30,11 @@ type LiteLLMAdmin struct {
 	HTTP      *http.Client // nil = a call-sized timeout
 	PageSize  int          // key/list page size, default 100
 
-	now        func() time.Time // nil = time.Now
-	mu         sync.Mutex       // guards the two below
-	backstop   Backstop         // ProxyBudget's last read
-	backstopAt time.Time        // when it was read, zero for none
+	now         func() time.Time // nil = time.Now
+	mu          sync.Mutex       // guards the three below
+	backstop    Backstop         // ProxyBudget's last read
+	backstopErr error            // its failure, nil for an answer
+	backstopAt  time.Time        // when it was read, zero for none
 }
 
 // Backstop is LiteLLM's proxy-wide budget, the absolute monthly limit
@@ -48,19 +50,32 @@ const backstopTTL = time.Minute
 // ProxyBudget reads the backstop off the user LiteLLM keeps the
 // proxy-wide max_budget and its spend on, litellm-proxy-budget: /user/info
 // answers its row as user_info (read off the litellm 1.102.4 source). A read
-// serves for backstopTTL; a failed one keeps nothing. A row without a
-// max_budget above 0 sets no backstop, an error.
+// serves for backstopTTL, a failed one too, so a slow or failing LiteLLM
+// costs one request per TTL; a read its caller cancelled keeps nothing. A
+// row without a max_budget above 0 sets no backstop, an error.
 func (l *LiteLLMAdmin) ProxyBudget(ctx context.Context) (Backstop, error) {
 	now := time.Now
 	if l.now != nil {
 		now = l.now
 	}
 	l.mu.Lock()
-	b, at := l.backstop, l.backstopAt
+	b, failed, at := l.backstop, l.backstopErr, l.backstopAt
 	l.mu.Unlock()
 	if !at.IsZero() && now().Sub(at) < backstopTTL {
-		return b, nil
+		return b, failed
 	}
+	b, err := l.readBackstop(ctx)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return b, err
+	}
+	l.mu.Lock()
+	l.backstop, l.backstopErr, l.backstopAt = b, err, now()
+	l.mu.Unlock()
+	return b, err
+}
+
+// readBackstop is one read of the backstop off LiteLLM.
+func (l *LiteLLMAdmin) readBackstop(ctx context.Context) (Backstop, error) {
 	body, err := l.call(ctx, http.MethodGet, "/user/info?user_id=litellm-proxy-budget", nil)
 	if err != nil {
 		return Backstop{}, err
@@ -77,11 +92,7 @@ func (l *LiteLLMAdmin) ProxyBudget(ctx context.Context) (Backstop, error) {
 	if info.UserInfo == nil || info.UserInfo.MaxBudget == nil || *info.UserInfo.MaxBudget <= 0 {
 		return Backstop{}, fmt.Errorf("litellm user/info: litellm-proxy-budget has no max_budget above 0, so no backstop is set")
 	}
-	b = Backstop{SpendUSD: info.UserInfo.Spend, MaxUSD: *info.UserInfo.MaxBudget}
-	l.mu.Lock()
-	l.backstop, l.backstopAt = b, now()
-	l.mu.Unlock()
-	return b, nil
+	return Backstop{SpendUSD: info.UserInfo.Spend, MaxUSD: *info.UserInfo.MaxBudget}, nil
 }
 
 type liteKey struct {

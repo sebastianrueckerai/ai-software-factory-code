@@ -2856,7 +2856,8 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 // The costs page lists the cap resets of its window, newest first, a
 // project's by the project's name: of three, the one a minute before the
 // window's first day starts is left out. The costs tool reads the same
-// two after its ledger.
+// two after its ledger. A failed read of the resets leaves the page and
+// the tool their ledger and says so in one line.
 func TestCostsListsResets(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -2884,6 +2885,15 @@ func TestCostsListsResets(t *testing.T) {
 	if want := "No spend recorded.\nResets of the caps' counts:\n  " + today.Format("2006-01-02") + " 14:02 UTC day by sebastian, 19.62 EUR before\n  " +
 		first.Format("2006-01-02") + " 00:00 UTC project demo-app by alice, 30.00 EUR before"; err != nil || text != want {
 		t.Errorf("the costs tool = (%q, %v), want %q", text, err, want)
+	}
+	caps.err = errors.New("the store is gone")
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck)
+	if body := rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(body, "<caption>Per day,") || strings.Contains(body, "<caption>Resets") ||
+		!strings.Contains(body, `<p class="problem" role="alert">the resets could not be read</p>`) {
+		t.Errorf("/costs with the resets unread = %d, want the ledger and the problem line:\n%s", rec.Code, body)
+	}
+	if text, err := r.c.costsByText(context.Background(), actor{}, "day", first.Format(policy.DateLayout), today.Format(policy.DateLayout)); err != nil || text != "No spend recorded.\nthe resets could not be read" {
+		t.Errorf("the costs tool with the resets unread = (%q, %v), want the ledger and the problem line", text, err)
 	}
 }
 

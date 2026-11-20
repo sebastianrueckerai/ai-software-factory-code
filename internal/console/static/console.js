@@ -1816,17 +1816,18 @@ document.addEventListener("click", function (e) {
   navigator.clipboard.writeText(el.textContent).then(function () { say("Copied"); }, pick);
 });
 
-// A confirm's Cancel closes the fold that holds it, and so does its
-// press once sent; while one stands open the board's refreshes leave the
-// status line as it is.
+// A confirm's Cancel closes the fold that holds it, and a press sent
+// closes every open one in the status line; while one stands open the
+// board's refreshes leave the status line as it is.
 document.addEventListener("click", function (e) {
   var b = e.target.closest && e.target.closest("button[data-cancel]");
   var d = b && b.closest("details.rst");
   if (d) d.removeAttribute("open");
 });
 document.addEventListener("submit", function (e) {
-  var d = e.target.closest("details.rst");
-  if (d) d.removeAttribute("open");
+  var line = document.getElementById("status-line");
+  if (!line || !line.contains(e.target)) return;
+  line.querySelectorAll("details.rst[open]").forEach(function (d) { d.removeAttribute("open"); });
 });
 function confirming(line) {
   return !!line.querySelector("details.rst[open]");

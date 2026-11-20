@@ -62,7 +62,7 @@ func TestMonthMeterReadsTheEnforcedSpend(t *testing.T) {
 	if d.Status.Spend.EUR != 48.5 || d.Status.CapEUR != 50 || !d.Status.FactoryCap {
 		t.Errorf("month %.2f of %.2f, factory cap %v, want 48.50 of 50 under the factory's cap", d.Status.Spend.EUR, d.Status.CapEUR, d.Status.FactoryCap)
 	}
-	if words := spendWords(d.Status.Spend, d.Status.CapEUR, d.Status.FactoryCap); !strings.Contains(words, "48.50 of 50.00 EUR") || strings.Contains(words, "the cards") {
+	if words := spendWords(d.Status.Spend, d.Status.CapEUR, d.Status.FactoryCap, time.Now()); !strings.Contains(words, "48.50 of 50.00 EUR") || strings.Contains(words, "the cards") {
 		t.Errorf("spend words %q, want the factory's ledger without the project's split", words)
 	}
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code"}}
@@ -158,10 +158,11 @@ func TestResetConfirmWords(t *testing.T) {
 // month and, once a reset restarted the cap's count, the count apart with
 // the reset: under the factory's cap 12 counted since sebastian's reset
 // at 48 make 60 in the month; under a project's, the cards' and the
-// chat's split is the count's.
+// chat's split is the count's. One clock: the reset at 14:02 of the day
+// the words are read.
 func TestSpendWordsSayTheWholeMonthAndTheCount(t *testing.T) {
-	now := time.Now().UTC()
-	reset := &policy.CapReset{Cap: policy.CapMonth, At: time.Date(now.Year(), now.Month(), now.Day(), 14, 2, 0, 0, time.UTC), Login: "sebastian", BeforeEUR: 48}
+	now := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
+	reset := &policy.CapReset{Cap: policy.CapMonth, At: time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC), Login: "sebastian", BeforeEUR: 48}
 	for _, tc := range []struct {
 		spend   factoryd.ProjectSpend
 		factory bool
@@ -169,12 +170,12 @@ func TestSpendWordsSayTheWholeMonthAndTheCount(t *testing.T) {
 	}{
 		{factoryd.ProjectSpend{EUR: 48.5, AllEUR: 48.5}, true, "spend this month 48.50 of 50.00 EUR, the factory's whole ledger"},
 		{factoryd.ProjectSpend{EUR: 12, AllEUR: 60, Hit: true, Reset: reset}, true,
-			"spend this month 60.00 EUR; the month cap's count 12.00 of 50.00 EUR (cap hit) (reset 14:02 UTC by sebastian, 48.00 EUR before), the factory's whole ledger"},
+			"spend this month 60.00 EUR, the factory's whole ledger; counted against the 50.00 EUR cap since the reset 14:02 UTC by sebastian, 48.00 EUR before: 12.00 EUR, cap hit"},
 		{factoryd.ProjectSpend{EUR: 3, ChatEUR: 1, AllEUR: 3}, false, "spend this month 3.00 of 50.00 EUR: the cards 2.00 EUR, the chat 1.00 EUR"},
 		{factoryd.ProjectSpend{EUR: 10, ChatEUR: 2, AllEUR: 58, Reset: reset}, false,
-			"spend this month 58.00 EUR; the month cap's count 10.00 of 50.00 EUR (reset 14:02 UTC by sebastian, 48.00 EUR before): the cards 8.00 EUR, the chat 2.00 EUR"},
+			"spend this month 58.00 EUR; counted against the 50.00 EUR cap since the reset 14:02 UTC by sebastian, 48.00 EUR before: 10.00 EUR, the cards 8.00 EUR, the chat 2.00 EUR"},
 	} {
-		if got := spendWords(tc.spend, 50, tc.factory); got != tc.want {
+		if got := spendWords(tc.spend, 50, tc.factory, now); got != tc.want {
 			t.Errorf("spendWords(%+v, factory %v) =\n%s\nwant\n%s", tc.spend, tc.factory, got, tc.want)
 		}
 	}

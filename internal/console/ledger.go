@@ -35,9 +35,9 @@ type resetRow struct {
 
 // costs shows the ledger per day and per task over a window of UTC days,
 // the last 14 by default, today included, the window's last day's total
-// against the policy's day cap, and the cap resets of the window. Query
-// params from and to are YYYY-MM-DD dates, both included; each defaults
-// as before.
+// against the policy's day cap, and the cap resets of the window, or a
+// line saying they could not be read. Query params from and to are
+// YYYY-MM-DD dates, both included; each defaults as before.
 func (c *Console) costs(w http.ResponseWriter, r *http.Request) {
 	to := time.Now().UTC()
 	from := to.AddDate(0, 0, -(costDays - 1))
@@ -88,17 +88,21 @@ func (c *Console) costs(w http.ResponseWriter, r *http.Request) {
 			todayTotal = d.Total
 		}
 	}
+	var problem string
 	resets, err := c.capResets(r.Context(), v, from, to)
 	if err != nil {
 		log.Printf("console: cap resets: %v", err)
-		http.Error(w, "cannot read the cap resets", http.StatusInternalServerError)
-		return
+		problem = resetsUnread
 	}
 	s := current(r)
 	c.render(w, "costs.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true,
 		"From": ledger.From, "To": ledger.To, "Kinds": ledgerKinds, "Days": rows, "Tasks": ledger.Tasks,
-		"Today": todayTotal, "DayCap": v.Document.Budget.DayEUR, "PolicyID": v.ID, "Resets": resets})
+		"Today": todayTotal, "DayCap": v.Document.Budget.DayEUR, "PolicyID": v.ID, "Resets": resets, "Problem": problem})
 }
+
+// resetsUnread is the costs page's and the costs tool's line for a failed
+// read of the cap resets.
+const resetsUnread = "the resets could not be read"
 
 // capResets are the cap resets of the UTC days from to to, both included,
 // newest first, a project's named as policy v names it; none without a
