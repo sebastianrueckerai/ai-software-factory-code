@@ -584,41 +584,58 @@ func CapCountStartSQL(cap, repository, at string) string {
 // UTC calendar month of at, a timestamptz expression, standing lines left
 // out: a standing line is its project's monthly cost, not variable spend.
 func dayRowsSQL(at string) string {
-	return `day = (` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'`
+	return `l.day = (` + at + ` AT TIME ZONE 'UTC')::date AND l.kind <> 'standing'`
 }
 
 func monthRowsSQL(at string) string {
-	return `day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'`
+	return `l.day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND l.kind <> 'standing'`
 }
 
-// ledgerSumSQL is the spend of the ledger rows where holds, 0 without one.
+// ledgerSumSQL is the spend of the ledger rows l where holds, 0 without
+// one.
 func ledgerSumSQL(where string) string {
-	return `COALESCE((SELECT sum(eur) FROM ledger WHERE ` + where + `), 0)`
+	return `COALESCE((SELECT sum(l.eur) FROM ledger l WHERE ` + where + `), 0)`
 }
+
+// countedSQL is whether ledger row l is in cap's count of at, a
+// timestamptz expression, of repository, an SQL expression: booked since
+// the count started. In a count a reset started, a settlement counts only
+// when its task finished since (finished, an SQL expression, NULL while it
+// runs): the reset forgave the rows of a task that finished before it, so
+// it forgives their correction, booked up to factoryd's SpendSettleWindow
+// later, too.
+func countedSQL(cap, repository, at, finished string) string {
+	start := CapCountStartSQL(cap, repository, at)
+	return `l.created_at >= ` + start + ` AND (l.kind <> 'settlement' OR ` + start + ` = ` + periodStartSQL(cap, at) +
+		` OR COALESCE(` + finished + `, 'infinity') >= ` + start + `)`
+}
+
+// rowFinishedSQL is the finish of ledger row l's task, NULL while it runs.
+const rowFinishedSQL = `(SELECT ft.finished_at FROM tasks ft WHERE ft.id = l.task_id)`
 
 // MonthSpentSQL is the month cap's count over the ledger: the month's rows
-// of at, a timestamptz expression, booked since the count started.
+// of at, a timestamptz expression, in the count (countedSQL).
 func MonthSpentSQL(at string) string {
-	return ledgerSumSQL(monthRowsSQL(at) + ` AND created_at >= ` + CapCountStartSQL(CapMonth, "''", at))
+	return ledgerSumSQL(monthRowsSQL(at) + ` AND ` + countedSQL(CapMonth, "''", at, rowFinishedSQL))
 }
 
 // daySpentSQL is the day cap's count over the ledger: the day's rows of
-// at, a timestamptz expression, booked since the count started; heldSQL is
+// at, a timestamptz expression, in the count (countedSQL); heldSQL is
 // every outstanding hold, which counts against the day and the month.
 func daySpentSQL(at string) string {
-	return ledgerSumSQL(dayRowsSQL(at) + ` AND created_at >= ` + CapCountStartSQL(CapDay, "''", at))
+	return ledgerSumSQL(dayRowsSQL(at) + ` AND ` + countedSQL(CapDay, "''", at, rowFinishedSQL))
 }
 
 const heldSQL = `COALESCE((SELECT sum(eur) FROM holds), 0)`
 
 // projectSpentSQL is the project cap's count over the ledger: the month's
 // rows of at, a timestamptz expression, of the tasks of repository, an SQL
-// expression, booked since the count started. A standing line's task id
-// is standing:<repository>: it joins no task.
+// expression, in the count (countedSQL). A standing line's task id is
+// standing:<repository>: it joins no task.
 func projectSpentSQL(repository, at string) string {
 	return `COALESCE((SELECT sum(l.eur) FROM ledger l JOIN tasks p ON p.id = l.task_id
 		WHERE p.repository = ` + repository + ` AND l.day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date
-		AND l.created_at >= ` + CapCountStartSQL(CapProject, repository, at) + `), 0)`
+		AND ` + countedSQL(CapProject, repository, at, "p.finished_at") + `), 0)`
 }
 
 // projectHeldSQL is every outstanding hold of the tasks of repository, an
@@ -667,16 +684,17 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 // ReadFree reads r's task's own headroom and outstanding holds, and the
 // task's, the UTC day's, the UTC calendar month's and the task's
 // project's month headroom: FreeHeadroom's figures, and the attempt
-// floor's (factoryd's SessionFunded) on the pool. The
-// project's is r.ProjectEUR less the month's ledger rows since the
-// project's newest reset and the outstanding holds of every task of the
-// task's repository, read only under a cap (+Inf otherwise). Every
-// outstanding hold counts against the day and the month. A call under a premium cap (r.PremiumEUR) also reads
-// the premium month headroom: the cap less the month's spend and the
-// outstanding holds on Premium. The task's headroom holds r's gate
-// reserve out (ReserveEUR): a session's call fits budget - spent -
-// reserve, factoryd's and a reservation's the full budget - spent, and
-// the Free carries the reserve and the spent EUR a money stop names.
+// floor's (factoryd's SessionFunded) on the pool. The project's is
+// r.ProjectEUR less the month's ledger rows since the project's newest
+// reset and the outstanding holds of every task of the task's
+// repository, read only under a cap (+Inf otherwise). Every outstanding
+// hold counts against the day and the month. A call under a premium cap
+// (r.PremiumEUR) also reads the premium month headroom: the cap less the
+// month's spend and the outstanding holds on Premium. The task's headroom
+// holds r's gate reserve out (ReserveEUR): a session's call fits budget -
+// spent - reserve, factoryd's and a reservation's the full budget -
+// spent, and the Free carries the reserve and the spent EUR a money stop
+// names.
 func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free, error) {
 	taskID, at := r.TaskID, now()
 	t, err := readTaskFree(ctx, q, taskID)

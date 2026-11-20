@@ -38,7 +38,7 @@ func testDB(t *testing.T) *sql.DB {
 	// headroom queries and the sweep's audit rows read
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS tasks (
 		id text PRIMARY KEY, budget_eur numeric NOT NULL, spent_eur numeric NOT NULL DEFAULT 0, status text NOT NULL, repository text NOT NULL DEFAULT '',
-		author text NOT NULL DEFAULT '', settled_at timestamptz)`); err != nil {
+		author text NOT NULL DEFAULT '', settled_at timestamptz, finished_at timestamptz)`); err != nil {
 		t.Fatal(err)
 	}
 	// the gateway's audit table, the columns the sweep writes
@@ -1250,7 +1250,8 @@ func TestResetKeepsHolds(t *testing.T) {
 // Hand-derived at 2026-11-20 14:02: the day reset of 2026-11-19 23:00 and
 // the month reset of 2026-10-31 18:00 are of earlier periods; today's 1.50
 // is the day, and with 2.00 of 2026-11-19 and 4.00 of 2026-11-03 the
-// month is 7.50; 8.00 of 2026-10-31 is October's.
+// month is 7.50; 8.00 of 2026-10-31 is October's. The day refusal of
+// 2026-11-19 23:30, after yesterday's reset, does not hit today.
 func TestResetOfAnEarlierPeriod(t *testing.T) {
 	db := testDB(t)
 	runningTasks(t, db, map[string]string{"t": ""})
@@ -1262,10 +1263,13 @@ func TestResetOfAnEarlierPeriod(t *testing.T) {
 	book(t, db, "t", "2026-11-03 10:00", "4.00")
 	book(t, db, "t", "2026-11-19 22:30", "2.00")
 	book(t, db, "t", "2026-11-20 09:00", "1.50")
+	if _, err := db.Exec(`INSERT INTO audit (ts, task_id, decision, reason) VALUES ('2026-11-19 23:30+00', 't', $1, 'x')`, RefusedDayCap); err != nil {
+		t.Fatal(err)
+	}
 	clock(t, "2026-11-20 14:02")
 	e := enforcedNow(t, db)
-	if !near(e.Day, 1.5) || !near(e.DayAll, 1.5) || !near(e.Month, 7.5) || !near(e.MonthAll, 7.5) || e.DayReset != nil || e.MonthReset != nil {
-		t.Fatalf("enforced = %+v, want day 1.50, month 7.50, no reset of this period", e)
+	if !near(e.Day, 1.5) || !near(e.DayAll, 1.5) || !near(e.Month, 7.5) || !near(e.MonthAll, 7.5) || e.DayReset != nil || e.MonthReset != nil || e.DayHit {
+		t.Fatalf("enforced = %+v, want day 1.50, month 7.50, no reset of this period, no hit today", e)
 	}
 }
 
@@ -1374,5 +1378,57 @@ func TestCapResets(t *testing.T) {
 	got, err := CapResets(context.Background(), db, day.At, to)
 	if err != nil || len(got) != 2 || !sameReset(got[0], project) || !sameReset(got[1], day) {
 		t.Fatalf("resets = (%+v, %v), want a's of 11-19 and the day's of 11-18", got, err)
+	}
+}
+
+// settle books task's final settlement of eur at at on day, its finish
+// day, as factoryd's final settlement does; finished stamps its finish.
+func settle(t *testing.T, db *sql.DB, task, finished, at, eur string) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE tasks SET finished_at = $2::timestamptz WHERE id = $1`, task, finished+"+00"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO ledger (task_id, day, kind, ref, eur, created_at)
+		VALUES ($1, ($2::timestamptz AT TIME ZONE 'UTC')::date, 'settlement', 'litellm-final', $3::numeric, $4::timestamptz)`,
+		task, finished+"+00", eur, at+"+00"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A reset forgives the rows of a task that finished before it, so the
+// final settlement that corrects them, booked after the press, stays out
+// of the new count; a count from the period's start keeps it. Hand-
+// derived: t booked 12.00 at 09:00 and finished at 12:00; the 14:02 press
+// ends a count of 12.00; u's 0.40 at 14:10 is the day's count, and t's
+// -1.00 settled at 14:30 leaves the month 11.40.
+func TestResetForgivesAnEarlierTasksSettlement(t *testing.T) {
+	db := testDB(t)
+	runningTasks(t, db, map[string]string{"t": "", "u": ""})
+	book(t, db, "t", "2026-11-20 09:00", "12.00")
+	clock(t, "2026-11-20 14:02")
+	resetCap(t, db, CapDay, "")
+	book(t, db, "u", "2026-11-20 14:10", "0.40")
+	settle(t, db, "t", "2026-11-20 12:00", "2026-11-20 14:30", "-1.00")
+	clock(t, "2026-11-20 15:00")
+	if e := enforcedNow(t, db); !near(e.Day, 0.4) || !near(e.DayAll, 11.4) || !near(e.Month, 11.4) {
+		t.Fatalf("enforced = %+v, want day 0.40, the day's and the month's whole 11.40", e)
+	}
+}
+
+// A task that finishes after the press settles into the new count.
+// Hand-derived: t booked 2.00 at 13:00, the 14:02 press ends a count of
+// 2.00, t books 1.50 at 14:10, finishes at 14:20 and settles -1.00 at
+// 14:40: the day's count is 0.50 of the day's 2.50.
+func TestResetCountsALaterTasksSettlement(t *testing.T) {
+	db := testDB(t)
+	runningTasks(t, db, map[string]string{"t": ""})
+	book(t, db, "t", "2026-11-20 13:00", "2.00")
+	clock(t, "2026-11-20 14:02")
+	resetCap(t, db, CapDay, "")
+	book(t, db, "t", "2026-11-20 14:10", "1.50")
+	settle(t, db, "t", "2026-11-20 14:20", "2026-11-20 14:40", "-1.00")
+	clock(t, "2026-11-20 15:00")
+	if e := enforcedNow(t, db); !near(e.Day, 0.5) || !near(e.DayAll, 2.5) {
+		t.Fatalf("enforced = %+v, want day 0.50 of 2.50", e)
 	}
 }
