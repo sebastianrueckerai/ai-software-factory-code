@@ -380,10 +380,15 @@ type labScene struct {
 	// attachments are the conversation's image rows, their bytes in objects
 	attachments      []factoryd.ChatAttachment
 	spend, chatSpend float64
-	github           string
-	alerts           []factoryd.Alert
-	resources        []cloudres.Resource
-	drawer           string
+	// today is the factory's enforced spend this UTC day, holds included,
+	// 0 for the ledger's own day; dayHit says the gateway refused a call
+	// at the day cap
+	today     float64
+	dayHit    bool
+	github    string
+	alerts    []factoryd.Alert
+	resources []cloudres.Resource
+	drawer    string
 	// autonomy is the project's autonomy level for the scene (roadmap
 	// 239); empty: manual.
 	autonomy string
@@ -910,6 +915,15 @@ func (r *rig) seedScene(s labScene) string {
 	} else {
 		r.ledger.costs = labCosts(now, s.spend, s.tasks)
 	}
+	r.ledger.enforced.Day, r.ledger.enforced.DayHit = 0, s.dayHit
+	if s.today > 0 {
+		r.ledger.enforced.Day = s.today
+		for _, d := range r.ledger.costs.Days {
+			if d.Day == now.UTC().Format(policy.DateLayout) {
+				r.ledger.enforced.Day -= d.Total
+			}
+		}
+	}
 	r.figures.SetMetrics(s.metrics)
 	r.c.cfg.Hold = func(_ context.Context, repository string) (factoryd.Hold, error) {
 		if repository != project.Repository {
@@ -1104,7 +1118,7 @@ func pushedTimeline(start time.Time, alias, failed string) []map[string]any {
 func busyScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
-	s := labScene{drawer: labID(606), github: "1 open pull request", spend: 61.40, chatSpend: 3.85,
+	s := labScene{drawer: labID(606), github: "1 open pull request", spend: 61.40, chatSpend: 3.85, today: 17,
 		objects: map[string]string{}, questions: map[string][]factoryd.PlanQuestion{}}
 
 	merge := labCard(now, 607, "in-review", "direct", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
@@ -1655,7 +1669,7 @@ func historyScene(now time.Time) labScene {
 func fireScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
-	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, objects: map[string]string{}}
+	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, today: 20, dayHit: true, objects: map[string]string{}}
 
 	stale := labCard(now, 619, "running", "direct", 90*time.Minute, "Load test: the event stream under 200 followers",
 		"Open 200 followers on one project's stream and measure the heartbeat's board reads.")

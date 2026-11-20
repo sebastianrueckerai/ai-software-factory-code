@@ -1082,3 +1082,41 @@ func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 		t.Fatalf("spent = %v (%v), want 0.170422, the three swept holds", spent, err)
 	}
 }
+
+// A cap is hit when the gateway refused a call at it in the cap's current
+// UTC period. Hand-derived: yesterday's day refusal is outside today, so
+// DayHit is false and then true once today's row lands; last month's month
+// refusal never counts, this month's does; the premium cap has no row.
+func TestLedgerEnforcedHits(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	hits := func() Enforced {
+		t.Helper()
+		e, err := LedgerEnforced(ctx, db, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	insert := func(decision, ts string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, `INSERT INTO audit (ts, task_id, decision, reason) VALUES (`+ts+`, 't', $1, 'x')`, decision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	today := `date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
+	insert(RefusedDayCap, today+` - interval '1 second'`)
+	insert(RefusedMonthCap, `date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 second'`)
+	if e := hits(); e.DayHit || e.MonthHit || e.PremiumHit {
+		t.Fatalf("refusals before the period: %+v, want no hit", e)
+	}
+	insert(RefusedDayCap, today)
+	if e := hits(); !e.DayHit || e.MonthHit || e.PremiumHit {
+		t.Fatalf("a day refusal at 00:00 UTC today: %+v, want DayHit alone", e)
+	}
+	insert(RefusedMonthCap, today)
+	insert(RefusedPremiumCap, today)
+	if e := hits(); !e.DayHit || !e.MonthHit || !e.PremiumHit {
+		t.Fatalf("all three refused this period: %+v, want all hit", e)
+	}
+}

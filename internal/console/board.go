@@ -84,7 +84,8 @@ var funcs = template.FuncMap{
 		return coarse(-d) + " ago"
 	},
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
-	// is the gauge's class: warn from 80 percent, over past the cap
+	// is the gauge's class: warn from 80 percent, over at the cap or when
+	// the gateway refused a call at it (hit)
 	"pct":    pct,
 	"pct100": func(spent, cap float64) int { return min(pct(spent, cap), 100) },
 	// initial is a member's avatar letter
@@ -102,9 +103,9 @@ var funcs = template.FuncMap{
 		}
 		return ""
 	},
-	"gaugeClass": func(spent, cap float64) string {
+	"gaugeClass": func(spent, cap float64, hit bool) string {
 		switch {
-		case cap > 0 && spent > cap:
+		case policy.CapHit(spent, cap, hit):
 			return " over"
 		case pct(spent, cap) >= 80:
 			return " warn"
@@ -1111,6 +1112,9 @@ type statusLine struct {
 	// TodayEUR is the factory's enforced spend this UTC day, holds
 	// included, and DayCapEUR the policy's day cap.
 	TodayEUR, DayCapEUR float64
+	// DayHit and PremiumHit: the cap is hit (policy.CapHit); the month's
+	// is Spend.Hit.
+	DayHit, PremiumHit bool
 	// PremiumEUR is the factory's spend on the premium class this UTC
 	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
 	// 0 shows no premium meter.
@@ -2343,9 +2347,9 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			d.Problems = append(d.Problems, "the month's pool could not be read")
 		}
 	}
-	s.TodayEUR = e.Day
+	s.TodayEUR, s.DayHit = e.Day, policy.CapHit(e.Day, s.DayCapEUR, e.DayHit)
 	if s.PremiumCapEUR > 0 {
-		s.PremiumEUR = e.Premium
+		s.PremiumEUR, s.PremiumHit = e.Premium, policy.CapHit(e.Premium, s.PremiumCapEUR, e.PremiumHit)
 	}
 	s.Approver = v.approves(p.Repository)
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
@@ -2539,19 +2543,24 @@ func cellWord(name string) string { return name[strings.LastIndex(name, "-")+1:]
 func (c *Console) monthFigures(ctx context.Context, v policy.Version, p factoryd.Project, e policy.Enforced) (factoryd.ProjectSpend, float64, bool, error) {
 	if _, eur := v.ProjectCap(p.Repository); !math.IsInf(eur, 1) {
 		spend, err := c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now())
+		spend.Hit = policy.CapHit(spend.EUR, eur, spend.Hit)
 		return spend, eur, false, err
 	}
-	return factoryd.ProjectSpend{EUR: e.Month}, v.Document.Budget.MonthEUR, true, nil
+	return factoryd.ProjectSpend{EUR: e.Month, Hit: policy.CapHit(e.Month, v.Document.Budget.MonthEUR, e.MonthHit)}, v.Document.Budget.MonthEUR, true, nil
 }
 
 // spendWords is spend against the month cap as the project agent reads
 // it: under the factory's cap the whole enforced ledger, without the
 // project's own split, which does not sum to it.
 func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool) string {
-	if factory {
-		return fmt.Sprintf("spend this month %s of %s EUR, the factory's whole ledger", textutil.EUR(spend.EUR), textutil.EUR(capEUR))
+	hit := ""
+	if spend.Hit {
+		hit = " (cap hit)"
 	}
-	return fmt.Sprintf("spend this month %s of %s EUR: the cards %s EUR, the chat %s EUR", textutil.EUR(spend.EUR), textutil.EUR(capEUR), textutil.EUR(spend.EUR-spend.ChatEUR), textutil.EUR(spend.ChatEUR))
+	if factory {
+		return fmt.Sprintf("spend this month %s of %s EUR%s, the factory's whole ledger", textutil.EUR(spend.EUR), textutil.EUR(capEUR), hit)
+	}
+	return fmt.Sprintf("spend this month %s of %s EUR%s: the cards %s EUR, the chat %s EUR", textutil.EUR(spend.EUR), textutil.EUR(capEUR), hit, textutil.EUR(spend.EUR-spend.ChatEUR), textutil.EUR(spend.ChatEUR))
 }
 
 type timelineEntry struct {

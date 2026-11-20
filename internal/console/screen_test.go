@@ -1730,3 +1730,53 @@ func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
 		}
 	}
 }
+
+// The gauge is warn from 80 percent, over at the cap or once the gateway
+// refused a call at it: 79 of 100 is plain, 80 warn, 97 with a refusal
+// over, 100 without one over, and a spend with no cap stays plain.
+func TestGaugeClass(t *testing.T) {
+	gauge := funcs["gaugeClass"].(func(float64, float64, bool) string)
+	for _, tc := range []struct {
+		spent, cap float64
+		hit        bool
+		want       string
+	}{
+		{79, 100, false, ""}, {80, 100, false, " warn"}, {97, 100, true, " over"},
+		{100, 100, false, " over"}, {120, 100, false, " over"}, {5, 0, false, ""},
+	} {
+		if got := gauge(tc.spent, tc.cap, tc.hit); got != tc.want {
+			t.Errorf("gaugeClass(%v, %v, %v) = %q, want %q", tc.spent, tc.cap, tc.hit, got, tc.want)
+		}
+	}
+}
+
+// The closed strip shows the day cell from 80 percent of the day cap (20
+// EUR): 17 EUR is 85 percent, amber; 10 EUR is 50, no cell; 10 EUR with a
+// refusal today is red and says the cap refuses calls; the open panel
+// reads the day's note with it.
+func TestStatusLineDayCell(t *testing.T) {
+	r, ck := screenRig(t)
+	board := func(e policy.Enforced) string {
+		t.Helper()
+		r.ledger.enforced = e
+		return r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	}
+	const cell = `<span class="cell spend`
+	if body := board(policy.Enforced{Day: 10}); strings.Contains(body, `<span class="of">today</span>`) {
+		t.Errorf("a day at 50 percent shows a day cell")
+	}
+	body := board(policy.Enforced{Day: 17})
+	if !strings.Contains(body, cell+` warn" title="spend this UTC day against the day cap, budget.day_eur, holds included; it resets at 00:00 UTC"><span><span class="of">today</span> <b class="n">17.00 EUR</b> <span class="of">/ 20.00 EUR</span></span>`) ||
+		!strings.Contains(body, `<span class="pct">85%</span>`) || strings.Contains(body, "the day cap is hit") {
+		t.Errorf("a day at 85 percent: want an amber day cell with no hit note")
+	}
+	body = board(policy.Enforced{Day: 10, DayHit: true})
+	if !strings.Contains(body, cell+` over" title="spend this UTC day against the day cap, budget.day_eur, holds included; it resets at 00:00 UTC; the day cap refuses calls until then">`) ||
+		!strings.Contains(body, `<p class="sp-note">the day cap is hit: sessions wait until 00:00 UTC or a human raises it</p>`) {
+		t.Errorf("a day cap with a refusal: want a red day cell and the hit note")
+	}
+	body = board(policy.Enforced{Month: 50})
+	if !strings.Contains(body, `<p class="sp-note">the month cap is hit: sessions wait until the month turns or a human raises it</p>`) {
+		t.Errorf("a month at its cap: want the month's hit note")
+	}
+}

@@ -160,6 +160,19 @@ const DateLayout = "2006-01-02"
 // together).
 type Enforced struct {
 	Day, Month, Premium float64
+	// DayHit, MonthHit and PremiumHit say the cap is hit: the gateway
+	// refused a call at it in the cap's current UTC period.
+	DayHit, MonthHit, PremiumHit bool
+}
+
+// CapHit is whether a cap is hit: spend at or past it, or a refusal at
+// it in its current period (Enforced's flags, the project's month spend).
+func CapHit(spent, cap float64, refused bool) bool { return refused || cap > 0 && spent >= cap }
+
+// refusedSince is whether the audit holds a refusal with decision since
+// the UTC day (unit "day") or month (unit "month") of at.
+func refusedSince(decision, unit, at string) string {
+	return `EXISTS (SELECT 1 FROM audit WHERE decision = '` + decision + `' AND ts >= date_trunc('` + unit + `', ` + at + ` AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`
 }
 
 // LedgerEnforced reads the enforced spend of the UTC day and month of at.
@@ -168,8 +181,11 @@ func LedgerEnforced(ctx context.Context, db *sql.DB, at time.Time) (Enforced, er
 	err := db.QueryRowContext(ctx,
 		`SELECT (`+daySpentSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
 		        (`+MonthSpentSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
-		        (`+PremiumMonthSpentSQL("$1::timestamptz")+` + COALESCE((SELECT sum(eur) FROM holds WHERE `+premiumRef+`), 0))::float8`,
-		at).Scan(&e.Day, &e.Month, &e.Premium)
+		        (`+PremiumMonthSpentSQL("$1::timestamptz")+` + COALESCE((SELECT sum(eur) FROM holds WHERE `+premiumRef+`), 0))::float8,
+		        `+refusedSince(RefusedDayCap, "day", "$1::timestamptz")+`,
+		        `+refusedSince(RefusedMonthCap, "month", "$1::timestamptz")+`,
+		        `+refusedSince(RefusedPremiumCap, "month", "$1::timestamptz"),
+		at).Scan(&e.Day, &e.Month, &e.Premium, &e.DayHit, &e.MonthHit, &e.PremiumHit)
 	return e, err
 }
 

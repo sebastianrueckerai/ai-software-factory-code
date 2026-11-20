@@ -1329,20 +1329,24 @@ func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, 
 }
 
 // ProjectSpend is a project's ledger spend in one UTC month, and the part
-// its chat tasks booked.
+// its chat tasks booked. Hit says the gateway refused a call at the
+// project's month cap in that month.
 type ProjectSpend struct {
 	EUR, ChatEUR float64
+	Hit          bool
 }
 
 // ProjectMonthSpend is repository's spend over the ledger in the UTC month
 // of at, as the gateway's project headroom counts it.
 func (s *PGStore) ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error) {
 	var p ProjectSpend
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(sum(l.eur), 0)::float8, COALESCE(sum(l.eur) FILTER (WHERE t.kind = $3), 0)::float8
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(sum(l.eur), 0)::float8, COALESCE(sum(l.eur) FILTER (WHERE t.kind = $3), 0)::float8,
+		EXISTS (SELECT 1 FROM audit a JOIN tasks r ON r.id = a.task_id
+			WHERE a.decision = $4 AND r.repository = $1 AND a.ts >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
 		FROM ledger l JOIN tasks t ON t.id = l.task_id
 		WHERE t.repository = $1 AND l.day >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC')::date
 		AND l.day < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month')::date`,
-		repository, at, KindChat).Scan(&p.EUR, &p.ChatEUR)
+		repository, at, KindChat, policy.RefusedProjectCap).Scan(&p.EUR, &p.ChatEUR, &p.Hit)
 	return p, err
 }
 

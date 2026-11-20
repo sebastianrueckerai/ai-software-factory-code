@@ -743,3 +743,32 @@ func TestPGStoreLiveSessionOwnerIsACompareAndSet(t *testing.T) {
 		t.Fatalf("second release = %v, %v, want no row", ok, err)
 	}
 }
+
+// ProjectMonthSpend's Hit is a refused_project_cap row of a task of the
+// repository in the month: another repository's row and last month's stay
+// out. Hand-derived on 2026-10-11.
+func TestPGStoreProjectMonthSpendHit(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	oct := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	for _, task := range []Task{{ID: "t-a", Kind: "agent", Status: "running", Repository: "a/a", IssueNumber: 1, Track: "direct"},
+		{ID: "t-b", Kind: "agent", Status: "running", Repository: "b/b", IssueNumber: 1, Track: "direct"}} {
+		if err := s.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refuse := func(task string, ts time.Time) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (ts, task_id, decision, reason) VALUES ($1, $2, $3, 'x')`, ts, task, policy.RefusedProjectCap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refuse("t-a", time.Date(2026, 9, 30, 23, 59, 0, 0, time.UTC))
+	refuse("t-b", time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC))
+	if got, err := s.ProjectMonthSpend(ctx, "a/a", oct); err != nil || got.Hit {
+		t.Fatalf("hit = %v, %v with last month's refusal and another repository's, want false", got.Hit, err)
+	}
+	refuse("t-a", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if got, err := s.ProjectMonthSpend(ctx, "a/a", oct); err != nil || !got.Hit {
+		t.Fatalf("hit = %v, %v with a refusal on the month's first instant, want true", got.Hit, err)
+	}
+}

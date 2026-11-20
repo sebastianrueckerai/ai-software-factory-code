@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"math"
 	"slices"
@@ -73,6 +74,7 @@ type BoardDigestPlan struct {
 type BoardDigestCap struct {
 	Name             string
 	SpentEUR, CapEUR float64
+	Hit              bool
 }
 
 // BoardDigest builds repository's board digest at the runner's clock: one
@@ -121,13 +123,14 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 	if err != nil {
 		return BoardDigest{}, err
 	}
-	b.Caps = []BoardDigestCap{{"month", e.Month, v.Document.Budget.MonthEUR}, {"day", e.Day, v.Document.Budget.DayEUR}}
+	month, day := v.Document.Budget.MonthEUR, v.Document.Budget.DayEUR
+	b.Caps = []BoardDigestCap{{"month", e.Month, month, policy.CapHit(e.Month, month, e.MonthHit)}, {"day", e.Day, day, policy.CapHit(e.Day, day, e.DayHit)}}
 	if _, cap := v.ProjectCap(repository); !math.IsInf(cap, 1) {
 		spent, err := r.store.ProjectMonthSpend(ctx, repository, now)
 		if err != nil {
 			return BoardDigest{}, err
 		}
-		b.Caps = append(b.Caps, BoardDigestCap{"project", spent.EUR, cap})
+		b.Caps = append(b.Caps, BoardDigestCap{"project", spent.EUR, cap, policy.CapHit(spent.EUR, cap, spent.Hit)})
 	}
 	return b, nil
 }
@@ -260,6 +263,9 @@ func (b BoardDigest) Render() string {
 	caps := make([]string, len(b.Caps))
 	for i, c := range b.Caps {
 		caps[i] = fmt.Sprintf("%s %s of %s EUR", c.Name, textutil.EUR(c.SpentEUR), textutil.EUR(c.CapEUR))
+		if c.Hit {
+			caps[i] += " (hit)"
+		}
 	}
 	s.WriteString("caps:\n" + strings.Join(caps, " · ") + "\n")
 	return s.String()
