@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -23,14 +24,35 @@ func (c *Console) factoryCapReset(w http.ResponseWriter, r *http.Request) {
 	c.resetCap(w, r, cap, "")
 }
 
-// projectCapReset is the panel's Reset of a project's month cap.
+// projectCapReset is the panel's Reset of a project's month cap, refused
+// for a project without one of its own.
 func (c *Console) projectCapReset(w http.ResponseWriter, r *http.Request) {
 	p, ok, err := c.projectOf(r.Context(), r.PathValue("name"))
 	if err != nil || !ok {
 		http.NotFound(w, r)
 		return
 	}
+	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
+	if err != nil || !ok {
+		log.Printf("console: current policy: loaded %v, %v", ok, err)
+		http.Error(w, "The policy in force cannot be read. Press Reset again in a moment.", http.StatusServiceUnavailable)
+		return
+	}
+	if _, eur := v.ProjectCap(p.Repository); math.IsInf(eur, 1) {
+		c.stalePanel(w, r, "Project "+p.Name+" has no month cap of its own.")
+		return
+	}
 	c.resetCap(w, r, policy.CapProject, p.Repository)
+}
+
+// stalePanel refuses a press made on a panel that no longer stands with a
+// 409 of line, and under htmx refreshes the board, so the panel shows
+// what stands now.
+func (c *Console) stalePanel(w http.ResponseWriter, r *http.Request, line string) {
+	if r.Header.Get("HX-Request") != "" {
+		w.Header().Set("HX-Trigger", "board-refresh")
+	}
+	c.fail(w, r, refuse(http.StatusConflict, line))
 }
 
 // capCounts name each cap's count as its press does.
@@ -54,12 +76,9 @@ func (c *Console) resetCap(w http.ResponseWriter, r *http.Request, cap, reposito
 	reset, err := c.cfg.Caps.ResetCap(r.Context(), cap, repository, current(r).user, seen)
 	var stale *policy.StaleResetError
 	if errors.As(err, &stale) {
-		if r.Header.Get("HX-Request") != "" {
-			w.Header().Set("HX-Trigger", "board-refresh")
-		}
 		n := stale.Newest
-		c.fail(w, r, refuse(http.StatusConflict, n.Login+" reset "+capCounts[cap]+" at "+factoryd.ResetStamp(n.At, c.clock())+
-			"; the panel now shows it. Press Reset again to reset it once more."))
+		c.stalePanel(w, r, n.Login+" reset "+capCounts[cap]+" at "+factoryd.ResetStamp(n.At, c.clock())+
+			"; the panel now shows it. Press Reset again to reset it once more.")
 		return
 	}
 	if err != nil {

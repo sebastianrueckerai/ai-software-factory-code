@@ -101,12 +101,25 @@ func TestCapResetMonth(t *testing.T) {
 	equal(t, "the resets", caps.calls, []capCall{{"month", "", "alice", 0}})
 }
 
+// A project's Reset restarts its own month cap's count; a project with no
+// month cap of its own has none to reset: a 409 says so, refreshes the
+// board, and nothing is written or woken.
 func TestCapResetProject(t *testing.T) {
 	r, caps, wakes := capRig(t)
 	ck, s := memberLogin(t, r, "bob")
-	req := post("/projects/demo/cap/reset", url.Values{"csrf": {s.csrf}, "seen": {"0"}})
-	req.Header.Set("HX-Request", "true")
-	if rec := r.do(req, ck); !pressRefreshes(rec) {
+	press := func() *httptest.ResponseRecorder {
+		req := post("/projects/demo/cap/reset", url.Values{"csrf": {s.csrf}, "seen": {"0"}})
+		req.Header.Set("HX-Request", "true")
+		return r.do(req, ck)
+	}
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "Project demo has no month cap of its own.\n" || rec.Header().Get("HX-Trigger") != "board-refresh" {
+		t.Fatalf("a reset without demo's cap = %d %q, trigger %q; want 409 with board-refresh", rec.Code, rec.Body, rec.Header().Get("HX-Trigger"))
+	}
+	if len(caps.calls) != 0 || *wakes != 0 {
+		t.Fatalf("a reset without demo's cap wrote %v and woke %d times", caps.calls, *wakes)
+	}
+	r.ledger.monthCaps = map[string]float64{"demo": 30}
+	if rec := press(); !pressRefreshes(rec) {
 		t.Fatalf("reset = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
 	}
 	equal(t, "the resets", caps.calls, []capCall{{"project", "demo/demo", "bob", 0}})
