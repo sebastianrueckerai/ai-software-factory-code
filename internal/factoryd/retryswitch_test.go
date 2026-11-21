@@ -866,13 +866,13 @@ func TestRetrySwitchPressOutlivesItsCaller(t *testing.T) {
 }
 
 // Hand-derived from a class that resumed on its own: the gateway's lapse
-// row lands at 12:00 and the card's face closes itself at 12:05. A press
-// on it names that state and what follows, and moves nothing: the hold
-// stands, no card wakes, no row is written.
+// row lands this minute and the card's face closes itself 5 minutes on. A
+// press on it names that state and what follows, and moves nothing: the
+// hold stands, no card wakes, no row is written.
 func TestRetrySwitchRefusesAResumedClass(t *testing.T) {
-	reset := time.Now().UTC().Truncate(time.Minute).Add(2 * time.Hour)
+	resumedAt := time.Now().UTC().Truncate(time.Minute)
+	reset := resumedAt.Add(2 * time.Hour)
 	store, _, w, gw, woke := switchRig(t, reset)
-	resumedAt := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: resumedAt, Kind: "class_resumed", Class: "big", Reset: stamp(reset)})
 	if err := w.Check(context.Background()); err != nil {
 		t.Fatal(err)
@@ -882,7 +882,7 @@ func TestRetrySwitchRefusesAResumedClass(t *testing.T) {
 	sw := &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client()}
 	var no ErrNoFreeze
 	if err := sw.RetryFreeze(context.Background(), freezeCardOn(t, store, 1).ID, "sebastian", ViaButton); !errors.As(err, &no) ||
-		err.Error() != "the big class resumed on its own and #1 closes itself at 2026-11-21T12:05:00Z: nothing waits for a retry, its frozen cards wake once the class has run for five minutes, and a new limit opens a freeze card again" {
+		err.Error() != "the big class resumed on its own and #1 closes itself at "+resumedAt.Add(5*time.Minute).Format(time.RFC3339)+": nothing waits for a retry, its frozen cards wake once the class has run for five minutes, and a new limit opens a freeze card again" {
 		t.Fatalf("the press on a resumed class = %v, want the resumed refusal", err)
 	}
 	if code, held := gw.call(t, "t1"); held != stamp(reset) || len(*woke) != 0 || len(store.rows) != rows {
