@@ -325,6 +325,10 @@ type Config struct {
 	// through it. A refusal is factoryd.ErrActRefused. New refuses a
 	// Config without it.
 	Act func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error)
+	// RoomFacts are the facts a card's room is worked out from
+	// (factoryd's Runner.RoomFacts): its record's, its agent-time cap, the
+	// floor of its next session and the project's money left this month.
+	RoomFacts func(ctx context.Context, t factoryd.Task) (factoryd.CaseFacts, error)
 	// InfraRepo is the infra repository (owner/name), where the new-project
 	// button files its pull request; InfraToken reads its pull requests
 	// (factoryd's forgejo-config token).

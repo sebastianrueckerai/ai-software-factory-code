@@ -20,11 +20,11 @@ import (
 )
 
 // poolLine is a project's escalation pool as every face reads it: what its
-// cards drew this UTC month on every rung (PoolDrawn) against the pool the
-// policy tree sets (EscalationOf), in three parts: sessions, agent time and
-// money. Readable: the draws could be read; an unreadable read is never
-// zero. Overdrawn: a part is past its pool, where a human's draw may take
-// it. Present: the project file sets the pool's money itself, which a
+// cards drew this UTC month on every rung but a human's (PoolDrawn)
+// against the pool the policy tree sets (EscalationOf), in three parts:
+// sessions, agent time and money. Readable: the draws could be read; an
+// unreadable read is never zero. Overdrawn: a part is past its pool, as
+// after a change lowered the pool below the month's draws. Present: the project file sets the pool's money itself, which a
 // top-up grows; without, the money is the policy's and a set gives the
 // project its own.
 type poolLine struct {

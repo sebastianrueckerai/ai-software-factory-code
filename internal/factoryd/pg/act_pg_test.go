@@ -224,8 +224,8 @@ func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 
 // Another card drew the whole pool this month: 30 sessions, 30 hours and
 // 60 EUR. Rung 2's extend of one session is refused naming the pool. The
-// human's goes through, and the month reads 31 sessions drawn, past the
-// pool's 30.
+// human's goes through and draws nothing from the pool: the month reads
+// the 30 sessions drawn before it.
 func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
@@ -251,8 +251,8 @@ func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 		t.Fatalf("the human's extend past the pool: %v", err)
 	}
 	drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if want := (policy.Draw{Sessions: 31, AgentTime: 30 * time.Hour, EUR: 60}); err != nil || drawn != want {
-		t.Fatalf("PoolDrawn = %+v, %v; want %+v, past the pool", drawn, err, want)
+	if want := (policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}); err != nil || drawn != want {
+		t.Fatalf("PoolDrawn = %+v, %v; want %+v, the human's session left out", drawn, err, want)
 	}
 }
 
@@ -368,7 +368,8 @@ func TestEndCaseWithdrawsWithTheReason(t *testing.T) {
 // A fund of 3 EUR on a budget of 3 passes the policy's ceiling of 5. The
 // human raises the ceiling by 2 EUR and funds 4 EUR beside it: the raise is
 // written first, so the fund lands on 7 EUR at the ceiling of 7. The
-// ceiling's row draws nothing from the pool, the fund's 4 EUR does.
+// ceiling's row is off the pool; the fund's row of 4 EUR is a pool row of
+// rung 3, a human's, which the pool does not count.
 func TestActRaisesTheCeilingThenFundsInOneTransaction(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
@@ -390,10 +391,10 @@ func TestActRaisesTheCeilingThenFundsInOneTransaction(t *testing.T) {
 	funded := g.rows(t, EventCardFunded)
 	if len(funded) != 2 || funded[0].Detail["ceiling_eur"] != 7.0 || funded[0].Detail["pool"] != nil || funded[0].Detail["case_id"] != float64(g.c.ID) ||
 		funded[1].Detail["amount_eur"] != 4.0 || funded[1].Detail["pool"] != true {
-		t.Fatalf("card_funded rows = %+v, want the ceiling of 7 off the pool, then 4 EUR from it", funded)
+		t.Fatalf("card_funded rows = %+v, want the ceiling of 7 off the pool, then a pool row of 4 EUR", funded)
 	}
-	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{EUR: 4}) {
-		t.Fatalf("PoolDrawn = %+v, %v; want 4 EUR", drawn, err)
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || !drawn.IsZero() {
+		t.Fatalf("PoolDrawn = %+v, %v; want nothing, the human's 4 EUR left out", drawn, err)
 	}
 }
 
@@ -646,19 +647,19 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 	}
 }
 
-// Case 6354's pool: the human drew past it, to 49 sessions, 52554 s and
-// 84.30 EUR of its 30 sessions, 30 hours and 60 EUR. Under the lock rung
-// 2's draw of a session and 30 minutes is refused naming the sessions and
-// the fit, and its draw of the 30 minutes alone lands: a part drawn past its
-// bound refuses only a draw that asks for some of it.
+// A pool drawn past its 30 sessions, 30 hours and 60 EUR, to 49 sessions,
+// 52554 s and 84.30 EUR, by rung 2 before a change lowered it. Under the
+// lock rung 2's draw of a session and 30 minutes is refused naming the
+// sessions and the fit, and its draw of the 30 minutes alone lands: a part
+// drawn past its bound refuses only a draw that asks for some of it.
 func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
 	for _, e := range []Event{
-		{Kind: EventCardExtended, Detail: map[string]any{"pool": true, "rung": 3, "sessions": 49, "agent_time_s": 52554}},
-		{Kind: EventCardFunded, Detail: map[string]any{"pool": true, "rung": 3, "amount_eur": 84.30}},
+		{Kind: EventCardExtended, Detail: map[string]any{"pool": true, "rung": 2, "sessions": 49, "agent_time_s": 52554}},
+		{Kind: EventCardFunded, Detail: map[string]any{"pool": true, "rung": 2, "amount_eur": 84.30}},
 	} {
-		e.Repository, e.TaskID, e.Actor, e.Via = "demo-app/demo-app", "t1", "sebastian", ViaConsole
+		e.Repository, e.TaskID, e.Actor, e.Via = "demo-app/demo-app", "t1", ChatUser, ViaChat
 		if _, err := g.s.Record(ctx, e); err != nil {
 			t.Fatal(err)
 		}
@@ -689,8 +690,8 @@ func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
 func TestResolveCaseNamesNoFitWithoutTheNeed(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,
-		Detail: map[string]any{"pool": true, "rung": 3, "sessions": 10, "agent_time_s": 108000}}); err != nil {
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventCardExtended, Actor: ChatUser, Via: ViaChat,
+		Detail: map[string]any{"pool": true, "rung": 2, "sessions": 10, "agent_time_s": 108000}}); err != nil {
 		t.Fatal(err)
 	}
 	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
@@ -1035,8 +1036,9 @@ func TestActHoldsTheCaseFromItsReadToItsEnd(t *testing.T) {
 
 // RecordGrant retried after its commit (a timeout, a crash) writes nothing
 // twice: the second run of the same identity drops its row on the events'
-// identity, adds nothing to the card's row, and publishes nothing, so the
-// month's pool reads the one session.
+// identity, adds nothing to the card's row, and publishes nothing. The
+// one row is a human's grant, of rung 3, which the month's pool does not
+// count.
 func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
@@ -1053,8 +1055,8 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	if rows := g.rows(t, EventCardExtended); len(rows) != 1 || rows[0].Actor != "sebastian" || rows[0].Detail["sessions"] != 1.0 {
 		t.Fatalf("card_extended rows = %+v, want sebastian's one", rows)
 	}
-	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{Sessions: 1}) {
-		t.Fatalf("the pool drew %+v, %v; want 1 session", drawn, err)
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || !drawn.IsZero() {
+		t.Fatalf("the pool drew %+v, %v; want nothing", drawn, err)
 	}
 	if card := g.card(t); card.Usage.RaisedSessions != 0 {
 		t.Fatalf("raised sessions = %d, want 0: the run granted it", card.Usage.RaisedSessions)
@@ -1163,8 +1165,9 @@ func TestAnExtendOnAFreshTripCaseRaisesTheRow(t *testing.T) {
 }
 
 // Two grants of one run at one attempt value, the session cap's and then
-// the agent time's after a session that took no number, are two rows of
-// the pool; a retry of the second writes nothing more.
+// the agent time's after a session that took no number, are two rows, 1
+// session and 300 s; a retry of the second writes nothing more. Both are
+// a human's grants, which the month's pool does not count.
 func TestRecordGrantKeysEachGrant(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
@@ -1178,11 +1181,11 @@ func TestRecordGrantKeysEachGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if rows := g.rows(t, EventCardExtended); len(rows) != 2 {
+	if rows := g.rows(t, EventCardExtended); len(rows) != 2 || rows[0].Detail["sessions"] != 1.0 || rows[1].Detail["agent_time_s"] != 300.0 {
 		t.Fatalf("card_extended rows = %+v, want the two grants'", rows)
 	}
-	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{Sessions: 1, AgentTime: 5 * time.Minute}) {
-		t.Fatalf("the pool drew %+v, %v; want 1 session and 5 minutes", drawn, err)
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || !drawn.IsZero() {
+		t.Fatalf("the pool drew %+v, %v; want nothing", drawn, err)
 	}
 }
 

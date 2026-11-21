@@ -886,6 +886,13 @@ type attemptNeed struct {
 	call, measure, then, unread string
 }
 
+// capsRequest is card t's request under v's caps: the factory's day and
+// month caps and its project's month cap, as the gateway admits its calls.
+func capsRequest(v policy.Version, t Task) policy.HoldRequest {
+	project, projectEUR := v.ProjectCap(t.Repository)
+	return policy.HoldRequest{TaskID: t.ID, DayEUR: v.Document.Budget.DayEUR, MonthEUR: v.Document.Budget.MonthEUR, Project: project, ProjectEUR: projectEUR}
+}
+
 // needOf reads card t's attemptNeed on model under version v.
 func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model string, opening bool) (attemptNeed, error) {
 	alias := aliasOf(model)
@@ -895,9 +902,8 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 		// attempt is refused (roadmap 222, item 5)
 		return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %s", alias, r.Scrub.String(err.Error()))}, nil
 	}
-	project, projectEUR := v.ProjectCap(t.Repository)
-	req := policy.HoldRequest{TaskID: t.ID, Kind: policy.KindModel, Ref: alias, Price: price,
-		DayEUR: v.Document.Budget.DayEUR, MonthEUR: v.Document.Budget.MonthEUR, Project: project, ProjectEUR: projectEUR}
+	req := capsRequest(v, t)
+	req.Kind, req.Ref, req.Price = policy.KindModel, alias, price
 	if opening {
 		// a session's floor holds the card's gate reserve out of the
 		// headroom as the gateway holds its calls to

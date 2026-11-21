@@ -763,10 +763,10 @@ func TestActRefusesAFundOnAnEndedCard(t *testing.T) {
 }
 
 // A grant the run made itself, the session a change request bought at the
-// cap, is the writer's draw against the pool: a card_extended row of rung
-// 3 that the pool counts, never refused past the pool, and no raise on the
-// card's row, whose run granted it already.
-func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
+// cap, is the writer's: a card_extended row of rung 3, a human's, that the
+// pool does not count, and no raise on the card's row, whose run granted
+// it already.
+func TestRecordGrantLeavesThePool(t *testing.T) {
 	g := newFactsRig(t)
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
@@ -775,8 +775,8 @@ func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if drawn.Minus(drawnBefore) != (policy.Draw{Sessions: 1}) {
-		t.Fatalf("the pool drew %+v more, want 1 session", drawn.Minus(drawnBefore))
+	if drawn != drawnBefore {
+		t.Fatalf("the pool drew %+v more, want nothing", drawn.Minus(drawnBefore))
 	}
 	last := g.store.events[len(g.store.events)-1]
 	if last.Kind != EventCardExtended || last.Actor != "sebastian" || last.Detail["rung"] != 3 || last.Detail["pool"] != true {

@@ -207,6 +207,10 @@ type CaseFacts struct {
 	MonthCapEUR   float64 `json:"month_cap_eur,omitempty"`
 	ProjectCapEUR float64 `json:"project_cap_eur,omitempty"`
 	SpendShare    float64 `json:"spend_share,omitempty"`
+	// MonthLeftEUR is the project's money left this month, as the gateway
+	// admits calls against it (policy.ReadFree): the smaller of the
+	// project's headroom under its cap and the factory's month headroom.
+	MonthLeftEUR float64 `json:"month_left_eur"`
 }
 
 // LastSessionFacts is what the card's newest session cost, whether it
@@ -456,10 +460,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 	var newest *digestSession
 	var refused lineMark
 	// the readers in order, each after the head the events name
-	readers := []struct {
-		name string
-		read func() error
-	}{
+	readers := []factReader{
 		{"events", func() error {
 			events, err := r.store.TaskEvents(ctx, t.ID, cardDigestEvents)
 			if err == nil {
@@ -551,48 +552,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			f.HeadCommits = commitsAfter(commits, f.Head, pushed, r.Scrub)
 			return nil
 		}},
-		{"config", func() error {
-			tc, err := r.TaskConfig(ctx, t.ID, 0)
-			if err == nil {
-				sized := tc.AgentTime
-				if !f.Planner {
-					// the plan's loop reads the class's time unsized
-					sized = policy.SizeAgentTime(t.Size, tc.AgentTime)
-				}
-				f.AgentTimeCapS = (sized + t.Usage.TimeAdded()).Seconds()
-				f.SessionLeastS = min(minSession, sized).Seconds()
-				f.PlannerRetry = f.Planner && t.Usage.RetryTime == 0 && tc.AgentTime/2 >= min(minSession, tc.AgentTime)
-			}
-			return err
-		}},
-		{"floor", func() error {
-			if r.cfg.Prices == nil {
-				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
-				return nil
-			}
-			// the model the next session opens on, resolved as the run
-			// resolves it; only none at all falls back to the policy's floor
-			m := sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias))
-			if m == "" {
-				f.FloorEUR = v.Document.Budget.SessionFloor(false)
-				return nil
-			}
-			n, err := r.needOf(ctx, v, t, m, true)
-			if err == nil && n.unread != "" {
-				err = errors.New(n.unread)
-			}
-			f.FloorEUR = n.eur
-			if err != nil {
-				return err
-			}
-			// the run's own floor, whose caps bind before the card's budget
-			why, err := r.SessionFunded(ctx, t.ID, m)
-			if d, ok := CapDecision(why); ok && err == nil {
-				_, state, _ := strings.Cut(why, "\n")
-				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, CapTurn(d, r.Clock())), "\n")
-			}
-			return err
-		}},
+		{"config", func() error { return r.configFacts(ctx, t, &f) }},
+		{"floor", func() error { return r.floorFacts(ctx, v, t, model, &f) }},
+		{"month", func() error { return r.monthFacts(ctx, v, t, &f) }},
 		{"review rows", func() error {
 			if !f.PROpen {
 				return nil
@@ -714,15 +676,89 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return err
 		}},
 	}
+	err := readFacts(ctx, &f, readers)
+	return f, err
+}
+
+// factReader is a reader of a card's facts, named in Partial when it
+// fails.
+type factReader struct {
+	name string
+	read func() error
+}
+
+// readFacts runs readers in order and names each that fails in f's
+// Partial. It fails only when ctx ends, since facts read past that are no
+// facts.
+func readFacts(ctx context.Context, f *CaseFacts, readers []factReader) error {
 	for _, rd := range readers {
 		if err := ctx.Err(); err != nil {
-			return f, err
+			return err
 		}
 		if rd.read() != nil {
 			f.Partial = append(f.Partial, rd.name)
 		}
 	}
-	return f, ctx.Err()
+	return ctx.Err()
+}
+
+// configFacts sets f's agent-time cap, the least a session needs and the
+// plan's retry from card t's config.
+func (r *Runner) configFacts(ctx context.Context, t Task, f *CaseFacts) error {
+	tc, err := r.TaskConfig(ctx, t.ID, 0)
+	if err != nil {
+		return err
+	}
+	sized := tc.AgentTime
+	if !f.Planner {
+		// the plan's loop reads the class's time unsized
+		sized = policy.SizeAgentTime(t.Size, tc.AgentTime)
+	}
+	f.AgentTimeCapS = (sized + t.Usage.TimeAdded()).Seconds()
+	f.SessionLeastS = min(minSession, sized).Seconds()
+	f.PlannerRetry = f.Planner && t.Usage.RetryTime == 0 && tc.AgentTime/2 >= min(minSession, tc.AgentTime)
+	return nil
+}
+
+// floorFacts sets f's floor of card t's next session on model, the card's
+// own when "", under v, and the cap wait the run's floor would ask.
+func (r *Runner) floorFacts(ctx context.Context, v policy.Version, t Task, model string, f *CaseFacts) error {
+	if r.cfg.Prices == nil {
+		f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
+		return nil
+	}
+	// the model the next session opens on, resolved as the run resolves
+	// it; only none at all falls back to the policy's floor
+	m := sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias))
+	if m == "" {
+		f.FloorEUR = v.Document.Budget.SessionFloor(false)
+		return nil
+	}
+	n, err := r.needOf(ctx, v, t, m, true)
+	if err == nil && n.unread != "" {
+		err = errors.New(n.unread)
+	}
+	f.FloorEUR = n.eur
+	if err != nil {
+		return err
+	}
+	// the run's own floor, whose caps bind before the card's budget
+	why, err := r.SessionFunded(ctx, t.ID, m)
+	if d, ok := CapDecision(why); ok && err == nil {
+		_, state, _ := strings.Cut(why, "\n")
+		f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, CapTurn(d, r.Clock())), "\n")
+	}
+	return err
+}
+
+// monthFacts sets f's MonthLeftEUR from the headroom the gateway admits
+// card t's calls against under v.
+func (r *Runner) monthFacts(ctx context.Context, v policy.Version, t Task, f *CaseFacts) error {
+	_, free, err := r.store.Free(ctx, capsRequest(v, t))
+	if err == nil {
+		f.MonthLeftEUR = min(free.Project, free.Month)
+	}
+	return err
 }
 
 // eventFacts sets f's head, its review, whether a session pushed, and its

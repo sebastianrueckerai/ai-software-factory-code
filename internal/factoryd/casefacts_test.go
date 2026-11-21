@@ -213,7 +213,8 @@ func TestTripFactsReadTheLastSession(t *testing.T) {
 //     its recorded opening, 0.607001, above the cheap floor 0.30; the
 //     ceiling task_max_eur 5; the gate reserve is the default 0.40
 //   - the pool 30, 30h, 60 less November's draws: 1 session and 5 minutes
-//     at 09:00, 0.50 at 10:04 and t2's 1.00 = 29, 29h55m, 58.50
+//     at 09:00 and t2's 1.00 = 29, 29h55m, 59.00; the 0.50 at 10:04 is a
+//     human's, of rung 3, which the pool does not count
 //   - the card draw 2, 1h, 4 of a medium card is 3, 1h30m, 6 for a large
 //     one, less t1's draws of rungs 0 and 1: 1 session, 5 minutes, and
 //     October's 2.00 = 2, 1h25m, 4.00
@@ -226,7 +227,8 @@ func TestTripFactsReadTheLastSession(t *testing.T) {
 //     left
 //   - the policy's limits are 20 EUR a day and 50 a month, demo-app's file
 //     sets none, and a session may spend the default 60 percent with
-//     nothing pushed
+//     nothing pushed; with nothing spent this month the month's money
+//     left is the whole 50
 func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -254,9 +256,9 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 			{TaskID: "d5", Issue: 24, Status: "closed", Why: ReasonIssueClosed},
 		},
 		Autonomy:     policy.AutonomyFullAuto,
-		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
+		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 59},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
-		PosterGrant:  true, DayCapEUR: 20, MonthCapEUR: 50, SpendShare: 0.6,
+		PosterGrant:  true, DayCapEUR: 20, MonthCapEUR: 50, SpendShare: 0.6, MonthLeftEUR: 50,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts =\n%+v\nwant\n%+v", got, want)
@@ -603,12 +605,13 @@ func TestTripFactsReadAPlansAutomaticSession(t *testing.T) {
 // cap binds first: the facts hold its wait, which lifts at the UTC day's
 // turn, 2026-11-04T00:00:00Z, and the face names it before the budget
 // floor. With the day ample the budget binds and the face asks the floor.
+// The month's 50 EUR and the project, which has no cap, never bind.
 func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
 	g := newFactsRig(t)
 	inf := math.Inf(1)
 	for name, day := range map[string]float64{"day cap first": 0.05, "budget first": 100} {
 		t.Run(name, func(t *testing.T) {
-			g.store.capsFree = &policy.Free{Day: day, Month: inf, Project: inf}
+			g.store.capsFree = &policy.Free{Day: day, Month: 50, Project: inf}
 			f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 			if err != nil || !f.unfunded() {
 				t.Fatalf("facts %+v, %v; want the budget short", f, err)
@@ -773,5 +776,80 @@ func TestMinutesWordSaysWholeHoursInHours(t *testing.T) {
 		if got := minutesWord(d); got != want {
 			t.Errorf("%s reads %q, want %q", d, got, want)
 		}
+	}
+}
+
+// roomStore is a fake store whose Free reads the caps of the request as
+// ReadFree does: the factory's month cap less monthSpent, the project's
+// cap less projectSpent and projectHeld under a cap, +Inf without one.
+type roomStore struct {
+	*fakeStore
+	monthSpent, projectSpent, projectHeld float64
+	err                                   error
+}
+
+func (s roomStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
+	if s.err != nil {
+		return policy.TaskFree{}, policy.Free{}, s.err
+	}
+	own, f, err := s.fakeStore.Free(ctx, r)
+	f.Day, f.Month, f.Project = math.Inf(1), r.MonthEUR-s.monthSpent, r.ProjectEUR-s.projectSpent-s.projectHeld
+	return own, f, err
+}
+
+// roomRig is a runner on s under a policy whose month cap is 200 EUR,
+// whose agent time is 60 minutes and whose cheap floor is 0.30 EUR, with
+// demo-app's file setting project, and t1, a medium card of demo-app on
+// small with 5 EUR of budget and 1 spent.
+func roomRig(t *testing.T, s roomStore, project string) (*Runner, Task) {
+	t.Helper()
+	files := testFiles(strings.NewReplacer("month_eur: 50", "month_eur: 200", "agent_time: 10m", "agent_time: 60m").Replace(testPolicyYAML))
+	files["projects/demo-app.yaml"] = []byte(policy.Header("projects/demo-app.yaml") + "\n" + demoFile + project)
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := policy.Version{ID: 7, Tree: tree}
+	v.Document.Budget.SessionFloorCheapEUR, v.Document.Budget.SessionFloorFrontierEUR = 0.3, 0.6
+	cfg := testRunnerConfig()
+	cfg.Policy = func() policy.Version { return v }
+	cfg.Prices = aliasPrices{"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
+	card := Task{ID: "t1", Kind: "agent", Repository: "demo-app/demo-app", IssueNumber: 12, Status: "running", Track: policy.TrackDirect,
+		Size: "medium", ModelAlias: "small", BudgetEUR: 5, SpentEUR: 1}
+	s.tasks["t1"] = card
+	return &Runner{store: s, objects: &fakeObjectStore{}, cfg: cfg, now: func() time.Time { return factsNow }}, card
+}
+
+// By hand: a medium card's agent time is the policy's 60 minutes, 3600
+// s, and a session needs the 5 minutes of minSession; the next session on
+// small opens at the cheap floor of 0.30 EUR, above its cheapest call;
+// the month's money left is min(project 50 - 12 spent - 3 held, factory
+// 200 - 40) = 35. A store whose Free fails names the floor and the month,
+// the two readers of it, and leaves the month's money 0.
+func TestRoomFactsReadsTheCapTheFloorAndTheMonth(t *testing.T) {
+	r, card := roomRig(t, roomStore{fakeStore: newFakeStore(), monthSpent: 40, projectSpent: 12, projectHeld: 3}, "budget: {month_eur: 50}\n")
+	got, err := r.RoomFacts(context.Background(), card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := CardFacts(card, r.cfg.Policy(), "")
+	want.AgentTimeCapS, want.SessionLeastS, want.FloorEUR, want.MonthLeftEUR = 3600, 300, 0.3, 35
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("facts =\n%+v\nwant\n%+v", got, want)
+	}
+	r, card = roomRig(t, roomStore{fakeStore: newFakeStore(), err: errors.New("the gateway's tables are gone")}, "budget: {month_eur: 50}\n")
+	got, err = r.RoomFacts(context.Background(), card)
+	if err != nil || !slices.Equal(got.Partial, []string{"floor", "month"}) || got.MonthLeftEUR != 0 || got.AgentTimeCapS != 3600 {
+		t.Fatalf("facts on a Free that fails = %+v, %v; want floor and month partial, 0 EUR left and the cap read", got, err)
+	}
+}
+
+// Without a cap of its own the project's money left this month is the
+// factory's month headroom: 200 - 40 = 160.
+func TestMonthLeftWithoutAProjectCap(t *testing.T) {
+	r, card := roomRig(t, roomStore{fakeStore: newFakeStore(), monthSpent: 40, projectSpent: 12, projectHeld: 3}, "")
+	got, err := r.RoomFacts(context.Background(), card)
+	if err != nil || got.MonthLeftEUR != 160 || len(got.Partial) != 0 {
+		t.Fatalf("month left = %v, partial %v, %v; want 160 EUR and every reader read", got.MonthLeftEUR, got.Partial, err)
 	}
 }

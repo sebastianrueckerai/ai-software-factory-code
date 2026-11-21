@@ -822,7 +822,7 @@ type Store interface {
 	// to ceiling, and writes e, its card_funded row (PGStore.FundCard).
 	FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (from, to float64, err error)
 	// PoolDrawn is what repository's cards drew from the escalation pool
-	// in the UTC month of month, every rung's draws.
+	// in the UTC month of month, every rung's draws below a human's.
 	PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error)
 	// CardDrawn is what task taskID drew from the pool in its life on
 	// rungs 0 and 1, the draws the per-card bound counts.
@@ -2346,8 +2346,9 @@ func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 	return nil
 }
 
-// poolDraws picks the event rows that are draws from the escalation pool.
-const poolDraws = `kind IN ('card_funded', 'card_extended') AND detail->>'pool' = 'true'`
+// poolDraws picks the event rows that are draws from the escalation pool:
+// a human's grant, a row of rung 3, draws from the project's month instead.
+const poolDraws = `kind IN ('card_funded', 'card_extended') AND detail->>'pool' = 'true' AND detail->>'rung' IS DISTINCT FROM '3'`
 
 // drawn sums the pool draws of the rows where picks out of them.
 func drawn(ctx context.Context, q rowQuerier, where string, args ...any) (policy.Draw, error) {
@@ -2362,7 +2363,7 @@ func drawn(ctx context.Context, q rowQuerier, where string, args ...any) (policy
 }
 
 // PoolDrawn is what repository's cards drew from the escalation pool in
-// the UTC calendar month of month, on every rung.
+// the UTC calendar month of month, on every rung below a human's.
 func (s *PGStore) PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error) {
 	return poolDrawn(ctx, s.db, repository, month)
 }

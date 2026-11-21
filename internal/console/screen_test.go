@@ -1832,7 +1832,7 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
 		Process: "maintenance", Escalation: &policy.Escalation{Pool: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 2}}}}
 	r.drawn = policy.Draw{Sessions: 3}
-	if strip, _ = status(); !strings.Contains(strip, `">pool drawn out</span>`) || !strings.Contains(strip, `<span class="cell hit" title="the escalation pool every extend and fund draws from`) {
+	if strip, _ = status(); !strings.Contains(strip, `">pool drawn out</span>`) || !strings.Contains(strip, `<span class="cell hit" title="the escalation pool every extend and fund but a human's draws from`) {
 		t.Errorf("an overdrawn pool: the strip lacks its cell\n%s", strip)
 	}
 	r.c.cfg.Backstop = func(context.Context) (factoryd.Backstop, error) {

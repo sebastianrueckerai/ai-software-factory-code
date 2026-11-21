@@ -81,6 +81,27 @@ func TestPoolDrawnSumsTheMonthsPoolRows(t *testing.T) {
 	}
 }
 
+// A human's grant is no draw from the escalation pool: a pool row of rung
+// 3 leaves the month's pool at zero, and one of rung 2 with 1 session
+// raises it to 1 session.
+func TestPoolLeavesOutTheHumansRows(t *testing.T) {
+	ctx := context.Background()
+	s := drawStore(t, "t-h", 5)
+	row := func(rung int, sessions int) Event {
+		return Event{At: drawAt("2026-11-10T08:00:00Z"), Repository: "sf/r", TaskID: "t-h", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,
+			Detail: map[string]any{"sessions": sessions, "agent_time_s": 0, "amount_eur": 0, "pool": true, "rung": rung}}
+	}
+	month := drawAt("2026-11-20T08:00:00Z")
+	recordAll(t, s, row(3, 1))
+	if got, err := s.PoolDrawn(ctx, "sf/r", month); err != nil || !got.IsZero() {
+		t.Fatalf("PoolDrawn after a human's grant = %+v, %v; want zero", got, err)
+	}
+	recordAll(t, s, row(2, 1))
+	if got, err := s.PoolDrawn(ctx, "sf/r", month); err != nil || got != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("PoolDrawn after rung 2's draw = %+v, %v; want 1 session", got, err)
+	}
+}
+
 // A card's life draws are its pool rows of rungs 0 and 1: 1 session, 600
 // s and 0.5 + 1 EUR. Rungs 2 and 3, a row with no pool key and another
 // card's draw are left out.
@@ -110,8 +131,8 @@ func TestCardDrawnCountsRungsZeroAndOne(t *testing.T) {
 
 // An extend draw raises the sessions and the agent time
 // in one write, and its card_extended row carries each part: 20 minutes
-// is 1200 s, and no money moves. The row is a pool draw, so the month's
-// pool reads it. A card that does not exist is ErrNotFound.
+// is 1200 s, and no money moves. The row is a human's, of rung 3, so the
+// month's pool leaves it out. A card that does not exist is ErrNotFound.
 func TestExtendDrawRaisesTimeAndWritesTheRow(t *testing.T) {
 	ctx := context.Background()
 	s := drawStore(t, "t-x", 2)
@@ -136,8 +157,8 @@ func TestExtendDrawRaisesTimeAndWritesTheRow(t *testing.T) {
 		e["amount_eur"] != 0.0 || e["from_eur"] != 2.0 || e["to_eur"] != 2.0 || e["pool"] != true || e["rung"] != 3.0 {
 		t.Fatalf("the row = %+v, want sessions 1, agent_time_s 1200, amount_eur 0 from 2 to 2, pool true, rung 3", rows[0])
 	}
-	if got, err := s.PoolDrawn(ctx, "sf/r", time.Now()); err != nil || got != (policy.Draw{Sessions: 1, AgentTime: 20 * time.Minute}) {
-		t.Fatalf("PoolDrawn = %+v, %v; want the extend's draw", got, err)
+	if got, err := s.PoolDrawn(ctx, "sf/r", time.Now()); err != nil || !got.IsZero() {
+		t.Fatalf("PoolDrawn = %+v, %v; want nothing", got, err)
 	}
 	d.Event.TaskID = "nope"
 	if _, err := s.DrawCard(ctx, "nope", d); !errors.Is(err, ErrNotFound) {

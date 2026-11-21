@@ -127,8 +127,10 @@ type fakeStore struct {
 	capResets   []policy.CapReset
 	capResetErr error
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
-	// capsFree is Free's free day, month and project headroom, all
-	// unbounded when nil; openings are Opening's answers by ref
+	// capsFree is Free's free day, month and project headroom; when nil
+	// the day and the project are unbounded and the month is the
+	// request's whole month cap, as ReadFree reads a month of no spend;
+	// openings are Opening's answers by ref
 	held     map[string]policy.TaskFree
 	capsFree *policy.Free
 	// estimates are CalibrateEstimate's earlier call and mean output by ref
@@ -328,17 +330,19 @@ func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, ru
 		e.Detail = map[string]any{}
 	}
 	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, d.EUR
-	e.Detail["sessions"], e.Detail["agent_time_s"], e.Detail["lines"] = d.Sessions, int64(d.AgentTime/time.Second), lines
+	e.Detail["sessions"], e.Detail["agent_time_s"] = d.Sessions, int64(d.AgentTime/time.Second)
 	_, err = s.Record(ctx, e)
 	return from, t.BudgetEUR, err
 }
 
-// PoolDrawn sums repository's pool draws in the UTC month of month.
+// PoolDrawn sums repository's pool draws in the UTC month of month but a
+// human's, of rung 3.
 func (s *fakeStore) PoolDrawn(_ context.Context, repository string, month time.Time) (policy.Draw, error) {
 	from := time.Date(month.UTC().Year(), month.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	return s.drawn(func(e Event) bool {
 		at := cmp.Or(e.At, time.Now())
-		return e.Repository == repository && !at.Before(from) && at.Before(from.AddDate(0, 1, 0))
+		rung, ok := toInt(e.Detail["rung"])
+		return e.Repository == repository && !at.Before(from) && at.Before(from.AddDate(0, 1, 0)) && (!ok || rung != 3)
 	}), nil
 }
 
@@ -2723,7 +2727,7 @@ func (s *fakeStore) Free(ctx context.Context, r policy.HoldRequest) (policy.Task
 	tf := s.held[r.TaskID]
 	tf.Status, tf.Budget, tf.Spent = t.Status, t.BudgetEUR, t.SpentEUR
 	inf := math.Inf(1)
-	f := policy.Free{Day: inf, Month: inf, Project: inf}
+	f := policy.Free{Day: inf, Month: r.MonthEUR, Project: inf}
 	if s.capsFree != nil {
 		f = *s.capsFree
 	}

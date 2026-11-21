@@ -675,7 +675,7 @@ func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.
 	defer s.mu.Unlock()
 	t := s.tasks[r.TaskID]
 	own, inf := policy.TaskFree{Status: t.Status, Budget: t.BudgetEUR, Spent: t.SpentEUR}, math.Inf(1)
-	return own, policy.Free{Task: policy.SessionHeadroom(own.Free(), r.ReserveEUR), Day: inf, Month: inf, Project: inf, Reserve: r.ReserveEUR, Spent: t.SpentEUR}, nil
+	return own, policy.Free{Task: policy.SessionHeadroom(own.Free(), r.ReserveEUR), Day: inf, Month: r.MonthEUR, Project: inf, Reserve: r.ReserveEUR, Spent: t.SpentEUR}, nil
 }
 
 func (s *acceptanceStore) CalibrateEstimate(_ context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error) {

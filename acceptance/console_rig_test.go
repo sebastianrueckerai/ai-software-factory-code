@@ -1445,7 +1445,8 @@ func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, erro
 }
 
 // PoolDrawn mirrors PGStore.PoolDrawn: the pool draws of repository's
-// cards in the UTC calendar month of month, every rung's, in three parts.
+// cards in the UTC calendar month of month, every rung's but a human's,
+// in three parts.
 // FailPoolReads makes it answer its failure instead, the unreadable draws
 // no readout may show as zero.
 func (a *AcceptanceRig) PoolDrawn(_ context.Context, repository string, month time.Time) (policy.Draw, error) {
@@ -1460,7 +1461,7 @@ func (a *AcceptanceRig) PoolDrawn(_ context.Context, repository string, month ti
 	var d policy.Draw
 	for _, e := range a.events {
 		if e.Repository != repository || e.Kind != factoryd.EventCardFunded && e.Kind != factoryd.EventCardExtended ||
-			e.Detail["pool"] != true || e.At.Before(from) || !e.At.Before(until) {
+			e.Detail["pool"] != true || e.Detail["rung"] == 3 || e.At.Before(from) || !e.At.Before(until) {
 			continue
 		}
 		sessions, _ := e.Detail["sessions"].(int)

@@ -146,8 +146,8 @@ func pageGET(t *testing.T, r *AcceptanceRig, ck *http.Cookie, path string) strin
 // turn funds the waiting card 1 EUR without a click: one answer to the
 // card's live case through Act on rung 2, the card at 3 EUR and the
 // month's draws at 4 of 12. Anna's own confirmed fund of 2 EUR is the
-// same answer on rung 3, a pool draw too: every rung draws from the pool,
-// and only the human's draw may pass it.
+// same answer on rung 3, which the pool does not count: a human's grant
+// draws from the project's month, so the draws stay at 4.
 func TestPoolAuthorisesFunding(t *testing.T) {
 	r, path, ck, csrf := fundRig(t)
 	r.SetLoadedPool(10)
@@ -194,8 +194,8 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	equal(t, "the pool line after the agent's fund", poolLineOf(t, r, now), []any{12.0, 4.0, true, false,
 		"0 of 30 sessions, 0 h of 30 h agent time and 4.00 of 12.00 EUR drawn this UTC month"})
 
-	// anna's confirmed fund of 2 EUR: the same answer on rung 3, a pool
-	// draw as well
+	// anna's confirmed fund of 2 EUR: the same answer on rung 3, no draw
+	// from the pool
 	r.SetLoadedAutonomy(policy.AutonomyManual)
 	theirFund := `{"task_id":"t-e","eur":2,"text":"my call"}`
 	token = proposeFund(t, r, path, ck, csrf, theirFund)
@@ -206,8 +206,8 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	equal(t, "anna's answer", lastAct(t, r), []any{"t-e", int64(1), "anna", factoryd.ViaChat, 3, factoryd.ActFund, 2.0, "my call"})
 	card, _, _ = r.Task(t.Context(), "t-e")
 	equal(t, "the card's budget", card.BudgetEUR, 5.0)
-	if drawn, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || drawn != (policy.Draw{EUR: 6}) {
-		t.Fatalf("the month's draws = %+v, %v; want 6 EUR of the pool's 12", drawn, err)
+	if drawn, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || drawn != (policy.Draw{EUR: 4}) {
+		t.Fatalf("the month's draws = %+v, %v; want 4 EUR of the pool's 12, anna's 2 left out", drawn, err)
 	}
 }
 
@@ -296,9 +296,10 @@ func TestPoolEscalationFallback(t *testing.T) {
 // face, the settings, the policy and the chat agree on the policy's pool
 // while the file sets none, then on the file's EUR 10 with this month's
 // pool draws of this repository in three parts (2 sessions, 1 h 20 min
-// of agent time and EUR 3), never the model-spend total, and an
-// unreadable read stays unreadable, never a zero. The explicit-instant
-// November-to-December fixture turns the month with the pool kept.
+// of agent time and EUR 3), never a human's grant or the model-spend
+// total, and an unreadable read stays unreadable, never a zero. The
+// explicit-instant November-to-December fixture turns the month with the
+// pool kept.
 func TestPoolReadouts(t *testing.T) {
 	r, path, ck, csrf := poolRig(t)
 	pages := map[string]string{
@@ -333,7 +334,9 @@ func TestPoolReadouts(t *testing.T) {
 		seedFundRow(t, r, eur, now)
 	}
 	seedRow(t, r, "sf/code", factoryd.EventCardExtended,
-		map[string]any{"pool": true, "rung": 3, "sessions": 2, "agent_time_s": 4800, "amount_eur": 0.0}, now)
+		map[string]any{"pool": true, "rung": 2, "sessions": 2, "agent_time_s": 4800, "amount_eur": 0.0}, now)
+	seedRow(t, r, "sf/code", factoryd.EventCardExtended,
+		map[string]any{"pool": true, "rung": 3, "sessions": 1, "agent_time_s": 600, "amount_eur": 0.0}, now) // a human's grant
 	seedRow(t, r, "sf/other", factoryd.EventCardFunded, map[string]any{"pool": true, "amount_eur": 5.0}, now) // another repository
 	seedRow(t, r, "sf/code", factoryd.EventCardFunded, map[string]any{"amount_eur": 4.0}, now)                // no pool draw
 	seedFundRow(t, r, 9, lastMonth)                                                                           // another month
