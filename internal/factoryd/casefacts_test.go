@@ -819,11 +819,12 @@ func roomRig(t *testing.T, s roomStore, project string) (*Runner, Task) {
 }
 
 // By hand: a medium card's agent time is the policy's 60 minutes, 3600
-// s, its cap and its sized cap with nothing added, and a session needs the 5 minutes of minSession; the next session on
-// small opens at the cheap floor of 0.30 EUR, above its cheapest call;
-// the month's money left is min(project 50 - 12 spent - 3 held, factory
-// 200 - 40) = 35. A store whose Free fails names the floor and the month,
-// the two readers of it, and leaves the month's money 0.
+// s, its cap and its sized cap with nothing added, and a session needs
+// the 5 minutes of minSession; the next session on small opens at the
+// cheap floor of 0.30 EUR, above its cheapest call; the month's money
+// left is min(project 50 - 12 spent - 3 held, factory 200 - 40) = 35. A
+// store whose Free fails names the floor and the month, the two readers
+// of it, and leaves the month's money 0.
 func TestRoomFactsReadsTheCapTheFloorAndTheMonth(t *testing.T) {
 	r, card := roomRig(t, roomStore{fakeStore: newFakeStore(), monthSpent: 40, projectSpent: 12, projectHeld: 3}, "budget: {month_eur: 50}\n")
 	got, err := r.RoomFacts(context.Background(), card)

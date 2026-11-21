@@ -184,7 +184,7 @@ func (b *builder) issue(n int64, status string, age time.Duration, title, body s
 // pull request open while the card has one, money left on the card and in
 // the project's month, and the pool and the card's draw bound with room.
 func facts(t factoryd.Task, kind factoryd.CaseKind) factoryd.CaseFacts {
-	f := factoryd.CaseFacts{Kind: kind, Attempts: t.Usage.Attempts, SessionCap: 3, AgentTimeS: 1500, AgentTimeCapS: 7200, SessionLeastS: 300,
+	f := factoryd.CaseFacts{Kind: kind, Attempts: t.Usage.Attempts, SessionCap: 3, AgentTimeS: 1500, AgentTimeCapS: 7200, SizedTimeS: 7200, SessionLeastS: 300,
 		Model: "big", BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, LeftEUR: t.BudgetEUR - t.SpentEUR, FloorEUR: 0.3, CeilingEUR: 18,
 		Autonomy: policy.AutonomyManual, Stage: t.Gate, Running: t.Status == "running", PosterGrant: t.Usage.PosterAttempts < factoryd.MaxPosterAttempts, Report: t.Report(),
 		DayCapEUR: 40, MonthCapEUR: 450, ProjectCapEUR: 100, SpendShare: 0.6, MonthLeftEUR: 41.2,
