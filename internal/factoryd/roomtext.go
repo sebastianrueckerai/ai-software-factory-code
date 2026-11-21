@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -32,13 +33,39 @@ func RoomLines(f CaseFacts, r Room) []string {
 	default:
 		lines = append(lines, "Enough: "+moneyLeft)
 	}
+	lines = append(lines, r.alsoLines(f)...)
+	return append(lines, "The project has "+textutil.EUR(max(0, f.MonthLeftEUR))+" EUR left this month.")
+}
+
+// alsoLines are the readout's lines of what room r raises beside the time
+// and the money: the spend limit first, then the starts.
+func (r Room) alsoLines(f CaseFacts) []string {
+	var lines []string
 	if r.Limit > 0 {
 		lines = append(lines, fmt.Sprintf("The spend limit rises from %s to %s EUR first.", textutil.EUR(f.CeilingEUR), textutil.EUR(f.CeilingEUR+r.Limit)))
 	}
 	if r.Starts > 0 {
 		lines = append(lines, "It may also start "+textutil.Plural(r.Starts, "more session", "more sessions")+".")
 	}
-	return append(lines, "The project has "+textutil.EUR(max(0, f.MonthLeftEUR))+" EUR left this month.")
+	return lines
+}
+
+// movedText is the refusal of a press whose readout showed raises other
+// than room r's on f: the card ran on between the two, so it names r's
+// raises as they are now.
+func (r Room) movedText(f CaseFacts) string {
+	var adds []string
+	if r.AgentTime > 0 {
+		adds = append(adds, minText(r.AgentTime))
+	}
+	if r.EUR > 0 {
+		adds = append(adds, textutil.EUR(r.EUR)+" EUR")
+	}
+	if len(adds) == 0 {
+		adds = []string{"no time and no money"}
+	}
+	return strings.Join(append([]string{"The card ran on since this opened: " + worthWords(r.N) + " now add " + textutil.AndList(adds) + "."},
+		append(r.alsoLines(f), "Press again to give them.")...), " ")
 }
 
 // leftText says figure left, "none left" when the figure shown is not above 0.

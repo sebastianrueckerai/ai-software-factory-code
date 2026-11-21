@@ -466,6 +466,10 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 		return factoryd.ActResult{}, factoryd.ErrActRefused("this rig answers no case")
 	}
 	cfg.PoolDrawn = func(context.Context, string, time.Time) (policy.Draw, error) { return policy.Draw{}, nil }
+	cfg.RoomFacts = func(ctx context.Context, t factoryd.Task) (factoryd.CaseFacts, error) {
+		v, _, err := cfg.Policies.CurrentPolicy(ctx)
+		return roomFacts(t, v), err
+	}
 	// the rigs keep no review or audit rows: every approval passes the gate
 	cfg.CheckMerge = func(context.Context, string, int64, string) error { return nil }
 	// the rest of the seams New requires: a rig that drives one wires its own

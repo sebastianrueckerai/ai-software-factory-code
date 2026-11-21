@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -472,5 +473,62 @@ func TestAHandoverAtTheCapTakesARoomWithoutMoney(t *testing.T) {
 	}
 	if got := (&Runner{}).rungStatement(Case{Kind: CaseSessionCap, Problem: "P"}, f, "D", nil, 1); !strings.Contains(got, "- handover, with a draw of 1 session's worth and money false: the cap is reached\n") {
 		t.Errorf("the statement does not name the handover's draw:\n%s", got)
+	}
+}
+
+// A room's guard is its four raises as the readout's press posts them: a
+// room of 2 on the ahead-of-time row adds 2 starts, 24 minutes (1440 s)
+// and 1.50 EUR, and raises no limit.
+func TestARoomShowsItsRaisesAsTheGuard(t *testing.T) {
+	want := map[string]string{"shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
+	if got := RoomFor(aheadOfTime(), 2, true).Shown(); !maps.Equal(got, want) {
+		t.Errorf("Shown = %v, want %v", got, want)
+	}
+}
+
+// A press weighs the room again at the press: its guard, the raises its
+// readout showed, passes while the card stands as it was. Once the card's
+// agent time moved from 42 to 46 minutes, a session's worth is 46 / 3 =
+// 15 min 20 s, 14 minutes are left, so the room now is min(1, 0, 1) = 0,
+// and 2 sessions' worth need 2 - 1 = 1 start, 2 x 920 - 840 = 1000 s, 17
+// minutes rounded up, and 2 x 1.20 - 2.10 = 0.30 EUR: the press is
+// refused with those figures. Under a limit of 7.00 the readout's guard
+// of no limit meets a room that raises it by 0.50 EUR. A press with no
+// guard, the chat's and the rungs', is weighed as it is.
+func TestAPressWhoseRoomMovedIsRefusedWithTheNewFigures(t *testing.T) {
+	shown := RoomFor(aheadOfTime(), 2, true).Shown()
+	press := map[string]any{"sessions": 2, "money": true}
+	for k, v := range shown {
+		press[k] = v
+	}
+	if why := refusalOn(t, aheadOfTime(), 3, extendBy(press)); why != "" {
+		t.Fatalf("the press with its readout's guard is refused: %s", why)
+	}
+	ran := aheadOfTime()
+	ran.AgentTimeS = 46 * 60
+	if got, want := refusalOn(t, ran, 3, extendBy(press)),
+		"The card ran on since this opened: 2 sessions' worth now add 17 min and 0.30 EUR. It may also start 1 more session. Press again to give them."; got != want {
+		t.Errorf("the press after the card ran on = %q, want %q", got, want)
+	}
+	limited := aheadOfTime()
+	limited.CeilingEUR = 7
+	if got, want := refusalOn(t, limited, 3, extendBy(press)),
+		"The card ran on since this opened: 2 sessions' worth now add 24 min and 1.50 EUR. The spend limit rises from 7.00 to 7.50 EUR first. It may also start 2 more sessions. Press again to give them."; got != want {
+		t.Errorf("the press under a lower limit = %q, want %q", got, want)
+	}
+	if why := refusalOn(t, ran, 3, extendBy(map[string]any{"sessions": 2, "money": true})); why != "" {
+		t.Errorf("a press with no guard is refused: %s", why)
+	}
+}
+
+// The press's fields carry the guard beside the count and the tick: the
+// extend's args are what the form posts, each guard figure as written.
+func TestArgsOfCarriesTheRoomsGuard(t *testing.T) {
+	a, _ := AnswerOf(ActExtend)
+	posted := map[string]string{"sessions": "2", "money": "yes", "shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
+	args, _, err := ArgsOf(a, func(name string) string { return posted[name] })
+	want := map[string]any{"sessions": 2, "money": true, "shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
+	if err != nil || !maps.Equal(args, want) {
+		t.Errorf("ArgsOf = %v, %v; want %v", args, err, want)
 	}
 }

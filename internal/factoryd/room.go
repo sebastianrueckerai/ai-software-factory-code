@@ -2,7 +2,10 @@ package factoryd
 
 import (
 	"math"
+	"strconv"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // MaxRoomSessions is the most sessions' worth one press of "Give more room" gives.
@@ -89,4 +92,16 @@ func RoomFor(f CaseFacts, n int, money bool) Room {
 		r.Limit = float64(max(0, Cents(f.BudgetEUR+r.EUR-f.CeilingEUR))) / 100
 	}
 	return r
+}
+
+// RoomGuard are the args a human's press of a room posts beside its count
+// and its tick: the raises its readout showed (Room.Shown), which Act
+// works out again at the press.
+var RoomGuard = []string{"shown_starts", "shown_agent_time_s", "shown_eur", "shown_limit"}
+
+// Shown are r's raises by RoomGuard's names, as its readout's press posts
+// them.
+func (r Room) Shown() map[string]string {
+	return map[string]string{"shown_starts": strconv.Itoa(r.Starts), "shown_agent_time_s": strconv.FormatInt(int64(r.AgentTime/time.Second), 10),
+		"shown_eur": textutil.EUR(r.EUR), "shown_limit": textutil.EUR(r.Limit)}
 }

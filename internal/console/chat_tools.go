@@ -1878,7 +1878,7 @@ func init() {
 			required: []string{"task_id", "text"},
 			about:    "Give a card more sessions' worth of time and money, at its stop or ahead of time.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				note, err := t.c.doExtend(t.r.Context(), t.a, in.TaskID, in.Sessions, in.Money, in.Text)
+				note, err := t.c.doExtend(t.r.Context(), t.a, in.TaskID, map[string]any{"sessions": in.Sessions, "money": in.Money}, in.Text)
 				return note, nil, err
 			}},
 		{name: "set_dependency", title: "Set a dependency", write: true,

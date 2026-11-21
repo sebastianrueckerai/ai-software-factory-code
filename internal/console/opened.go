@@ -203,7 +203,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	o.Summary = c.linkRefs(ctx, v, k.Repository, k.Summary)
 	o.Pending = bt.AnswersPending > 0
 
-	facts := factoryd.Facts{CaseFacts: factoryd.CardFacts(bt.Task, v.policy, ""), Card: bt.Task}
+	facts := factoryd.Facts{CaseFacts: c.roomFactsOf(ctx, v, bt.Task), Card: bt.Task}
 	for _, a := range v.pending {
 		if a.TaskID != bt.ID {
 			continue
@@ -238,7 +238,8 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	onCase, helperPage := false, false
 	switch {
 	case row != nil:
-		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case}
+		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case,
+			Recommend: factoryd.Recommendation{Action: row.Face.Preselected, By: row.Face.Source, Grounds: row.Face.Recommendation, Args: row.Face.PreselectedArgs}}
 		if f.Card.Kind == "human" {
 			// a human card ends closed by End the card, so the cards waiting for it ask
 			waiters, err := c.cfg.Tasks.Dependents(ctx, f.Card.ID)
@@ -549,7 +550,8 @@ func (c *Console) answersOf(ctx context.Context, v *boardView, k card, ask strin
 // answerOf is answer a by key of card k on facts f as its button shows it: its
 // label, its effect line in the factory's words, and the fields its press
 // opens with their defaults, named as its press posts them and with ids
-// under scope.
+// under scope. A room's fields open on the card's room facts, the facts
+// Act weighs its press on, with the readout of their defaults.
 func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key string, a factoryd.Answer, f factoryd.Facts, press presser, seen map[string]int) answerView {
 	// a writer's words reach a label, an effect and a field: each shows
 	// masked, as the face's own texts do
@@ -566,6 +568,14 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 	view.Press = p
 	defaults := a.Defaults(f)
 	id := "f-" + fieldID.ReplaceAllString(scope+"-"+view.Action, "-")
+	if a.Action == factoryd.ActExtend {
+		f.CaseFacts = c.roomFactsOf(ctx, v, f.Card)
+		defaults = a.Defaults(f)
+		args, _, err := factoryd.ArgsOf(a, func(field string) string { return defaults[field] })
+		room := readoutOf(f.CaseFacts, args, err, name)
+		room.ID, room.Get, room.Params = id+"-room", "/tasks/"+f.Card.ID+"/room", name("sessions")+","+name("money")
+		view.Room = &room
+	}
 	bound := factoryd.MaxAnswer
 	if a.Action == factoryd.ActReplan {
 		bound = factoryd.MaxReplanComment

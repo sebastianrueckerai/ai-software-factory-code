@@ -657,15 +657,17 @@ func TestAnInformationRequestAnswersInMyWords(t *testing.T) {
 // 2 = 2.68226108 EUR against 0.34 - 0.40 = -0.06 EUR left for sessions,
 // so 2.74226108, 2.75 EUR rounded up to the cent; on the floor of 1.90 EUR
 // spent in 1 session, with 0.10 EUR left and no reserve, 1.90 - 0.10 =
-// 1.80 EUR, at the spend limit too. The small card's pick opens the card
-// with the fields open, and the send gives the room shown.
+// 1.80 EUR, at the spend limit too, where the limit rises by the 1.80
+// EUR. Each card holds the start and the time a session takes. The small
+// card's pick opens the card with the fields open, and the send gives the
+// room shown with its guard.
 func TestGiveMoreRoomOpensAtTheMoneyStop(t *testing.T) {
 	for _, tc := range []struct {
-		group, kind, need string
+		group, kind, need, limit string
 	}{
-		{"case", string(factoryd.CaseBudgetFloor), "2.75"},
-		{"variant", "budget_floor without findings", "1.80"},
-		{"variant", "budget_floor at the spend limit", "1.80"},
+		{"case", string(factoryd.CaseBudgetFloor), "2.75", "0.00"},
+		{"variant", "budget_floor without findings", "1.80", "0.00"},
+		{"variant", "budget_floor at the spend limit", "1.80", "1.80"},
 	} {
 		r, ck, _, target, body := openedEntry(t, tc.group, tc.kind, "&press="+factoryd.ActExtend)
 		send := answerForm(t, body, factoryd.ActExtend)
@@ -682,7 +684,8 @@ func TestGiveMoreRoomOpensAtTheMoneyStop(t *testing.T) {
 			t.Fatalf("%s: the send = %d: %s", tc.kind, rec.Code, rec.Body)
 		}
 		got, _ := actedOnce(t, r)
-		if got.Res.Action != factoryd.ActExtend || !reflect.DeepEqual(got.Res.Args, map[string]any{"sessions": 1, "money": true}) || got.TaskID != target {
+		want := map[string]any{"sessions": 1, "money": true, "shown_starts": "0", "shown_agent_time_s": "0", "shown_eur": tc.need, "shown_limit": tc.limit}
+		if got.Res.Action != factoryd.ActExtend || !reflect.DeepEqual(got.Res.Args, want) || got.TaskID != target {
 			t.Errorf("%s: Act took %+v, want a room of 1 session's worth with its money", tc.kind, got.Res)
 		}
 	}

@@ -1336,7 +1336,12 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 	if err != nil {
 		return "", err
 	}
-	more := factoryd.MoreOf(t, factoryd.Facts{})
+	facts, err := c.cfg.RoomFacts(ctx, t)
+	if err != nil {
+		log.Printf("console: the room facts of %s: %v", t.ID, err)
+		return "", refuse(http.StatusServiceUnavailable, "The card's facts could not be read, so nothing was pressed. Try again.")
+	}
+	more := factoryd.MoreOf(t, factoryd.Facts{CaseFacts: facts})
 	i := slices.IndexFunc(more, func(m factoryd.Answer) bool { return m.Key() == key })
 	if i < 0 {
 		return "", refuse(http.StatusBadRequest, "This answer names no question of the card. Reload the board and press the answer again.")
@@ -1358,12 +1363,10 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 	case factoryd.ActReplan:
 		return c.doReplan(ctx, a, id, note, field(factoryd.OffMainField) != "")
 	case factoryd.ActExtend:
-		sessions, ok := args["sessions"].(int)
-		if !ok {
-			sessions = 1
+		if _, ok := args["sessions"]; !ok {
+			args["sessions"] = 1
 		}
-		money, _ := args["money"].(bool)
-		return c.doExtend(ctx, a, id, sessions, money, note)
+		return c.doExtend(ctx, a, id, args, note)
 	case factoryd.AnswerSteer:
 		return c.doSteer(ctx, a, id, note)
 	case factoryd.ActClose:
@@ -1510,13 +1513,14 @@ func grantOf(k factoryd.Case) (map[string]any, bool) {
 	return nil, false
 }
 
-// doExtend gives card id the room of sessions' worth, with its money
-// when money, through Act on any live agent card: the answer on its live
-// case at a stop, room ahead of time on a card waiting on none. On a
-// case the note, or when none the room in words, is the answer Act has
-// posted as the human's comment. The text names the raises Act applied.
-func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions int, money bool, note string) (string, error) {
-	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": sessions, "money": money}}
+// doExtend gives card id the room an extend's args ask for, its count
+// and its money, with the guard of a press's readout, through Act on any
+// live agent card: the answer on its live case at a stop, room ahead of
+// time on a card waiting on none. On a case the note, or when none the
+// room in words, is the answer Act has posted as the human's comment. The
+// text names the raises Act applied.
+func (c *Console) doExtend(ctx context.Context, a actor, id string, args map[string]any, note string) (string, error) {
+	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: args}
 	res.Note = cmp.Or(strings.TrimSpace(note), res.Sentence())
 	if err := answerFits(res.Note); err != nil {
 		return "", err

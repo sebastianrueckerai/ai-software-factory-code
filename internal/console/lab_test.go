@@ -416,12 +416,16 @@ type labScene struct {
 	cases map[string][]factoryd.Case
 	steps map[int64][]factoryd.CaseStep
 	asks  map[int64]factoryd.CaseAsk
+	// room are the room facts factoryd reads for a card (RoomFacts), by
+	// card, where its live ask's facts do not stand for them
+	room map[string]factoryd.CaseFacts
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
 	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene,
-	"human": humanScene, "document": documentScene, "cases": casesScene, "planslots": planSlotsScene}
+	"human": humanScene, "document": documentScene, "cases": casesScene, "planslots": planSlotsScene,
+	"room-ahead": roomAheadScene, "room-money": roomMoneyScene, "room-chat": roomChatScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -730,7 +734,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics, tokens, criteria, human, document or cases", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics, tokens, criteria, human, document, cases, planslots, room-ahead, room-money or room-chat", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }
@@ -799,7 +803,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
 	r.tasks.criteria = s.criteria
 	r.tasks.mu.Unlock()
-	r.openCases, r.caseSteps, r.caseAsks, r.briefs = s.cases, s.steps, s.asks, s.briefs
+	r.openCases, r.caseSteps, r.caseAsks, r.briefs, r.roomFacts = s.cases, s.steps, s.asks, s.briefs, s.room
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
 	var highest int64
@@ -2176,5 +2180,77 @@ func planSlotsScene(now time.Time) labScene {
 	for i := range 3 {
 		s.asks[int64(500+i)] = factoryd.CaseAsk{At: now.Add(-12 * time.Minute), Detail: map[string]any{}}
 	}
+	return s
+}
+
+// labRoomCard is the quiet board's card issue in status, 3 sessions in 42
+// minutes for 3.60 EUR of budget, under a spend limit of 8.00 EUR, and
+// the quiet board with its spend: a session's worth is 14 minutes and
+// 1.20 EUR, from its 3 sessions.
+func labRoomCard(now time.Time, issue int64, status, title, body string, budget float64) (labScene, factoryd.Task) {
+	s := quietScene(now)
+	k := labCard(now, issue, status, "direct", 3*time.Hour, title, body)
+	k.BudgetEUR, k.SpentEUR, k.CeilingEUR, k.Usage.Attempts, k.Usage.AgentTime = budget, 3.60, 8, 3, 42*time.Minute
+	s.spend += k.SpentEUR
+	s.drawer = k.ID
+	return s, k
+}
+
+// labRoomFacts are card k's room facts in a room scene: its record's, under
+// sessionCap sessions and capMin minutes of agent time, the gate reserve
+// of 0.30 EUR, the next session's floor of 0.50 EUR, and the project's
+// month of 120.00 EUR less the scene's spend.
+func labRoomFacts(s labScene, k factoryd.Task, sessionCap int, capMin float64) factoryd.CaseFacts {
+	return factoryd.CaseFacts{Attempts: k.Usage.Attempts, AgentTimeS: k.Usage.AgentTime.Seconds(), SpentEUR: k.SpentEUR, BudgetEUR: k.BudgetEUR,
+		LeftEUR: k.Left(), ReserveEUR: 0.30, CeilingEUR: k.CeilingEUR, SessionCap: sessionCap, AgentTimeCapS: capMin * 60, FloorEUR: 0.50,
+		MonthLeftEUR: 120 - s.spend, Running: k.Status == "running"}
+}
+
+// roomAheadScene is the quiet board with #640 running ahead of time, as
+// the spec's first row holds it: 1 start, 18 of 60 minutes and 2.40 - 0.30
+// = 2.10 EUR left of its 6.00, the project 120.00 - 7.70 = 112.30 EUR. Its
+// Give more room at 1 aims at a room of 2: 1 start, 2 x 14 - 18 = 10
+// minutes and 2 x 1.20 - 2.10 = 0.30 EUR; at 2, 2 starts, 24 minutes and
+// 1.50 EUR.
+func roomAheadScene(now time.Time) labScene {
+	s, k := labRoomCard(now, 640, "running", "Board export: stream the snapshot to the bucket",
+		"Write the nightly snapshot to the object store as it is read, so a large board needs no temporary file.", 6)
+	k.Gate, k.GateSince = factoryd.GateSession, &k.CreatedAt
+	s.tasks = append([]factoryd.BoardTask{{Task: k}}, s.tasks...)
+	s.room = map[string]factoryd.CaseFacts{k.ID: labRoomFacts(s, k, 4, 60)}
+	return s
+}
+
+// roomMoneyScene is the quiet board with #641 at the money stop, as the
+// spec's last row holds it: 2 starts and 30 of 72 minutes left, but 0.70 -
+// 0.30 = 0.40 EUR left of its 4.30, under the 0.50 EUR a session opens
+// with. Its Give more room at 1, the money ticked, adds 1.20 - 0.40 = 0.80
+// EUR and nothing else.
+func roomMoneyScene(now time.Time) labScene {
+	s, k := labRoomCard(now, 641, "waiting-human", "Board export: keep the nightly snapshots",
+		"Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots.", 4.30)
+	s.tasks = append([]factoryd.BoardTask{{Task: k, Escalation: "the card's budget cannot fund the next session", EscalatedAt: now.Add(-9 * time.Minute), QuestionComment: 1141}}, s.tasks...)
+	f := labRoomFacts(s, k, 5, 72)
+	f.Kind = factoryd.CaseBudgetFloor
+	b, _ := json.Marshal(f)
+	var facts map[string]any
+	_ = json.Unmarshal(b, &facts)
+	s.cases = map[string][]factoryd.Case{k.ID: {{ID: 141, TaskID: k.ID, Repository: "sf/code", Kind: factoryd.CaseBudgetFloor, Status: factoryd.CaseAtHuman,
+		Problem: "The card's budget cannot fund the next session.", OpenedAt: now.Add(-9 * time.Minute), CommentID: 1141, Facts: facts}}}
+	return s
+}
+
+// roomChatScene is the quiet board with the human card the chat's spent
+// budget files: the chat spent its 5.00 EUR this month, and the card asks
+// for money for the chat.
+func roomChatScene(now time.Time) labScene {
+	s := quietScene(now)
+	chat := factoryd.Task{ID: "chat-sf-code-" + now.UTC().Format("2006-01"), Kind: factoryd.KindChat, Status: "running", Repository: "sf/code",
+		BudgetEUR: 5, SpentEUR: 5}
+	q := factoryd.ChatBudgetQuestion(chat)
+	k := labCard(now, 642, "waiting-human", "direct", 2*time.Hour, q.Ask, q.Why)
+	k.Kind, k.Source, k.Parent, k.BudgetEUR, k.ModelAlias = "human", factoryd.SourceChatBudget, chat.ID, chat.BudgetEUR, ""
+	s.tasks = append([]factoryd.BoardTask{{Task: k, Escalation: q.Ask, EscalatedAt: now.Add(-2 * time.Hour), Question: &q}}, s.tasks...)
+	s.drawer = k.ID
 	return s
 }

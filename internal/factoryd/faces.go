@@ -623,7 +623,8 @@ func (a Answer) Defaults(f Facts) map[string]string {
 // ArgsOf parses the fields of answer a from get, a field's posted value by
 // name: the action's arguments, the variant's own among them, and the
 // amount in EUR a money field holds. An empty field is left out, but a
-// room's money box, which unticked gives the room without its money.
+// room's money box, which unticked gives the room without its money. A
+// room's press carries its guard (RoomGuard) as posted.
 func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, error) {
 	args := map[string]any{}
 	switch a.Action {
@@ -633,6 +634,11 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 		args["verdict"] = cmp.Or(a.Variant, "met")
 	case ActExtend:
 		args["money"] = strings.TrimSpace(get("money")) == "yes"
+		for _, k := range RoomGuard {
+			if v := strings.TrimSpace(get(k)); v != "" {
+				args[k] = v
+			}
+		}
 	}
 	var eur float64
 	for _, field := range a.Fields {

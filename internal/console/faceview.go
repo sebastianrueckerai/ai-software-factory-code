@@ -122,6 +122,8 @@ type answerView struct {
 	Press         *pressForm
 	Thread        string
 	Open          bool
+	// Room is a room's readout under its fields, nil for any other answer.
+	Room *roomView
 }
 
 // pressForm is the form of the one button: where it posts, with what,

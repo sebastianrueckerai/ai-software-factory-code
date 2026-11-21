@@ -850,3 +850,23 @@ func TestMonthLeftWithoutAProjectCap(t *testing.T) {
 		t.Fatalf("month left = %v, partial %v, %v; want 160 EUR and every reader read", got.MonthLeftEUR, got.Partial, err)
 	}
 }
+
+// The next session's model is the one the card's live ask names, as Act
+// reads its facts at the press (FactsAtCase): t1 runs on small, the
+// ladder's start, whose session floor is the cheap 0.30 EUR; once its ask
+// at the session cap names big, a frontier model, its room is priced at
+// the frontier floor of 0.60 EUR.
+func TestRoomFactsReadTheModelTheCardsAskNames(t *testing.T) {
+	s := roomStore{fakeStore: newFakeStore()}
+	r, card := roomRig(t, s, "")
+	r.cfg.Prices = nil
+	got, err := r.RoomFacts(context.Background(), card)
+	if err != nil || got.FloorEUR != 0.3 {
+		t.Fatalf("the floor on no ask = %v, %v; want 0.30 EUR", got.FloorEUR, err)
+	}
+	s.cases = append(s.cases, Case{ID: 1, TaskID: card.ID, Kind: CaseSessionCap, Status: CaseAtHuman, Facts: map[string]any{"model": "big"}})
+	got, err = r.RoomFacts(context.Background(), card)
+	if err != nil || got.Model != "big" || got.FloorEUR != 0.6 {
+		t.Fatalf("the facts at the ask naming big = model %q, floor %v, %v; want big at 0.60 EUR", got.Model, got.FloorEUR, err)
+	}
+}

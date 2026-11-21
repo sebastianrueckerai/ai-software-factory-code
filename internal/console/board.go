@@ -1709,6 +1709,8 @@ type boardView struct {
 	// requests are the requests the opened card read for its brief, which
 	// its case's page reads no second time
 	requests map[int64]approvalCard
+	// rooms are the room facts the opened card read, by card
+	rooms map[string]factoryd.CaseFacts
 }
 
 // viewOf reads what every card of a render shares, and the projects agents
@@ -3044,6 +3046,7 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	field := func(name string) string { return strings.Join(r.PostForm[action+"."+name], "\n") }
 	if named == "" {
 		_, err := c.doCardAnswer(r.Context(), button(r), id, action, field)
+		roomPressed(w, action, err)
 		c.pressed(w, r, err)
 		return
 	}
@@ -3065,8 +3068,23 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	for _, f := range answer.Fields {
 		values[f.Name] = field(f.Name)
 	}
+	if answer.Action == factoryd.ActExtend {
+		for _, k := range factoryd.RoomGuard {
+			values[k] = field(k)
+		}
+	}
 	_, err = c.doPressCase(r.Context(), button(r), id, caseID, answer, values)
+	roomPressed(w, action, err)
 	c.pressed(w, r, err)
+}
+
+// roomPressed has a refused press of a room ask its readout to read again
+// (room-refused), so the figures it shows and its guard follow the card as
+// it is now.
+func roomPressed(w http.ResponseWriter, action string, err error) {
+	if err != nil && action == factoryd.ActExtend {
+		w.Header().Set("HX-Trigger", "room-refused")
+	}
 }
 
 // answersLiveAsk refuses an answer from a form that names a case other than

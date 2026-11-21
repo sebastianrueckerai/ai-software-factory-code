@@ -622,7 +622,7 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 func TestExtendGivesTheRoomAndAnswers(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 2, true, "the restructure is worth it"); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", map[string]any{"sessions": 2, "money": true}, "the restructure is worth it"); err != nil {
 		t.Fatalf("the room: %v", err)
 	}
 	got, posts := actedOnce(t, r)
@@ -634,7 +634,7 @@ func TestExtendGivesTheRoomAndAnswers(t *testing.T) {
 	equal(t, "the answer posted", posted, "the restructure is worth it")
 
 	r = fundRig(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, false, ""); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", map[string]any{"sessions": 1, "money": false}, ""); err != nil {
 		t.Fatalf("the room without money: %v", err)
 	}
 	got, _ = actedOnce(t, r)
@@ -721,7 +721,7 @@ func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
 		r := fundRig(t)
 		setStatus(r, status)
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, true, ""); err != nil {
+		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", map[string]any{"sessions": 1, "money": true}, ""); err != nil {
 			t.Fatalf("%s: the room: %v", status, err)
 		}
 		got, _ := actedOnce(t, r)
@@ -742,7 +742,7 @@ func TestExtendRefusesADoneCard(t *testing.T) {
 	r := fundRig(t)
 	setStatus(r, "done")
 	_, s := r.loggedIn(t)
-	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, true, "")
+	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", map[string]any{"sessions": 1, "money": true}, "")
 	var no *refusal
 	if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.Contains(no.msg, "not a live card to give room") || len(r.acted) != 0 {
 		t.Fatalf("the room of a done card = %v, Act took %+v; want a 409 refusal before Act", err, r.acted)

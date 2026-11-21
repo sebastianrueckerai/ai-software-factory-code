@@ -82,6 +82,7 @@ var accessTable = map[string]accessRule{
 	"GET /board/finished":                          rMember,
 	"GET /tasks/new":                               rFactory,
 	"GET /tasks/{id}/timeline":                     {need: writer, scope: scTask},
+	"GET /tasks/{id}/room":                         rCard,
 	"GET /costs":                                   rFactory,
 	"GET /policy":                                  rFactory,
 	"GET /resources":                               rFactory,

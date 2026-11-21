@@ -330,6 +330,7 @@ func newParkRig(t *testing.T) *parkRig {
 	ccfg.NewestAskCase = store.NewestAskCase
 	ccfg.PoolDrawn = store.PoolDrawn
 	ccfg.Act = runner.Act
+	ccfg.RoomFacts = runner.RoomFacts
 	ccfg.CardDigest = runner.CardDigest
 	ccfg.CardStep = runner.CardStep
 	ccfg.BoardDigest = runner.BoardDigest

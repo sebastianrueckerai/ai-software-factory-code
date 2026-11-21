@@ -489,7 +489,7 @@ func TestASpendLimitPassedAsksForTheRoomAgain(t *testing.T) {
 		r := needRig(t)
 		_, s := r.loggedIn(t)
 		r.actErr = &factoryd.CardCapError{Budget: 4.5}
-		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: via}, "t-e", 1, true, "go")
+		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: via}, "t-e", map[string]any{"sessions": 1, "money": true}, "go")
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
 			t.Errorf("%s: the room = %v, want %q", via, err, want)

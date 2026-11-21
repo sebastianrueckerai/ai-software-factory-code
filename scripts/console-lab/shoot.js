@@ -316,6 +316,29 @@ async function main() {
           }, false);
         }
         if (s === "fire" && theme === "dark") await shot("held-1440.png", desk, "/", feet, false);
+        // the room's control (the card-room plan) open on the opened card:
+        // among the running card's other actions, on the money stop, and
+        // the chat's budget ask; at its default and, on a card, after its
+        // count went to 2; at the desk and on the phone
+        if (s.startsWith("room-")) {
+          const at = { "room-ahead": ":more", "room-money": ":press=extend", "room-chat": ":overview" }[s];
+          const pick = { "room-ahead": 'form[data-answer="extend"]', "room-chat": 'form[data-answer="choice:fund_chat"]' }[s];
+          const openRoom = (n) => async (p) => {
+            const form = p.page.locator("#drawer " + (pick || 'form[data-answer="extend"]'));
+            if (pick) await form.locator("button.pick").click();
+            if (n) {
+              const count = form.locator('input[name="extend.sessions"]');
+              await count.fill(n);
+              await count.dispatchEvent("change");
+            }
+            await p.idle();
+            await form.scrollIntoViewIfNeeded();
+          };
+          for (const [vp, w] of [[desk, 1440], [phone, 390]]) {
+            await shot("room-" + w + ".png", vp, (id) => "/#card=" + id + at, openRoom(""), false);
+            if (s !== "room-chat") await shot("room-2-" + w + ".png", vp, (id) => "/#card=" + id + at, openRoom("2"), false);
+          }
+        }
         if (s !== "busy") continue;
         // the documents (roadmap 277): the roadmap read, a link into a
         // plan, Back, the hover peek, wide, and the phone

@@ -102,6 +102,9 @@ const mustHave = {
   tokens: ["via claude-laptop", "sent by the chat token claude-laptop", "What does #606 still wait on?", "Leave #606 to its session."],
   metrics: ["Delivery", "Stability", "Cost", "Autonomy", "The factory itself", "deploys / week", "lead time, push to live",
     "spend by model", "served by", "7 days", "28 days", "90 days"],
+  "room-ahead": ["#640", "Board export: stream the snapshot to the bucket", "In progress"],
+  "room-money": ["#641", "The card's money left does not pay its next session.", "near its budget", "Needs you"],
+  "room-chat": ["#642", "is spent. Add money to it?", "Needs you"],
 };
 
 // mustOpen are the words a scenario's opened cards show, by the hash that
@@ -118,6 +121,16 @@ const mustOpen = {
   fire: {
     [labID(619) + ":overview"]: ["Rent a cx33 server for 5 hours at about 0.07 EUR?", "nothing for over 41 min", "Beyond the project's envelope", "Approve it", "Refuse it"],
     [labID(620) + ":overview"]: ["1.95 of 2.00 EUR"],
+  },
+  // the money stop opens Give more room at 1 with its money: it adds the
+  // 1.20 - 0.40 = 0.80 EUR a session's worth lacks, and nothing else
+  "room-money": {
+    [labID(641) + ":press=extend"]: ["The card's money left does not pay its next session. How should it go on?", "Give more room", "Sessions' worth",
+      "With its money", "About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Enough: 30 min left",
+      "Adds 0.80 EUR: 0.40 EUR left, then 1.20 EUR", "The project has 112.30 EUR left this month.", "End the card", "Not now"],
+  },
+  "room-chat": {
+    [labID(642) + ":overview"]: ["Add money to the chat", "Raises the chat's budget for this month. The card closes.", "The chat spent 5.00 EUR of its 5.00 EUR for"],
   },
 };
 
@@ -666,6 +679,41 @@ async function text(page) {
       if (psw) fails.push("metrics: horizontal scroll at 390 (" + psw + " px)");
       if (mp.errors.length) fails.push("metrics phone: " + mp.errors[0]);
       await mp.ctx.close();
+    }
+    if (sc === "room-ahead") {
+      // the room's control (the card-room plan): Give more room among the
+      // running card's other actions opens at 1 with its readout; a new
+      // count, a cleared money box and a refused press each read the
+      // readout again from the server, and the guard the press posts
+      // follows it
+      const rp = await open(browser, { width: 1440, height: 900 });
+      await rp.page.goto(base + "/#card=" + labID(640) + ":more", { waitUntil: "load" });
+      await rp.page.waitForTimeout(800);
+      const form = rp.page.locator('#drawer form[data-answer="extend"]');
+      await form.locator("button.pick").click();
+      const guard = () => form.evaluate((f) => ["starts", "agent_time_s", "eur", "limit"].map((k) => f.elements.namedItem("extend.shown_" + k).value).join(" "));
+      const reads = async (label, lines, want) => {
+        const got = (await form.locator(".room").innerText()).replace(/\s+/g, " ");
+        for (const l of lines) if (!got.includes(l)) fails.push("room-ahead: " + label + ': the readout lacks "' + l + '" (' + got + ")");
+        const g = await guard();
+        if (g !== want) fails.push("room-ahead: " + label + ": the press posts the guard " + g + ", want " + want);
+      };
+      await reads("at 1", ["About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Adds 10 min: 18 min left, then 28 min",
+        "Adds 0.30 EUR: 2.10 EUR left, then 2.40 EUR", "It may also start 1 more session.", "The project has 112.30 EUR left this month."], "1 600 0.30 0.00");
+      const count = form.locator('input[name="extend.sessions"]');
+      await count.fill("2");
+      await count.dispatchEvent("change");
+      await rp.page.waitForTimeout(700);
+      await reads("at 2", ["Adds 24 min: 18 min left, then 42 min", "Adds 1.50 EUR: 2.10 EUR left, then 3.60 EUR", "It may also start 2 more sessions."], "2 1440 1.50 0.00");
+      await form.locator('input[name="extend.money"]').uncheck();
+      await rp.page.waitForTimeout(700);
+      await reads("at 2 without money", ["Adds 24 min: 18 min left, then 42 min", "Adds no money: 2.10 EUR left"], "2 1440 0.00 0.00");
+      await count.evaluate((c) => { c.value = "3"; });
+      await form.evaluate((f) => f.dispatchEvent(new CustomEvent("room-refused", { bubbles: true })));
+      await rp.page.waitForTimeout(700);
+      await reads("after a refused press at 3", ["Adds 38 min: 18 min left, then 56 min", "It may also start 3 more sessions."], "3 2280 0.00 0.00");
+      if (rp.errors.length) fails.push("room-ahead: " + rp.errors[0]);
+      await rp.ctx.close();
     }
     if (sc === "quiet") {
       const merged = p.page.locator('#board [data-card="' + labID(623) + '"]');

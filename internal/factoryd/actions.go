@@ -875,6 +875,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if !asked {
 		return ""
 	}
+	if why := shownRefusal(f, r, room); why != "" {
+		return why
+	}
 	unread := slices.IndexFunc(f.Partial, func(p string) bool { return p == "events" || p == "checks" })
 	switch {
 	case room.EUR > 0 && !moneyRungs[rung]:
@@ -890,6 +893,23 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		return why
 	}
 	return drawWithin(f, rung, room)
+}
+
+// shownRefusal is why a press whose guard (RoomGuard) differs from room,
+// the room worked out at the press, is refused, "" when they agree or r
+// posts no guard, as the chat's and the rungs' answers do not.
+func shownRefusal(f CaseFacts, r Resolution, room Room) string {
+	shown := room.Shown()
+	guarded, same := false, true
+	for _, k := range RoomGuard {
+		v, ok := r.Args[k]
+		guarded = guarded || ok
+		same = same && ok && fmt.Sprint(v) == shown[k]
+	}
+	if !guarded || same {
+		return ""
+	}
+	return room.movedText(f)
 }
 
 // moneyRungs are the deciders who draw money for a card, limitRungs those

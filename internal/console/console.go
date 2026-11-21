@@ -321,13 +321,13 @@ type Config struct {
 	// a free production answers factoryd.ErrNotHeld.
 	DeployNow func(ctx context.Context, repository, by, via, decider string) (string, error)
 	// Act answers a card's case (factoryd's Runner.Act): every answer,
-	// grant, extend, fund and close of a card waiting on a case goes
-	// through it. A refusal is factoryd.ErrActRefused. New refuses a
+	// room and close of a card goes through it. A refusal is factoryd.ErrActRefused. New refuses a
 	// Config without it.
 	Act func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error)
 	// RoomFacts are the facts a card's room is worked out from
 	// (factoryd's Runner.RoomFacts): its record's, its agent-time cap, the
 	// floor of its next session and the project's money left this month.
+	// New refuses a Config without it.
 	RoomFacts func(ctx context.Context, t factoryd.Task) (factoryd.CaseFacts, error)
 	// InfraRepo is the infra repository (owner/name), where the new-project
 	// button files its pull request; InfraToken reads its pull requests
@@ -572,6 +572,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /board/finished", c.finishedPage, "", "the next page of a column of finished cards: a fragment of the board page, whose tool is board"},
 		{"GET /tasks/new", c.newTaskForm, "", "the new task's form: the chat files cards (new_card), not tasks"},
 		{"GET /tasks/{id}/timeline", c.timeline, "", "a card's timeline fragment: the card read names where its reviews, checks and plan are"},
+		{"GET /tasks/{id}/room", c.roomReadout, "", "the readout of a card's room at a count: a fragment of the opened card, whose give_room names the raises it applies"},
 		{"GET /costs", c.costs, "costs", ""},
 		{"GET /policy", c.policy, "policy", ""},
 		{"GET /resources", c.resources, "resources", ""},
@@ -691,6 +692,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no NewestAskCase")
 	case cfg.Act == nil:
 		return nil, errors.New("console: no Act")
+	case cfg.RoomFacts == nil:
+		return nil, errors.New("console: no RoomFacts")
 	case cfg.PoolDrawn == nil:
 		return nil, errors.New("console: no PoolDrawn")
 	case cfg.CheckMerge == nil:

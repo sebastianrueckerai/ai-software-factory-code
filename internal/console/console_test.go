@@ -1322,6 +1322,9 @@ type rig struct {
 	caseSteps    map[int64][]factoryd.CaseStep
 	// caseAsks are the newest ask of each case by id
 	caseAsks map[int64]factoryd.CaseAsk
+	// roomFacts are the room facts RoomFacts answers by card, in place of
+	// its live ask's stored facts, else its record's
+	roomFacts map[string]factoryd.CaseFacts
 	// briefs are the texts each card's sessions got, by task id
 	briefs map[string][]factoryd.SessionBrief
 	// web is the chat's fake web door; the gateway is the lab's scripted
@@ -1747,6 +1750,16 @@ func newRig(t *testing.T) *rig {
 			return out, err
 		},
 		PoolDrawn: func(context.Context, string, time.Time) (policy.Draw, error) { return r.drawn, r.drawnErr },
+		RoomFacts: func(ctx context.Context, t factoryd.Task) (factoryd.CaseFacts, error) {
+			if f, ok := r.roomFacts[t.ID]; ok {
+				return f, nil
+			}
+			if k, err := r.c.cfg.NewestAskCase(ctx, t.ID); err == nil && k.ID != 0 {
+				return factoryd.FactsOf(k), nil
+			}
+			v, _, err := r.ledger.CurrentPolicy(ctx)
+			return factoryd.CardFacts(t, v, ""), err
+		},
 		CaseSteps: func(_ context.Context, caseID int64) ([]factoryd.CaseStep, error) { return r.caseSteps[caseID], nil },
 		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
@@ -2112,6 +2125,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"CaseSteps":                func(c *Config) { c.CaseSteps = nil },
 		"CaseDesk":                 func(c *Config) { c.CaseDesk = nil },
 		"NewestAskCase":            func(c *Config) { c.NewestAskCase = nil },
+		"RoomFacts":                func(c *Config) { c.RoomFacts = nil },
 		"CheckMerge":               func(c *Config) { c.CheckMerge = nil },
 		"Writers":                  func(c *Config) { c.Writers = nil },
 		"Writes":                   func(c *Config) { c.Writes = nil },
