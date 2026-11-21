@@ -36,7 +36,7 @@ func cappedCard(r *rig, t *testing.T) {
 // a session's worth of 0.30 EUR, the floor, leaves room for none, so 1
 // session's worth needs 0.10 EUR more, and no start or time, of which the
 // card holds 2 starts and 110 minutes: the press posts that readout's
-// guard.
+// guard, the room of 0 the card has with it.
 func TestTheMoneyStopOpensGiveMoreRoom(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -52,7 +52,7 @@ func TestTheMoneyStopOpensGiveMoreRoom(t *testing.T) {
 	}
 	got, posts := actedOnce(t, r)
 	want := roomOf(1, true, "", 3, factoryd.ViaButton)
-	maps.Copy(want.Res.Args, map[string]any{"shown_starts": "0", "shown_agent_time_s": "0", "shown_eur": "0.10", "shown_limit": "0.00"})
+	maps.Copy(want.Res.Args, map[string]any{"shown_now": "0", "shown_starts": "0", "shown_agent_time_s": "0", "shown_eur": "0.10", "shown_limit": "0.00"})
 	equal(t, "the room", []any{got, posts}, []any{want, true})
 	if got, want := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "“Give more room”: 1 session's worth"; got != want {
 		t.Fatalf("the room posted %q on the issue, want the answer in its words %q", got, want)
@@ -62,7 +62,8 @@ func TestTheMoneyStopOpensGiveMoreRoom(t *testing.T) {
 // Room on a card that waits on no case, as a running one, is given on no
 // case, ahead of time, with the guard of the readout the form opened with:
 // 1 session's worth on a record that names no agent-time cap and no price
-// is the least session, 5 minutes (300 s), and no start or money. A count
+// is the least session, 5 minutes (300 s), and no start or money, on a
+// room of 0, no time being left. A count
 // that is no whole number never reaches Act, and no card is 404.
 func TestGiveMoreRoomOnARunningCardDrawsOnNoCase(t *testing.T) {
 	r := newRig(t)
@@ -77,7 +78,7 @@ func TestGiveMoreRoomOnARunningCardDrawsOnNoCase(t *testing.T) {
 	}
 	got, _ := actedOnce(t, r)
 	if got.TaskID != "t-r" || got.CaseID != 0 || got.Res.Action != factoryd.ActExtend || !reflect.DeepEqual(got.Res.Args, map[string]any{"sessions": 2, "money": true,
-		"shown_starts": "0", "shown_agent_time_s": "300", "shown_eur": "0.00", "shown_limit": "0.00"}) {
+		"shown_now": "0", "shown_starts": "0", "shown_agent_time_s": "300", "shown_eur": "0.00", "shown_limit": "0.00"}) {
 		t.Fatalf("Act took %+v, want a room of 2 sessions' worth with its money for t-r on no case", got)
 	}
 	if rec := r.do(post("/tasks/t-missing/resolve", url.Values{"csrf": {s.csrf}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}}), ck); rec.Code != http.StatusNotFound {

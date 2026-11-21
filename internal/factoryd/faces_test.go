@@ -397,7 +397,7 @@ func TestAnAgentsAnswersLeaveAFaceWhereNoSessionCanStart(t *testing.T) {
 		"How should the new digests, sha256 sums and versions be obtained?"; capped.Story.Happened != want {
 		t.Errorf("at the session cap the story's line is %q, want the agent's question whole", capped.Story.Happened)
 	}
-	if want := "Gives the card 1 more session's worth, and the agent's question comes back to you."; capped.Answers[0].Effect != want {
+	if want := "Gives the card more sessions' worth, and the agent's question comes back to you."; capped.Answers[0].Effect != want {
 		t.Errorf("the extend's effect %q, want %q", capped.Answers[0].Effect, want)
 	}
 }

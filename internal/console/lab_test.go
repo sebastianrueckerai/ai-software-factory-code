@@ -222,6 +222,15 @@ func TestLab(t *testing.T) {
 		streamFails.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// a refused press (the card-room plan): Act refuses its next call with
+	// ?text, as it refuses a press whose room changed, so the refusal
+	// takes the console's own error path to the page
+	mux.HandleFunc("POST /lab/act-refuse", func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		r.actErrs = map[int]error{len(r.acted) + 1: factoryd.ErrActRefused(req.URL.Query().Get("text"))}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /lab/scenario/{name}", func(w http.ResponseWriter, req *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()

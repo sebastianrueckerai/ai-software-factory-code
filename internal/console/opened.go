@@ -108,9 +108,10 @@ type fieldView struct {
 	ID, Name, Label, Hint, Value string
 	Kind                         string
 	Required                     bool
-	// Max bounds a note's words, as its door takes them.
-	Max     int
-	Options []optionView
+	// MaxLen bounds a note's words, as its door takes them; Min and Max
+	// bound a number, Max 0 for no bound.
+	MaxLen, Min, Max int
+	Options          []optionView
 }
 
 type optionView struct {
@@ -585,8 +586,8 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 			p.Values = append(p.Values, hidden{name(field.Name), defaults[field.Name]})
 			continue
 		}
-		fv := fieldView{ID: id + "-" + field.Name, Name: name(field.Name), Label: field.Label, Value: clean(defaults[field.Name]), Required: field.Required,
-			Max: cmp.Or(p.Max, bound)}
+		fv := fieldView{ID: id + "-" + field.Name, Name: name(field.Name), Label: field.Label, Value: clean(defaults[field.Name]),
+			Required: field.Required || field.Min > 0, MaxLen: cmp.Or(p.Max, bound), Min: field.Min, Max: field.Max}
 		if field.Required && fv.Value == "" {
 			fv.Hint = field.Hint
 		}

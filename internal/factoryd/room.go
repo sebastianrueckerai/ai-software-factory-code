@@ -95,13 +95,14 @@ func RoomFor(f CaseFacts, n int, money bool) Room {
 }
 
 // RoomGuard are the args a human's press of a room posts beside its count
-// and its tick: the raises its readout showed (Room.Shown), which Act
-// works out again at the press.
-var RoomGuard = []string{"shown_starts", "shown_agent_time_s", "shown_eur", "shown_limit"}
+// and its tick: the room the card had and the raises its readout showed
+// (Room.Shown), which Act works out again at the press. Any give raises
+// the room the card has, so a second press on one readout meets another.
+var RoomGuard = []string{"shown_now", "shown_starts", "shown_agent_time_s", "shown_eur", "shown_limit"}
 
-// Shown are r's raises by RoomGuard's names, as its readout's press posts
-// them.
+// Shown are r's room now and its raises by RoomGuard's names, as its
+// readout's press posts them.
 func (r Room) Shown() map[string]string {
-	return map[string]string{"shown_starts": strconv.Itoa(r.Starts), "shown_agent_time_s": strconv.FormatInt(int64(r.AgentTime/time.Second), 10),
-		"shown_eur": textutil.EUR(r.EUR), "shown_limit": textutil.EUR(r.Limit)}
+	return map[string]string{"shown_now": strconv.Itoa(r.Now), "shown_starts": strconv.Itoa(r.Starts),
+		"shown_agent_time_s": strconv.FormatInt(int64(r.AgentTime/time.Second), 10), "shown_eur": textutil.EUR(r.EUR), "shown_limit": textutil.EUR(r.Limit)}
 }

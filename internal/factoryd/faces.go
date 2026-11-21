@@ -33,13 +33,15 @@ type Option struct{ Value, Label string }
 
 // Field is one input an answer opens after its press. A required field
 // has no default and its hint says what to write; every other field opens
-// with its default filled in.
+// with its default filled in. Min and Max bound a number field, Max 0 for
+// no bound.
 type Field struct {
 	Name, Label, Hint string
 	Kind              FieldKind
 	Required          bool
 	Default           func(Facts) string
 	Options           []Option
+	Min, Max          int
 }
 
 // Answer is one answer a face offers: an action of the table, or the
@@ -624,7 +626,8 @@ func (a Answer) Defaults(f Facts) map[string]string {
 // name: the action's arguments, the variant's own among them, and the
 // amount in EUR a money field holds. An empty field is left out, but a
 // room's money box, which unticked gives the room without its money. A
-// room's press carries its guard (RoomGuard) as posted.
+// room's press carries its guard (RoomGuard) as posted, and its count is
+// refused off 1 to MaxRoomSessions, a blank one too.
 func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, error) {
 	args := map[string]any{}
 	switch a.Action {
@@ -663,6 +666,9 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 			args[field.Name] = v
 		}
 	}
+	if why := (Resolution{Action: a.Action, Args: args}).RoomRefusal(); a.Action == ActExtend && why != "" {
+		return nil, 0, errors.New(why)
+	}
 	if len(args) == 0 {
 		args = nil
 	}
@@ -671,19 +677,19 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 
 // Press is the resolution a human's press of answer a makes on facts f,
 // every field at values' entry or else its default, a box posted clear
-// staying clear, and note: the words an agent offered lead the note, a money
+// staying clear and a bounded count posted blank staying blank, and note: the words an agent offered lead the note, a money
 // field goes to the chat budget's amount, and an overrule drops the
 // review's findings with the note as its reason. A required field left
 // empty refuses the press, saying what to write.
 func (a Answer) Press(f Facts, values map[string]string, note string) (Resolution, error) {
 	defaults := a.Defaults(f)
 	f.CaseFacts = f.atCap()
-	boxes := map[string]bool{}
+	kept := map[string]bool{}
 	for _, field := range a.Fields {
-		boxes[field.Name] = field.Kind == FieldCheck
+		kept[field.Name] = field.Kind == FieldCheck || field.Kind == FieldNumber && field.Min > 0
 	}
 	get := func(name string) string {
-		if v, posted := values[name]; strings.TrimSpace(v) != "" || posted && boxes[name] {
+		if v, posted := values[name]; strings.TrimSpace(v) != "" || posted && kept[name] {
 			return v
 		}
 		return defaults[name]

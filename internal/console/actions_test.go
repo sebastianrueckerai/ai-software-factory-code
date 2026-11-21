@@ -683,8 +683,8 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 }
 
 // The card's own room reads its count and its tick: 3 sessions' worth
-// with the box ticked give 3 with money, a box left clear gives none, and
-// a count left out is 1.
+// with the box ticked give 3 with money, and a box left clear gives none.
+// A count left out is refused (TestABlankCountIsRefusedOnBothDoors).
 func TestExtendRouteTakesTheCountAndTheTick(t *testing.T) {
 	for _, tc := range []struct {
 		form url.Values
@@ -692,7 +692,6 @@ func TestExtendRouteTakesTheCountAndTheTick(t *testing.T) {
 	}{
 		{url.Values{"extend.sessions": {"3"}, "extend.money": {"yes"}}, map[string]any{"sessions": 3, "money": true}},
 		{url.Values{"extend.sessions": {"2"}}, map[string]any{"sessions": 2, "money": false}},
-		{url.Values{"extend.money": {"yes"}}, map[string]any{"sessions": 1, "money": true}},
 	} {
 		r := fundRig(t)
 		setStatus(r, "running")

@@ -1363,9 +1363,6 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 	case factoryd.ActReplan:
 		return c.doReplan(ctx, a, id, note, field(factoryd.OffMainField) != "")
 	case factoryd.ActExtend:
-		if _, ok := args["sessions"]; !ok {
-			args["sessions"] = 1
-		}
 		return c.doExtend(ctx, a, id, args, note)
 	case factoryd.AnswerSteer:
 		return c.doSteer(ctx, a, id, note)

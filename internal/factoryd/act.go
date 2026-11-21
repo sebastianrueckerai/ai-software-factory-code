@@ -981,7 +981,8 @@ func (r *Runner) confirmAudit(ctx context.Context, t Task, in ActInput, f CaseFa
 // actRefusal is why in may not answer the facts f of card, "" when it
 // may: no such rung, an action the table does not hold, an action that
 // answers a case on a card with none open, or the table's refusal, with
-// the actions the rung may take there.
+// the actions the rung may take there; past them, a room's press whose
+// readout showed another room (shownRefusal).
 func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if in.Rung < 0 || in.Rung > 3 {
 		return fmt.Sprintf("there is no decider %d", in.Rung)
@@ -997,7 +998,7 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 		why = a.refusal(f, in.Rung, in.Res)
 	}
 	if why == "" {
-		return ""
+		return shownRefusal(f, in.Res)
 	}
 	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" && mergeRuleRefusal(f, in.Rung, a.Name) == "" {
 		// the approval card's own remedies: a factory pull request's checks run again, an agent's goes back

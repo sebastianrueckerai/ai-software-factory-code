@@ -1131,7 +1131,7 @@ func TestBoardFixturesRenderTheirAsks(t *testing.T) {
 		if tc.suggested != "" && !strings.Contains(ask, `class="answer suggested" data-answer="`+tc.suggested+`"`) {
 			t.Errorf("%s: the ask does not lead with %s:\n%s", tc.name, tc.suggested, ask)
 		}
-		if strings.Contains(ask, "disabled") {
+		if strings.Contains(ask, `class="pick" disabled`) {
 			t.Errorf("%s: the ask holds an answer that cannot be pressed:\n%s", tc.name, ask)
 		}
 		if want := `<h4>What the factory knows</h4><div class="info"><p>` + boardFixtureInfo + `</p>`; tc.info && !strings.Contains(page, want) {

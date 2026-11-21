@@ -691,7 +691,7 @@ async function text(page) {
       await rp.page.waitForTimeout(800);
       const form = rp.page.locator('#drawer form[data-answer="extend"]');
       await form.locator("button.pick").click();
-      const guard = () => form.evaluate((f) => ["starts", "agent_time_s", "eur", "limit"].map((k) => f.elements.namedItem("extend.shown_" + k).value).join(" "));
+      const guard = () => form.evaluate((f) => ["now", "starts", "agent_time_s", "eur", "limit"].map((k) => f.elements.namedItem("extend.shown_" + k).value).join(" "));
       const reads = async (label, lines, want) => {
         const got = (await form.locator(".room").innerText()).replace(/\s+/g, " ");
         for (const l of lines) if (!got.includes(l)) fails.push("room-ahead: " + label + ': the readout lacks "' + l + '" (' + got + ")");
@@ -699,20 +699,40 @@ async function text(page) {
         if (g !== want) fails.push("room-ahead: " + label + ": the press posts the guard " + g + ", want " + want);
       };
       await reads("at 1", ["About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Adds 10 min: 18 min left, then 28 min",
-        "Adds 0.30 EUR: 2.10 EUR left, then 2.40 EUR", "It may also start 1 more session.", "The project has 112.30 EUR left this month."], "1 600 0.30 0.00");
+        "Adds 0.30 EUR: 2.10 EUR left, then 2.40 EUR", "It may also start 1 more session.", "The project has 112.30 EUR left this month."], "1 1 600 0.30 0.00");
       const count = form.locator('input[name="extend.sessions"]');
       await count.fill("2");
       await count.dispatchEvent("change");
       await rp.page.waitForTimeout(700);
-      await reads("at 2", ["Adds 24 min: 18 min left, then 42 min", "Adds 1.50 EUR: 2.10 EUR left, then 3.60 EUR", "It may also start 2 more sessions."], "2 1440 1.50 0.00");
+      await reads("at 2", ["Adds 24 min: 18 min left, then 42 min", "Adds 1.50 EUR: 2.10 EUR left, then 3.60 EUR", "It may also start 2 more sessions."], "1 2 1440 1.50 0.00");
       await form.locator('input[name="extend.money"]').uncheck();
       await rp.page.waitForTimeout(700);
-      await reads("at 2 without money", ["Adds 24 min: 18 min left, then 42 min", "Adds no money: 2.10 EUR left"], "2 1440 0.00 0.00");
+      await reads("at 2 without money", ["Adds 24 min: 18 min left, then 42 min", "Adds no money: 2.10 EUR left"], "1 2 1440 0.00 0.00");
       await count.evaluate((c) => { c.value = "3"; });
       await form.evaluate((f) => f.dispatchEvent(new CustomEvent("room-refused", { bubbles: true })));
       await rp.page.waitForTimeout(700);
-      await reads("after a refused press at 3", ["Adds 38 min: 18 min left, then 56 min", "It may also start 3 more sessions."], "3 2280 0.00 0.00");
-      if (rp.errors.length) fails.push("room-ahead: " + rp.errors[0]);
+      await reads("after a refused press at 3", ["Adds 38 min: 18 min left, then 56 min", "It may also start 3 more sessions."], "1 3 2280 0.00 0.00");
+      // a real refused press: Act's refusal at 4 takes the console's 409
+      // to the flash and asks the readout to read again (HX-Trigger), and
+      // Send stays disabled while its press runs, so a double click posts
+      // once
+      await count.evaluate((c) => { c.value = "4"; });
+      const moved = "The room changed since this opened: 4 sessions' worth now add 52 min. It may also start 4 more sessions. Press again to give them.";
+      await rp.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/act-refuse?text=" + encodeURIComponent(moved));
+      const posts = [];
+      rp.page.on("request", (q) => { if (q.method() === "POST" && q.url().includes("/resolve")) posts.push(q.url()); });
+      await rp.page.route("**/resolve", async (route) => { await new Promise((done) => setTimeout(done, 600)); await route.continue(); });
+      const send = form.locator("button.send");
+      await send.dblclick();
+      await rp.page.waitForTimeout(200);
+      if (!(await send.isDisabled())) fails.push("room-ahead: Send takes a press while its press runs");
+      await rp.page.waitForTimeout(1200);
+      if (posts.length !== 1) fails.push("room-ahead: a double click on Send posted " + posts.length + " times, want once");
+      const flash = await rp.page.locator("#flash").innerText();
+      if (!flash.includes(moved)) fails.push("room-ahead: the refused press flashes " + JSON.stringify(flash) + ", want " + JSON.stringify(moved));
+      await reads("after a real refused press at 4", ["Adds 52 min: 18 min left, then 70 min", "It may also start 4 more sessions."], "1 4 3120 0.00 0.00");
+      const unexpected = rp.errors.filter((e) => !/\/resolve 409$/.test(e));
+      if (unexpected.length) fails.push("room-ahead: " + unexpected[0]);
       await rp.ctx.close();
     }
     if (sc === "quiet") {

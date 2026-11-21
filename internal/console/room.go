@@ -21,12 +21,15 @@ type roomView struct {
 }
 
 // readoutOf is the readout of the room args ask for on facts f, its guard
-// named by name; a count no press may give, or that read as no number
-// (err), shows why alone.
+// named by name; a count no press may give (err), or a room the card
+// cannot take as asked, shows why alone, as the press would be refused.
 func readoutOf(f factoryd.CaseFacts, args map[string]any, err error, name func(string) string) roomView {
-	why := factoryd.Resolution{Action: factoryd.ActExtend, Args: args}.RoomRefusal()
+	extend, _ := factoryd.ActionByName(factoryd.ActExtend)
+	why := ""
 	if err != nil {
 		why = err.Error()
+	} else {
+		why = extend.Applies(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: args})
 	}
 	if why != "" {
 		return roomView{Lines: []string{strings.ToUpper(why[:1]) + why[1:] + "."}}

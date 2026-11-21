@@ -114,7 +114,7 @@ var Vocabulary = []Answer{
 		Fields: []Field{{Name: "findings", Label: "The findings to clear", Kind: FieldCheck, Required: true, Hint: "Tick at least one finding to clear"},
 			requiredNote("Your reason", "Why the findings are safe")}},
 	{Action: ActExtend, Label: "Give more room", Effect: "Gives the card more sessions' worth of time and money, and it goes on.",
-		Fields: []Field{{Name: "sessions", Label: "Sessions' worth", Kind: FieldNumber, Default: roomSessions},
+		Fields: []Field{{Name: "sessions", Label: "Sessions' worth", Kind: FieldNumber, Default: roomSessions, Min: 1, Max: MaxRoomSessions},
 			{Name: "money", Label: "With its money", Kind: FieldCheck, Default: roomMoney}}},
 	{Action: ActSuccessor, Label: "Start a fresh card on this work", Effect: "Ends this card. A new card goes on from its branch with a full budget."},
 	{Action: ActRetry, Label: "Try the failed card again", Effect: "Files the failed card again as a new card."},
@@ -327,7 +327,7 @@ var effectFills = map[string]func(Facts) string{
 		return ""
 	},
 	ActExtend: func(f Facts) string {
-		return "Gives the card " + moreWorthWords(roomCount(f)) + ", and " + onward(f, "it goes on") + "."
+		return "Gives the card more sessions' worth, and " + onward(f, "it goes on") + "."
 	},
 	ActReplan: func(f Facts) string {
 		switch {

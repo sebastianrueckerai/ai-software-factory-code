@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,7 +35,10 @@ func RoomLines(f CaseFacts, r Room) []string {
 		lines = append(lines, "Enough: "+moneyLeft)
 	}
 	lines = append(lines, r.alsoLines(f)...)
-	return append(lines, "The project has "+textutil.EUR(max(0, f.MonthLeftEUR))+" EUR left this month.")
+	if slices.Contains(f.Partial, "month") {
+		return append(lines, "The project's money left this month could not be read.")
+	}
+	return append(lines, "The project has "+leftText(textutil.EUR(f.MonthLeftEUR)+" EUR", Cents(f.MonthLeftEUR) > 0)+" this month.")
 }
 
 // alsoLines are the readout's lines of what room r raises beside the time
@@ -50,9 +54,9 @@ func (r Room) alsoLines(f CaseFacts) []string {
 	return lines
 }
 
-// movedText is the refusal of a press whose readout showed raises other
-// than room r's on f: the card ran on between the two, so it names r's
-// raises as they are now.
+// movedText is the refusal of a press whose readout showed a room other
+// than r on f: the card ran on, or someone gave room, between the two, so
+// it names r's raises as they are now.
 func (r Room) movedText(f CaseFacts) string {
 	var adds []string
 	if r.AgentTime > 0 {
@@ -64,7 +68,7 @@ func (r Room) movedText(f CaseFacts) string {
 	if len(adds) == 0 {
 		adds = []string{"no time and no money"}
 	}
-	return strings.Join(append([]string{"The card ran on since this opened: " + worthWords(r.N) + " now add " + textutil.AndList(adds) + "."},
+	return strings.Join(append([]string{"The room changed since this opened: " + worthWords(r.N) + " now add " + textutil.AndList(adds) + "."},
 		append(r.alsoLines(f), "Press again to give them.")...), " ")
 }
 

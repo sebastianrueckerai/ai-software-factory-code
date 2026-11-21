@@ -384,7 +384,8 @@ func TestARacingDrawIsRefusedInSessionsWorth(t *testing.T) {
 // target 2 + 1 = 3, 3 - 2 = 1 start and 42 - 30 = 12 minutes; and a card
 // before its first session: a quarter of 60 minutes and the 0.80 EUR
 // floor, room now for min(3, 60/15, 5.00/0.80) = 3, so the press adds 1
-// start alone.
+// start alone; its project overspent its month, which reads none left, and
+// a month that could not be read says so.
 func TestRoomLinesSayWhatThePressGives(t *testing.T) {
 	f := aheadOfTime()
 	want := []string{
@@ -419,10 +420,14 @@ func TestRoomLinesSayWhatThePressGives(t *testing.T) {
 		"Enough: 60 min left",
 		"Enough: 5.00 EUR left",
 		"It may also start 1 more session.",
-		"The project has 0.00 EUR left this month.",
+		"The project has none left this month.",
 	}
 	if got := RoomLines(fresh, RoomFor(fresh, 1, true)); !slices.Equal(got, first) {
 		t.Errorf("RoomLines before the first session = %q, want %q", got, first)
+	}
+	fresh.Partial = []string{"month"}
+	if got := RoomLines(fresh, RoomFor(fresh, 1, true)); got[len(got)-1] != "The project's money left this month could not be read." {
+		t.Errorf("RoomLines on a month that could not be read end %q, want the read named", got[len(got)-1])
 	}
 }
 
@@ -476,11 +481,12 @@ func TestAHandoverAtTheCapTakesARoomWithoutMoney(t *testing.T) {
 	}
 }
 
-// A room's guard is its four raises as the readout's press posts them: a
-// room of 2 on the ahead-of-time row adds 2 starts, 24 minutes (1440 s)
-// and 1.50 EUR, and raises no limit.
+// A room's guard is the room the card had and the four raises, as the
+// readout's press posts them: on the ahead-of-time row the room now is 1,
+// and a room of 2 adds 2 starts, 24 minutes (1440 s) and 1.50 EUR, and
+// raises no limit.
 func TestARoomShowsItsRaisesAsTheGuard(t *testing.T) {
-	want := map[string]string{"shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
+	want := map[string]string{"shown_now": "1", "shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
 	if got := RoomFor(aheadOfTime(), 2, true).Shown(); !maps.Equal(got, want) {
 		t.Errorf("Shown = %v, want %v", got, want)
 	}
@@ -493,42 +499,85 @@ func TestARoomShowsItsRaisesAsTheGuard(t *testing.T) {
 // and 2 sessions' worth need 2 - 1 = 1 start, 2 x 920 - 840 = 1000 s, 17
 // minutes rounded up, and 2 x 1.20 - 2.10 = 0.30 EUR: the press is
 // refused with those figures. Under a limit of 7.00 the readout's guard
-// of no limit meets a room that raises it by 0.50 EUR. A press with no
-// guard, the chat's and the rungs', is weighed as it is.
+// of no limit meets a room that raises it by 0.50 EUR. Act's refusal is
+// the text alone, the press again being what fits. A press with no guard,
+// the chat's and the rungs', is weighed as it is.
+//
+// A give moves the guard even where the raises stay: on a card its starts
+// limit (cap 4, 120 minutes, 8.40 - 0.30 = 8.10 EUR left), the room now is
+// min(1, 78 / 14 = 5, 8.10 / 1.20 = 6) = 1, and 1 more needs 1 start
+// alone. Once that start is given (cap 5) the room now is 2, and 1 more
+// again needs 1 start alone: the second press on the first readout is
+// refused.
 func TestAPressWhoseRoomMovedIsRefusedWithTheNewFigures(t *testing.T) {
 	shown := RoomFor(aheadOfTime(), 2, true).Shown()
 	press := map[string]any{"sessions": 2, "money": true}
 	for k, v := range shown {
 		press[k] = v
 	}
-	if why := refusalOn(t, aheadOfTime(), 3, extendBy(press)); why != "" {
+	if why := actRefusal(aheadOfTime(), ActInput{Rung: 3, Res: extendBy(press)}, "#12"); why != "" {
 		t.Fatalf("the press with its readout's guard is refused: %s", why)
 	}
 	ran := aheadOfTime()
 	ran.AgentTimeS = 46 * 60
-	if got, want := refusalOn(t, ran, 3, extendBy(press)),
-		"The card ran on since this opened: 2 sessions' worth now add 17 min and 0.30 EUR. It may also start 1 more session. Press again to give them."; got != want {
+	if got, want := actRefusal(ran, ActInput{Rung: 3, Res: extendBy(press)}, "#12"),
+		"The room changed since this opened: 2 sessions' worth now add 17 min and 0.30 EUR. It may also start 1 more session. Press again to give them."; got != want {
 		t.Errorf("the press after the card ran on = %q, want %q", got, want)
 	}
 	limited := aheadOfTime()
 	limited.CeilingEUR = 7
-	if got, want := refusalOn(t, limited, 3, extendBy(press)),
-		"The card ran on since this opened: 2 sessions' worth now add 24 min and 1.50 EUR. The spend limit rises from 7.00 to 7.50 EUR first. It may also start 2 more sessions. Press again to give them."; got != want {
+	if got, want := actRefusal(limited, ActInput{Rung: 3, Res: extendBy(press)}, "#12"),
+		"The room changed since this opened: 2 sessions' worth now add 24 min and 1.50 EUR. The spend limit rises from 7.00 to 7.50 EUR first. It may also start 2 more sessions. Press again to give them."; got != want {
 		t.Errorf("the press under a lower limit = %q, want %q", got, want)
 	}
-	if why := refusalOn(t, ran, 3, extendBy(map[string]any{"sessions": 2, "money": true})); why != "" {
+	if why := actRefusal(ran, ActInput{Rung: 3, Res: extendBy(map[string]any{"sessions": 2, "money": true})}, "#12"); why != "" {
 		t.Errorf("a press with no guard is refused: %s", why)
+	}
+	starts := roomFacts(4, 120, 8.40)
+	first := map[string]any{"sessions": 1, "money": true}
+	for k, v := range RoomFor(starts, 1, true).Shown() {
+		first[k] = v
+	}
+	if first["shown_starts"] != "1" || first["shown_agent_time_s"] != "0" || first["shown_eur"] != "0.00" || first["shown_now"] != "1" {
+		t.Fatalf("the starts-limited readout guards %v, want a room of 1 that adds 1 start alone", first)
+	}
+	starts.SessionCap = 5
+	if again := RoomFor(starts, 1, true).Shown(); again["shown_starts"] != "1" || again["shown_agent_time_s"] != "0" || again["shown_eur"] != "0.00" {
+		t.Fatalf("after the give the room of 1 guards %v, want the same raises", again)
+	}
+	if got, want := actRefusal(starts, ActInput{Rung: 3, Res: extendBy(first)}, "#12"),
+		"The room changed since this opened: 1 session's worth now add no time and no money. It may also start 1 more session. Press again to give them."; got != want {
+		t.Errorf("the second press on one readout = %q, want %q", got, want)
 	}
 }
 
 // The press's fields carry the guard beside the count and the tick: the
-// extend's args are what the form posts, each guard figure as written.
+// extend's args are what the form posts, each guard figure as written. A
+// count left blank or past the range is refused with the range, never
+// filled in, by the card's own press (ArgsOf) and a case's (Press).
 func TestArgsOfCarriesTheRoomsGuard(t *testing.T) {
 	a, _ := AnswerOf(ActExtend)
-	posted := map[string]string{"sessions": "2", "money": "yes", "shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
+	posted := map[string]string{"sessions": "2", "money": "yes", "shown_now": "1", "shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
 	args, _, err := ArgsOf(a, func(name string) string { return posted[name] })
-	want := map[string]any{"sessions": 2, "money": true, "shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
+	want := map[string]any{"sessions": 2, "money": true, "shown_now": "1", "shown_starts": "2", "shown_agent_time_s": "1440", "shown_eur": "1.50", "shown_limit": "0.00"}
 	if err != nil || !maps.Equal(args, want) {
 		t.Errorf("ArgsOf = %v, %v; want %v", args, err, want)
+	}
+	for _, n := range []string{"", "0", "6"} {
+		posted["sessions"] = n
+		if args, _, err := ArgsOf(a, func(name string) string { return posted[name] }); err == nil || err.Error() != "a room counts 1 to 5 sessions' worth" {
+			t.Errorf("ArgsOf of the count %q = %v, %v; want the range", n, args, err)
+		}
+		if res, err := a.Press(Facts{CaseFacts: moneyStop()}, posted, ""); err == nil || err.Error() != "a room counts 1 to 5 sessions' worth" {
+			t.Errorf("Press of the count %q = %+v, %v; want the range", n, res, err)
+		}
+	}
+}
+
+// The room's count box takes 1 to 5 and no blank.
+func TestTheRoomsCountIsBounded(t *testing.T) {
+	a, _ := AnswerOf(ActExtend)
+	if f := a.Fields[0]; f.Name != "sessions" || f.Min != 1 || f.Max != MaxRoomSessions {
+		t.Errorf("the count field = %+v, want sessions from 1 to %d", f, MaxRoomSessions)
 	}
 }
