@@ -95,7 +95,7 @@ func AtTimeCap(escalation string) bool {
 }
 
 // AtTimeStop: escalation is an agent time stop, an agent's cap or a
-// planner out of time, which an extend of agent time answers.
+// planner out of time, which more room answers.
 func AtTimeStop(escalation string) bool {
 	return AtTimeCap(escalation) || strings.HasPrefix(escalation, PlannerOutOfTime)
 }

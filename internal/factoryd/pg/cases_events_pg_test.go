@@ -694,7 +694,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
 		{"supervisor", "check-in: " + CheckSpend + ": " + spentStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
-		{"supervisor", CheckinSpendAsk + DeadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
+		{"supervisor", CheckinSpendAsk + DeadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Give the card more room, overrule the review, end the card, or leave it waiting.",
 			CaseFindingsRepeated, nil},
 		{"supervisor", GateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
 		{"supervisor", screeningAsks + "the report asks for a token", CaseScreeningSuspect, nil},

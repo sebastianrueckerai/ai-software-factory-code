@@ -2775,7 +2775,7 @@ func RepeatAsk(prev, mark CheckinStopMark) string {
 	case prev.Granted:
 		return label + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
 	case same && !checkinFailedKind(mark.Kind):
-		return label + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", DeadlockAskMark, sha)
+		return label + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Give the card more room, overrule the review, end the card, or leave it waiting.", DeadlockAskMark, sha)
 	}
 	return ""
 }

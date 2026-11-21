@@ -97,8 +97,12 @@ type CaseFacts struct {
 	DrawChecks string     `json:"draw_checks,omitempty"`
 	// DrawFindings are the finding ids the newest draw's row recorded,
 	// nil when it recorded none, which is not the empty list.
-	DrawFindings    []string `json:"draw_findings"`
-	PushedSinceDraw bool     `json:"pushed_since_draw,omitempty"`
+	DrawFindings []string `json:"draw_findings"`
+	// DrawFromSessions is the count of sessions the newest draw's row
+	// recorded its estimate from, the card's attempts at the draw; 0 for a
+	// row that recorded none.
+	DrawFromSessions int  `json:"draw_from_sessions,omitempty"`
+	PushedSinceDraw  bool `json:"pushed_since_draw,omitempty"`
 	// RevisedSinceDraw is set when a planner filed a revision since the
 	// last draw: what a planner's draw buys, as a push does for an agent.
 	RevisedSinceDraw bool `json:"revised_since_draw,omitempty"`
@@ -255,12 +259,13 @@ func lastSession(steps []DigestStep, sessions []*digestSession, head string) *La
 // head, the checks and the findings it recorded, and whether a session
 // pushed or a planner filed a revision after it.
 type DrawFacts struct {
-	At       time.Time `json:"at"`
-	Head     string    `json:"head"`
-	Checks   string    `json:"checks"`
-	Findings []string  `json:"findings"`
-	Pushed   bool      `json:"pushed,omitempty"`
-	Revised  bool      `json:"revised,omitempty"`
+	At           time.Time `json:"at"`
+	Head         string    `json:"head"`
+	Checks       string    `json:"checks"`
+	Findings     []string  `json:"findings"`
+	FromSessions int       `json:"from_sessions,omitempty"`
+	Pushed       bool      `json:"pushed,omitempty"`
+	Revised      bool      `json:"revised,omitempty"`
 }
 
 // SessionLeft is the budget a session may spend, the headroom SessionFunded
@@ -769,8 +774,7 @@ func (r *Runner) monthFacts(ctx context.Context, v policy.Version, t Task, f *Ca
 // and the newest draw from the pool, when its row recorded the head and
 // the checks, with the findings it recorded and whether a session pushed
 // after it or a planner filed a revision. A row of no sessions, no agent
-// time and no money, an extend of lines alone,
-// drew nothing and is no draw. TimeDraw is the newest draw that raised
+// time and no money drew nothing and is no draw. TimeDraw is the newest draw that raised
 // agent time, read the same way: the one an agent time stop weighs.
 func (f *CaseFacts) eventFacts(events []Event) {
 	word := func(e Event, k string) string { s, _ := e.Detail[k].(string); return s }
@@ -795,7 +799,7 @@ func (f *CaseFacts) eventFacts(events []Event) {
 		})
 	}
 	if d := drawFactsAt(events, drawn(false), pushed); d != nil {
-		f.LastDrawAt, f.DrawHead, f.DrawChecks, f.DrawFindings = &d.At, d.Head, d.Checks, d.Findings
+		f.LastDrawAt, f.DrawHead, f.DrawChecks, f.DrawFindings, f.DrawFromSessions = &d.At, d.Head, d.Checks, d.Findings, d.FromSessions
 		f.PushedSinceDraw, f.RevisedSinceDraw = d.Pushed, d.Revised
 	}
 	f.TimeDraw = drawFactsAt(events, drawn(true), pushed)
@@ -812,7 +816,8 @@ func drawFactsAt(events []Event, i int, pushed func(Event) bool) *DrawFacts {
 	if !hasHead || !hasChecks {
 		return nil
 	}
-	d := &DrawFacts{At: events[i].At, Head: head, Checks: checks, Pushed: slices.ContainsFunc(events[:i], pushed),
+	from, _ := toInt(events[i].Detail["from_sessions"])
+	d := &DrawFacts{At: events[i].At, Head: head, Checks: checks, FromSessions: from, Pushed: slices.ContainsFunc(events[:i], pushed),
 		Revised: slices.ContainsFunc(events[:i], func(e Event) bool { return e.Kind == EventPlanRevision })}
 	switch ids := events[i].Detail["findings"].(type) {
 	case []string:

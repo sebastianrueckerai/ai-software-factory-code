@@ -2566,15 +2566,14 @@ func (t *taskRun) planAsksAgain(u TaskUsage) bool {
 const PlannerOutOfTime = "the planner used its agent time"
 
 // plannerTimeCard is that question: the automatic session used, or the cap
-// too short for one, and the answers the stop holds: an extend of the
-// card's agent time, which buys the next session (versionCases), a note
-// and a close.
+// too short for one, and the answers the stop holds: more room, which
+// buys the next session (versionCases), a note and a close.
 func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 	what := " and its automatic second session without filing a plan"
 	if u.RetryTime == 0 {
 		what = fmt.Sprintf(" without filing a plan, and its %g-minute cap is too short for an automatic second session", t.cfg.WallClockCap.Minutes())
 	}
-	return PlannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
+	return PlannerOutOfTime + what + ": more room starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
 }
 
 // confirmedByAnswers tells whether every question of a revision is

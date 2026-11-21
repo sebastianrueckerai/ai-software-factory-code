@@ -424,6 +424,7 @@ func TestTheDigestNamesAHoldsEndAtTheCardsClose(t *testing.T) {
 func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := newRetryRig(t)
+	readable(store, "t-b")
 	store.CreateTask(ctx, Task{ID: "t-pl2", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "linkshort/linkshort", IssueNumber: 30})
 	store.CreateTask(ctx, Task{ID: "t-rel", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "linkshort/linkshort",
 		IssueNumber: 31, Source: SourcePlan, Parent: "t-pl2"})

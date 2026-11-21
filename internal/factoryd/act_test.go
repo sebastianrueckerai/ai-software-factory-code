@@ -159,11 +159,20 @@ func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseD
 	return ErrCaseEnded{Case: s.ended}
 }
 
+// readable puts card id on the rig's one process, so its config, which a
+// room is worked out from, reads.
+func readable(store *fakeStore, id string) {
+	k := store.tasks[id]
+	k.Process = "maintenance"
+	store.tasks[id] = k
+}
+
 // When the case cannot end after the retry filed its replacement, the
 // error leads with what ran, so the human reads that #9 exists, and the
 // room drawn beside it, which rolled back, is in neither Did nor Drawn.
 func TestActSaysWhatRanWhenTheCaseCannotEnd(t *testing.T) {
 	r, store, _, _, _ := newRetryRig(t)
+	readable(store, "t-b")
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman}}
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	r.store = resolveFails{store, Case{ID: 3, Kind: CaseDependencyFailed, Status: CaseResolved, ResolvedAt: &at, Resolution: &CaseResolution{By: "bo", Action: ActResume}}}
@@ -1383,5 +1392,71 @@ func TestTheMinutePassWithdrawsAReplacedAskAndTheCardStillWaits(t *testing.T) {
 	}
 	if !slices.Contains(calls, "POST /api/v1/repos/demo-app/demo-app/issues/12/comments") || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "/labels") }) {
 		t.Errorf("the forge saw %q, want the withdrawal's comment and no state label", calls)
+	}
+}
+
+// laterAsk holds press "door"'s read of t1's newest ask, which finds none,
+// until the press on the ask that opens then has ended, or 300 ms passed:
+// the door's press reads the card from before the ask's press gave room.
+type laterAsk struct {
+	Store
+	read chan struct{} // closed once the door read the card's asks
+	go_  chan struct{} // closed once the ask's press ended
+}
+
+type pressKey struct{}
+
+func (s laterAsk) NewestAskCase(ctx context.Context, taskID string) (Case, error) {
+	c, err := s.Store.NewestAskCase(ctx, taskID)
+	if ctx.Value(pressKey{}) == "door" {
+		close(s.read)
+		select {
+		case <-s.go_:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	return c, err
+}
+
+// A press ahead of time on the card's door and a press on an ask that
+// opened after the door read the card's asks, both on one readout, are
+// taken one after the other: one gives. By hand: t1 ran 3 sessions in 42
+// minutes for 3.60 EUR of 6.00, under 3 + 1 sessions and 15 + 45 minutes,
+// with a reserve of 0.40, so a session's worth is 14 minutes and 1.20 EUR
+// and the room now is min(4 - 3, 18 / 14, 2.00 / 1.20) = 1. One more needs
+// 1 start, 2 x 14 - 18 = 10 minutes and 2 x 1.20 - 2.00 = 0.40 EUR: the
+// card then holds 2 raised sessions, 55 minutes and 6.40 EUR. Once given,
+// the room now is 2, so the other press's guard of 1 is refused.
+func TestARoomOnTheDoorAndOneOnANewAskGiveOnce(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.Status, card.Gate, card.PRNumber, card.SpentEUR, card.HeldEUR, card.BudgetEUR, card.CeilingEUR = "running", "", 0, 3.6, 0, 6, 10
+	card.Usage = TaskUsage{Attempts: 3, AgentTime: 42 * time.Minute, RaisedSessions: 1, RaisedTime: 45 * time.Minute}
+	g.store.tasks["t1"] = card
+	press := map[string]any{"sessions": 1, "money": true, "shown_now": "1", "shown_starts": "1", "shown_agent_time_s": "600", "shown_eur": "0.40", "shown_limit": "0.00"}
+	hold := laterAsk{Store: g.store, read: make(chan struct{}), go_: make(chan struct{})}
+	g.r.store = hold
+	door, ask := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, err := g.r.Act(context.WithValue(context.Background(), pressKey{}, "door"), ActInput{TaskID: "t1", By: "sebastian", Via: ViaButton, Rung: 3, Res: extendBy(press)})
+		door <- err
+	}()
+	<-hold.read
+	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseCheckinShare, Status: CaseAtHuman})
+	go func() {
+		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaButton, Rung: 3, Res: extendBy(press),
+			Post: func(context.Context) (int64, error) { return 1, nil }})
+		ask <- err
+	}()
+	errs := []error{<-ask}
+	close(hold.go_)
+	errs = append(errs, <-door)
+	var refused ErrActRefused
+	given := slices.IndexFunc(errs, func(err error) bool { return err == nil })
+	if given < 0 || !errors.As(errs[1-given], &refused) || !strings.HasPrefix(refused.Error(), "The room changed since this opened") {
+		t.Errorf("the ask's press and the door's = %v, want one given and one refused as the room changed", errs)
+	}
+	if u, budget := g.store.tasks["t1"].Usage, g.store.tasks["t1"].BudgetEUR; u.RaisedSessions != 2 || u.RaisedTime != 55*time.Minute || Cents(budget) != 640 {
+		t.Fatalf("t1 after both presses: %d raised sessions, %s raised time, %.2f EUR; want one give: 2, 55m, 6.40", u.RaisedSessions, u.RaisedTime, budget)
 	}
 }

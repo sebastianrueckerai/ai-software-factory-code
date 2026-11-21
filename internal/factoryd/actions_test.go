@@ -236,6 +236,43 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 	}
 }
 
+// A give whose session still runs bought nothing yet: the guard weighs a
+// draw once a session ended since it. A human gives 1 session's worth
+// ahead of time to the ahead-of-time row on h1, red, with finding A, while
+// its fourth session runs after 3, and the rows record the head, the
+// checks, the finding and the 3 sessions the estimate came from, as
+// caseDraw writes them. Before the session pushes, the human's second give
+// is taken: 3 attempts are not above the draw's 3. Once the fourth session
+// ended (4 attempts) with the head, the checks and the finding unchanged,
+// a give is refused as today.
+func TestAGiveWhileItsSessionRunsIsWeighedOnceItEnded(t *testing.T) {
+	f := aheadOfTime()
+	f.Head, f.PR, f.PROpen, f.Checks, f.Findings, f.Running = "h1", 9, true, "red", []string{idA}, true
+	r, store, card := roomCardRig(t, 8)
+	give := extendBy(map[string]any{"sessions": 1})
+	d := r.caseDraw(card, f, Case{}, ActInput{TaskID: "t1", By: "sebastian", Rung: 3, Res: give}, ViaConsole)
+	if _, err := store.DrawCard(context.Background(), "t1", *d); err != nil {
+		t.Fatal(err)
+	}
+	rows := slices.Clone(store.events)
+	for i := range rows {
+		rows[i].At = time.Date(2026, 11, 21, 10, 4, 0, 0, time.UTC)
+	}
+	slices.Reverse(rows)
+	running := f
+	running.eventFacts(rows)
+	if why := refusalOn(t, running, 3, give); why != "" {
+		t.Errorf("a second give while the session runs = %q, want it taken", why)
+	}
+	ended := running
+	ended.Attempts = 4
+	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
+		"hand over, start a successor, replan or close"
+	if got := refusalOn(t, ended, 3, give); got != refused {
+		t.Errorf("a give after the session ended with nothing changed = %q, want %q", got, refused)
+	}
+}
+
 // Rungs 0 and 1 draw within the card's draw bound and the pool, rung 2
 // within the pool, the human past both. Money compares in cents: a room
 // of 1 on the ahead-of-time row takes 1 start, 10 minutes and 0.30 EUR,

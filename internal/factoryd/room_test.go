@@ -272,6 +272,32 @@ func TestARoomPastTheMonthIsRefused(t *testing.T) {
 	}
 }
 
+// A room is worked out from the card's agent-time cap and, with its
+// money, from what a session needs to open: when the card's config could
+// not be read the cap reads 0, and when the floor could not be read the
+// money errs low, so every decider's room is refused with what failed and
+// a minute's wait, the floor's only while the room carries money.
+func TestARoomOnUnreadLimitsIsRefused(t *testing.T) {
+	unread := func(what string) CaseFacts {
+		f := aheadOfTime()
+		f.Partial = []string{what}
+		return f
+	}
+	for _, rung := range []int{0, 1, 2, 3} {
+		if got, want := refusalOn(t, unread("config"), rung, extendBy(map[string]any{"sessions": 1, "money": false})),
+			"the card's agent-time cap could not be read, so its room cannot be worked out: try again in a minute"; got != want {
+			t.Errorf("rung %d with the config unread: %q, want %q", rung, got, want)
+		}
+	}
+	if got, want := refusalOn(t, unread("floor"), 3, extendBy(map[string]any{"sessions": 1})),
+		"the money a session of the card needs to open could not be read, so the room's money cannot be worked out: try again in a minute, or give the room without its money"; got != want {
+		t.Errorf("the floor unread: %q, want %q", got, want)
+	}
+	if got := refusalOn(t, unread("floor"), 3, extendBy(map[string]any{"sessions": 1, "money": false})); got != "" {
+		t.Errorf("a room without money with the floor unread = %q, want it taken", got)
+	}
+}
+
 // Time and starts alone do not let a card go on that cannot pay to open a
 // session: 0.40 EUR left under a 0.50 EUR opening.
 func TestMoneyLeftOutOnAnUnfundedCard(t *testing.T) {
@@ -571,6 +597,57 @@ func TestAPressWhoseRoomMovedIsRefusedWithTheNewFigures(t *testing.T) {
 	if got, want := actRefusal(starts, ActInput{Rung: 3, Res: extendBy(first)}, "#12"),
 		"The room changed since this opened: 1 session's worth now add no time and no money. It may also start 1 more session. Press again to give them."; got != want {
 		t.Errorf("the second press on one readout = %q, want %q", got, want)
+	}
+}
+
+// A running card's money moves with each model call, so the guard takes
+// money and a spend limit that moved by 0.10 EUR at most, and the press
+// gives what it works out at the press. Under a limit of 7.00 the
+// ahead-of-time row's readout of 2 shows 1.50 EUR and a raise of 0.50.
+// With 0.05 EUR more held, 3.65 spent and 2.35 left, a session's worth is
+// 3.65 / 3 = 1.2167 EUR and 2.05 is left to spend, so the room now is
+// still min(1, 1, 1) = 1, and 2 more need 3 x 1.2167 - 2.05 = 1.60 EUR and a
+// raise of 6.00 + 1.60 - 7.00 = 0.60: 0.10 off each, so the press gives
+// them and its result names them. With 0.055 held they are 1.61 and 0.61,
+// 0.11 off, and the press is refused with them. A limit that moved
+// alone, to 6.85, raises 0.65 for the same 1.50: 0.15 off, refused.
+func TestTheGuardTakesMoneyThatMovedByTenCents(t *testing.T) {
+	f := aheadOfTime()
+	f.CeilingEUR = 7
+	press := map[string]any{"sessions": 2, "money": true}
+	for k, v := range RoomFor(f, 2, true).Shown() {
+		press[k] = v
+	}
+	if press["shown_eur"] != "1.50" || press["shown_limit"] != "0.50" {
+		t.Fatalf("the readout guards %v, want 1.50 EUR and a raise of 0.50", press)
+	}
+	held := func(eur float64) CaseFacts {
+		g := f
+		g.SpentEUR, g.LeftEUR = g.SpentEUR+eur, g.LeftEUR-eur
+		return g
+	}
+	near := held(0.05)
+	if why := actRefusal(near, ActInput{Rung: 3, Res: extendBy(press)}, "#12"); why != "" {
+		t.Fatalf("the press 0.10 EUR off = %q, want it taken", why)
+	}
+	r, _, card := roomCardRig(t, 7)
+	d := r.caseDraw(card, near, Case{}, ActInput{TaskID: "t1", By: "sebastian", Rung: 3, Res: extendBy(press)}, ViaConsole)
+	var said []string
+	for _, a := range drawActions(extendBy(press), *d) {
+		said = append(said, a.Result)
+	}
+	if want := []string{"Raised the spend limit by 0.60 EUR.", "Added 2 sessions, 24 minutes of agent time and 1.60 EUR."}; !slices.Equal(said, want) {
+		t.Errorf("the press 0.10 EUR off says %q, want %q", said, want)
+	}
+	if got, want := actRefusal(held(0.055), ActInput{Rung: 3, Res: extendBy(press)}, "#12"),
+		"The room changed since this opened: 2 sessions' worth now add 24 min and 1.61 EUR. The spend limit rises from 7.00 to 7.61 EUR first. It may also start 2 more sessions. Press again to give them."; got != want {
+		t.Errorf("the press 0.11 EUR off = %q, want %q", got, want)
+	}
+	lower := f
+	lower.CeilingEUR = 6.85
+	if got, want := actRefusal(lower, ActInput{Rung: 3, Res: extendBy(press)}, "#12"),
+		"The room changed since this opened: 2 sessions' worth now add 24 min and 1.50 EUR. The spend limit rises from 6.85 to 7.50 EUR first. It may also start 2 more sessions. Press again to give them."; got != want {
+		t.Errorf("the press whose limit moved 0.15 EUR = %q, want %q", got, want)
 	}
 }
 

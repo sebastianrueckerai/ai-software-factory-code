@@ -192,16 +192,25 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 }
 
 func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) {
-	locks, key := &r.caseLocks, any(in.CaseID)
-	if in.CaseID == 0 {
-		locks, key = &r.cardLocks, in.TaskID
+	// a press on no case, and every room, holds the card's lock, then a
+	// case's press its case's, in that order alone: two rooms on one card
+	// go one after the other, by its door and by its ask
+	_, gives, _ := in.Res.roomAsk()
+	for _, l := range []struct {
+		on    bool
+		locks *sync.Map
+		key   any
+	}{{in.CaseID == 0 || gives, &r.cardLocks, in.TaskID}, {in.CaseID != 0, &r.caseLocks, in.CaseID}} {
+		if !l.on {
+			continue
+		}
+		lock, _ := l.locks.LoadOrStore(l.key, &sync.Mutex{})
+		mu := lock.(*sync.Mutex)
+		if err := lockWithin(ctx, mu); err != nil {
+			return ActResult{}, err
+		}
+		defer mu.Unlock()
 	}
-	lock, _ := locks.LoadOrStore(key, &sync.Mutex{})
-	mu := lock.(*sync.Mutex)
-	if err := lockWithin(ctx, mu); err != nil {
-		return ActResult{}, err
-	}
-	defer mu.Unlock()
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
 		return ActResult{}, err

@@ -207,7 +207,7 @@ type Runner struct {
 	revertLocks sync.Map
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
 	// once at a time (one factoryd replica), and cardLocks one by task id,
-	// so Act takes a card's presses on no case one at a time
+	// so Act takes a card's presses on no case and its rooms one at a time
 	caseLocks, cardLocks sync.Map
 	// rungs counts the rung 1 conversations running in the background
 	rungs sync.WaitGroup

@@ -5047,8 +5047,8 @@ func TestThePlannersWindowHoldsFiveSessionsWorth(t *testing.T) {
 func TestPlanLoopOutOfTimeUnderCasesTakesTheRowsTime(t *testing.T) {
 	retryUsed := TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}
 	shortCap := TaskUsage{AgentTime: 8 * time.Minute, Attempts: 1}
-	usedAsk := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
-	shortAsk := "the planner used its agent time without filing a plan, and its 8-minute cap is too short for an automatic second session: an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
+	usedAsk := "the planner used its agent time and its automatic second session without filing a plan: more room starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
+	shortAsk := "the planner used its agent time without filing a plan, and its 8-minute cap is too short for an automatic second session: more room starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
 	for _, tc := range []struct {
 		name   string
 		cap    time.Duration
@@ -5140,7 +5140,7 @@ func TestPlanLoopOwnQuestionAtTheTimeLimitUnderCasesAsksForTime(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "magic links", Comment: 801})
 	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "five more minutes", Comment: 802})
 	h.file = map[int]bool{1: true}
-	timeAsk := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
+	timeAsk := "the planner used its agent time and its automatic second session without filing a plan: more room starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{"which login do accounts use?", timeAsk}) {
 		t.Fatalf("final %q, finals %v, escalated %q; want the planner's question, then the time ask", final, h.finals, h.escalated)
 	}

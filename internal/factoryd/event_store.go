@@ -72,9 +72,10 @@ const (
 	// "release", the release card's name and its plan's, "release_issue",
 	// "status"}.
 	EventCardHoldStranded = "card_hold_stranded"
-	// EventCardExtended is an approver's raise of a card's caps — its
-	// session cap and budget — the console's Extend the card:
-	// detail {"sessions", "amount_eur", "from_eur", "to_eur"}.
+	// EventCardExtended is a raise of a card's session cap and agent-time
+	// cap, the starts and the time of Give more room, whose money a
+	// card_funded row holds: detail {"sessions", "agent_time_s",
+	// "amount_eur", "from_eur", "to_eur"}.
 	EventCardExtended = "card_extended"
 	// EventChatFunded is an approver's raise of a project's chat task's
 	// monthly budget, the console's Fund the chat: detail {"from_eur",

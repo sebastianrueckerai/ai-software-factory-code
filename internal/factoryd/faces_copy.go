@@ -245,6 +245,13 @@ func proposedRoom(f Facts) (RoomAsk, bool) {
 	return ask, why == ""
 }
 
+// RoomProposed says a rung proposes the room f opens at, with its own
+// tick, which the readout keeps as a human's.
+func RoomProposed(f Facts) bool {
+	_, ok := proposedRoom(f)
+	return ok
+}
+
 // roomCount is the count a room opens at: the proposal's, else 1.
 func roomCount(f Facts) int {
 	if ask, ok := proposedRoom(f); ok {

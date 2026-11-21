@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,6 +123,17 @@ func (r Resolution) roomAsk() (ask RoomAsk, asked bool, why string) {
 func (r Resolution) RoomRefusal() string {
 	_, _, why := r.roomAsk()
 	return why
+}
+
+// HumanRefusal is why a human's press of r on f is refused, its guard
+// aside: what a room's readout and the chat's proposal show in place of
+// its figures.
+func HumanRefusal(f CaseFacts, r Resolution) string {
+	a, ok := ActionByName(r.Action)
+	if !ok {
+		return "there is no action `" + r.Action + "`"
+	}
+	return a.refusal(f, 3, r)
 }
 
 // room is the room r gives on f: an extend's, or the one beside its
@@ -877,6 +889,10 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	unread := slices.IndexFunc(f.Partial, func(p string) bool { return p == "events" || p == "checks" })
 	switch {
+	case slices.Contains(f.Partial, "config"):
+		return "the card's agent-time cap could not be read, so its room cannot be worked out: try again in a minute"
+	case room.Money && slices.Contains(f.Partial, "floor"):
+		return "the money a session of the card needs to open could not be read, so the room's money cannot be worked out: try again in a minute, or give the room without its money"
 	case room.EUR > 0 && !moneyRungs[rung]:
 		return fmt.Sprintf("%s may not draw money: %s may", who(rung), rungsText(moneyRungs))
 	case room.Limit > 0 && !limitRungs[rung]:
@@ -906,12 +922,28 @@ func shownRefusal(f CaseFacts, r Resolution) string {
 	for _, k := range RoomGuard {
 		v, ok := r.Args[k]
 		guarded = guarded || ok
-		same = same && ok && fmt.Sprint(v) == shown[k]
+		same = same && ok && guardHolds(k, fmt.Sprint(v), shown[k])
 	}
 	if !guarded || same {
 		return ""
 	}
 	return room.movedText(f)
+}
+
+// guardDriftCents is how far a guard's money and spend limit may lie from
+// the press's: a running card's money moves with each model call.
+const guardDriftCents = 10
+
+// guardHolds says posted, guard k as the readout showed it, agrees with
+// now, as the press works it out: the room and the time exactly, the money
+// and the spend limit within guardDriftCents.
+func guardHolds(k, posted, now string) bool {
+	if k != "shown_eur" && k != "shown_limit" {
+		return posted == now
+	}
+	a, errA := strconv.ParseFloat(posted, 64)
+	b, errB := strconv.ParseFloat(now, 64)
+	return errA == nil && errB == nil && max(Cents(a)-Cents(b), Cents(b)-Cents(a)) <= guardDriftCents
 }
 
 // moneyRungs are the deciders who draw money for a card, limitRungs those
@@ -1114,9 +1146,8 @@ func retryRefusal(d DepFact) string {
 
 // boughtNothing reports the design's refusal of a draw: a draw happened, no push
 // and no filed revision since, the head, the checks and the findings
-// unchanged since it. A card that has run no session has no draw weighed:
-// its newest draw is a fund press on an empty head and checks, never the
-// evidence of its own failure. A draw whose row recorded no findings, or
+// unchanged since it, and a session ended since it (weighedDraw). A draw
+// whose row recorded no findings, or
 // one on facts whose timeline could not be read, is weighed on the head and
 // the checks. At an agent time stop the draw weighed is the newest that
 // raised agent time: one that raised nothing the stop names is no draw.
@@ -1126,24 +1157,23 @@ func boughtNothing(f CaseFacts) bool {
 		(d.Findings == nil || slices.Contains(f.Partial, partialTimeline) || slices.Equal(d.Findings, f.Findings))
 }
 
-// weighedDraw is the draw the guard weighs on f: none on a card that has
-// run no session (its attempts are 0), whose newest draw is a fund press
-// the head and the checks of which no session has had the chance to
-// change.
+// weighedDraw is the draw the guard weighs on f: none until a session
+// ended since it, as the card's attempts pass the sessions its row
+// recorded, so a draw the running session still spends, or one before the
+// first session, has bought nothing yet. A row that recorded no sessions
+// is weighed once the card ran one.
 func weighedDraw(f CaseFacts) (DrawFacts, bool) {
-	if f.Attempts == 0 {
+	var d DrawFacts
+	switch {
+	case f.Kind == CaseAgentTimeCap && f.TimeDraw != nil:
+		d = *f.TimeDraw
+	case f.Kind != CaseAgentTimeCap && f.LastDrawAt != nil:
+		d = DrawFacts{At: *f.LastDrawAt, Head: f.DrawHead, Checks: f.DrawChecks, Findings: f.DrawFindings, FromSessions: f.DrawFromSessions,
+			Pushed: f.PushedSinceDraw, Revised: f.RevisedSinceDraw}
+	default:
 		return DrawFacts{}, false
 	}
-	if f.Kind == CaseAgentTimeCap {
-		if f.TimeDraw == nil {
-			return DrawFacts{}, false
-		}
-		return *f.TimeDraw, true
-	}
-	if f.LastDrawAt == nil {
-		return DrawFacts{}, false
-	}
-	return DrawFacts{At: *f.LastDrawAt, Head: f.DrawHead, Checks: f.DrawChecks, Findings: f.DrawFindings, Pushed: f.PushedSinceDraw, Revised: f.RevisedSinceDraw}, true
+	return d, f.Attempts > d.FromSessions
 }
 
 // boughtNothingText is boughtNothing's refusal, with the actions that

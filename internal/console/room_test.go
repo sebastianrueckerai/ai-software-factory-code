@@ -335,11 +335,11 @@ func TestAProposalOpensTheRoomAtItsCount(t *testing.T) {
 // + 1 = 4 sessions and 20 + 100 = 120 minutes. Starts left 3, time left
 // 106 minutes, 7 sessions' worth, money left 10.00 - 1.20 - 0.40 = 8.40
 // EUR, 7: the room now is 3, and 1 more needs 1 start alone. The first
-// press gives it (cap 5). A second press right after is refused by the
-// draw that bought nothing yet. Once the card pushed, the room now is 4
-// and 1 more again needs 1 start alone, the raises the first readout
-// showed, so its guard refuses the press by the room it showed, and the
-// card keeps 2 raised sessions.
+// press gives it (cap 5). Its session still runs, so the draw is not
+// weighed yet; the room now is 4, and 1 more again needs 1 start alone,
+// the raises the first readout showed, so its guard refuses the second
+// press right after by the room it showed, and the card keeps 2 raised
+// sessions.
 func TestASecondPressOnOneReadoutIsRefused(t *testing.T) {
 	r, ra, _ := roomRig(t, policy.AutonomyManual, roomCard{task: factoryd.Task{ID: "t-st", Status: "running", IssueNumber: 33, BudgetEUR: 10, SpentEUR: 1.2,
 		CeilingEUR: 20, Usage: factoryd.TaskUsage{RaisedSessions: 1, RaisedTime: 100 * time.Minute}}, attempts: 1, agentTime: 14 * time.Minute})
@@ -351,13 +351,6 @@ func TestASecondPressOnOneReadoutIsRefused(t *testing.T) {
 	}
 	if rec := pressRoom(t, r, ck, s.csrf, "t-st", "1", guard); rec.Code != http.StatusSeeOther {
 		t.Fatalf("the first press = %d: %s", rec.Code, rec.Body)
-	}
-	if rec := pressRoom(t, r, ck, s.csrf, "t-st", "1", guard); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "bought nothing") {
-		t.Fatalf("the second press right after = %d %q, want 409, the draw having bought nothing yet", rec.Code, rec.Body)
-	}
-	if _, err := ra.pg.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-st", IssueNumber: 33, Kind: factoryd.EventSessionPushed,
-		Actor: factoryd.FactoryDecider, Detail: map[string]any{"commit": "c2"}}); err != nil {
-		t.Fatal(err)
 	}
 	rec := pressRoom(t, r, ck, s.csrf, "t-st", "1", guard)
 	const want = "The room changed since this opened: 1 session's worth now add no time and no money. It may also start 1 more session. Press again to give them."

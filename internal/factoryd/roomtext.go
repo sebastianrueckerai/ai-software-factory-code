@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -102,6 +103,30 @@ func (r Room) movedText(f CaseFacts) string {
 	}
 	return strings.Join(slices.DeleteFunc([]string{"The room changed since this opened: " + worthWords(r.N) + " now add " + textutil.AndList(adds) + ".",
 		r.limitLine(f), r.startsLine(), "Press again to give them."}, func(s string) bool { return s == "" }), " ")
+}
+
+// Summary says room r on f in a line, as the chat's proposal names it:
+// "2 sessions' worth (24 min, 1.50 EUR, the spend limit raised from 7.00
+// to 7.50 EUR and 2 more sessions to start)".
+func (r Room) Summary(f CaseFacts) string {
+	var parts []string
+	if r.AgentTime > 0 {
+		parts = append(parts, minText(r.AgentTime))
+	}
+	if r.EUR > 0 {
+		parts = append(parts, textutil.EUR(r.EUR)+" EUR")
+	}
+	if r.Limit > 0 {
+		parts = append(parts, fmt.Sprintf("the spend limit raised from %s to %s EUR", textutil.EUR(f.CeilingEUR), textutil.EUR(f.CeilingEUR+r.Limit)))
+	}
+	if r.Starts > 0 {
+		parts = append(parts, textutil.Plural(r.Starts, "more session", "more sessions")+" to start")
+	}
+	head := worthWords(r.N)
+	if !r.Money {
+		head += " without money"
+	}
+	return head + " (" + cmp.Or(textutil.AndList(parts), "no time and no money") + ")"
 }
 
 // minShown says d in whole minutes, "none" when that is not above 0.

@@ -4061,10 +4061,14 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 func TestARaiseAtTheSpendLimitFundsTheNextSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-3", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
-		RequiredCapabilities: []string{"planner"}, CeilingEUR: 5}); err != nil {
+		Repository: "sf/repo", Process: "maintenance", RequiredCapabilities: []string{"planner"}, CeilingEUR: 5}); err != nil {
 		t.Fatal(err)
 	}
 	v := testPolicyVersion()
+	// the plan track, so the card's config, which its room is worked out from, reads
+	p := v.Processes["maintenance"]
+	p.Tracks.Plan = &policy.Track{Class: "planner"}
+	v.Processes["maintenance"] = p
 	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
 	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
 	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},

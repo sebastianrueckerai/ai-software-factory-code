@@ -4728,24 +4728,34 @@ func (s lateCheckin) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, ok, err
 }
 
-// deafChat answers a check-in after delay whatever its context says, so a
-// conversation can end past the session's deadline.
+// deafChat answers a check-in once past says so, whatever its context
+// says, so a conversation can end past the session's deadline.
 type deafChat struct {
-	delay  time.Duration
+	past   func() bool
 	answer string
 }
 
 func (c deafChat) Call(context.Context, string, string, CheckinRequest) (CheckinResponse, error) {
-	time.Sleep(c.delay)
+	for !c.past() {
+		time.Sleep(10 * time.Millisecond)
+	}
 	return CheckinResponse{Text: c.answer}, nil
+}
+
+// past says the deadline the session's start wrote has passed.
+func (s *deadlineSpy) past() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.deadlines) > 0 && time.Now().After(s.deadlines[0])
 }
 
 // By hand: a session of a second trips spend_no_push at its first tick (1
 // EUR spent of 5 at its start, 2.50 more after it: 62.5 percent of the 4
-// left), and the check-in's conversation answers continue a second and a
-// half later, past the deadline, after the card got 2 more minutes. The raise
-// counts before the wall clock does: the deadline moves 2 minutes, and the
-// session runs on.
+// left), and the check-in's conversation answers continue once the
+// deadline passed, after the card got 2 more minutes. The raise counts
+// before the wall clock does: the deadline moves 2 minutes, and the session
+// runs on past five more ticks, where the old deadline would have tripped
+// it at the first.
 func TestARaiseDuringACheckinCountsBeforeTheWallClock(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
@@ -4754,8 +4764,8 @@ func TestARaiseDuringACheckinCountsBeforeTheWallClock(t *testing.T) {
 	store.tasks["t2"] = tk
 	pod := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	pod.start(t, runner)
-	runner.Checkin = deafChat{delay: 1500 * time.Millisecond, answer: `{"decision":"continue","reason":"it is making progress"}`}
 	spy := &deadlineSpy{Store: store}
+	runner.Checkin = deafChat{past: spy.past, answer: `{"decision":"continue","reason":"it is making progress"}`}
 	spend := &atomic.Bool{}
 	runner.store = lateCheckin{spy, spend}
 	kube.onCreatePod = func() { spend.Store(true) }
@@ -4776,15 +4786,18 @@ func TestARaiseDuringACheckinCountsBeforeTheWallClock(t *testing.T) {
 		spy.mu.Lock()
 		defer spy.mu.Unlock()
 		var moved []time.Duration
-		for _, d := range spy.deadlines[1:] {
-			moved = append(moved, d.Sub(spy.deadlines[0]))
+		for i := 1; i < len(spy.deadlines); i++ {
+			moved = append(moved, spy.deadlines[i].Sub(spy.deadlines[0]))
 		}
 		return moved
+	}
+	for end := time.Now().Add(5 * time.Second); len(moves()) == 0 && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
 	}
 	select {
 	case err := <-done:
 		t.Fatalf("the session ended (%v) with its deadline moved %v, want it running on 2 minutes later", err, moves())
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * runner.tick):
 	}
 	if got := moves(); !slices.Equal(got, []time.Duration{2 * time.Minute}) {
 		t.Fatalf("deadline moved %v, want 2m", got)
@@ -4826,7 +4839,15 @@ func TestASupersededSessionWritesNoDeadline(t *testing.T) {
 		t.Fatalf("take = %v, %v", ok, err)
 	}
 	kube.scriptPods(0, envLine(readEvent("/workspace/repo/go.mod"))+"\n"+sigtermLogs+resultLine(true, "stopped"))
-	time.Sleep(500 * time.Millisecond)
+	// the superseded attempt takes the raise and tries its write
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		spy.mu.Lock()
+		tried := len(spy.deadlines) > 1
+		spy.mu.Unlock()
+		if tried {
+			break
+		}
+	}
 	store.liveMu.Lock()
 	row := store.liveSessions["t2"]
 	store.liveMu.Unlock()
