@@ -181,39 +181,35 @@ decimals: a task's model calls cost fractions of a cent.
   action can resume the card, hand it to the same, a stronger or a
   cheaper model, check it again, route it for approval, rerun its
   checks, run a stopped checks wait again (no agent time), give it more
-  sessions or agent time, fund it, raise its ceiling,
+  room,
   file a successor, retry or replan a failed dependency, close it, or note
-  a step while the card waits (“Not now”). An extend answers a cap, or the owner exits
-  of a gate stop and of findings that repeat, never a question, and a
-  stop on money takes a fund. At the month cap a fund waits for a raise
-  of budget.month_eur or the month's turn. An extend grants one more
-  check-in share at a time, and an extend of a share draws
-  nothing. “Allow more sessions” buys what the stop asks for: one session at
-  a session cap, the card draw's agent time at an agent time cap, one
-  more check-in share at the check-in's share stop, one session at its
-  call or time cap, and at a stop that asked a question it goes on. A
-  fund can also go beside another action and draws its money with it. A
-  fund, an extend or a raise of the ceiling on a card that ended is
-  refused. “Raise the spend limit” raises the card's spend limit first
-  and adds the money beside it, for an “Add money” that would pass the
-  limit. Words on a card at its session or agent time cap allow one more
+  a step while the card waits (“Not now”). “Give more room” (`extend`) answers a cap, a stop on money, or
+  the owner exits of a gate stop and of findings that repeat, never a
+  question. It takes `sessions`, 1 to 5, and `money`, true when left out.
+  One session's worth is the agent time and the money one session of the
+  card takes. The action raises the starts and the agent time cap by what
+  they lack for that many sessions, and adds the money the card lacks. When the
+  money would pass the card's spend limit, it raises the limit first. The
+  opened card shows these figures before the press. On a card that
+  ended it is refused. A human's grant counts nothing against the
+  escalation pool. A human's money has one bound: what the project has left
+  this month. At the month cap it waits for a raise of budget.month_eur or
+  the month's turn. A card's line bound has no raise: it is its size's
+  bound plus the lines of its proofs. A running session takes a raise of time and
+  money without a restart. Words on a card at its session or agent time cap allow one more
   session. Once the answer passes, its words are posted
   on the issue as the human. A human card's choice does its own work
   first, and its case takes the comment that work posted. A card that
   waits with no open case refuses the answer until the heal pass opens
   one, within a minute. The project agent's `answer` takes the same
-  `action`, its `args` (a handover's model, an extend's sessions and agent
-  time, the EUR of a fund or a ceiling raise) and a `fund_eur`
-  beside it. Every answer meets the same gates first: a running card's
+  `action`, its `args` (a handover's model, an extend's `sessions`
+  and `money`). The tool gives a card no room: `give_room` does. Every answer meets the same gates first: a running card's
   words steer its session, and an action on a card no answer fits is
   refused.
 - Approval cards in Needs you, from `approval_requests`. Each opens
   with its brief, one factoryd call (purpose `brief`) a moment after the
-  request files. A brief the card's own budget refuses (`refused_budget`)
-  says so in its place, and an approver's Fund there (`POST
-  /tasks/{id}/fund`) draws the card's money from the escalation pool and
-  queues the brief again,
-  without answering the card. A resource
+  request files. The project's judgment budget pays for the brief, not the card, so a
+  brief waits when that budget is spent, until it grows or the month turns. A resource
   request shows its type, purpose, lease, monthly cost, project and task;
   approve for the task or the project, or deny with a reason (`decided_by`,
   `decided_at`, `decision_note`). A merge request shows the pull request,
@@ -440,7 +436,7 @@ decimals: a task's model calls cost fractions of a cent.
   the agent answer a waiting card or message a running session as the
   human), `retry`, `request_changes`, `approve_merge`, `deny_merge`,
   `invite`, `github_export`, `github_sync`, `close`, `edit`,
-  `grant_session` and `set_dependency`; `confirm: []` asks for none.
+  `give_room` and `set_dependency`; `confirm: []` asks for none.
   `new_card` takes a `track` (`direct`, `plan` or `human`) and a one-line
   `track_reason`, both required. `close` closes the card's issue as the human (the face's Close
   button too; a failed card's close ends it `closed`, with an issue or without, and
@@ -452,9 +448,10 @@ decimals: a task's model calls cost fractions of a cent.
   waives them, is a proposal at every autonomy level that only the human's
   press runs), `edit` its brief: its title or body, which make the task's objective, and its why
   line and summary, which the next session's brief reads; the brief passes
-  `factoryd.CheckBrief` first and its refusals come back whole (the drawer's Edit the brief form too), `grant_session` grants a card at a cap what
-  the cap asks for, is refused on a card at no cap (“Allow more sessions”
-  among the opened card's other actions raises a running card), and the action table refuses it on a card that asked a
+  `factoryd.CheckBrief` first and its refusals come back whole (the drawer's Edit the brief form too), `give_room` gives a card `sessions` sessions' worth
+  of room, 1 to 5, with its money unless `money` is false: on a card at a stop it answers
+  the stop, on a live card without one it gives room ahead of time, and the action
+  table refuses it on a card that asked a
   question, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
@@ -470,8 +467,8 @@ decimals: a task's model calls cost fractions of a cent.
   of the project's escalation pool, or tops up the money its project file
   already sets, as `escalation.pool.eur` written through a pull request on
   that file. The OK is asked for it at every autonomy level. The
-  escalation pool is what every extend and fund of the project's cards
-  draws from in a UTC month, in three parts: sessions, agent time and
+  escalation pool is what every extend of the project's cards
+  that the factory or the project agent decides draws from in a UTC month, in three parts: sessions, agent time and
   money. The policy tree sets them, `escalation.pool` in `policy.yaml` or
   the project file, and 30 sessions, 30 hours and 60 EUR stand where
   neither does. The board's pool cell and the chat's status line read

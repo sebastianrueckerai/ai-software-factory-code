@@ -125,7 +125,7 @@ itself, and a restart_plan of a plan that holds a held card, naming the
 hold and what fits the rung there: the case's note or settle where the
 table offers them, and the hand-up. A rung's statement lists each as not
 offered with that reason, and a hold that could not be read refuses them
-the same way. Their other answers, a fund, a note or the retry of a
+the same way. Their other answers, a note or the retry of a
 failed dependency among them, go through. Act records a rung 2 answer as the project agent's
 (`factory-chat`), never as the human whose turn woke it. The chat sets
 and ends a hold only on a line the human typed in that turn, or on their
@@ -136,7 +136,7 @@ and the oldest queued card of its project starts (the pull, in filing
 order); the heal pass re-derives the same admission every minute.
 
 A card back from a wait (a human's answer, an approval, a dependency, a
-fund after a cap) passes the same bound at its session start
+room given after a cap) passes the same bound at its session start
 (`AdmitResume`): it starts while the project's live count is under
 `work_in_progress` plus `surge` (2 unless the project's file says
 otherwise), else it waits queued, holding no slot. The queue admits the
@@ -336,12 +336,12 @@ reviewers does not count. A session starts only on 5 minutes of it left,
 or on the whole cap when the card's cap is shorter, so a small card whose
 class gives under 10 minutes still runs its first session (change id
 `sized-least`). Its stop says the agent time is used up, apart
-from the session cap's stop, and a grant buys the next session a quarter
-of the cap. The used time and the attempts are recorded on the task row
+from the session cap's stop, and a grant buys the next session the card's own average
+of agent time per session, a quarter of the cap before its first. The used time and the attempts are recorded on the task row
 (`RecordUsage` after every session), so a new workflow run for the same
 task (a resubmitted issue, a run restarted by hand) resumes the count
-instead of starting a fresh cap. The console's “Allow more sessions”
-raises sessions and lines in columns the workflow never writes. The
+instead of starting a fresh cap. The console's “Give more room”
+raises sessions and agent time in columns the workflow never writes. The
 workflow reads them before each cap check and after every answer, so a
 raise on a running or queued card stands. A stopping factoryd detaches from a running
 `RunSession`: the pod runs on, and the next factoryd's retry reattaches to
