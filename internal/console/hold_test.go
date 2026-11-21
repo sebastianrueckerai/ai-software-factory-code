@@ -439,7 +439,7 @@ func TestAWakeTurnsDeployAnywayIsActsProposalAtAssisted(t *testing.T) {
 	r.actProposes = true
 	_, s := r.loggedIn(t)
 	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAssisted, wake: true, birth: "case_climbed"}
-	if _, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.ActDeployNow, nil, 0); err != nil {
+	if _, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.ActDeployNow, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(*deploys) != 0 || len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.ActDeployNow {

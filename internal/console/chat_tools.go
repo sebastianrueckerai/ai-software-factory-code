@@ -34,15 +34,18 @@ type recommended struct {
 
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
-	TaskID      string   `json:"task_id,omitempty"`
-	CaseID      int64    `json:"case_id,omitempty"`
-	Title       string   `json:"title,omitempty"`
-	Body        string   `json:"body,omitempty"`
-	Track       string   `json:"track,omitempty"`
-	TrackReason string   `json:"track_reason,omitempty"`
-	Text        string   `json:"text,omitempty"`
-	EUR         float64  `json:"eur,omitempty"`
-	FundEUR     float64  `json:"fund_eur,omitempty"`
+	TaskID      string  `json:"task_id,omitempty"`
+	CaseID      int64   `json:"case_id,omitempty"`
+	Title       string  `json:"title,omitempty"`
+	Body        string  `json:"body,omitempty"`
+	Track       string  `json:"track,omitempty"`
+	TrackReason string  `json:"track_reason,omitempty"`
+	Text        string  `json:"text,omitempty"`
+	EUR         float64 `json:"eur,omitempty"`
+	// Sessions and Money are give_room's count of sessions' worth and its
+	// money, which normalized sets to their defaults when left out.
+	Sessions    int      `json:"sessions,omitempty"`
+	Money       bool     `json:"money,omitempty"`
 	Question    int      `json:"question,omitempty"`
 	Decision    string   `json:"decision,omitempty"`
 	Note        string   `json:"note,omitempty"`
@@ -492,8 +495,12 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if in.EUR > 0 {
 		parts = append(parts, fmt.Sprintf("%s EUR", textutil.EUR(in.EUR)))
 	}
-	if in.FundEUR > 0 {
-		parts = append(parts, fmt.Sprintf("fund_eur %s EUR", textutil.EUR(in.FundEUR)))
+	if tool.name == "give_room" {
+		room := textutil.Plural(in.Sessions, "session's worth", "sessions' worth")
+		if !in.Money {
+			room += " without money"
+		}
+		parts = append(parts, room)
 	}
 	if in.CaseID > 0 {
 		parts = append(parts, fmt.Sprintf("case %d", in.CaseID))
@@ -719,7 +726,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 
 func (t *turn) answerIn(ctx context.Context, in toolInput) (string, error) {
 	if in.CaseID != 0 {
-		return t.c.doAnswerCase(ctx, t.a, in.TaskID, in.CaseID, in.Text, in.Action, in.Args, in.FundEUR)
+		return t.c.doAnswerCase(ctx, t.a, in.TaskID, in.CaseID, in.Text, in.Action, in.Args)
 	}
 	k, err := t.card(in)
 	if err != nil {
@@ -750,8 +757,8 @@ func (t *turn) answerIn(ctx context.Context, in toolInput) (string, error) {
 		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
-	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:
-		return t.c.doAnswerAs(ctx, t.a, in.TaskID, in.Text, in.Action, in.Args, in.FundEUR)
+	case in.Action != "" || len(in.Args) > 0:
+		return t.c.doAnswerAs(ctx, t.a, in.TaskID, in.Text, in.Action, in.Args)
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
 }
@@ -788,8 +795,7 @@ func issueRef(id string, issue int64) string {
 	return id
 }
 
-// actionNames are the names of the actions rung 2 or the human may take,
-// the answer tool's actions.
+// humanActionNames are the names of the actions the human may take.
 func humanActionNames() []string {
 	var names []string
 	for _, a := range factoryd.Actions {
@@ -800,10 +806,12 @@ func humanActionNames() []string {
 	return names
 }
 
+// actionNames are the names of the actions rung 2 or the human may take
+// but the room, which give_room gives: the answer tool's actions.
 func actionNames() []string {
 	var names []string
 	for _, a := range factoryd.Actions {
-		if a.Rungs[2] || a.Rungs[3] {
+		if (a.Rungs[2] || a.Rungs[3]) && a.Name != factoryd.ActExtend {
 			names = append(names, a.Name)
 		}
 	}
@@ -1630,24 +1638,19 @@ func init() {
 				"description": "the number of a case to answer, none for the card's own ask"},
 			"action": map[string]any{"type": "string", "enum": actionNames(),
 				"description": "the typed action on the card's case, continue when none"},
-			"fund_eur": map[string]any{"type": "number", "exclusiveMinimum": 0,
-				"description": "the EUR it draws: the fund's own, else beside the action"},
 			"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
 				"properties": map[string]any{
-					"model":        map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
-					"sessions":     map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
-					"agent_time_s": map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
-					"eur":          map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
-					"action":       map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
-					"task_id":      map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
-					"depends_on":   map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
-					"title":        str(writingguide.TitleLine),
-					"why":          str(writingguide.WhyLine),
-					"summary":      str(writingguide.SummaryLine),
-					"body":         map[string]any{"type": "string", "description": "file_card's description"},
-					"size":         map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
-					"criterion":    map[string]any{"type": "string", "description": "answer_criteria's criterion"},
-					"verdict":      map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
+					"model":      map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
+					"action":     map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
+					"task_id":    map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
+					"depends_on": map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
+					"title":      str(writingguide.TitleLine),
+					"why":        str(writingguide.WhyLine),
+					"summary":    str(writingguide.SummaryLine),
+					"body":       map[string]any{"type": "string", "description": "file_card's description"},
+					"size":       map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
+					"criterion":  map[string]any{"type": "string", "description": "answer_criteria's criterion"},
+					"verdict":    map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
 			"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 				"description": "confirm accepts the plan, revise asks for changes in text"},
 			"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
@@ -1863,19 +1866,16 @@ func init() {
 				note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: in.Body})
 				return note, nil, err
 			}},
-		{name: "grant_session", title: "Grant what the stop asks for", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+		{name: "give_room", title: "Give a card more room", write: true,
+			params: map[string]any{"task_id": taskParam,
+				"sessions": fallback(1, map[string]any{"type": "integer", "minimum": 1, "maximum": factoryd.MaxRoomSessions,
+					"description": "how many sessions' worth of time and money the card gets"}),
+				"money": fallback(true, map[string]any{"type": "boolean", "description": "with the money for them, false for time and starts alone"}),
+				"text":  textParam},
 			required: []string{"task_id", "text"},
-			about:    "Grant a card at a cap what the cap asks for, with an answer to its findings.",
+			about:    "Give a card more sessions' worth of time and money, at its stop or ahead of time.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
-				return note, nil, err
-			}},
-		{name: "fund", title: "Fund a card", write: true,
-			params:   map[string]any{"task_id": taskParam, "eur": map[string]any{"type": "number", "description": "the raise in EUR", "exclusiveMinimum": 0}, "text": textParam},
-			required: []string{"task_id", "eur", "text"},
-			about:    "Raise a card's budget for its question or its refused brief: the pool's money, or the human's.",
-			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				note, err := t.fund(in)
+				note, err := t.c.doExtend(t.r.Context(), t.a, in.TaskID, in.Sessions, in.Money, in.Text)
 				return note, nil, err
 			}},
 		{name: "set_dependency", title: "Set a dependency", write: true,
@@ -2100,7 +2100,7 @@ func init() {
 				"recommended": map[string]any{"type": "object", "description": "what the human is asked to take: an action or a plan answer",
 					"properties": map[string]any{
 						"action": map[string]any{"type": "string", "enum": humanActionNames()},
-						"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer takes them"},
+						"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer or give_room takes them"},
 						"answer": map[string]any{"type": "string", "description": "a plan question's choice, confirm or revise, or a human card's choice by its value"}}}},
 			required: []string{"task_id", "found"},
 			about:    "Record what you found on a card's ask, or hand your case up to the human.",
@@ -2336,14 +2336,14 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
-  answer's action takes its args: handover a model, extend sessions or agent_time_s, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
+  answer's action takes its args: handover a model, and retry and replan none.
+  give_room gives a card sessions' worth of time and money, each raise worked out from the card's own sessions: at a cap it answers the stop, on a live card it gives room ahead of time, and at a question it is refused. On your own decision the month's escalation pool bounds it and counts it; once the human confirmed it, the pool does not. Its money never passes the project's money left this month.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.
   escalate asks the humans who are not in this conversation; a choice in their inbox or a reply in a thread of their own answers it.
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
   inbox reads the factory's thread: what woke the agent and what waits on a human. Its first page holds every open ask, and before pages the other rows.
-  fund draws a card's money from the escalation pool. On your own decision it stays within the month's pool and the card's ceiling, and once the human confirmed it, it may pass the pool.
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the judgment budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
@@ -2402,32 +2402,6 @@ func (t *turn) systemText() (string, error) {
 	b.WriteString(limitLines(v.Tree.Document))
 	fmt.Fprintf(&b, "\nChat bounds:\n  message size: %d KiB\n  model calls: as many as the task's budget holds\n", chatMessageMax>>10)
 	return b.String(), nil
-}
-
-// fund is the fund tool: doFund on the turn's rung, the agent's own
-// decision on rung 2, which the pool and the card's ceiling bound, a
-// human's confirmed one on rung 3.
-func (t *turn) fund(in toolInput) (string, error) {
-	return t.c.doFund(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text, 0)
-}
-
-// capSpent is the refusal of money res draws past card issue's ceiling,
-// held the budget it met: it names the raise that makes room by the
-// control the human has where they are, the answer's raise_ceiling in the
-// chat, the opened card's raise of the spend limit elsewhere.
-func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float64, via string) string {
-	eur, _ := res.Args["eur"].(float64)
-	if res.Action != factoryd.ActFund {
-		eur = 0
-	}
-	if res.Fund != nil {
-		eur += res.Fund.EUR
-	}
-	raise := "press “" + factoryd.LabelOf(factoryd.ActRaiseCeiling) + "” on the opened card, which adds the money beside it"
-	if via == factoryd.ViaChat {
-		raise = "raise the spend limit first (answer with the action `" + factoryd.ActRaiseCeiling + "`), then add the money"
-	}
-	return fmt.Sprintf("Card #%d holds %s EUR now, and %s EUR more passes its spend limit of %s EUR: %s.", issue, textutil.EUR(held), textutil.EUR(eur), textutil.EUR(ceiling), raise)
 }
 
 // limitLines are the policy's task budget and limits, one indented line

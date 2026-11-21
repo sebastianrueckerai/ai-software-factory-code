@@ -171,11 +171,8 @@ var writeCases = []writeCase{
 	{name: "edit", tool: "edit", args: `{"task_id":"t-m","title":"Fix the cache and the TTL","why":"So the board loads at once.","summary":"The cache keeps its entries for one TTL. A test reads them back."}`, confirm: true,
 		result: "Edited #5. The card's next session reads the edit.", event: factoryd.EventCardEdited,
 		calls: []string{"PATCH /api/v1/repos/sf/code/issues/5"}},
-	{name: "grant_session", tool: "grant_session", args: `{"task_id":"t-e","text":"One more session."}`, confirm: true,
+	{name: "give_room", tool: "give_room", args: `{"task_id":"t-e","sessions":1,"money":true,"text":"One more session."}`, confirm: true,
 		result: "Case 1 took " + factoryd.ActExtend + ".", event: factoryd.EventCardExtended,
-		calls: []string{"POST /api/v1/repos/sf/code/issues/13/comments"}},
-	{name: "fund", tool: "fund", args: `{"task_id":"t-e","eur":0.5,"text":"Go on."}`, confirm: true,
-		result: "Case 1 took " + factoryd.ActFund + ".", event: factoryd.EventCardFunded,
 		calls: []string{"POST /api/v1/repos/sf/code/issues/13/comments"}},
 	{name: "set_dependency", tool: "set_dependency", args: `{"task_id":"t-a","depends_on":"t-b"}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
@@ -492,7 +489,7 @@ func firstTask(args string) string {
 var (
 	writeTools = []string{"promote_resource", "release_resource", "new_card", "request_image", "answer", "comment",
 		"tell_card", "steer", "retry", "request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria",
-		"set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
+		"set_accent", "invite", "github_export", "github_sync", "close", "edit", "give_room",
 		"set_dependency", "hold_card", "release_hold", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",
 		"routine_skip", "notes_write", "escalate", "attach_analysis"}
 	// readTools are the tools that change nothing; with writeTools they

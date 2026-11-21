@@ -102,10 +102,11 @@ func TestBoardWorkFailureIsMasked(t *testing.T) {
 }
 
 // roomyFacts are the facts of a card that stopped with room to draw: three
-// attempts of three, a pool and a card draw to take from. over changes them.
+// attempts of three, a pool, a card draw and the project's month to take
+// from. over changes them.
 func roomyFacts(over func(*factoryd.CaseFacts)) map[string]any {
 	f := factoryd.CaseFacts{Attempts: 3, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.3,
-		CeilingEUR: 10, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+		CeilingEUR: 10, MonthLeftEUR: 50, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	if over != nil {
 		over(&f)
 	}
@@ -278,16 +279,16 @@ func TestFaceButtonsAreTheRegistersAnswers(t *testing.T) {
 
 // One send carries one answer: the form posts the case, the action and
 // that action's own fields, and Act is called once with one resolution:
-// handover on the same model. Another answer's fields, a fund and a note
-// the answer does not take ride nothing: the comment is the answer's own
+// handover on the same model. Another answer's fields and a note the
+// answer does not take ride nothing: the comment is the answer's own
 // sentence (Resolution.Sentence), not the stray note.
-func TestOneSendCarriesDecisionFundAndNote(t *testing.T) {
+func TestOneSendCarriesTheDecisionAlone(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
 	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
 	rec := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "case_id": {"1"},
-		"action": {"handover"}, "handover.model": {"same"}, "extend.sessions": {"9"}, "fund_eur": {"1.50"}, "note": {"go on with the cache"}}), ck)
+		"action": {"handover"}, "handover.model": {"same"}, "extend.sessions": {"9"}, "extend.money": {"yes"}, "note": {"go on with the cache"}}), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("resolve = %d: %s", rec.Code, rec.Body)
 	}
@@ -430,7 +431,7 @@ func TestARepeatedFindingsCardShowsItsLateAnswersInTheAsk(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	ask, folds, _ := strings.Cut(drawer(t, r, ck, "t-g", "overview"), `<div class="o-folds">`)
-	for _, label := range []string{"Allow more sessions", "End the card"} {
+	for _, label := range []string{"Give more room", "End the card"} {
 		if !strings.Contains(ask, label) || strings.Contains(folds, label) {
 			t.Errorf("“%s” stands outside the ask block or under a fold:\nthe ask:\n%s\nthe folds:\n%s", label, ask, folds)
 		}
@@ -490,24 +491,6 @@ func TestNewCardOnACaseCarriesEveryField(t *testing.T) {
 	}
 }
 
-// raise_ceiling's amount rides its own input: one send of raise_ceiling with
-// 2.50 EUR is one Act call whose args carry the amount.
-func TestRaiseCeilingTakesItsOwnAmount(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
-	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
-	rec := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "case_id": {"1"},
-		"action": {"raise_ceiling"}, "raise_ceiling.eur": {"2.50"}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("resolve = %d: %s", rec.Code, rec.Body)
-	}
-	got, _ := actedOnce(t, r)
-	if got.Res.Action != factoryd.ActRaiseCeiling || got.Res.Args["eur"] != 2.5 || got.Res.Fund != nil {
-		t.Fatalf("Act took %+v, want raise_ceiling of 2.5 EUR and no fund", got.Res)
-	}
-}
-
 // restart_plan closes the done plan as its Close does and files its
 // objective anew on the plan track, continuing the old plan's issue, the
 // note the shape to take.
@@ -541,8 +524,8 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 
 // A case whose ask stores no face renders the register's face on the
 // case's own facts, each answer a send of its own to the case's resolve:
-// at the session cap, allow more sessions, end the card and not now. The
-// old answer, fund and extend forms are gone for a cased card.
+// at the session cap, give more room, end the card and not now. The old
+// answer, fund and extend forms are gone for a cased card.
 func TestACaseWithNoStoredFaceRendersTheRegistersAndNoOldForms(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
@@ -550,7 +533,7 @@ func TestACaseWithNoStoredFaceRendersTheRegistersAndNoOldForms(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	esc := escalationOf(t, r, ck, "t-g")
 	if strings.Contains(esc, `action="/tasks/t-g/answer"`) || strings.Contains(esc, `action="/tasks/t-g/fund"`) || strings.Contains(esc, `action="/tasks/t-g/extend"`) ||
-		strings.Count(esc, `action="/tasks/t-g/resolve"`) != 3 || strings.Contains(esc, "fund_eur") || !strings.Contains(esc, `name="note.note"`) {
+		strings.Count(esc, `action="/tasks/t-g/resolve"`) != 3 || !strings.Contains(esc, `name="note.note"`) {
 		t.Fatalf("the face of a case with no stored face =\n%s\nwant the resolve forms alone, Not now's note its own field", esc)
 	}
 	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, []string{"extend", "close", "note"}) {

@@ -559,14 +559,14 @@ func TestAParkedCardStillAnswers(t *testing.T) {
 		detail: map[string]any{"action": factoryd.ActClose, "answer": factoryd.ActClose, "case_id": int64(1)}})
 	equal(t, "the close kept the park's answer alone", r.fg.commentBodies(comments), []string{"Park it"})
 
-	// the extend one session more on the same parked card: Act's, posted
+	// a session's worth more room on the same parked card: Act's, posted
 	before = ev.count()
 	if rec := r.do(post("/tasks/t-q/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
-		"extend.sessions": {"1"}, "extend.note": {"one more run"}}), ck); rec.Code >= 400 {
+		"extend.sessions": {"1"}, "extend.money": {"yes"}, "extend.note": {"one more run"}}), ck); rec.Code >= 400 {
 		t.Fatalf("the extend = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the extend", the(2), factoryd.ActInput{TaskID: "t-q", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 0}, Note: "one more run"}})
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "money": true}, Note: "one more run"}})
 	equal(t, "the extend's answer", r.fg.commentBodies(comments), []string{"Park it", "one more run"})
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventSessionGranted, repo: "sf/code", taskID: "t-q",
 		detail: map[string]any{"action": factoryd.ActExtend, "answer": "one more run", "case_id": int64(1), "comment": int64(2)}})
@@ -615,68 +615,33 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 	}
 }
 
-// The extend action is an extend through Act on the card's live case:
-// its sessions and minutes, the money drawn beside it, and the note Act has
-// posted as the answer. A raise of money alone is a fund.
-func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
+// The room is an extend through Act on the card's live case: its count
+// of sessions' worth and its money, and the note Act has posted as the
+// answer; with no note, the answer posted is the room in words.
+func TestExtendGivesTheRoomAndAnswers(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 0, 2, "the restructure is worth it"); err != nil {
-		t.Fatalf("extend: %v", err)
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 2, true, "the restructure is worth it"); err != nil {
+		t.Fatalf("the room: %v", err)
 	}
 	got, posts := actedOnce(t, r)
-	equal(t, "the extend", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 0}, Fund: &policy.Draw{EUR: 2},
-			Note: "the restructure is worth it"}}, true})
+	equal(t, "the room", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 2, "money": true}, Note: "the restructure is worth it"}}, true})
 	r.fg.mu.Lock()
 	posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]
 	r.fg.mu.Unlock()
 	equal(t, "the answer posted", posted, "the restructure is worth it")
 
-	// the Extend form's minutes field raises the card's agent time, the
-	// chat's extend's agent_time_s by its own door
 	r = fundRig(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 20, 0, ""); err != nil {
-		t.Fatalf("extend by minutes: %v", err)
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, false, ""); err != nil {
+		t.Fatalf("the room without money: %v", err)
 	}
 	got, _ = actedOnce(t, r)
-	equal(t, "the minutes alone", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 0, "agent_time_s": 1200},
-		Note: "Extended the card: +0 sessions, +20 minutes of agent time, +0.00 EUR."})
-
-	r = fundRig(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 1.5, ""); err != nil {
-		t.Fatalf("extend by money alone: %v", err)
-	}
-	got, _ = actedOnce(t, r)
-	equal(t, "the money alone", got.Res, factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.5},
-		Note: "Extended the card: +0 sessions, +0 minutes of agent time, +1.50 EUR."})
-}
-
-// Nothing extends when the raise names nothing or names a negative: the
-// refusal changes no row and posts no answer.
-func TestExtendRefusesWhatChangesNothing(t *testing.T) {
-	r := fundRig(t)
-	_, s := r.loggedIn(t)
-	for _, in := range []struct {
-		sessions, minutes int
-		eur               float64
-	}{
-		{0, 0, 0}, {-1, 0, 0}, {0, -20, 0}, {0, 0, -2}, {1, 0, -5},
-	} {
-		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.minutes, in.eur, "")
-		var no *refusal
-		if !errors.As(err, &no) || no.status != http.StatusBadRequest {
-			t.Errorf("extend %+v = %v, want a 400 refusal", in, err)
-		}
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || task.Usage != (factoryd.TaskUsage{}) {
-		t.Errorf("a refused extend moved the card: budget %v, usage %+v", task.BudgetEUR, task.Usage)
-	}
+	equal(t, "the room without money", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "money": false}})
 	r.fg.mu.Lock()
-	defer r.fg.mu.Unlock()
-	if len(r.fg.comments) != 0 {
-		t.Errorf("a refused extend posted %q", r.fg.comments)
-	}
+	posted = r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]
+	r.fg.mu.Unlock()
+	equal(t, "the answer posted with no note", posted, "“Give more room”: 1 session's worth without money")
 }
 
 // The card's own extend refuses a non-numeric field with its own line and
@@ -695,9 +660,9 @@ func TestExtendRouteRefusesNonNumeric(t *testing.T) {
 	}
 }
 
-// The opened card's extend fields show where the face offers more
-// sessions, its fields naming what they raise: a review that keeps raising
-// findings offers more sessions and the overrule.
+// The opened card's room fields show where the face offers more room,
+// its count and its money: a review that keeps raising findings offers
+// more room and the overrule.
 func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	r := fundRig(t)
 	facts := roomyFacts(func(f *factoryd.CaseFacts) {
@@ -707,7 +672,7 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	seatAsk(r, "t-e", factoryd.CaseGateStop, facts)
 	ck, _ := r.loggedIn(t)
 	body := escalationOf(t, r, ck, "t-e")
-	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.minutes"`, `name="extend.sessions"`,
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.sessions"`, `name="extend.money"`,
 		`name="action" value="` + factoryd.ActReverify + `/overrule"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %s", want)
@@ -715,51 +680,29 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	}
 }
 
-// A planner's time stop shows the Extend form's minutes field first: the
-// stop asks agent time, and the form's own order says so.
-func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
-	r := fundRig(t)
-	r.tasks.set(factoryd.PlannerOutOfTime+" and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card",
-		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
-			Objective: "Plan the API.", BudgetEUR: 2, ModelAlias: "factory/small"})
-	seatAsk(r, "t-e", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS, f.Planner = 1, 7200, true }))
-	ck, _ := r.loggedIn(t)
-	form := escalationOf(t, r, ck, "t-e")
-	minutes, sessions := strings.Index(form, `name="extend.minutes"`), strings.Index(form, `name="extend.sessions"`)
-	if minutes < 0 || sessions < 0 || minutes > sessions {
-		t.Fatalf("the extend form at the planner's stop leads with %q; want the minutes field before the sessions", form[:min(len(form), 300)])
-	}
-}
-
-// The card's own extend reads the minutes field into the card's agent
-// time, as the chat's extend carries it, and bounds it: 20 minutes act as
-// 1200 seconds, 601 are refused naming the bound and draw nothing.
-func TestExtendRouteTakesMinutes(t *testing.T) {
-	r := fundRig(t)
-	setStatus(r, "running")
-	ck, s := r.loggedIn(t)
-	form := func(minutes string) url.Values {
-		return url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
-			"extend.sessions": {"0"}, "extend.minutes": {minutes}}
-	}
-	if rec := r.do(post("/tasks/t-e/resolve", form("20")), ck); rec.Code >= 400 {
-		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
-	}
-	got, _ := actedOnce(t, r)
-	equal(t, "the posted minutes", got.Res.Args, map[string]any{"sessions": 0, "agent_time_s": 1200})
-	r = fundRig(t)
-	setStatus(r, "running")
-	ck, s = r.loggedIn(t)
-	rec := r.do(post("/tasks/t-e/resolve", form("601")), ck)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "at most 600 minutes") {
-		t.Fatalf("extend of 601 minutes = %d: %s", rec.Code, rec.Body)
-	}
-	if n := len(r.acted); n != 0 {
-		t.Errorf("a refused extend acted %d times", n)
-	}
-	if rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
-		"extend.sessions": {"1"}}), ck); rec.Code >= 400 {
-		t.Errorf("an extend with no minutes field = %d: %s", rec.Code, rec.Body)
+// The card's own room reads its count and its tick: 3 sessions' worth
+// with the box ticked give 3 with money, a box left clear gives none, and
+// a count left out is 1.
+func TestExtendRouteTakesTheCountAndTheTick(t *testing.T) {
+	for _, tc := range []struct {
+		form url.Values
+		want map[string]any
+	}{
+		{url.Values{"extend.sessions": {"3"}, "extend.money": {"yes"}}, map[string]any{"sessions": 3, "money": true}},
+		{url.Values{"extend.sessions": {"2"}}, map[string]any{"sessions": 2, "money": false}},
+		{url.Values{"extend.money": {"yes"}}, map[string]any{"sessions": 1, "money": true}},
+	} {
+		r := fundRig(t)
+		setStatus(r, "running")
+		ck, s := r.loggedIn(t)
+		tc.form.Set("csrf", s.csrf)
+		tc.form.Set("action", factoryd.ActExtend)
+		if rec := r.do(post("/tasks/t-e/resolve", tc.form), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("%v: the room = %d: %s", tc.form, rec.Code, rec.Body)
+		}
+		if got, _ := actedOnce(t, r); got.CaseID != 0 || !reflect.DeepEqual(got.Res.Args, tc.want) {
+			t.Errorf("%v: Act took %+v, want the args %v on no case", tc.form, got, tc.want)
+		}
 	}
 }
 
@@ -769,15 +712,15 @@ func setStatus(r *rig, status string) {
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
 }
 
-// A live card that is not waiting takes the raise too: an extend on no
-// case, nothing posted, for the run reads the raise at its next cap check.
+// A live card that is not waiting takes room too: an extend on no case,
+// nothing posted, ahead of its next stop.
 func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
 	for _, status := range []string{"queued", "running"} {
 		r := fundRig(t)
 		setStatus(r, status)
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 0, 2, ""); err != nil {
-			t.Fatalf("%s: extend: %v", status, err)
+		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, true, ""); err != nil {
+			t.Fatalf("%s: the room: %v", status, err)
 		}
 		got, _ := actedOnce(t, r)
 		if got.CaseID != 0 || got.Res.Action != factoryd.ActExtend {
@@ -792,34 +735,36 @@ func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
 	}
 }
 
-// A card past its end refuses the extend and changes nothing.
+// A card past its end refuses the room and changes nothing.
 func TestExtendRefusesADoneCard(t *testing.T) {
 	r := fundRig(t)
 	setStatus(r, "done")
 	_, s := r.loggedIn(t)
-	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 0, 2, "")
+	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, true, "")
 	var no *refusal
-	if !errors.As(err, &no) || no.status != http.StatusConflict {
-		t.Fatalf("extend of a done card = %v, want a 409 refusal", err)
+	if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.Contains(no.msg, "not a live card to give room") || len(r.acted) != 0 {
+		t.Fatalf("the room of a done card = %v, Act took %+v; want a 409 refusal before Act", err, r.acted)
 	}
 	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || task.Usage != (factoryd.TaskUsage{}) {
 		t.Errorf("a refused extend moved the card: budget %v, usage %+v", task.BudgetEUR, task.Usage)
 	}
 }
 
-// A running card's opened card offers more sessions and money among its
-// other actions to an approver, the card left where it stands, and
-// offers neither to a viewer who is not one.
+// A running card's opened card offers more room among its other actions
+// to an approver, its count and its money, the card left where it
+// stands, and no money apart; a viewer who is not one is offered none.
 func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
 	r := fundRig(t)
 	setStatus(r, "running")
 	ck, _ := r.loggedIn(t)
 	more := otherActionsOf(t, drawer(t, r, ck, "t-e", "overview"))
-	for _, want := range []string{`action="/tasks/t-e/resolve"`, `data-answer="extend"`, `name="extend.minutes"`, `name="extend.sessions"`,
-		`data-answer="fund"`, `name="fund.eur"`} {
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `data-answer="extend"`, `name="extend.sessions"`, `name="extend.money"`} {
 		if !strings.Contains(more, want) {
 			t.Errorf("the running card's other actions lack %s:\n%s", want, more)
 		}
+	}
+	if strings.Contains(more, `data-answer="fund"`) {
+		t.Errorf("the running card's other actions hold money apart:\n%s", more)
 	}
 	_, extend, _ := strings.Cut(more, `data-answer="extend"`)
 	if extend, _, _ = strings.Cut(extend, ">"); strings.Contains(extend, "data-to") {
@@ -829,9 +774,8 @@ func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "morgan")
 	r.forgetWriters()
 	mk, _ := memberLogin(t, r, "morgan")
-	if more := otherActionsOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), mk).Body.String()); strings.Contains(more, `data-answer="extend"`) ||
-		strings.Contains(more, `data-answer="fund"`) {
-		t.Errorf("a non-approver's opened card offers more sessions or money:\n%s", more)
+	if more := otherActionsOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), mk).Body.String()); strings.Contains(more, `data-answer="extend"`) {
+		t.Errorf("a non-approver's opened card offers more room:\n%s", more)
 	}
 }
 
@@ -967,9 +911,10 @@ func TestAFacePressAnswersAsItsAnswer(t *testing.T) {
 	}
 }
 
-// "Add money" funds the amount of its own field, and an amount that is no
-// number says what to type.
-func TestAddMoneyFundsItsAmount(t *testing.T) {
+// "Give more room" at a money stop gives the count of its own field with
+// its tick: 3 sessions' worth with the box ticked, 1 with it clear; a
+// count that is no number says what to type.
+func TestGiveMoreRoomTakesItsCountAndItsTick(t *testing.T) {
 	press := func(values url.Values) (*rig, *httptest.ResponseRecorder) {
 		r := newRig(t)
 		ck, s := r.loggedIn(t)
@@ -977,19 +922,27 @@ func TestAddMoneyFundsItsAmount(t *testing.T) {
 		seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
 		values.Set("csrf", s.csrf)
 		values.Set("case_id", "1")
-		values.Set("action", factoryd.ActFund)
+		values.Set("action", factoryd.ActExtend)
 		return r, r.do(post("/tasks/t-e/resolve", values), ck)
 	}
-	r, rec := press(url.Values{"fund.eur": {"1.50"}})
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("the fund = %d: %s", rec.Code, rec.Body)
+	for _, tc := range []struct {
+		form url.Values
+		want map[string]any
+	}{
+		{url.Values{"extend.sessions": {"3"}, "extend.money": {"yes"}}, map[string]any{"sessions": 3, "money": true}},
+		{url.Values{"extend.sessions": {"1"}}, map[string]any{"sessions": 1, "money": false}},
+	} {
+		r, rec := press(tc.form)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("%v: the room = %d: %s", tc.form, rec.Code, rec.Body)
+		}
+		if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActExtend || !reflect.DeepEqual(got.Res.Args, tc.want) || got.Res.Room != nil {
+			t.Fatalf("%v: Act took %+v, want the room %v", tc.form, got.Res, tc.want)
+		}
 	}
-	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActFund || got.Res.Args["eur"] != 1.5 || got.Res.Fund != nil {
-		t.Fatalf("Act took %+v, want a fund of the 1.50 EUR typed", got.Res)
-	}
-	r, rec = press(url.Values{"fund.eur": {"two"}})
-	if body := rec.Body.String(); rec.Code != http.StatusBadRequest || !strings.Contains(body, "EUR to add takes an amount in EUR, such as 2.50") || len(r.acted) != 0 {
-		t.Fatalf("an amount that is no number = %d %q with %d Act calls; want 400 saying what to type, none", rec.Code, body, len(r.acted))
+	r, rec := press(url.Values{"extend.sessions": {"two"}})
+	if body := rec.Body.String(); rec.Code != http.StatusBadRequest || !strings.Contains(body, "Sessions' worth takes a whole number, such as 1") || len(r.acted) != 0 {
+		t.Fatalf("a count that is no number = %d %q with %d Act calls; want 400 saying what to type, none", rec.Code, body, len(r.acted))
 	}
 }
 

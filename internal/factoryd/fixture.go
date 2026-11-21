@@ -160,14 +160,14 @@ type FixtureAsk struct {
 
 // FixtureAnswer is an answer to one of the card's asks: At is the offset
 // from the card's creation in seconds, By a role, Action the answer's
-// action or its event kind, and Fund the money it drew for the card.
+// action or its event kind, and DrawnEUR the money it drew for the card.
 type FixtureAnswer struct {
 	AtS      int64          `json:"at_s"`
 	By       string         `json:"by"`
 	CaseKind string         `json:"case_kind"`
 	Action   string         `json:"action"`
 	Args     map[string]any `json:"args"`
-	FundEUR  float64        `json:"fund_eur"`
+	DrawnEUR float64        `json:"drawn_eur"`
 	Note     string         `json:"note"`
 }
 

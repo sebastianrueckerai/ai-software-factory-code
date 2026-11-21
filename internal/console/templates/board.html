@@ -27,7 +27,7 @@
 {{end}}<span class="cell spend{{gaugeClass .Spend.EUR .CapEUR .Spend.Hit}}" title="spend this UTC month, {{pct .Spend.EUR .CapEUR}} percent of the month cap: the project file's when it sets one, else the factory's, holds included{{with .MonthReset}}{{.Title}}{{end}}">{{if $.Factory}}<a href="/costs">{{end}}<span>{{if .MonthReset}}<span class="of">↺</span> {{end}}<b class="n">{{eur .Spend.EUR}}</b> <span class="of">/ {{eur .CapEUR}} EUR</span></span><span class="gauge"><meter min="0" max="100" value="{{pct100 .Spend.EUR .CapEUR}}" aria-label="Spend of the month cap">{{pct .Spend.EUR .CapEUR}} percent</meter></span>{{if $.Factory}}</a>{{end}}</span>
 {{if .PremiumHit}}<span class="cell hit" title="spend on the premium model this UTC month, {{eur .PremiumEUR}} of {{eur .PremiumCapEUR}} EUR, against its cap; past it, premium calls run on big">premium cap hit</span>
 {{end}}
-{{- with .Pool}}{{if .Overdrawn}}<span class="cell hit" title="the escalation pool every extend and fund but a human's draws from, set in the policy tree (escalation.pool), {{.Policy}}, {{.Month}} UTC: {{.Words}}">pool drawn out</span>
+{{- with .Pool}}{{if .Overdrawn}}<span class="cell hit" title="the escalation pool every room the factory gives a card draws from, set in the policy tree (escalation.pool), {{.Policy}}, {{.Month}} UTC: {{.Words}}">pool drawn out</span>
 {{end}}{{end}}
 {{- if .ChatSpent}}<span class="cell hit" title="the judgment budget is spent: the chat stands until it is raised or the month turns">judgment budget spent</span>
 {{end}}{{if .BackstopHit}}<span class="cell hit" title="LiteLLM's proxy-wide budget, the absolute limit of the month under every cap: {{eur .Backstop.SpendUSD}} of {{eur .Backstop.MaxUSD}} USD; no reset passes it">LiteLLM backstop hit</span>

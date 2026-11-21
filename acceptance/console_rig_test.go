@@ -1131,14 +1131,15 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 
 // Act mirrors Runner.Act, the case door this rig is: a refusal the test
 // set (RefuseActs) answers ErrActRefused with nothing done; else the caller
-// posts a case-resolving answer, and the answer's draw lands as the
-// store's rows land it, one pool draw of the answer's rung: card_funded
-// for its money, which raises the card's budget, and card_extended for
-// its sessions, which raise the card's; then the answer's own row. A
-// resolving answer closes its case and ends its in-flight step, as the
-// real keepsOpen's ending does; a note and the chain stall's re-run keep
-// theirs live. The table's and the bounds' refusals are factoryd's own,
-// tested there.
+// posts a case-resolving answer, and the answer's room, RoomFor on the
+// card's facts as Runner.RoomFacts reads them, lands as the store's rows
+// land it: the spend limit's raise, then card_extended for its starts and
+// agent time, which raise the card's caps, and card_funded for its money,
+// which raises the card's budget, each a pool row of the answer's rung;
+// then the answer's own row. A resolving answer closes its case and ends
+// its in-flight step, as the real keepsOpen's ending does; a note and the
+// chain stall's re-run keep theirs live. The table's and the bounds'
+// refusals are factoryd's own, tested there.
 func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 	a.mu.Lock()
 	a.acted = append(a.acted, in)
@@ -1161,17 +1162,7 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 			return out, err
 		}
 	}
-	eur, _ := in.Res.Args["eur"].(float64)
-	if in.Res.Action != factoryd.ActFund {
-		eur = 0
-	}
-	sessions, _ := in.Res.Args["sessions"].(int)
-	if in.Res.Action != factoryd.ActExtend {
-		sessions = 0
-	}
-	if in.Res.Fund != nil {
-		eur += in.Res.Fund.EUR
-	}
+	v, _, _ := a.CurrentPolicy(ctx)
 	a.mu.Lock()
 	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.ID == in.TaskID })
 	if i < 0 {
@@ -1193,17 +1184,27 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 		rows = append(rows, e)
 		return err
 	}
-	var err error
-	if eur > 0 {
-		from := k.BudgetEUR
-		k.BudgetEUR += eur
-		err = add(row(factoryd.EventCardFunded, map[string]any{"pool": true, "rung": in.Rung, "case_id": in.CaseID,
-			"amount_eur": eur, "from_eur": from, "to_eur": k.BudgetEUR}))
+	var room factoryd.Room
+	if n, money, ok := roomAsk(in.Res); ok {
+		room = factoryd.RoomFor(roomFacts(k.Task, v), n, money)
 	}
-	if err == nil && sessions > 0 {
-		k.Usage.RaisedSessions += sessions
+	var err error
+	if room.Limit > 0 {
+		k.CeilingEUR = cmp.Or(k.CeilingEUR, v.Document.Budget.TaskMaxEUR) + room.Limit
+		err = add(row(factoryd.EventCardFunded, map[string]any{"rung": in.Rung, "case_id": in.CaseID, "ceiling_eur": k.CeilingEUR,
+			"amount_eur": 0.0, "from_eur": k.BudgetEUR, "to_eur": k.BudgetEUR}))
+	}
+	if err == nil && (room.Starts > 0 || room.AgentTime > 0) {
+		k.Usage.RaisedSessions += room.Starts
+		k.Usage.RaisedTime += room.AgentTime
 		err = add(row(factoryd.EventCardExtended, map[string]any{"pool": true, "rung": in.Rung, "case_id": in.CaseID,
-			"sessions": sessions, "agent_time_s": 0, "amount_eur": 0.0}))
+			"sessions": room.Starts, "agent_time_s": int(room.AgentTime / time.Second), "amount_eur": 0.0}))
+	}
+	if err == nil && room.EUR > 0 {
+		from := k.BudgetEUR
+		k.BudgetEUR += room.EUR
+		err = add(row(factoryd.EventCardFunded, map[string]any{"pool": true, "rung": in.Rung, "case_id": in.CaseID,
+			"amount_eur": room.EUR, "from_eur": from, "to_eur": k.BudgetEUR}))
 	}
 	if err == nil && resolves {
 		detail := map[string]any{"action": in.Res.Action, "case_id": in.CaseID, "answer": cmp.Or(in.Res.Note, in.Res.Action)}
@@ -1242,6 +1243,46 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 		a.bus.Publish(e)
 	}
 	return out, nil
+}
+
+// roomAsk is the room res gives: an extend's count and money, true when
+// left out, or the room beside another action.
+func roomAsk(res factoryd.Resolution) (n int, money, ok bool) {
+	switch {
+	case res.Action == factoryd.ActExtend:
+		n, _ = toInt(res.Args["sessions"])
+		money, set := res.Args["money"].(bool)
+		return n, money || !set, true
+	case res.Room != nil:
+		return res.Room.Sessions, res.Room.Money, true
+	}
+	return 0, false, false
+}
+
+// roomFacts are card t's facts as Runner.RoomFacts reads them under v,
+// with no ledger rows: its card facts, its sized agent-time cap, the
+// policy's session floor and the month the caps leave.
+func roomFacts(t factoryd.Task, v policy.Version) factoryd.CaseFacts {
+	f := factoryd.CardFacts(t, v, "")
+	f.AgentTimeCapS = (policy.SizeAgentTime(t.Size, v.Document.Limits.AgentTime) + t.Usage.TimeAdded()).Seconds()
+	f.FloorEUR = v.Document.Budget.SessionFloor(false)
+	_, project := v.ProjectCap(t.Repository)
+	f.MonthLeftEUR = min(project, v.Document.Budget.MonthEUR)
+	return f
+}
+
+// toInt reads a number from an event detail or an answer's args: float64
+// after a JSON trip, int or int64 when built in process.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // RefuseActs makes Act refuse every next answer with why; "" clears it.
@@ -1461,11 +1502,14 @@ func (a *AcceptanceRig) PoolDrawn(_ context.Context, repository string, month ti
 	var d policy.Draw
 	for _, e := range a.events {
 		if e.Repository != repository || e.Kind != factoryd.EventCardFunded && e.Kind != factoryd.EventCardExtended ||
-			e.Detail["pool"] != true || e.Detail["rung"] == 3 || e.At.Before(from) || !e.At.Before(until) {
+			e.Detail["pool"] != true || e.At.Before(from) || !e.At.Before(until) {
 			continue
 		}
-		sessions, _ := e.Detail["sessions"].(int)
-		seconds, _ := e.Detail["agent_time_s"].(int)
+		if rung, ok := toInt(e.Detail["rung"]); ok && rung == 3 {
+			continue
+		}
+		sessions, _ := toInt(e.Detail["sessions"])
+		seconds, _ := toInt(e.Detail["agent_time_s"])
 		eur, _ := e.Detail["amount_eur"].(float64)
 		d = d.Plus(policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second, EUR: eur})
 	}

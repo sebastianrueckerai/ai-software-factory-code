@@ -132,8 +132,8 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		}
 		return opened[at : at+strings.Index(opened[at:], "</section>")]
 	}
-	// each answer its own send: no fund control, at most one note box a
-	// form, and the door the kind answers through
+	// each answer its own send: at most one note box a form, and the door
+	// the kind answers through
 	for _, tc := range []struct {
 		id, action string
 	}{
@@ -143,8 +143,8 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		{"t-bp", "/tasks/t-bp/plan/answer"},
 	} {
 		ask := askOf(tc.id)
-		if strings.Contains(ask, `name="fund_eur"`) || !strings.Contains(ask, `action="`+tc.action+`"`) {
-			t.Errorf("%s: the ask holds a fund or no answer through %s:\n%s", tc.id, tc.action, ask)
+		if !strings.Contains(ask, `action="`+tc.action+`"`) {
+			t.Errorf("%s: the ask holds no answer through %s:\n%s", tc.id, tc.action, ask)
 		}
 		for _, form := range strings.Split(ask, "<form ")[1:] {
 			if strings.Count(form, "<textarea") > 1 || strings.Count(form, `type="submit"`) != 1 {

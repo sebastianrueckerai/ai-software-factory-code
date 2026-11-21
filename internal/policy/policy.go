@@ -198,7 +198,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_accent", "invite", "github_export",
-	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "hold_card", "release_hold", "replan", "set_pool",
+	"github_sync", "close", "edit", "give_room", "set_dependency", "hold_card", "release_hold", "replan", "set_pool",
 	"read_doc", "write_doc", "show_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset",
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}
@@ -212,7 +212,7 @@ var VisionModels = []string{"vision"}
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 10,
 	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
-		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
+		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "give_room", "set_dependency", "replan",
 		"promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
@@ -251,7 +251,7 @@ const DefaultQueueCap = 8
 // the agent starts and files ready work itself, and every start and
 // filing still passes the ready check. routine_run files a routine's
 // card, as new_card files one, and request_image a tool card.
-var assistedOff = []string{"new_card", "request_image", "retry", "grant_session", "routine_run"}
+var assistedOff = []string{"new_card", "request_image", "retry", "routine_run"}
 
 // fullAutoOff are the always-confirm tools that come off at full auto:
 // merges follow the rule, and the agent writes documents.
@@ -266,12 +266,13 @@ var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite",
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
 // over base, the list the policy and the project file set: manual is
-// base as its files set it with the always-confirm set and fund, assisted takes
-// the starts and filings off and keeps the always-confirm set, autonomous
+// base as its files set it with the always-confirm set and give_room,
+// whose money goes past a card's budget, assisted takes the starts and
+// filings off and keeps the always-confirm set and give_room, autonomous
 // keeps the always-confirm set only, with merges following the rule.
 func ConfirmFor(level, mergeRule string, base []string) []string {
 	ensure := func(list []string) []string {
-		for _, t := range append(slices.Clone(AlwaysConfirm), "fund") {
+		for _, t := range append(slices.Clone(AlwaysConfirm), "give_room") {
 			if !slices.Contains(list, t) {
 				list = append(list, t)
 			}

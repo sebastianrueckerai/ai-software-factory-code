@@ -8,7 +8,8 @@ import (
 )
 
 // The answer tool's action enum is every action rung 2 or the human may
-// take, the board's rows among them; its refusals are Act's.
+// take but the room, which give_room gives, the board's rows among them;
+// its refusals are Act's.
 func TestAnswerToolActionEnumHoldsTheBoardActions(t *testing.T) {
 	r := newRig(t)
 	tool, _ := r.c.chatTool("answer")
@@ -20,8 +21,8 @@ func TestAnswerToolActionEnumHoldsTheBoardActions(t *testing.T) {
 		}
 	}
 	for _, a := range factoryd.Actions {
-		if (a.Rungs[2] || a.Rungs[3]) != slices.Contains(enum, a.Name) {
-			t.Errorf("action %s: the enum holds it = %v, want rung 2 or 3 may take it = %v", a.Name, slices.Contains(enum, a.Name), a.Rungs[2] || a.Rungs[3])
+		if want := (a.Rungs[2] || a.Rungs[3]) && a.Name != factoryd.ActExtend; want != slices.Contains(enum, a.Name) {
+			t.Errorf("action %s: the enum holds it = %v, want %v", a.Name, slices.Contains(enum, a.Name), want)
 		}
 	}
 }

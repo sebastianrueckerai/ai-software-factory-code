@@ -453,9 +453,9 @@ type card struct {
 	// title, and the activity line names it. nil on a card whose ask no
 	// template shaped.
 	Question *factoryd.HumanQuestion
-	// MayExtend: the viewer may give the live agent card more sessions and
-	// money, MayReplan send it back to the planner, MayRetry file the
-	// failed plan card again; each an approver's action.
+	// MayExtend: the viewer may give the live agent card more room,
+	// MayReplan send it back to the planner, MayRetry file the failed plan
+	// card again; each an approver's action.
 	MayExtend, MayReplan, MayRetry bool
 	// Total is the task's time so far, or in all once it finished.
 	Total string

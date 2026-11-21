@@ -356,13 +356,13 @@ func TestTheSuggestedAnswerIsTheOneButton(t *testing.T) {
 	scene := fixtureScene(fx, all)
 	ask := scene.asks[fx.Case.ID]
 	ask.Detail = maps.Clone(ask.Detail)
-	ask.Detail["preselected"] = map[string]any{"action": factoryd.ActFund}
+	ask.Detail["preselected"] = map[string]any{"action": factoryd.ActExtend}
 	scene.asks[fx.Case.ID] = ask
 	r = newRig(t)
 	ck, _ = r.loggedIn(t)
 	r.seedScene(scene)
 	face = smallCard(t, r, ck, fx.Task.ID)
-	if strings.Contains(face, `type="submit"`) || !strings.Contains(face, `<a class="pick-link" href="#card=t-e758758121d7:press=fund">Add money</a>`) {
+	if strings.Contains(face, `type="submit"`) || !strings.Contains(face, `<a class="pick-link" href="#card=t-e758758121d7:press=extend">Give more room</a>`) {
 		t.Fatalf("a suggestion with a field shows a button, or no link that opens the card:\n%s", face)
 	}
 }

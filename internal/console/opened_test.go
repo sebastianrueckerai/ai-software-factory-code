@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -516,9 +517,9 @@ func TestOneSendPostsAnswerFieldsAndNote(t *testing.T) {
 
 // A press on an answer whose fields open, then a press on a second answer,
 // closes the first answer's fields, and the send posts the second answer
-// alone: on #2004's opened card "Add money" opens its amount, "End the
-// card" closes it, and the send holds no amount (Review Focus 4). It drives
-// the page in a browser, which the test needs.
+// alone: on #2004's opened card "Give more room" opens its count, "End
+// the card" closes it, and the send holds no room (Review Focus 4). It
+// drives the page in a browser, which the test needs.
 func TestSecondAnswerClosesTheFirst(t *testing.T) {
 	modules := cmpEnv("NODE_PATH", "/tmp/claude-1000/pw/node_modules")
 	node, err := exec.LookPath("node")
@@ -545,10 +546,10 @@ func TestSecondAnswerClosesTheFirst(t *testing.T) {
   page.on("request", (q) => { if (q.method() === "POST") posts.push(q.postData() || ""); });
   await page.goto(base + "/?project=" + project + "#card=" + id);
   const ask = page.locator("#drawer .o-ask");
-  await ask.locator("button.pick", {hasText: "Add money"}).click();
-  const amount = ask.locator("form[data-answer=fund] input[name='fund.eur']");
+  await ask.locator("button.pick", {hasText: "Give more room"}).click();
+  const amount = ask.locator("form[data-answer=extend] input[name='extend.sessions']");
   const shown = await amount.isVisible();
-  await amount.fill("1.50");
+  await amount.fill("2");
   await ask.locator("button.pick", {hasText: "End the card"}).click();
   const hidden = !(await amount.isVisible());
   const sends = await ask.locator("button.send:visible").count();
@@ -576,7 +577,7 @@ func TestSecondAnswerClosesTheFirst(t *testing.T) {
 		t.Fatalf("the browser said %s: %v", out, err)
 	}
 	if !got.Shown || !got.Hidden || got.Sends != 1 {
-		t.Errorf("Add money's amount shown %v, closed by End the card %v, %d sends in view; want shown, closed and one", got.Shown, got.Hidden, got.Sends)
+		t.Errorf("Give more room's count shown %v, closed by End the card %v, %d sends in view; want shown, closed and one", got.Shown, got.Hidden, got.Sends)
 	}
 	if len(got.Posts) != 1 {
 		t.Fatalf("the page posted %d times, want once: %q", len(got.Posts), got.Posts)
@@ -585,8 +586,8 @@ func TestSecondAnswerClosesTheFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if posted.Get("action") != factoryd.ActClose || posted.Has("fund.eur") || posted.Has("eur") {
-		t.Errorf("the send posted %v, want the end of the card and no amount", posted)
+	if posted.Get("action") != factoryd.ActClose || posted.Has("extend.sessions") || posted.Has("extend.money") {
+		t.Errorf("the send posted %v, want the end of the card and no room", posted)
 	}
 }
 
@@ -649,36 +650,40 @@ func TestAnInformationRequestAnswersInMyWords(t *testing.T) {
 	}
 }
 
-// Add money opens with the card's amount filled in, the one number the
-// line under the question names: on #2004's floor 2.68 EUR, on a floor
-// without findings 0.38 EUR, and at the spend limit the raise's 0.38 EUR.
-// The small card's pick opens the card with that field open, and the
-// send funds the amount shown.
-func TestAddMoneyOpensWithTheCardsAmount(t *testing.T) {
+// Give more room opens at a money stop at 1 session's worth with its
+// money ticked, and the line under the question names the money that
+// session's worth needs. By hand, a session's worth costs the card's
+// spend per session, never under the floor: on #2004's floor 5.36452216 /
+// 2 = 2.68226108 EUR against 0.34 - 0.40 = -0.06 EUR left for sessions,
+// so 2.74226108, 2.75 EUR rounded up to the cent; on the floor of 1.90 EUR
+// spent in 1 session, with 0.10 EUR left and no reserve, 1.90 - 0.10 =
+// 1.80 EUR, at the spend limit too. The small card's pick opens the card
+// with the fields open, and the send gives the room shown.
+func TestGiveMoreRoomOpensAtTheMoneyStop(t *testing.T) {
 	for _, tc := range []struct {
-		group, kind, key, amount string
+		group, kind, need string
 	}{
-		{"case", string(factoryd.CaseBudgetFloor), factoryd.ActFund, "2.68"},
-		{"variant", "budget_floor without findings", factoryd.ActFund, "0.38"},
-		{"variant", "budget_floor at the spend limit", factoryd.ActRaiseCeiling, "0.38"},
+		{"case", string(factoryd.CaseBudgetFloor), "2.75"},
+		{"variant", "budget_floor without findings", "1.80"},
+		{"variant", "budget_floor at the spend limit", "1.80"},
 	} {
-		r, ck, _, target, body := openedEntry(t, tc.group, tc.kind, "&press="+tc.key)
-		send := answerForm(t, body, tc.key)
-		if got := send.Values.Get(tc.key + ".eur"); got != tc.amount {
-			t.Errorf("%s: %s opens with %q, want the card's %s", tc.kind, send.Label, got, tc.amount)
+		r, ck, _, target, body := openedEntry(t, tc.group, tc.kind, "&press="+factoryd.ActExtend)
+		send := answerForm(t, body, factoryd.ActExtend)
+		if send.Label != "Give more room" || send.Values.Get("extend.sessions") != "1" || send.Values.Get("extend.money") != "yes" {
+			t.Errorf("%s: the room opens as %+v, want Give more room at 1 session's worth with its money", tc.kind, send)
 		}
-		if ask := askBlockOf(t, body); !strings.Contains(ask, "needs "+tc.amount+" EUR more") {
-			t.Errorf("%s: no line under the question names the %s EUR the card needs:\n%s", tc.kind, tc.amount, ask)
+		if ask := askBlockOf(t, body); !strings.Contains(ask, "needs "+tc.need+" EUR more") {
+			t.Errorf("%s: no line under the question names the %s EUR the card needs:\n%s", tc.kind, tc.need, ask)
 		}
 		if !strings.Contains(askBlockOf(t, body), `aria-expanded="true" aria-controls="f-`) {
-			t.Errorf("%s: the pick's press does not open the answer's field:\n%s", tc.kind, askBlockOf(t, body))
+			t.Errorf("%s: the pick's press does not open the answer's fields:\n%s", tc.kind, askBlockOf(t, body))
 		}
 		if rec := r.do(post(send.Action, send.Values), ck); rec.Code != http.StatusSeeOther {
 			t.Fatalf("%s: the send = %d: %s", tc.kind, rec.Code, rec.Body)
 		}
 		got, _ := actedOnce(t, r)
-		if got.Res.Action != tc.key || fmt.Sprintf("%.2f", got.Res.Args["eur"]) != tc.amount || got.TaskID != target {
-			t.Errorf("%s: Act took %+v, want %s of %s EUR", tc.kind, got.Res, tc.key, tc.amount)
+		if got.Res.Action != factoryd.ActExtend || !reflect.DeepEqual(got.Res.Args, map[string]any{"sessions": 1, "money": true}) || got.TaskID != target {
+			t.Errorf("%s: Act took %+v, want a room of 1 session's worth with its money", tc.kind, got.Res)
 		}
 	}
 }
@@ -772,20 +777,20 @@ func TestALongQuoteStandsInItsOwnFold(t *testing.T) {
 
 // A field's id moves with its default: a swap keeps what the human typed
 // (hx-preserve) while the default stands, and shows the new default once
-// it moves, so Send never posts an amount the ask no longer holds.
+// it moves, so Send never posts a count the ask no longer holds.
 func TestAFieldsIDMovesWithItsDefault(t *testing.T) {
 	r, ctx, v := refsRig(t)
-	a := factoryd.Answer{Action: factoryd.ActFund, Label: "Add money", Fields: []factoryd.Field{
-		{Name: "eur", Label: "EUR", Kind: factoryd.FieldMoney, Default: func(f factoryd.Facts) string { return f.Card.Why }}}}
+	a := factoryd.Answer{Action: factoryd.ActExtend, Label: "Give more room", Fields: []factoryd.Field{
+		{Name: "sessions", Label: "Sessions' worth", Kind: factoryd.FieldNumber, Default: func(f factoryd.Facts) string { return f.Card.Why }}}}
 	press := func(factoryd.Answer, string) (*pressForm, func(string) string) {
-		return &pressForm{Post: "/tasks/t-1/resolve"}, func(field string) string { return "fund." + field }
+		return &pressForm{Post: "/tasks/t-1/resolve"}, func(field string) string { return "extend." + field }
 	}
-	id := func(amount string) string {
-		f := factoryd.Facts{Card: factoryd.Task{ID: "t-1", Why: amount}}
-		return r.c.answerOf(ctx, v, card{Task: f.Card}, "t-1-5", factoryd.ActFund, a, f, press, nil).Fields[0].ID
+	id := func(count string) string {
+		f := factoryd.Facts{Card: factoryd.Task{ID: "t-1", Why: count}}
+		return r.c.answerOf(ctx, v, card{Task: f.Card}, "t-1-5", factoryd.ActExtend, a, f, press, nil).Fields[0].ID
 	}
-	if first, again, moved := id("2.68"), id("2.68"), id("3.10"); first != again || first == moved {
-		t.Errorf("the field's ids are %q, %q at the same amount and %q at another; want one id per amount", first, again, moved)
+	if first, again, moved := id("1"), id("1"), id("2"); first != again || first == moved {
+		t.Errorf("the field's ids are %q, %q at the same count and %q at another; want one id per count", first, again, moved)
 	}
 }
 

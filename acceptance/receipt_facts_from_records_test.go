@@ -162,9 +162,14 @@ func accSeedReceipt(ctx context.Context, t *testing.T, s *factoryd.PGStore, obje
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the human's room of 2 sessions' worth, its draw written as Act writes
+	// it in the resolution's own transaction: 2 starts and an hour
+	draw := &factoryd.CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 2, AgentTime: time.Hour},
+		Event: factoryd.Event{Repository: "sf/code", TaskID: id, IssueNumber: issue, Actor: "sebastian", Via: factoryd.ViaConsole,
+			Detail: map[string]any{"pool": true, "rung": 3, "case_id": c.ID}}}
 	if err := s.ResolveCase(ctx, c.ID, factoryd.CaseResolution{By: "sebastian", Rung: 3, Action: factoryd.ActExtend,
-		Args: map[string]any{"sessions": 2, "agent_time_s": 3600}, Reason: "the flaky checkout needs two more sessions"},
-		nil, nil, nil); err != nil {
+		Args: map[string]any{"sessions": 2, "money": false}, Reason: "the flaky checkout needs two more sessions"},
+		draw, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutCriteriaVerdicts(ctx, id, factoryd.CriteriaSourceJudgement, factoryd.FactoryDecider, []factoryd.CriterionVerdict{
@@ -298,7 +303,7 @@ func accReceiptJSON(t *testing.T, v any) string {
 // record — the approval a person decided, the case the person answered
 // on rung 3 — each with its kind, its decision and its by, the approval
 // in the records' own order, the case's draw said in the factory's own
-// words from the resolution's own args.
+// words from the card_extended rows that name the case.
 func accReceiptDecisions(ctx context.Context, t *testing.T, s *factoryd.PGStore, id string) []factoryd.ReceiptDecision {
 	t.Helper()
 	var out []factoryd.ReceiptDecision
@@ -319,13 +324,23 @@ func accReceiptDecisions(ctx context.Context, t *testing.T, s *factoryd.PGStore,
 	if err != nil {
 		t.Fatal(err)
 	}
+	rows, err := s.TaskEventsOfKind(ctx, id, factoryd.EventCardExtended, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range cs {
 		res := c.Resolution
 		if res == nil || res.Rung != 3 {
 			continue
 		}
-		sessions, _ := res.Args["sessions"].(float64)
-		seconds, _ := res.Args["agent_time_s"].(float64)
+		var sessions, seconds float64
+		for _, e := range rows {
+			if e.Detail["case_id"] == float64(c.ID) {
+				n, _ := e.Detail["sessions"].(float64)
+				secs, _ := e.Detail["agent_time_s"].(float64)
+				sessions, seconds = sessions+n, seconds+secs
+			}
+		}
 		out = append(out, factoryd.ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
 			// the answer of this test draws one whole hour
 			Draw: fmt.Sprintf("%d sessions and %d hour of agent time", int(sessions), int(seconds)/3600),

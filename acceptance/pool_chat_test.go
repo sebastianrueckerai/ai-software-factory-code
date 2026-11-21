@@ -292,7 +292,7 @@ func TestPoolConfirmationAccess(t *testing.T) {
 	// a custom confirm list that leaves the pool off it still proposes
 	r.SetLoadedAutonomy(policy.AutonomyManual)
 	r.SetLoadedMergeRule(policy.MergeHuman)
-	r.SetLoadedChat(&policy.ChatConfig{Confirm: []string{"fund"}})
+	r.SetLoadedChat(&policy.ChatConfig{Confirm: []string{"give_room"}})
 	held, _, _ := poolOffer(t, r, path, ck, csrf, args)
 	equal(t, "the writes the custom-confirm offer made", poolWrites(r), 0)
 

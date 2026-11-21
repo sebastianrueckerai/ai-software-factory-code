@@ -31,7 +31,7 @@ func TestTokenStampsEveryDecisionEvent(t *testing.T) {
 			r, _, g := newChatRig(t)
 			return r, g
 		}, "sebastian", "sf/code"},
-		{"fund", `{"task_id":"t-e","eur":1,"text":"go"}`, func(t *testing.T) (*rig, *chatGateway) {
+		{"give_room", `{"task_id":"t-e","sessions":1,"text":"go"}`, func(t *testing.T) (*rig, *chatGateway) {
 			r, _, g := newChatRig(t)
 			cappedCard(r, t)
 			return r, g

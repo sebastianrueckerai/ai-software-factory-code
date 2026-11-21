@@ -257,13 +257,13 @@ func TestARoomPastTheMonthIsRefused(t *testing.T) {
 	f.MonthLeftEUR = 1.20
 	for _, rung := range []int{1, 2, 3} {
 		if got, want := refusalOn(t, f, rung, extendBy(map[string]any{"sessions": 2})),
-			"the project has 1.20 EUR left this month, which pays for 1 session's worth: give that, or raise budget.month_eur by a commit"; got != want {
+			"the project has 1.20 EUR left this month, which pays for 1 session's worth: give that, or raise the month cap by a commit (`budget.month_eur`)"; got != want {
 			t.Errorf("rung %d: %q, want %q", rung, got, want)
 		}
 	}
 	f.MonthLeftEUR = -3
 	if got, want := refusalOn(t, f, 3, extendBy(map[string]any{"sessions": 1})),
-		"the project has 0.00 EUR left this month, which pays for no session's worth: raise budget.month_eur by a commit"; got != want {
+		"the project has 0.00 EUR left this month, which pays for no session's worth: raise the month cap by a commit (`budget.month_eur`)"; got != want {
 		t.Errorf("an overspent month: %q, want %q", got, want)
 	}
 	if got := refusalOn(t, f, 3, extendBy(map[string]any{"sessions": 1, "money": false})); got != "" {

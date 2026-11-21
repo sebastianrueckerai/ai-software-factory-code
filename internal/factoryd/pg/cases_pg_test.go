@@ -85,7 +85,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendCaseStep: %v", err)
 	}
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}, nil, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	next := capped
@@ -100,7 +100,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 		t.Fatalf("CaseByID: %v", err)
 	}
 	if resolved.Status != CaseResolved || resolved.ResolvedAt == nil ||
-		!reflect.DeepEqual(resolved.Resolution, &CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}) {
+		!reflect.DeepEqual(resolved.Resolution, &CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}) {
 		t.Fatalf("resolved case = %+v, resolution %+v", resolved, resolved.Resolution)
 	}
 	steps, err := s.CaseSteps(ctx, a.ID)
@@ -109,8 +109,8 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	}
 	var over ErrCaseEnded
 	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); !errors.As(err, &over) ||
-		over.Case.ID != a.ID || over.Case.Resolution.Action != "grant_session" {
-		t.Fatalf("ResolveCase of a resolved case = %v, want ErrCaseEnded naming its grant_session", err)
+		over.Case.ID != a.ID || over.Case.Resolution.Action != ActExtend {
+		t.Fatalf("ResolveCase of a resolved case = %v, want ErrCaseEnded naming its extend", err)
 	}
 	if err := s.ResolveCase(ctx, a.ID+1000, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveCase of no case = %v, want ErrNotFound", err)

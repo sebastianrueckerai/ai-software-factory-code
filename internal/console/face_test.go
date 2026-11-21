@@ -1010,7 +1010,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	face := faceOf(t, page(bt, "/?project=ai-software-factory-code", true), "t-q")
 	for _, want := range []string{
 		`<strong class="title">The card used all 3 sessions. How should it go on?</strong>`,
-		`<a class="pick-link" href="#card=t-q:press=extend">Allow more sessions</a>`,
+		`<a class="pick-link" href="#card=t-q:press=extend">Give more room</a>`,
 		`<span class="by">factory question&#39;s pick</span><span class="others">or <a href="#card=t-q">2 others ›</a></span>`,
 	} {
 		if !strings.Contains(face, want) {
@@ -1027,7 +1027,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 		`<p class="o-question">The card used all 3 <span class="term">sessions</span>. How should it go on?</p>`,
 		`class="answer suggested" data-answer="extend" data-to="running">`,
 		`<p class="o-by">suggested by the factory question: <span class="quote">Grant one session</span></p>`,
-		`data-press="extend">Allow more sessions</button>`,
+		`data-press="extend">Give more room</button>`,
 		`data-press="note">Not now</button>`,
 		`data-press="close">End the card</button>`,
 	} {
@@ -1143,7 +1143,7 @@ func TestBoardFixturesRenderTheirAsks(t *testing.T) {
 		}
 		for _, form := range forms {
 			form, _, _ = strings.Cut(form, "</form>")
-			if strings.Count(form, `type="submit"`) != 1 || strings.Count(form, "<textarea") > 1 || strings.Contains(form, "fund_eur") {
+			if strings.Count(form, `type="submit"`) != 1 || strings.Count(form, "<textarea") > 1 {
 				t.Errorf("%s: an answer does not send alone:\n%s", tc.name, form)
 			}
 		}
@@ -1713,8 +1713,8 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		if strings.Contains(face, tc.gone) {
 			t.Errorf("%s: the ask says %q:\n%s", tc.id, tc.gone, face)
 		}
-		// each answer is a send of its own, with no fund beside it
-		if got := strings.Count(face, `<form `); got != strings.Count(face, `action="/tasks/`+tc.id+`/resolve"`) || got < 2 || strings.Contains(face, "fund_eur") {
+		// each answer is a send of its own
+		if got := strings.Count(face, `<form `); got != strings.Count(face, `action="/tasks/`+tc.id+`/resolve"`) || got < 2 {
 			t.Errorf("%s: the ask holds %d forms, not each a send of its own:\n%s", tc.id, got, face)
 		}
 		// the send: the action and its note ride one POST, which lands as
@@ -1728,7 +1728,7 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 			t.Fatalf("%s: the send = %d: %s", tc.id, rec.Code, rec.Body)
 		}
 		in, posts := actedOnce(t, r)
-		if in.Res.Action != factoryd.ActReplan || in.Res.Note != note || in.Res.Fund != nil {
+		if in.Res.Action != factoryd.ActReplan || in.Res.Note != note || in.Res.Room != nil {
 			t.Errorf("%s: the send answered with %+v, want replan with the note and no draw", tc.id, in.Res)
 		}
 		if posts != tc.posts {

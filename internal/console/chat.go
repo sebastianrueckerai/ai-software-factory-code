@@ -1595,10 +1595,11 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 
 // rungTwoEnds says call in of tool name ends rung 2's case in its wake, so
 // it runs as the agent at every level, past the confirm list: an answer to
-// the case, or a plan's answer or request for changes, whose guard
+// the case, the room that answers the card's stop, which Act proposes
+// below autonomous, or a plan's answer or request for changes, whose guard
 // refuses rung 2 below full auto with the hand-up's words.
 func rungTwoEnds(name string, in toolInput) bool {
-	return name == "answer" && (in.CaseID != 0 || in.Revision != 0) || name == "request_changes"
+	return name == "answer" && (in.CaseID != 0 || in.Revision != 0) || name == "give_room" || name == "request_changes"
 }
 
 // tokenMask stands in for a GitHub token in every message, row and log

@@ -425,10 +425,10 @@ func TestAMergeAskHoldsNoTailOfItsLongParts(t *testing.T) {
 			t.Errorf("the ask carries %s:\n%s", tail, ask)
 		}
 	}
-	// one form an answer, each its own send: no fund control beside them,
-	// and a note box for each answer that takes words
+	// one form an answer, each its own send, and a note box for each
+	// answer that takes words
 	for what, want := range map[string]int{`<form `: 3, `action="/tasks/t-m/resolve"`: 3, `data-answer="approve_merge"`: 1, `data-answer="deny_merge"`: 1,
-		`data-answer="deny_merge/reject"`: 1, `name="fund_eur"`: 0, `<textarea`: 2} {
+		`data-answer="deny_merge/reject"`: 1, `<textarea`: 2} {
 		if got := strings.Count(ask, what); got != want {
 			t.Errorf("the ask carries %s %d times, want %d:\n%s", what, got, want, ask)
 		}

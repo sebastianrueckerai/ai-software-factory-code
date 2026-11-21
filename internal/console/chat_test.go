@@ -2032,22 +2032,22 @@ func TestChatToolSentences(t *testing.T) {
 	}
 	equal(t, "the tools marked (needs OK)", marked, []string{"promote_resource", "release_resource", "new_card", "request_image",
 		"answer", "tell_card", "retry", "request_changes", "approve_merge", "deny_merge", "invite",
-		"github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool", "write_doc", "set_autonomy",
+		"github_export", "github_sync", "close", "edit", "give_room", "set_dependency", "replan", "set_pool", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})
 	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["edit"], required["set_accent"],
 		required["session_step"], required["answer"]},
 		[]any{[]any{"title", "why", "track", "track_reason"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
 	equal(t, "the schemas' defaults", []any{defaults["new_card track"], defaults["deny_merge action"], defaults["github_export mode"],
-		defaults["set_autonomy queue_cap"], defaults["history n"], defaults["session_step from"]},
-		[]any{nil, "request_changes", "mirror", nil, float64(20), float64(1)})
+		defaults["set_autonomy queue_cap"], defaults["history n"], defaults["session_step from"], defaults["give_room sessions"], defaults["give_room money"]},
+		[]any{nil, "request_changes", "mirror", nil, float64(20), float64(1), float64(1), true})
 
 	// an empty confirm list marks only the always-confirm set
 	r, _, g = newChatRig(t)
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	for _, f := range offered(r, g) {
 		about := f["description"].(string)
-		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)) || f["name"] == "fund"; always != strings.Contains(about, "(needs OK)") {
-			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and fund, nothing else", f["name"], about)
+		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)) || f["name"] == "give_room"; always != strings.Contains(about, "(needs OK)") {
+			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and give_room, nothing else", f["name"], about)
 		}
 	}
 }
@@ -2068,13 +2068,13 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
-			"rerun_checks", "set_accent", "close", "edit", "grant_session", "set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines",
+			"rerun_checks", "set_accent", "close", "edit", "set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
-			"request_changes", "deny_merge", "rerun_checks", "set_accent", "close", "edit", "grant_session",
+			"request_changes", "deny_merge", "rerun_checks", "set_accent", "close", "edit",
 			"set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
 			"attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
@@ -4933,7 +4933,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	}
 	equal(t, "stream refusals", events[:6], []string{
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
-			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer). Close ends it."),
+			"Refused: Card #14 "+human+", not a pending merge request: more room answers it (`give_room`), as does an answer with the findings (answer). Close ends it."),
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
 			"Refused: Card #13 "+human+", not a pending merge request: answer it (answer)."),
 		refused("steer", `{"task_id":"t-m","text":"go"}`, "Refused: Card #5 "+queued+", not a running session: nothing to do until it starts."),
@@ -4975,7 +4975,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 	// the real Act's gate: a queued card has no case, so a typed answer (a continue) has none to answer
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
-		"no ask is open on card #5, so “Go on with my note” has nothing to answer, and the human may take “Allow more sessions”, “Add money”, “Raise the spend limit”, “Send back to the planner”, “End the card” and “Make it wait for a card”\n"})
+		"no ask is open on card #5, so “Go on with my note” has nothing to answer, and the human may take “Give more room”, “Send back to the planner”, “End the card” and “Make it wait for a card”\n"})
 }
 
 // The fitting action of each state wrongState names, past the ones the

@@ -222,18 +222,21 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 	}
 }
 
-// Only the Waker's answer on a case skips the chat's confirm list, and Act's
-// autonomy rule judges it. By hand: with answer, retry and set_autonomy on
-// the list, a member's turn proposes an answer on a case; so does a wake
+// Only the Waker's answer on a case, and its room for the card's stop,
+// skip the chat's confirm list, and Act's autonomy rule judges them. By
+// hand: with answer, give_room, retry and set_autonomy on the list, a
+// member's turn proposes an answer on a case and a room; so does a wake
 // turn that is no Waker's (a refill's resume); the Waker's turns, wake_ask
-// and case_climbed, run it as rung 2's; the Waker's answer with no case
-// proposes; the Waker's other tools proposes even with a stray case_id.
+// and case_climbed, run them as rung 2's, the room on the card's live case
+// 5; the Waker's answer with no case proposes; the Waker's other tools
+// propose even with a stray case_id.
 func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	caseCard(r)
 	_, s := r.loggedIn(t)
 	var events []string
 	answer := `{"task_id":"13","case_id":5,"text":"go on"}`
+	room := `{"task_id":"13","sessions":1,"money":true,"text":"go on"}`
 	for _, tc := range []struct {
 		name, birth, tool, args string
 		wake, propose           bool
@@ -241,19 +244,22 @@ func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 		{"a member's turn", "", "answer", answer, false, true},
 		{"a refill's resume", "resume", "answer", answer, true, true},
 		{"the Waker's climbed case", "case_climbed", "answer", answer, true, false},
+		{"a member's room", "", "give_room", room, false, true},
+		{"a refill's room", "resume", "give_room", room, true, true},
+		{"the Waker's room", "case_climbed", "give_room", room, true, false},
 		{"the Waker's answer on no case", "case_climbed", "answer", `{"task_id":"13","text":"go on"}`, true, true},
 		{"the Waker's retry with a stray case_id", "case_climbed", "retry", `{"task_id":"13","case_id":5}`, true, true},
 		{"the Waker's set_autonomy with a stray case_id", "case_climbed", "set_autonomy", `{"autonomy":"autonomous","case_id":5}`, true, true},
 	} {
 		r.acted = nil
 		trn := r.chatTurnOf(t, s, &events)
-		trn.cfg.Confirm = []string{"answer", "retry", "set_autonomy"}
+		trn.cfg.Confirm = []string{"answer", "give_room", "retry", "set_autonomy"}
 		trn.a.wake, trn.a.birth = tc.wake, tc.birth
 		_, proposal, _ := trn.call(factoryd.OperatorCall{Name: tc.tool, Arguments: tc.args})
 		if (proposal != "") != tc.propose {
 			t.Errorf("%s: proposal %q, want a proposal: %v", tc.name, proposal, tc.propose)
 		}
-		if tc.tool == "answer" && !tc.propose && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].CaseID != 5) {
+		if !tc.propose && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].CaseID != 5) {
 			t.Errorf("%s: Act calls %+v, want one on case 5 at rung 2", tc.name, r.acted)
 		}
 	}
@@ -290,7 +296,7 @@ func TestAWakeTurnsChoiceOnAHumanCardRunsNoWorkWhereActProposes(t *testing.T) {
 			r.actProposes = level == policy.AutonomyAssisted
 			_, s := r.loggedIn(t)
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: "case_climbed"}
-			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil, 0)
+			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil)
 			if level == policy.AutonomyAssisted {
 				if err != nil || len(*replans) != 0 || len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.AnswerReplanOnTop+":t-pl" {
 					t.Fatalf("err %v, replans %v, Act calls %+v; want no replan and one proposal on rung 2", err, *replans, r.acted)
@@ -332,7 +338,7 @@ func TestAHumanCardChoiceRunsItsWorkOnlyWhereActAccepts(t *testing.T) {
 			r.actErr = tc.actErr
 			_, s := r.loggedIn(t)
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: tc.decider, level: tc.level}
-			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil, 0)
+			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil)
 			if (len(*replans) == 1) != tc.runs || (err == nil) != tc.runs {
 				t.Fatalf("err %v, replans %v; want the work to run only where Act accepts (%v)", err, *replans, tc.runs)
 			}
@@ -354,7 +360,7 @@ func TestAHeldHumanCardTakesOnlyRungTwosAnswerBeforeItsFace(t *testing.T) {
 		Status: factoryd.CaseOpen, OwnerRung: 2}}}
 	_, s := r.loggedIn(t)
 	human := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: policy.AutonomyAutonomous}
-	_, err := r.c.doAnswerCase(t.Context(), human, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0)
+	_, err := r.c.doAnswerCase(t.Context(), human, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil)
 	want := "Card “needs you: the chain of sf/code has been pending” waits for the factory agent, which decides it or hands it to you: answer it once it stands in Needs you."
 	if err == nil || err.Error() != want || len(r.acted) != 0 || len(r.closed) != 0 {
 		t.Fatalf("the human's press = %v, Act calls %+v, closed %v; want %q and nothing done", err, r.acted, r.closed, want)
@@ -364,13 +370,13 @@ func TestAHeldHumanCardTakesOnlyRungTwosAnswerBeforeItsFace(t *testing.T) {
 	}
 	// the chat's agent outside rung 2's turn reads the title and the id its tools take
 	chat := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous}
-	_, err = r.c.doAnswerCase(t.Context(), chat, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0)
+	_, err = r.c.doAnswerCase(t.Context(), chat, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil)
 	want = "Card “needs you: the chain of sf/code has been pending” (t-stall) waits on its case 51, open at rung 2: rung 2 decides it or hands it up, and only then is it the human's, in Needs you."
 	if err == nil || err.Error() != want || len(r.acted) != 0 || len(r.closed) != 0 {
 		t.Fatalf("the agent's answer = %v, Act calls %+v, closed %v; want %q and nothing done", err, r.acted, r.closed, want)
 	}
 	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous, wake: true, birth: factoryd.EventCaseClimbed}
-	if _, err := r.c.doAnswerCase(t.Context(), agent, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0); err != nil {
+	if _, err := r.c.doAnswerCase(t.Context(), agent, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil); err != nil {
 		t.Fatalf("rung 2's answer: %v", err)
 	}
 	if len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.AnswerCheckAgain || len(r.closed) != 1 ||

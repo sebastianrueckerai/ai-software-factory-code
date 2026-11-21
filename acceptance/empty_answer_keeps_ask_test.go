@@ -641,26 +641,37 @@ func parkEvents(t *testing.T, body string) []string {
 }
 
 // TestTheChatsGrantResolvesTheCapAsk: end to end over the same real store
-// the empty answer refused, the project chat's grant answer tool — its
-// proposal confirmed by the member — lands on doGrantSession, whose
-// grantOf buys agent time at the card's live agent-time cap ask: the case
-// resolves with action extend and its draw of agent time, the answer row
+// the empty answer refused, the project chat's give_room — its proposal
+// confirmed by the member — gives the card at its live agent-time cap ask
+// 1 session's worth: the case resolves with action extend, the answer row
 // names the comment the console posted on the card's issue, and no live
-// ask stands between the card and its work any more.
+// ask stands between the card and its work any more. By hand: the card
+// ran 1 session in its whole 20 minutes, so a session's worth is 20
+// minutes; with no time left and 2 starts left, 1 session's worth needs
+// 20 minutes and no start.
 func TestTheChatsGrantResolvesTheCapAsk(t *testing.T) {
 	rig := newParkRig(t)
 	ask := rig.seedAgentTimeCapAsk(t, parkTask, parkIssue, parkAskComment)
+	if _, err := rig.store.DB().ExecContext(context.Background(), `UPDATE tasks SET attempts = 1, agent_time_ns = $2 WHERE id = $1`,
+		parkTask, int64(20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// the cap trip's own step, which tells Act the run reads its raise from the card's row
+	if _, err := rig.store.AppendCaseStep(context.Background(), factoryd.CaseStep{CaseID: ask.ID, Rung: 0, Actor: factoryd.FactoryDecider,
+		Found: "no resolver fits", Outcome: factoryd.StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 
-	rig.Reply([]string{Call(1, "grant_session", `{"task_id":"`+parkTask+`","text":"Extend 1800 s of agent time on the card"}`)},
-		[]string{Say("Granted the extend.")})
+	rig.Reply([]string{Call(1, "give_room", `{"task_id":"`+parkTask+`","sessions":1,"money":true,"text":"Twenty more minutes for the last test."}`)},
+		[]string{Say("Gave the card room.")})
 	ck, csrf := rig.login(t)
-	code, body := rig.postChat(t, ck, url.Values{"message": {"Grant what the card asks for."}, "csrf": {csrf}})
+	code, body := rig.postChat(t, ck, url.Values{"message": {"Give the card room."}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
 	}
 	stream := parkEvents(t, body)
 	if len(stream) != 2 || !strings.HasPrefix(stream[0], "proposal ") || !strings.HasPrefix(stream[1], "done ") {
-		t.Fatalf("the turn's events = %v, want the grant's proposal and done", stream)
+		t.Fatalf("the turn's events = %v, want the room's proposal and done", stream)
 	}
 	var offer struct {
 		ID   string `json:"id"`
@@ -669,8 +680,8 @@ func TestTheChatsGrantResolvesTheCapAsk(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(stream[0], "proposal ")), &offer); err != nil {
 		t.Fatal(err)
 	}
-	if offer.Tool != "grant_session" || offer.ID == "" {
-		t.Fatalf("the offer = %+v, want the grant_session tool's", offer)
+	if offer.Tool != "give_room" || offer.ID == "" {
+		t.Fatalf("the offer = %+v, want the give_room tool's", offer)
 	}
 
 	code, body = rig.postChat(t, ck, url.Values{"csrf": {csrf}}, "/proposals/"+offer.ID)
@@ -683,7 +694,7 @@ func TestTheChatsGrantResolvesTheCapAsk(t *testing.T) {
 	}
 
 	// the case resolved with the structured extend: action extend and its
-	// draw of agent time, no longer at the human
+	// room, no longer at the human, and the card's agent time raised
 	ctx := context.Background()
 	got, err := rig.store.CaseByID(ctx, ask.ID)
 	if err != nil {
@@ -692,9 +703,11 @@ func TestTheChatsGrantResolvesTheCapAsk(t *testing.T) {
 	if got.Status != factoryd.CaseResolved || got.Resolution == nil || got.Resolution.Action != factoryd.ActExtend {
 		t.Fatalf("the agent-time cap = %s, %+v; want it resolved by an extend", got.Status, got.Resolution)
 	}
-	secs, _ := got.Resolution.Args["agent_time_s"].(float64)
-	if secs <= 0 {
-		t.Fatalf("the extend's args = %v; want agent_time_s > 0", got.Resolution.Args)
+	if got.Resolution.Args["sessions"] != 1.0 || got.Resolution.Args["money"] != true {
+		t.Fatalf("the extend's args = %v; want 1 session's worth with its money", got.Resolution.Args)
+	}
+	if card, _, err := rig.store.Task(ctx, parkTask); err != nil || card.Usage.RaisedTime != 20*time.Minute || card.Usage.RaisedSessions != 0 {
+		t.Fatalf("the card's raises = %s and %d starts, %v; want 20 minutes and none", card.Usage.RaisedTime, card.Usage.RaisedSessions, err)
 	}
 	if newest, err := rig.store.NewestAskCase(ctx, parkTask); err != nil || newest.ID != 0 {
 		t.Fatalf("the card's newest live ask = %+v, %v; want none, the card goes on past its stop", newest, err)
@@ -703,7 +716,7 @@ func TestTheChatsGrantResolvesTheCapAsk(t *testing.T) {
 	// the answer row names the comment the console posted on the card's issue
 	posted := rig.fj.Posted()
 	if len(posted) != 1 {
-		t.Fatalf("the console posted %+v on the card's issue; want the grant's one comment", posted)
+		t.Fatalf("the console posted %+v on the card's issue; want the room's one comment", posted)
 	}
 	rows, err := rig.store.TaskEvents(ctx, parkTask, 10)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -109,7 +111,7 @@ func TestAnswerRefusalNamesTheOfferedActions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	caseCard(r)
-	const why = "the session cap of 3 is reached, and the human may take extend, fund, raise_ceiling, successor, replan and close"
+	const why = "the session cap of 3 is reached, and the human may take extend, successor, replan and close"
 	r.actErr = factoryd.ErrActRefused(why)
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), why) {
@@ -128,44 +130,24 @@ func TestARefusedPressNamesTheAnswersByTheirLabels(t *testing.T) {
 	caseCard(r)
 	r.actErr = factoryd.ErrActRefused("the session cap of 3 is reached (the card's answers at this stop: `extend`, `close` and `note`), and the human may take `extend` and `close`")
 	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"5"}, "action": {"continue"}, "continue.note": {"go on"}}), ck)
-	want := "the session cap of 3 is reached (the card's answers at this stop: “Allow more sessions”, “End the card” and “Not now”), and the human may take “Allow more sessions” and “End the card”\n"
+	want := "the session cap of 3 is reached (the card's answers at this stop: “Give more room”, “End the card” and “Not now”), and the human may take “Give more room” and “End the card”\n"
 	if rec.Code != http.StatusConflict || rec.Body.String() != want {
 		t.Fatalf("the refused press = %d %q, want 409 %q", rec.Code, rec.Body, want)
 	}
 }
 
-// The chat's answer carries its action and the money beside it: a human's
-// re-verify with 1 EUR drawn beside it, on rung 3.
-func TestChatAnswerCarriesActionAndFund(t *testing.T) {
+// The chat's answer carries its action: a human's re-verify, on rung 3.
+func TestChatAnswerCarriesItsAction(t *testing.T) {
 	r := newRig(t)
 	caseCard(r)
-	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Text: "check it again", Action: factoryd.ActReverify, FundEUR: 1}); err != nil {
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Text: "check it again", Action: factoryd.ActReverify}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := actedOnce(t, r)
 	want := factoryd.ActInput{TaskID: "t-e", CaseID: 5, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActReverify, Fund: &policy.Draw{EUR: 1}, Note: "check it again"}}
+		Res: factoryd.Resolution{Action: factoryd.ActReverify, Note: "check it again"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Act took %+v, want %+v", got, want)
-	}
-}
-
-// The chat's fund is the agent's own decision on rung 2, as the chat user,
-// and a human's on rung 3 once they confirmed it, as their login.
-func TestAgentFundIsRungTwo(t *testing.T) {
-	for decider, rung := range map[string]int{"agent": 2, "member": 3} {
-		r := newRig(t)
-		caseCard(r)
-		if _, err := runTool(t, r, "fund", decider, toolInput{TaskID: "t-e", EUR: 1, Text: "the replica is worth it"}); err != nil {
-			t.Fatalf("%s: %v", decider, err)
-		}
-		got, _ := actedOnce(t, r)
-		by := map[int]string{2: factoryd.ChatUser, 3: "sebastian"}[rung]
-		want := factoryd.ActInput{TaskID: "t-e", CaseID: 5, By: by, Via: factoryd.ViaChat, Rung: rung,
-			Res: factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.0}, Note: "the replica is worth it"}}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s: Act took %+v, want %+v", decider, got, want)
-		}
 	}
 }
 
@@ -236,14 +218,17 @@ func committed(t *testing.T, infra *infraFake, i int) string {
 	return string(b)
 }
 
-// Words on a card whose newest case is its session cap grant it one
-// session, and at its agent time cap the card draw's hour, as the cap's
-// own answer does: continue would find no room. Words on a card whose
-// newest case is an ask go on, whatever its session count says.
-func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
+// Words on a card whose newest case is its session cap or its agent time
+// cap give it a session's worth with its money, as the cap's own answer
+// does: continue would find no room. Words on a card whose newest case is
+// an ask or a check-in's share stop go on, whatever its session count
+// says.
+func TestWordsGiveASessionsWorthOnlyAtACap(t *testing.T) {
+	room := factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "money": true}, Note: "use the replica"}
 	for kind, want := range map[factoryd.CaseKind]factoryd.Resolution{
-		factoryd.CaseSessionCap:    {Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "use the replica"},
-		factoryd.CaseAgentTimeCap:  {Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 3600}, Note: "use the replica"},
+		factoryd.CaseSessionCap:    room,
+		factoryd.CaseAgentTimeCap:  room,
+		factoryd.CaseCheckinShare:  {Action: factoryd.ActContinue, Note: "use the replica"},
 		factoryd.CaseAgentEscalate: {Action: factoryd.ActContinue, Note: "use the replica"},
 	} {
 		r := newRig(t)
@@ -264,7 +249,7 @@ func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
 // every entry: the chat's close on a human card runs the close's work, the
 // human's words posted and the issue closed, and resolves the card's case
 // with the close, handing Act the comment the close posted. The real Act is the
-// only gate: it takes the chat's extend on a running card with no case
+// only gate: it takes the chat's room on a running card with no case
 // open, a draw, and refuses the button's words on a card that holds no
 // case, a continue.
 func TestAnActionMeetsTheAnswersGates(t *testing.T) {
@@ -295,13 +280,16 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 		steered = append(steered, taskID+": "+text)
 		return nil
 	}
-	// extend is a draw, which Act takes with no case open: the chat's typed
-	// extend on a running card raises its sessions by one, and steers nothing
-	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`), Text: "one more"}); err != nil {
-		t.Fatalf("the chat's extend on a running card: %v", err)
+	// a room is a draw, which Act takes with no case open, and its words
+	// steer nothing. By hand: the card ran no session, so a session's worth
+	// is a quarter of its 20 minutes, 5 minutes, and 20 minutes hold 4,
+	// more than its 3 starts: the room now is 3, and 1 session's worth aims
+	// at 4, 1 start and no time
+	if _, err := runTool(t, r, "give_room", "member", toolInput{TaskID: "t-run", Sessions: 1, Money: true, Text: "one more"}); err != nil {
+		t.Fatalf("the chat's room on a running card: %v", err)
 	}
-	if got, _, _ := ra.pg.Task(context.Background(), "t-run"); got.Usage.RaisedSessions != 1 || len(steered) != 0 {
-		t.Errorf("raised sessions %d, steered %v; want 1 and none", got.Usage.RaisedSessions, steered)
+	if got, _, _ := ra.pg.Task(context.Background(), "t-run"); got.Usage.RaisedSessions != 1 || got.Usage.RaisedTime != 0 || len(steered) != 0 {
+		t.Errorf("raised sessions %d and time %s, steered %v; want 1, none and none", got.Usage.RaisedSessions, got.Usage.RaisedTime, steered)
 	}
 	// the button's words on a card that holds no case reach the real Act
 	// as a continue, which it refuses
@@ -491,21 +479,19 @@ func TestCloseOfAHumanCardResolvesItsCase(t *testing.T) {
 	}
 }
 
-// A ceiling refusal names the control the human holds where they are: the
-// opened card's Raise the spend limit on the board, the answer's
-// raise_ceiling in the chat.
-func TestCeilingRefusalNamesTheActorsControl(t *testing.T) {
-	for via, want := range map[string]string{
-		factoryd.ViaButton: "Card #13 holds 4.50 EUR now, and 0.90 EUR more passes its spend limit of 5.00 EUR: press “Raise the spend limit” on the opened card, which adds the money beside it.",
-		factoryd.ViaChat:   "Card #13 holds 4.50 EUR now, and 0.90 EUR more passes its spend limit of 5.00 EUR: raise the spend limit first (answer with the action `raise_ceiling`), then add the money.",
-	} {
+// A spend limit the room's money passes, which the room raised by what it
+// needed when it was worked out, means the card's money moved since: the
+// refusal asks for the room again, on every door.
+func TestASpendLimitPassedAsksForTheRoomAgain(t *testing.T) {
+	const want = "Card #13 holds 4.50 EUR now, more than when its room was worked out, so the room's money passes its spend limit. Give the room again: its raises follow the card as it is now."
+	for _, via := range []string{factoryd.ViaButton, factoryd.ViaChat} {
 		r := needRig(t)
 		_, s := r.loggedIn(t)
 		r.actErr = &factoryd.CardCapError{Budget: 4.5}
-		_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: via}, "t-e", 0.9, "go", 0)
+		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: via}, "t-e", 1, true, "go")
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
-			t.Errorf("%s: doFund = %v, want %q", via, err, want)
+			t.Errorf("%s: the room = %v, want %q", via, err, want)
 		}
 	}
 }
@@ -639,54 +625,16 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 	}
 }
 
-// grant_session buys what the case's stop asks for: one session at a
-// session cap, the card draw's agent time at an agent time cap (an hour,
-// one and a half for a large card), one session at the check-in's spend
-// stops, the call cap the case's checkin_stop fact names on a repeat whose
-// ask names none and a case that names no stop alike, and one session on
-// a stop that asked a question.
-func TestGrantBuysWhatTheStopAsksFor(t *testing.T) {
-	const repeat = "check-in: spend_above_policy: The restart produced no new commit, the head is still c1. What should the agent do?"
-	for _, tc := range []struct {
-		kind factoryd.CaseKind
-		stop string
-		size string
-		want factoryd.Resolution
-	}{
-		{factoryd.CaseSessionCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
-		{factoryd.CaseAgentTimeCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 3600}, Note: "Go on"}},
-		{factoryd.CaseAgentTimeCap, "", "large", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 5400}, Note: "Go on"}},
-		{factoryd.CaseCheckinShare, factoryd.CheckinStopCallCap, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
-		{factoryd.CaseCheckinShare, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
-		{factoryd.CaseOther, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
-	} {
-		r := newRig(t)
-		r.tasks.set("a stop", factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Size: tc.size})
-		facts := map[string]any{"reason": repeat}
-		if tc.stop != "" {
-			facts["checkin_stop"] = tc.stop
-		}
-		r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}}}
-		if _, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-k", Text: "Go on"}); err != nil {
-			t.Fatalf("%s %s: %v", tc.kind, tc.size, err)
-		}
-		if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, tc.want) {
-			t.Errorf("%s %q %s: Act took %+v, want %+v", tc.kind, tc.stop, tc.size, got.Res, tc.want)
-		}
-	}
-}
-
-// grant_session reaches Act on any card: on an ask its extend of one
-// session meets the table's refusal, which the console does not judge
-// before it.
-func TestGrantSessionLeavesTheAskToAct(t *testing.T) {
+// give_room reaches Act on any live card: on an ask its room meets the
+// table's refusal, which the console does not judge before it.
+func TestGiveRoomLeavesTheAskToAct(t *testing.T) {
 	r := newRig(t)
 	caseCard(r)
-	if _, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-e", Text: "yes"}); err != nil {
+	if _, err := runTool(t, r, "give_room", "member", toolInput{TaskID: "t-e", Sessions: 1, Money: true, Text: "yes"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "yes"}) {
-		t.Fatalf("Act took %+v, want an extend of one session", got.Res)
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "money": true}, Note: "yes"}) {
+		t.Fatalf("Act took %+v, want a room of 1 session's worth", got.Res)
 	}
 }
 
@@ -704,77 +652,40 @@ func TestChatArgsKeepTheSchemasKeys(t *testing.T) {
 	}
 }
 
-// A human card's typed answer is one of its choices: args or fund_eur on it
-// reach Act, which refuses them (humanChoice), and nothing is posted or closed
-// before it does.
+// A human card's typed answer is one of its choices: args on it reach Act,
+// which refuses them (humanChoice), and nothing is posted or closed before
+// it does.
 func TestHumanCardsTypedAnswerMeetsActsRefusal(t *testing.T) {
 	for _, in := range []toolInput{
-		{TaskID: "t-hq", Action: factoryd.ActClose, Args: json.RawMessage(`{"sessions":1}`)},
-		{TaskID: "t-hq", Action: factoryd.ActClose, FundEUR: 1},
+		{TaskID: "t-hq", Action: factoryd.ActClose, Args: json.RawMessage(`{"model":"stronger"}`)},
 	} {
 		r := newRig(t)
 		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
 		r.actErr = factoryd.ErrActRefused("Act's refusal")
 		_, err := runTool(t, r, "answer", "member", in)
 		var no *refusal
-		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "Act's refusal" || len(r.acted) != 1 ||
-			(in.FundEUR > 0 && (r.acted[0].Res.Fund == nil || r.acted[0].Res.Fund.EUR != 1)) || (len(in.Args) > 0 && r.acted[0].Res.Args["sessions"] == nil) ||
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "Act's refusal" || len(r.acted) != 1 || r.acted[0].Res.Args["model"] != "stronger" ||
 			len(r.fg.comments) != 0 || len(r.fg.patched) != 0 {
 			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want Act's refusal after one call and no side effect", in, err, r.acted, r.fg.comments, r.fg.patched)
 		}
 	}
 }
 
-// A fund on a card that ended reaches Act, whose fund rule refuses it
-// naming the end: the console carries that refusal whole as a 409.
-func TestFundOnAnEndedCardMeetsTheTable(t *testing.T) {
-	r := needRig(t)
-	r.tasks.tasks[0].Status = "done"
-	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 0.9}, Note: "go"}
-	fund, _ := factoryd.ActionByName(factoryd.ActFund)
-	why := fund.Applies(factoryd.CaseFacts{Final: "done"}, res)
-	if why != "this card ended done: a fund buys nothing, file a new card" {
-		t.Fatalf("the table's fund rule on a done card = %q", why)
-	}
-	r.actErr = factoryd.ErrActRefused(why)
-	_, s := r.loggedIn(t)
-	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", 0.9, "go", 0)
-	var no *refusal
-	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != why {
-		t.Fatalf("doFund = %v, want 409 %q", err, why)
-	}
-	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, res) || got.CaseID != 0 {
-		t.Fatalf("Act took %+v, want the fund on no case", got)
-	}
-}
-
-// A grant on a card that is at no cap is refused before Act: a done card
-// with no case has nothing to grant, and the Extend form raises a running
-// card.
-func TestGrantSessionNeedsACap(t *testing.T) {
+// A room on a card that ended is refused at the door with the card's state
+// and what fits it, and nothing reaches Act.
+func TestGiveRoomOnAnEndedCardNamesWhatFits(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 13})
-	_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-d", Text: "one more"})
+	_, err := runTool(t, r, "give_room", "member", toolInput{TaskID: "t-d", Sessions: 1, Money: true, Text: "one more"})
 	var no *refusal
-	if want := "this card is not at a cap, so there is nothing to grant: Allow more sessions among the opened card's other actions raises a running card"; !errors.As(err, &no) ||
+	if want := "Card #13 " + factoryd.StatusMeaning("done") + ", not a live card to give room: a new card continues the work."; !errors.As(err, &no) ||
 		no.status != http.StatusConflict || no.msg != want || len(r.acted) != 0 {
-		t.Fatalf("grant_session on a done card = %v, Act took %+v; want 409 %q", err, r.acted, want)
+		t.Fatalf("give_room on a done card = %v, Act took %+v; want 409 %q", err, r.acted, want)
 	}
 }
 
-// At an agent time cap a policy the console cannot read still grants the
-// default card draw's agent time, one and a half hours for a large card,
-// never a session the time cap does not take.
-func TestCardTimeFallsBackToTheDefaultDraw(t *testing.T) {
-	r := newRig(t)
-	r.ledger.down = true
-	if got, want := r.c.cardTime(t.Context(), factoryd.Task{Size: "large"}), 90*time.Minute; got != want {
-		t.Fatalf("cardTime = %v, want %v", got, want)
-	}
-}
-
-// A card at its agent time cap leads with the extend, whose form asks the
-// minutes of agent time first, and a wrong press names what fits.
+// A card at its agent time cap leads with the room, and a wrong press
+// names what fits.
 func TestTimeCappedCardNamesItsGrant(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -782,51 +693,54 @@ func TestTimeCappedCardNamesItsGrant(t *testing.T) {
 		Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Trim the logs."})
 	seatAsk(r, "t-tc", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS = 1, 7200 }))
 	esc := escalationOf(t, r, ck, "t-tc")
-	first, minutes, sessions := strings.Index(esc, `data-answer="`), strings.Index(esc, `name="extend.minutes"`), strings.Index(esc, `name="extend.sessions"`)
-	if first < 0 || !strings.HasPrefix(esc[first:], `data-answer="extend"`) || minutes < 0 || sessions < minutes {
-		t.Fatalf("the time-capped card's answer form =\n%s\nwant the extend first, its minutes before its sessions", esc)
+	if first := strings.Index(esc, `data-answer="`); first < 0 || !strings.HasPrefix(esc[first:], `data-answer="extend"`) || !strings.Contains(esc, `name="extend.sessions"`) {
+		t.Fatalf("the time-capped card's answer form =\n%s\nwant the room first, with its count", esc)
 	}
 	if got, want := fitting(factoryd.Task{Status: "waiting-human", IssueNumber: 13}, capFacts{capped: true, timeCap: true}),
-		"an answer with the findings grants more agent time (answer). Close ends it"; got != want {
+		"more room answers it (`give_room`), as does an answer with the findings (answer). Close ends it"; got != want {
 		t.Fatalf("fitting = %q, want %q", got, want)
 	}
 }
 
-// grant_session says what it grants, in its sentence and in the title its
-// proposal leads with: what the cap asks for.
-func TestGrantSessionSaysWhatItGrants(t *testing.T) {
+// give_room says what it gives, in its sentence and in the title its
+// proposal leads with: sessions' worth of time and money, at a stop and
+// ahead of time.
+func TestGiveRoomSaysWhatItGives(t *testing.T) {
 	r := newRig(t)
-	tool, _ := r.c.chatTool("grant_session")
-	if want := "Grant a card at a cap what the cap asks for, with an answer to its findings."; tool.about != want {
-		t.Fatalf("grant_session's about = %q, want %q", tool.about, want)
+	tool, _ := r.c.chatTool("give_room")
+	if want := "Give a card more sessions' worth of time and money, at its stop or ahead of time."; tool.about != want {
+		t.Fatalf("give_room's about = %q, want %q", tool.about, want)
 	}
-	if want := "Grant what the stop asks for"; tool.title != want {
-		t.Fatalf("grant_session's title = %q, want %q", tool.title, want)
+	if want := "Give a card more room"; tool.title != want {
+		t.Fatalf("give_room's title = %q, want %q", tool.title, want)
 	}
 }
 
-// The chat's answer tool names the actions rung 2 or the human may take:
-// withdraw, the factory's own, is none of them.
+// The chat's answer tool names the actions rung 2 or the human may take
+// but the room, which give_room gives: withdraw, the factory's own, is
+// none of them.
 func TestChatAnswerOffersNoWithdraw(t *testing.T) {
 	i := slices.IndexFunc(tools, func(t chatTool) bool { return t.name == "answer" })
 	action, _ := tools[i].params["action"].(map[string]any)
 	enum, _ := action["enum"].([]string)
-	if slices.Contains(enum, factoryd.ActWithdraw) || !slices.Contains(enum, factoryd.ActExtend) || !slices.Contains(enum, factoryd.ActRouteApproval) {
-		t.Fatalf("the answer tool's actions = %q, want rung 2's and the human's, no withdraw", enum)
+	if slices.Contains(enum, factoryd.ActWithdraw) || slices.Contains(enum, factoryd.ActExtend) || !slices.Contains(enum, factoryd.ActRouteApproval) {
+		t.Fatalf("the answer tool's actions = %q, want rung 2's and the human's, no withdraw and no extend", enum)
 	}
 }
 
-// A typed answer with no words posts its resolution's sentence as the
-// human's own comment, the comment a run from before the cases gate wakes
-// on, where factoryd's record of it wakes nothing: the chat's extend of one
-// session with no text posts "“Allow more sessions”: 1 session from the
-// pool" as sebastian.
-func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
+// A press with no words posts its resolution's sentence as the human's
+// own comment, the comment a run from before the cases gate wakes on,
+// where factoryd's record of it wakes nothing: Give more room at 1
+// session's worth with no note posts "“Give more room”: 1 session's
+// worth" as sebastian.
+func TestAPressWithNoWordsPostsItsSentence(t *testing.T) {
 	r := newRig(t)
+	ck, s := r.loggedIn(t)
 	caseCard(r)
 	r.openCases["t-e"][0].Kind = factoryd.CaseSessionCap
-	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`)}); err != nil {
-		t.Fatal(err)
+	if rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"5"}, "action": {factoryd.ActExtend},
+		"extend.sessions": {"1"}, "extend.money": {"yes"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the press = %d: %s", rec.Code, rec.Body)
 	}
 	if _, posts := actedOnce(t, r); !posts {
 		t.Fatal("Act took no Post: factoryd would post the record, which no run from before the gate wakes on")
@@ -834,7 +748,7 @@ func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
 	r.fg.mu.Lock()
 	defer r.fg.mu.Unlock()
 	if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues/13/comments Bearer access-1") ||
-		r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"] != "“Allow more sessions”: 1 session from the pool" {
+		r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"] != "“Give more room”: 1 session's worth" {
 		t.Fatalf("Forgejo calls %q, comments %q; want the sentence posted on #13 as sebastian", r.fg.calls, r.fg.comments)
 	}
 }
@@ -962,7 +876,7 @@ func TestCloseThroughActLeavesTheDependenciesToAct(t *testing.T) {
 // a card and its edit of a card's issue. The same tools decided by the
 // human go out with the human's own token.
 func TestTheAgentsCardWritesGoOutAsTheChatBot(t *testing.T) {
-	answer := toolInput{TaskID: "t-e", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`)}
+	answer := toolInput{TaskID: "t-e", Text: "Go on with the replica."}
 	comment := toolInput{TaskID: "t-e", Text: "The replica is fine."}
 	edit := toolInput{TaskID: "t-e", Title: "Use the replica", Why: "So reads stay fast.", Summary: "The card moves the reads to the replica."}
 	for _, c := range []struct {
@@ -1012,4 +926,296 @@ func TestTheAgentsSteerIsTheChatUsers(t *testing.T) {
 		}
 	}
 	equal(t, "the steers' senders", by, []string{factoryd.ChatUser, "sebastian"})
+}
+
+// roomCard is an agent card of sf/code on the room's rig: its row, the
+// sessions and the agent time its runs left on it, and the stop its case
+// waits at, none for a card waiting on no case.
+type roomCard struct {
+	task      factoryd.Task
+	attempts  int
+	agentTime time.Duration
+	stop      factoryd.CaseKind
+}
+
+// roomRig is the console rig on the real Act and the real store, at the
+// manual level, with cards in both, each a direct card of the maintenance
+// process, whose policy sets 3 sessions, 20 minutes of agent time, a
+// spend limit of 5.00 EUR, a gate reserve of 0.40 EUR, no session floor
+// and a month of 50.00 EUR. Each stop's case stands at the human after its
+// trip's step; roomRig answers the cases by card.
+func roomRig(t *testing.T, cards ...roomCard) (*rig, *realAct, map[string]int64) {
+	t.Helper()
+	ctx := context.Background()
+	r := newRig(t)
+	ra := newRealRunner(t, policy.AutonomyManual)
+	cases := map[string]int64{}
+	var tasks []factoryd.Task
+	for _, k := range cards {
+		card := k.task
+		card.Kind, card.Repository, card.Track, card.Process, card.Objective = "agent", "sf/code", policy.TrackDirect, "maintenance", "Speed up the board."
+		if err := ra.pg.CreateTask(ctx, card); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ra.pg.DB().ExecContext(ctx, `UPDATE tasks SET attempts = $2, agent_time_ns = $3 WHERE id = $1`, card.ID, k.attempts, int64(k.agentTime)); err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, card)
+		if k.stop == "" {
+			continue
+		}
+		c, _, err := ra.pg.OpenCase(ctx, factoryd.Case{TaskID: card.ID, Repository: card.Repository, Kind: k.stop, StateKey: "cap",
+			Problem: fmt.Sprintf("Card #%d stopped at its cap", card.IssueNumber)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ra.pg.DB().ExecContext(ctx, `UPDATE cases SET status = 'at_human', owner_rung = 3, next_wake_at = NULL WHERE id = $1`, c.ID); err != nil {
+			t.Fatal(err)
+		}
+		// the trip's own step, which tells Act the run reads its raise from the card's row
+		if _, err := ra.pg.AppendCaseStep(ctx, factoryd.CaseStep{CaseID: c.ID, Rung: 0, Actor: factoryd.FactoryDecider, Found: "no resolver fits",
+			Outcome: factoryd.StepHandedUp}); err != nil {
+			t.Fatal(err)
+		}
+		cases[card.ID] = c.ID
+	}
+	r.tasks.set("", tasks...)
+	ra.wire(r, "", false)
+	return r, ra, cases
+}
+
+// stored is card id as the real store holds it.
+func (ra *realAct) stored(t *testing.T, id string) factoryd.Task {
+	t.Helper()
+	k, ok, err := ra.pg.Task(context.Background(), id)
+	if err != nil || !ok {
+		t.Fatalf("card %s: %v %v", id, ok, err)
+	}
+	return k
+}
+
+// drawRows are card id's draw rows, oldest first.
+func (ra *realAct) drawRows(t *testing.T, id string) []factoryd.Event {
+	t.Helper()
+	events, err := ra.pg.TaskEvents(context.Background(), id, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []factoryd.Event
+	for _, e := range slices.Backward(events) {
+		if e.Kind == factoryd.EventCardExtended || e.Kind == factoryd.EventCardFunded {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// give_room answers a stop and gives room ahead of time, each raise the
+// one RoomFor works out, and its result names them. By hand:
+//
+// At the session cap, #31 ran 3 sessions in 15 minutes for 0.90 EUR of
+// its 2.00: a session's worth is 5 minutes (15 / 3, the floor of 5 holds)
+// and 0.30 EUR (0.90 / 3, no session floor). Starts left 3 - 3 = 0, time
+// left 20 - 15 = 5 minutes, money left 2.00 - 0.90 - 0.40 = 0.70 EUR: the
+// room now is min(0, 1, 2) = 0, so 1 session's worth needs 1 start, 1 x
+// 5 - 5 = 0 minutes and no money (0.30 <= 0.70).
+//
+// Running #32 ran 3 sessions in 42 minutes for 3.60 EUR of 6.00, with 1
+// session and 40 minutes raised before, under its own spend limit of
+// 10.00: a session's worth is 14 minutes and 1.20 EUR. Starts left 4 - 3 =
+// 1, time left 60 - 42 = 18 minutes, money left 6.00 - 3.60 - 0.40 = 2.00
+// EUR: the room now is min(1, 1, 1) = 1, so 2 sessions' worth aim at 3:
+// 3 - 1 = 2 starts, 3 x 14 - 18 = 24 minutes and 3 x 1.20 - 2.00 = 1.60
+// EUR, the budget to 7.60 under the limit of 10.00. A count of 0 or 6
+// before it is Act's to refuse, and changes nothing.
+func TestGiveRoomAtAStopAndAheadOfTime(t *testing.T) {
+	r, ra, cases := roomRig(t,
+		roomCard{task: factoryd.Task{ID: "t-cap", Status: "waiting-human", IssueNumber: 31, BudgetEUR: 2, SpentEUR: 0.9},
+			attempts: 3, agentTime: 15 * time.Minute, stop: factoryd.CaseSessionCap},
+		roomCard{task: factoryd.Task{ID: "t-run", Status: "running", IssueNumber: 32, BudgetEUR: 6, SpentEUR: 3.6, CeilingEUR: 10,
+			Usage: factoryd.TaskUsage{RaisedSessions: 1, RaisedTime: 40 * time.Minute}}, attempts: 3, agentTime: 42 * time.Minute})
+
+	said, err := runTool(t, r, "give_room", "member", toolInput{TaskID: "t-cap", Sessions: 1, Money: true, Text: "Finish the cache."})
+	if err != nil {
+		t.Fatalf("give_room at the session cap: %v", err)
+	}
+	k, err := ra.pg.CaseByID(t.Context(), cases["t-cap"])
+	if err != nil || k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Action != factoryd.ActExtend || k.Resolution.Rung != 3 {
+		t.Fatalf("the session cap's case = %+v, %v; want it resolved by the human's extend", k, err)
+	}
+	if card := ra.stored(t, "t-cap"); card.Usage.RaisedSessions != 1 || card.Usage.RaisedTime != 0 || factoryd.Cents(card.BudgetEUR) != 200 {
+		t.Fatalf("#31 after the room: %d raised sessions, %s raised time, %.2f EUR; want 1, none and 2.00", card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR)
+	}
+	if !strings.HasSuffix(said, " Added 1 session.") {
+		t.Fatalf("give_room at the cap said %q, want the start it added", said)
+	}
+
+	for _, n := range []int{0, 6} {
+		_, err := runTool(t, r, "give_room", "member", toolInput{TaskID: "t-run", Sessions: n, Money: true, Text: "The cache needs more."})
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.Contains(no.msg, "a room counts 1 to 5 sessions' worth") {
+			t.Fatalf("give_room of %d = %v, want Act's 409 naming the count's range", n, err)
+		}
+	}
+	said, err = runTool(t, r, "give_room", "member", toolInput{TaskID: "t-run", Sessions: 2, Money: true, Text: "The cache needs more."})
+	if err != nil {
+		t.Fatalf("give_room ahead of time: %v", err)
+	}
+	card := ra.stored(t, "t-run")
+	if card.Usage.RaisedSessions != 3 || card.Usage.RaisedTime != 64*time.Minute || factoryd.Cents(card.BudgetEUR) != 760 || factoryd.Cents(card.CeilingEUR) != 1000 || card.Status != "running" {
+		t.Fatalf("#32 after the room: %d raised sessions, %s raised time, %.2f EUR under %.2f, %s; want 3, 1h4m, 7.60 under 10.00, running",
+			card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR, card.CeilingEUR, card.Status)
+	}
+	if !strings.HasSuffix(said, " Added 2 sessions, 24 minutes of agent time and 1.60 EUR.") {
+		t.Fatalf("give_room ahead of time said %q, want the raises it applied", said)
+	}
+}
+
+// The chat's answer gives no room: an extend, and a fund or a ceiling
+// raise as they were once typed, are refused with the tool that gives it,
+// on the card's ask and on a case alike, and nothing reaches Act. The
+// answer tool offers none of them, nor a room's old arguments.
+func TestAnswerRefusesARoom(t *testing.T) {
+	r := newRig(t)
+	caseCard(r)
+	for _, action := range []string{factoryd.ActExtend, "fund", "raise_ceiling"} {
+		for _, in := range []toolInput{{TaskID: "t-e", Text: "more room", Action: action}, {TaskID: "t-e", CaseID: 5, Text: "more room", Action: action}} {
+			_, err := runTool(t, r, "answer", "member", in)
+			var no *refusal
+			if !errors.As(err, &no) || no.status != http.StatusBadRequest || !strings.Contains(no.msg, "use `give_room`") {
+				t.Errorf("answer with %s on case %d = %v, want 400 naming give_room", action, in.CaseID, err)
+			}
+		}
+	}
+	if len(r.acted) != 0 {
+		t.Fatalf("a refused room reached Act: %+v", r.acted)
+	}
+	tool, ok := r.c.chatTool("answer")
+	if !ok {
+		t.Fatal("there is no answer tool")
+	}
+	actions, _ := tool.params["action"].(map[string]any)["enum"].([]string)
+	for _, name := range []string{factoryd.ActExtend, "fund", "raise_ceiling"} {
+		if slices.Contains(actions, name) {
+			t.Errorf("the answer tool offers the action %s", name)
+		}
+	}
+	args, _ := tool.params["args"].(map[string]any)["properties"].(map[string]any)
+	equal(t, "the answer tool's parameters", slices.Sorted(maps.Keys(tool.params)),
+		[]string{"action", "answers", "args", "case_id", "decision", "question", "revision", "task_id", "text"})
+	equal(t, "the answer tool's args", slices.Sorted(maps.Keys(args)),
+		[]string{"action", "body", "criterion", "depends_on", "model", "size", "summary", "task_id", "title", "verdict", "why"})
+}
+
+// Room for a card is an approver's on every door: the opened card's Give
+// more room and the chat's give_room give one verdict for the same human.
+// A writer is refused on both, at the chat's door before the tool runs
+// too, and Act takes nothing; an approver reaches Act on both, on rung 3.
+func TestGiveRoomNeedsAnApprover(t *testing.T) {
+	for _, tc := range []struct {
+		who  string
+		acts int
+	}{{"alice", 0}, {"sebastian", 2}} {
+		r := newRig(t)
+		r.openCases = map[string][]factoryd.Case{"t-g": {{ID: 91, TaskID: "t-g", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman,
+			Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Kind, f.Gate, f.Attempts = factoryd.CaseGateStop, "review", 1 })}}}
+		r.tasks.tasks = append(r.tasks.tasks,
+			factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 24, BudgetEUR: 2}})
+		r.fg.user, r.repoWriters["sf/code"] = tc.who, []string{"sebastian", "alice"}
+		r.forgetWriters()
+		ck, s := r.loggedIn(t)
+		press := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"91"}, "action": {factoryd.ActExtend},
+			"extend.sessions": {"1"}, "extend.money": {"yes"}}), ck)
+		_, err := runTool(t, r, "give_room", "member", toolInput{TaskID: "t-g", Sessions: 1, Money: true, Text: "Go on"})
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		trn := &turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
+			a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}
+		door := trn.admitTool("give_room", toolInput{TaskID: "t-g"})
+		const words = "Only the approvers of project ai-software-factory-code may give a card room."
+		var no, atDoor *refusal
+		switch {
+		case tc.acts == 0 && (press.Code != http.StatusForbidden || strings.TrimSpace(press.Body.String()) != words ||
+			!errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != words || !errors.As(door, &atDoor) || atDoor.msg != words):
+			t.Errorf("%s, a writer: the press = %d %q, the chat's give_room = %v, its door = %v; want each refused with 403 %q", tc.who, press.Code, press.Body, err, door, words)
+		case tc.acts > 0 && (press.Code != http.StatusSeeOther || err != nil || door != nil):
+			t.Errorf("%s, an approver: the press = %d: %s, the chat's give_room = %v, its door = %v; want each taken", tc.who, press.Code, press.Body, err, door)
+		}
+		if len(r.acted) != tc.acts {
+			t.Fatalf("%s: Act took %+v, want %d answers", tc.who, r.acted, tc.acts)
+		}
+		for _, in := range r.acted {
+			if in.Rung != 3 || in.CaseID != 91 || in.Res.Action != factoryd.ActExtend || !reflect.DeepEqual(in.Res.Args, map[string]any{"sessions": 1, "money": true}) {
+				t.Errorf("%s: Act took %+v, want the human's room of 1 session's worth with its money on case 91", tc.who, in)
+			}
+		}
+	}
+}
+
+// The project agent's own give_room is rung 2's, and its rows count in the
+// escalation pool; the human's confirmed one is rung 3's, and its rows do
+// not. By hand: each card ran 3 sessions in 42 minutes for 3.60 EUR of
+// 6.00, with 1 session and 40 minutes raised before, under its own spend
+// limit of 10.00, so a session's worth is 14 minutes and 1.20 EUR and the
+// room now is min(4 - 3, 18 / 14, 2.00 / 1.20) = 1. One session's worth
+// aims at 2: 2 - 1 = 1 start, 2 x 14 - 18 = 10 minutes and 2 x 1.20 - 2.00
+// = 0.40 EUR. The pool counts the agent's 1 session, 10 minutes and 0.40
+// EUR, and the human's draw leaves it there.
+func TestTheChatAgentsRoomIsRungTwo(t *testing.T) {
+	ran := func(id string, issue int64) roomCard {
+		return roomCard{task: factoryd.Task{ID: id, Status: "running", IssueNumber: issue, BudgetEUR: 6, SpentEUR: 3.6, CeilingEUR: 10,
+			Usage: factoryd.TaskUsage{RaisedSessions: 1, RaisedTime: 40 * time.Minute}}, attempts: 3, agentTime: 42 * time.Minute}
+	}
+	r, ra, _ := roomRig(t, ran("t-agent", 33), ran("t-human", 34))
+	want := policy.Draw{Sessions: 1, AgentTime: 10 * time.Minute, EUR: 0.4}
+	pool := func() policy.Draw {
+		d, err := ra.pg.PoolDrawn(t.Context(), "sf/code", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.EUR = float64(factoryd.Cents(d.EUR)) / 100
+		return d
+	}
+	for _, tc := range []struct {
+		id, decider string
+		rung        float64
+	}{{"t-agent", "agent", 2}, {"t-human", "member", 3}} {
+		if _, err := runTool(t, r, "give_room", tc.decider, toolInput{TaskID: tc.id, Sessions: 1, Money: true, Text: "The cache needs another session."}); err != nil {
+			t.Fatalf("%s's give_room: %v", tc.decider, err)
+		}
+		rows := ra.drawRows(t, tc.id)
+		if len(rows) != 2 {
+			t.Fatalf("%s's draw rows = %+v, want the start and time, then the money", tc.decider, rows)
+		}
+		for _, e := range rows {
+			if e.Detail["rung"] != tc.rung || e.Detail["pool"] != true {
+				t.Errorf("%s's row %s = %+v, want rung %v in the pool's rows", tc.decider, e.Kind, e.Detail, tc.rung)
+			}
+		}
+		if got := pool(); got != want {
+			t.Errorf("after %s's room the pool counts %+v, want the agent's %+v alone", tc.decider, got, want)
+		}
+	}
+}
+
+// Words typed at an agent-time cap give one session's worth with its
+// money, as RoomFor works it out, where they once gave the card draw's
+// hour. By hand: #35 ran 2 sessions in its whole 20 minutes for 0.60 EUR
+// of 2.00, so a session's worth is 10 minutes and 0.30 EUR. Starts left
+// 3 - 2 = 1, time left 0, money left 2.00 - 0.60 - 0.40 = 1.00 EUR: the
+// room now is 0, and 1 session's worth needs no start, 10 minutes and no
+// money (0.30 <= 1.00).
+func TestWordsAloneAtACapGiveOneSessionsWorth(t *testing.T) {
+	r, ra, cases := roomRig(t, roomCard{task: factoryd.Task{ID: "t-time", Status: "waiting-human", IssueNumber: 35, BudgetEUR: 2, SpentEUR: 0.6},
+		attempts: 2, agentTime: 20 * time.Minute, stop: factoryd.CaseAgentTimeCap})
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-time", Text: "The last test needs ten more minutes."}); err != nil {
+		t.Fatalf("words at the agent-time cap: %v", err)
+	}
+	k, err := ra.pg.CaseByID(t.Context(), cases["t-time"])
+	if err != nil || k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Action != factoryd.ActExtend ||
+		k.Resolution.Args["sessions"] != 1.0 || k.Resolution.Args["money"] != true {
+		t.Fatalf("the agent-time cap's case = %+v, %v; want it resolved by an extend of 1 session's worth with its money", k.Resolution, err)
+	}
+	if card := ra.stored(t, "t-time"); card.Usage.RaisedTime != 10*time.Minute || card.Usage.RaisedSessions != 0 || factoryd.Cents(card.BudgetEUR) != 200 {
+		t.Fatalf("#35 after the words: %s raised time, %d raised sessions, %.2f EUR; want 10m, none and 2.00", card.Usage.RaisedTime, card.Usage.RaisedSessions, card.BudgetEUR)
+	}
 }

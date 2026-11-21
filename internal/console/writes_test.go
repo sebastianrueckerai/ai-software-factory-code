@@ -372,30 +372,30 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 	}
 }
 
-// grant_session proposes on the card at its session cap; Do it extends
-// its live case by one session through Act on the human's rung, the
+// give_room proposes on the card at its session cap, naming the room; Do
+// it gives its live case the room through Act on the human's rung, the
 // human's answer the note posted on its issue, and Act's grant row names
 // the comment.
-func TestChatGrantSession(t *testing.T) {
+func TestChatGiveRoom(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
 	before := r.events.count()
-	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
-	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
+	args := `{"task_id":"t-cap","sessions":2,"money":true,"text":"Trim to 1 MB first."}`
+	proposed, done, _ := proposeAndDo(t, r, g, "give_room", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Grant what the stop asks for, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"grant_session"}`,
+		`proposal {"arguments":` + args + `,"description":"Give a card more room, #14 t-cap \"Trim the logs.\", 2 sessions' worth, text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"give_room"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("grant_session", args, "Case 1 took extend."))
+	equal(t, "Do it", done, ran("give_room", args, "Case 1 took extend."))
 	got, posts := actedOnce(t, r)
-	equal(t, "the grant", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-cap", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Trim to 1 MB first."}}, true})
+	equal(t, "the room", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-cap", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 2, "money": true}, Note: "Trim to 1 MB first."}}, true})
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-cap", IssueNumber: 14, Kind: factoryd.EventSessionGranted,
 			Detail: map[string]any{"action": factoryd.ActExtend, "case_id": int64(1), "answer": "Trim to 1 MB first.", "comment": int64(1)}})
 }
 
-// Roadmap 237: grant_session, answer and a comment on a card waiting for
+// Roadmap 237: give_room, answer and a comment on a card waiting for
 // an answer carry at most factoryd.MaxAnswer bytes, as the answer box
 // does, and post nothing longer. A comment on a card in the backlog, or
 // on a plan waiting on its approvers (the planner gets it whole), keeps
@@ -403,7 +403,7 @@ func TestChatGrantSession(t *testing.T) {
 func TestChatAnswerTextsBoundedAtMaxAnswer(t *testing.T) {
 	r, _ := newWritesRig(t)
 	long := strings.Repeat("x", 4001)
-	for _, tc := range []struct{ tool, id string }{{"grant_session", "t-cap"}, {"answer", "t-e"}, {"comment", "t-e"}} {
+	for _, tc := range []struct{ tool, id string }{{"give_room", "t-cap"}, {"answer", "t-e"}, {"comment", "t-e"}} {
 		code, msg := refused(t, r, tc.tool, toolInput{TaskID: tc.id, Text: long})
 		equal(t, tc.tool+" on "+tc.id, []any{code, msg}, []any{http.StatusBadRequest, "An answer of 1 to 4000 bytes is required, and this one has 4001."})
 	}
@@ -1569,7 +1569,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 			t.Errorf("the small card of %s offers Close:\n%s", id, face)
 		}
 	}
-	if extend := answerForm(t, drawer(t, r, ck, "t-cap", "overview"), factoryd.ActExtend); extend.Action != "/tasks/t-cap/resolve" || extend.Label != "Allow more sessions" {
+	if extend := answerForm(t, drawer(t, r, ck, "t-cap", "overview"), factoryd.ActExtend); extend.Action != "/tasks/t-cap/resolve" || extend.Label != "Give more room" {
 		t.Errorf("the capped card's answer = %+v, want it to extend", extend)
 	}
 	if note := answerForm(t, drawer(t, r, ck, "t-e", "overview"), factoryd.ActNote); note.Action != "/tasks/t-e/resolve" || note.Label != "Not now" || !note.Values.Has("note.note") {

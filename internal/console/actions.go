@@ -196,10 +196,8 @@ func fitting(t factoryd.Task, f capFacts) string {
 			return "close ends it (close)"
 		case t.Kind == "human":
 			return "one of its choices answers it (answer). Close ends it"
-		case f.timeCap:
-			return "an answer with the findings grants more agent time (answer). Close ends it"
 		case f.capped:
-			return "an answer with the findings grants one session (answer). Close ends it"
+			return "more room answers it (`give_room`), as does an answer with the findings (answer). Close ends it"
 		case f.rerun:
 			return factoryRedFits
 		case f.returns:
@@ -1137,7 +1135,7 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // another agent card close ends the card (doClose), go resumes it, park
 // and keep waiting settle the ask, the card waiting on, its choice the
 // settle's park arg; words alone continue, and at a session or agent time
-// cap grant what the cap asks for (grantOf), as continue finds no room.
+// cap give a session's worth (grantOf), as continue finds no room.
 // The human's own words from the board go to the human's chat, where the
 // agent reads the card and answers with its own judgement; a console
 // without a chat posts them on the issue. head is the pull request head a
@@ -1184,7 +1182,7 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, h
 	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
 	switch value {
 	case "":
-		if args, ok := grantOf(k, c.cardTime(ctx, t)); ok && k.Kind != factoryd.CaseCheckinShare {
+		if args, ok := grantOf(k); ok {
 			res.Action, res.Args = factoryd.ActExtend, args
 		}
 	case factoryd.AnswerGo:
@@ -1259,18 +1257,16 @@ func (c *Console) heldOnRungs(ctx context.Context, a actor, t factoryd.Task) err
 // answerArgs are the keys of an action's args the answer tool's schema
 // and the case form name; any other key is dropped. A chat's file_card
 // passes the door on its own tries whatever as_written says.
-var answerArgs = []string{"model", "sessions", "agent_time_s", "eur",
+var answerArgs = []string{"model",
 	"action", "task_id", "depends_on", "title", "why", "summary", "body", "size", "criterion", "verdict", "head",
 	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of", factoryd.AsWritten}
 
 // doAnswerAs answers card id with the typed action the chat names, after
 // every answer's gates (routeAnswer): text its note and the comment, args
-// passed through to the action, eur the money it draws, the fund's or the
-// ceiling raise's own amount (args' eur, which it replaces), else money
-// for the budget beside the action. No action is continue.
-func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action string, args json.RawMessage, eur float64) (string, error) {
+// passed through to the action. No action is continue.
+func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action string, args json.RawMessage) (string, error) {
 	text = strings.TrimSpace(text)
-	res, err := typedAnswer(text, action, args, eur)
+	res, err := typedAnswer(text, action, args)
 	if err != nil {
 		return "", err
 	}
@@ -1283,9 +1279,9 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 
 // doAnswerCase answers case caseID of card id with the typed action the
 // chat names, as doAnswerAs answers the card's own ask.
-func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID int64, text, action string, args json.RawMessage, eur float64) (string, error) {
+func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID int64, text, action string, args json.RawMessage) (string, error) {
 	text = strings.TrimSpace(text)
-	res, err := typedAnswer(text, action, args, eur)
+	res, err := typedAnswer(text, action, args)
 	if err != nil {
 		return "", err
 	}
@@ -1307,15 +1303,13 @@ func (c *Console) doPressCase(ctx context.Context, a actor, id string, caseID in
 
 // approverRules are the access rules of the actions that ask more than a
 // writer, on a card's own door and on a case alike: an approver's retry,
-// replan, sessions and money, merge and decisions on a plan's criteria, as
-// the chat's tools and the requests' own doors ask.
+// replan, room, merge and decisions on a plan's criteria, as the chat's
+// tools and the requests' own doors ask.
 var approverRules = map[string]accessRule{
 	factoryd.ActRetry:           accessTable["retry"],
 	factoryd.ActReplan:          accessTable["replan"],
 	factoryd.ActHandBack:        accessTable["replan"],
-	factoryd.ActExtend:          {need: approver, scope: scCard, what: "extend a card"},
-	factoryd.ActFund:            accessTable["fund"],
-	factoryd.ActRaiseCeiling:    {need: approver, scope: scCard, what: "raise a card's spend limit"},
+	factoryd.ActExtend:          accessTable["give_room"],
 	factoryd.ActApproveMerge:    accessTable["approve_merge"],
 	factoryd.ActGrantCriteria:   accessTable["answer_criteria"],
 	factoryd.ActConfirmCriteria: accessTable["answer_criteria"],
@@ -1353,11 +1347,10 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 			return "", err
 		}
 	}
-	args, eur, err := factoryd.ArgsOf(answer, field)
+	args, _, err := factoryd.ArgsOf(answer, field)
 	if err != nil {
 		return "", refuse(http.StatusBadRequest, err.Error()+".")
 	}
-	n := func(name string) int { v, _ := args[name].(int); return v }
 	note := strings.TrimSpace(field("note"))
 	switch answer.Action {
 	case factoryd.ActRetry:
@@ -1365,9 +1358,12 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 	case factoryd.ActReplan:
 		return c.doReplan(ctx, a, id, note, field(factoryd.OffMainField) != "")
 	case factoryd.ActExtend:
-		return c.doExtend(ctx, a, id, n("sessions"), n("agent_time_s")/60, 0, note)
-	case factoryd.ActFund:
-		return c.doFund(ctx, a, id, eur, note, 0)
+		sessions, ok := args["sessions"].(int)
+		if !ok {
+			sessions = 1
+		}
+		money, _ := args["money"].(bool)
+		return c.doExtend(ctx, a, id, sessions, money, note)
 	case factoryd.AnswerSteer:
 		return c.doSteer(ctx, a, id, note)
 	case factoryd.ActClose:
@@ -1477,10 +1473,15 @@ func (c *Console) noLiveCase(ctx context.Context, a actor, t factoryd.Task, id i
 }
 
 // typedAnswer is the chat's typed answer: action with its args, continue
-// when none, text its note, and eur the money it draws, the fund's or the
-// ceiling raise's own amount, else money for the budget beside the action.
-func typedAnswer(text, action string, args json.RawMessage, eur float64) (factoryd.Resolution, error) {
+// when none, and text its note. A card's room has its own tool, so an
+// extend, or a fund or a ceiling raise as they were once typed, is refused
+// with it.
+func typedAnswer(text, action string, args json.RawMessage) (factoryd.Resolution, error) {
 	res := factoryd.Resolution{Action: cmp.Or(action, factoryd.ActContinue), Note: text}
+	switch res.Action {
+	case factoryd.ActExtend, "fund", "raise_ceiling":
+		return res, refuseAgent(http.StatusBadRequest, "The answer tool gives a card no room: use `give_room`, with the card's `task_id`, `sessions` and `money`.")
+	}
 	if len(args) > 0 {
 		var all map[string]any
 		if err := json.Unmarshal(args, &all); err != nil {
@@ -1495,90 +1496,58 @@ func typedAnswer(text, action string, args json.RawMessage, eur float64) (factor
 			}
 		}
 	}
-	switch {
-	case eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0):
-		return res, refuse(http.StatusBadRequest, "Name an amount above zero (`fund_eur`).")
-	case eur == 0:
-	case res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling:
-		if res.Args == nil {
-			res.Args = map[string]any{}
-		}
-		res.Args["eur"] = eur
-	default:
-		res.Fund = &policy.Draw{EUR: eur}
-	}
 	return res, nil
 }
 
-// grantOf is what a grant on case k buys, the extend's args: one session
-// at a session cap or a check-in's spend stop, agentTime at an agent time
-// cap. ok is false on a stop that asked a question, where a grant goes on.
-func grantOf(k factoryd.Case, agentTime time.Duration) (map[string]any, bool) {
-	switch {
-	case k.Kind == factoryd.CaseAgentTimeCap:
-		return map[string]any{"agent_time_s": int(agentTime / time.Second)}, true
-	case k.Kind == factoryd.CaseSessionCap, k.Kind == factoryd.CaseCheckinShare:
-		return map[string]any{"sessions": 1}, true
+// grantOf is what words alone at case k's stop give, the extend's args: a
+// session's worth with its money at a session cap or an agent time cap.
+// ok is false on any other stop, where words go on.
+func grantOf(k factoryd.Case) (map[string]any, bool) {
+	switch k.Kind {
+	case factoryd.CaseAgentTimeCap, factoryd.CaseSessionCap:
+		return map[string]any{"sessions": 1, "money": true}, true
 	}
 	return nil, false
 }
 
-// cardTime is card t's draw of agent time: its project's card draw for its
-// size in the policy in force, the default card draw's when the policy
-// cannot be read.
-func (c *Console) cardTime(ctx context.Context, t factoryd.Task) time.Duration {
-	if v, ok := c.inForce(ctx); ok {
-		return v.EscalationOf(t.Repository).CardDrawOf(t.Size).AgentTime
-	}
-	return policy.DefaultEscalation.CardDrawOf(t.Size).AgentTime
-}
-
-// doExtend raises card id's caps on any live agent card through Act: its
-// sessions and its agent time (minutes of it) as an
-// extend, its budget as the money drawn beside it, or a fund alone when
-// it raises no session or minute. On a card waiting at its case
-// the note, or when none a line naming the raise, is the answer Act has
-// posted as the human's comment; a card waiting on no case reads the
-// raise at its next cap check.
-func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, minutes int, eur float64, note string) (string, error) {
-	switch {
-	case sessions < 0 || minutes < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
-		(sessions == 0 && minutes == 0 && !(eur > 0)):
-		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions and minutes and an amount in EUR")
-	}
-	if minutes > factoryd.MaxExtendMinutes {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an extend raises at most %d minutes of agent time at once", factoryd.MaxExtendMinutes))
-	}
-	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, minutes, eur)))
-	if err := answerFits(note); err != nil {
-		return "", err
+// doExtend gives card id the room of sessions' worth, with its money
+// when money, through Act on any live agent card: the answer on its live
+// case at a stop, room ahead of time on a card waiting on none. On a
+// case the note, or when none the room in words, is the answer Act has
+// posted as the human's comment. The text names the raises Act applied.
+func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions int, money bool, note string) (string, error) {
+	note = strings.TrimSpace(note)
+	if len(note) > factoryd.MaxAnswer {
+		return "", answerFits(note)
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
 	if !extendable(t) {
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to extend")
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to give room")
 	}
-	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}
-	if sessions > 0 || minutes > 0 {
-		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "agent_time_s": minutes * 60}
-		if eur > 0 {
-			res.Fund = &policy.Draw{EUR: eur}
+	k, err := c.liveCase(ctx, t)
+	if err != nil {
+		return "", err
+	}
+	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": sessions, "money": money}, Note: note}
+	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
+	if err != nil {
+		return "", err
+	}
+	text := out.Text
+	for _, did := range out.Did {
+		if did.Action == factoryd.ActExtend && did.Result != "" && !out.Proposed {
+			text += " " + did.Result
 		}
 	}
-	return c.answerCard(ctx, a, t, res)
+	return text, nil
 }
 
 // extendable: t is an agent card with an issue, in a status short of its end.
 func extendable(t factoryd.Task) bool {
 	return t.Kind == "agent" && t.IssueNumber != 0 && slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
-}
-
-// raiseLine names an extend's raise: the sessions, minutes of agent time
-// and EUR it adds.
-func raiseLine(sessions, minutes int, eur float64) string {
-	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%s EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), textutil.EUR(eur))
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the
@@ -1635,7 +1604,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	}
 	chosen := factoryd.Resolution{Action: value, Note: label}
 	if typed != nil {
-		chosen.Fund, chosen.Args = typed.Fund, typed.Args // Act refuses what a choice does not take
+		chosen.Args = typed.Args // Act refuses what a choice does not take
 	}
 	// the choice's work runs inside Act, which accepts the answer first and
 	// runs nothing for one it refuses or leaves to the human as a proposal
@@ -1959,12 +1928,12 @@ func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseI
 // Act, as a's user on a's rung, the rows carrying a's chat detail and
 // token, post the answer's comment (nil for none) and work a board
 // action's work. Every door to Act passes here, so a human's answer meets
-// approverRules here, and money a human draws is an approver's. Act's own
-// errors come back as they are.
+// approverRules here, and room a human gives beside another action is an
+// approver's. Act's own errors come back as they are.
 func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	rule, ok := approverRules[res.Action]
-	if !ok && res.Fund != nil && res.Fund.EUR > 0 {
-		rule, ok = accessTable["fund"], true
+	if !ok && res.Room != nil {
+		rule, ok = accessTable["give_room"], true
 	}
 	if res.Action == factoryd.ActRetry {
 		rule = retryRule(t)
@@ -1996,9 +1965,10 @@ func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, cas
 
 // actErr is Act's failure of a's answer res on card t as the human reads
 // it: Act's refusal, an answer on a case that ended and a retry factoryd
-// refuses are a 409 with their words, a ceiling the money passes names the
-// raise that makes room, and any other failure is logged and answers a
-// 500 that names the log. A console refusal goes as it is.
+// refuses are a 409 with their words, a spend limit the room's money
+// passes since the room was worked out asks for the room again, and any
+// other failure is logged and answers a 500 that names the log. A console
+// refusal goes as it is.
 func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res factoryd.Resolution, err error) error {
 	var no *refusal
 	var refused factoryd.ErrActRefused
@@ -2021,7 +1991,8 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	case errors.As(err, &refused), errors.As(err, &noRetry):
 		return refuse(http.StatusConflict, err.Error())
 	case errors.As(err, &capped):
-		return refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, res, c.ceilingOf(ctx, t), a.via))
+		return refuse(http.StatusConflict, fmt.Sprintf("Card %s holds %s EUR now, more than when its room was worked out, so the room's money passes its spend limit. Give the room again: its raises follow the card as it is now.",
+			cardRef(a, t), textutil.EUR(capped.Budget)))
 	case errors.As(err, &part):
 		log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
 		return partialPress(part)
@@ -2035,54 +2006,6 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	return refuse(http.StatusInternalServerError, "The answer failed: "+errText(err)+". Reload the board and press the button again.")
 }
 
-// ceilingOf is the most card t's budget may hold: its own ceiling, else
-// the policy's for its project; 0 when the policy cannot be read.
-func (c *Console) ceilingOf(ctx context.Context, t factoryd.Task) float64 {
-	if fresh, ok, err := c.cfg.Tasks.Task(ctx, t.ID); err == nil && ok && fresh.CeilingEUR > 0 {
-		return fresh.CeilingEUR
-	}
-	v, ok := c.inForce(ctx)
-	if !ok {
-		return 0
-	}
-	_, project, _ := v.ProjectOf(t.Repository)
-	return factoryd.CardCeiling(v.Document, project)
-}
-
-// doGrantSession grants card id what its cap asks for (grantOf), an
-// extend through Act on its live case, the human's answer to its findings
-// the note. On a case that asked a question it is an extend of one
-// session, which Act's table refuses there, naming the question. A card
-// with no case is at no cap, which a grant needs: the opened card's Allow
-// more sessions raises a running card.
-func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) (string, error) {
-	text = strings.TrimSpace(text)
-	if err := answerFits(text); err != nil {
-		return "", err
-	}
-	t, err := c.cardIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	k, err := c.liveCase(ctx, t)
-	switch {
-	case err != nil:
-		return "", err
-	case k.ID == 0:
-		return "", refuse(http.StatusConflict, "this card is not at a cap, so there is nothing to grant: Allow more sessions among the opened card's other actions raises a running card")
-	}
-	args, ok := grantOf(k, c.cardTime(ctx, t))
-	if !ok {
-		args = map[string]any{"sessions": 1}
-	}
-	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: args, Note: text}
-	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
-	if err != nil {
-		return "", err
-	}
-	return out.Text, nil
-}
-
 // answerFits refuses an answer the sessions would get cut: each answer
 // reaches them as at most factoryd.MaxAnswer bytes, so a longer one is
 // refused here, where its author sees why, and the issue never holds more
@@ -2092,34 +2015,6 @@ func answerFits(text string) error {
 		return refuse(http.StatusBadRequest, fmt.Sprintf("An answer of 1 to %d bytes is required, and this one has %d.", factoryd.MaxAnswer, len(text)))
 	}
 	return nil
-}
-
-// doFund raises card id's budget by eur through Act, a fund on the card's
-// live case, or on no case when it waits on none: an approver's, or the
-// agent's own from the pool on rung 2. The note, or when none a line naming
-// the raise, is the answer Act has posted as the human's comment when the
-// fund ends the case, so the raise resumes the card in one step. raise
-// lifts the card's ceiling first, the fund drawn beside it (0 for none).
-func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, raise float64) (string, error) {
-	switch {
-	case !(eur > 0) || math.IsInf(eur, 0):
-		return "", refuse(http.StatusBadRequest, "an amount in EUR above zero is required")
-	case !(raise >= 0) || math.IsInf(raise, 0):
-		return "", refuse(http.StatusBadRequest, "the ceiling's raise is an amount in EUR, 0 for none")
-	}
-	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Funded the card: +%s EUR.", textutil.EUR(eur)))
-	if err := answerFits(note); err != nil {
-		return "", err
-	}
-	t, err := c.cardIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}
-	if raise > 0 {
-		res = factoryd.Resolution{Action: factoryd.ActRaiseCeiling, Args: map[string]any{"eur": raise}, Fund: &policy.Draw{EUR: eur}, Note: note}
-	}
-	return c.answerCard(ctx, a, t, res)
 }
 
 // doChatFund raises the project's chat task's monthly budget by eur, from
@@ -3272,10 +3167,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 // checks turned green again (#1013: a re-run); still red, its approval
 // refuses naming what fits the card. The agent never approves a GitHub
 // sync's pull request: a human approves the GitHub commits it carries.
-// Its one row on the card (EventMergeApproved) carries the pull request,
-// the request, the fund the decide's send rode beside it and its note,
-// which an empty note omits — the resource face's row its own shape.
-func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.ApprovalRequest, fund float64, note string) (string, error) {
+// Its one row on the card (EventMergeApproved) carries the pull request
+// and its note, which an empty note omits — the resource face's row its
+// own shape.
+func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.ApprovalRequest, note string) (string, error) {
 	t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
 	if err != nil {
 		log.Printf("console: task %s: %v", q.TaskID, err)
@@ -3334,10 +3229,6 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 	}
 	log.Printf("console: %s approved PR #%d of %s at %s via %s", a.s.user, q.PRNumber, q.TaskID, spec.HeadSHA, a.via)
 	detail := map[string]any{"pr": q.PRNumber}
-	if fund > 0 {
-		detail["approval"] = q.ID
-		detail["fund_eur"] = fund
-	}
 	if note = strings.TrimSpace(note); note != "" {
 		detail["reason"] = note
 	}

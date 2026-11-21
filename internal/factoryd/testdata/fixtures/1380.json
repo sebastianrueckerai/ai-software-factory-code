@@ -121,7 +121,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -130,7 +130,7 @@
       "case_kind": "merge_approval",
       "action": "merge_approved",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     }
   ],

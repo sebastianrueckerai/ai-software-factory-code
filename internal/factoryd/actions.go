@@ -958,9 +958,9 @@ func monthWithin(f CaseFacts, room Room) string {
 	}
 	fit, ok := roomFit(below(f, room), func(o Room) bool { return Cents(o.EUR) <= Cents(left) })
 	if !ok {
-		return fmt.Sprintf("the project has %s EUR left this month, which pays for no session's worth: raise budget.month_eur by a commit", textutil.EUR(left))
+		return fmt.Sprintf("the project has %s EUR left this month, which pays for no session's worth: raise the month cap by a commit (`budget.month_eur`)", textutil.EUR(left))
 	}
-	return fmt.Sprintf("the project has %s EUR left this month, which pays for %s: give that, or raise budget.month_eur by a commit", textutil.EUR(left), worthWords(fit.N))
+	return fmt.Sprintf("the project has %s EUR left this month, which pays for %s: give that, or raise the month cap by a commit (`budget.month_eur`)", textutil.EUR(left), worthWords(fit.N))
 }
 
 // withDraw is f with the room r gives beside its action counted: the

@@ -1076,7 +1076,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 		}
 	}
 	for what, want := range map[string]int{`<form `: 3, `action="/tasks/t-m/resolve"`: 3, `<input type="hidden" name="action" value="approve_merge">`: 1,
-		`<input type="hidden" name="action" value="deny_merge">`: 1, `<input type="hidden" name="action" value="deny_merge/reject">`: 1, `name="fund_eur"`: 0, `<textarea`: 2} {
+		`<input type="hidden" name="action" value="deny_merge">`: 1, `<input type="hidden" name="action" value="deny_merge/reject">`: 1, `<textarea`: 2} {
 		if got := strings.Count(ask, what); got != want {
 			t.Errorf("the merge ask carries %s %d times, want %d:\n%s", what, got, want, ask)
 		}
@@ -1832,7 +1832,7 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
 		Process: "maintenance", Escalation: &policy.Escalation{Pool: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 2}}}}
 	r.drawn = policy.Draw{Sessions: 3}
-	if strip, _ = status(); !strings.Contains(strip, `">pool drawn out</span>`) || !strings.Contains(strip, `<span class="cell hit" title="the escalation pool every extend and fund but a human's draws from`) {
+	if strip, _ = status(); !strings.Contains(strip, `">pool drawn out</span>`) || !strings.Contains(strip, `<span class="cell hit" title="the escalation pool every room the factory gives a card draws from`) {
 		t.Errorf("an overdrawn pool: the strip lacks its cell\n%s", strip)
 	}
 	r.c.cfg.Backstop = func(context.Context) (factoryd.Backstop, error) {

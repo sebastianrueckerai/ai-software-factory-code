@@ -145,8 +145,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 37 || len(tools) != 81 {
-		t.Fatalf("%d of %d tools checked as writes: want 37 of 81", writes, len(tools))
+	if writes != 36 || len(tools) != 80 {
+		t.Fatalf("%d of %d tools checked as writes: want 36 of 80", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -281,8 +281,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 37 {
-		t.Fatalf("%d write tools driven: want 37", writes)
+	if writes != 36 {
+		t.Fatalf("%d write tools driven: want 36", writes)
 	}
 }
 
@@ -317,9 +317,9 @@ func TestChatTimelineIsACard(t *testing.T) {
 // The opened card's answers keep their doors' rules: a writer who is no
 // approver sees the merge disabled beside the line that says so, and gets
 // 403 for an approver's answer, on a merge case (approve_merge), on a
-// card's own door (retry, replan, extend, fund) and on any case that offers
-// one (replan, extend, fund on a gate stop), and nothing changes. A case's
-// other actions leave out what the writer may not press.
+// card's own door (retry, replan, room) and on any case that offers one
+// (replan and room on a gate stop), and nothing changes. A case's other
+// actions leave out what the writer may not press.
 func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 	r := newRig(t)
 	withRequestCards(r)
@@ -350,11 +350,9 @@ func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 		{"t-m", url.Values{"case_id": {"90"}, "action": {factoryd.ActApproveMerge}}},
 		{"t-f", url.Values{"action": {factoryd.ActRetry}}},
 		{"t-run", url.Values{"action": {factoryd.ActReplan}, "replan.note": {"cut it smaller"}}},
-		{"t-run", url.Values{"action": {factoryd.ActExtend}, "extend.sessions": {"1"}}},
-		{"t-run", url.Values{"action": {factoryd.ActFund}, "fund.eur": {"1.00"}}},
+		{"t-run", url.Values{"action": {factoryd.ActExtend}, "extend.sessions": {"1"}, "extend.money": {"yes"}}},
 		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActReplan}, "replan.note": {"cut it smaller"}}},
-		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}}},
-		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActFund}, "fund.eur": {"1.00"}}},
+		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}, "extend.money": {"yes"}}},
 	} {
 		tc.form.Set("csrf", s.csrf)
 		if rec := r.do(post("/tasks/"+tc.id+"/resolve", tc.form), ck); rec.Code != http.StatusForbidden {
@@ -365,44 +363,11 @@ func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 		t.Errorf("a refused press acted: request %s, %d rows, Act %+v", r.approvals.get(4).Status, r.events.count()-before, r.acted)
 	}
 	if more := otherActionsOf(t, drawer(t, r, ck, "t-g", "overview")); strings.Contains(more, `data-answer="replan"`) ||
-		strings.Contains(more, `data-answer="extend"`) || strings.Contains(more, `data-answer="fund"`) {
+		strings.Contains(more, `data-answer="extend"`) {
 		t.Errorf("the case's other actions offer a writer an approver's action:\n%s", more)
 	}
 	if k, _, _ := r.tasks.Task(t.Context(), "t-run"); k.BudgetEUR != 2 || k.Status != "running" {
 		t.Errorf("t-run = %s with %.2f EUR, want running with 2.00", k.Status, k.BudgetEUR)
-	}
-}
-
-// More sessions for a case's cap is an approver's on every door: the
-// opened card's Allow more sessions and the chat's grant_session give one
-// verdict for the same human. A writer is refused on both and Act takes
-// nothing; an approver reaches Act on both.
-func TestBothDoorsGiveOneVerdictOnMoreSessions(t *testing.T) {
-	for _, tc := range []struct {
-		who  string
-		acts int
-	}{{"alice", 0}, {"sebastian", 2}} {
-		r := newRig(t)
-		r.openCases = map[string][]factoryd.Case{"t-g": {{ID: 91, TaskID: "t-g", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman,
-			Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Kind, f.Gate, f.Attempts = factoryd.CaseGateStop, "review", 1 })}}}
-		r.tasks.tasks = append(r.tasks.tasks,
-			factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 24, BudgetEUR: 2}})
-		r.fg.user, r.repoWriters["sf/code"] = tc.who, []string{"sebastian", "alice"}
-		r.forgetWriters()
-		ck, s := r.loggedIn(t)
-		press := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"91"}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}}), ck)
-		_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-g", Text: "Go on"})
-		var no *refusal
-		refused := errors.As(err, &no) && no.status == http.StatusForbidden
-		switch {
-		case tc.acts == 0 && (press.Code != http.StatusForbidden || !refused):
-			t.Errorf("%s, a writer: the press = %d, the chat's grant = %v; want both refused with 403", tc.who, press.Code, err)
-		case tc.acts > 0 && (press.Code != http.StatusSeeOther || err != nil):
-			t.Errorf("%s, an approver: the press = %d: %s, the chat's grant = %v; want both taken", tc.who, press.Code, press.Body, err)
-		}
-		if len(r.acted) != tc.acts {
-			t.Errorf("%s: Act took %+v, want %d answers", tc.who, r.acted, tc.acts)
-		}
 	}
 }
 

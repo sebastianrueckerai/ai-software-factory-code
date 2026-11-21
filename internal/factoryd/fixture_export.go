@@ -459,7 +459,7 @@ func (r *fixtureRun) answers(events []Event, cases map[int64]Case) []FixtureAnsw
 		for _, f := range events {
 			if n, _ := toInt(f.Detail["case_id"]); f.Kind == EventCardFunded && n == id && id != 0 {
 				eur, _ := f.Detail["amount_eur"].(float64)
-				a.FundEUR += eur
+				a.DrawnEUR += eur
 			}
 		}
 		out = append(out, a)

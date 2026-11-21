@@ -14,9 +14,9 @@ import (
 )
 
 // The escalation pool's funding, accepted end to end: the agent's own
-// fund and the human's confirmed one both answer the card's live case
-// through Act, the agent's on rung 2 and the human's on rung 3, and both
-// are pool draws the month's line counts; a draw Act refuses changes
+// room and the human's confirmed one both answer the card's live case
+// through Act, the agent's on rung 2, which the month's line counts, and
+// the human's on rung 3, which it does not; a draw Act refuses changes
 // nothing and falls back to attach_analysis, whose findings the ask
 // carries to the human; and every readout (the project face, the
 // settings, the policy and the chat) reads the one projection of this
@@ -25,13 +25,21 @@ import (
 
 // fundRig answers the rig with anna, writer and approver of the code
 // project, logged in, the pool's file on infra's main, no pool in force,
-// and card t-e waiting on a human over its budget of EUR 2.
+// and card t-e waiting on a human over its budget of EUR 2, of which its
+// 2 sessions spent 1.90.
 func fundRig(t *testing.T) (*AcceptanceRig, string, *http.Cookie, string) {
 	t.Helper()
 	r, _, path := NewAcceptanceRig(t, false, nil)
 	ck, csrf := r.LoginAs(t, "anna")
 	r.PutInfraFile(accInfraFile, accPoolHead)
 	r.SetCardBudget("t-e", 2)
+	r.mu.Lock()
+	for i := range r.tasks {
+		if r.tasks[i].ID == "t-e" {
+			r.tasks[i].Usage.Attempts, r.tasks[i].SpentEUR = 2, 1.9
+		}
+	}
+	r.mu.Unlock()
 	return r, path, ck, csrf
 }
 
@@ -52,7 +60,7 @@ func seedRow(t *testing.T, r *AcceptanceRig, repository, kind string, detail map
 	}
 }
 
-// lastAct is the last answer Act took, the fields a fund carries.
+// lastAct is the last answer Act took, the fields a room carries.
 func lastAct(t *testing.T, r *AcceptanceRig) []any {
 	t.Helper()
 	acted := r.Acted()
@@ -60,7 +68,7 @@ func lastAct(t *testing.T, r *AcceptanceRig) []any {
 		t.Fatalf("Act took no answer")
 	}
 	in := acted[len(acted)-1]
-	return []any{in.TaskID, in.CaseID, in.By, in.Via, in.Rung, in.Res.Action, in.Res.Args["eur"], in.Res.Note}
+	return []any{in.TaskID, in.CaseID, in.By, in.Via, in.Rung, in.Res.Action, in.Res.Args["sessions"], in.Res.Args["money"], in.Res.Note}
 }
 
 // agentCall has the model call tool with args on the human's next
@@ -76,12 +84,12 @@ func agentCall(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csr
 	return eventsOf(t, body)
 }
 
-// proposeFund has the model call fund with args — confirmed at this
+// proposeRoom has the model call give_room with args — confirmed at this
 // autonomy — and answers the proposal's token.
-func proposeFund(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, args string) string {
+func proposeRoom(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, args string) string {
 	t.Helper()
-	r.Reply([]string{Call(1, "fund", args)})
-	code, body := postChat(t, r, path, ck, url.Values{"message": {"fund the card"}, "csrf": {csrf}})
+	r.Reply([]string{Call(1, "give_room", args)})
+	code, body := postChat(t, r, path, ck, url.Values{"message": {"give the card room"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
 	}
@@ -96,11 +104,11 @@ func proposeFund(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, c
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(e, "proposal ")), &p); err != nil {
 			t.Fatalf("the proposal event %q: %v", e, err)
 		}
-		if p.Tool == "fund" {
+		if p.Tool == "give_room" {
 			return p.ID
 		}
 	}
-	t.Fatalf("the stream holds no fund proposal:\n%s", body)
+	t.Fatalf("the stream holds no give_room proposal:\n%s", body)
 	return ""
 }
 
@@ -143,11 +151,15 @@ func pageGET(t *testing.T, r *AcceptanceRig, ck *http.Cookie, path string) strin
 // draws: anna, writer and approver, confirms the model's set of 10 to 12
 // with her reason, and exactly one store-timestamped pool_changed row
 // names her, the set, both pools and the pull request. The agent's next
-// turn funds the waiting card 1 EUR without a click: one answer to the
-// card's live case through Act on rung 2, the card at 3 EUR and the
-// month's draws at 4 of 12. Anna's own confirmed fund of 2 EUR is the
-// same answer on rung 3, which the pool does not count: a human's grant
-// draws from the project's month, so the draws stay at 4.
+// turn gives the waiting card 1 session's worth without a click: one
+// answer to the card's live case through Act on rung 2. By hand, a
+// session's worth is 1.90 / 2 = 0.95 EUR against 2.00 - 1.90 - 0.40 =
+// -0.30 EUR left for sessions, so 1.25 EUR: the card at 3.25 EUR and the
+// month's draws at 4.25 of 12. Anna's own confirmed room of 1 session's
+// worth is the same answer on rung 3: 0.95 EUR left holds 1, so it aims
+// at 2, which takes 1 start and 1.90 - 0.95 = 0.95 EUR, the card at 4.20
+// EUR; the pool does not count it, a human's grant draws from the
+// project's month, so the draws stay at 4.25.
 func TestPoolAuthorisesFunding(t *testing.T) {
 	r, path, ck, csrf := fundRig(t)
 	r.SetLoadedPool(10)
@@ -179,35 +191,35 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	equal(t, "the row's detail", e.Detail, map[string]any{"action": "set", "from_eur": 10.0,
 		"confirmed_eur": 12.0, "to_eur": 12.0, "reason": "the review findings cost money", "pr": "sf/infra#101"})
 
-	// the agent's fund of 1 EUR: no human click, the card's live case
-	// answered on rung 2 as the chat user
+	// the agent's room of 1 session's worth: no human click, the card's
+	// live case answered on rung 2 as the chat user
 	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
-	fund := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
-	equal(t, "the unattended fund", agentCall(t, r, path, ck, csrf, "fund", fund, "funded it"), []string{
-		`tool {"arguments":` + fund + `,"duration_ms":0,"name":"fund","result":"Case 1 took fund."}`,
-		`applied {"result":"Case 1 took fund.","tool":"fund"}`,
-		`text {"text":"funded it"}`, `done {}`})
+	room := `{"task_id":"t-e","sessions":1,"money":true,"text":"the replica is worth it"}`
+	equal(t, "the unattended room", agentCall(t, r, path, ck, csrf, "give_room", room, "gave it room"), []string{
+		`tool {"arguments":` + room + `,"duration_ms":0,"name":"give_room","result":"Case 1 took extend."}`,
+		`applied {"result":"Case 1 took extend.","tool":"give_room"}`,
+		`text {"text":"gave it room"}`, `done {}`})
 	equal(t, "the agent's answer", lastAct(t, r),
-		[]any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
+		[]any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActExtend, 1, true, "the replica is worth it"})
 	card, _, _ := r.Task(t.Context(), "t-e")
-	equal(t, "the card's budget", card.BudgetEUR, 3.0)
-	equal(t, "the pool line after the agent's fund", poolLineOf(t, r, now), []any{12.0, 4.0, true, false,
-		"0 of 30 sessions, 0 h of 30 h agent time and 4.00 of 12.00 EUR drawn this UTC month"})
+	equal(t, "the card's budget", card.BudgetEUR, 3.25)
+	equal(t, "the pool line after the agent's room", poolLineOf(t, r, now), []any{12.0, 4.25, true, false,
+		"0 of 30 sessions, 0 h of 30 h agent time and 4.25 of 12.00 EUR drawn this UTC month"})
 
-	// anna's confirmed fund of 2 EUR: the same answer on rung 3, no draw
-	// from the pool
+	// anna's confirmed room of 1 session's worth: the same answer on rung
+	// 3, no draw from the pool
 	r.SetLoadedAutonomy(policy.AutonomyManual)
-	theirFund := `{"task_id":"t-e","eur":2,"text":"my call"}`
-	token = proposeFund(t, r, path, ck, csrf, theirFund)
+	theirRoom := `{"task_id":"t-e","sessions":1,"money":true,"text":"my call"}`
+	token = proposeRoom(t, r, path, ck, csrf, theirRoom)
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
-	if code != http.StatusOK || !strings.Contains(body, "Case 1 took fund.") {
+	if code != http.StatusOK || !strings.Contains(body, "Case 1 took extend.") {
 		t.Fatalf("anna's Do it = %d:\n%s", code, body)
 	}
-	equal(t, "anna's answer", lastAct(t, r), []any{"t-e", int64(1), "anna", factoryd.ViaChat, 3, factoryd.ActFund, 2.0, "my call"})
+	equal(t, "anna's answer", lastAct(t, r), []any{"t-e", int64(1), "anna", factoryd.ViaChat, 3, factoryd.ActExtend, 1, true, "my call"})
 	card, _, _ = r.Task(t.Context(), "t-e")
-	equal(t, "the card's budget", card.BudgetEUR, 5.0)
-	if drawn, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || drawn != (policy.Draw{EUR: 4}) {
-		t.Fatalf("the month's draws = %+v, %v; want 4 EUR of the pool's 12, anna's 2 left out", drawn, err)
+	equal(t, "the card's budget and starts", []any{factoryd.Cents(card.BudgetEUR), card.Usage.RaisedSessions}, []any{int64(420), 1})
+	if drawn, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || drawn != (policy.Draw{EUR: 4.25}) {
+		t.Fatalf("the month's draws = %+v, %v; want 4.25 EUR of the pool's 12, anna's room left out", drawn, err)
 	}
 }
 
@@ -231,7 +243,7 @@ func TestPoolDrawnRigMonth(t *testing.T) {
 }
 
 // TestPoolEscalationFallback is the refusal that hands the money back to
-// the human: the agent's fund past the month's pool, which the store
+// the human: the agent's room past the month's pool, which the store
 // refuses through Act, reaches the agent whole as a 409, moves no budget
 // and writes no row, and the agent's analysis of two verified findings
 // lands on the card's spine, which the card shows beside its ask; the
@@ -243,18 +255,17 @@ func TestPoolEscalationFallback(t *testing.T) {
 		Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: fund?", TaskID: "t-e"}); err != nil {
 		t.Fatal(err)
 	}
-	const spent = "the escalation pool leaves 30 sessions, 30 hours of agent time and 0.50 EUR this month: only the human draws more. " +
-		"This draw does not fit in EUR (asked 1.00, left 0.50). The largest draw that fits is 0 sessions, 0 seconds of agent time and 0.50 EUR: ask for that"
-	if got := (&factoryd.DrawBoundError{Want: policy.Draw{EUR: 1}, Left: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 0.5}, Fit: policy.Draw{EUR: 0.5}}).Error(); got != spent {
+	const spent = "the escalation pool leaves room for no more session's worth this month: hand it up (`hand_up`) for the human to give more"
+	if got := (&factoryd.DrawBoundError{}).Error(); got != spent {
 		t.Fatalf("the store's refusal reads %q, want %q", got, spent)
 	}
 	r.RefuseActs(spent)
-	raise := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
-	equal(t, "the refused fund", agentCall(t, r, path, ck, csrf, "fund", raise, "the human decides"), []string{
-		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: ` + spent + `"}`,
+	room := `{"task_id":"t-e","sessions":1,"money":true,"text":"the replica is worth it"}`
+	equal(t, "the refused room", agentCall(t, r, path, ck, csrf, "give_room", room, "the human decides"), []string{
+		`tool {"arguments":` + room + `,"duration_ms":0,"name":"give_room","result":"Refused: ` + spent + `"}`,
 		`text {"text":"the human decides"}`, `done {}`})
-	equal(t, "the refused call's status", lastToolRow(t, r, "anna", "fund").Status, http.StatusConflict)
-	equal(t, "the refused answer", lastAct(t, r), []any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
+	equal(t, "the refused call's status", lastToolRow(t, r, "anna", "give_room").Status, http.StatusConflict)
+	equal(t, "the refused answer", lastAct(t, r), []any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActExtend, 1, true, "the replica is worth it"})
 	card, _, _ := r.Task(t.Context(), "t-e")
 	if card.BudgetEUR != 2 || card.Status != "waiting-human" {
 		t.Fatalf("the refusal moved the card to %v %v", card.BudgetEUR, card.Status)

@@ -853,14 +853,13 @@ func mayAnswer(v *boardView, k card, action string) bool {
 }
 
 // mayPress says the viewer of v may press card k's own action a: a
-// replan, more sessions, money and a retry are an approver's where the
-// card takes them, a word to the session needs one to take it, a thread
-// the chat.
+// replan, more room and a retry are an approver's where the card takes
+// them, a word to the session needs one to take it, a thread the chat.
 func (c *Console) mayPress(v *boardView, k card, a factoryd.Answer) bool {
 	switch a.Action {
 	case factoryd.ActReplan:
 		return k.MayReplan
-	case factoryd.ActExtend, factoryd.ActFund:
+	case factoryd.ActExtend:
 		return k.MayExtend
 	case factoryd.ActRetry:
 		return k.MayRetry

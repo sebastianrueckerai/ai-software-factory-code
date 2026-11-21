@@ -1062,7 +1062,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1071,7 +1071,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1080,7 +1080,7 @@
       "case_kind": "budget_floor",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1089,7 +1089,7 @@
       "case_kind": "other",
       "action": "session_granted",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1098,7 +1098,7 @@
       "case_kind": "session_cap",
       "action": "session_granted",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1107,7 +1107,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1116,7 +1116,7 @@
       "case_kind": "budget_floor",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1125,7 +1125,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1134,7 +1134,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1143,7 +1143,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1152,7 +1152,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1161,7 +1161,7 @@
       "case_kind": "budget_floor",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1170,7 +1170,7 @@
       "case_kind": "other",
       "action": "question_answered",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     },
     {
@@ -1179,7 +1179,7 @@
       "case_kind": "",
       "action": "card_closed",
       "args": {},
-      "fund_eur": 0,
+      "drawn_eur": 0,
       "note": ""
     }
   ],

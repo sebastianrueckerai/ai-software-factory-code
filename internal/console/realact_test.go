@@ -369,7 +369,7 @@ func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 						if caller == "agent" {
 							a = actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.EventCaseClimbed}
 						}
-						said, err := r.c.doAnswerCase(t.Context(), a, su.task, ra.caseID, "", value, nil, 0)
+						said, err := r.c.doAnswerCase(t.Context(), a, su.task, ra.caseID, "", value, nil)
 						work := len(r.fg.patched) + len(*replans) + len(*deploys) + len(r.reran) + len(r.dismissed)
 						k := ra.caseNow(t)
 						pre, _ := ra.face(t, su.task)["preselected"].(map[string]any)
@@ -419,7 +419,7 @@ func TestAHumanCardCloseOrdersItsWorkAndMeetsTheLevel(t *testing.T) {
 	r.fg.mu.Unlock()
 	_, s := r.loggedIn(t)
 	human := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: policy.AutonomyManual}
-	if _, err := r.c.doAnswerCase(t.Context(), human, "t-hq", ra.caseID, "", factoryd.AnswerClose, nil, 0); err == nil ||
+	if _, err := r.c.doAnswerCase(t.Context(), human, "t-hq", ra.caseID, "", factoryd.AnswerClose, nil); err == nil ||
 		len(comments(r)) != 0 || len(r.fg.patched) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
 		t.Fatalf("a failing PATCH: err %v, comments %q, case %s; want the refusal, no comment and the case at the human", err, comments(r), ra.caseNow(t).Status)
 	}
@@ -486,7 +486,7 @@ func TestIDidItWaitsAndEndTheCardTakesTheHumansWords(t *testing.T) {
 	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hd", CaseID: ra.caseID, Action: factoryd.AnswerDone})
 	nothing(t, "the human's chat", r, ra, err)
 	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto, wake: true, birth: factoryd.EventCaseClimbed}
-	_, err = r.c.doAnswerCase(t.Context(), agent, "t-hd", ra.caseID, "", factoryd.AnswerDone, nil, 0)
+	_, err = r.c.doAnswerCase(t.Context(), agent, "t-hd", ra.caseID, "", factoryd.AnswerDone, nil)
 	nothing(t, "the project agent", r, ra, err)
 
 	const words = "The runner team changed the build files in their own repository."
@@ -532,7 +532,7 @@ func TestTheFactorysPullRequestWaitsForAHumansPress(t *testing.T) {
 			r, ra := newCard(t, level)
 			_, s := r.loggedIn(t)
 			agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.EventCaseClimbed}
-			_, err := r.c.doAnswerCase(t.Context(), agent, "t-pr", ra.caseID, "The change is the template's own.", value, nil, 0)
+			_, err := r.c.doAnswerCase(t.Context(), agent, "t-pr", ra.caseID, "The change is the template's own.", value, nil)
 			if no := refusedWith(err); no == nil || no.status != http.StatusConflict || no.msg != why ||
 				slices.Contains(r.fg.calls, merge) || len(r.fg.closed) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
 				t.Fatalf("%s/%s: err %v, calls %q, closed %v, case %s; want %q and nothing done", level, value, err, r.fg.calls, r.fg.closed, ra.caseNow(t).Status, why)
@@ -576,7 +576,7 @@ func TestAPressOnAnEndedCaseRunsNoWorkAtAnyLevel(t *testing.T) {
 						if caller == "agent" {
 							a = actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.EventCaseClimbed}
 						}
-						_, err := r.c.doAnswerCase(t.Context(), a, "t-hq", ra.caseID, "", value, nil, 0)
+						_, err := r.c.doAnswerCase(t.Context(), a, "t-hq", ra.caseID, "", value, nil)
 						no := refusedWith(err)
 						if no == nil || no.status != http.StatusConflict || len(r.fg.patched) != 0 || len(*replans) != 0 {
 							t.Fatalf("err %v, patched %v, replans %v; want the 409 and no work", err, r.fg.patched, *replans)
