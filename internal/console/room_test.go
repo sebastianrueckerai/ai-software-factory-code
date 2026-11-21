@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -276,7 +277,8 @@ func TestASecondPressOnOneReadoutIsRefused(t *testing.T) {
 }
 
 // A count left blank or left out is refused with the range on the card's
-// own door and on a case's, never filled in, and Act takes nothing.
+// own door and on a case's, never filled in, as one sentence, and Act
+// takes nothing.
 func TestABlankCountIsRefusedOnBothDoors(t *testing.T) {
 	for _, form := range []url.Values{{"extend.sessions": {""}, "extend.money": {"yes"}}, {"extend.money": {"yes"}}} {
 		for _, onCase := range []bool{false, true} {
@@ -295,7 +297,7 @@ func TestABlankCountIsRefusedOnBothDoors(t *testing.T) {
 				f.Set("case_id", "1")
 			}
 			rec := r.do(post("/tasks/t-e/resolve", f), ck)
-			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "a room counts 1 to 5 sessions' worth") || len(r.acted) != 0 {
+			if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != "A room counts 1 to 5 sessions' worth." || len(r.acted) != 0 {
 				t.Errorf("%v on a case %v = %d %q with %d Act calls; want 400 with the range and none", form, onCase, rec.Code, rec.Body, len(r.acted))
 			}
 		}
@@ -317,5 +319,33 @@ func TestTheReadoutShowsTheRefusalAPressMeets(t *testing.T) {
 		if strings.TrimSpace(body) != want || len(guard) != 0 {
 			t.Errorf("the readout at %q without money = %q, guard %v; want %q alone", sessions, body, guard, want)
 		}
+	}
+}
+
+// Two humans press one readout's room at once on a card that waits on no
+// ask (Review Focus 4): Act takes a card's own presses one at a time, so
+// the second reads the room the first gave and is refused, and #32 holds
+// one give, 2 starts, 24 minutes and 1.60 EUR: 3 raised sessions, 64
+// minutes and 7.60 EUR.
+func TestTwoPressesAtOnceGiveOnce(t *testing.T) {
+	r, ra := aheadRig(t)
+	ck, s := r.loggedIn(t)
+	_, guard := readout(t, r, ck, "t-run", "2", "yes")
+	start, codes := make(chan struct{}), make(chan int, 2)
+	for range 2 {
+		go func() {
+			<-start
+			codes <- pressRoom(t, r, ck, s.csrf, "t-run", "2", guard).Code
+		}()
+	}
+	close(start)
+	got := []int{<-codes, <-codes}
+	slices.Sort(got)
+	if !slices.Equal(got, []int{http.StatusSeeOther, http.StatusConflict}) {
+		t.Errorf("two presses at once answered %v, want one given (303) and one refused (409)", got)
+	}
+	if card := ra.stored(t, "t-run"); card.Usage.RaisedSessions != 3 || card.Usage.RaisedTime != 64*time.Minute || factoryd.Cents(card.BudgetEUR) != 760 {
+		t.Fatalf("#32 after two presses at once: %d raised sessions, %s raised time, %.2f EUR; want one give: 3, 1h4m, 7.60",
+			card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR)
 	}
 }

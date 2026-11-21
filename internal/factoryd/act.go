@@ -122,7 +122,7 @@ func endedRefusal(status string, planWait bool, action string) string {
 }
 
 // lockWithin takes mu, or gives up when ctx ends: the wait for a case's
-// lock is bounded by the answer's own context.
+// or a card's lock is bounded by the answer's own context.
 func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 	for !mu.TryLock() {
 		select {
@@ -190,14 +190,16 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 }
 
 func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) {
-	if in.CaseID != 0 {
-		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
-		mu := lock.(*sync.Mutex)
-		if err := lockWithin(ctx, mu); err != nil {
-			return ActResult{}, err
-		}
-		defer mu.Unlock()
+	locks, key := &r.caseLocks, any(in.CaseID)
+	if in.CaseID == 0 {
+		locks, key = &r.cardLocks, in.TaskID
 	}
+	lock, _ := locks.LoadOrStore(key, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	if err := lockWithin(ctx, mu); err != nil {
+		return ActResult{}, err
+	}
+	defer mu.Unlock()
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
 		return ActResult{}, err

@@ -667,7 +667,7 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 		}
 	}
 	if why := (Resolution{Action: a.Action, Args: args}).RoomRefusal(); a.Action == ActExtend && why != "" {
-		return nil, 0, errors.New(why)
+		return nil, 0, errors.New(capitalize(why))
 	}
 	if len(args) == 0 {
 		args = nil

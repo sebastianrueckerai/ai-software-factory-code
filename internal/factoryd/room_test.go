@@ -59,7 +59,7 @@ func TestRoomForMoneyLeftOut(t *testing.T) {
 }
 
 func TestSessionEstimateBeforeTheFirstSession(t *testing.T) {
-	got := SessionEstimate(CaseFacts{AgentTimeCapS: 60 * 60, FloorEUR: 0.80})
+	got := SessionEstimate(CaseFacts{AgentTimeCapS: 60 * 60, SizedTimeS: 60 * 60, FloorEUR: 0.80})
 	if want := (Estimate{15 * time.Minute, 0.80, 0}); got != want {
 		t.Errorf("got %+v want %+v", got, want)
 	}
@@ -414,7 +414,7 @@ func TestRoomLinesSayWhatThePressGives(t *testing.T) {
 	if got := RoomLines(f, RoomFor(f, 1, false)); !slices.Equal(got, left) {
 		t.Errorf("RoomLines without money = %q, want %q", got, left)
 	}
-	fresh := CaseFacts{SessionCap: 3, AgentTimeCapS: 60 * 60, FloorEUR: 0.80, BudgetEUR: 5, LeftEUR: 5, CeilingEUR: 18, MonthLeftEUR: -2}
+	fresh := CaseFacts{SessionCap: 3, AgentTimeCapS: 60 * 60, SizedTimeS: 60 * 60, FloorEUR: 0.80, BudgetEUR: 5, LeftEUR: 5, CeilingEUR: 18, MonthLeftEUR: -2}
 	first := []string{
 		"About 15 min and 0.80 EUR per session, the policy's estimate before its first session",
 		"Enough: 60 min left",
@@ -565,10 +565,10 @@ func TestArgsOfCarriesTheRoomsGuard(t *testing.T) {
 	}
 	for _, n := range []string{"", "0", "6"} {
 		posted["sessions"] = n
-		if args, _, err := ArgsOf(a, func(name string) string { return posted[name] }); err == nil || err.Error() != "a room counts 1 to 5 sessions' worth" {
+		if args, _, err := ArgsOf(a, func(name string) string { return posted[name] }); err == nil || err.Error() != "A room counts 1 to 5 sessions' worth" {
 			t.Errorf("ArgsOf of the count %q = %v, %v; want the range", n, args, err)
 		}
-		if res, err := a.Press(Facts{CaseFacts: moneyStop()}, posted, ""); err == nil || err.Error() != "a room counts 1 to 5 sessions' worth" {
+		if res, err := a.Press(Facts{CaseFacts: moneyStop()}, posted, ""); err == nil || err.Error() != "A room counts 1 to 5 sessions' worth" {
 			t.Errorf("Press of the count %q = %+v, %v; want the range", n, res, err)
 		}
 	}
@@ -579,5 +579,24 @@ func TestTheRoomsCountIsBounded(t *testing.T) {
 	a, _ := AnswerOf(ActExtend)
 	if f := a.Fields[0]; f.Name != "sessions" || f.Min != 1 || f.Max != MaxRoomSessions {
 		t.Errorf("the count field = %+v, want sessions from 1 to %d", f, MaxRoomSessions)
+	}
+}
+
+// Before its first session a card's session's worth is a quarter of its
+// sized agent-time cap, whatever time was given since: 3 starts and a
+// sized 60 minutes give 15 minutes, the 0.50 EUR floor and 10.00 EUR, so
+// the room now is min(3, 60 / 15 = 4, 10.00 / 0.50 = 20) = 3, and 2 more
+// need 2 starts and 5 x 15 - 60 = 15 minutes. Once given (5 starts, 75
+// minutes, the sized cap still 60) a session's worth is still 15 minutes
+// and the card has the room of 5 the readout promised: min(5, 75 / 15 =
+// 5, 20) = 5.
+func TestTheEstimateBeforeTheFirstSessionReadsTheSizedCap(t *testing.T) {
+	f := CaseFacts{SessionCap: 3, AgentTimeCapS: 60 * 60, SizedTimeS: 60 * 60, FloorEUR: 0.50, BudgetEUR: 10, LeftEUR: 10, CeilingEUR: 20, MonthLeftEUR: 50}
+	if r := RoomFor(f, 2, true); r.Now != 3 || r.Starts != 2 || r.AgentTime != 15*time.Minute || r.EUR != 0 {
+		t.Fatalf("a room of 2 = now %d, %d starts, %s, %v EUR; want now 3, 2 starts, 15m and no money", r.Now, r.Starts, r.AgentTime, r.EUR)
+	}
+	f.SessionCap, f.AgentTimeCapS = 5, 75*60
+	if r := RoomFor(f, 1, true); r.Est.Time != 15*time.Minute || r.Now != 5 {
+		t.Errorf("after the give a session's worth is %s and the room now %d, want 15m and 5", r.Est.Time, r.Now)
 	}
 }

@@ -207,8 +207,9 @@ func TestTripFactsReadTheLastSession(t *testing.T) {
 // checks of its head, its configuration, its dependencies, its cases and
 // the draws, by hand:
 //   - the checks ran again on h1, not on h2: until a case on h2 does
-//   - sessions 3 + 1 raised = 4; agent time 10m, 15m for a large card, + 5m
-//     raised = 1200 s, 480 s used; a session needs min(5m, 15m) = 300 s
+//   - sessions 3 + 1 raised = 4; agent time 10m, 15m (900 s) for a large
+//     card, + 5m raised = 1200 s, 480 s used; a session needs min(5m, 15m)
+//     = 300 s
 //   - spent 4.50 + 0.25 held = 4.75, left 0.25; an opening on small needs
 //     its recorded opening, 0.607001, above the cheap floor 0.30; the
 //     ceiling task_max_eur 5; the gate reserve is the default 0.40
@@ -242,7 +243,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	drawn := factsAt(10, 4)
 	want := CaseFacts{Head: "h2", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Stage: GateApproval,
-		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, SessionLeastS: 300, Model: "small",
+		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, SizedTimeS: 900, SessionLeastS: 300, Model: "small",
 		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, ReserveEUR: 0.4, FloorEUR: got.FloorEUR, CeilingEUR: 5,
 		Findings:     []string{idA, idB},
 		FindingTexts: map[string]string{idA: findingA, idB: findingB}, FindingOrder: []string{idA, idB}, ReviewFindings: []string{idA},
@@ -818,7 +819,7 @@ func roomRig(t *testing.T, s roomStore, project string) (*Runner, Task) {
 }
 
 // By hand: a medium card's agent time is the policy's 60 minutes, 3600
-// s, and a session needs the 5 minutes of minSession; the next session on
+// s, its cap and its sized cap with nothing added, and a session needs the 5 minutes of minSession; the next session on
 // small opens at the cheap floor of 0.30 EUR, above its cheapest call;
 // the month's money left is min(project 50 - 12 spent - 3 held, factory
 // 200 - 40) = 35. A store whose Free fails names the floor and the month,
@@ -830,7 +831,7 @@ func TestRoomFactsReadsTheCapTheFloorAndTheMonth(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := CardFacts(card, r.cfg.Policy(), "")
-	want.AgentTimeCapS, want.SessionLeastS, want.FloorEUR, want.MonthLeftEUR = 3600, 300, 0.3, 35
+	want.AgentTimeCapS, want.SizedTimeS, want.SessionLeastS, want.FloorEUR, want.MonthLeftEUR = 3600, 3600, 300, 0.3, 35
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts =\n%+v\nwant\n%+v", got, want)
 	}

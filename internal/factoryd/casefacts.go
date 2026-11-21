@@ -43,11 +43,13 @@ type CaseFacts struct {
 	SessionCap     int    `json:"session_cap"`
 	// AgentTimeS is the agent time the card used and AgentTimeCapS its cap,
 	// the class's sized by the card plus what was added, in seconds with
-	// their fraction. SessionLeastS is what a session needs to start, as
-	// the run reads it: minSession, or the card's sized agent time when
-	// shorter. The cap and the least are 0 when the config is unread.
+	// their fraction; SizedTimeS is the sized cap alone. SessionLeastS is
+	// what a session needs to start, as the run reads it: minSession, or
+	// the card's sized agent time when shorter. The caps and the least are
+	// 0 when the config is unread.
 	AgentTimeS    float64 `json:"agent_time_s"`
 	AgentTimeCapS float64 `json:"agent_time_cap_s"`
+	SizedTimeS    float64 `json:"sized_time_s,omitempty"`
 	SessionLeastS float64 `json:"session_least_s"`
 	// Model is the model the next session runs on, "" when none is known
 	// yet: the class's session_model, else the one the run's trip names,
@@ -702,8 +704,8 @@ func readFacts(ctx context.Context, f *CaseFacts, readers []factReader) error {
 	return ctx.Err()
 }
 
-// configFacts sets f's agent-time cap, the least a session needs and the
-// plan's retry from card t's config.
+// configFacts sets f's agent-time cap, its sized cap, the least a session
+// needs and the plan's retry from card t's config.
 func (r *Runner) configFacts(ctx context.Context, t Task, f *CaseFacts) error {
 	tc, err := r.TaskConfig(ctx, t.ID, 0)
 	if err != nil {
@@ -714,7 +716,7 @@ func (r *Runner) configFacts(ctx context.Context, t Task, f *CaseFacts) error {
 		// the plan's loop reads the class's time unsized
 		sized = policy.SizeAgentTime(t.Size, tc.AgentTime)
 	}
-	f.AgentTimeCapS = (sized + t.Usage.TimeAdded()).Seconds()
+	f.AgentTimeCapS, f.SizedTimeS = (sized + t.Usage.TimeAdded()).Seconds(), sized.Seconds()
 	f.SessionLeastS = min(minSession, sized).Seconds()
 	f.PlannerRetry = f.Planner && t.Usage.RetryTime == 0 && tc.AgentTime/2 >= min(minSession, tc.AgentTime)
 	return nil

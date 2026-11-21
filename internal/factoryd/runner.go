@@ -206,8 +206,9 @@ type Runner struct {
 	// once at a time per project
 	revertLocks sync.Map
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
-	// once at a time (one factoryd replica)
-	caseLocks sync.Map
+	// once at a time (one factoryd replica), and cardLocks one by task id,
+	// so Act takes a card's presses on no case one at a time
+	caseLocks, cardLocks sync.Map
 	// rungs counts the rung 1 conversations running in the background
 	rungs sync.WaitGroup
 	// launchRung1, when set, takes the place of the goroutine that runs a

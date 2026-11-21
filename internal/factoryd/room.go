@@ -20,7 +20,8 @@ type Estimate struct {
 }
 
 // EstimateTime is the agent time of one session's worth: the card's agent
-// time per session, else a slice of the agent-time cap, never under minSession.
+// time per session, else a slice of its sized agent-time cap, capTime,
+// which no time given since moves; never under minSession.
 func EstimateTime(agentTime time.Duration, sessions int, capTime time.Duration) time.Duration {
 	per := AnswerSlice(capTime)
 	if sessions > 0 {
@@ -37,7 +38,7 @@ func SessionEstimate(f CaseFacts) Estimate {
 		eur = max(f.SpentEUR/float64(f.Attempts), f.FloorEUR)
 	}
 	return Estimate{
-		Time:         EstimateTime(seconds(f.AgentTimeS), f.Attempts, seconds(f.AgentTimeCapS)),
+		Time:         EstimateTime(seconds(f.AgentTimeS), f.Attempts, seconds(f.SizedTimeS)),
 		EUR:          eur,
 		FromSessions: f.Attempts,
 	}
@@ -96,8 +97,8 @@ func RoomFor(f CaseFacts, n int, money bool) Room {
 
 // RoomGuard are the args a human's press of a room posts beside its count
 // and its tick: the room the card had and the raises its readout showed
-// (Room.Shown), which Act works out again at the press. Any give raises
-// the room the card has, so a second press on one readout meets another.
+// (Room.Shown), which Act works out again at the press. Any give changes
+// one of them, so a second press on one readout meets another room.
 var RoomGuard = []string{"shown_now", "shown_starts", "shown_agent_time_s", "shown_eur", "shown_limit"}
 
 // Shown are r's room now and its raises by RoomGuard's names, as its
