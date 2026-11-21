@@ -2251,7 +2251,8 @@ func roomMoneyScene(now time.Time) labScene {
 
 // roomChatScene is the quiet board with the human card the chat's spent
 // budget files: the chat spent its 5.00 EUR this month, and the card asks
-// for money for the chat.
+// for money for the chat. The chat's facts hold its money, none left, and
+// the project's month of 120.00 - 4.10 = 115.90 EUR.
 func roomChatScene(now time.Time) labScene {
 	s := quietScene(now)
 	chat := factoryd.Task{ID: "chat-sf-code-" + now.UTC().Format("2006-01"), Kind: factoryd.KindChat, Status: "running", Repository: "sf/code",
@@ -2259,7 +2260,8 @@ func roomChatScene(now time.Time) labScene {
 	q := factoryd.ChatBudgetQuestion(chat)
 	k := labCard(now, 642, "waiting-human", "direct", 2*time.Hour, q.Ask, q.Why)
 	k.Kind, k.Source, k.Parent, k.BudgetEUR, k.ModelAlias = "human", factoryd.SourceChatBudget, chat.ID, chat.BudgetEUR, ""
-	s.tasks = append([]factoryd.BoardTask{{Task: k, Escalation: q.Ask, EscalatedAt: now.Add(-2 * time.Hour), Question: &q}}, s.tasks...)
+	s.tasks = append([]factoryd.BoardTask{{Task: k, Escalation: q.Ask, EscalatedAt: now.Add(-2 * time.Hour), Question: &q}, {Task: chat}}, s.tasks...)
+	s.room = map[string]factoryd.CaseFacts{chat.ID: {BudgetEUR: chat.BudgetEUR, SpentEUR: chat.SpentEUR, LeftEUR: chat.Left(), MonthLeftEUR: 120 - s.spend}}
 	s.drawer = k.ID
 	return s
 }

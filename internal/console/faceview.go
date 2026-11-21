@@ -122,8 +122,10 @@ type answerView struct {
 	Press         *pressForm
 	Thread        string
 	Open          bool
-	// Room is a room's readout under its fields, nil for any other answer.
+	// Room is a room's control, nil for any other answer; Fund the chat's
+	// money row of "Add money to the chat", nil for any other answer.
 	Room *roomView
+	Fund *fundView
 }
 
 // pressForm is the form of the one button: where it posts, with what,

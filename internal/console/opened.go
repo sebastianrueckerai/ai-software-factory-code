@@ -569,13 +569,17 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 	view.Press = p
 	defaults := a.Defaults(f)
 	id := "f-" + fieldID.ReplaceAllString(scope+"-"+view.Action, "-")
-	if a.Action == factoryd.ActExtend {
+	switch a.Action {
+	case factoryd.ActExtend:
 		f.CaseFacts = c.roomFactsOf(ctx, v, f.Card)
 		defaults = a.Defaults(f)
-		args, _, err := factoryd.ArgsOf(a, func(field string) string { return defaults[field] })
-		room := readoutOf(f.CaseFacts, args, err, name)
-		room.ID, room.Get, room.Params = id+"-room", "/tasks/"+f.Card.ID+"/room", name("sessions")+","+name("money")
+		room := readoutOf(f.CaseFacts, func(field string) string { return defaults[field] }, id, name)
+		room.Get, room.Params = "/tasks/"+f.Card.ID+"/room?at="+id, name("sessions")+","+name("money")
 		view.Room = &room
+	case factoryd.AnswerFundChat:
+		fund := c.fundOf(ctx, f.Card, "")
+		fund.ID, fund.Get, fund.Params = id+"-then", "/tasks/"+f.Card.ID+"/fund?field="+url.QueryEscape(name("eur")), name("eur")
+		view.Fund = &fund
 	}
 	bound := factoryd.MaxAnswer
 	if a.Action == factoryd.ActReplan {
@@ -619,6 +623,12 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 			h := fnv.New32a()
 			h.Write([]byte(fv.Value)) // #nosec G104 -- a hash's Write never fails
 			fv.ID += fmt.Sprintf("-%08x", h.Sum32())
+		}
+		switch {
+		case view.Room != nil && field.Name == "sessions":
+			view.Room.Count = countOf(fv)
+		case view.Fund != nil:
+			view.Fund.Field = fv
 		}
 		view.Fields = append(view.Fields, fv)
 	}

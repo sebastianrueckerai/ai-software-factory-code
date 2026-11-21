@@ -339,20 +339,19 @@ func TestAPoolRefusalNamesTheLargestCountThatFits(t *testing.T) {
 }
 
 // At an agent time overrun, 42 minutes spent of a 40 minute cap, the time
-// line shows none left and the real total after the press: a room of 1
+// row shows none left and the real total after the press: a room of 1
 // needs 14 - (-2) = 16 minutes, then 14 minutes; the 2.10 EUR left hold
 // the 1.20 EUR, and the start left takes the session.
-func TestRoomLinesAtATimeOverrunSayNoneLeft(t *testing.T) {
+func TestTheReadoutAtATimeOverrunSaysNone(t *testing.T) {
 	f := aheadOfTime()
 	f.AgentTimeCapS = 40 * 60
-	want := []string{
-		"About 14 min and 1.20 EUR per session, from its 3 sessions so far",
-		"Adds 16 min: none left, then 14 min",
-		"Enough: 2.10 EUR left",
-		"The project has 41.20 EUR left this month.",
+	want := Readout{
+		Time:  RoomRow{Left: "none", Adds: "16 min", Then: "14 min"},
+		Money: RoomRow{Left: "2.10 EUR", Not: "enough", Then: "2.10 EUR"},
+		Month: "The project has 41.20 EUR left this month.",
 	}
-	if got := RoomLines(f, RoomFor(f, 1, true)); !slices.Equal(got, want) {
-		t.Errorf("RoomLines = %q, want %q", got, want)
+	if got := ReadoutOf(f, RoomFor(f, 1, true)); got != want {
+		t.Errorf("ReadoutOf = %+v, want %+v", got, want)
 	}
 }
 
@@ -386,48 +385,72 @@ func TestARacingDrawIsRefusedInSessionsWorth(t *testing.T) {
 // floor, room now for min(3, 60/15, 5.00/0.80) = 3, so the press adds 1
 // start alone; its project overspent its month, which reads none left, and
 // a month that could not be read says so.
-func TestRoomLinesSayWhatThePressGives(t *testing.T) {
+func TestTheReadoutSaysWhatThePressGives(t *testing.T) {
 	f := aheadOfTime()
-	want := []string{
-		"About 14 min and 1.20 EUR per session, from its 3 sessions so far",
-		"Adds 24 min: 18 min left, then 42 min",
-		"Adds 1.50 EUR: 2.10 EUR left, then 3.60 EUR",
-		"It may also start 2 more sessions.",
-		"The project has 41.20 EUR left this month.",
+	want := Readout{
+		Time:   RoomRow{Left: "18 min", Adds: "24 min", Then: "42 min"},
+		Money:  RoomRow{Left: "2.10 EUR", Adds: "1.50 EUR", Then: "3.60 EUR"},
+		Starts: "It may also start 2 more sessions.",
+		Month:  "The project has 41.20 EUR left this month.",
 	}
-	if got := RoomLines(f, RoomFor(f, 2, true)); !slices.Equal(got, want) {
-		t.Errorf("RoomLines = %q, want %q", got, want)
+	if got := ReadoutOf(f, RoomFor(f, 2, true)); got != want {
+		t.Errorf("ReadoutOf = %+v, want %+v", got, want)
+	}
+	if got, want := EachLine(f), "Each is about 14 min and 1.20 EUR, from its 3 sessions so far."; got != want {
+		t.Errorf("EachLine = %q, want %q", got, want)
 	}
 	f.CeilingEUR = 7
-	limited := slices.Insert(slices.Clone(want), 3, "The spend limit rises from 7.00 to 7.50 EUR first.")
-	if got := RoomLines(f, RoomFor(f, 2, true)); !slices.Equal(got, limited) {
-		t.Errorf("RoomLines under the 7.00 limit = %q, want %q", got, limited)
+	limited := want
+	limited.Limit = "The spend limit rises from 7.00 to 7.50 EUR first."
+	if got := ReadoutOf(f, RoomFor(f, 2, true)); got != limited {
+		t.Errorf("ReadoutOf under the 7.00 limit = %+v, want %+v", got, limited)
 	}
 	f = moneyStop()
-	left := []string{
-		"About 14 min and 1.20 EUR per session, from its 3 sessions so far",
-		"Adds 12 min: 30 min left, then 42 min",
-		"Adds no money: 0.40 EUR left",
-		"It may also start 1 more session.",
-		"The project has 41.20 EUR left this month.",
+	left := Readout{
+		Time:   RoomRow{Left: "30 min", Adds: "12 min", Then: "42 min"},
+		Money:  RoomRow{Left: "0.40 EUR", Not: "left out", Then: "0.40 EUR"},
+		Starts: "It may also start 1 more session.",
+		Month:  "The project has 41.20 EUR left this month.",
 	}
-	if got := RoomLines(f, RoomFor(f, 1, false)); !slices.Equal(got, left) {
-		t.Errorf("RoomLines without money = %q, want %q", got, left)
+	if got := ReadoutOf(f, RoomFor(f, 1, false)); got != left {
+		t.Errorf("ReadoutOf without money = %+v, want %+v", got, left)
 	}
 	fresh := CaseFacts{SessionCap: 3, AgentTimeCapS: 60 * 60, SizedTimeS: 60 * 60, FloorEUR: 0.80, BudgetEUR: 5, LeftEUR: 5, CeilingEUR: 18, MonthLeftEUR: -2}
-	first := []string{
-		"About 15 min and 0.80 EUR per session, the policy's estimate before its first session",
-		"Enough: 60 min left",
-		"Enough: 5.00 EUR left",
-		"It may also start 1 more session.",
-		"The project has none left this month.",
+	first := Readout{
+		Time:   RoomRow{Left: "60 min", Not: "enough", Then: "60 min"},
+		Money:  RoomRow{Left: "5.00 EUR", Not: "enough", Then: "5.00 EUR"},
+		Starts: "It may also start 1 more session.",
+		Month:  "The project has none left this month.",
 	}
-	if got := RoomLines(fresh, RoomFor(fresh, 1, true)); !slices.Equal(got, first) {
-		t.Errorf("RoomLines before the first session = %q, want %q", got, first)
+	if got := ReadoutOf(fresh, RoomFor(fresh, 1, true)); got != first {
+		t.Errorf("ReadoutOf before the first session = %+v, want %+v", got, first)
+	}
+	if got, want := EachLine(fresh), "Each is about 15 min and 0.80 EUR, the policy's estimate before its first session."; got != want {
+		t.Errorf("EachLine before the first session = %q, want %q", got, want)
 	}
 	fresh.Partial = []string{"month"}
-	if got := RoomLines(fresh, RoomFor(fresh, 1, true)); got[len(got)-1] != "The project's money left this month could not be read." {
-		t.Errorf("RoomLines on a month that could not be read end %q, want the read named", got[len(got)-1])
+	if got := ReadoutOf(fresh, RoomFor(fresh, 1, true)).Month; got != "The project's money left this month could not be read." {
+		t.Errorf("ReadoutOf on a month that could not be read says %q, want the read named", got)
+	}
+}
+
+// The chat's money row: of a budget the chat spent to 0.30 EUR past it, a
+// raise of 5.00 EUR leaves 4.70 EUR, and one of 0.20 EUR leaves none; with
+// 1.25 EUR left a raise of 5.00 leaves 6.25 EUR, and no raise leaves what
+// is left.
+func TestTheMoneyRowOfARaise(t *testing.T) {
+	for _, tc := range []struct {
+		left, eur float64
+		want      RoomRow
+	}{
+		{-0.30, 5, RoomRow{Left: "none", Adds: "5.00 EUR", Then: "4.70 EUR"}},
+		{-0.30, 0.20, RoomRow{Left: "none", Adds: "0.20 EUR", Then: "none"}},
+		{1.25, 5, RoomRow{Left: "1.25 EUR", Adds: "5.00 EUR", Then: "6.25 EUR"}},
+		{1.25, 0, RoomRow{Left: "1.25 EUR", Not: "enough", Then: "1.25 EUR"}},
+	} {
+		if got := MoneyRow(tc.left, tc.eur); got != tc.want {
+			t.Errorf("MoneyRow(%.2f, %.2f) = %+v, want %+v", tc.left, tc.eur, got, tc.want)
+		}
 	}
 }
 

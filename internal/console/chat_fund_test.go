@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"golang.org/x/net/html"
 )
 
 // budgetReason is the gateway's refused_budget reason as it read live: the
@@ -536,5 +537,109 @@ func TestTheChatBudgetCardAddsMoneyToTheChat(t *testing.T) {
 	}
 	if rows := eventsOf(r, factoryd.EventChatFunded); len(rows) != 1 || rows[0].Detail["amount_eur"] != 2.5 || rows[0].Detail["reason"] != "Add money to the chat" {
 		t.Fatalf("the raise's rows: %+v", rows)
+	}
+}
+
+// fundRowIn reads the money row of "Add money to the chat" in page: the
+// table's header, the row's cells as text, the cell index of the EUR
+// field, its value, the label that names it, the lines under the table,
+// and the id of the then cell.
+func fundRowIn(t *testing.T, page string) (head, row []string, field int, value, label string, notes []string, then string) {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cash *html.Node
+	labels := map[string]string{}
+	field = -1
+	for n := range doc.Descendants() {
+		if n.Type != html.ElementNode {
+			continue
+		}
+		cells := func() (out []string) {
+			for c := range n.ChildNodes() {
+				if c.Type == html.ElementNode {
+					out = append(out, nodeText(c))
+				}
+			}
+			return out
+		}
+		switch {
+		case n.Data == "tr" && n.Parent != nil && n.Parent.Data == "thead":
+			head = cells()
+		case n.Data == "tr" && n.Parent != nil && n.Parent.Data == "tbody":
+			row = cells()
+		case n.Data == "label":
+			labels[htmlAttr(n, "for")] = nodeText(n)
+		case n.Data == "input" && strings.HasSuffix(htmlAttr(n, "name"), "fund_chat.eur"):
+			cash = n
+		case n.Data == "p" && n.Parent != nil && hasClass(n.Parent, "notes"):
+			notes = append(notes, nodeText(n))
+		case hasClass(n, "then"):
+			then = htmlAttr(n, "id")
+		}
+	}
+	if cash == nil {
+		t.Fatalf("no EUR field to add money to the chat:\n%s", page)
+	}
+	i := 0
+	for c := cash.Parent.PrevSibling; c != nil; c = c.PrevSibling {
+		if c.Type == html.ElementNode {
+			i++
+		}
+	}
+	if cash.Parent.Data == "td" {
+		field = i
+	}
+	return head, row, field, htmlAttr(cash, "value"), labels[htmlAttr(cash, "id")], notes, then
+}
+
+// "Add money to the chat" opens the chat's money row alone: the chat spent
+// 14.96 of its 15.00 EUR, so 15.00 - 14.96 = 0.04 EUR is left; the EUR
+// field stands in the adds column at the card's 15.00, so the chat then
+// has 0.04 + 15.00 = 15.04 EUR; the project has 40.00 EUR left this month.
+// The then figure follows the amount, read as the press reads it: 2.50
+// EUR leaves 0.04 + 2.50 = 2.54 EUR, an empty field is the card's 15.00,
+// and 0 adds nothing.
+func TestTheChatBudgetCardShowsTheMoneyRow(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	chat := stoppedChat(t, r)
+	q := factoryd.ChatBudgetQuestion(chat)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-cb", Kind: "human", Status: "waiting-human",
+		Source: factoryd.SourceChatBudget, Parent: chat.ID, Repository: "sf/code", IssueNumber: 61, Objective: q.Ask, BudgetEUR: chat.BudgetEUR}, Escalation: q.Ask, Question: &q})
+	var offers []any
+	for _, c := range q.Choices {
+		offers = append(offers, map[string]any{"value": c.Value, "label": c.Label})
+	}
+	r.openCases = map[string][]factoryd.Case{"t-cb": {{ID: 1, TaskID: "t-cb", Kind: factoryd.CaseJudgmentBudget, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"offers": offers}}}}
+	r.roomFacts = map[string]factoryd.CaseFacts{chat.ID: {BudgetEUR: 15, SpentEUR: 14.96, LeftEUR: 0.04, MonthLeftEUR: 40}}
+	body := drawer(t, r, ck, "t-cb", "overview")
+	head, row, field, value, label, notes, then := fundRowIn(t, askBlockOf(t, body))
+	got := []any{head, row, field, value, label, notes}
+	want := []any{[]string{"", "left", "adds, EUR", "then"}, []string{"Money", "0.04 EUR", "", "15.04 EUR"}, 2, "15.00", "Money", []string{"The project has 40.00 EUR left this month."}}
+	if !reflect.DeepEqual(got, want) || then == "" {
+		t.Fatalf("the chat's money row reads %q, then cell %q; want %q and an id", got, then, want)
+	}
+	form := answerForm(t, body, factoryd.Answer{Value: factoryd.AnswerFundChat}.Key())
+	name := ""
+	for k := range form.Values {
+		if strings.HasSuffix(k, ".eur") {
+			name = k
+		}
+	}
+	if !strings.Contains(body, `hx-get="/tasks/t-cb/fund?field=`+url.QueryEscape(name)+`"`) || !strings.Contains(body, `hx-target="#`+then+`"`) {
+		t.Errorf("the chat's money row asks for its then figure nowhere, or not into #%s:\n%s", then, body)
+	}
+	for amount, want := range map[string]string{"2.50": "2.54 EUR", "": "15.04 EUR", "0": "0.04 EUR"} {
+		rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-cb/fund?"+url.Values{"field": {name}, name: {amount}}.Encode(), nil), ck)
+		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+			t.Errorf("the then figure at %q = %d %q, want %q", amount, rec.Code, rec.Body, want)
+		}
+	}
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+chat.ID+"/fund?field=x.eur", nil), ck); rec.Code < 400 {
+		t.Errorf("the then figure of a card that asks for no chat money = %d, want it refused", rec.Code)
 	}
 }

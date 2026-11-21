@@ -1417,6 +1417,35 @@ form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible)
 .o-answers .answer .fields :is(input[type=text], input[type=number], textarea, select) { width: 100%; max-width: 100%; box-sizing: border-box; }
 .o-answers .answer .fields label:has(input[type=checkbox]) { display: flex; gap: 6px; align-items: baseline; color: var(--text); font-size: 13px; }
 .o-answers .answer .send { width: 220px; max-width: 100%; min-height: 36px; border: 0; background: var(--need); color: var(--need-ink); font-weight: 600; }
+/* "Give more room" (C48): five count buttons with one session's worth
+   beside them, and the readout as a table of left, adds and then with the
+   money's tick in its row; the chat's budget ask takes the money row
+   alone, its EUR field in the adds column */
+.o-answers .answer .room-count { display: block; margin: 0; padding: 0; border: 0; min-width: 0; }
+.o-answers .answer .room-count legend { float: none; display: block; margin: 0 0 6px; padding: 0; color: var(--text-muted); font-size: 12px; }
+.o-answers .answer .count-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.o-answers .answer .segs { display: inline-flex; border: 1px solid var(--btn-line); border-radius: 3px; }
+.o-answers .answer .seg { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 32px; margin: 0; color: var(--text); font: 500 14px var(--font-mono); cursor: pointer; }
+.o-answers .answer .seg + .seg { border-left: 1px solid var(--btn-line); }
+.o-answers .answer .seg input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.o-answers .answer .seg:hover { background: var(--bg-hover); }
+.o-answers .answer .seg:has(input:checked) { background: color-mix(in srgb, var(--need) 22%, transparent); box-shadow: inset 0 0 0 1px var(--need); font-weight: 700; }
+.o-answers .answer .seg:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.o-answers .answer .room-count .each { color: var(--text-faint); font-size: 12px; }
+.o-answers .answer .room table { width: 100%; max-width: 500px; margin: 8px 0 4px; border-collapse: collapse; }
+.o-answers .answer .room :is(th, td) { padding: 5px 0 5px 12px; border-bottom: 1px solid var(--line); color: var(--text-muted); font: 12.5px var(--font-mono); text-align: right; white-space: nowrap; vertical-align: baseline; }
+.o-answers .answer .room thead th { padding-top: 0; padding-bottom: 4px; color: var(--text-faint); font: 700 12px var(--font-ui); letter-spacing: .06em; font-variant-caps: all-small-caps; }
+.o-answers .answer .room :is(th, td):first-child { padding-left: 0; text-align: left; }
+.o-answers .answer .room tbody th { color: var(--text); font: 400 13px var(--font-ui); letter-spacing: normal; font-variant-caps: normal; }
+.o-answers .answer .room td.add { color: var(--text); font-weight: 600; }
+.o-answers .answer .room td.none { color: var(--text-faint); font-family: var(--font-ui); }
+.o-answers .answer .room td.then { color: var(--text); }
+.o-answers .answer .room label { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 13px; cursor: pointer; }
+.o-answers .answer .room label input[type=checkbox] { width: 15px; height: 15px; margin: 0; }
+.o-answers .answer .room input[type=number] { width: 80px; height: 30px; padding: 0 8px; font: 600 14px var(--font-mono); text-align: right; }
+.o-answers .answer .room .notes p { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.o-answers .answer .room .notes :is(p.limit, p.why) { color: var(--text); }
+.o-answers .answer .room .notes p.month { color: var(--text-faint); }
 .opened .o-sent { color: var(--text-muted); font-size: 13px; }
 .opened .o-summary { color: var(--text); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .opened .o-folds { display: flex; flex-direction: column; padding: 0; }
@@ -1436,6 +1465,12 @@ form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible)
 @media (max-width: 600px) {
   .o-answers .answer { grid-template-columns: 1fr; }
   .o-answers .answer :is(.pick, .send) { width: 100%; min-height: 44px; }
+  .o-answers .answer .segs { display: flex; width: 100%; }
+  .o-answers .answer .seg { flex: 1; width: auto; height: 44px; }
+  .o-answers .answer .room table { margin-top: 12px; }
+  .o-answers .answer .room td { padding-left: 8px; font-size: 12px; }
+  .o-answers .answer .room label { padding: 14px 0; margin: -14px 0; }
+  .o-answers .answer .room input[type=number] { height: 44px; }
   .opened .o-folds > .fold > summary { min-height: 44px; flex-wrap: wrap; }
   .opened .o-pages :is(a, span) { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
 }

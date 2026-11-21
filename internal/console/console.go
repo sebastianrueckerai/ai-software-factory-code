@@ -573,6 +573,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /tasks/new", c.newTaskForm, "", "the new task's form: the chat files cards (new_card), not tasks"},
 		{"GET /tasks/{id}/timeline", c.timeline, "", "a card's timeline fragment: the card read names where its reviews, checks and plan are"},
 		{"GET /tasks/{id}/room", c.roomReadout, "", "the readout of a card's room at a count: a fragment of the opened card, whose give_room names the raises it applies"},
+		{"GET /tasks/{id}/fund", c.fundReadout, "", "what the chat then has at an amount: a figure of the opened chat budget card, and the chat does not fund itself"},
 		{"GET /costs", c.costs, "costs", ""},
 		{"GET /policy", c.policy, "policy", ""},
 		{"GET /resources", c.resources, "resources", ""},

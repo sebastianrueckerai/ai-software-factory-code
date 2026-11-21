@@ -122,12 +122,11 @@ const mustOpen = {
     [labID(619) + ":overview"]: ["Rent a cx33 server for 5 hours at about 0.07 EUR?", "nothing for over 41 min", "Beyond the project's envelope", "Approve it", "Refuse it"],
     [labID(620) + ":overview"]: ["1.95 of 2.00 EUR"],
   },
-  // the money stop opens Give more room at 1 with its money: it adds the
-  // 1.20 - 0.40 = 0.80 EUR a session's worth lacks, and nothing else
+  // the money stop opens Give more room at its ask; its table is
+  // room-money's own check below
   "room-money": {
     [labID(641) + ":press=extend"]: ["The card's money left does not pay its next session. How should it go on?", "Give more room", "Sessions' worth",
-      "With its money", "About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Enough: 30 min left",
-      "Adds 0.80 EUR: 0.40 EUR left, then 1.20 EUR", "The project has 112.30 EUR left this month.", "End the card", "Not now"],
+      "Each is about 14 min and 1.20 EUR, from its 3 sessions so far.", "The project has 112.30 EUR left this month.", "End the card", "Not now"],
   },
   "room-chat": {
     [labID(642) + ":overview"]: ["Add money to the chat", "Raises the chat's budget for this month. The card closes.", "The chat spent 5.00 EUR of its 5.00 EUR for"],
@@ -168,6 +167,31 @@ async function open(browser, viewport, folded) {
 // scrollbars (the launch drops --hide-scrollbars), so a box 1 px past the
 // edge shows as the scrollbar a desktop browser draws for it.
 const sideways = (page) => page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth));
+
+// roomCount is the count of the room's form as C48 draws it: the legend of
+// its buttons, their values, the one chosen, how many typed count fields
+// remain, and one session's worth beside them
+const roomCount = (form) => form.evaluate((f) => {
+  const radios = [...f.querySelectorAll('input[type=radio][name="extend.sessions"]')];
+  const set = radios.length ? radios[0].closest("fieldset") : null;
+  const each = f.querySelector(".room-count .each");
+  return { legend: set && set.querySelector("legend") ? set.querySelector("legend").textContent.trim() : "", values: radios.map((r) => r.value),
+    checked: (radios.find((r) => r.checked) || {}).value || "", typed: f.querySelectorAll('input:not([type=radio])[name="extend.sessions"]').length,
+    each: each ? each.textContent.trim() : "" };
+});
+
+// roomTable is the room's readout as C48 draws it, null for none: its
+// header row, the kind of each header cell, the body rows' first cells,
+// the rows as text, the lines under the table and the money's tick
+const roomTable = (form) => form.evaluate((f) => {
+  const t = f.querySelector(".room table");
+  if (!t || !t.tHead || !t.tBodies.length) return null;
+  const cells = (r) => [...r.cells].map((c) => c.textContent.replace(/\s+/g, " ").trim());
+  const kind = (c) => c.tagName + (c.scope || "");
+  const tick = t.querySelector('tbody input[type=checkbox][name="extend.money"]');
+  return { head: cells(t.tHead.rows[0]), kinds: [...t.tHead.rows[0].cells].map(kind), rowKinds: [...t.tBodies[0].rows].map((r) => kind(r.cells[0])),
+    rows: [...t.tBodies[0].rows].map(cells), notes: [...f.querySelectorAll(".room .notes p")].map((p) => p.textContent.trim()), ticked: tick ? tick.checked : null };
+});
 
 // findAsYouType types word into the find of the busy board under query
 // without Enter and checks that after the pause the board, and nothing
@@ -681,42 +705,75 @@ async function text(page) {
       await mp.ctx.close();
     }
     if (sc === "room-ahead") {
-      // the room's control (the card-room plan): Give more room among the
-      // running card's other actions opens at 1 with its readout; a new
-      // count, a cleared money box and a refused press each read the
-      // readout again from the server, and the guard the press posts
-      // follows it
+      // the room's control as C48 holds it: Give more room among the
+      // running card's other actions opens at 1 with five count buttons
+      // and the readout as a table of left, adds and then; a press on a
+      // button, an arrow key, the money tick and a refused press each read
+      // the readout again from the server, the tick keeps the focus, and
+      // the guard the press posts follows the readout
       const rp = await open(browser, { width: 1440, height: 900 });
       await rp.page.goto(base + "/#card=" + labID(640) + ":more", { waitUntil: "load" });
       await rp.page.waitForTimeout(800);
       const form = rp.page.locator('#drawer form[data-answer="extend"]');
       await form.locator("button.pick").click();
       const guard = () => form.evaluate((f) => ["now", "starts", "agent_time_s", "eur", "limit"].map((k) => f.elements.namedItem("extend.shown_" + k).value).join(" "));
-      const reads = async (label, lines, want) => {
-        const got = (await form.locator(".room").innerText()).replace(/\s+/g, " ");
-        for (const l of lines) if (!got.includes(l)) fails.push("room-ahead: " + label + ': the readout lacks "' + l + '" (' + got + ")");
+      const month = "The project has 112.30 EUR left this month.";
+      const reads = async (label, rows, notes, want) => {
+        const got = await roomTable(form);
+        const head = [["", "left", "adds", "then"], ["TD", "THcol", "THcol", "THcol"], ["THrow", "THrow"]];
+        if (!got) fails.push("room-ahead: " + label + ": the readout holds no table (" + (await form.locator(".room").innerText()) + ")");
+        else {
+          if (JSON.stringify([got.head, got.kinds, got.rowKinds]) !== JSON.stringify(head)) fails.push("room-ahead: " + label + ": the table's headers read " + JSON.stringify([got.head, got.kinds, got.rowKinds]) + ", want " + JSON.stringify(head));
+          if (JSON.stringify(got.rows) !== JSON.stringify(rows)) fails.push("room-ahead: " + label + ": the table reads " + JSON.stringify(got.rows) + ", want " + JSON.stringify(rows));
+          if (JSON.stringify(got.notes) !== JSON.stringify(notes)) fails.push("room-ahead: " + label + ": the lines under the table read " + JSON.stringify(got.notes) + ", want " + JSON.stringify(notes));
+        }
         const g = await guard();
         if (g !== want) fails.push("room-ahead: " + label + ": the press posts the guard " + g + ", want " + want);
+        const each = await form.evaluate((f) => [...f.querySelectorAll(".each")].map((e) => (e.closest(".room-count") ? "" : "outside ") + e.textContent.trim()));
+        if (JSON.stringify(each) !== JSON.stringify(["Each is about 14 min and 1.20 EUR, from its 3 sessions so far."])) fails.push("room-ahead: " + label + ": one session's worth reads " + JSON.stringify(each) + ", want it once beside the count");
       };
-      await reads("at 1", ["About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Adds 10 min: 18 min left, then 28 min",
-        "Adds 0.30 EUR: 2.10 EUR left, then 2.40 EUR", "It may also start 1 more session.", "The project has 112.30 EUR left this month."], "1 1 600 0.30 0.00");
-      const count = form.locator('input[name="extend.sessions"]');
-      await count.fill("2");
-      await count.dispatchEvent("change");
+      const count = await roomCount(form);
+      const wantCount = { legend: "Sessions' worth", values: ["1", "2", "3", "4", "5"], checked: "1", typed: 0, each: "Each is about 14 min and 1.20 EUR, from its 3 sessions so far." };
+      if (JSON.stringify(count) !== JSON.stringify(wantCount)) fails.push("room-ahead: the count reads " + JSON.stringify(count) + ", want " + JSON.stringify(wantCount));
+      const first = await rp.page.evaluate(() => { const a = document.activeElement; return a ? a.name + " " + a.value : ""; });
+      if (first !== "extend.sessions 1") fails.push("room-ahead: the press puts the focus on " + JSON.stringify(first) + ", want the chosen count, 1");
+      await reads("at 1", [["Agent time", "18 min", "10 min", "28 min"], ["Money", "2.10 EUR", "0.30 EUR", "2.40 EUR"]],
+        ["It may also start 1 more session.", month], "1 1 600 0.30 0.00");
+      await form.locator("label.seg", { hasText: "2" }).click();
       await rp.page.waitForTimeout(700);
-      await reads("at 2", ["Adds 24 min: 18 min left, then 42 min", "Adds 1.50 EUR: 2.10 EUR left, then 3.60 EUR", "It may also start 2 more sessions."], "1 2 1440 1.50 0.00");
-      await form.locator('input[name="extend.money"]').uncheck();
+      await reads("at 2", [["Agent time", "18 min", "24 min", "42 min"], ["Money", "2.10 EUR", "1.50 EUR", "3.60 EUR"]],
+        ["It may also start 2 more sessions.", month], "1 2 1440 1.50 0.00");
+      // at 3 the room aims at 4: 3 starts, 4 x 14 - 18 = 38 minutes and
+      // 4 x 1.20 - 2.10 = 2.70 EUR, the budget 6.00 + 2.70 = 8.70 past the
+      // 8.00 limit, which rises first
+      await rp.page.keyboard.press("ArrowRight");
       await rp.page.waitForTimeout(700);
-      await reads("at 2 without money", ["Adds 24 min: 18 min left, then 42 min", "Adds no money: 2.10 EUR left"], "1 2 1440 0.00 0.00");
-      await count.evaluate((c) => { c.value = "3"; });
+      await reads("at 3 by the arrow key", [["Agent time", "18 min", "38 min", "56 min"], ["Money", "2.10 EUR", "2.70 EUR", "4.80 EUR"]],
+        ["The spend limit rises from 8.00 to 8.70 EUR first.", "It may also start 3 more sessions.", month], "1 3 2280 2.70 0.70");
+      if (!(await form.locator(".room .notes p.limit").count())) fails.push("room-ahead: the spend limit's line is not marked as the limit");
+      const ring = await form.evaluate((f) => { const s = getComputedStyle(f.querySelector("label.seg:has(input:focus-visible)") || f); return s.outlineStyle + " " + s.outlineWidth; });
+      if (ring !== "solid 2px") fails.push("room-ahead: the count button in focus shows the outline " + ring + ", want solid 2px");
+      await rp.page.keyboard.press("ArrowLeft");
+      await rp.page.waitForTimeout(700);
+      await reads("back at 2", [["Agent time", "18 min", "24 min", "42 min"], ["Money", "2.10 EUR", "1.50 EUR", "3.60 EUR"]],
+        ["It may also start 2 more sessions.", month], "1 2 1440 1.50 0.00");
+      await form.locator('.room input[name="extend.money"]').focus();
+      await rp.page.keyboard.press("Space");
+      await rp.page.waitForTimeout(700);
+      await reads("at 2 without money", [["Agent time", "18 min", "24 min", "42 min"], ["Money", "2.10 EUR", "left out", "2.10 EUR"]],
+        ["It may also start 2 more sessions.", month], "1 2 1440 0.00 0.00");
+      const tick = await rp.page.evaluate(() => { const a = document.activeElement; return a ? a.name + " " + a.checked : ""; });
+      if (tick !== "extend.money false") fails.push("room-ahead: after the tick's own key the focus is on " + JSON.stringify(tick) + ", want the cleared tick");
+      await form.locator('input[name="extend.sessions"][value="3"]').evaluate((c) => { c.checked = true; });
       await form.evaluate((f) => f.dispatchEvent(new CustomEvent("room-refused", { bubbles: true })));
       await rp.page.waitForTimeout(700);
-      await reads("after a refused press at 3", ["Adds 38 min: 18 min left, then 56 min", "It may also start 3 more sessions."], "1 3 2280 0.00 0.00");
+      await reads("after a refused press at 3", [["Agent time", "18 min", "38 min", "56 min"], ["Money", "2.10 EUR", "left out", "2.10 EUR"]],
+        ["It may also start 3 more sessions.", month], "1 3 2280 0.00 0.00");
       // a real refused press: Act's refusal at 4 takes the console's 409
       // to the flash and asks the readout to read again (HX-Trigger), and
       // Send stays disabled while its press runs, so a double click posts
       // once
-      await count.evaluate((c) => { c.value = "4"; });
+      await form.locator('input[name="extend.sessions"][value="4"]').evaluate((c) => { c.checked = true; });
       const moved = "The room changed since this opened: 4 sessions' worth now add 52 min. It may also start 4 more sessions. Press again to give them.";
       await rp.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/act-refuse?text=" + encodeURIComponent(moved));
       const posts = [];
@@ -730,10 +787,84 @@ async function text(page) {
       if (posts.length !== 1) fails.push("room-ahead: a double click on Send posted " + posts.length + " times, want once");
       const flash = await rp.page.locator("#flash").innerText();
       if (!flash.includes(moved)) fails.push("room-ahead: the refused press flashes " + JSON.stringify(flash) + ", want " + JSON.stringify(moved));
-      await reads("after a real refused press at 4", ["Adds 52 min: 18 min left, then 70 min", "It may also start 4 more sessions."], "1 4 3120 0.00 0.00");
+      await reads("after a real refused press at 4", [["Agent time", "18 min", "52 min", "70 min"], ["Money", "2.10 EUR", "left out", "2.10 EUR"]],
+        ["It may also start 4 more sessions.", month], "1 4 3120 0.00 0.00");
       const unexpected = rp.errors.filter((e) => !/\/resolve 409$/.test(e));
       if (unexpected.length) fails.push("room-ahead: " + unexpected[0]);
       await rp.ctx.close();
+      // at 390 px the five buttons fill the row and each, the tick too, is
+      // a 44 px target, and nothing scrolls sideways
+      const pp = await open(browser, { width: 390, height: 844 });
+      await pp.page.goto(base + "/#card=" + labID(640) + ":more", { waitUntil: "load" });
+      await pp.page.waitForTimeout(800);
+      const pform = pp.page.locator('#drawer form[data-answer="extend"]');
+      await pform.locator("button.pick").click();
+      await pp.page.waitForTimeout(400);
+      const sizes = await pform.evaluate((f) => {
+        const box = (e) => e.getBoundingClientRect();
+        const segs = [...f.querySelectorAll("label.seg")].map((l) => Math.round(box(l).height));
+        const row = box(f.querySelector(".segs")), fs = box(f.querySelector("fieldset.fields"));
+        return { segs, fill: Math.round(fs.width - row.width), tick: Math.round(box(f.querySelector(".room label.tk")).height) };
+      });
+      if (sizes.segs.length !== 5 || sizes.segs.some((h) => h < 44) || sizes.fill > 1 || sizes.tick < 44) {
+        fails.push("room-ahead phone: the count buttons are " + JSON.stringify(sizes.segs) + " px high and leave " + sizes.fill + " px of the row, the tick " + sizes.tick + " px; want five of 44 px filling the row, and a tick of 44 px");
+      }
+      const psw = await sideways(pp.page);
+      if (psw) fails.push("room-ahead: horizontal scroll at 390 (" + psw + " px)");
+      if (pp.errors.length) fails.push("room-ahead phone: " + pp.errors[0]);
+      await pp.ctx.close();
+    }
+    if (sc === "room-money") {
+      // the money stop opens Give more room at 1 with its money ticked: it
+      // adds the 1.20 - 0.40 = 0.80 EUR a session's worth lacks, and the 30
+      // minutes left are enough
+      const mp = await open(browser, { width: 1440, height: 900 });
+      await mp.page.goto(base + "/#card=" + labID(641) + ":press=extend", { waitUntil: "load" });
+      await mp.page.waitForTimeout(800);
+      const form = mp.page.locator('#drawer .o-ask form[data-answer="extend"]');
+      const count = await roomCount(form);
+      const wantCount = { legend: "Sessions' worth", values: ["1", "2", "3", "4", "5"], checked: "1", typed: 0, each: "Each is about 14 min and 1.20 EUR, from its 3 sessions so far." };
+      if (JSON.stringify(count) !== JSON.stringify(wantCount)) fails.push("room-money: the count reads " + JSON.stringify(count) + ", want " + JSON.stringify(wantCount));
+      const got = await roomTable(form);
+      const want = { rows: [["Agent time", "30 min", "enough", "30 min"], ["Money", "0.40 EUR", "0.80 EUR", "1.20 EUR"]], notes: ["The project has 112.30 EUR left this month."], ticked: true };
+      if (!got || JSON.stringify({ rows: got.rows, notes: got.notes, ticked: got.ticked }) !== JSON.stringify(want)) fails.push("room-money: the readout reads " + JSON.stringify(got) + ", want " + JSON.stringify(want));
+      if (mp.errors.length) fails.push("room-money: " + mp.errors[0]);
+      await mp.ctx.close();
+    }
+    if (sc === "room-chat") {
+      // the chat's budget ask holds the money row alone: the chat spent its
+      // 5.00 EUR, so none is left, the EUR field stands in the adds column
+      // at its 5.00, and the chat then has 5.00 EUR; the project's month
+      // is 120.00 - 4.10 = 115.90 EUR. The press puts the focus in the
+      // field. Typing 12.50 reads the then figure again from the server,
+      // 12.50 EUR, and the field keeps the focus
+      const cp = await open(browser, { width: 1440, height: 900 });
+      await cp.page.goto(base + "/#card=" + labID(642) + ":overview", { waitUntil: "load" });
+      await cp.page.waitForTimeout(800);
+      const form = cp.page.locator('#drawer form[data-answer="choice:fund_chat"]');
+      await form.locator("button.pick").click();
+      await cp.page.waitForTimeout(400);
+      const chat = () => form.evaluate((f) => {
+        const t = f.querySelector(".room table"), cash = f.querySelector('input[name="choice:fund_chat.eur"]');
+        if (!t || !cash) return null;
+        const cells = (r) => [...r.cells].map((c) => c.textContent.replace(/\s+/g, " ").trim());
+        const label = f.querySelector('label[for="' + cash.id + '"]');
+        return { head: cells(t.tHead.rows[0]), rows: [...t.tBodies[0].rows].map(cells), field: cash.closest("td") && cash.closest("td").cellIndex, value: cash.value,
+          label: label ? label.textContent.trim() : "", notes: [...f.querySelectorAll(".room .notes p")].map((p) => p.textContent.trim()), focus: document.activeElement === cash };
+      });
+      const at = await chat();
+      const want = { head: ["", "left", "adds, EUR", "then"], rows: [["Money", "none", "", "5.00 EUR"]], field: 2, value: "5.00", label: "Money", notes: ["The project has 115.90 EUR left this month."], focus: true };
+      if (JSON.stringify(at) !== JSON.stringify(want)) fails.push("room-chat: the money row reads " + JSON.stringify(at) + ", want " + JSON.stringify(want));
+      const cash = form.locator('input[name="choice:fund_chat.eur"]');
+      await cash.click();
+      await cash.fill("");
+      await cp.page.keyboard.type("12.50", { delay: 40 });
+      await cp.page.waitForTimeout(1000);
+      const typed = await chat();
+      const wantTyped = { ...want, rows: [["Money", "none", "", "12.50 EUR"]], value: "12.50" };
+      if (JSON.stringify(typed) !== JSON.stringify(wantTyped)) fails.push("room-chat: after typing 12.50 the money row reads " + JSON.stringify(typed) + ", want " + JSON.stringify(wantTyped));
+      if (cp.errors.length) fails.push("room-chat: " + cp.errors[0]);
+      await cp.ctx.close();
     }
     if (sc === "quiet") {
       const merged = p.page.locator('#board [data-card="' + labID(623) + '"]');

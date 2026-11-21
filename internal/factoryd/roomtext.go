@@ -9,49 +9,81 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// RoomLines are the readout of room r on f, in the order a human reads it:
-// one session's worth and where it comes from, the time, the money with
-// the spend limit's raise, the starts when they rise, and the project's
-// money left this month.
-func RoomLines(f CaseFacts, r Room) []string {
-	from := "the policy's estimate before its first session"
-	if r.Est.FromSessions > 0 {
-		from = "from its " + plural(r.Est.FromSessions, "session") + " so far"
-	}
-	lines := []string{fmt.Sprintf("About %s and %s EUR per session, %s", minText(r.Est.Time), textutil.EUR(r.Est.EUR), from)}
-	timeLeft := leftText(minText(r.TimeLeft), r.TimeLeft.Round(time.Minute) > 0)
-	if r.AgentTime > 0 {
-		lines = append(lines, fmt.Sprintf("Adds %s: %s, then %s", minText(r.AgentTime), timeLeft, minText(r.TimeLeft+r.AgentTime)))
-	} else {
-		lines = append(lines, "Enough: "+timeLeft)
-	}
-	moneyLeft := leftText(textutil.EUR(r.MoneyLeft)+" EUR", Cents(r.MoneyLeft) > 0)
-	switch {
-	case !r.Money:
-		lines = append(lines, "Adds no money: "+moneyLeft)
-	case r.EUR > 0:
-		lines = append(lines, fmt.Sprintf("Adds %s EUR: %s, then %s EUR", textutil.EUR(r.EUR), moneyLeft, textutil.EUR(r.MoneyLeft+r.EUR)))
-	default:
-		lines = append(lines, "Enough: "+moneyLeft)
-	}
-	lines = append(lines, r.alsoLines(f)...)
-	if slices.Contains(f.Partial, "month") {
-		return append(lines, "The project's money left this month could not be read.")
-	}
-	return append(lines, "The project has "+leftText(textutil.EUR(f.MonthLeftEUR)+" EUR", Cents(f.MonthLeftEUR) > 0)+" this month.")
+// Readout is room r on f as a human reads it under its count: a row each
+// for the agent time and the money, the spend limit's raise and the
+// starts, each "" unless it rises, and the project's money left this
+// month.
+type Readout struct {
+	Time, Money   RoomRow
+	Limit, Starts string
+	Month         string
 }
 
-// alsoLines are the readout's lines of what room r raises beside the time
-// and the money: the spend limit first, then the starts.
-func (r Room) alsoLines(f CaseFacts) []string {
-	var lines []string
-	if r.Limit > 0 {
-		lines = append(lines, fmt.Sprintf("The spend limit rises from %s to %s EUR first.", textutil.EUR(f.CeilingEUR), textutil.EUR(f.CeilingEUR+r.Limit)))
+// RoomRow is a row of a readout: what is left, what the press adds and
+// what there is then. Adds is "" where the press adds nothing, and Not
+// then says why: "enough", or "left out" for money the press leaves out.
+type RoomRow struct{ Left, Adds, Not, Then string }
+
+// EachLine says one session's worth on f and where it comes from, as it
+// stands beside the count.
+func EachLine(f CaseFacts) string {
+	est := SessionEstimate(f)
+	from := "the policy's estimate before its first session"
+	if est.FromSessions > 0 {
+		from = "from its " + plural(est.FromSessions, "session") + " so far"
 	}
-	if r.Starts > 0 {
-		lines = append(lines, "It may also start "+textutil.Plural(r.Starts, "more session", "more sessions")+".")
+	return fmt.Sprintf("Each is about %s and %s EUR, %s.", minText(est.Time), textutil.EUR(est.EUR), from)
+}
+
+// ReadoutOf is the readout of room r on f.
+func ReadoutOf(f CaseFacts, r Room) Readout {
+	out := Readout{Time: RoomRow{Left: minShown(r.TimeLeft)}, Limit: r.limitLine(f), Starts: r.startsLine(), Month: MonthLine(f)}
+	if r.AgentTime > 0 {
+		out.Time.Adds, out.Time.Then = minText(r.AgentTime), minShown(r.TimeLeft+r.AgentTime)
+	} else {
+		out.Time.Not, out.Time.Then = "enough", out.Time.Left
 	}
-	return lines
+	out.Money = MoneyRow(r.MoneyLeft, r.EUR)
+	if !r.Money {
+		out.Money = RoomRow{Left: out.Money.Left, Not: "left out", Then: out.Money.Left}
+	}
+	return out
+}
+
+// MoneyRow is the row of a raise of eur on left EUR left; with nothing
+// to add the money is enough.
+func MoneyRow(left, eur float64) RoomRow {
+	row := RoomRow{Left: eurShown(left)}
+	if Cents(eur) <= 0 {
+		row.Not, row.Then = "enough", row.Left
+		return row
+	}
+	row.Adds, row.Then = textutil.EUR(eur)+" EUR", eurShown(left+eur)
+	return row
+}
+
+// MonthLine says the project's money left this month on f.
+func MonthLine(f CaseFacts) string {
+	if slices.Contains(f.Partial, "month") {
+		return "The project's money left this month could not be read."
+	}
+	return "The project has " + eurShown(f.MonthLeftEUR) + " left this month."
+}
+
+// limitLine says the spend limit's raise of room r on f, "" for none.
+func (r Room) limitLine(f CaseFacts) string {
+	if r.Limit <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("The spend limit rises from %s to %s EUR first.", textutil.EUR(f.CeilingEUR), textutil.EUR(f.CeilingEUR+r.Limit))
+}
+
+// startsLine says the starts room r adds, "" for none.
+func (r Room) startsLine() string {
+	if r.Starts <= 0 {
+		return ""
+	}
+	return "It may also start " + textutil.Plural(r.Starts, "more session", "more sessions") + "."
 }
 
 // movedText is the refusal of a press whose readout showed a room other
@@ -68,16 +100,24 @@ func (r Room) movedText(f CaseFacts) string {
 	if len(adds) == 0 {
 		adds = []string{"no time and no money"}
 	}
-	return strings.Join(append([]string{"The room changed since this opened: " + worthWords(r.N) + " now add " + textutil.AndList(adds) + "."},
-		append(r.alsoLines(f), "Press again to give them.")...), " ")
+	return strings.Join(slices.DeleteFunc([]string{"The room changed since this opened: " + worthWords(r.N) + " now add " + textutil.AndList(adds) + ".",
+		r.limitLine(f), r.startsLine(), "Press again to give them."}, func(s string) bool { return s == "" }), " ")
 }
 
-// leftText says figure left, "none left" when the figure shown is not above 0.
-func leftText(figure string, above bool) string {
-	if !above {
-		return "none left"
+// minShown says d in whole minutes, "none" when that is not above 0.
+func minShown(d time.Duration) string {
+	if d.Round(time.Minute) <= 0 {
+		return "none"
 	}
-	return figure + " left"
+	return minText(d)
+}
+
+// eurShown says eur in EUR, "none" when its cents are not above 0.
+func eurShown(eur float64) string {
+	if Cents(eur) <= 0 {
+		return "none"
+	}
+	return textutil.EUR(eur) + " EUR"
 }
 
 // minText says d in whole minutes, as the readout counts them: "14 min".

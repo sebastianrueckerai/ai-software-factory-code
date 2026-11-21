@@ -456,7 +456,7 @@ func answerForm(t *testing.T, body, key string) answerPost {
 			name := htmlAttr(f, "name")
 			switch {
 			case name == "":
-			case f.Data == "input" && htmlAttr(f, "type") == "checkbox":
+			case f.Data == "input" && (htmlAttr(f, "type") == "checkbox" || htmlAttr(f, "type") == "radio"):
 				if slices.ContainsFunc(f.Attr, func(a html.Attribute) bool { return a.Key == "checked" }) {
 					p.Values.Add(name, htmlAttr(f, "value"))
 				}
@@ -547,11 +547,11 @@ func TestSecondAnswerClosesTheFirst(t *testing.T) {
   await page.goto(base + "/?project=" + project + "#card=" + id);
   const ask = page.locator("#drawer .o-ask");
   await ask.locator("button.pick", {hasText: "Give more room"}).click();
-  const amount = ask.locator("form[data-answer=extend] input[name='extend.sessions']");
-  const shown = await amount.isVisible();
-  await amount.fill("2");
+  const count = ask.locator("form[data-answer=extend] .segs");
+  const shown = await count.isVisible();
+  await ask.locator("form[data-answer=extend] input[name='extend.sessions'][value='2']").check();
   await ask.locator("button.pick", {hasText: "End the card"}).click();
-  const hidden = !(await amount.isVisible());
+  const hidden = !(await count.isVisible());
   const sends = await ask.locator("button.send:visible").count();
   await ask.locator("form[data-answer=close] button.send").click();
   await page.waitForTimeout(500);

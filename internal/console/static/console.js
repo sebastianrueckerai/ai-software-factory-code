@@ -566,7 +566,7 @@ document.addEventListener("click", function (e) {
   var open = b.getAttribute("aria-expanded") !== "true";
   b.setAttribute("aria-expanded", String(open));
   box.hidden = !open;
-  if (open) { var f = box.querySelector("textarea, input:not([type=hidden]), select"); if (f) f.focus(); }
+  if (open) { var f = box.querySelector("textarea, input:not([type=hidden]):not([type=radio]), input[type=radio]:checked, select"); if (f) f.focus(); }
 });
 
 // A card's press acts at once (C31): the card moves to the column that

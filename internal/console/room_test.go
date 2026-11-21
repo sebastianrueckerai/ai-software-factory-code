@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"golang.org/x/net/html"
 )
 
 // aheadRig is roomRig with running #32 ahead of time, as give_room's test
@@ -45,10 +47,11 @@ func storedRoomFacts(ra *realAct) func(context.Context, factoryd.Task) (factoryd
 }
 
 // readout is the room readout of card id for the count and the tick the
-// press form posts, and the guard it shows by name.
+// press form posts, asked by the form whose ids start with "f-t", and the
+// guard it shows by name.
 func readout(t *testing.T, r *rig, ck *http.Cookie, id, sessions, money string) (string, url.Values) {
 	t.Helper()
-	q := url.Values{"extend.sessions": {sessions}}
+	q := url.Values{"at": {"f-t"}, "extend.sessions": {sessions}}
 	if money != "" {
 		q.Set("extend.money", money)
 	}
@@ -65,34 +68,117 @@ func readout(t *testing.T, r *rig, ck *http.Cookie, id, sessions, money string) 
 
 var guardInput = regexp.MustCompile(`<input type="hidden" name="(extend\.shown_[a-z_]+)" value="([^"]*)">`)
 
+// roomShown is a room's control as the page draws it (C48): the count's
+// legend, its buttons' values and the one chosen, one session's worth
+// beside them and its id, the table's header and its rows as text, each
+// row's first cell a row header, the lines under it, the refusal shown in
+// its place, and the money's tick, its id and whether it is ticked.
+type roomShown struct {
+	Legend, Chosen string
+	Counts         []string
+	Each, EachID   string
+	Head           []string
+	Rows           [][]string
+	RowHeads       bool
+	Notes          []string
+	Why            string
+	Tick           string
+	Ticked         bool
+}
+
+// roomIn reads the room's control in page, an opened card's part or a
+// readout's fragment.
+func roomIn(t *testing.T, page string) roomShown {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells := func(row *html.Node) []string {
+		var got []string
+		for c := range row.ChildNodes() {
+			if c.Type == html.ElementNode {
+				got = append(got, nodeText(c))
+			}
+		}
+		return got
+	}
+	checked := func(n *html.Node) bool {
+		return slices.ContainsFunc(n.Attr, func(a html.Attribute) bool { return a.Key == "checked" })
+	}
+	out := roomShown{RowHeads: true}
+	for n := range doc.Descendants() {
+		if n.Type != html.ElementNode {
+			continue
+		}
+		switch {
+		case n.Data == "legend" && n.Parent != nil && hasClass(n.Parent, "room-count"):
+			out.Legend = nodeText(n)
+		case n.Data == "input" && htmlAttr(n, "type") == "radio" && htmlAttr(n, "name") == "extend.sessions":
+			out.Counts = append(out.Counts, htmlAttr(n, "value"))
+			if checked(n) {
+				out.Chosen = htmlAttr(n, "value")
+			}
+		case hasClass(n, "each"):
+			out.Each, out.EachID = nodeText(n), htmlAttr(n, "id")
+		case n.Data == "tr" && n.Parent != nil && n.Parent.Data == "thead":
+			out.Head = cells(n)
+		case n.Data == "tr" && n.Parent != nil && n.Parent.Data == "tbody":
+			out.Rows = append(out.Rows, cells(n))
+			first := n.FirstChild
+			out.RowHeads = out.RowHeads && first != nil && first.Data == "th" && htmlAttr(first, "scope") == "row"
+		case hasClass(n, "why"):
+			out.Why = nodeText(n)
+		case n.Data == "p" && n.Parent != nil && hasClass(n.Parent, "notes") && nodeText(n) != "":
+			out.Notes = append(out.Notes, nodeText(n))
+		case n.Data == "input" && htmlAttr(n, "name") == "extend.money":
+			out.Tick, out.Ticked = htmlAttr(n, "id"), checked(n)
+		}
+	}
+	return out
+}
+
+// tableHead is the header row of a room's table: a blank corner, then
+// left, adds and then.
+var tableHead = []string{"", "left", "adds", "then"}
+
 // The readout follows the count and the tick, beside the room of 1 the
 // card has. 2 sessions' worth aim at a
 // room of 3: 3 - 1 = 2 starts, 3 x 14 - 18 = 24 minutes and 3 x 1.20 -
 // 2.00 = 1.60 EUR, the budget to 7.60 under the 10.00 limit. 1 aims at
 // 2: 1 start, 2 x 14 - 18 = 10 minutes and 2 x 1.20 - 2.00 = 0.40 EUR.
-// Without the money the line says the room adds none.
+// Without the money the row says the money is left out, then 2.00 EUR as
+// now. The tick follows the query, under the asking form's id, and one
+// session's worth goes beside the count again.
 func TestTheReadoutFollowsTheCount(t *testing.T) {
 	r, _ := aheadRig(t)
 	ck, _ := r.loggedIn(t)
+	month := "The project has 50.00 EUR left this month."
 	for _, tc := range []struct {
 		sessions, money string
-		lines           []string
+		rows            [][]string
+		notes           []string
 		guard           url.Values
 	}{
-		{"2", "yes", []string{"About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Adds 24 min: 18 min left, then 42 min",
-			"Adds 1.60 EUR: 2.00 EUR left, then 3.60 EUR", "It may also start 2 more sessions.", "The project has 50.00 EUR left this month."},
+		{"2", "yes", [][]string{{"Agent time", "18 min", "24 min", "42 min"}, {"Money", "2.00 EUR", "1.60 EUR", "3.60 EUR"}},
+			[]string{"It may also start 2 more sessions.", month},
 			url.Values{"extend.shown_now": {"1"}, "extend.shown_starts": {"2"}, "extend.shown_agent_time_s": {"1440"}, "extend.shown_eur": {"1.60"}, "extend.shown_limit": {"0.00"}}},
-		{"1", "yes", []string{"About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Adds 10 min: 18 min left, then 28 min",
-			"Adds 0.40 EUR: 2.00 EUR left, then 2.40 EUR", "It may also start 1 more session.", "The project has 50.00 EUR left this month."},
+		{"1", "yes", [][]string{{"Agent time", "18 min", "10 min", "28 min"}, {"Money", "2.00 EUR", "0.40 EUR", "2.40 EUR"}},
+			[]string{"It may also start 1 more session.", month},
 			url.Values{"extend.shown_now": {"1"}, "extend.shown_starts": {"1"}, "extend.shown_agent_time_s": {"600"}, "extend.shown_eur": {"0.40"}, "extend.shown_limit": {"0.00"}}},
-		{"1", "", []string{"Adds 10 min: 18 min left, then 28 min", "Adds no money: 2.00 EUR left", "It may also start 1 more session."},
+		{"1", "", [][]string{{"Agent time", "18 min", "10 min", "28 min"}, {"Money", "2.00 EUR", "left out", "2.00 EUR"}},
+			[]string{"It may also start 1 more session.", month},
 			url.Values{"extend.shown_now": {"1"}, "extend.shown_starts": {"1"}, "extend.shown_agent_time_s": {"600"}, "extend.shown_eur": {"0.00"}, "extend.shown_limit": {"0.00"}}},
 	} {
 		body, guard := readout(t, r, ck, "t-run", tc.sessions, tc.money)
-		for _, l := range tc.lines {
-			if !strings.Contains(body, "<p>"+l+"</p>") {
-				t.Errorf("the readout at %s with money %q lacks %q:\n%s", tc.sessions, tc.money, l, body)
-			}
+		got := roomIn(t, body)
+		want := roomShown{Each: "Each is about 14 min and 1.20 EUR, from its 3 sessions so far.", EachID: "f-t-each", Head: tableHead, Rows: tc.rows, RowHeads: true,
+			Notes: tc.notes, Tick: "f-t-money", Ticked: tc.money == "yes"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("the readout at %s with money %q shows\n%+v\nwant\n%+v\n%s", tc.sessions, tc.money, got, want, body)
+		}
+		if !strings.Contains(body, `id="f-t-each" hx-swap-oob="true"`) {
+			t.Errorf("the readout at %s sets no new line beside the count:\n%s", tc.sessions, body)
 		}
 		if guard.Encode() != tc.guard.Encode() {
 			t.Errorf("the readout at %s with money %q guards %v, want %v", tc.sessions, tc.money, guard, tc.guard)
@@ -170,8 +256,8 @@ func TestAPressAfterTheCardRanOnIsRefused(t *testing.T) {
 // session's worth, its money ticked since the card lacks 0.40 EUR for it,
 // the readout of that room under the fields and its guard in the form:
 // the room of 1 it has, 1 start, 10 minutes (600 s) and 0.40 EUR. Its
-// effect names no count, its count box takes 1 to 5 and no blank, and its
-// Send takes one press at a time. No "Add money" is left.
+// effect names no count, its count is five buttons, 1 to 5, one always
+// chosen, and its Send takes one press at a time. No "Add money" is left.
 func TestTheOpenedCardOffersRoomAheadOfTime(t *testing.T) {
 	r, _ := aheadRig(t)
 	ck, _ := r.loggedIn(t)
@@ -180,16 +266,17 @@ func TestTheOpenedCardOffersRoomAheadOfTime(t *testing.T) {
 		t.Errorf("the opened card still offers Add money:\n%s", body)
 	}
 	more := otherActionsOf(t, body)
-	for _, l := range []string{"About 14 min and 1.20 EUR per session, from its 3 sessions so far", "Adds 10 min: 18 min left, then 28 min",
-		"Adds 0.40 EUR: 2.00 EUR left, then 2.40 EUR", "It may also start 1 more session.", "The project has 50.00 EUR left this month."} {
-		if !strings.Contains(more, "<p>"+l+"</p>") {
-			t.Errorf("the other actions' room lacks %q:\n%s", l, more)
-		}
+	got := roomIn(t, more)
+	want := roomShown{Legend: "Sessions' worth", Chosen: "1", Counts: []string{"1", "2", "3", "4", "5"}, Each: "Each is about 14 min and 1.20 EUR, from its 3 sessions so far.",
+		EachID: "f-t-run-extend-each", Head: tableHead, Rows: [][]string{{"Agent time", "18 min", "10 min", "28 min"}, {"Money", "2.00 EUR", "0.40 EUR", "2.40 EUR"}}, RowHeads: true,
+		Notes: []string{"It may also start 1 more session.", "The project has 50.00 EUR left this month."}, Tick: "f-t-run-extend-money", Ticked: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the other actions' room shows\n%+v\nwant\n%+v\n%s", got, want, more)
 	}
 	send := answerForm(t, body, factoryd.ActExtend)
-	want := url.Values{"action": {factoryd.ActExtend}, "extend.sessions": {"1"}, "extend.money": {"yes"}, "extend.shown_now": {"1"}, "extend.shown_starts": {"1"},
+	wantPost := url.Values{"action": {factoryd.ActExtend}, "extend.sessions": {"1"}, "extend.money": {"yes"}, "extend.shown_now": {"1"}, "extend.shown_starts": {"1"},
 		"extend.shown_agent_time_s": {"600"}, "extend.shown_eur": {"0.40"}, "extend.shown_limit": {"0.00"}}
-	for k, v := range want {
+	for k, v := range wantPost {
 		if got := send.Values[k]; strings.Join(got, ",") != strings.Join(v, ",") {
 			t.Errorf("the room's form posts %s = %v, want %v", k, got, v)
 		}
@@ -198,10 +285,13 @@ func TestTheOpenedCardOffersRoomAheadOfTime(t *testing.T) {
 		t.Errorf("the room's label = %q, want Give more room", send.Label)
 	}
 	for _, w := range []string{`Gives the card more <span class="term">sessions</span>&#39; worth, and it goes on.`, `hx-disabled-elt="find .send"`,
-		`name="extend.sessions" min="1" max="5" step="1" value="1" required`} {
+		`<input type="radio" name="extend.sessions" value="1" checked required>`, `hx-get="/tasks/t-run/room?at=f-t-run-extend"`} {
 		if !strings.Contains(more, w) {
 			t.Errorf("the room's form lacks %q:\n%s", w, more)
 		}
+	}
+	if strings.Contains(more, `type="number"`) {
+		t.Errorf("the room's form still types its count:\n%s", more)
 	}
 }
 
@@ -230,10 +320,13 @@ func TestAProposalOpensTheRoomAtItsCount(t *testing.T) {
 		t.Errorf("the proposed room ticks its money (%v), want it clear as proposed", got)
 	}
 	ask := askBlockOf(t, body)
-	for _, l := range []string{"suggested by the factory agent", "Adds no money: 1.50 EUR left", "It may also start 3 more sessions."} {
-		if !strings.Contains(ask, l) {
-			t.Errorf("the proposed room lacks %q:\n%s", l, ask)
-		}
+	if !strings.Contains(ask, "suggested by the factory agent") {
+		t.Errorf("the proposed room names no proposer:\n%s", ask)
+	}
+	got := roomIn(t, ask)
+	if got.Chosen != "3" || got.Ticked || len(got.Rows) != 2 || !slices.Equal(got.Rows[1], []string{"Money", "1.50 EUR", "left out", "1.50 EUR"}) ||
+		!slices.Contains(got.Notes, "It may also start 3 more sessions.") {
+		t.Errorf("the proposed room shows %+v, want 3 chosen, its money left out of 1.50 EUR, and 3 more starts", got)
 	}
 }
 
@@ -307,17 +400,19 @@ func TestABlankCountIsRefusedOnBothDoors(t *testing.T) {
 // The readout shows the refusal a press would meet: on a card whose money
 // cannot open a session (0.20 EUR left against the 0.30 EUR floor), a
 // room without its money is Act's to refuse, and a blank count is the
-// range's.
+// range's. The refusal stands in place of the table, the tick under it,
+// clear as asked, so the money can be ticked again.
 func TestTheReadoutShowsTheRefusalAPressMeets(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	cappedCard(r, t)
 	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
-	for sessions, want := range map[string]string{"1": "<p>This card lacks the money to open a session: give the room with its money.</p>",
-		"": "<p>A room counts 1 to 5 sessions&#39; worth.</p>"} {
+	for sessions, want := range map[string]string{"1": "This card lacks the money to open a session: give the room with its money.",
+		"": "A room counts 1 to 5 sessions' worth."} {
 		body, guard := readout(t, r, ck, "t-e", sessions, "")
-		if strings.TrimSpace(body) != want || len(guard) != 0 {
-			t.Errorf("the readout at %q without money = %q, guard %v; want %q alone", sessions, body, guard, want)
+		got := roomIn(t, body)
+		if got.Why != want || got.Tick != "f-t-money" || got.Ticked || got.Rows != nil || len(guard) != 0 {
+			t.Errorf("the readout at %q without money shows %+v, guard %v; want %q with the clear tick alone:\n%s", sessions, got, guard, want, body)
 		}
 	}
 }

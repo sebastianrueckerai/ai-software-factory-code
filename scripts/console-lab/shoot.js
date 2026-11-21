@@ -326,11 +326,7 @@ async function main() {
           const openRoom = (n) => async (p) => {
             const form = p.page.locator("#drawer " + (pick || 'form[data-answer="extend"]'));
             if (pick) await form.locator("button.pick").click();
-            if (n) {
-              const count = form.locator('input[name="extend.sessions"]');
-              await count.fill(n);
-              await count.dispatchEvent("change");
-            }
+            if (n) await form.locator('input[name="extend.sessions"][value="' + n + '"]').check();
             await p.idle();
             await form.scrollIntoViewIfNeeded();
           };

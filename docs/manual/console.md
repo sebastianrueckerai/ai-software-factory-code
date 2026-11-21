@@ -190,7 +190,11 @@ decimals: a task's model calls cost fractions of a cent.
   card takes. The action raises the starts and the agent time cap by what
   they lack for that many sessions, and adds the money the card lacks. When the
   money would pass the card's spend limit, it raises the limit first. The
-  opened card shows these figures before the press. On a card that
+  opened card shows these figures before the press: five buttons set the
+  count, and a table of what is left, what the press adds and what the
+  card then has shows the agent time and the money. “Add money to the
+  chat” on the chat's budget card shows the money row alone, the amount
+  in its adds column. On a card that
   ended it is refused. A human's grant counts nothing against the
   escalation pool. A human's money has one bound: what the project has left
   this month. At the month cap it waits for a raise of budget.month_eur or
