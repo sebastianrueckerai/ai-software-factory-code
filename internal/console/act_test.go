@@ -284,7 +284,7 @@ func TestWordsAloneOnAnUnfundedCardNameTheControl(t *testing.T) {
 	r.roomFacts = map[string]factoryd.CaseFacts{"t-e": {Kind: factoryd.CaseSessionCap, Attempts: 3, SessionCap: 3, AgentTimeS: 42 * 60, AgentTimeCapS: 60 * 60,
 		SpentEUR: 3.6, BudgetEUR: 3.8, LeftEUR: 0.2, FloorEUR: 0.3, CeilingEUR: 3.9, MonthLeftEUR: 50}}
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck)
-	const want = "Words alone give no money past the card's spend limit, and this card lacks the money to open a session: press “Give more room” on the card, which raises the limit first."
+	const want = "Words alone give no money past the spend limit, so this card still cannot open a session. Press “Give more room” on the card to raise the limit and add the money."
 	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want || len(r.acted) != 0 {
 		t.Fatalf("the words = %d %q with %d Act calls; want 409 %q and none", rec.Code, rec.Body, len(r.acted), want)
 	}

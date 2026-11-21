@@ -463,9 +463,10 @@ decimals: a task's model calls cost fractions of a cent.
   the stop, on a live card without one it gives room ahead of time, and the action
   table refuses it on a card that asked a
   question. Its proposal names the minutes, the money and any raise of the
-  spend limit, and holds them as the guard a press posts, so a Do it after
-  the room moved is refused with the new figures; and `set_dependency` adds or removes a dependency of a card that has
-  not started, in the store and on the issues as the bot. An added
+  spend limit. It holds them as the guard a press posts. A Do it after the
+  room moved is refused with the new figures. `set_dependency` adds or
+  removes a dependency of a card that has not started, in the store and on
+  the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
   one, and the refusal of an edge across two names the fitting action: a
   hold with the other card as its release card. `hold_card` holds a card

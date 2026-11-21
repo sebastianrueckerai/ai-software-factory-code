@@ -1520,8 +1520,8 @@ func (c *Console) grantOf(ctx context.Context, t factoryd.Task, k factoryd.Case)
 	if !money && factoryd.HumanRefusal(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: args}) != "" &&
 		factoryd.HumanRefusal(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}}) == "" {
 		// the room fails for the money the words may not give
-		return nil, false, refuse(http.StatusConflict, "Words alone give no money past the card's spend limit, and this card lacks the money to open a session: press "+
-			factoryd.AnswerWords(factoryd.ActExtend)+" on the card, which raises the limit first.")
+		return nil, false, refuse(http.StatusConflict, "Words alone give no money past the spend limit, so this card still cannot open a session. Press "+
+			factoryd.AnswerWords(factoryd.ActExtend)+" on the card to raise the limit and add the money.")
 	}
 	return args, true, nil
 }
