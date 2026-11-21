@@ -246,6 +246,30 @@ func TestWordsGiveASessionsWorthOnlyAtACap(t *testing.T) {
 	}
 }
 
+// Words alone raise no spend limit, which only a press of Give more room
+// shows: at #13's session cap a session's worth is 1.20 EUR from its 3
+// sessions, and with 0.50 EUR left the room of 1 adds 0.70, a budget of
+// 4.10 + 0.70 = 4.80 past its 4.50 limit, so the words give the session's
+// worth without its money. Under a limit of 5.00 they give it with its
+// money.
+func TestWordsAloneRaiseNoSpendLimit(t *testing.T) {
+	for limit, money := range map[float64]bool{4.5: false, 5: true} {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		caseCard(r)
+		r.openCases["t-e"][0].Kind = factoryd.CaseSessionCap
+		r.roomFacts = map[string]factoryd.CaseFacts{"t-e": {Kind: factoryd.CaseSessionCap, Attempts: 3, SessionCap: 3, AgentTimeS: 42 * 60, AgentTimeCapS: 60 * 60,
+			SpentEUR: 3.6, BudgetEUR: 4.1, LeftEUR: 0.5, FloorEUR: 0.3, CeilingEUR: limit, MonthLeftEUR: 50}}
+		if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("under %.2f: answer = %d: %s", limit, rec.Code, rec.Body)
+		}
+		want := factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "money": money}, Note: "use the replica"}
+		if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, want) {
+			t.Errorf("under a limit of %.2f: Act took %+v, want %+v", limit, got.Res, want)
+		}
+	}
+}
+
 // An answer with an action meets every answer's gates before Act, on
 // every entry: the chat's close on a human card runs the close's work, the
 // human's words posted and the issue closed, and resolves the card's case

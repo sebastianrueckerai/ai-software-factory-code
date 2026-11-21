@@ -234,6 +234,9 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	caseCard(r)
+	// #13's room facts as factoryd reads a card's, which name no ask, so
+	// its room meets Act's table at Do it alone
+	r.roomFacts = map[string]factoryd.CaseFacts{"t-e": {}}
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 14}})
 	_, s := r.loggedIn(t)
 	var events []string

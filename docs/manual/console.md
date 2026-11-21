@@ -192,7 +192,11 @@ decimals: a task's model calls cost fractions of a cent.
   money would pass the card's spend limit, it raises the limit first. The
   opened card shows these figures before the press: five buttons set the
   count, and a table of what is left, what the press adds and what the
-  card then has shows the agent time and the money. “Add money to the
+  card then has shows the agent time and the money. The money's tick
+  follows the count, set when the card lacks money for it, until the human
+  sets it. A press whose money and spend limit moved by 0.10 EUR at most
+  since the table showed them, as a running card's do with each model
+  call, gives the money worked out at the press. “Add money to the
   chat” on the chat's budget card shows the money row alone, the amount
   in its adds column. On a card that
   ended it is refused. A human's grant counts nothing against the
@@ -200,8 +204,9 @@ decimals: a task's model calls cost fractions of a cent.
   this month. At the month cap it waits for a raise of budget.month_eur or
   the month's turn. A card's line bound has no raise: it is its size's
   bound plus the lines of its proofs. A running session takes a raise of time and
-  money without a restart. Words on a card at its session or agent time cap allow one more
-  session. Once the answer passes, its words are posted
+  money without a restart. Words on a card at its session or agent time cap give one session's
+  worth, with its money unless that money would raise the spend limit: then without it, and
+  only the press of “Give more room” raises the limit. Once the answer passes, its words are posted
   on the issue as the human. A human card's choice does its own work
   first, and its case takes the comment that work posted. A card that
   waits with no open case refuses the answer until the heal pass opens

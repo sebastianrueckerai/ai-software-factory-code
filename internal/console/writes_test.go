@@ -381,11 +381,16 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 func TestChatGiveRoom(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
+	// at the cap, with no start left, 2 more aim at 2 on the ahead-of-time
+	// row: 2 starts, 2 x 14 - 18 = 10 minutes and 2 x 1.20 - 2.10 = 0.30 EUR
+	f := aheadRow()
+	f.Kind, f.SessionCap = factoryd.CaseSessionCap, 3
+	r.roomFacts = map[string]factoryd.CaseFacts{"t-cap": f}
 	before := r.events.count()
 	args := `{"task_id":"t-cap","sessions":2,"money":true,"text":"Trim to 1 MB first."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "give_room", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Give a card more room, #14 t-cap \"Trim the logs.\", 2 sessions' worth, text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"give_room"}`,
+		`proposal {"arguments":` + args + `,"description":"Give a card more room, #14 t-cap \"Trim the logs.\", 2 sessions' worth (10 min, 0.30 EUR and 2 more sessions to start), text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"give_room"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("give_room", args, "Case 1 took extend."))
 	got, posts := actedOnce(t, r)

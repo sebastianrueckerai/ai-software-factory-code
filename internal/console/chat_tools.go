@@ -496,14 +496,19 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("%s EUR", textutil.EUR(in.EUR)))
 	}
 	if tool.name == "give_room" {
-		if why := (factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": in.Sessions, "money": in.Money}}).RoomRefusal(); why != "" {
+		res := factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": in.Sessions, "money": in.Money}}
+		if why := res.RoomRefusal(); why != "" {
 			return "", refuseAgent(http.StatusBadRequest, why)
 		}
-		room := textutil.Plural(in.Sessions, "session's worth", "sessions' worth")
-		if !in.Money {
-			room += " without money"
+		f, err := t.c.cfg.RoomFacts(t.r.Context(), k)
+		if err != nil {
+			log.Printf("console: the room facts of %s: %v", k.ID, err)
+			return "", refuse(http.StatusServiceUnavailable, "The card's room could not be read, so nothing was proposed. Try again.")
 		}
-		parts = append(parts, room)
+		if why := factoryd.HumanRefusal(f, res); why != "" {
+			return "", refuseAgent(http.StatusConflict, why)
+		}
+		parts = append(parts, factoryd.RoomFor(f, in.Sessions, in.Money).Summary(f))
 	}
 	if in.CaseID > 0 {
 		parts = append(parts, fmt.Sprintf("case %d", in.CaseID))

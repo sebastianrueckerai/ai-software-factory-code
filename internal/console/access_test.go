@@ -362,6 +362,16 @@ func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 	if r.approvals.get(4).Status != "pending" || r.events.count() != before || len(r.acted) != 0 {
 		t.Errorf("a refused press acted: request %s, %d rows, Act %+v", r.approvals.get(4).Status, r.events.count()-before, r.acted)
 	}
+	// the readouts of an approver's room and of the chat's money, which read
+	// the project's money left this month, are an approver's too
+	for path, want := range map[string]string{
+		"/tasks/t-run/room?at=f-t&extend.sessions=1":     "Only the approvers of project ai-software-factory-code may give a card room.",
+		"/tasks/t-run/fund?field=choice%3Afund_chat.eur": "Only the approvers of project ai-software-factory-code may fund the chat.",
+	} {
+		if rec := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck); rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != want {
+			t.Errorf("GET %s by a writer = %d %q, want 403 %q", path, rec.Code, rec.Body, want)
+		}
+	}
 	if more := otherActionsOf(t, drawer(t, r, ck, "t-g", "overview")); strings.Contains(more, `data-answer="replan"`) ||
 		strings.Contains(more, `data-answer="extend"`) {
 		t.Errorf("the case's other actions offer a writer an approver's action:\n%s", more)

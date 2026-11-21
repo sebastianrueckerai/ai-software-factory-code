@@ -121,6 +121,12 @@ document.addEventListener("change", function (e) {
   f.requestSubmit();
 });
 document.addEventListener("DOMContentLoaded", offerTracks);
+// A room's money box the human touched keeps their state: its mark goes
+// with the readout's request, which the capture runs before.
+document.addEventListener("change", function (e) {
+  var mark = e.target.type === "checkbox" && e.target.form && e.target.form.elements.namedItem(e.target.name + "_touched");
+  if (mark) mark.value = "yes";
+}, true);
 
 // The find narrows the board as you type: its form swaps the board around
 // itself, which it outlives (hx-preserve). Its answer, as a menu's, lands

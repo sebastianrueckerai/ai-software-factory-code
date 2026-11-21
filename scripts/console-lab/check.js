@@ -717,7 +717,7 @@ async function text(page) {
       const form = rp.page.locator('#drawer form[data-answer="extend"]');
       await form.locator("button.pick").click();
       const guard = () => form.evaluate((f) => ["now", "starts", "agent_time_s", "eur", "limit"].map((k) => f.elements.namedItem("extend.shown_" + k).value).join(" "));
-      const month = "The project has 112.30 EUR left this month.";
+      const month = "The project has 109.90 EUR left this month.";
       const reads = async (label, rows, notes, want) => {
         const got = await roomTable(form);
         const head = [["", "left", "adds", "then"], ["TD", "THcol", "THcol", "THcol"], ["THrow", "THrow"]];
@@ -813,6 +813,35 @@ async function text(page) {
       if (psw) fails.push("room-ahead: horizontal scroll at 390 (" + psw + " px)");
       if (pp.errors.length) fails.push("room-ahead phone: " + pp.errors[0]);
       await pp.ctx.close();
+      // the money's tick follows the count until the human touches it: #643
+      // has 2.00 EUR left at 0.80 EUR a session's worth, so 1 more needs no
+      // money and the tick stays clear, 2 more lack 3 x 0.80 - 2.00 = 0.40
+      // EUR and the tick sets; once the human cleared it, a count of 3 keeps
+      // it clear, the money left out
+      const tp = await open(browser, { width: 1440, height: 900 });
+      await tp.page.goto(base + "/#card=" + labID(643) + ":more", { waitUntil: "load" });
+      await tp.page.waitForTimeout(800);
+      const tform = tp.page.locator('#drawer form[data-answer="extend"]');
+      await tform.locator("button.pick").click();
+      const ticks = async (label, row, ticked, touched, want) => {
+        const got = await roomTable(tform);
+        const read = await tform.evaluate((f) => [f.elements.namedItem("extend.money_touched").value,
+          ["now", "starts", "agent_time_s", "eur", "limit"].map((k) => f.elements.namedItem("extend.shown_" + k).value).join(" ")]);
+        const is = [got && got.rows[1], got && got.ticked, read[0], read[1]], should = [row, ticked, touched, want];
+        if (JSON.stringify(is) !== JSON.stringify(should)) fails.push("room-ahead: #643 " + label + ": the money row, its tick, its touch and the guard read " + JSON.stringify(is) + ", want " + JSON.stringify(should));
+      };
+      await ticks("at 1", ["Money", "2.00 EUR", "enough", "2.00 EUR"], false, "no", "1 1 600 0.00 0.00");
+      await tform.locator("label.seg", { hasText: "2" }).click();
+      await tp.page.waitForTimeout(700);
+      await ticks("at 2", ["Money", "2.00 EUR", "0.40 EUR", "2.40 EUR"], true, "no", "1 2 1440 0.40 0.00");
+      await tform.locator('.room input[name="extend.money"]').click();
+      await tp.page.waitForTimeout(700);
+      await ticks("at 2 cleared", ["Money", "2.00 EUR", "left out", "2.00 EUR"], false, "yes", "1 2 1440 0.00 0.00");
+      await tform.locator("label.seg", { hasText: "3" }).click();
+      await tp.page.waitForTimeout(700);
+      await ticks("at 3 cleared", ["Money", "2.00 EUR", "left out", "2.00 EUR"], false, "yes", "1 3 2280 0.00 0.00");
+      if (tp.errors.length) fails.push("room-ahead #643: " + tp.errors[0]);
+      await tp.ctx.close();
     }
     if (sc === "room-money") {
       // the money stop opens Give more room at 1 with its money ticked: it

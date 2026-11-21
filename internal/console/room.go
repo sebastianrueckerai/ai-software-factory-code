@@ -14,8 +14,9 @@ import (
 // buttons, one session's worth beside them (Each, in the element EachID),
 // and the readout of the count and the tick, the table factoryd's
 // ReadoutOf fills, or Why, the refusal a press would meet. Tick is the
-// money's box, which the readout holds, and Guard the raises the readout
-// shows under the names the press posts them by. Get is where the form
+// money's box, which the readout holds, Touched whether the human touched
+// it, and Guard the raises the readout shows under the names the press
+// posts them by. Get is where the form
 // asks for the readout again, Params the fields it asks with, ID the
 // element it lands in; Swap sets Each again beside the count from there.
 type roomView struct {
@@ -26,6 +27,7 @@ type roomView struct {
 	Why             string
 	Readout         factoryd.Readout
 	Tick            tickView
+	Touched         hidden
 	Guard           []hidden
 }
 
@@ -36,21 +38,35 @@ type tickView struct {
 	Checked         bool
 }
 
+// moneyTouched is the room's field that says the human touched the money
+// box, yes once console.js set it, else no: the tick then stops following
+// the count.
+const moneyTouched = "money_touched"
+
 // readoutOf is the readout of the room the fields get names ask for on
 // facts f, read as the press reads them, under the form whose ids start
-// with at, its fields named by name. A count no press may give, or a room
-// the card cannot take as asked, shows why alone, as the press would be
-// refused.
+// with at, its fields named by name. Until the human touched the money
+// box, the tick follows the count: set when the card lacks money for it.
+// A count no press may give, or a room the card cannot take as asked,
+// shows why alone, as the press would be refused.
 func readoutOf(f factoryd.CaseFacts, get func(field string) string, at string, name func(string) string) roomView {
 	answer, _ := factoryd.AnswerOf(factoryd.ActExtend)
+	touched := strings.TrimSpace(get(moneyTouched)) == "yes"
 	v := roomView{ID: at + "-room", Each: factoryd.EachLine(f), EachID: at + "-each",
-		Tick: tickView{ID: at + "-money", Name: name("money"), Label: moneyName(), Checked: strings.TrimSpace(get("money")) == "yes"}}
+		Tick:    tickView{ID: at + "-money", Name: name("money"), Label: moneyName(), Checked: strings.TrimSpace(get("money")) == "yes"},
+		Touched: hidden{Name: name(moneyTouched), Value: "no"}}
+	if touched {
+		v.Touched.Value = "yes"
+	}
 	args, _, err := factoryd.ArgsOf(answer, get)
 	if err != nil {
 		v.Why = err.Error()
 	} else {
-		extend, _ := factoryd.ActionByName(factoryd.ActExtend)
-		v.Why = extend.Applies(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: args})
+		if n, _ := args["sessions"].(int); !touched {
+			v.Tick.Checked = factoryd.RoomFor(f, n, true).EUR > 0
+			args["money"] = v.Tick.Checked
+		}
+		v.Why = factoryd.HumanRefusal(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: args})
 	}
 	if v.Why != "" {
 		v.Why = strings.ToUpper(v.Why[:1]) + v.Why[1:] + "."
@@ -58,7 +74,8 @@ func readoutOf(f factoryd.CaseFacts, get func(field string) string, at string, n
 	}
 	n, _ := args["sessions"].(int)
 	money, _ := args["money"].(bool)
-	room := factoryd.RoomFor(f, n, money)
+	// money the rule leaves clear is enough, not left out: the same raises
+	room := factoryd.RoomFor(f, n, money || !touched)
 	v.Readout = factoryd.ReadoutOf(f, room)
 	shown := room.Shown()
 	for _, k := range factoryd.RoomGuard {

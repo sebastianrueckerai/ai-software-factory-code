@@ -2217,16 +2217,23 @@ func labRoomFacts(s labScene, k factoryd.Task, sessionCap int, capMin float64) f
 
 // roomAheadScene is the quiet board with #640 running ahead of time, as
 // the spec's first row holds it: 1 start, 18 of 60 minutes and 2.40 - 0.30
-// = 2.10 EUR left of its 6.00, the project 120.00 - 7.70 = 112.30 EUR. Its
-// Give more room at 1 aims at a room of 2: 1 start, 2 x 14 - 18 = 10
-// minutes and 2 x 1.20 - 2.10 = 0.30 EUR; at 2, 2 starts, 24 minutes and
-// 1.50 EUR.
+// = 2.10 EUR left of its 6.00. Its Give more room at 1 aims at a room of
+// 2: 1 start, 2 x 14 - 18 = 10 minutes and 2 x 1.20 - 2.10 = 0.30 EUR; at
+// 2, 2 starts, 24 minutes and 1.50 EUR. #643 runs beside it with money for
+// 1 more: 3 sessions in 42 minutes for 2.40 EUR of 4.70, so a session's
+// worth is 14 minutes and 0.80 EUR, and 1 start, 18 minutes and 2.30 -
+// 0.30 = 2.00 EUR are left. The project has 120.00 - 10.10 = 109.90 EUR.
 func roomAheadScene(now time.Time) labScene {
 	s, k := labRoomCard(now, 640, "running", "Board export: stream the snapshot to the bucket",
 		"Write the nightly snapshot to the object store as it is read, so a large board needs no temporary file.", 6)
 	k.Gate, k.GateSince = factoryd.GateSession, &k.CreatedAt
-	s.tasks = append([]factoryd.BoardTask{{Task: k}}, s.tasks...)
-	s.room = map[string]factoryd.CaseFacts{k.ID: labRoomFacts(s, k, 4, 60)}
+	e := labCard(now, 643, "running", "direct", 2*time.Hour, "Board export: name each snapshot by its night",
+		"Name each nightly snapshot by the night it was written, so a restore finds the one it needs.")
+	e.BudgetEUR, e.SpentEUR, e.CeilingEUR, e.Usage.Attempts, e.Usage.AgentTime = 4.70, 2.40, 8, 3, 42*time.Minute
+	e.Gate, e.GateSince = factoryd.GateSession, &e.CreatedAt
+	s.spend += e.SpentEUR
+	s.tasks = append([]factoryd.BoardTask{{Task: k}, {Task: e}}, s.tasks...)
+	s.room = map[string]factoryd.CaseFacts{k.ID: labRoomFacts(s, k, 4, 60), e.ID: labRoomFacts(s, e, 4, 60)}
 	return s
 }
 

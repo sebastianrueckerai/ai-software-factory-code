@@ -77,16 +77,31 @@ func needRig(t *testing.T) *rig {
 	return r
 }
 
-// The give_room proposal names the room the member presses Do it on: the
-// count the call names, 1 when it names none, and the money left out when
-// it says so.
+// aheadRow are a card's room facts as the spec's ahead-of-time row holds
+// them, under a spend limit of 7.00: 3 sessions in 42 minutes for 3.60
+// EUR, so a session's worth is 14 minutes and 1.20 EUR; 1 start, 18 of 60
+// minutes and 2.40 - 0.30 = 2.10 EUR left, so the room now is 1.
+func aheadRow() factoryd.CaseFacts {
+	return factoryd.CaseFacts{Attempts: 3, AgentTimeS: 42 * 60, SpentEUR: 3.6, FloorEUR: 0.5, BudgetEUR: 6, LeftEUR: 2.4, ReserveEUR: 0.3, CeilingEUR: 7,
+		SessionCap: 4, AgentTimeCapS: 60 * 60, MonthLeftEUR: 50}
+}
+
+// The give_room proposal names the room the member presses Do it on, as
+// RoomFor works it out when the proposal is made: the count the call
+// names, 1 when it names none, and the money left out when it says so. On
+// the ahead-of-time row 2 more aim at 3: 2 starts, 3 x 14 - 18 = 24
+// minutes, 3 x 1.20 - 2.10 = 1.50 EUR and a budget of 7.50, past the 7.00
+// limit by 0.50; 1 more aims at 2: 1 start, 10 minutes and 0.30 EUR. With
+// 0.10 EUR left this month, which pays for no session's worth, no proposal
+// is made, and the agent reads why.
 func TestGiveRoomProposalNamesTheRoom(t *testing.T) {
 	for args, room := range map[string]string{
-		`{"task_id":"t-cap","sessions":2,"text":"go"}`:               `2 sessions' worth`,
-		`{"task_id":"t-cap","text":"go"}`:                            `1 session's worth`,
-		`{"task_id":"t-cap","sessions":1,"money":false,"text":"go"}`: `1 session's worth without money`,
+		`{"task_id":"t-cap","sessions":2,"text":"go"}`:               `2 sessions' worth (24 min, 1.50 EUR, the spend limit raised from 7.00 to 7.50 EUR and 2 more sessions to start)`,
+		`{"task_id":"t-cap","text":"go"}`:                            `1 session's worth (10 min, 0.30 EUR and 1 more session to start)`,
+		`{"task_id":"t-cap","sessions":1,"money":false,"text":"go"}`: `1 session's worth without money (10 min and 1 more session to start)`,
 	} {
 		r, g := newWritesRig(t)
+		r.roomFacts = map[string]factoryd.CaseFacts{"t-cap": aheadRow()}
 		ck, s := r.loggedIn(t)
 		g.replies = [][]string{{call(1, "give_room", args)}}
 		_, proposed, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"give it room"}})
@@ -94,6 +109,20 @@ func TestGiveRoomProposalNamesTheRoom(t *testing.T) {
 		if len(proposed) == 0 || !strings.Contains(proposed[0], want) {
 			t.Errorf("%s: proposal %v, want it to hold %s", args, proposed, want)
 		}
+	}
+	r, _, _ := newChatRig(t)
+	caseCard(r)
+	month := aheadRow()
+	month.MonthLeftEUR = 0.1
+	r.roomFacts = map[string]factoryd.CaseFacts{"t-e": month}
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.cfg.Confirm = []string{"give_room"}
+	result, proposal, status := trn.call(factoryd.OperatorCall{Name: "give_room", Arguments: `{"task_id":"13","sessions":2,"text":"go on"}`})
+	if want := "Refused: the project has 0.10 EUR left this month, which pays for no session's worth: raise the month cap by a commit (`budget.month_eur`)"; proposal != "" ||
+		status != http.StatusConflict || result != want {
+		t.Errorf("a room past the month = %q, proposal %q, status %d; want 409 %q and no proposal", result, proposal, status, want)
 	}
 }
 

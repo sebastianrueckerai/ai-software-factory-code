@@ -1182,7 +1182,9 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, h
 	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
 	switch value {
 	case "":
-		if args, ok := grantOf(k); ok {
+		if args, ok, err := c.grantOf(ctx, t, k); err != nil {
+			return "", err
+		} else if ok {
 			res.Action, res.Args = factoryd.ActExtend, args
 		}
 	case factoryd.AnswerGo:
@@ -1499,15 +1501,21 @@ func typedAnswer(text, action string, args json.RawMessage) (factoryd.Resolution
 	return res, nil
 }
 
-// grantOf is what words alone at case k's stop give, the extend's args: a
-// session's worth with its money at a session cap or an agent time cap.
-// ok is false on any other stop, where words go on.
-func grantOf(k factoryd.Case) (map[string]any, bool) {
-	switch k.Kind {
-	case factoryd.CaseAgentTimeCap, factoryd.CaseSessionCap:
-		return map[string]any{"sessions": 1, "money": true}, true
+// grantOf is what words alone at card t's stop k give, the extend's
+// args: a session's worth at a session cap or an agent time cap, with its
+// money unless the money would raise the spend limit, which only a press
+// of Give more room shows. ok is false on any other stop, where words go
+// on.
+func (c *Console) grantOf(ctx context.Context, t factoryd.Task, k factoryd.Case) (map[string]any, bool, error) {
+	if k.Kind != factoryd.CaseAgentTimeCap && k.Kind != factoryd.CaseSessionCap {
+		return nil, false, nil
 	}
-	return nil, false
+	f, err := c.cfg.RoomFacts(ctx, t)
+	if err != nil {
+		log.Printf("console: the room facts of %s: %v", t.ID, err)
+		return nil, false, refuse(http.StatusServiceUnavailable, "The card's facts could not be read, so nothing was answered. Try again.")
+	}
+	return map[string]any{"sessions": 1, "money": factoryd.RoomFor(f, 1, true).Limit == 0}, true, nil
 }
 
 // doExtend gives card id the room an extend's args ask for, its count
@@ -3264,7 +3272,7 @@ func (c *Console) grantCriteria(ctx context.Context, a actor, q factoryd.Approva
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 	case err != nil:
 		log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
-		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %s. Grant again, or Fund the card when the refusal names money.", errText(err)))
+		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %s. Grant again, or give the card more room when the refusal names money.", errText(err)))
 	case n == 0:
 		return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
 	}

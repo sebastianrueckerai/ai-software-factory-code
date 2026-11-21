@@ -47,14 +47,22 @@ func storedRoomFacts(ra *realAct) func(context.Context, factoryd.Task) (factoryd
 }
 
 // readout is the room readout of card id for the count and the tick the
-// press form posts, asked by the form whose ids start with "f-t", and the
-// guard it shows by name.
+// press form posts, the tick as the human set it, asked by the form whose
+// ids start with "f-t", and the guard it shows by name.
 func readout(t *testing.T, r *rig, ck *http.Cookie, id, sessions, money string) (string, url.Values) {
 	t.Helper()
-	q := url.Values{"at": {"f-t"}, "extend.sessions": {sessions}}
+	q := url.Values{"at": {"f-t"}, "extend.sessions": {sessions}, "extend.money_touched": {"yes"}}
 	if money != "" {
 		q.Set("extend.money", money)
 	}
+	return readoutOn(t, r, ck, id, q)
+}
+
+// readoutOn is the room readout of card id for query q, and the guard it
+// shows by name.
+func readoutOn(t *testing.T, r *rig, ck *http.Cookie, id string, q url.Values) (string, url.Values) {
+	t.Helper()
+	sessions := q.Get("extend.sessions")
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+id+"/room?"+q.Encode(), nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET the readout of %s at %s = %d: %s", id, sessions, rec.Code, rec.Body)
@@ -435,5 +443,85 @@ func TestTwoPressesAtOnceGiveOnce(t *testing.T) {
 	if card := ra.stored(t, "t-run"); card.Usage.RaisedSessions != 3 || card.Usage.RaisedTime != 64*time.Minute || factoryd.Cents(card.BudgetEUR) != 760 {
 		t.Fatalf("#32 after two presses at once: %d raised sessions, %s raised time, %.2f EUR; want one give: 3, 1h4m, 7.60",
 			card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR)
+	}
+}
+
+// roomyCard seats running card #34, t-ahead, with room facts f.
+func roomyCard(r *rig, f factoryd.CaseFacts) {
+	r.tasks.set("", factoryd.Task{ID: "t-ahead", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 34, BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR})
+	r.roomFacts = map[string]factoryd.CaseFacts{"t-ahead": f}
+}
+
+// enoughForOne are #34's room facts: 3 sessions in 42 minutes for 3.60
+// EUR, 3.30 EUR left to spend, under 4 sessions and 60 minutes. A
+// session's worth is 14 minutes and 1.20 EUR, and the room now is
+// min(4 - 3, 18 / 14, 3.30 / 1.20) = 1.
+func enoughForOne() factoryd.CaseFacts {
+	return factoryd.CaseFacts{Attempts: 3, AgentTimeS: 42 * 60, SpentEUR: 3.6, FloorEUR: 0.5, BudgetEUR: 6.9, LeftEUR: 3.3, CeilingEUR: 20,
+		SessionCap: 4, AgentTimeCapS: 60 * 60, MonthLeftEUR: 50, Running: true}
+}
+
+// The money tick follows the count until the human touches it, set when
+// the card lacks money for the count (C48). On #34, 1 more aims at a room
+// of 2: 1 start, 2 x 14 - 18 = 10 minutes and 2.40 EUR, which 3.30 holds,
+// so the tick is clear and the money enough. 3 more aim at 4: 3 starts,
+// 4 x 14 - 18 = 38 minutes and 4.80 - 3.30 = 1.50 EUR, so the tick is set,
+// though the box came clear from the readout at 1. Once the human touched
+// the box, the readout keeps it as posted: clear at 3 leaves the money
+// out, ticked at 1 keeps the money enough. The readout carries the touch.
+func TestTheTickFollowsTheCountUntilTouched(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	roomyCard(r, enoughForOne())
+	month := "The project has 50.00 EUR left this month."
+	at1 := [][]string{{"Agent time", "18 min", "10 min", "28 min"}, {"Money", "3.30 EUR", "enough", "3.30 EUR"}}
+	at3 := [][]string{{"Agent time", "18 min", "38 min", "56 min"}, {"Money", "3.30 EUR", "1.50 EUR", "4.80 EUR"}}
+	for _, tc := range []struct {
+		sessions, money, touched string
+		rows                     [][]string
+		starts                   string
+		ticked                   bool
+	}{
+		{"1", "", "no", at1, "It may also start 1 more session.", false},
+		{"3", "", "no", at3, "It may also start 3 more sessions.", true},
+		{"3", "", "yes", [][]string{at3[0], {"Money", "3.30 EUR", "left out", "3.30 EUR"}}, "It may also start 3 more sessions.", false},
+		{"1", "yes", "yes", at1, "It may also start 1 more session.", true},
+	} {
+		q := url.Values{"at": {"f-t"}, "extend.sessions": {tc.sessions}, "extend.money": {tc.money}, "extend.money_touched": {tc.touched}}
+		body, _ := readoutOn(t, r, ck, "t-ahead", q)
+		got := roomIn(t, body)
+		if !reflect.DeepEqual(got.Rows, tc.rows) || got.Ticked != tc.ticked || !slices.Equal(got.Notes, []string{tc.starts, month}) {
+			t.Errorf("at %s, money %q, touched %q: rows %q, ticked %v, notes %q; want %q, %v, %q", tc.sessions, tc.money, tc.touched, got.Rows, got.Ticked, got.Notes,
+				tc.rows, tc.ticked, []string{tc.starts, month})
+		}
+		if want := `<input type="hidden" name="extend.money_touched" value="` + tc.touched + `">`; !strings.Contains(body, want) {
+			t.Errorf("at %s, touched %q: the readout does not carry %s:\n%s", tc.sessions, tc.touched, want, body)
+		}
+	}
+}
+
+// The readout stands the refusal a press meets in place of its figures:
+// with 0.05 EUR left this month, #34's room of 3 needs 1.50 EUR, and the
+// month pays only for 1 session's worth, which needs no money; with the
+// card's config unread, its agent-time cap reads 0, and the room cannot be
+// worked out.
+func TestTheReadoutShowsTheMonthsAndAnUnreadCapsRefusal(t *testing.T) {
+	month, unread := enoughForOne(), enoughForOne()
+	month.MonthLeftEUR, unread.Partial = 0.05, []string{"config"}
+	for _, tc := range []struct {
+		f        factoryd.CaseFacts
+		sessions string
+		want     string
+	}{
+		{month, "3", "The project has 0.05 EUR left this month, which pays for 1 session's worth: give that, or raise the month cap by a commit (`budget.month_eur`)."},
+		{unread, "1", "The card's agent-time cap could not be read, so its room cannot be worked out: try again in a minute."},
+	} {
+		r := newRig(t)
+		ck, _ := r.loggedIn(t)
+		roomyCard(r, tc.f)
+		body, guard := readoutOn(t, r, ck, "t-ahead", url.Values{"at": {"f-t"}, "extend.sessions": {tc.sessions}})
+		if got := roomIn(t, body); got.Why != tc.want || got.Rows != nil || len(guard) != 0 {
+			t.Errorf("at %s: the readout shows %+v, guard %v; want %q alone", tc.sessions, got, guard, tc.want)
+		}
 	}
 }
