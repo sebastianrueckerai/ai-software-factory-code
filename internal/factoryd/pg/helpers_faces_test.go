@@ -25,8 +25,9 @@ var (
 // caseCard is the card of caseTask as a face reads it.
 var caseCard = Task{ID: caseTask, Kind: "agent", IssueNumber: 1410}
 
-// firstRaise is the amount "Add money" opens with on the budget floor of
-// card at refusal why, on the facts of the card's next session on model.
+// firstRaise is the money a press of "Give more room" with its defaults
+// adds on the budget floor of card at refusal why, on the facts of the
+// card's next session on model.
 func firstRaise(t *testing.T, r *Runner, card Task, why, model string) float64 {
 	t.Helper()
 	f, err := r.PgTripFacts(context.Background(), card, "", model)
@@ -34,13 +35,14 @@ func firstRaise(t *testing.T, r *Runner, card Task, why, model string) float64 {
 		t.Fatal(err)
 	}
 	facts := Facts{CaseFacts: f, Card: card, Case: Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}}
-	a, _ := factoryd.AnswerFor(ActFund, facts)
+	a, _ := factoryd.AnswerFor(ActExtend, facts)
 	res, err := a.Press(facts, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	eur, _ := res.Args["eur"].(float64)
-	return eur
+	n, _ := res.Args["sessions"].(int)
+	money, _ := res.Args["money"].(bool)
+	return factoryd.RoomFor(f, n, money).EUR
 }
 
 func (g rungRig) budget(t *testing.T) float64 {

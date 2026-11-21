@@ -311,10 +311,8 @@ func TestCaseKindOfReadsAnUnreadableStopRecordedBeforeTheRoll(t *testing.T) {
 func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 	f := CaseFacts{Kind: CaseCheckinFailed, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, BudgetEUR: 5, LeftEUR: 3.5, CeilingEUR: 10, Attempts: 1, SessionCap: 3, AgentTimeCapS: 7200, AgentTimeS: 600}
-	for name, args := range map[string]map[string]any{"agent time": {"agent_time_s": 600}, "a session": {"sessions": 1}} {
-		if got := applies(t, ActExtend, f, Resolution{Args: args}); got != "this card asked a question, not for a session: answer it, or extend at its cap" {
-			t.Errorf("extend of %s applies = %q, want the refusal", name, got)
-		}
+	if got := applies(t, ActExtend, f, Resolution{Args: map[string]any{"sessions": 1}}); got != "this card asked a question, not for room: answer it, or give room at its cap" {
+		t.Errorf("extend applies = %q, want the refusal", got)
 	}
 	for _, name := range []string{ActResume, ActHandover} {
 		if !slices.Contains(offeredNames(f, 2), name) {
@@ -406,7 +404,7 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		press := map[CaseKind]string{
 			CaseCheckinFailed: "Press “End the card” or “Not now”",
 			CaseCheckinHuman:  "Press “Send back to the planner”, “End the card” or “Not now”",
-			CaseCheckinShare:  "Press “Allow more sessions”, “End the card” or “Not now”",
+			CaseCheckinShare:  "Press “Give more room”, “End the card” or “Not now”",
 		}[kind] + " on the board, or tell the project chat how the card goes on. Close this issue to end the task."
 		spentWant := lead + "The card's agent time is spent. A reply alone starts no attempt: the task asks the agent-time cap next. " + press
 		limitWant := lead + "The card's sessions are used up. A reply alone starts no attempt: the task asks the session cap next. " + press
@@ -424,7 +422,7 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		// 0.48 EUR left less the 0.40 reserve is 0.08, under the 0.30 an opening
 		// needs: the line names the floor the task asks next and the same answers
 		short := facts(1, 600)
-		short["left_eur"], short["reserve_eur"], short["floor_eur"] = 0.48, 0.4, 0.3
+		short["left_eur"], short["reserve_eur"], short["floor_eur"], short["month_left_eur"] = 0.48, 0.4, 0.3, 41.2
 		shortWant := lead + "The card's budget no longer funds a session. A reply alone starts no attempt: the task asks the budget floor next. " + press
 		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); got != shortWant {
 			t.Errorf("%s with the budget short:\n %q\nwant\n %q", kind, got, shortWant)
@@ -466,17 +464,17 @@ func TestFindingsStopNamesTheBoardsMoves(t *testing.T) {
 			"pr_open": true, "head": "a1b2c3d"}
 	}
 	short := facts(1)
-	short["left_eur"], short["reserve_eur"], short["floor_eur"] = 0.48, 0.4, 0.3
+	short["left_eur"], short["reserve_eur"], short["floor_eur"], short["month_left_eur"] = 0.48, 0.4, 0.3, 41.2
 	for name, c := range map[string]struct {
 		facts map[string]any
 		want  string
 	}{
 		"room": {facts(1), "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. " +
-			"Press “Allow more sessions”, “Overrule the review” or “Start a fresh card on this work” on the board, or close this issue to end the task."},
+			"Press “Give more room”, “Overrule the review” or “Start a fresh card on this work” on the board, or close this issue to end the task."},
 		"sessions used up": {facts(3), "The card's sessions are used up. A reply alone starts no attempt: the task asks the session cap next. " +
-			"Press “Allow more sessions”, “Overrule the review”, “Start a fresh card on this work” or “End the card” on the board, or tell the project chat how the card goes on. Close this issue to end the task."},
+			"Press “Give more room”, “Overrule the review”, “Start a fresh card on this work” or “End the card” on the board, or tell the project chat how the card goes on. Close this issue to end the task."},
 		"budget short": {short, "The card's budget no longer funds a session. A reply alone starts no attempt: the task asks the budget floor next. " +
-			"Press “Allow more sessions”, “Overrule the review”, “Start a fresh card on this work” or “End the card” on the board, or tell the project chat how the card goes on. Close this issue to end the task."},
+			"Press “Give more room”, “Overrule the review”, “Start a fresh card on this work” or “End the card” on the board, or tell the project chat how the card goes on. Close this issue to end the task."},
 	} {
 		if got := tripNext(Case{Kind: CaseFindingsRepeated, Facts: c.facts}, "x"); got != c.want {
 			t.Errorf("%s:\n %q\nwant\n %q", name, got, c.want)

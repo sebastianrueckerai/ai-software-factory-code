@@ -430,7 +430,8 @@ func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
 // what a session may spend, the 0.15 left of 3 EUR with 2.85 spent less
 // the 0.40 gate reserve, -0.25, is 0.55 EUR, which buys one session on
 // the card's model. The issue comment names that amount under the question
-// and beside the answer that adds it.
+// and the answer that adds it: before its first session a room of 1 is the
+// opening's 0.30 EUR, so its money is the same 0.55 EUR.
 func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	g := newTripRig(t, "success")
 	rung1Off(g.r)
@@ -445,7 +446,7 @@ func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 		t.Fatalf("case %+v, money %+v; want the budget floor at the human with %+v", c, c.Money, want)
 	}
 	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], "and the card needs 0.55 EUR more to pay its next session.") ||
-		!strings.Contains(g.forge.comments[0], "Press “Add money” (EUR to add: 0.55), “End the card” or “Not now” on the board") {
+		!strings.Contains(g.forge.comments[0], "Press “Give more room”, “End the card” or “Not now” on the board") {
 		t.Fatalf("comments %q, want the face naming the 0.55 EUR to add", g.forge.comments)
 	}
 }
@@ -711,16 +712,16 @@ func onlyLiveCase(t *testing.T, s *PGStore, taskID string) Case {
 func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 	const reply = "Reply on this issue to start a new attempt"
 	const chat = " on the board, or tell the project chat how the card goes on. A reply alone starts no attempt."
-	extend := "Press “Allow more sessions”, “End the card” or “Not now”" + chat
-	// the rig's card has its whole budget left: the face holds no money answer
-	fund := "Press “End the card” or “Not now”" + chat
+	// the rig's card has its whole budget left: at the budget floor too the
+	// room is the answer, its money unticked
+	extend := "Press “Give more room”, “End the card” or “Not now”" + chat
 	for _, tc := range []struct {
 		name, reason, want string
 		escalate           bool
 	}{
 		{"the session cap", tripCap, extend, false},
 		{"the agent time cap", TimeCapReached + "\nlast: no session produced a result", extend, false},
-		{"the budget floor", BudgetRefused + ": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR", fund, false},
+		{"the budget floor", BudgetRefused + ": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR", extend, false},
 		{"an agent's question", AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt", reply, false},
 		{"a run from before the gate at the session cap", tripCap, reply, true},
 	} {
@@ -762,7 +763,7 @@ func TestOpenTripRestartWithNoLiveCaseAsksItsStopAgain(t *testing.T) {
 	if !slices.ContainsFunc(caseStepsOf(t, g.s, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == "asked again after a restart" }) {
 		t.Fatalf("steps = %+v, want the restart's step of rung 0", caseStepsOf(t, g.s, c.ID))
 	}
-	if extend := "Press “Allow more sessions”, “End the card” or “Not now” on the board, or tell the project chat how the card goes on"; len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], extend) {
+	if extend := "Press “Give more room”, “End the card” or “Not now” on the board, or tell the project chat how the card goes on"; len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], extend) {
 		t.Fatalf("faces = %q, want one naming Extend", g.forge.comments)
 	}
 	if raised, _ := g.extendOne(t, c.ID); raised != 1 {

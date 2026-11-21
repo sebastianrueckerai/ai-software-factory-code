@@ -147,7 +147,7 @@ var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting, Ans
 func keepsOpen(c Case, t Task, res Resolution) bool {
 	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) && !ChoiceKind(c.Kind) ||
 		res.Action == ActRunCriteria && c.Kind == CasePlanCriteria ||
-		ChoiceKind(c.Kind) && slices.Contains(keepsWaiting, res.Action) || slices.Contains(questionKinds, c.Kind) && slices.Contains(capDraws, res.Action)
+		ChoiceKind(c.Kind) && slices.Contains(keepsWaiting, res.Action) || slices.Contains(questionKinds, c.Kind) && res.Action == ActExtend
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
@@ -181,7 +181,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		in.By = ChatUser
 	}
 	out, err := r.act(ctx, in)
-	if in.CaseID != 0 && (err != nil || out.Case.Status == CaseAtHuman && slices.Contains(questionKinds, out.Case.Kind) && slices.Contains(capDraws, in.Res.Action)) {
+	if in.CaseID != 0 && (err != nil || out.Case.Status == CaseAtHuman && slices.Contains(questionKinds, out.Case.Kind) && in.Res.Action == ActExtend) {
 		// a refused press, or a draw that left its question open: the face
 		// shows what fits the state now
 		r.refreshOffersOf(ctx, in.TaskID, in.CaseID)
@@ -339,12 +339,10 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 		}
 	}
 	if !choice {
-		grants, err := r.runGrants(ctx, c, res)
-		if err != nil {
-			return out, err
-		}
 		if draw = r.caseDraw(t, f, c, in, via); draw != nil {
-			draw.RunGrants = grants
+			if draw.RunGrants, err = r.runGrants(ctx, c, *draw); err != nil {
+				return out, err
+			}
 		}
 	}
 	// a re-run of a merge case's checks with its work decides the request,
@@ -685,7 +683,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 	grounds := textutil.Truncate(r.scrub(strings.TrimSpace(note)), 1200)
 	found := textutil.Truncate(r.scrub(in.Found), 1200)
 	step := CaseStep{CaseID: c.ID, Rung: 2, Actor: in.By, Outcome: StepHandedUp, Found: found, Decision: res.Action, Grounds: grounds,
-		Did: []CaseAction{{Action: res.Action, Args: res.Args, Fund: res.Fund, Result: resultProposed}}, Read: nonNil(in.Read), CostEUR: in.CostEUR}
+		Did: []CaseAction{{Action: res.Action, Args: res.Args, Room: res.Room, Result: resultProposed}}, Read: nonNil(in.Read), CostEUR: in.CostEUR}
 	var err error
 	if own != 0 {
 		step.ID = own
@@ -835,14 +833,14 @@ func (r *Runner) ownStep(ctx context.Context, c Case, in ActInput) (int64, error
 }
 
 // runGrants reports whether the run waiting on case c grants the sessions
-// and agent time res draws itself: a run from before the cases gate, which
+// and agent time d draws itself: a run from before the cases gate, which
 // wakes on the human's comment and grants its own. A trip under the gate
 // marks the case it opens with its trip fact, which an answer reads before
 // any step, and writes a step of rung 0 on every case it waits on, the
 // old run's case a restarted run takes among them. No older face does
 // either.
-func (r *Runner) runGrants(ctx context.Context, c Case, res Resolution) (bool, error) {
-	if d, _ := res.draw(); c.ID == 0 || c.Facts["trip"] != nil || d.Sessions == 0 && d.AgentTime == 0 {
+func (r *Runner) runGrants(ctx context.Context, c Case, d CaseDraw) (bool, error) {
+	if c.ID == 0 || c.Facts["trip"] != nil || d.Extend.IsZero() {
 		return false, nil
 	}
 	steps, err := r.store.CaseSteps(ctx, c.ID)
@@ -944,10 +942,10 @@ func (r *Runner) CaseState(ctx context.Context, caseID int64) (CaseState, error)
 }
 
 // answersACase reports whether a answers a case and so needs one named:
-// every action the run carries out but the draws, a withdrawal, a note
-// and a settle.
+// every action the run carries out but the room, a withdrawal, a note and
+// a settle.
 func answersACase(a Action) bool {
-	return a.InRun && a.Name != ActExtend && a.Name != ActFund || a.Name == ActWithdraw || a.Name == ActNote || a.Name == ActSettle
+	return a.InRun && a.Name != ActExtend || a.Name == ActWithdraw || a.Name == ActNote || a.Name == ActSettle
 }
 
 // confirmAudit records the audit findings a person's confirm_audit marks
@@ -1033,15 +1031,15 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 
 // humanChoice is why human card t's case does not take in, "" when it
 // does: rung 2 or the human picks a value its question offers, with no
-// draw beside it. The factory's own pull request merges or closes at a
+// room beside it. The factory's own pull request merges or closes at a
 // human's press alone, and "I did it" waits for the card's open
 // dependencies.
 func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (string, error) {
 	switch {
 	case in.Rung != 2 && in.Rung != 3:
 		return fmt.Sprintf("%s may not answer a human card: the factory agent and the human may", who(in.Rung)), nil
-	case in.Res.Fund != nil:
-		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", ShownName(t)), nil
+	case in.Res.Room != nil:
+		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the room", ShownName(t)), nil
 	case len(in.Res.Args) > 0:
 		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", ShownName(t)), nil
 	}
@@ -1483,34 +1481,31 @@ func (r *Runner) closeEnded(ctx context.Context, t Task, in ActInput, posted boo
 	return CaseAction{Action: ActClose, Result: fmt.Sprintf("#%d was closed already.", t.IssueNumber)}, nil
 }
 
-// caseDraw is what in draws for card t on facts f, nil for nothing: a raise
-// of the ceiling, an extend's sessions and agent time, and the
-// money for the budget, with the card's draw bound and the pool its rung
-// draws within. Its rows are
-// pool draws of in's rung for case c, with the head, the checks and, when
-// the timeline was read, the findings they were weighed on (boughtNothing).
+// caseDraw is what in draws for card t on facts f, nil for nothing: the
+// room it gives (Resolution.room), its raise of the spend limit, its
+// starts and agent time and its money for the budget, with the card's
+// draw bound and the pool its rung draws within. Its rows are pool draws
+// of in's rung for case c, with the room asked, the estimate it was
+// worked out by, and the head, the checks and, when the timeline was
+// read, the findings they were weighed on (boughtNothing).
 func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) *CaseDraw {
-	d, budget := in.Res.draw()
-	if d.IsZero() {
+	room, ok := in.Res.room(f)
+	if !ok {
 		return nil
 	}
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
-	detail := map[string]any{"pool": true, "rung": in.Rung, "case_id": c.ID, "head": f.Head, "checks": f.Checks}
+	detail := map[string]any{"pool": true, "rung": in.Rung, "case_id": c.ID, "head": f.Head, "checks": f.Checks,
+		"room_sessions": room.N, "room_money": room.Money, "session_time_s": int64(room.Est.Time / time.Second),
+		"session_eur": room.Est.EUR, "from_sessions": room.Est.FromSessions}
 	if !slices.Contains(f.Partial, partialTimeline) {
 		detail["findings"] = nonNil(f.Findings)
 	}
 	beside(detail, in.Detail)
 	esc := v.EscalationOf(t.Repository)
-	a, _ := ActionByName(in.Res.Action)
-	draw := &CaseDraw{Rung: in.Rung, Extend: policy.Draw{Sessions: d.Sessions, AgentTime: d.AgentTime}, FundEUR: budget,
-		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool, Need: a.need(f),
+	return &CaseDraw{Rung: in.Rung, Raise: room.Limit, Extend: policy.Draw{Sessions: room.Starts, AgentTime: room.AgentTime}, FundEUR: room.EUR,
+		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool, Need: RoomFor(f, 1, room.Money).draw(),
 		Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: in.By, Via: via, Detail: detail}}
-	switch in.Res.Action {
-	case ActRaiseCeiling:
-		draw.Raise, _ = in.Res.Args["eur"].(float64)
-	}
-	return draw
 }
 
 // RecordGrant records grant d, which card taskID's run made itself on
@@ -1593,29 +1588,17 @@ func beside(detail, extra map[string]any) {
 	}
 }
 
-// drawActions are the steps of draw d that res makes: its action's own
-// draw, and the fund beside it.
+// drawActions are the steps of draw d that res makes: the raise of the
+// spend limit, then the starts, the agent time and the money.
 func drawActions(res Resolution, d CaseDraw) []CaseAction {
 	var out []CaseAction
-	own, _ := Resolution{Action: res.Action, Args: res.Args}.draw()
-	switch {
-	case res.Action == ActRaiseCeiling:
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the ceiling by %s EUR.", textutil.EUR(d.Raise))})
-	case !own.IsZero():
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Added " + raisedWords(own) + "."})
+	if d.Raise > 0 {
+		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Room: res.Room, Result: fmt.Sprintf("Raised the spend limit by %s EUR.", textutil.EUR(d.Raise))})
 	}
-	if res.Fund != nil && !res.Fund.IsZero() {
-		out = append(out, CaseAction{Action: ActFund, Result: "Added " + raisedWords(*res.Fund) + "."})
+	if added := drawWords(d.Extend.Plus(policy.Draw{EUR: d.FundEUR})); added != "" {
+		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Room: res.Room, Result: "Added " + added + "."})
 	}
 	return out
-}
-
-// raisedWords says what an answer raises: draw d from the pool.
-func raisedWords(d policy.Draw) string {
-	if d.IsZero() {
-		return ""
-	}
-	return drawWords(d) + " from the pool"
 }
 
 // drawWords says the parts of d that are not zero: "1 session and 1.00
@@ -1634,17 +1617,29 @@ func drawWords(d policy.Draw) string {
 	return textutil.AndList(parts)
 }
 
-// Sentence says r in a few words: its action and every part it raises.
+// roomWords says the room r asks for: "2 sessions' worth", "1 session's
+// worth without money"; "" for none.
+func (r Resolution) roomWords() string {
+	ask, asked, why := r.roomAsk()
+	switch {
+	case !asked || why != "":
+		return ""
+	case !ask.Money:
+		return worthWords(ask.Sessions) + " without money"
+	}
+	return worthWords(ask.Sessions)
+}
+
+// Sentence says r in a few words: its action and the room it asks for.
 func (r Resolution) Sentence() string {
-	d, _ := r.draw()
-	if said := raisedWords(d); said != "" {
+	if said := r.roomWords(); said != "" {
 		return AnswerWords(r.Action) + ": " + said
 	}
 	return AnswerWords(r.Action)
 }
 
 // AnswerWords is action as a human reads it: the label of its answer in
-// the vocabulary in quotes, “Allow more sessions”, and an action no face
+// the vocabulary in quotes, “Give more room”, and an action no face
 // offers in words.
 func AnswerWords(action string) string {
 	label := LabelOf(action)

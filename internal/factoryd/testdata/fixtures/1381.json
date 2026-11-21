@@ -169,8 +169,7 @@
           },
           "draw": {
             "sessions": 1,
-            "agent_time_s": 0,
-            "eur": 0
+            "money": false
           }
         }
       }

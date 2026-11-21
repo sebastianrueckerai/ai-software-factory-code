@@ -83,6 +83,14 @@ func (g rungRig) answer(t *testing.T, over map[string]any) CheckinResponse {
 	return answerCall(t, a)
 }
 
+// atSessionCap puts t1 at its session cap: its 3 sessions ran.
+func (g rungRig) atSessionCap(t *testing.T) {
+	t.Helper()
+	if _, err := g.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET attempts = 3 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // handUp is the answer that hands the case up recommending close.
 func (g rungRig) handUp(t *testing.T) CheckinResponse {
 	return g.answer(t, map[string]any{"decision": "hand_up", "draw": nil,

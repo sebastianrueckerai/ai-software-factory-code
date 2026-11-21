@@ -29,7 +29,11 @@ func AnswersByOffers(c Case) bool {
 func FaceKeys(face AskFace) map[string]any {
 	keys := map[string]any{"ask": face.Ask, "why": face.Why, "story": face.Story, "offers": offersOfAnswers(face.Answers), "findings": face.Findings}
 	if face.Suggested != "" {
-		keys["preselected"] = map[string]any{"action": face.Suggested}
+		pre := map[string]any{"action": face.Suggested}
+		if face.SuggestedArgs != nil {
+			pre["args"] = face.SuggestedArgs
+		}
+		keys["preselected"] = pre
 		keys["recommended_by"] = face.SuggestedBy
 		if face.Grounds != "" {
 			keys["recommendation"] = face.Grounds

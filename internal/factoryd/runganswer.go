@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -88,8 +89,8 @@ func recommendable(f CaseFacts, rung int, decision string) []string {
 // ids on f, each one of the check-in's three verdicts with its evidence,
 // a note, a recommendation with its grounds whose action is one the rung
 // offers or a rung above can take, an optional model for a handover, and
-// an optional draw that rides beside the decision. The same facts and
-// rung derive the same schema.
+// an optional draw: the room an extend gives, or the room that rides
+// beside the decision. The same facts and rung derive the same schema.
 func AnswerSchema(f CaseFacts, rung int) map[string]any {
 	verdicts := map[string]any{"type": "object", "additionalProperties": false,
 		"description": "the verdict on every finding the statement lists, keyed by the finding's id: each value is one object with verdict and evidence, never a string"}
@@ -141,12 +142,12 @@ func AnswerSchema(f CaseFacts, rung int) map[string]any {
 			},
 			"draw": map[string]any{
 				"type":        "object",
-				"description": "the draw that rides beside the decision, from the pool",
+				"description": "more room for the card in sessions' worth of its own time and money, which the factory works out from its sessions: the room the decision extend gives, or the room that rides beside another decision",
 				"properties": map[string]any{
-					"sessions":     map[string]any{"type": "integer", "minimum": 0},
-					"agent_time_s": map[string]any{"type": "integer", "minimum": 0},
-					"eur":          map[string]any{"type": "number", "minimum": 0},
+					"sessions": map[string]any{"type": "integer", "minimum": 1, "maximum": MaxRoomSessions, "description": "how many sessions' worth"},
+					"money":    map[string]any{"type": "boolean", "description": "true to give the money with the time and the starts, false to give the time and the starts alone"},
 				},
+				"required":             []string{"sessions", "money"},
 				"additionalProperties": false,
 			},
 		},
@@ -158,7 +159,7 @@ func AnswerSchema(f CaseFacts, rung int) map[string]any {
 // RungAnswer is a rung's answer as the model's tool call parses it: the
 // decision from the rung's offered actions or hand_up, its reason kind, a verdict on
 // every finding keyed by the finding's id, a note, a recommendation with
-// grounds, and the draw that rides beside the decision.
+// grounds, and the room the draw asks for.
 type RungAnswer struct {
 	Decision       string                 `json:"decision"`
 	ReasonKind     string                 `json:"reason_kind"`
@@ -184,12 +185,11 @@ type RungRecommendation struct {
 	Grounds string `json:"grounds"`
 }
 
-// RungDraw is the draw an answer rides beside its decision: sessions,
-// agent time in seconds and money, the parts of a pool draw.
+// RungDraw is the room an answer asks for: a count of sessions' worth and
+// whether its money is in it.
 type RungDraw struct {
-	Sessions   int     `json:"sessions"`
-	AgentTimeS int64   `json:"agent_time_s"`
-	EUR        float64 `json:"eur"`
+	Sessions int  `json:"sessions"`
+	Money    bool `json:"money"`
 }
 
 // rungAnswerJSON is the answer with every required field a pointer, so a
@@ -201,7 +201,14 @@ type rungAnswerJSON struct {
 	Model          *string                     `json:"model"`
 	Note           *string                     `json:"note"`
 	Recommendation *rungRecommendationJSON     `json:"recommendation"`
-	Draw           *RungDraw                   `json:"draw"`
+	Draw           *rungDrawJSON               `json:"draw"`
+}
+
+// rungDrawJSON is the draw as the answer sends it: a count, which a
+// fraction leaves no whole number, and a money a draw may leave out.
+type rungDrawJSON struct {
+	Sessions *float64 `json:"sessions"`
+	Money    *bool    `json:"money"`
 }
 
 // rungVerdictJSON is one finding's verdict as the answer sends it: the
@@ -315,8 +322,9 @@ func offeredText(names []string) string {
 // a hand_up), a reason_kind outside the closed enum, a verdict on an id
 // the facts do not hold, a finding without one or a null one, a verdict
 // outside the check-in's three or without its evidence, a model outside
-// handoverModels or left out of a handover, and a draw any part of which
-// is below zero. A verdict the rung composed as one string — the verdict
+// handoverModels or left out of a handover, a draw whose count is no
+// whole number from 1 to MaxRoomSessions or that leaves its money out, and
+// an extend with no draw. A verdict the rung composed as one string — the verdict
 // alone, with its evidence after a separator, or the JSON encoding of
 // the object itself — reads as that object. The refusal names what the
 // answer broke, for runRung's one re-ask.
@@ -333,7 +341,7 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&j); err != nil {
 		if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
-			return RungAnswer{}, fmt.Errorf("the answer holds the field %s, which the schema does not have; the fields are decision, reason_kind, verdicts, model, note, recommendation and draw (a draw holds sessions, agent_time_s and eur; a recommendation action and grounds; a verdict verdict and evidence)", field)
+			return RungAnswer{}, fmt.Errorf("the answer holds the field %s, which the schema does not have; the fields are decision, reason_kind, verdicts, model, note, recommendation and draw (a draw holds sessions and money; a recommendation action and grounds; a verdict verdict and evidence)", field)
 		}
 		return RungAnswer{}, fmt.Errorf("the answer is malformed: %w", err)
 	}
@@ -417,8 +425,17 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	if *j.Decision == ActHandover && j.Model == nil {
 		return RungAnswer{}, errors.New("a handover leaves model out; it names the model of the next session: " + textutil.AndList(handoverModels))
 	}
-	if j.Draw != nil && (j.Draw.Sessions < 0 || j.Draw.AgentTimeS < 0 || j.Draw.EUR < 0) {
-		return RungAnswer{}, fmt.Errorf("a draw does not go below zero: sessions %d, agent_time_s %d, eur %s", j.Draw.Sessions, j.Draw.AgentTimeS, textutil.EUR(j.Draw.EUR))
+	var draw *RungDraw
+	switch d := j.Draw; {
+	case d == nil && *j.Decision == ActExtend:
+		return RungAnswer{}, errors.New("an extend leaves draw out: the draw names its room, sessions from 1 to " + fmt.Sprint(MaxRoomSessions) + " and money true or false")
+	case d == nil:
+	case d.Sessions == nil || *d.Sessions != math.Trunc(*d.Sessions) || *d.Sessions < 1 || *d.Sessions > MaxRoomSessions:
+		return RungAnswer{}, errors.New(roomCountRefusal)
+	case d.Money == nil:
+		return RungAnswer{}, errors.New("the draw leaves money out: true gives the money with the time and the starts, false the time and the starts alone")
+	default:
+		draw = &RungDraw{Sessions: int(*d.Sessions), Money: *d.Money}
 	}
 	out := RungAnswer{
 		Decision:       *j.Decision,
@@ -426,7 +443,7 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 		Verdicts:       make(map[string]RungVerdict, len(f.Findings)),
 		Note:           *j.Note,
 		Recommendation: RungRecommendation{Action: *j.Recommendation.Action, Grounds: *j.Recommendation.Grounds},
-		Draw:           j.Draw,
+		Draw:           draw,
 	}
 	if j.Model != nil {
 		out.Model = *j.Model

@@ -10,13 +10,15 @@ import (
 
 // Face is one case as the board shows it: the ask, why, the story, the
 // agent's view, the suggestion with the one who made it and its grounds,
-// the answers, the suggested one named in Preselected, and the findings
-// the ask and the story count. Money is the money line an approval adds.
+// the answers, the suggested one named in Preselected with the args its
+// proposal names, and the findings the ask and the story count. Money is
+// the money line an approval adds.
 type Face struct {
 	Ask, Money, Why, Info, Recommendation, Source string
 	Story                                         Story
 	Offers                                        []AskOffer
 	Preselected                                   string
+	PreselectedArgs                               map[string]any
 	Findings                                      []string
 }
 
@@ -40,7 +42,7 @@ func CaseFace(c Case, t Task, ask CaseAsk) Face {
 	if slices.Contains(storyWriterKinds, c.Kind) {
 		af.Story = writerLines(af.Story, c).without(af.Ask, af.Why)
 	}
-	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: offersOfAnswers(af.Answers), Preselected: af.Suggested,
+	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: offersOfAnswers(af.Answers), Preselected: af.Suggested, PreselectedArgs: af.SuggestedArgs,
 		Source: af.SuggestedBy, Recommendation: af.Grounds, Findings: af.Findings}
 	face.Info, _ = ask.Detail["info"].(string)
 	if ask.Analysis != "" {
@@ -75,7 +77,7 @@ func storedFace(detail map[string]any) (AskFace, bool) {
 		face.Answers = append(face.Answers, a)
 	}
 	r := RecommendationOf(detail)
-	face.Suggested, face.SuggestedBy, face.Grounds = r.Action, r.By, shownGrounds(r.Grounds)
+	face.Suggested, face.SuggestedBy, face.Grounds, face.SuggestedArgs = r.Action, r.By, shownGrounds(r.Grounds), r.Args
 	return face, true
 }
 

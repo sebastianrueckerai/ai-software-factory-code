@@ -790,7 +790,7 @@ func recommendedBy(up *HandUp) string {
 // preselected is the action as the question_asked row carries it for the
 // face to preselect.
 func (a CaseAction) preselected() map[string]any {
-	return map[string]any{"action": a.Action, "args": a.Args, "fund": a.Fund}
+	return map[string]any{"action": a.Action, "args": a.Args, "room": a.Room}
 }
 
 // storedDecision is a case step's decision as the run reads it back: the
@@ -1931,7 +1931,7 @@ func (up *HandUp) recommend(fence, scrub func(string) string) Recommendation {
 	}
 	rec := Recommendation{Action: up.Action, By: recommendedBy(up), Grounds: up.recommendation(fence, scrub)}
 	if up.Preselected != nil {
-		rec.Action = verdictKey(up.Preselected.Action, up.Preselected.Args)
+		rec.Action, rec.Args = verdictKey(up.Preselected.Action, up.Preselected.Args), up.Preselected.Args
 	}
 	if rec.Action == "" || rec.Action == RungHandUp {
 		return Recommendation{}

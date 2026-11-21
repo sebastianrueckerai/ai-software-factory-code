@@ -26,8 +26,9 @@ import (
 // case 7, rung 1's close is refused with what rung 1 may take: route to
 // approval, re-verify, a successor, a replan, a withdrawal and a note. An
 // action the table does not hold is refused with the human's: re-verify,
-// a raise of the ceiling, a successor, a replan, a close and a note; no
-// confirm_audit, as the rig's audit finding is at no file. With case 7 live, an
+// a successor, a replan, a close and a note, no extend after the fund that
+// bought nothing, and no confirm_audit, as the rig's audit finding is at
+// no file. With case 7 live, an
 // answer with no case is refused naming it. Nothing is written.
 func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 	g := newFactsRig(t)
@@ -43,7 +44,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close with no case", ActInput{By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"the check-in may not pick `close`: the factory agent and the human may, and the check-in may take `replan`"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
-			"no ask is open on card #12, so `successor` has nothing to answer, and the human may take `raise_ceiling`, `replan` and `close`"},
+			"no ask is open on card #12, so `successor` has nothing to answer, and the human may take `replan` and `close`"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -60,10 +61,10 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"the check-in may not pick `close`: the factory agent and the human may, and the check-in may take `route_approval`, `reverify`, `successor` and `replan`"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
-			"there is no action `approve`, and the human may take `reverify`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
-		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
+			"there is no action `approve`, and the human may take `reverify`, `successor`, `replan`, `close` and `note`"},
+		{"a room with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: extendBy(map[string]any{"sessions": 1})},
 			"Card #12 waits on the session cap: answer that ask, not the card."},
-		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
+		{"a room with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: extendBy(map[string]any{"sessions": 1})},
 			"Card #12 waits on the session cap (`case_id 7`): answer that ask, not the card."},
 	} {
 		c.in.TaskID = "t1"
@@ -78,25 +79,32 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 	}
 }
 
-// With no case, a fund of 1 EUR on a running card raises its budget from
-// 3.50 to 4.50 EUR under the ceiling of 5 and writes the card_funded row as
-// a pool draw of rung 3 with the head, checks and findings it was weighed
-// on. No case is resolved, and no answer row, comment or signal follows.
-func TestActWithNoCaseFundsTheCard(t *testing.T) {
+// With no case, a room of 1 on a running card gives it the money a
+// session's worth lacks: 4.75 EUR spent over 3 sessions is 1.58 EUR a
+// session (4.75 / 3, above the rig's opening), and 5.15 - 4.75 = 0.40 EUR
+// left less the 0.40 reserve leaves nothing, so the press adds 1.59 EUR
+// (rounded up to the cent), from 5.15 to 6.74 EUR under the card's limit
+// of 10, and writes the card_funded row as a pool draw of rung 3 with the
+// room, the estimate and the head, checks and findings it was weighed on.
+// Its 12 minutes left and its 1 start left hold the session's worth, so
+// no extend row. No case is resolved, and no answer row, comment or
+// signal follows.
+func TestActWithNoCaseGivesTheCardRoom(t *testing.T) {
 	g := newFactsRig(t)
 	card := g.store.tasks["t1"]
-	card.Status, card.BudgetEUR = "running", 3.5
+	card.Status, card.BudgetEUR, card.CeilingEUR = "running", 5.15, 10
 	g.store.tasks["t1"] = card
 	got, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", By: "sebastian", Via: ViaConsole, Rung: 3,
-		Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}})
+		Res: extendBy(map[string]any{"sessions": 1})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Case.ID != 0 || got.Drawn != (policy.Draw{EUR: 1}) || got.Comment != 0 || got.Text != "Card #12 took “Add money”: 1.00 EUR from the pool." {
-		t.Fatalf("result = %+v, want no case, 1 EUR drawn, no comment", got)
+	if got.Case.ID != 0 || got.Drawn.Sessions != 0 || got.Drawn.AgentTime != 0 || Cents(got.Drawn.EUR) != 159 || got.Comment != 0 ||
+		got.Text != "Card #12 took “Give more room”: 1 session's worth." {
+		t.Fatalf("result = %+v, want no case, 1.59 EUR drawn, no comment", got)
 	}
-	if b := g.store.tasks["t1"].BudgetEUR; b != 4.5 {
-		t.Fatalf("budget = %v, want 4.5", b)
+	if b := g.store.tasks["t1"].BudgetEUR; Cents(b) != 674 {
+		t.Fatalf("budget = %v, want 6.74", b)
 	}
 	if len(g.store.events) != 1 || len(g.store.resolved) != 0 {
 		t.Fatalf("events %+v, cases resolved %v; want the one card_funded row and none", g.store.events, g.store.resolved)
@@ -105,8 +113,9 @@ func TestActWithNoCaseFundsTheCard(t *testing.T) {
 	d := e.Detail
 	if e.Kind != EventCardFunded || e.Actor != "sebastian" || e.Via != ViaConsole || e.Repository != "demo-app/demo-app" ||
 		d["pool"] != true || d["rung"] != 3 || d["case_id"] != int64(0) || d["head"] != "" || d["checks"] != "" ||
-		d["amount_eur"] != 1.0 || d["from_eur"] != 3.5 || d["to_eur"] != 4.5 {
-		t.Fatalf("the row = %+v, want card_funded by sebastian via console, pool true, rung 3, case 0, 1 EUR from 3.5 to 4.5", e)
+		d["amount_eur"] != 1.59 || d["from_eur"] != 5.15 || d["room_sessions"] != 1 || d["room_money"] != true ||
+		d["session_time_s"] != int64(300) || d["from_sessions"] != 3 {
+		t.Fatalf("the row = %+v, want card_funded by sebastian via console, pool true, rung 3, case 0, 1.59 EUR from 5.15, the room of 1 with money and the 300 s estimate from 3 sessions", e)
 	}
 	if ids, ok := d["findings"].([]string); !ok || len(ids) != 0 {
 		t.Fatalf("findings = %#v, want the empty list the read timeline gave", d["findings"])
@@ -152,14 +161,14 @@ func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseD
 
 // When the case cannot end after the retry filed its replacement, the
 // error leads with what ran, so the human reads that #9 exists, and the
-// session drawn beside it, which rolled back, is in neither Did nor Drawn.
+// room drawn beside it, which rolled back, is in neither Did nor Drawn.
 func TestActSaysWhatRanWhenTheCaseCannotEnd(t *testing.T) {
 	r, store, _, _, _ := newRetryRig(t)
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman}}
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	r.store = resolveFails{store, Case{ID: 3, Kind: CaseDependencyFailed, Status: CaseResolved, ResolvedAt: &at, Resolution: &CaseResolution{By: "bo", Action: ActResume}}}
 	got, err := r.Act(context.Background(), ActInput{TaskID: "t-b", CaseID: 3, By: "alice", Rung: 3,
-		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Fund: &policy.Draw{Sessions: 1}}})
+		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Room: &RoomAsk{Sessions: 1}}})
 	var ended ErrCaseEnded
 	const want = "Filed #9 in place of #5. The answer stopped there: the failed dependency on #6 was resolved by bo with resume at 10:04 UTC"
 	if !errors.As(err, &ended) || err.Error() != want || len(got.Did) != 1 || got.Did[0].Action != ActRetry || !got.Drawn.IsZero() {
@@ -215,7 +224,7 @@ func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
 	store.cases = []Case{{ID: 9, TaskID: "h", Repository: "sf/repo", Kind: CaseHumanCard, Status: CaseAtHuman}}
 	var refused ErrActRefused
 	_, err := r.Act(ctx, ActInput{TaskID: "h", CaseID: 9, By: "ana", Rung: 3, Res: Resolution{Action: ActHandBack}})
-	if want := "`hand_back` carries what stops you, for the planner: the note, and the human may take `fund`, `replan`, `close`, `restart_plan` and `note`"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+	if want := "`hand_back` carries what stops you, for the planner: the note, and the human may take `replan`, `close`, `restart_plan` and `note`"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("a hand-back with no words = %v, want the refusal %q", err, want)
 	}
 	if steps := replanSteps(t, r, "p"); len(steps) != 0 || store.cases[0].Status != CaseAtHuman {
@@ -328,7 +337,7 @@ func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
 		t.Fatalf("case %s, resolved %v; want nothing moved", g.store.cases[0].Status, g.store.resolved)
 	}
 	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 2, Res: Resolution{Action: ActHandBack, Note: "not mine"}})
-	if want := "the factory agent may not pick `hand_back`: the human may, and the factory agent may take `fund`, `replan`, `close` and `note`"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+	if want := "the factory agent may not pick `hand_back`: the human may, and the factory agent may take `replan`, `close` and `note`"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("the chat's hand-back = %v, want the refusal %q", err, want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "Done another way."}}); err != nil {
@@ -550,39 +559,33 @@ func retriedTwice(t *testing.T, second ActInput) {
 	}
 }
 
-// A card stopped at its agent time cap takes an extend of its agent time,
-// not one of the sessions alone: that raises nothing the stop names, is
-// refused with the stop's own words and the minutes each rung may ask for
-// (the large card's draw of 90 minutes, the pool's 30 hours) before it
-// draws — no row, no raise, the case open — so the stop's next answer is
-// not already weighed as a draw that bought nothing. The same extend with its minutes of agent time
-// raises the card and resolves the stop.
-func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
+// A card stopped at its agent time cap takes a room of 1: its 20 minutes
+// used of 20 over 3 sessions make 400 seconds a session's worth, rounded
+// up to 7 minutes, and its money left (0.25 less the 0.40 reserve) needs
+// 1.58 + 0.15 = 1.74 EUR, which passes the 5.00 EUR limit by 1.74. The
+// human's press raises the limit, the agent time and the budget and
+// resolves the stop.
+func TestActGivesTheTimeCapItsSessionsWorth(t *testing.T) {
 	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.Usage.AgentTime = 20 * time.Minute
+	g.store.tasks["t1"] = card
 	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseAgentTimeCap, Status: CaseAtHuman,
 		Facts: map[string]any{"trip": "trip-701"}})
-	events, usage := len(g.store.events), g.store.tasks["t1"].Usage
-	in := ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaConsole, Rung: 3,
-		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
-	var refused ErrActRefused
-	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session, and sessions alone buy none. "+
-			"The card's draw leaves 90 minutes and the pool 1800 minutes of agent time, so the check-in may ask for up to 90 minutes, the factory agent for up to 600 minutes and the human for up to 600 minutes, ") {
-		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
-	}
-	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||
-		g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman {
-		t.Fatalf("the refused extend wrote rows (%d events, usage %+v, resolved %v); want nothing drawn and the case open",
-			len(g.store.events)-events, g.store.tasks["t1"].Usage, g.store.resolved)
-	}
-	in.Res = Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 300}}
-	in.Post = func(context.Context) (int64, error) { return 801, nil }
+	in := ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaConsole, Rung: 3, Res: extendBy(map[string]any{"sessions": 1}),
+		Post: func(context.Context) (int64, error) { return 801, nil }}
 	out, err := g.r.Act(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Drawn.AgentTime != 5*time.Minute || g.store.tasks["t1"].Usage.RaisedTime != usage.RaisedTime+5*time.Minute {
-		t.Fatalf("drawn %+v, usage %+v; want the 5 minutes of agent time drawn and raised", out.Drawn, g.store.tasks["t1"].Usage)
+	got := g.store.tasks["t1"]
+	if out.Drawn.Sessions != 0 || out.Drawn.AgentTime != 7*time.Minute || Cents(out.Drawn.EUR) != 174 ||
+		got.Usage.RaisedTime != 12*time.Minute || got.Usage.RaisedSessions != 1 || Cents(got.BudgetEUR) != 674 || Cents(got.CeilingEUR) != 674 {
+		t.Fatalf("drawn %+v, usage %+v, budget %v, ceiling %v; want 7 minutes and 1.74 EUR, the limit raised to 6.74 first",
+			out.Drawn, got.Usage, got.BudgetEUR, got.CeilingEUR)
+	}
+	if c := g.store.cases[len(g.store.cases)-1]; c.Status != CaseResolved {
+		t.Fatalf("the stop is %s, want it resolved", c.Status)
 	}
 }
 
@@ -649,12 +652,13 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	}
 }
 
-// The project agent's fund in a human's thread on a card whose question
+// The project agent's room in a human's thread on a card whose question
 // waits at the human, out of money, draws: the question stays open,
 // unanswered, and its face is stored again, the question's once the money
-// funds a session. 4.50 of 5.00 EUR spent leaves 0.50 EUR, under the
-// rig's opening of about 1 EUR; 2.00 EUR more leaves 2.50 EUR.
-func TestTheChatsFundOnAWaitingQuestionDrawsAndLeavesItOpen(t *testing.T) {
+// funds a session. 4.50 of 5.00 EUR spent leaves 0.50 EUR, 0.10 past the
+// reserve, under the rig's opening; its one session cost 4.50 EUR, so a
+// room of 1 adds 4.40 EUR, a budget of 9.40 under the limit of 10.
+func TestTheChatsRoomOnAWaitingQuestionDrawsAndLeavesItOpen(t *testing.T) {
 	g := newFactsRig(t)
 	ctx := context.Background()
 	q := Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman,
@@ -663,12 +667,12 @@ func TestTheChatsFundOnAWaitingQuestionDrawsAndLeavesItOpen(t *testing.T) {
 	card := g.store.tasks["t1"]
 	card.HeldEUR, card.CeilingEUR, card.Usage.Attempts = 0, 10, 1
 	g.store.tasks["t1"] = card
-	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 2.0}}})
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 2, Res: extendBy(map[string]any{"sessions": 1})})
 	if err != nil {
-		t.Fatalf("the chat's fund = %v, want it drawn", err)
+		t.Fatalf("the chat's room = %v, want it drawn", err)
 	}
-	if got := g.store.tasks["t1"].BudgetEUR; got != 7 || len(g.store.resolved) != 0 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || out.Drawn.EUR != 2 {
-		t.Fatalf("budget %.2f, drawn %+v, resolved %v; want 7.00 EUR and the question open", got, out.Drawn, g.store.resolved)
+	if got := g.store.tasks["t1"].BudgetEUR; Cents(got) != 940 || len(g.store.resolved) != 0 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || Cents(out.Drawn.EUR) != 440 {
+		t.Fatalf("budget %.2f, drawn %+v, resolved %v; want 9.40 EUR and the question open", got, out.Drawn, g.store.resolved)
 	}
 	if stored := g.store.faces[7]; stored == nil || stored["ask"] != "Which store keeps the snapshots?" {
 		t.Fatalf("the stored face is %v; want the question's", stored)
@@ -745,17 +749,17 @@ func TestTheOffersPassKeepsAQuestionsFaceWithItsCaps(t *testing.T) {
 	}
 }
 
-// A fund on a card that ended is refused naming its end, with no case
+// Room on a card that ended is refused naming its end, with no case
 // needed, and nothing is drawn.
-func TestActRefusesAFundOnAnEndedCard(t *testing.T) {
+func TestActRefusesRoomOnAnEndedCard(t *testing.T) {
 	g := newFactsRig(t)
 	card := g.store.tasks["t1"]
 	card.Status = "done"
 	g.store.tasks["t1"] = card
-	_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}})
+	_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", By: "sebastian", Rung: 3, Res: extendBy(map[string]any{"sessions": 1})})
 	var refused ErrActRefused
-	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "this card ended done: a fund buys nothing, file a new card") {
-		t.Fatalf("a fund on a done card = %v, want the refusal naming its end", err)
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "this card ended done: more room buys nothing, file a new card") {
+		t.Fatalf("room on a done card = %v, want the refusal naming its end", err)
 	}
 	if len(g.store.events) != 0 || g.store.tasks["t1"].BudgetEUR != 5 {
 		t.Fatalf("events %+v, budget %v; want nothing written and 5 EUR", g.store.events, g.store.tasks["t1"].BudgetEUR)
@@ -929,12 +933,12 @@ func TestActWaitChecksIsAcceptedAtTheAgentTimeCap(t *testing.T) {
 	}
 }
 
-// A human card's answer draws nothing and takes no args: Act refuses a fund or
+// A human card's answer draws nothing and takes no args: Act refuses a room or
 // args beside a choice, whichever entry sent it.
-func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
+func TestHumanChoiceTakesNoRoomAndNoArgs(t *testing.T) {
 	r := new(Runner)
 	task := Task{ID: "t1", IssueNumber: 12}
-	for name, res := range map[string]Resolution{"fund": {Action: ActClose, Fund: &policy.Draw{EUR: 1}}, "args": {Action: ActClose, Args: map[string]any{"sessions": 1}}} {
+	for name, res := range map[string]Resolution{"room": {Action: ActClose, Room: &RoomAsk{Sessions: 1}}, "args": {Action: ActClose, Args: map[string]any{"sessions": 1}}} {
 		why, _ := r.humanChoice(context.Background(), task, Case{Kind: CaseHumanCard}, ActInput{Rung: 3, Res: res})
 		if !strings.Contains(why, "card #12 is a human card") {
 			t.Errorf("%s: refusal %q; want a human card's refusal", name, why)
@@ -1061,7 +1065,7 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		{"without a reason", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit}}, "a one-line reason is required"},
 		{"by the project agent", ActInput{TaskID: "t1", CaseID: 9, By: ChatUser, Rung: 2,
-			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "the factory agent may not pick `confirm_audit`: the human may, and the factory agent may take `route_approval`, `reverify`, `extend`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "the factory agent may not pick `confirm_audit`: the human may, and the factory agent may take `route_approval`, `reverify`, `extend`, `successor`, `replan`, `close` and `note`"},
 		{"naming an unknown finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
 				Args: map[string]any{"findings": FindingID("secrets at acceptance/rig_test.go:118")}}},
@@ -1231,8 +1235,8 @@ func TestAQuestionKeepsItsRecommendationThroughACap(t *testing.T) {
 	fence := func(s string) string { return g.r.untrusted(card, s) }
 	g.event("t1", factsNow, EventQuestionAsked, FaceRow(q, g.store.tasks["t1"], f, "", HandedUpBy(g.store.caseSteps[7], 2, ""), fence, g.r.scrub))
 	row()["case_id"] = q.ID
-	want := Recommendation{Action: ActHandover, By: "the factory agent", Grounds: "a stronger model reads the schema"}
-	if got := RecommendationOf(row()); got != want {
+	want := Recommendation{Action: ActHandover, By: "the factory agent", Grounds: "a stronger model reads the schema", Args: map[string]any{"model": "stronger"}}
+	if got := RecommendationOf(row()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("asked with room, the row recommends %+v, want %+v", got, want)
 	}
 	set(limit)
@@ -1242,7 +1246,7 @@ func TestAQuestionKeepsItsRecommendationThroughACap(t *testing.T) {
 	}
 	set(limit - 1)
 	g.r.StoreMissedOffers(ctx)
-	if got := RecommendationOf(row()); row()["ask"] != "Which store keeps the snapshots?" || got != want {
+	if got := RecommendationOf(row()); row()["ask"] != "Which store keeps the snapshots?" || !reflect.DeepEqual(got, want) {
 		t.Fatalf("the cap lifted: the row asks %v and recommends %+v, want the question with %+v", row()["ask"], got, want)
 	}
 }
@@ -1373,8 +1377,8 @@ func TestTheMinutePassWithdrawsAReplacedAskAndTheCardStillWaits(t *testing.T) {
 		labels = append(labels, o.Label)
 	}
 	// t1's budget of 5 EUR is the policy's ceiling (task_max_eur 5), so the
-	// floor asks to raise the limit, not to add money under it
-	if want := []string{"Raise the spend limit", "Start a fresh card on this work", "End the card", "Not now"}; !slices.Equal(labels, want) {
+	// floor's room raises the limit before it adds money
+	if want := []string{"Give more room", "Start a fresh card on this work", "End the card", "Not now"}; !slices.Equal(labels, want) {
 		t.Errorf("the newer ask's answers are %q, want %q", labels, want)
 	}
 	if !slices.Contains(calls, "POST /api/v1/repos/demo-app/demo-app/issues/12/comments") || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "/labels") }) {

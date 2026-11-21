@@ -81,11 +81,12 @@ func requireStoredDecisionsOnTheRungsNames(t *testing.T) {
 // the answers its stop's face holds; caps or a floor that could not be read
 // refuse. A handover needs the same and names its model. By hand: the card
 // has no branch, so no stop holds a successor, and with no spend limit set
-// it stands at its limit, so the money stop holds the raise and no fund.
+// it stands at its limit, so the money stop holds the room, which raises
+// the limit.
 func TestResumeAppliesOnlyWithRoom(t *testing.T) {
 	const capAnswers = " (the card's answers at this stop: `extend`, `close` and `note`)"
-	const moneyAnswers = " (the card's answers at this stop: `raise_ceiling`, `close` and `note`)"
-	room := CaseFacts{Attempts: 2, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3}
+	const moneyAnswers = capAnswers
+	room := CaseFacts{Attempts: 2, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3, MonthLeftEUR: 40}
 	with := func(change func(*CaseFacts)) CaseFacts {
 		f := room
 		change(&f)
@@ -199,9 +200,9 @@ func TestRerunChecksOnceOnAHead(t *testing.T) {
 	}
 }
 
-// A draw after one that bought nothing (no push since it, the head, the
-// checks and the findings as they were) is refused for an extend, a fund
-// and a draw beside any action; a push, a new head, new checks or new
+// A room after a draw that bought nothing (no push since it, the head, the
+// checks and the findings as they were) is refused, for an extend and for
+// a room beside any action; a push, a new head, new checks or new
 // findings lift the refusal. A draw whose row recorded no findings is
 // weighed on the head and the checks, and one that recorded no head and
 // checks never refuses.
@@ -213,74 +214,56 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 		BudgetEUR: 5, CeilingEUR: 10}
 	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
 		"hand over, start a successor, replan or close"
-	extend := Resolution{Args: map[string]any{"sessions": 1}}
-	if got := applies(t, ActExtend, stuck, extend); got != refused {
-		t.Errorf("extend applies = %q, want %q", got, refused)
+	extend := extendBy(map[string]any{"sessions": 1})
+	if got := refusalOn(t, stuck, 2, extend); got != refused {
+		t.Errorf("extend = %q, want %q", got, refused)
 	}
-	if got := applies(t, ActFund, stuck, Resolution{Args: map[string]any{"eur": 1.0}}); got != refused {
-		t.Errorf("fund applies = %q, want %q", got, refused)
-	}
-	note, _ := ActionByName(ActNote)
-	if got := note.refusal(stuck, 2, Resolution{Action: ActNote, Note: "one more", Fund: &policy.Draw{Sessions: 1}}); got != refused {
-		t.Errorf("a note with a draw beside it = %q, want %q", got, refused)
+	if got := refusalOn(t, stuck, 2, Resolution{Action: ActNote, Note: "one more", Room: &RoomAsk{Sessions: 1, Money: true}}); got != refused {
+		t.Errorf("a note with a room beside it = %q, want %q", got, refused)
 	}
 	unweighed := stuck
 	unweighed.DrawFindings, unweighed.Findings = nil, []string{idB}
-	if got := applies(t, ActExtend, unweighed, extend); got != refused {
-		t.Errorf("a draw that recorded no findings: extend applies = %q, want %q", got, refused)
+	if got := refusalOn(t, unweighed, 2, extend); got != refused {
+		t.Errorf("a draw that recorded no findings: extend = %q, want %q", got, refused)
 	}
 	pushed, moved, rechecked, found, unrecorded := stuck, stuck, stuck, stuck, stuck
 	pushed.PushedSinceDraw, moved.Head, rechecked.Checks, found.Findings, unrecorded.LastDrawAt = true, "h2", "green", []string{idA, idB}, nil
 	for name, f := range map[string]CaseFacts{"a push since": pushed, "a new head": moved, "new checks": rechecked, "a new finding": found,
 		"no recorded state": unrecorded} {
-		if got := applies(t, ActExtend, f, extend); got != "" {
-			t.Errorf("%s: extend applies = %q, want it to apply", name, got)
+		if got := refusalOn(t, f, 2, extend); got != "" {
+			t.Errorf("%s: extend = %q, want it taken", name, got)
 		}
 	}
 }
 
 // Rungs 0 and 1 draw within the card's draw bound and the pool, rung 2
-// within the pool, the human past both; a fund stays under the ceiling on
-// every rung. Money compares in cents.
+// within the pool, the human past both. Money compares in cents: a room
+// of 1 on the ahead-of-time row takes 1 start, 10 minutes and 0.30 EUR,
+// which the pool's 60 - 59.7 EUR holds.
 func TestDrawWithinByRung(t *testing.T) {
-	f := CaseFacts{PoolLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 60 - 59.7}, BudgetEUR: 5, CeilingEUR: 8}
-	one := policy.Draw{Sessions: 1}
-	if got, want := drawWithin(f, 1, one, policy.Draw{}, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: the factory agent or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"; got != want {
+	f := aheadOfTime()
+	f.CardDrawLeft, f.PoolLeft = policy.Draw{}, policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 60 - 59.7}
+	one, two := RoomFor(f, 1, true), RoomFor(f, 2, true)
+	if got, want := drawWithin(f, 1, one), "the card's draw bound leaves room for no more session's worth: hand it up (`hand_up`) for the factory agent or the human to give more"; got != want {
 		t.Errorf("rung 1 = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 2, one, policy.Draw{}, false); got != "" {
+	if got := drawWithin(f, 2, one); got != "" {
 		t.Errorf("rung 2 within the pool = %q, want none", got)
 	}
-	past := policy.Draw{Sessions: 3}
-	if got, want := drawWithin(f, 2, past, policy.Draw{}, false), "the escalation pool leaves 2 sessions, 1 hour of agent time and 0.30 EUR this month: only the human draws more. "+
-		"This draw does not fit in sessions (asked 3, left 2). The largest draw that fits is 2 sessions, 0 seconds of agent time and 0.00 EUR: ask for that"; got != want {
+	if got, want := drawWithin(f, 2, two), "the escalation pool leaves room for 1 more session's worth this month, about 14 minutes and 1.20 EUR: ask for that, or hand it up (`hand_up`) for the human to give more"; got != want {
 		t.Errorf("rung 2 past the pool = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 3, past, policy.Draw{}, false); got != "" {
+	if got := drawWithin(f, 3, two); got != "" {
 		t.Errorf("rung 3 past the pool = %q, want none", got)
-	}
-	// 60 - 59.7 is 0.29999999999999716 in floats: 30 cents, which 0.30 EUR fits
-	if got := drawWithin(f, 2, policy.Draw{EUR: 0.3}, policy.Draw{}, true); got != "" {
-		t.Errorf("rung 2 drawing the pool's last 30 cents = %q, want none", got)
-	}
-	if got, want := drawWithin(f, 3, policy.Draw{EUR: 4}, policy.Draw{}, true), "4.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 8.00 EUR: raise the ceiling first"; got != want {
-		t.Errorf("rung 3 past the ceiling = %q, want %q", got, want)
-	}
-	if got := drawWithin(f, 3, policy.Draw{EUR: 3}, policy.Draw{}, true); got != "" {
-		t.Errorf("rung 3 up to the ceiling = %q, want none", got)
-	}
-	if got, want := drawWithin(f, 4, one, policy.Draw{}, false), "there is no decider 4"; got != want {
-		t.Errorf("rung 4 = %q, want %q", got, want)
 	}
 }
 
-// A refused extend names the part past the bound, with what it asked and
-// what the bound left, and the largest draw that fits every bound of the
-// rung: on rungs 0 and 1 the card's draw and the pool together. A fit is
-// named only while the extend's smallest answer at the case (its probe: a
-// minute at an agent time cap, else a session) fits too, so the extend
-// stays on offer; else nothing fits.
+// The store's refusal of a draw past a bound names the part past it, with
+// what it asked and what the bound left, and the largest draw that fits
+// every bound of the rung: on rungs 0 and 1 the card's draw and the pool
+// together. A fit is named only while the smallest draw the answer takes
+// (a room of 1, here a minute at an agent time cap, else a session) fits
+// too; else nothing fits.
 // The facts are case 6354's at an agent time cap: the card's draw holds 3
 // sessions, 90 minutes and 6 EUR, the pool 924 minutes alone.
 func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
@@ -296,7 +279,6 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 	gateSessions, noCase := sessionsOnly, sessionsOnly
 	gateSessions.Kind, noCase.Kind = CaseGateStop, ""
 	odd.PoolLeft.AgentTime = 924*time.Minute + 40*time.Second
-	extend, _ := ActionByName(ActExtend)
 	for _, c := range []struct {
 		name string
 		f    CaseFacts
@@ -317,7 +299,6 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"},
 		{"a session without minutes at the agent time cap", sessionsOnly, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute},
 			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"},
-		// a gate stop's extend is probed with a session, which the pool lacks
 		{"a session at a gate stop", gate, 2, policy.Draw{Sessions: 1},
 			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"},
 		{"a session at the session cap", sessionCap, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute},
@@ -334,117 +315,94 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 		{"two parts past the pool", noCase, 2, policy.Draw{Sessions: 6, EUR: 12},
 			pool5 + "This draw does not fit in sessions (asked 6, left 5) and EUR (asked 12.00, left 10.00). The largest draw that fits is 5 sessions, 0 seconds of agent time and 10.00 EUR: ask for that"},
 	} {
-		if got := drawWithin(c.f, c.rung, c.d, extend.need(c.f), false); got != c.want {
+		need := policy.Draw{Sessions: 1}
+		if c.f.Kind == CaseAgentTimeCap {
+			need = policy.Draw{AgentTime: time.Minute}
+		}
+		var got string
+		if e := newDrawBound(c.rung, c.d, need, c.f.CardDrawLeft, c.f.PoolLeft); e != nil {
+			got = e.Error()
+		}
+		if got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}
 	}
 }
 
-// An extend at the agent time cap that names no minutes is refused with
-// the minutes each rung may ask for: rung 1 the least of the card's draw
-// and the pool, rung 2 the pool's, each at most 600 at once.
-func TestExtendAtATimeCapNamesTheMinutesThatFit(t *testing.T) {
-	f := CaseFacts{Kind: CaseAgentTimeCap, CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6},
-		PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
-	want := "this card stopped for agent time: an extend of its agent time starts the next session, and sessions alone buy none. " +
-		"The card's draw leaves 90 minutes and the pool 924 minutes of agent time, so the check-in may ask for up to 90 minutes, the factory agent for up to 600 minutes and the human for up to 600 minutes"
-	if got := applies(t, ActExtend, f, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
-		t.Errorf("an extend of a session at the agent time cap:\n got %q\nwant %q", got, want)
-	}
-}
-
-// A rung's refused extend names a fit, "ask for that", exactly while the
-// extend stays on offer to it, and sends it up with hand_up only while it
-// does not: at case 6354's agent time cap and at a gate stop, whose extend
-// is probed with a session.
+// A rung's refused extend names a count that fits, "ask for that",
+// exactly while the extend stays on offer to it: at case 6354's agent
+// time cap, where a session's worth is its 7220 seconds and the pool
+// holds 924 minutes and no session, a room of 5 needs 3 starts and a room
+// of 2 none; on an empty pool nothing fits, nor at the session cap with
+// the pool's sessions gone.
 func TestARefusedExtendIsOfferedOnlyWhileAFitRemains(t *testing.T) {
 	timeCap := CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, SessionCap: 3, AgentTimeS: 7220, AgentTimeCapS: 10800,
 		CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6}, PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
-	emptyPool, gate := timeCap, timeCap
+	emptyPool, sessionCap := timeCap, timeCap
 	emptyPool.PoolLeft = policy.Draw{}
-	gate.Kind = CaseGateStop
-	gateSessions := gate
-	gateSessions.PoolLeft = policy.Draw{Sessions: 5, EUR: 10}
+	sessionCap.Kind, sessionCap.Attempts, sessionCap.AgentTimeS = CaseSessionCap, 3, 600
 	for _, c := range []struct {
 		name string
 		f    CaseFacts
-		args map[string]any
+		n    int
 		fit  bool
 	}{
-		{"6354's session and 30 minutes", timeCap, map[string]any{"sessions": 1, "agent_time_s": 1800}, true},
-		{"30 minutes on an empty pool", emptyPool, map[string]any{"agent_time_s": 1800}, false},
-		{"a session at a gate stop, the pool's sessions gone", gate, map[string]any{"sessions": 1}, false},
-		{"minutes at a gate stop, the pool's minutes gone", gateSessions, map[string]any{"agent_time_s": 1800}, true},
+		{"6354's room of 5", timeCap, 5, true},
+		{"a room of 1 on an empty pool", emptyPool, 1, false},
+		{"a room of 1 at the session cap, the pool's sessions gone", sessionCap, 1, false},
 	} {
-		got := actRefusal(c.f, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: c.args}}, "#2109")
+		got := actRefusal(c.f, ActInput{CaseID: 6354, Rung: 2, Res: extendBy(map[string]any{"sessions": c.n})}, "#2109")
 		_, list, _ := strings.Cut(got, ", and the factory agent may take ")
 		offered := slices.Contains(strings.Split(strings.ReplaceAll(list, " and ", ", "), ", "), "`"+ActExtend+"`")
-		if strings.Contains(got, ": ask for that") != c.fit || strings.Contains(got, "hand_up") == c.fit || offered != c.fit {
+		if got == "" || strings.Contains(got, ": ask for that") != c.fit || offered != c.fit {
 			t.Errorf("%s: %q; want a fit and the extend on offer %v", c.name, got, c.fit)
 		}
 	}
-	got := actRefusal(timeCap, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}}, "#2109")
-	_, list, _ := strings.Cut(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and the factory agent may take ")
-	if !strings.Contains(list, "`"+ActExtend+"`") {
-		t.Errorf("6354's refusal = %q, want the fit and the extend on offer", got)
+	got := actRefusal(timeCap, ActInput{CaseID: 6354, Rung: 2, Res: extendBy(map[string]any{"sessions": 5})}, "#2109")
+	if want := "the escalation pool leaves room for 2 more sessions' worth this month, about 241 minutes and 0.00 EUR: ask for that"; !strings.HasPrefix(got, want) {
+		t.Errorf("6354's refusal = %q, want it to start %q", got, want)
 	}
 }
 
-// An answer's draw carries the smallest draw its action takes on the case,
-// the extend's probe, so the store's own refusal names a fit by it as
-// drawWithin does: a minute at an agent time cap, a session at a gate stop,
-// a cent for a fund.
+// An answer's draw carries the smallest room its action gives on the case,
+// a room of 1 with the money as asked, so the store's own refusal names a
+// fit by it as Act does: on the ahead-of-time row 1 start, 10 minutes and
+// 0.30 EUR, or no money.
 func TestCaseDrawCarriesTheActionsNeed(t *testing.T) {
 	g := newFactsRig(t)
 	card := g.store.tasks["t1"]
-	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}
 	for _, c := range []struct {
-		kind CaseKind
-		res  Resolution
-		want policy.Draw
-	}{
-		{CaseAgentTimeCap, extend, policy.Draw{AgentTime: time.Minute}},
-		{CaseGateStop, extend, policy.Draw{Sessions: 1}},
-		{CaseBudgetFloor, Resolution{Action: ActFund, Args: map[string]any{"eur": 2.0}}, policy.Draw{EUR: 0.01}},
-	} {
-		d := g.r.caseDraw(card, CaseFacts{Kind: c.kind}, Case{ID: 7, Kind: c.kind}, ActInput{Rung: 2, Res: c.res}, ViaChat)
-		if d == nil || d.Need != c.want {
-			t.Errorf("%s's %s draw = %+v, want the need %+v", c.kind, c.res.Action, d, c.want)
+		money bool
+		eur   int64
+	}{{true, 30}, {false, 0}} {
+		d := g.r.caseDraw(card, aheadOfTime(), Case{ID: 7}, ActInput{Rung: 2, Res: extendBy(map[string]any{"sessions": 3, "money": c.money})}, ViaChat)
+		if d == nil || d.Need.Sessions != 1 || d.Need.AgentTime != 10*time.Minute || Cents(d.Need.EUR) != c.eur {
+			t.Errorf("money %v: the draw = %+v, want the need of 1 start, 10 minutes and %d cents", c.money, d, c.eur)
 		}
 	}
 }
 
-// Rung 0 never funds, however much room the card has.
-func TestFundIsNeverRungZeros(t *testing.T) {
-	fund, ok := ActionByName(ActFund)
-	if !ok || fund.Rungs[0] {
-		t.Fatalf("fund = %+v, want a row rung 0 may not pick", fund)
-	}
+// Rung 0 never draws money, however much room the card has: a withdraw
+// with a room beside it that holds 0.50 EUR is refused, one without its
+// money is taken. A note is no answer of rung 0's, and rung 1 withdraws a
+// monitor flag's ask alone.
+func TestTheFactoryNeverDrawsMoney(t *testing.T) {
 	room := CaseFacts{PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
-		BudgetEUR: 5, CeilingEUR: 10}
-	if names := offeredNames(room, 0); slices.Contains(names, ActFund) {
-		t.Errorf("rung 0 is offered %v, want no fund", names)
-	}
-	if names := offeredNames(room, 1); !slices.Contains(names, ActFund) {
-		t.Errorf("rung 1 is offered %v, want fund", names)
-	}
-	if got, want := fund.refusal(room, 0, Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}), "the factory may not pick `fund`: the check-in, the factory agent and the human may"; got != want {
-		t.Errorf("rung 0's fund = %q, want %q", got, want)
-	}
+		BudgetEUR: 5, CeilingEUR: 10, FloorEUR: 0.5, MonthLeftEUR: 40}
 	note, _ := ActionByName(ActNote)
 	if got, want := note.refusal(room, 0, Resolution{Action: ActNote, Note: "x"}), "the factory may not pick `note`: the factory agent and the human may"; got != want {
 		t.Errorf("rung 0's note = %q, want %q", got, want)
 	}
 	withdraw, _ := ActionByName(ActWithdraw)
-	if got, want := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}), "the factory may not draw money: the check-in, the factory agent and the human may"; got != want {
+	if got, want := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Room: &RoomAsk{Sessions: 1, Money: true}}), "the factory may not draw money: the check-in, the factory agent and the human may"; got != want {
 		t.Errorf("rung 0's withdraw with money beside it = %q, want %q", got, want)
 	}
-	if got := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Fund: &policy.Draw{Sessions: 1}}); got != "" {
-		t.Errorf("rung 0's withdraw with a session beside it = %q, want none", got)
+	if got := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Room: &RoomAsk{Sessions: 1}}); got != "" {
+		t.Errorf("rung 0's withdraw with a room without money beside it = %q, want none", got)
 	}
 	flag := room
 	flag.Kind = CaseMonitorFlag
-	if got := withdraw.refusal(flag, 1, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}); got != "" {
+	if got := withdraw.refusal(flag, 1, Resolution{Action: ActWithdraw, Room: &RoomAsk{Sessions: 1, Money: true}}); got != "" {
 		t.Errorf("rung 1's withdraw of a monitor flag's case with money beside it = %q, want none", got)
 	}
 	if got := withdraw.refusal(room, 1, Resolution{Action: ActWithdraw}); !strings.Contains(got, "A withdrawal (`withdraw`) ends a monitor flag's ask alone") {
@@ -457,14 +415,14 @@ func TestFundIsNeverRungZeros(t *testing.T) {
 
 // A green approved head at the session cap, its budget at the ceiling and
 // the pool spent: the human is offered a re-verify (the approval card is
-// where they approve), an extend and a ceiling raise past the pool, a
+// where they approve), an extend that raises the limit past the pool, a
 // successor, a replan of the direct card, a close and a note; rung 0,
-// bound by the card's draw, routes to approval, gets no extend and
-// withdraws instead of closing.
+// which draws no money, routes to approval, gets no extend and withdraws
+// instead of closing.
 func TestOfferedFollowsTheTable(t *testing.T) {
 	f := CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
-		AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5}
-	if got, want := offeredNames(f, 3), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
+		AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5, MonthLeftEUR: 40}
+	if got, want := offeredNames(f, 3), []string{ActReverify, ActExtend, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3 is offered %v, want %v", got, want)
 	}
 	if got, want := offeredNames(f, 0), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw}; !slices.Equal(got, want) {
@@ -579,50 +537,43 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	}
 }
 
-// Every money part of an answer draws from the pool together, the ceiling
-// bounds only what goes to the card's budget, the human is never refused
-// on the pool, and no draw is weighed while the reads it needs failed.
+// A room's money and its raise of the spend limit draw from the pool
+// together, the human is never refused on the pool, and no room is
+// weighed while the reads it needs failed. A room of 2 on the
+// ahead-of-time row under a 7.00 EUR limit takes 1.50 EUR and raises the
+// limit by 0.50: 2.00 EUR, past a pool of 1.90 and within one of 2.00.
 func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
-	f := CaseFacts{PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 10}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
-		BudgetEUR: 5, CeilingEUR: 6}
-	raise, _ := ActionByName(ActRaiseCeiling)
-	raiseBy := func(eur float64, beside *policy.Draw) Resolution {
-		return Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": eur}, Fund: beside}
-	}
-	const pool = "the escalation pool leaves 5 sessions, 5 hours of agent time and 10.00 EUR this month: only the human draws more. This draw does not fit in EUR "
-	const fit = ". The largest draw that fits is 0 sessions, 0 seconds of agent time and 10.00 EUR: ask for that"
-	for _, c := range []struct {
-		name string
-		rung int
-		r    Resolution
-		want string
-	}{
-		{"rung 3 raises past the pool", 3, raiseBy(20, nil), ""},
-		{"rung 2 raises within it", 2, raiseBy(8, nil), ""},
-		{"rung 2 raises within it and funds past it", 2, raiseBy(8, &policy.Draw{EUR: 5}), pool + "(asked 13.00, left 10.00)" + fit},
-		{"rung 2 raises past it", 2, raiseBy(12, nil), pool + "(asked 12.00, left 10.00)" + fit},
-		// budget 5 at a ceiling of 6: the raise of 3 is written first, so a
-		// fund beside it meets a ceiling of 9, which 4 more fits and 5 more
-		// passes
-		{"the human funds past the raised ceiling", 3, raiseBy(3, &policy.Draw{EUR: 5}),
-			"5.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 9.00 EUR: raise the ceiling first"},
-		{"the human funds within the raised ceiling", 3, raiseBy(3, &policy.Draw{EUR: 4}), ""},
-		{"a negative part beside", 3, raiseBy(3, &policy.Draw{Sessions: -1, EUR: 1}), "the draw has a part below 0 or an endless one"},
-	} {
-		if got := raise.refusal(f, c.rung, c.r); got != c.want {
-			t.Errorf("%s: refusal = %q, want %q", c.name, got, c.want)
-		}
-	}
+	f := aheadOfTime()
+	f.CeilingEUR, f.PoolLeft = 7, policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 1.9}
 	extend, _ := ActionByName(ActExtend)
+	two := extendBy(map[string]any{"sessions": 2})
+	if got, want := extend.refusal(f, 2, two), "the escalation pool leaves room for 1 more session's worth this month, about 14 minutes and 1.20 EUR: ask for that, or hand it up (`hand_up`) for the human to give more"; got != want {
+		t.Errorf("rung 2's room past the pool = %q, want %q", got, want)
+	}
+	if got := extend.refusal(f, 3, two); got != "" {
+		t.Errorf("the human's room past the pool = %q, want none", got)
+	}
+	f.PoolLeft.EUR = 2
+	if got := extend.refusal(f, 2, two); got != "" {
+		t.Errorf("rung 2's room within the pool = %q, want none", got)
+	}
 	for _, reader := range []string{"events", "checks"} {
 		blind := f
 		blind.Partial = []string{reader}
 		want := "the card's " + reader + " could not be read, so a draw cannot be weighed against the last one: try again in a minute, or close the card"
-		if got := extend.refusal(blind, 3, Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}); got != want {
+		if got := extend.refusal(blind, 3, extendBy(map[string]any{"sessions": 1})); got != want {
 			t.Errorf("%s unread: extend = %q, want %q", reader, got, want)
 		}
 	}
-	if got, want := extend.refusal(f, 7, Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}), "there is no decider 7"; got != want {
+	blind := f
+	blind.Partial = []string{"month"}
+	if got, want := extend.refusal(blind, 3, extendBy(map[string]any{"sessions": 1})), "the project's money left this month could not be read, so a room's money cannot be weighed against it: try again in a minute, or give the room without its money"; got != want {
+		t.Errorf("the month unread: extend = %q, want %q", got, want)
+	}
+	if got := extend.refusal(blind, 3, extendBy(map[string]any{"sessions": 1, "money": false})); got != "" {
+		t.Errorf("the month unread: extend without money = %q, want none", got)
+	}
+	if got, want := extend.refusal(f, 7, extendBy(map[string]any{"sessions": 1})), "there is no decider 7"; got != want {
 		t.Errorf("rung 7: extend = %q, want %q", got, want)
 	}
 	closing, _ := ActionByName(ActClose)
@@ -632,35 +583,6 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 	withdraw, _ := ActionByName(ActWithdraw)
 	if got, want := withdraw.refusal(f, 3, Resolution{Action: ActWithdraw}), "the human may not pick `withdraw`: the factory and the check-in may"; got != want {
 		t.Errorf("the human's withdraw = %q, want %q", got, want)
-	}
-}
-
-// A raise of the ceiling moves no money into the budget, so the bought-
-// nothing rule and the reads it is weighed on refuse an extend, a fund and
-// a draw beside the raise, never the raise alone.
-func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
-	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
-	stuck := CaseFacts{Head: "h1", Checks: "red", Findings: []string{idA}, LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red",
-		DrawFindings: []string{idA}, Attempts: 2, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, BudgetEUR: 5, CeilingEUR: 6}
-	raise, _ := ActionByName(ActRaiseCeiling)
-	byTwo := Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": 2.0}}
-	beside := byTwo
-	beside.Fund = &policy.Draw{EUR: 1}
-	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
-		"hand over, start a successor, replan or close"
-	if got := raise.refusal(stuck, 3, byTwo); got != "" {
-		t.Errorf("the human's raise after a draw that bought nothing = %q, want none", got)
-	}
-	if got := raise.refusal(stuck, 3, beside); got != refused {
-		t.Errorf("a fund beside the raise = %q, want %q", got, refused)
-	}
-	blind := stuck
-	blind.LastDrawAt, blind.Partial = nil, []string{"events"}
-	if got := raise.refusal(blind, 2, byTwo); got != "" {
-		t.Errorf("rung 2's raise with the events unread = %q, want none", got)
-	}
-	if got, want := raise.refusal(blind, 2, beside), "the card's events could not be read, so a draw cannot be weighed against the last one: try again in a minute, or close the card"; got != want {
-		t.Errorf("a fund beside the raise with the events unread = %q, want %q", got, want)
 	}
 }
 
@@ -682,45 +604,19 @@ func TestBoughtNothingWeighsHeadAndChecksWhenTheTimelineIsUnread(t *testing.T) {
 	}
 }
 
-// A raise of the ceiling is a whole cent or more, as the store keeps it.
-func TestRaiseCeilingNeedsAWholeCent(t *testing.T) {
-	for _, eur := range []float64{0.004, 0, -1} {
-		want := fmt.Sprintf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
-		if got := applies(t, ActRaiseCeiling, CaseFacts{}, Resolution{Args: map[string]any{"eur": eur}}); got != want {
-			t.Errorf("a raise of %v = %q, want %q", eur, got, want)
-		}
-	}
-	if got := applies(t, ActRaiseCeiling, CaseFacts{}, Resolution{Args: map[string]any{"eur": 0.01}}); got != "" {
-		t.Errorf("a raise of a cent = %q, want it to apply", got)
-	}
-}
-
-// An extend takes no part below 0, and an extend of nothing names what it
-// may take.
-func TestExtendRefusesAPartBelowZeroAndNothing(t *testing.T) {
-	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{Args: map[string]any{"sessions": -5}}), "an extend takes no part below 0"; got != want {
-		t.Errorf("an extend of -5 sessions = %q, want %q", got, want)
-	}
-	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{}), "an extend needs sessions or agent time above 0"; got != want {
-		t.Errorf("an extend of nothing = %q, want %q", got, want)
-	}
-}
-
-// An extend answers a cap: a session cap, a check-in's spend stop (an agent time
-// cap takes agent time, see TestExtendAtATimeCapTakesAgentTime), and the owner exits of a gate stop and of findings that repeat,
-// whose questions offer "Extend the card"; with no case it raises a live
-// card's caps. A stop on money says it waits on money, with the answers its
-// face holds (on facts with no amount, neither a fund nor a raise), any other case asked a
-// question, which an extend does not answer, and the human is not offered
-// one there.
+// An extend answers a cap: the session cap, the agent time cap, the money
+// stop, a check-in's spend stop, and the owner exits of a gate stop and of
+// findings that repeat, whose questions offer more room; with no case it
+// gives a live card room. A spending limit of the factory or the project
+// is no room of the card's, and any other case asked a question, which
+// room does not answer, and the human is not offered one there.
 func TestExtendAnswersACapAlone(t *testing.T) {
-	const asked = "this card asked a question, not for a session: answer it, or extend at its cap"
+	const asked = "this card asked a question, not for room: answer it, or give room at its cap"
 	one := Resolution{Args: map[string]any{"sessions": 1}}
 	for kind, want := range map[CaseKind]string{
-		CaseSessionCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
-		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
-		CaseBudgetFloor: "this card waits on money, not a session (the card's answers at this stop: `close` and `note`)",
-		CaseMonthCap:    "this card waits on the month cap, not a session: reset the month's count in the console's status panel, raise the month cap in policy.yaml by a commit, or wait for the month to turn, then `fund` or `retry`",
+		CaseSessionCap: "", CaseAgentTimeCap: "", CaseBudgetFloor: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
+		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked, CaseMergeApproval: asked, CaseFactoryMonthCap: asked,
+		CaseDayCap: capLiftsNot, CaseMonthCap: capLiftsNot, CaseProjectCap: capLiftsNot,
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, one); got != want {
 			t.Errorf("an extend on %q = %q, want %q", kind, got, want)
@@ -731,87 +627,31 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	}
 }
 
-// An agent time cap is answered by agent time: an extend that raises none
-// of the time its stop names, sessions alone, is refused with the
-// stop's own words before it draws, so it leaves the card's last draw as
-// it stands and the next extend is not already refused for having bought
-// nothing. The extend stays offered there, probed on the agent time it
-// takes.
-func TestExtendAtATimeCapTakesAgentTime(t *testing.T) {
-	timeCap := CaseFacts{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200}
-	const noMinutes = "this card stopped for agent time: an extend of its agent time starts the next session, and sessions alone buy none. " +
-		"The card's draw leaves 0 minutes and the pool 0 minutes of agent time, so the check-in may ask for none, the factory agent for none and the human for up to 600 minutes"
-	for _, tc := range []struct {
-		name string
-		r    Resolution
-		want string
-	}{
-		{"sessions alone", Resolution{Args: map[string]any{"sessions": 1}}, noMinutes},
-		{"agent time", Resolution{Args: map[string]any{"agent_time_s": 600}}, ""},
-		{"agent time past the bound", Resolution{Args: map[string]any{"agent_time_s": 36001}}, "an extend raises at most 600 minutes of agent time at once"},
-		{"agent time and sessions", Resolution{Args: map[string]any{"agent_time_s": 600, "sessions": 1}}, ""},
-	} {
-		if got := applies(t, ActExtend, timeCap, tc.r); got != tc.want {
-			t.Errorf("%s at the agent time cap = %q, want %q", tc.name, got, tc.want)
+// An agent time cap is answered by the time a room lacks: on the
+// agent-time stop row, 2 minutes left of a 14-minute session's worth, a
+// room of 1 adds 12 minutes and no start, and every decider is offered it.
+func TestExtendAtATimeCapGivesItsTime(t *testing.T) {
+	timeCap := aheadOfTime()
+	timeCap.Kind, timeCap.AgentTimeCapS = CaseAgentTimeCap, 44*60
+	if r := RoomFor(timeCap, 1, true); r.Starts != 0 || r.AgentTime != 12*time.Minute || r.EUR != 0 {
+		t.Errorf("the room of 1 = %+v, want 12 minutes alone", r)
+	}
+	for rung := range 4 {
+		if got := offeredNames(timeCap, rung); !slices.Contains(got, ActExtend) {
+			t.Errorf("rung %d at the agent time cap is offered %v, want the extend", rung, got)
 		}
 	}
-	if got := offeredNames(timeCap, 3); !slices.Contains(got, ActExtend) {
-		t.Errorf("the human at the agent time cap is offered %v, want the extend", got)
-	}
 }
 
-// A fund on a card that ended buys nothing: it is refused naming the end.
-func TestFundRefusesAnEndedCard(t *testing.T) {
-	if got, want := applies(t, ActFund, CaseFacts{Final: "done"}, Resolution{Args: map[string]any{"eur": 1.0}}),
-		"this card ended done: a fund buys nothing, file a new card"; got != want {
-		t.Errorf("a fund on a done card = %q, want %q", got, want)
-	}
-}
-
-// A card that ended takes nothing that buys: an extend and a raise of its
-// ceiling are refused naming the end, as a fund is, and the human is
-// offered none of the three there.
-func TestEndedCardTakesNoExtendOrRaise(t *testing.T) {
+// A card that ended takes no room: an extend is refused naming the end,
+// and the human is offered none there.
+func TestEndedCardTakesNoExtend(t *testing.T) {
 	ended := CaseFacts{Final: "done"}
-	for _, tc := range []struct {
-		action string
-		r      Resolution
-		want   string
-	}{
-		{ActExtend, Resolution{Args: map[string]any{"sessions": 1}}, "this card ended done: an extend buys nothing, file a new card"},
-		{ActRaiseCeiling, Resolution{Args: map[string]any{"eur": 1.0}}, "this card ended done: a raise of its ceiling buys nothing, file a new card"},
-	} {
-		if got := applies(t, tc.action, ended, tc.r); got != tc.want {
-			t.Errorf("%s on a done card = %q, want %q", tc.action, got, tc.want)
-		}
+	if got, want := applies(t, ActExtend, ended, Resolution{Args: map[string]any{"sessions": 1}}), "this card ended done: more room buys nothing, file a new card"; got != want {
+		t.Errorf("an extend on a done card = %q, want %q", got, want)
 	}
-	if got := offeredNames(ended, 3); slices.Contains(got, ActExtend) || slices.Contains(got, ActRaiseCeiling) || slices.Contains(got, ActFund) {
-		t.Errorf("the human on a done card is offered %v, want no extend, raise or fund", got)
-	}
-}
-
-// An extend on a card short of money names the stop and the answers its
-// face holds: under an 18.00 EUR spend limit and with no branch, the fund,
-// the close and the note. At the month cap the gateway refuses every call
-// until the cap moves, so the refusal names the cap before the fund. Act's
-// door adds every answer the human may take: with 0.00 EUR left of a 2.00
-// EUR opening and no pull request, the table's fund, raise_ceiling, replan,
-// close and note, in the table's order.
-func TestExtendOnAMoneyStopNamesTheStop(t *testing.T) {
-	floor := CaseFacts{Kind: CaseBudgetFloor, Attempts: 1, SessionCap: 3, BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: 18,
-		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
-	got := actRefusal(floor, ActInput{CaseID: 7, Rung: 3, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}}, "#5")
-	if want := "this card waits on money, not a session (the card's answers at this stop: `fund`, `close` and `note`)," +
-		" and the human may take `fund`, `raise_ceiling`, `replan`, `close` and `note`"; got != want {
-		t.Errorf("the human's extend at the budget floor = %q, want %q", got, want)
-	}
-	for kind, want := range map[CaseKind]string{
-		CaseBudgetFloor: "this card waits on money, not a session (the card's answers at this stop: `close` and `note`)",
-		CaseMonthCap:    "this card waits on the month cap, not a session: reset the month's count in the console's status panel, raise the month cap in policy.yaml by a commit, or wait for the month to turn, then `fund` or `retry`",
-	} {
-		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
-			t.Errorf("an extend on %s = %q, want %q", kind, got, want)
-		}
+	if got := offeredNames(ended, 3); slices.Contains(got, ActExtend) {
+		t.Errorf("the human on a done card is offered %v, want no extend", got)
 	}
 }
 
@@ -859,14 +699,14 @@ func TestRungZeroClosesOnlyAnEndedCard(t *testing.T) {
 
 // A monitor flag's case sits beside the card's run, which carries out no
 // answer to it: the human is offered only what Act does itself, here the
-// raise of the ceiling, the replan, the settle of the flag and a note,
+// replan, the settle of the flag and a note,
 // and a resume is refused. Close is refused on the live card, since it would
 // end the card, and taken on an ended one, whose issue it may close; a
 // settle of any other case is refused.
 func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	f := CaseFacts{Kind: CaseMonitorFlag, Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
 		AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5}
-	if got, want := offeredNames(f, 3), []string{ActRaiseCeiling, ActReplan, ActSettle, ActNote}; !slices.Equal(got, want) {
+	if got, want := offeredNames(f, 3), []string{ActReplan, ActSettle, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3 on a monitor case is offered %v, want %v", got, want)
 	}
 	resume, _ := ActionByName(ActResume)
@@ -891,20 +731,19 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 
 // No answer leads a stop's list: at a budget floor, a session cap and an
 // agent time cap the human is offered the action table's rows in the
-// table's order. The table holds reverify before extend and extend before
-// fund, so on an open pull request reverify stands ahead of the fund at the
-// floor and ahead of the extend at both caps.
+// table's order. The table holds reverify before extend, so on an open
+// pull request reverify stands ahead of the extend at every stop.
 func TestOfferedListsTheTableInItsOrderAtEveryStop(t *testing.T) {
 	base := CaseFacts{Head: "abcdef123", PR: 9, PROpen: true, Pushed: true, Checks: "green", ReviewApproved: true,
 		Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300,
-		BudgetEUR: 4, SpentEUR: 1, LeftEUR: 3, FloorEUR: 2, CeilingEUR: 18,
+		BudgetEUR: 4, SpentEUR: 1, LeftEUR: 3, FloorEUR: 2, CeilingEUR: 18, MonthLeftEUR: 40,
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	for _, tc := range []struct {
 		kind CaseKind
 		at   func(*CaseFacts)
 		cure string
 	}{
-		{CaseBudgetFloor, func(f *CaseFacts) { f.SpentEUR, f.LeftEUR = 4, 0 }, ActFund},
+		{CaseBudgetFloor, func(f *CaseFacts) { f.SpentEUR, f.LeftEUR = 4, 0 }, ActExtend},
 		{CaseSessionCap, func(f *CaseFacts) { f.Attempts = 3 }, ActExtend},
 		{CaseAgentTimeCap, func(f *CaseFacts) { f.AgentTimeS = 7200 }, ActExtend},
 	} {
@@ -930,14 +769,15 @@ func TestOfferedListsTheTableInItsOrderAtEveryStop(t *testing.T) {
 	}
 }
 
-// A budget floor's amount reads what a session may spend, the gate
-// reserve held out: 0.70 EUR left less the 0.40 reserve is 0.30, and an
-// opening of 0.60 needs 0.30 EUR more. Its money fact names the budget
-// and what one more session buys.
-func TestShortfallHoldsTheReserveOut(t *testing.T) {
+// A room's money reads what a session may spend, the gate reserve held
+// out: 0.70 EUR left less the 0.40 reserve is 0.30, and before its first
+// session a session's worth is the 0.60 EUR opening, so a room of 1 needs
+// 0.30 EUR more. Its money fact names the budget and what one more
+// session buys.
+func TestARoomsMoneyHoldsTheReserveOut(t *testing.T) {
 	f := CaseFacts{BudgetEUR: 3, SpentEUR: 2.3, LeftEUR: 0.7, ReserveEUR: 0.4, FloorEUR: 0.6, Model: "factory/small"}
-	if got := shortfall(f); got != 0.3 {
-		t.Errorf("shortfall = %v, want 0.30", got)
+	if got := RoomFor(f, 1, true).EUR; got != 0.3 {
+		t.Errorf("the room's money = %v, want 0.30", got)
 	}
 	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.3, Buys: "one session on factory/small"}
 	if got := tripMoney(CaseBudgetFloor, f); got == nil || *got != want {
@@ -947,10 +787,10 @@ func TestShortfallHoldsTheReserveOut(t *testing.T) {
 
 // The amount rounds up to the cent: an opening of 0.604 against a session
 // ceiling of 0.11 - 0.40 = -0.29 needs 0.894, so 0.90, not 0.89.
-func TestShortfallRoundsUp(t *testing.T) {
+func TestARoomsMoneyRoundsUp(t *testing.T) {
 	f := CaseFacts{BudgetEUR: 3, SpentEUR: 2.89, LeftEUR: 0.11, ReserveEUR: 0.4, FloorEUR: 0.604}
-	if got := shortfall(f); got != 0.9 {
-		t.Fatalf("shortfall = %v, want 0.90", got)
+	if got := RoomFor(f, 1, true).EUR; got != 0.9 {
+		t.Fatalf("the room's money = %v, want 0.90", got)
 	}
 }
 
@@ -1156,8 +996,8 @@ func TestApproveMergeApplies(t *testing.T) {
 	if got, want := a.refusal(ready, 1, Resolution{Action: ActApproveMerge}), "the check-in may not pick `approve_merge`: the factory agent and the human may"; got != want {
 		t.Errorf("rung 1's `approve_merge` = %q, want %q", got, want)
 	}
-	if got := a.refusal(ready, 3, Resolution{Action: ActApproveMerge, Fund: &policy.Draw{EUR: 1}}); got != "`approve_merge` decides the merge request alone: it draws nothing" {
-		t.Errorf("`approve_merge` with a fund = %q", got)
+	if got := a.refusal(ready, 3, Resolution{Action: ActApproveMerge, Room: &RoomAsk{Sessions: 1, Money: true}}); got != "`approve_merge` decides the merge request alone: it draws nothing" {
+		t.Errorf("`approve_merge` with a room = %q", got)
 	}
 }
 
@@ -1186,13 +1026,12 @@ func TestOfferedOnAMergeCaseAndNoBoardRowOnAGateStop(t *testing.T) {
 	}
 }
 
-// The human's buttons on the check-in's seed gate stop: rung 3 adds
-// raise_ceiling and close to the seed's rung 1 list of resume, continue,
-// handover, reverify, extend, fund, successor and replan, and its note
-// closes the list; withdraw is the factory's own, and no row of the board
-// applies to a gate stop.
+// The human's buttons on the check-in's seed gate stop: rung 3 adds close
+// to the seed's rung 1 list of resume, continue, handover, reverify,
+// extend, successor and replan, and its note closes the list; withdraw is
+// the factory's own, and no row of the board applies to a gate stop.
 func TestHumanButtonsOnTheSeedGateStop(t *testing.T) {
-	want := []string{ActResume, ActContinue, ActHandover, ActReverify, ActExtend, ActFund, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}
+	want := []string{ActResume, ActContinue, ActHandover, ActReverify, ActExtend, ActSuccessor, ActReplan, ActClose, ActNote}
 	if got := offeredNames(rungFacts, 3); !slices.Equal(got, want) {
 		t.Errorf("rung 3 is offered %v, want %v", got, want)
 	}
@@ -1246,7 +1085,7 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	}
 	for kind, fit := range map[CaseKind]string{
 		CaseAgentTimeCap:  "the card needs a session that merges main into the branch (the card's answers at this stop: `extend`, `successor`, `close` and `note`)",
-		CaseBudgetFloor:   "the card needs a session that merges main into the branch (the card's answers at this stop: `successor`, `close` and `note`)",
+		CaseBudgetFloor:   "the card needs a session that merges main into the branch (the card's answers at this stop: `extend`, `successor`, `close` and `note`)",
 		CaseGateStop:      "the card needs a session that merges main into the branch, which `extend` buys",
 		CaseMonthCap:      "the card's next session, once the cap turns, merges main into the branch",
 		CaseAgentEscalate: "continue the card with a note for a session that merges main into the branch",
@@ -1328,10 +1167,10 @@ func TestRungZeroGoesOnPastAnUnreadHold(t *testing.T) {
 	}
 }
 
-// A decision's riding draw counts before the cap check. At a cap of 3
-// reached with 3 attempts, a handover that draws one session applies (the
-// cap becomes 4), one that draws nothing does not, and a draw of agent time
-// alone does not buy a session. By hand: 3 attempts against 3 + 1 = 4.
+// A decision's riding room counts before the cap check. At a cap of 3
+// reached with 3 attempts, a handover with a room of 1 beside it applies
+// (no start left, so the cap becomes 4), one with no room does not. By
+// hand: 3 attempts against 3 + 1 = 4.
 func TestHandoverAtTheCapAppliesWithItsRidingDraw(t *testing.T) {
 	atCap := CaseFacts{Attempts: 3, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3}
 	same := map[string]any{"model": "same"}
@@ -1340,16 +1179,15 @@ func TestHandoverAtTheCapAppliesWithItsRidingDraw(t *testing.T) {
 		r    Resolution
 		want string
 	}{
-		{"one session beside it", Resolution{Args: same, Fund: &policy.Draw{Sessions: 1}}, ""},
-		{"no draw", Resolution{Args: same}, "the session cap of 3 is reached (the card's answers at this stop: `extend`, `close` and `note`)"},
-		{"agent time alone", Resolution{Args: same, Fund: &policy.Draw{AgentTime: time.Hour}}, "the session cap of 3 is reached (the card's answers at this stop: `extend`, `close` and `note`)"},
+		{"a room of 1 beside it", Resolution{Args: same, Room: &RoomAsk{Sessions: 1, Money: true}}, ""},
+		{"no room", Resolution{Args: same}, "the session cap of 3 is reached (the card's answers at this stop: `extend`, `close` and `note`)"},
 	} {
 		if got := applies(t, ActHandover, atCap, c.r); got != c.want {
 			t.Errorf("%s: handover applies = %q, want %q", c.name, got, c.want)
 		}
 	}
-	if got := applies(t, ActResume, atCap, Resolution{Fund: &policy.Draw{Sessions: 1}}); got != "" {
-		t.Errorf("resume beside a draw of one session applies = %q, want it to apply", got)
+	if got := applies(t, ActResume, atCap, Resolution{Room: &RoomAsk{Sessions: 1}}); got != "" {
+		t.Errorf("resume beside a room of 1 applies = %q, want it to apply", got)
 	}
 }
 
@@ -1378,7 +1216,7 @@ func TestOfferedListsAHandoverAtTheCapToRung1WhileTheDrawBoundHoldsASession(t *t
 	}
 	c := Case{Kind: CaseSessionCap, Problem: "the cap"}
 	text := new(Runner).rungStatement(c, atCap, "", nil, 1)
-	if !strings.Contains(text, "- handover, with a draw of at least one session") {
+	if !strings.Contains(text, "- handover, with a draw of 1 session's worth") {
 		t.Errorf("rung 1's statement does not name the handover's draw:\n%s", text)
 	}
 	if text := new(Runner).rungStatement(c, atCap, "", nil, 2); strings.Contains(text, "- handover\n") || strings.Contains(text, "- handover,") {
@@ -1594,62 +1432,59 @@ func TestRung2ApprovesAHeadOnceOnTheFacts(t *testing.T) {
 	}
 }
 
-// Rung 0 extends only through the audit's own draw at a cap, which writes
-// through the store and not through Act's table: no case offers rung 0 the
-// extend, at a session cap or an agent time cap, while rungs 1 and 2 and the
-// human keep it.
-func TestRungZeroIsOfferedNoExtend(t *testing.T) {
+// The factory's code gives starts and time through the extend, never
+// money: at a session cap and an agent time cap whose rooms need no money
+// every decider is offered it; at the money stop, whose room of 1 adds
+// 0.50 EUR, rung 0 is not.
+func TestRungZeroIsOfferedAnExtendWithoutMoney(t *testing.T) {
 	pool := policy.Draw{Sessions: 5, AgentTime: time.Hour, EUR: 20}
 	for _, f := range []CaseFacts{
 		{Kind: CaseSessionCap, SessionCap: 3, Attempts: 3, AgentTimeCapS: 7200, PoolLeft: pool, CardDrawLeft: pool},
 		{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200, PoolLeft: pool, CardDrawLeft: pool},
 	} {
-		if got := offeredNames(f, 0); slices.Contains(got, ActExtend) {
-			t.Errorf("%s: rung 0 is offered %v, want no extend", f.Kind, got)
-		}
-		for _, rung := range []int{1, 2, 3} {
+		for rung := range 4 {
 			if got := offeredNames(f, rung); !slices.Contains(got, ActExtend) {
 				t.Errorf("%s: rung %d is offered %v, want the extend", f.Kind, rung, got)
 			}
 		}
 	}
+	floor := CaseFacts{Kind: CaseBudgetFloor, SessionCap: 3, AgentTimeCapS: 7200, FloorEUR: 0.5, CeilingEUR: 10, MonthLeftEUR: 40, PoolLeft: pool, CardDrawLeft: pool}
+	if got := offeredNames(floor, 0); slices.Contains(got, ActExtend) {
+		t.Errorf("rung 0 at the money stop is offered %v, want no extend", got)
+	}
+	for _, rung := range []int{1, 2, 3} {
+		if got := offeredNames(floor, rung); !slices.Contains(got, ActExtend) {
+			t.Errorf("rung %d at the money stop is offered %v, want the extend", rung, got)
+		}
+	}
 }
 
-// Money for the card lifts no spending limit of the factory or the
-// project, and a case that holds none of the card's money has no limit to
-// raise: neither answer is on offer there.
-func TestMoneyLiftsNoCapAndRaisesNoLimitWithoutMoney(t *testing.T) {
-	room := CaseFacts{Attempts: 1, SessionCap: 3, BudgetEUR: 2, SpentEUR: 1, LeftEUR: 1, CeilingEUR: 10,
+// Room for the card lifts no spending limit of the factory or the
+// project, and a case that holds none of the card's money takes none: the
+// extend is on offer at neither, and it is at the budget floor.
+func TestRoomLiftsNoCap(t *testing.T) {
+	room := CaseFacts{Attempts: 1, SessionCap: 3, BudgetEUR: 2, SpentEUR: 1, LeftEUR: 1, CeilingEUR: 10, MonthLeftEUR: 40,
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
-	press := func(f CaseFacts, name string) string {
-		a, _ := ActionByName(name)
-		return a.refusal(f, 3, Resolution{Action: name, Args: map[string]any{"eur": 1.0}})
-	}
+	extend, _ := ActionByName(ActExtend)
+	press := func(f CaseFacts) string { return extend.refusal(f, 3, extendBy(map[string]any{"sessions": 1})) }
 	for _, kind := range []CaseKind{CaseDayCap, CaseMonthCap, CaseProjectCap} {
 		f := room
 		f.Kind = kind
-		for _, name := range []string{ActFund, ActRaiseCeiling} {
-			if press(f, name) == "" {
-				t.Errorf("%s at %s is on offer", name, kind)
-			}
+		if got := press(f); got != capLiftsNot {
+			t.Errorf("an extend at %s = %q, want %q", kind, got, capLiftsNot)
 		}
 	}
 	for _, kind := range []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CasePlanCriteria, CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused} {
 		f := room
 		f.Kind = kind
-		if press(f, ActRaiseCeiling) == "" {
-			t.Errorf("a raise of the spend limit on %s is on offer", kind)
+		if press(f) == "" {
+			t.Errorf("an extend on %s is on offer", kind)
 		}
 	}
 	f := room
-	f.ApprovalKind = ApprovalResource
-	if press(f, ActRaiseCeiling) == "" {
-		t.Error("a raise of the spend limit on a resource request is on offer")
-	}
-	f = room
 	f.Kind = CaseBudgetFloor
-	if why := press(f, ActRaiseCeiling); why != "" {
-		t.Errorf("a raise at the budget floor is refused: %s", why)
+	if why := press(f); why != "" {
+		t.Errorf("an extend at the budget floor is refused: %s", why)
 	}
 }
 
@@ -1665,14 +1500,15 @@ func TestSalvageTakesAFindingConfirmedTwice(t *testing.T) {
 	}
 }
 
-// A draw on an agent's question that waits at the human is weighed at the
+// A room on an agent's question that waits at the human is weighed at the
 // cap the question waits at, by the chat's rung 2 as by the human: both
 // doors give one verdict on the same facts. While the question sits on a
-// rung, the rung's draw is refused, and the refusal names the draw only
-// where the draw lifts the question's cap.
+// rung, the rung's room is refused, and the refusal names the room only
+// where the room lifts the question's cap: a start at the session cap,
+// time at the agent time cap, money at the budget floor.
 func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
 	room := CaseFacts{Kind: CaseAgentEscalate, AtHuman: true, Attempts: 1, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 7200, SessionLeastS: 300,
-		BudgetEUR: 2, SpentEUR: 1, LeftEUR: 1, FloorEUR: 0.3, CeilingEUR: 10,
+		BudgetEUR: 2, SpentEUR: 1, LeftEUR: 1, FloorEUR: 0.3, CeilingEUR: 10, MonthLeftEUR: 40,
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	sessionCap := func(f *CaseFacts) { f.Attempts = f.SessionCap }
 	timeCap := func(f *CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }
@@ -1680,26 +1516,22 @@ func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
 	dayCap := func(f *CaseFacts) {
 		f.CapWait, _, _ = strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway refused the spend", "state", time.Now().Add(time.Hour)), "\n")
 	}
-	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}
-	extendTime := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 600}}
-	fund := Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}
+	extend := extendBy(map[string]any{"sessions": 1})
+	timeOnly := extendBy(map[string]any{"sessions": 1, "money": false})
 	for _, c := range []struct {
 		name string
 		at   func(*CaseFacts)
-		r    Resolution
 		want string
 	}{
-		{"extend at the session cap", sessionCap, extend, ""},
-		{"extend at the agent time cap", timeCap, extendTime, ""},
-		{"fund at the budget floor", floor, fund, ""},
-		{"fund at the day cap", dayCap, fund, capLiftsNot},
-		// 0.10 EUR left under a 10.00 EUR limit: the floor's face holds the fund, and no branch a successor
-		{"extend at the budget floor", floor, extend, "this card waits on money, not a session (the card's answers at this stop: `fund`, `close` and `note`)"},
+		{"at the session cap", sessionCap, ""},
+		{"at the agent time cap", timeCap, ""},
+		{"at the budget floor", floor, ""},
+		{"at the day cap", dayCap, capLiftsNot},
 	} {
 		f := room
 		c.at(&f)
-		a, _ := ActionByName(c.r.Action)
-		human, chat := a.refusal(f, 3, c.r), a.refusal(f, 2, c.r)
+		a, _ := ActionByName(ActExtend)
+		human, chat := a.refusal(f, 3, extend), a.refusal(f, 2, extend)
 		if human != c.want || chat != c.want {
 			t.Errorf("%s: the human's press = %q, the chat's = %q; want both %q", c.name, human, chat, c.want)
 		}
@@ -1713,15 +1545,12 @@ func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
 		r    Resolution
 		want string
 	}{
-		{"extend at the session cap", sessionCap, extend, hand},
-		{"extend of agent time at the agent time cap", timeCap, extendTime, hand},
-		{"fund at the budget floor", floor, fund, hand},
-		{"extend of agent time at the session cap", sessionCap, extendTime, answer},
-		{"extend of sessions at the agent time cap", timeCap, extend, answer},
-		{"extend at the budget floor", floor, extend, answer},
-		{"fund at the session cap", sessionCap, fund, answer},
-		{"fund at no cap", func(*CaseFacts) {}, fund, answer},
-		{"fund at the day cap", dayCap, fund, answer},
+		{"a room at the session cap", sessionCap, extend, hand},
+		{"a room at the agent time cap", timeCap, extend, hand},
+		{"a room at the budget floor", floor, extend, hand},
+		{"a room without money at the budget floor", floor, timeOnly, answer},
+		{"a room at no cap", func(*CaseFacts) {}, extend, answer},
+		{"a room at the day cap", dayCap, extend, answer},
 	} {
 		f := room
 		f.AtHuman = false
@@ -1851,7 +1680,7 @@ func TestCaseFactsCountThePlansOpenCriteria(t *testing.T) {
 // the extend and no fund.
 func TestARefusalListsTheAnswersOfTheStopItNames(t *testing.T) {
 	f := CaseFacts{Kind: CaseBudgetFloor, Attempts: 1, SessionCap: 3, AgentTimeS: 1200, AgentTimeCapS: 1200, SessionLeastS: 300,
-		BudgetEUR: 2, SpentEUR: 1.9, LeftEUR: 0.1, FloorEUR: 0.3, CeilingEUR: 10,
+		BudgetEUR: 2, SpentEUR: 1.9, LeftEUR: 0.1, FloorEUR: 0.3, CeilingEUR: 10, MonthLeftEUR: 40,
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	resume, _ := ActionByName(ActResume)
 	want := "the agent time cap of 20 minutes is reached (the card's answers at this stop: `extend`, `close` and `note`)"

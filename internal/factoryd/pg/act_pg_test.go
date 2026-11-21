@@ -172,8 +172,11 @@ func posting(id int64, before func()) func(context.Context) (int64, error) {
 	}
 }
 
-// The human's extend of one session on the live case a trip waits on
-// resolves it and raises the card's sessions in one transaction: the case reads resolved
+// The human's room of 1 on the live case a trip waits on resolves it and
+// raises the card's caps in one transaction. Before its first session a
+// session's worth of the large card is a quarter of its 15 minutes, at
+// least 5, and its 3 starts and 15 minutes hold 3, so the room adds 1
+// start and 5 minutes, and no money at an opening of 0: the case reads resolved
 // by sebastian on rung 3 with extend, its step says what was drawn, and
 // the card_extended row is a pool draw of rung 3 naming the case. A second
 // answer finds the case ended, names the first, and draws nothing.
@@ -185,30 +188,30 @@ func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Drawn != (policy.Draw{Sessions: 1}) || got.Comment != 77 || got.Case.ID != g.c.ID {
-		t.Fatalf("result = %+v, want case %d, 1 session drawn, comment 77", got, g.c.ID)
+	if got.Drawn != (policy.Draw{Sessions: 1, AgentTime: 5 * time.Minute}) || got.Comment != 77 || got.Case.ID != g.c.ID {
+		t.Fatalf("result = %+v, want case %d, 1 session and 5 minutes drawn, comment 77", got, g.c.ID)
 	}
 	c := caseByID(t, g.s, g.c.ID)
 	want := &CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"sessions": 1.0, "comment": 77.0}}
 	if c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, want) {
 		t.Fatalf("case = %s, %+v; want resolved by %+v", c.Status, c.Resolution, want)
 	}
-	if card := g.card(t); card.Usage.RaisedSessions != 1 {
-		t.Fatalf("raised sessions = %d, want 1", card.Usage.RaisedSessions)
+	if card := g.card(t); card.Usage.RaisedSessions != 1 || card.Usage.RaisedTime != 5*time.Minute {
+		t.Fatalf("raised %+v, want 1 session and 5 minutes", card.Usage)
 	}
 	extended := g.rows(t, EventCardExtended)
 	if len(extended) != 1 {
 		t.Fatalf("card_extended rows = %+v, want one", extended)
 	}
 	d := extended[0].Detail
-	if d["pool"] != true || d["rung"] != 3.0 || d["case_id"] != float64(g.c.ID) || d["sessions"] != 1.0 || extended[0].Actor != "sebastian" {
-		t.Fatalf("the draw row = %+v, want a pool draw of 1 session by sebastian on rung 3 for case %d", extended[0], g.c.ID)
+	if d["pool"] != true || d["rung"] != 3.0 || d["case_id"] != float64(g.c.ID) || d["sessions"] != 1.0 || d["agent_time_s"] != 300.0 || extended[0].Actor != "sebastian" {
+		t.Fatalf("the draw row = %+v, want a pool draw of 1 session and 300 s by sebastian on rung 3 for case %d", extended[0], g.c.ID)
 	}
 	steps := caseStepsOf(t, g.s, g.c.ID)
 	last := steps[len(steps)-1]
 	if last.Rung != 3 || last.Actor != "sebastian" || last.Decision != ActExtend || last.Outcome != StepResolved ||
-		len(last.Did) != 1 || last.Did[0].Action != ActExtend || last.Did[0].Result != "Added 1 session from the pool." {
-		t.Fatalf("the step = %+v, want sebastian's extend on rung 3, resolved, that drew 1 session from the pool", last)
+		len(last.Did) != 1 || last.Did[0].Action != ActExtend || last.Did[0].Result != "Added 1 session and 5 minutes of agent time." {
+		t.Fatalf("the step = %+v, want sebastian's extend on rung 3, resolved, that drew 1 session and 5 minutes", last)
 	}
 
 	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "ana", Rung: 3, Res: oneSession})
@@ -223,7 +226,7 @@ func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 }
 
 // Another card drew the whole pool this month: 30 sessions, 30 hours and
-// 60 EUR. Rung 2's extend of one session is refused naming the pool. The
+// 60 EUR. Rung 2's room of 1 is refused naming the pool. The
 // human's goes through and draws nothing from the pool: the month reads
 // the 30 sessions drawn before it.
 func TestActRefusesARungsDrawPastThePool(t *testing.T) {
@@ -239,8 +242,7 @@ func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 	}
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: oneSession})
 	var refused ErrActRefused
-	const pool = "the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
+	const pool = "the escalation pool leaves room for no more session's worth this month: hand it up (`hand_up`) for the human to give more"
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), pool+", and the factory agent may take ") {
 		t.Fatalf("rung 2's extend = %v, want the pool's refusal", err)
 	}
@@ -280,7 +282,7 @@ func TestActSignalsTheRunAndPostsTheComment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"sebastian answered with “Allow more sessions”: 1 session from the pool."}; got.Comment != 501 || !reflect.DeepEqual(g.forge.comments, want) {
+	if want := []string{"sebastian answered with “Give more room”: 1 session's worth."}; got.Comment != 501 || !reflect.DeepEqual(g.forge.comments, want) {
 		t.Fatalf("comment %d, forgejo holds %q; want 501 and %q", got.Comment, g.forge.comments, want)
 	}
 	want := []reopenCall{
@@ -365,86 +367,89 @@ func TestEndCaseWithdrawsWithTheReason(t *testing.T) {
 	}
 }
 
-// A fund of 3 EUR on a budget of 3 passes the policy's ceiling of 5. The
-// human raises the ceiling by 2 EUR and funds 4 EUR beside it: the raise is
-// written first, so the fund lands on 7 EUR at the ceiling of 7. The
-// ceiling's row is off the pool; the fund's row of 4 EUR is a pool row of
-// rung 3, a human's, which the pool does not count.
+// A room of 2 on a card 2 sessions in, its 3.00 EUR budget spent, passes
+// the policy's ceiling of 5. A session's worth is 3.00 / 2 = 1.50 EUR;
+// 0.00 EUR is left, less the 0.40 reserve, and 1 of its 3 starts, so the
+// room adds 1 start and 2 x 1.50 + 0.40 = 3.40 EUR, a budget of 6.40,
+// which passes the limit by 1.40. The human's press writes the raise of
+// the limit first, then the start, then the money, in the one transaction
+// that resolves the case: the ceiling's row is off the pool, the start's
+// and the money's rows are pool rows of rung 3, a human's, which the pool
+// does not count.
 func TestActRaisesTheCeilingThenFundsInOneTransaction(t *testing.T) {
 	g := newActRig(t)
+	g.tripWaits(t)
 	ctx := context.Background()
-	res := Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": 2.0}, Fund: &policy.Draw{EUR: 2}}
-	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: Resolution{
-		Action: ActFund, Args: map[string]any{"eur": 3.0}}})
-	var refused ErrActRefused
-	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "3.00 EUR more takes the budget of 3.00 EUR past the card's ceiling of 5.00 EUR: raise the ceiling first") {
-		t.Fatalf("a fund of 3 = %+v, %v; want the ceiling's refusal", got, err)
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET attempts = 2, spent_eur = 3 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
 	}
-	res.Fund.EUR = 4
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: res}); err != nil {
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 2}}}); err != nil {
 		t.Fatal(err)
 	}
 	card := g.card(t)
-	if card.CeilingEUR != 7 || card.BudgetEUR != 7 {
-		t.Fatalf("ceiling %v, budget %v; want 7 and 7", card.CeilingEUR, card.BudgetEUR)
+	if card.CeilingEUR != 6.4 || card.BudgetEUR != 6.4 || card.Usage.RaisedSessions != 1 {
+		t.Fatalf("ceiling %v, budget %v, raised %d; want 6.40, 6.40 and 1", card.CeilingEUR, card.BudgetEUR, card.Usage.RaisedSessions)
 	}
-	funded := g.rows(t, EventCardFunded)
-	if len(funded) != 2 || funded[0].Detail["ceiling_eur"] != 7.0 || funded[0].Detail["pool"] != nil || funded[0].Detail["case_id"] != float64(g.c.ID) ||
-		funded[1].Detail["amount_eur"] != 4.0 || funded[1].Detail["pool"] != true {
-		t.Fatalf("card_funded rows = %+v, want the ceiling of 7 off the pool, then a pool row of 4 EUR", funded)
+	funded, extended := g.rows(t, EventCardFunded), g.rows(t, EventCardExtended)
+	if len(funded) != 2 || funded[0].Detail["ceiling_eur"] != 6.4 || funded[0].Detail["pool"] != nil || funded[0].Detail["case_id"] != float64(g.c.ID) ||
+		funded[1].Detail["amount_eur"] != 3.4 || funded[1].Detail["pool"] != true || funded[0].ID > funded[1].ID {
+		t.Fatalf("card_funded rows = %+v, want the ceiling of 6.40 off the pool, then a pool row of 3.40 EUR", funded)
+	}
+	if len(extended) != 1 || extended[0].Detail["sessions"] != 1.0 || extended[0].Detail["agent_time_s"] != 0.0 || extended[0].ID < funded[0].ID || extended[0].ID > funded[1].ID {
+		t.Fatalf("card_extended rows = %+v, want the one start between the ceiling and the money", extended)
 	}
 	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || !drawn.IsZero() {
-		t.Fatalf("PoolDrawn = %+v, %v; want nothing, the human's 4 EUR left out", drawn, err)
+		t.Fatalf("PoolDrawn = %+v, %v; want nothing, the human's rows left out", drawn, err)
 	}
 }
 
-// A fund press is never the evidence of its own failure. The rig's card
-// ran no session ever, so its first fund writes the card's only event: a
+// A room press is never the evidence of its own failure. The rig's card
+// ran no session ever, so its first press writes the card's only event: a
 // pool draw of rung 3 on the empty head and checks. The guard weighs no
 // draw on a card with no session (boughtNothing false on the facts), so
-// the second fund of 1.00 EUR is taken with no bought-nothing refusal,
-// and the card funds on toward its ceiling without running once.
-func TestAFundPressIsNotBoughtNothing(t *testing.T) {
+// the second press is taken with no bought-nothing refusal, and the card
+// gets room on without running once. Before its first session a session's
+// worth is a quarter of its 15 minutes, at least 5, and the opening, which
+// the rig's policy leaves at 0: 3 starts and 15 minutes hold 3, so each
+// press adds 1 start and 5 minutes and no money.
+func TestARoomPressIsNotBoughtNothing(t *testing.T) {
 	g := newActRig(t)
+	g.tripWaits(t)
 	ctx := context.Background()
 	if card := g.card(t); card.Usage.Attempts != 0 {
 		t.Fatalf("the rig's card ran %d sessions, want none ever", card.Usage.Attempts)
 	}
-	fund := ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
-		Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}}
-	if _, err := g.r.Act(ctx, fund); err != nil {
-		t.Fatalf("the first fund on the never-ran card: %v", err)
+	press := ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: oneSession}
+	if _, err := g.r.Act(ctx, press); err != nil {
+		t.Fatalf("the first press on the never-ran card: %v", err)
 	}
-	rows := g.rows(t, EventCardFunded)
+	rows := g.rows(t, EventCardExtended)
 	if len(rows) != 1 {
-		t.Fatalf("card_funded rows = %+v, want the one fund press", rows)
+		t.Fatalf("card_extended rows = %+v, want the one press", rows)
 	}
-	if d := rows[0].Detail; d["pool"] != true || d["rung"] != 3.0 || d["head"] != "" || d["checks"] != "" || d["amount_eur"] != 1.0 {
-		t.Fatalf("the fund's row = %+v, want a rung-3 pool draw of 1 EUR on the empty head and checks", rows[0])
+	if d := rows[0].Detail; d["pool"] != true || d["rung"] != 3.0 || d["head"] != "" || d["checks"] != "" || d["sessions"] != 1.0 || d["agent_time_s"] != 300.0 {
+		t.Fatalf("the press's row = %+v, want a rung-3 pool draw of 1 start and 300 s on the empty head and checks", rows[0])
 	}
 	f, err := g.r.FactsAtCase(ctx, g.card(t), Case{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if f.Attempts != 0 || f.LastDrawAt == nil || f.Head != "" || f.Checks != "" {
-		t.Fatalf("facts = %+v, want no session ever and the fund press the newest draw, on an empty head and checks", f)
+		t.Fatalf("facts = %+v, want no session ever and the press the newest draw, on an empty head and checks", f)
 	}
 	if boughtNothing(f) {
-		t.Error("the fund press of a card that ran no session: the guard weighs no draw")
+		t.Error("the press of a card that ran no session: the guard weighs no draw")
 	}
-	fund.CaseID = 0 // the first fund ended the case, so the second answers the card
-	got, err := g.r.Act(ctx, fund)
+	press.CaseID = 0 // the first press ended the case, so the second answers the card
+	got, err := g.r.Act(ctx, press)
 	if err != nil {
-		t.Fatalf("the second fund of 1.00 EUR = %v, want it taken with no bought-nothing refusal", err)
+		t.Fatalf("the second press = %v, want it taken with no bought-nothing refusal", err)
 	}
-	if got.Drawn != (policy.Draw{EUR: 1}) {
-		t.Fatalf("drawn = %+v, want the 1 EUR", got.Drawn)
+	if got.Drawn != (policy.Draw{Sessions: 1, AgentTime: 5 * time.Minute}) {
+		t.Fatalf("drawn = %+v, want 1 start and 5 minutes", got.Drawn)
 	}
-	if card := g.card(t); card.BudgetEUR != 5 || card.Usage.Attempts != 0 {
-		t.Fatalf("after the second fund: budget %v after %d sessions, want 5 EUR and the card still never run", card.BudgetEUR, card.Usage.Attempts)
-	}
-	if funded := g.rows(t, EventCardFunded); len(funded) != 2 {
-		t.Fatalf("card_funded rows = %+v, want the two presses", funded)
+	if card := g.card(t); card.Usage.RaisedSessions != 2 || card.Usage.RaisedTime != 10*time.Minute || card.Usage.Attempts != 0 {
+		t.Fatalf("after the second press: %+v, want 2 starts and 10 minutes raised and the card still never run", card.Usage)
 	}
 }
 
@@ -745,7 +750,7 @@ func TestResolveCaseLeavesTheCaseLiveWhenItsDrawFails(t *testing.T) {
 	draw := CaseDraw{Rung: 3, FundEUR: 10, PolicyCeiling: 5, Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: "sebastian", Via: ViaConsole,
 		Detail: map[string]any{"pool": true, "rung": 3}}}
 	var capped *CardCapError
-	if err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActFund}, &draw, &CaseStep{Rung: 3, Actor: "sebastian"}, nil); !errors.As(err, &capped) {
+	if err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, &draw, &CaseStep{Rung: 3, Actor: "sebastian"}, nil); !errors.As(err, &capped) {
 		t.Fatalf("ResolveCase = %v, want CardCapError", err)
 	}
 	c := caseByID(t, g.s, g.c.ID)
@@ -860,17 +865,17 @@ func TestActCarriesTheCallersDetailOnEveryRow(t *testing.T) {
 	ctx := context.Background()
 	token := map[string]any{"id": 3, "name": "laptop"}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaChat, Rung: 3,
-		Res:    Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}, Note: "go on"},
+		Res:    Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "go on"},
 		Detail: map[string]any{"token": token, "rung": "the caller's"}}); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]any{"id": 3.0, "name": "laptop"}
-	funded, answered := g.rows(t, EventCardFunded), g.rows(t, EventQuestionAnswered)
-	if len(funded) != 1 || !reflect.DeepEqual(funded[0].Detail["token"], want) || funded[0].Detail["rung"] != 3.0 {
-		t.Fatalf("card_funded rows = %+v; want one with the token and rung 3", funded)
+	extended, answered := g.rows(t, EventCardExtended), g.rows(t, EventSessionGranted)
+	if len(extended) != 1 || !reflect.DeepEqual(extended[0].Detail["token"], want) || extended[0].Detail["rung"] != 3.0 {
+		t.Fatalf("card_extended rows = %+v; want one with the token and rung 3", extended)
 	}
 	if len(answered) != 1 || !reflect.DeepEqual(answered[0].Detail["token"], want) {
-		t.Fatalf("question_answered rows = %+v; want one with the token", answered)
+		t.Fatalf("session_granted rows = %+v; want one with the token", answered)
 	}
 }
 
@@ -930,7 +935,7 @@ func TestActRefusesAnExtendOnAnEndedCard(t *testing.T) {
 	}
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t2", By: "sebastian", Rung: 3, Res: oneSession})
 	var refused ErrActRefused
-	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "this card ended done: an extend buys nothing, file a new card") {
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "this card ended done: more room buys nothing, file a new card") {
 		t.Fatalf("an extend on a done card = %v, want the refusal naming its end", err)
 	}
 	card, _, err := g.s.Task(ctx, "t2")
@@ -942,8 +947,9 @@ func TestActRefusesAnExtendOnAnEndedCard(t *testing.T) {
 	}
 }
 
-// An extend's step and its answer's text name what it raised: a session
-// from the pool.
+// An extend's step names what it raised, a start and the 5 minutes a
+// session's worth of the never-run card lacks, and its answer's text the
+// room it gave.
 func TestActStepNamesWhatAnExtendRaised(t *testing.T) {
 	g := newActRig(t)
 	got, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3,
@@ -951,11 +957,11 @@ func TestActStepNamesWhatAnExtendRaised(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"sessions": 1}, Result: "Added 1 session from the pool."}}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"sessions": 1}, Result: "Added 1 session and 5 minutes of agent time."}}
 	if !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("did = %+v, want %+v", got.Did, want)
 	}
-	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with “Allow more sessions”: 1 session from the pool.`; got.Text != text {
+	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with “Give more room”: 1 session's worth.`; got.Text != text {
 		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 }

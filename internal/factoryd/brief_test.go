@@ -545,7 +545,7 @@ func TestStoryNamesNoButton(t *testing.T) {
 	var bodies []string
 	happened, left := "The check-in stopped the card on an edit outside the exporter.", "The importer drops the accent, and the fix must keep it."
 	answers := []string{
-		`{"happened": "The check-in stopped the card, and Add money lets it go on.", "left": "The importer drops the accent."}`,
+		`{"happened": "The check-in stopped the card, and Give more room lets it go on.", "left": "The importer drops the accent."}`,
 		fmt.Sprintf(`{"happened": %q, "left": %q}`, happened, left),
 	}
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -561,18 +561,18 @@ func TestStoryNamesNoButton(t *testing.T) {
 	if err := w.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	const named = "happened names the answer “Add money”, which the card shows below the story"
+	const named = "happened names the answer “Give more room”, which the card shows below the story"
 	if mark := store.caseFailed[5]; len(store.caseBrief) != 0 || !strings.Contains(mark, named) {
 		t.Fatalf("story %v, mark %q; want none stored and the mark naming the label", store.caseBrief, mark)
 	}
 	story := CaseFace(c, briefTask(), CaseAsk{}).Story
-	if story.Happened != "No session has run on this card. The check of the last session handed the card to a human." || strings.Contains(fmt.Sprint(story), "Add money") {
+	if story.Happened != "No session has run on this card. The check of the last session handed the card to a human." || strings.Contains(fmt.Sprint(story), "Give more room") {
 		t.Fatalf("the card's story = %+v, want the template's", story)
 	}
 	if err := w.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(bodies) != 2 || !strings.Contains(bodies[1], `\"last_refusal\"`) || !strings.Contains(bodies[1], "Add money") {
+	if len(bodies) != 2 || !strings.Contains(bodies[1], `\"last_refusal\"`) || !strings.Contains(bodies[1], "Give more room") {
 		t.Fatalf("the second call's facts lack the refusal: %v", bodies)
 	}
 	if got := store.caseBrief[5]; got != [2]string{happened, left} {
@@ -586,18 +586,18 @@ func TestStoryNamesNoButton(t *testing.T) {
 // statements are the nine listed.
 func TestNamedLabel(t *testing.T) {
 	for line, want := range map[string]string{
-		"It is met by the new test of the export.":                    "",
-		"It is not met on the newest change.":                         "",
-		"The review ran twice. The work is enough for the first one.": "",
-		"Noted in the review, the fault of the importer stays open.":  "",
-		"Colour is missing from the export.":                          "",
-		"The importer drops the accent, and the fix must keep it.":    "",
-		"A human may pick It is met for the first promise.":           "It is met",
-		"The answer “It is not met” ends the card.":                   "It is not met",
-		"The check stopped the card: The work is enough goes on.":     "The work is enough",
-		"Add money lets the card go on.":                              "Add money",
-		"The check-in stopped the card, and Add money lets it go on.": "Add money",
-		"The card stopped. Merge it to go on.":                        "Merge it",
+		"It is met by the new test of the export.":                         "",
+		"It is not met on the newest change.":                              "",
+		"The review ran twice. The work is enough for the first one.":      "",
+		"Noted in the review, the fault of the importer stays open.":       "",
+		"Colour is missing from the export.":                               "",
+		"The importer drops the accent, and the fix must keep it.":         "",
+		"A human may pick It is met for the first promise.":                "It is met",
+		"The answer “It is not met” ends the card.":                        "It is not met",
+		"The check stopped the card: The work is enough goes on.":          "The work is enough",
+		"Give more room lets the card go on.":                              "Give more room",
+		"The check-in stopped the card, and Give more room lets it go on.": "Give more room",
+		"The card stopped. Merge it to go on.":                             "Merge it",
 	} {
 		if got := NamedLabel(line); got != want {
 			t.Errorf("NamedLabel(%q) = %q, want %q", line, got, want)

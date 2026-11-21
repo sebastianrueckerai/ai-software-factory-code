@@ -229,7 +229,7 @@ func TestRollHeldStatementShowsThePlansAndTheOptions(t *testing.T) {
 			t.Errorf("the statement lacks %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "raise_ceiling") {
+	if strings.Contains(text, "- extend") {
 		t.Errorf("the statement lists the agent card's table:\n%s", text)
 	}
 }
@@ -417,14 +417,14 @@ func TestEndedCardTakesNoReplanButStillCloses(t *testing.T) {
 	}
 }
 
-// A fund beside deploy_now is refused with the choice card's own words, not
+// A room beside deploy_now is refused with the choice card's own words, not
 // with words about a pool or a ceiling the card does not have.
-func TestDeployNowWithAFundIsRefusedByTheChoiceCard(t *testing.T) {
+func TestDeployNowWithARoomIsRefusedByTheChoiceCard(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyFullAuto)
 	for _, rung := range []int{2, 3} {
 		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung,
-			Res: Resolution{Action: ActDeployNow, Fund: &policy.Draw{EUR: 1}}})
-		if want := "is a human card, so its answer draws nothing: answer it without the fund"; err == nil || !strings.Contains(err.Error(), want) {
+			Res: Resolution{Action: ActDeployNow, Room: &RoomAsk{Sessions: 1, Money: true}}})
+		if want := "is a human card, so its answer draws nothing: answer it without the room"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("rung %d: Act = %v, want %q", rung, err, want)
 		}
 	}

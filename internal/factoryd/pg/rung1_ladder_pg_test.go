@@ -62,9 +62,11 @@ func (g rungRig) drawn(t *testing.T, rung int, d policy.Draw, key string) {
 }
 
 // A medium card at its session cap with a review finding: rung 0 hands it
-// up, rung 1 reads one tool and answers extend with one session and a
-// dropped verdict. By hand: the pool holds 30 sessions and the medium
-// card's draw 2, so one session fits; the extend adds 1 session to the
+// up, rung 1 reads one tool and answers extend with a room of 1 and a
+// dropped verdict. By hand: its 3 sessions ran, so a room of 1 lacks one
+// start, and its 10 minutes and 4.60 EUR left hold a session's worth of 5
+// minutes and 0.30 EUR; the pool holds 30 sessions and the medium card's
+// draw 2, so the start fits; the extend adds 1 session to the
 // card (raised_sessions 1) and books a pool row of rung 1 (card_extended
 // with pool true, rung 1); the answer resolves the case on rung 1, so the
 // step is rung 1's own, ended with what it read, found, did, decided and
@@ -72,7 +74,8 @@ func (g rungRig) drawn(t *testing.T, rung int, d policy.Draw, key string) {
 // is asked: no question row, one case_resolved signal.
 func TestRung1ResolvesWithinBound(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.chat.answers = []CheckinResponse{{ToolName: "card_facts", UsageEUR: 0.02}, g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g.atSessionCap(t)
+	g.chat.answers = []CheckinResponse{{ToolName: "card_facts", UsageEUR: 0.02}, g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	g.chat.answers[1].UsageEUR = 0.01
 	out := g.trip(t, tripCap)
 	if out.Rung != 1 || out.Resolution != nil || out.Comment != 0 || out.CaseID == 0 {
@@ -91,7 +94,7 @@ func TestRung1ResolvesWithinBound(t *testing.T) {
 	s := steps[1]
 	wantDid := []CaseAction{
 		{Action: "verdict", Args: map[string]any{"id": g.id, "verdict": "dropped", "evidence": "tasks.go:12 at head: TasksByPR is declared"}},
-		{Action: ActExtend, Args: map[string]any{"sessions": 1.0, "agent_time_s": 0.0}, Result: "Added 1 session from the pool."},
+		{Action: ActExtend, Args: map[string]any{"sessions": 1.0, "money": true}, Result: "Added 1 session."},
 	}
 	wantFound := "the stop reads as gate_stop; finding " + g.id + " dropped: tasks.go:12 at head: TasksByPR is declared"
 	if s.Actor != CheckinDecider || s.Outcome != StepResolved || s.Decision != ActExtend || s.Grounds != "one more session" || s.Found != wantFound ||
@@ -121,13 +124,14 @@ func TestRung1ResolvesWithinBound(t *testing.T) {
 
 // The same card with two sessions drawn already, one on rung 0 and one on
 // rung 1: the medium card's draw bound of 2 sessions, 1h and 4 EUR leaves 0
-// sessions, so the extend is refused naming it and that nothing of the
-// session fits, rung 1's step ends handed
+// sessions, so the extend's start is refused naming the bound and that no
+// session's worth fits, rung 1's step ends handed
 // up with the refusal in its found and the answer's recommendation as its
 // decision, and the case goes to the human.
 func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1},
+	g.atSessionCap(t)
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true},
 		"recommendation": map[string]any{"action": "successor", "grounds": "one more session would do"}})}
 	// the two draws land while the rung reads, after its statement offered
 	// the extend: Act reads the card's draws again
@@ -139,8 +143,7 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	g.settle()
 	g.afterRung2(t, out.CaseID)
 
-	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: the factory agent or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation, ", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
+	const refusal = "the card's draw bound leaves room for no more session's worth: hand it up (`hand_up`) for the factory agent or the human to give more, "
 	steps := g.steps(t, out.CaseID)
 	if len(steps) != 4 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1's answer extend was refused: "+refusal) ||
 		steps[1].Decision != "successor" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 2 || steps[3].Rung != 3 {
@@ -157,32 +160,29 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	}
 }
 
-// Rung 1's fund on the agent's question is refused: a draw answers no
+// Rung 1's room on the agent's question is refused: a draw answers no
 // question, so the statement offers none and says to hand the case up.
-// Rung 1's fund is refused as an answer, its hand-up recommends the fund,
-// nothing is drawn, and the case climbs instead of waiting open with
-// nobody on it. The card's ceiling of 10 EUR leaves room for the fund.
-func TestRung1FundOnAnAgentsQuestionHandsItUp(t *testing.T) {
+// Rung 1's extend is refused as an answer, its hand-up recommends the
+// close, nothing is drawn, and the case climbs instead of waiting open
+// with nobody on it.
+func TestRung1RoomOnAnAgentsQuestionHandsItUp(t *testing.T) {
 	g := newRungRig(t, "success")
-	if _, err := g.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET ceiling_eur = 10 WHERE id = 't1'`); err != nil {
-		t.Fatal(err)
-	}
-	fund := map[string]any{"decision": "fund", "draw": map[string]any{"eur": 0.5}}
-	g.chat.answers = []CheckinResponse{g.answer(t, fund), g.answer(t, map[string]any{"decision": "hand_up", "draw": nil,
-		"recommendation": map[string]any{"action": "fund", "grounds": "the card needs money to answer"}})}
+	room := map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}}
+	g.chat.answers = []CheckinResponse{g.answer(t, room), g.answer(t, map[string]any{"decision": "hand_up", "draw": nil,
+		"recommendation": map[string]any{"action": "close", "grounds": "the card cannot answer it"}})}
 	budget := g.budget(t)
 	out := g.trip(t, AgentAsks+"Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite")
 	g.settle()
-	refusal := "- fund: not offered: this ask is the agent's question, which a draw does not answer: answer it, or hand it up"
+	refusal := "- extend: not offered: this ask is the agent's question, which a draw does not answer: answer it, or hand it up"
 	if len(g.chat.gots) == 0 || !strings.Contains(g.chat.gots[0].Input, refusal) {
 		t.Fatalf("rung 1's statement does not say %q", refusal)
 	}
 	own := g.stepsOfRung(t, out.CaseID, 1)
-	if len(own) != 1 || own[0].Outcome != StepHandedUp || own[0].Decision != ActFund {
-		t.Fatalf("rung 1 steps = %+v, want one handed up recommending the fund", own)
+	if len(own) != 1 || own[0].Outcome != StepHandedUp || own[0].Decision != ActClose {
+		t.Fatalf("rung 1 steps = %+v, want one handed up recommending the close", own)
 	}
 	if got := g.budget(t); got != budget || poolRows(t, g) != 0 {
-		t.Fatalf("budget %.2f, pool rows %d; want %.2f and none: no fund was drawn", got, poolRows(t, g), budget)
+		t.Fatalf("budget %.2f, pool rows %d; want %.2f and none: no room was drawn", got, poolRows(t, g), budget)
 	}
 	if c := caseByID(t, g.s, out.CaseID); c.Status == CaseResolved {
 		t.Fatalf("case status = %s, want it climbing", c.Status)
@@ -227,7 +227,7 @@ func TestRung1HandsUpRecommendation(t *testing.T) {
 // answer row, no draw row.
 func TestRung1ForcedToolCall(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "teleport"}), g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "teleport"}), g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	out := g.trip(t, tripCap)
 	g.settle()
 	if g.chat.calls != 2 || !strings.Contains(g.chat.gots[1].Input, `Your last answer was unreadable: `) || !strings.Contains(g.chat.gots[1].Input, "teleport") {
@@ -300,7 +300,7 @@ func TestRung1ExpiryClimbsOnce(t *testing.T) {
 	g := newRungRig(t, "success")
 	release := make(chan struct{})
 	g.chat.onCall = func() { <-release }
-	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	out := g.trip(t, tripCap)
 	ctx := context.Background()
 	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 1`, out.CaseID); err != nil {
@@ -671,7 +671,7 @@ func TestRung1MasksWhatItRecords(t *testing.T) {
 // carries them keyed by the finding's text.
 func TestRung1ResolutionCarriesTheVerdictsByText(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	g.trip(t, tripCap)
 	g.settle()
 	sig := g.signalsOf(SignalCaseResolved)
@@ -755,7 +755,7 @@ func (failingResolve) ResolveCase(context.Context, int64, CaseResolution, *CaseD
 func TestRung1MasksAnActFailureEndToEnd(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.PgSetStore(failingResolve{g.s})
-	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	out := g.trip(t, tripCap)
 	g.settle()
 	g.afterRung2(t, out.CaseID)
@@ -1479,7 +1479,7 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 		want  string
 	}{
 		{"rung 1's answer delivered", 0, func(t *testing.T, g rungRig) int64 {
-			g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+			g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 			out := g.trip(t, tripCap)
 			g.settle()
 			return out.CaseID
@@ -1492,7 +1492,7 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 			return out.CaseID
 		}, SignalCaseFaced},
 		{"rung 1's answer", 1, func(t *testing.T, g rungRig) int64 {
-			g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+			g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 			out := g.trip(t, tripCap)
 			g.settle()
 			return out.CaseID
@@ -1560,7 +1560,7 @@ func TestTheHealPassBoundsItsSendsOfACaseSignal(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	g := newRungRig(t, "success")
 	g.r.PgSetWorkflows(&flakySignals{caseSignals: g.signals, fails: 1000})
-	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	out := g.trip(t, tripCap)
 	g.settle()
 	later := time.Now().Add(2 * CaseSignalWait)
@@ -1582,7 +1582,7 @@ func TestTheHealPassBoundsItsSendsOfACaseSignal(t *testing.T) {
 
 	g2 := newRungRig(t, "success")
 	g2.r.PgSetWorkflows(&flakySignals{caseSignals: g2.signals, fails: 1})
-	g2.chat.answers = []CheckinResponse{g2.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g2.chat.answers = []CheckinResponse{g2.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	g2.trip(t, tripCap)
 	g2.settle()
 	if _, err := g2.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't1'`); err != nil {
@@ -1721,7 +1721,7 @@ func TestTheHealPassNeverDropsASignalForAFrontendThatIsDown(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	g := newRungRig(t, "success")
 	g.r.PgSetWorkflows(downSignals{Workflows: g.signals, retryable: true})
-	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1, "money": true}})}
 	out := g.trip(t, tripCap)
 	g.settle()
 	later := time.Now().Add(2 * CaseSignalWait)

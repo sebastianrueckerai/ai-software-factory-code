@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -71,7 +70,7 @@ func TestRung2ProposesAtAssistedAndManual(t *testing.T) {
 			out := g.trip(t, tripCap)
 			g.settle()
 			res, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2,
-				Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{AgentTime: 10 * time.Minute}, Note: leaky}, Found: leaky})
+				Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 2, "money": false}, Note: leaky}, Found: leaky})
 			if err != nil {
 				t.Fatalf("Act: %v", err)
 			}
@@ -83,19 +82,19 @@ func TestRung2ProposesAtAssistedAndManual(t *testing.T) {
 			}
 			own := g.stepsOfRung(t, out.CaseID, 2)
 			if len(own) != 1 || own[0].Outcome != StepHandedUp || own[0].Decision != ActExtend || len(own[0].Did) != 1 ||
-				own[0].Did[0].Action != ActExtend || own[0].Did[0].Result != "proposed" || own[0].Did[0].Args["sessions"] != float64(1) {
-				t.Fatalf("rung 2 steps %+v, want one handed up with the extend proposed", own)
+				own[0].Did[0].Action != ActExtend || own[0].Did[0].Result != "proposed" || own[0].Did[0].Args["sessions"] != float64(2) || own[0].Did[0].Args["money"] != false {
+				t.Fatalf("rung 2 steps %+v, want one handed up with the room of 2 without money proposed", own)
 			}
-			if own[0].Did[0].Fund == nil || own[0].Did[0].Fund.AgentTime != 10*time.Minute || strings.Contains(own[0].Grounds, "Your one job") {
-				t.Errorf("step %+v, want the fund of 10 minutes and the rung's own note without the session's lead", own[0])
+			if strings.Contains(own[0].Grounds, "Your one job") {
+				t.Errorf("step %+v, want the rung's own note without the session's lead", own[0])
 			}
 			asks := g.asks(t)
 			if len(asks) != 1 {
 				t.Fatalf("%d asks, want one", len(asks))
 			}
 			pre, _ := asks[0].Detail["preselected"].(map[string]any)
-			if fund, _ := pre["fund"].(map[string]any); pre["action"] != ActExtend || pre["args"].(map[string]any)["sessions"] != float64(1) || fund["agent_time"] == nil {
-				t.Errorf("preselected %v, want extend with one session", asks[0].Detail["preselected"])
+			if args, _ := pre["args"].(map[string]any); pre["action"] != ActExtend || args["sessions"] != float64(2) || args["money"] != false {
+				t.Errorf("preselected %v, want the room of 2 without money", asks[0].Detail["preselected"])
 			}
 			if asks[0].Detail["recommended_by"] != "the factory agent" {
 				t.Errorf("the proposal's writer = %v, want the factory agent", asks[0].Detail["recommended_by"])
@@ -120,6 +119,7 @@ func TestRung2RunsAtAutonomousAndFullAuto(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
 			g.atAutonomy(state)
+			g.atSessionCap(t)
 			g.chat.answers = []CheckinResponse{g.handUp(t)}
 			out := g.trip(t, tripCap)
 			g.settle()

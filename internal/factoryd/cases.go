@@ -285,7 +285,7 @@ type CaseRead struct {
 type CaseAction struct {
 	Action string         `json:"action"`
 	Args   map[string]any `json:"args,omitempty"`
-	Fund   *policy.Draw   `json:"fund,omitempty"`
+	Room   *RoomAsk       `json:"room,omitempty"`
 	Result string         `json:"result,omitempty"`
 }
 

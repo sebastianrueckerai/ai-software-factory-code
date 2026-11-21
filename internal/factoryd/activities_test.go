@@ -3900,7 +3900,8 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 // 4.5004 spent, the ceiling 0.0996 is read down to 0.099, never up to
 // 0.100, so the raise is 0.60 - 0.099 = 0.501, rounded up to 0.51, and at
 // 5.51 (0.6096) the floor funds the session. The face's why names the
-// raise, and "Add money" opens with it.
+// raise, and a room of 1 adds it: before the card's first session a
+// session's worth is the opening's 0.60.
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
@@ -3937,8 +3938,8 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		if want := fmt.Sprintf("the card needs %.2f EUR more to pay its next session", raise); !strings.Contains(face.Why, want) {
 			t.Errorf("%.4f of %.2f spent: why = %q, want it to name %q", spent, budget, face.Why, want)
 		}
-		if eur := pressedFund(t, facts); eur != raise {
-			t.Fatalf("%.4f of %.2f spent: Add money opens with %.2f, want %.2f", spent, budget, eur, raise)
+		if eur := pressedRoom(t, facts); eur != raise {
+			t.Fatalf("%.4f of %.2f spent: a room of 1 adds %.2f, want %.2f", spent, budget, eur, raise)
 		}
 		k.BudgetEUR += raise
 		store.tasks["t-2"] = k
@@ -3969,10 +3970,11 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 }
 
 // At its spend limit a card out of money is let go on by one press of
-// "Raise the spend limit": 4.50 of 5.00 EUR spent with the limit at 5.00,
-// a session on factory/big needs 0.60 EUR and the review and the audit
-// 0.40 EUR, so 0.50 EUR is short. The press raises the limit by 0.50 EUR
-// and adds 0.50 EUR, and the next session is funded.
+// "Give more room": 4.50 of 5.00 EUR spent with the limit at 5.00, a
+// session on factory/big needs 0.60 EUR and the review and the audit 0.40
+// EUR, so before its first session a room of 1 is 0.50 EUR short. The
+// press raises the limit by 0.50 EUR and adds 0.50 EUR, and the next
+// session is funded.
 func TestARaiseAtTheSpendLimitFundsTheNextSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-3", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
@@ -4001,15 +4003,15 @@ func TestARaiseAtTheSpendLimitFundsTheNextSession(t *testing.T) {
 	f.Kind = CaseBudgetFloor
 	facts := Facts{CaseFacts: f, Card: k}
 	face := FaceOf(Case{Kind: CaseBudgetFloor}, facts)
-	if len(face.Answers) == 0 || face.Answers[0].Action != ActRaiseCeiling {
-		t.Fatalf("answers %+v, want the raise first", face.Answers)
+	if len(face.Answers) == 0 || face.Answers[0].Action != ActExtend {
+		t.Fatalf("answers %+v, want the room first", face.Answers)
 	}
 	res, err := face.Answers[0].Press(facts, nil, "")
-	if err != nil || res.Args["eur"] != 0.5 || res.Fund == nil || res.Fund.EUR != 0.5 {
-		t.Fatalf("the raise presses %+v (%v), want a raise of 0.50 EUR and a fund of 0.50 EUR", res, err)
+	if room := RoomFor(f, 1, true); err != nil || res.Args["sessions"] != 1 || res.Args["money"] != true || Cents(room.EUR) != 50 || Cents(room.Limit) != 50 {
+		t.Fatalf("the room presses %+v (%v), want a room of 1 that raises the limit by 0.50 EUR and adds 0.50 EUR", res, err)
 	}
 	if why := PressRefusal(facts, res); why != "" {
-		t.Fatalf("the table refuses the raise: %s", why)
+		t.Fatalf("the table refuses the room: %s", why)
 	}
 	if _, err := store.DrawCard(ctx, "t-3", *r.caseDraw(k, f, Case{ID: 1}, ActInput{Rung: 3, Res: res}, "board")); err != nil {
 		t.Fatal(err)
@@ -4363,8 +4365,8 @@ func TestReplanTextOfAnAgentCutKeepsItsParts(t *testing.T) {
 
 // The floor's need is rounded up to the micro-euro where it is read, so the
 // ask and the case's money fact name one fund, which the stop leaves to them. A cheap floor of
-// 0.3000004 reads 0.300001; at a room of 1.00 - 0.30 - 0.40 = 0.30 the
-// shortfall is 0.000001, which rounds up to the cent: 0.01.
+// 0.3000004 reads 0.300001; at a room of 1.00 - 0.30 - 0.40 = 0.30 a room
+// of 1 lacks 0.000001, which rounds up to the cent: 0.01.
 func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Status: "waiting-human", BudgetEUR: 1, SpentEUR: 0.3, Track: "direct"}); err != nil {
@@ -4386,8 +4388,8 @@ func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
 		t.Fatalf("stop = (%q, %v), want the need 0.300001 and no fund", why, err)
 	}
 	f := CaseFacts{LeftEUR: store.tasks["t-1"].Left(), ReserveEUR: 0.4, FloorEUR: n.eur}
-	if got := shortfall(f); got != 0.01 {
-		t.Fatalf("shortfall = %v, want 0.01, the ask's fund", got)
+	if got := RoomFor(f, 1, true).EUR; got != 0.01 {
+		t.Fatalf("the room's money = %v, want 0.01, the ask's fund", got)
 	}
 }
 

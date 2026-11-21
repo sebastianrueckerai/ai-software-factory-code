@@ -111,7 +111,7 @@ func seedReceiptRecords(ctx context.Context, t *testing.T, store *fakeStore, obj
 			ResolvedAt: &receiptApprovedAt, Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: "approve", Reason: "the strict improvement holds"}},
 		{ID: 3, TaskID: "t1", Repository: "sf/repo", Kind: CaseSessionCap, Status: CaseResolved, OpenedAt: handedUp, // the human's answer
 			ResolvedAt: &receiptAnsweredAt, Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend,
-				Args: map[string]any{"sessions": 2, "agent_time_s": 3600}, Reason: "the flaky checkout needs two more sessions"}},
+				Args: map[string]any{"sessions": 2}, Reason: "the flaky checkout needs two more sessions"}},
 		{ID: 4, TaskID: "t1", Repository: "sf/repo", Kind: CaseCheckinShare, Status: CaseAtHuman, OpenedAt: receiptAnsweredAt}, // still open
 	}
 
@@ -167,7 +167,7 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 			CostEUR: 3.5, // the task row's settled spend
 			Decisions: []ReceiptDecision{ // the human's, oldest first: the approval, the case it answered
 				{Kind: ApprovalMerge, Decision: "approved", By: "sebastian", Note: "the strict improvement holds", At: &receiptApprovedAt},
-				{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 1 hour of agent time",
+				{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions' worth",
 					Note: "the flaky checkout needs two more sessions", At: &receiptAnsweredAt},
 			},
 		},
@@ -470,7 +470,7 @@ func TestRecordReceiptPostsTheCommentOnce(t *testing.T) {
 		"Gate policy: auto", "Gate reproduction: not run", "Gate reproduction: bash check (exit 0): passed",
 		"Cost: 3.50 EUR",
 		"Decision: merge approved by sebastian — the strict improvement holds",
-		"Decision: case extend by sebastian, drew 2 sessions and 1 hour of agent time — the flaky checkout needs two more sessions",
+		"Decision: case extend by sebastian, drew 2 sessions' worth — the flaky checkout needs two more sessions",
 	} {
 		if !strings.Contains(facts, want) {
 			t.Fatalf("the comment's facts miss %q:\n%s", want, body)

@@ -65,11 +65,9 @@ var (
 	ActDeployNow              = factoryd.ActDeployNow
 	ActDenyMerge              = factoryd.ActDenyMerge
 	ActExtend                 = factoryd.ActExtend
-	ActFund                   = factoryd.ActFund
 	ActGrantCriteria          = factoryd.ActGrantCriteria
 	ActHandover               = factoryd.ActHandover
 	ActNote                   = factoryd.ActNote
-	ActRaiseCeiling           = factoryd.ActRaiseCeiling
 	ActReplan                 = factoryd.ActReplan
 	ActRemoveDependency       = factoryd.ActRemoveDependency
 	ActRestartPlan            = factoryd.ActRestartPlan
@@ -353,6 +351,7 @@ type (
 	QuestionChoice        = factoryd.QuestionChoice
 	ReleaseKeeper         = factoryd.ReleaseKeeper
 	Resolution            = factoryd.Resolution
+	RoomAsk               = factoryd.RoomAsk
 	RoutineRunInput       = factoryd.RoutineRunInput
 	RungTwoRecommendation = factoryd.RungTwoRecommendation
 	Runner                = factoryd.Runner

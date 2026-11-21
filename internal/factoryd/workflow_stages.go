@@ -100,9 +100,6 @@ func AtTimeStop(escalation string) bool {
 	return AtTimeCap(escalation) || strings.HasPrefix(escalation, PlannerOutOfTime)
 }
 
-// MaxExtendMinutes bounds the agent time one extend raises.
-const MaxExtendMinutes = 600
-
 // atGateStop: escalation is the gate supervisor's stop of one of the
 // verification's gates (actOnGate), not of a session or the screening.
 func atGateStop(escalation string) bool {

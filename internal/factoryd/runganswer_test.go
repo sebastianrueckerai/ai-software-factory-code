@@ -12,10 +12,10 @@ import (
 )
 
 // answerFacts are seeded facts of a card at its budget floor with two
-// findings: rung 3 answers reverify, extend, raise_ceiling, successor,
-// replan, close and note on them.
+// findings: rung 3 answers reverify, extend, successor, replan, close and
+// note on them.
 var answerFacts = CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
-	AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5,
+	AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5, MonthLeftEUR: 40,
 	Findings: []string{idA, idB}}
 
 // wantReasonKinds is the closed enum of reason_kind: every case kind in
@@ -79,10 +79,10 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	noFindings.Findings = nil
 	// the union of the actions offered from the rung itself up to the human's
 	handUpWant := map[int][]string{
-		0: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
-		1: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
-		2: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
-		3: {ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
+		0: {ActRouteApproval, ActReverify, ActExtend, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
+		1: {ActRouteApproval, ActReverify, ActExtend, ActSuccessor, ActReplan, ActClose, ActNote},
+		2: {ActRouteApproval, ActReverify, ActExtend, ActSuccessor, ActReplan, ActClose, ActNote},
+		3: {ActReverify, ActExtend, ActSuccessor, ActReplan, ActClose, ActNote},
 	}
 	for _, c := range []struct {
 		name string
@@ -122,7 +122,7 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	// rung: rung 3 answers the caps, rung 0 routes the approval and
 	// withdraws instead of closing
 	schema := AnswerSchema(answerFacts, 3)
-	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
+	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3's decision enum is %v, want %v", got, want)
 	}
 	if got, want := answerEnum(t, AnswerSchema(answerFacts, 0), "decision"), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw, RungHandUp}; !slices.Equal(got, want) {
@@ -156,9 +156,8 @@ func TestAMergeConflictTakesNoGateRerunFromTheRungs(t *testing.T) {
 // The verdicts part is keyed by the facts' finding ids: each id holds
 // one of the check-in's three verdicts with its evidence, and the
 // findings themselves are the required list. Facts without findings
-// take an empty verdicts object that names no id. The draw rides beside
-// the decision with three parts, each floored at zero, and no part of
-// it is required.
+// take an empty verdicts object that names no id. The draw is no
+// required part of the answer.
 func TestAnswerSchemaVerdictsAndDraw(t *testing.T) {
 	verdicts := answerPart(t, AnswerSchema(answerFacts, 3), "verdicts")
 	props, ok := verdicts["properties"].(map[string]any)
@@ -198,23 +197,6 @@ func TestAnswerSchemaVerdictsAndDraw(t *testing.T) {
 	if _, has := empty["required"]; has {
 		t.Errorf("facts without findings still require verdicts: %v", empty["required"])
 	}
-	draw := answerPart(t, AnswerSchema(answerFacts, 3), "draw")
-	parts, ok := draw["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("the draw holds no properties: %v", draw["properties"])
-	}
-	for _, part := range []string{"sessions", "agent_time_s", "eur"} {
-		one, ok := parts[part].(map[string]any)
-		if !ok {
-			t.Fatalf("the draw holds no %s: %v", part, parts[part])
-		}
-		if one["minimum"] != 0 {
-			t.Errorf("the draw's %s is floored at %v, want 0", part, one["minimum"])
-		}
-	}
-	if parts["sessions"].(map[string]any)["type"] != "integer" || parts["agent_time_s"].(map[string]any)["type"] != "integer" || parts["eur"].(map[string]any)["type"] != "number" {
-		t.Errorf("the draw's parts are mistyped: %v", parts)
-	}
 	if slices.Contains(answerRequired(t, AnswerSchema(answerFacts, 3)), "draw") {
 		t.Error("the draw is required, want it beside the decision")
 	}
@@ -233,7 +215,7 @@ func answerBody(t *testing.T, edit func(map[string]any)) string {
 		},
 		"note":           "one red test is left, extend by two sessions",
 		"recommendation": map[string]any{"action": ActReverify, "grounds": "the head is green again on a reverify"},
-		"draw":           map[string]any{"sessions": 2, "agent_time_s": 3600, "eur": 0.5},
+		"draw":           map[string]any{"sessions": 2, "money": true},
 	}
 	if edit != nil {
 		edit(body)
@@ -265,10 +247,10 @@ func TestParseRungAnswer(t *testing.T) {
 	if want := (RungRecommendation{Action: ActReverify, Grounds: "the head is green again on a reverify"}); got.Recommendation != want {
 		t.Errorf("the recommendation is %+v, want %+v", got.Recommendation, want)
 	}
-	if got.Draw == nil || got.Draw.Sessions != 2 || got.Draw.AgentTimeS != 3600 || got.Draw.EUR != 0.5 {
-		t.Errorf("the draw is %+v, want 2 sessions, 3600 s and 0.50 EUR", got.Draw)
+	if got.Draw == nil || *got.Draw != (RungDraw{Sessions: 2, Money: true}) {
+		t.Errorf("the draw is %+v, want 2 sessions' worth with money", got.Draw)
 	}
-	got, err = ParseRungAnswer(answerFacts, 3, answerBody(t, func(m map[string]any) { delete(m, "draw") }))
+	got, err = ParseRungAnswer(answerFacts, 3, answerBody(t, func(m map[string]any) { m["decision"] = ActReverify; delete(m, "draw") }))
 	if err != nil {
 		t.Fatalf("a valid answer without a draw is refused: %v", err)
 	}
@@ -316,9 +298,9 @@ func TestParseRungAnswer(t *testing.T) {
 		{"a verdict without its evidence", answerFacts, 3, answerBody(t, func(m map[string]any) {
 			delete(m["verdicts"].(map[string]any)[idA].(map[string]any), "evidence")
 		}), "leaves evidence out"},
-		{"a draw below zero", answerFacts, 3, answerBody(t, func(m map[string]any) {
-			m["draw"].(map[string]any)["eur"] = -0.01
-		}), "below zero"},
+		{"a count of 0", answerFacts, 3, answerBody(t, func(m map[string]any) {
+			m["draw"].(map[string]any)["sessions"] = 0
+		}), "a room counts 1 to 5 sessions' worth"},
 	} {
 		_, err := ParseRungAnswer(c.f, c.rung, c.text)
 		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
@@ -379,8 +361,8 @@ func TestParseRungAnswerTakesTheRungsRealAnswerShape(t *testing.T) {
 	}
 }
 
-// A handover at the cap parses for rung 1 with a draw of a session and is
-// refused at the parse without one, so rung 1 is asked again instead of
+// A handover at the cap parses for rung 1 with a room of 1 beside it and
+// is refused at the parse without one, so rung 1 is asked again instead of
 // handing up for Act to refuse, with the stop, the answers the card holds
 // there and the answers the rung may give. By hand: 3 of 3 sessions used, the card's
 // draw left holds 2 sessions.
@@ -395,10 +377,10 @@ func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
 			m["recommendation"] = map[string]any{"action": ActHandover, "grounds": "one session fixes it"}
 		})
 	}
-	if got, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 1, "agent_time_s": 0, "eur": 0})); err != nil || got.Decision != ActHandover {
+	if got, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 1, "money": true})); err != nil || got.Decision != ActHandover {
 		t.Fatalf("with a draw: %+v, %v; want the handover accepted", got, err)
 	}
-	_, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 0, "agent_time_s": 0, "eur": 0}))
+	_, err := ParseRungAnswer(f, 1, handover(nil))
 	// the card has an open pull request, so its cap's face holds a successor
 	// beside the extend, the close and the note; the check-in takes the
 	// first two
@@ -407,5 +389,61 @@ func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
 		" the rung answers with handover, route_approval, reverify, extend, successor and replan, or hand_up when it cannot resolve"
 	if err == nil || err.Error() != want {
 		t.Fatalf("with no draw: %v, want the refusal naming the cap and the answers: %s", err, want)
+	}
+}
+
+// A rung's draw is a room: a count of sessions' worth from 1 to 5 and its
+// money, both required, and no agent time or EUR. An extend carries its
+// room as its args; a draw with agent time is refused for its field, one
+// outside the count for its range, and one that leaves its money out for
+// that.
+func TestRungAnswerSchemaTakesSessionsAndMoney(t *testing.T) {
+	draw := answerPart(t, AnswerSchema(answerFacts, 3), "draw")
+	parts, ok := draw["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("the draw holds no properties: %v", draw["properties"])
+	}
+	if got := slices.Sorted(maps.Keys(parts)); !slices.Equal(got, []string{"money", "sessions"}) {
+		t.Errorf("the draw holds %v, want sessions and money alone", got)
+	}
+	sessions, _ := parts["sessions"].(map[string]any)
+	if sessions["type"] != "integer" || sessions["minimum"] != 1 || sessions["maximum"] != MaxRoomSessions {
+		t.Errorf("the draw's sessions are %v, want an integer from 1 to %d", sessions, MaxRoomSessions)
+	}
+	if money, _ := parts["money"].(map[string]any); money["type"] != "boolean" {
+		t.Errorf("the draw's money is %v, want a boolean", money)
+	}
+	if got, ok := draw["required"].([]string); !ok || !slices.Equal(got, []string{"sessions", "money"}) {
+		t.Errorf("the draw requires %v, want sessions and money", draw["required"])
+	}
+	with := func(d map[string]any) string {
+		return answerBody(t, func(m map[string]any) { m["draw"] = d })
+	}
+	got, err := ParseRungAnswer(answerFacts, 3, with(map[string]any{"sessions": 2, "money": false}))
+	if err != nil || got.Draw == nil || *got.Draw != (RungDraw{Sessions: 2, Money: false}) {
+		t.Fatalf("a room of 2 without money = %+v, %v", got.Draw, err)
+	}
+	if res := rungResolution(got, answerFacts); res.Room != nil || res.Args["sessions"] != 2 || res.Args["money"] != false {
+		t.Errorf("the extend's resolution = %+v, want its room as its args", res)
+	}
+	for _, tc := range []struct {
+		name string
+		draw map[string]any
+		want string
+	}{
+		{"agent time", map[string]any{"sessions": 1, "money": true, "agent_time_s": 60}, `the answer holds the field "agent_time_s", which the schema does not have`},
+		{"eur", map[string]any{"sessions": 1, "money": true, "eur": 0.5}, `the answer holds the field "eur", which the schema does not have`},
+		{"a count of 0", map[string]any{"sessions": 0, "money": true}, "a room counts 1 to 5 sessions' worth"},
+		{"a count of 6", map[string]any{"sessions": 6, "money": true}, "a room counts 1 to 5 sessions' worth"},
+		{"a fraction", map[string]any{"sessions": 1.5, "money": true}, "a room counts 1 to 5 sessions' worth"},
+		{"no money", map[string]any{"sessions": 1}, "the draw leaves money out"},
+	} {
+		if _, err := ParseRungAnswer(answerFacts, 3, with(tc.draw)); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want it refused with %q", tc.name, err, tc.want)
+		}
+	}
+	if _, err := ParseRungAnswer(answerFacts, 3, answerBody(t, func(m map[string]any) { delete(m, "draw") })); err == nil ||
+		!strings.HasPrefix(err.Error(), "an extend leaves draw out") {
+		t.Errorf("an extend with no draw = %v, want it refused naming the draw", err)
 	}
 }

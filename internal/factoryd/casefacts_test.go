@@ -504,36 +504,27 @@ func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
 	}
 }
 
-// A floor case asks the opening price the run's next session needs: the
-// case's need is the raise the refusal text names, so a fund of exactly
-// it clears SessionFunded, and "Add money" opens with it. Spent 4.40 of
-// 5 with nothing held leaves 0.60, less the 0.40
-// reserve 0.20 for a session, and the recorded opening on small needs
-// 0.607001: the raise and the case's need are both 0.41.
-// firstRaise is the amount "Add money" opens with on the budget floor of
-// card at refusal why, on the facts of the card's next session on model.
-func firstRaise(t *testing.T, r *Runner, card Task, why, model string) float64 {
+// pressedRoom is the money a press of "Give more room" with its defaults
+// adds on facts f.
+func pressedRoom(t *testing.T, f Facts) float64 {
 	t.Helper()
-	f, err := r.tripFacts(context.Background(), card, "", model)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pressedFund(t, Facts{CaseFacts: f, Card: card, Case: Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}})
-}
-
-// pressedFund is the amount a press of "Add money" with its default funds on
-// facts f.
-func pressedFund(t *testing.T, f Facts) float64 {
-	t.Helper()
-	a, _ := AnswerFor(ActFund, f)
+	a, _ := AnswerFor(ActExtend, f)
 	res, err := a.Press(f, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	eur, _ := res.Args["eur"].(float64)
-	return eur
+	room, _ := res.room(f.atCap())
+	return room.EUR
 }
 
+// A floor case asks the opening price the run's next session needs: the
+// case's need is the raise the refusal text names, so a fund of exactly
+// it clears SessionFunded. Spent 4.40 of 5 with nothing held leaves 0.60,
+// less the 0.40 reserve 0.20 for a session, and the recorded opening on
+// small needs 0.607001: the raise and the case's need are both 0.41.
+// "Give more room" opens with a room of 1, a session's worth of 4.40 / 3
+// = 1.47 EUR from the card's 3 sessions, which adds 1.47 - 0.20 = 1.27 EUR,
+// and with it the session is funded too.
 func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	g := newFactsRig(t)
 	card := g.store.tasks["t1"]
@@ -565,13 +556,14 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if c.Kind != CaseBudgetFloor || c.Money == nil {
 		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
 	}
-	if eur := pressedFund(t, Facts{CaseFacts: FactsOf(c), Card: card, Case: c}); eur != raise {
-		t.Fatalf("Add money opens with %v, want the raise %v", eur, raise)
+	eur := pressedRoom(t, Facts{CaseFacts: FactsOf(c), Card: card, Case: c})
+	if Cents(eur) != 127 {
+		t.Fatalf("the room of 1 adds %v, want 1.27", eur)
 	}
-	card.BudgetEUR += raise
+	card.BudgetEUR += eur
 	g.store.tasks["t1"] = card
 	if why, err := g.r.SessionFunded(ctx, "t1", "factory/small"); err != nil || why != "" {
-		t.Fatalf("after a fund of %.2f: SessionFunded = (%q, %v), want the session funded", raise, why, err)
+		t.Fatalf("after a room of %.2f: SessionFunded = (%q, %v), want the session funded", eur, why, err)
 	}
 }
 

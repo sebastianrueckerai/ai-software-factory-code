@@ -23,9 +23,7 @@ const (
 	ActRerunChecks   = "rerun_checks"
 	ActWaitChecks    = "wait_checks"   // runs a stopped checks wait again: no session, no agent time
 	ActConfirmAudit  = "confirm_audit" // args: findings, their ids, one per line; note: the reason
-	ActExtend        = "extend"        // args: sessions, agent_time_s
-	ActFund          = "fund"          // args: eur
-	ActRaiseCeiling  = "raise_ceiling" // args: eur
+	ActExtend        = "extend"        // args: sessions, 1 to MaxRoomSessions; money, true when left out
 	ActSuccessor     = "successor"
 	ActRetry         = "retry"  // args: task_id of the failed dependency
 	ActReplan        = "replan" // args: task_id of a failed dependency, whose work its plan's planner takes (impasse)
@@ -54,11 +52,11 @@ const (
 const ActHandBack = "hand_back"
 
 // Resolution is one answer on a case: the action with its arguments, an
-// optional draw that rides beside it, and a note.
+// optional room that rides beside it, and a note.
 type Resolution struct {
 	Action string         `json:"action"`
 	Args   map[string]any `json:"args,omitempty"`
-	Fund   *policy.Draw   `json:"fund,omitempty"`
+	Room   *RoomAsk       `json:"room,omitempty"`
 	Note   string         `json:"note,omitempty"`
 	// Verdicts are a rung's verdicts on the findings it judged, keyed by
 	// the finding's text.
@@ -80,23 +78,71 @@ type Action struct {
 // session: where no session can run, each is its cap's case first.
 var questionKinds = []CaseKind{CaseAgentEscalate, CaseAgentRequestInfo}
 
-// capDraws are the draws that lift a cap: on a question's case they buy the
-// room and leave the question open, so a rung working the case by itself
-// may take none: it would leave the case open with nobody on it.
-var capDraws = []string{ActExtend, ActFund, ActRaiseCeiling}
+// RoomAsk is a room asked for: a count of sessions' worth and whether its
+// money is in it.
+type RoomAsk struct {
+	Sessions int  `json:"sessions"`
+	Money    bool `json:"money"`
+}
 
-// lifts reports whether action's draw of args lifts the card's own cap
-// kind: sessions the session cap, agent time the agent time cap, money the
-// budget floor.
-func lifts(kind CaseKind, action string, args map[string]any) bool {
-	d := extendDraw(args)
-	switch kind {
+// roomCountRefusal refuses a count of sessions' worth outside 1 to
+// MaxRoomSessions.
+var roomCountRefusal = fmt.Sprintf("a room counts 1 to %d sessions' worth", MaxRoomSessions)
+
+// roomAsk is the room r asks for: an extend's own count and money, its
+// money true when left out, else the room beside its action. why refuses
+// a count that is no whole number from 1 to MaxRoomSessions, and a money
+// that is neither true nor false.
+func (r Resolution) roomAsk() (ask RoomAsk, asked bool, why string) {
+	if r.Action != ActExtend {
+		if r.Room == nil {
+			return RoomAsk{}, false, ""
+		}
+		if r.Room.Sessions < 1 || r.Room.Sessions > MaxRoomSessions {
+			return *r.Room, true, roomCountRefusal
+		}
+		return *r.Room, true, ""
+	}
+	n, ok := toInt(r.Args["sessions"])
+	if f, fraction := r.Args["sessions"].(float64); fraction && f != math.Trunc(f) || !ok || n < 1 || n > MaxRoomSessions {
+		return RoomAsk{}, true, roomCountRefusal
+	}
+	ask = RoomAsk{Sessions: n, Money: true}
+	if m, set := r.Args["money"]; set {
+		if ask.Money, ok = m.(bool); !ok {
+			return ask, true, "a room's money is true or false"
+		}
+	}
+	return ask, true, ""
+}
+
+// room is the room r gives on f: an extend's, or the one beside its
+// action; false for none, or for an ask roomAsk refuses.
+func (r Resolution) room(f CaseFacts) (Room, bool) {
+	ask, asked, why := r.roomAsk()
+	if !asked || why != "" {
+		return Room{}, false
+	}
+	return RoomFor(f, ask.Sessions, ask.Money), true
+}
+
+// draw is what room r takes from the pool and the card's draw bound: its
+// starts, its agent time and its money with the raise of the spend limit.
+func (r Room) draw() policy.Draw {
+	return policy.Draw{Sessions: r.Starts, AgentTime: r.AgentTime, EUR: r.EUR + r.Limit}
+}
+
+// lifts reports whether r's room lifts the cap f stops at: starts the
+// session cap, agent time the agent time cap, money the budget floor.
+func lifts(f CaseFacts, r Resolution) bool {
+	room, ok := r.room(f)
+	switch f.Kind {
 	case CaseSessionCap:
-		return action == ActExtend && d.Sessions > 0
+		return ok && room.Starts > 0
 	case CaseAgentTimeCap:
-		return action == ActExtend && d.AgentTime > 0
+		return ok && room.AgentTime > 0
 	case CaseBudgetFloor:
-		return action == ActFund || action == ActRaiseCeiling
+		return ok && room.EUR > 0
 	}
 	return false
 }
@@ -130,9 +176,9 @@ func (f CaseFacts) authorGranted() CaseFacts {
 	return f
 }
 
-// extendKinds are the cases an extend answers: the caps, and the stops
-// whose questions offer extending the card as an owner exit.
-var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
+// extendKinds are the cases an extend answers: the caps, the money stop,
+// and the stops whose questions offer more room as an owner exit.
+var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
 
 // replyAloneKinds are the cases an answer row that names no action ends
 // never: every ask whose ladder line reads "A reply alone starts no attempt",
@@ -249,66 +295,21 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	{Name: ActExtend, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
-		d := extendDraw(r.Args)
+	{Name: ActExtend, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
+		ask, _, _ := r.roomAsk()
 		switch {
-		case d.Sessions < 0 || d.AgentTime < 0:
-			return "an extend takes no part below 0"
 		case f.Final != "":
-			return "this card ended " + f.Final + ": an extend buys nothing, file a new card"
+			return "this card ended " + f.Final + ": more room buys nothing, file a new card"
 		case f.Report:
 			return reportRuns
-		case f.Kind == CaseBudgetFloor:
-			return "this card waits on money, not a session" + stopAnswers(CaseBudgetFloor, f)
-		case f.Kind == CaseMonthCap:
-			return "this card waits on the month cap, not a session: reset the month's count in the console's status panel, raise the month cap in policy.yaml by a commit, or wait for the month to turn, then `fund` or `retry`"
+		case slices.Contains(capKinds, f.Kind):
+			return capLiftsNot
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
-			return "this card asked a question, not for a session: answer it, or extend at its cap"
-		case d.Sessions == 0 && d.AgentTime == 0:
-			return "an extend needs sessions or agent time above 0"
-		case d.AgentTime > MaxExtendMinutes*time.Minute:
-			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
-		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
-			card, pool := int(f.CardDrawLeft.AgentTime/time.Minute), int(f.PoolLeft.AgentTime/time.Minute)
-			upTo := func(minutes int) string {
-				if minutes <= 0 {
-					return "none"
-				}
-				return "up to " + textutil.Plural(minutes, "minute", "minutes")
-			}
-			return fmt.Sprintf("this card stopped for agent time: an extend of its agent time starts the next session, and sessions alone buy none. "+
-				"The card's draw leaves %s and the pool %s of agent time, so the check-in may ask for %s, the factory agent for %s and the human for %s",
-				textutil.Plural(card, "minute", "minutes"), textutil.Plural(pool, "minute", "minutes"),
-				upTo(min(card, pool, MaxExtendMinutes)), upTo(min(pool, MaxExtendMinutes)), upTo(MaxExtendMinutes))
-		case !d.IsZero() && boughtNothing(f):
-			return boughtNothingText(f)
+			return "this card asked a question, not for room: answer it, or give room at its cap"
+		case !ask.Money && f.unfunded():
+			return "this card lacks the money to open a session: give the room with its money"
 		}
 		return ""
-	}},
-	{Name: ActFund, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
-		switch eur, _ := r.Args["eur"].(float64); {
-		case f.Final != "":
-			return "this card ended " + f.Final + ": a fund buys nothing, file a new card"
-		case slices.Contains(capKinds, f.Kind):
-			return capLiftsNot
-		case !(eur > 0) || math.IsInf(eur, 1):
-			return "a fund needs an amount above 0 EUR"
-		case boughtNothing(f):
-			return boughtNothingText(f)
-		}
-		return ""
-	}},
-	{Name: ActRaiseCeiling, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		switch {
-		case f.Final != "":
-			return "this card ended " + f.Final + ": a raise of its ceiling buys nothing, file a new card"
-		case slices.Contains(capKinds, f.Kind):
-			return capLiftsNot
-		case f.ApprovalKind != "" || moneyless(f.Kind):
-			return "this ask holds none of the card's money, so its ceiling is not what it waits on: answer the ask"
-		}
-		eur, _ := r.Args["eur"].(float64)
-		return raiseRefusal(eur)
 	}},
 	{Name: ActSuccessor, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		if !f.PROpen && !f.Pushed && f.Head == "" && f.BranchHead == "" {
@@ -502,14 +503,8 @@ var Actions = []Action{
 // which no money for the card lifts.
 var capKinds = []CaseKind{CaseDayCap, CaseMonthCap, CaseProjectCap}
 
-// capLiftsNot is the refusal of money for a card at a spending limit.
-const capLiftsNot = "this card waits on a spending limit of the factory or the project, which money for the card does not lift: wait for the limit to reset, or close the card"
-
-// moneyless says a case of kind k holds none of the card's money: a
-// merge's, a plan's and a human card's.
-func moneyless(k CaseKind) bool {
-	return ChoiceKind(k) || slices.Contains([]CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CasePlanCriteria}, k)
-}
+// capLiftsNot is the refusal of room for a card at a spending limit.
+const capLiftsNot = "this card waits on a spending limit of the factory or the project, which more room for the card does not lift: reset the limit's count in the console's status panel, raise the limit by a commit, or wait for it to reset"
 
 // conflictRefusal refuses action, which runs the gates again, on a head
 // that no longer merges into main: the merge queue's turn meets the same
@@ -556,7 +551,7 @@ func conflictFit(f CaseFacts) string {
 // monitorActions are the actions a monitor flag's case takes: those Act carries
 // out itself, since the card's run waits on no such case and drops its
 // resolution.
-var monitorActions = []string{ActNote, ActSettle, ActSalvage, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw, ActRunCriteria}
+var monitorActions = []string{ActNote, ActSettle, ActSalvage, ActRetry, ActReplan, ActWithdraw, ActRunCriteria}
 
 // rungs marks the rungs of in a row's Rungs.
 func rungs(of ...int) [4]bool {
@@ -579,11 +574,9 @@ func ActionByName(name string) (Action, bool) {
 }
 
 // probes are the smallest answers Offered tries the actions that need
-// arguments or a note with: one session, one cent, the same model, one
-// note.
+// arguments or a note with: one session's worth, the same model, one note.
 var probes = map[string]Resolution{
 	ActHandover: {Args: map[string]any{"model": "same"}}, ActExtend: {Args: map[string]any{"sessions": 1}},
-	ActFund: {Args: map[string]any{"eur": 0.01}}, ActRaiseCeiling: {Args: map[string]any{"eur": 0.01}},
 	ActContinue:         {Note: "probe"},
 	ActDenyMerge:        {Note: "probe"},
 	ActSetDependency:    {Args: map[string]any{"depends_on": "probe"}},
@@ -698,27 +691,14 @@ var requestEnds = []string{ActApproveMerge, ActDenyMerge}
 // mergeDecisions are the actions that decide an approval request alone.
 var mergeDecisions = append(slices.Clone(requestEnds), ActGrantCriteria)
 
-// probe is action a's smallest answer on facts f: its probe, an extend of
-// one minute of agent time at an agent time cap, where a raise of the
-// sessions alone is refused with the stop's own words, and the clearing of
-// the audit's first finding.
+// probe is action a's smallest answer on facts f: its probe, and the
+// clearing of the audit's first finding.
 func probe(a Action, f CaseFacts) Resolution {
 	p := probes[a.Name]
-	switch {
-	case a.Name == ActExtend && f.Kind == CaseAgentTimeCap:
-		p.Args = map[string]any{"agent_time_s": 60}
-	case a.Name == ActConfirmAudit && len(f.AuditConfirmable) > 0:
+	if a.Name == ActConfirmAudit && len(f.AuditConfirmable) > 0 {
 		p.Args = map[string]any{"findings": f.AuditConfirmable[0]}
 	}
 	return p
-}
-
-// need is the smallest draw an answer by a takes on f, its probe's: an
-// extend's session, or its minute at an agent time cap, and a fund's or a
-// raise's cent. Zero for an action that draws nothing of its own.
-func (a Action) need(f CaseFacts) policy.Draw {
-	d, _ := Resolution{Action: a.Name, Args: probe(a, f).Args}.draw()
-	return d
 }
 
 // Offered lists the actions rung may take on facts f, in table order: its
@@ -735,41 +715,55 @@ func Offered(f CaseFacts, rung int) []Action {
 }
 
 // offerRefusal is why a is not on offer to rung on f, "" when it is: the
-// action tried with the smallest answer (its probe). A handover at the cap is
-// on offer to rung 1 alone, the one rung whose answer carries a session draw,
-// while the card's draw bound holds a session (handoverNeedsDraw).
+// action tried with the smallest answer (its probe). An extend is on offer
+// when a room of 1 passes with its money or without it. A handover at the
+// cap is on offer to rung 1 alone, the one rung whose answer carries a
+// session draw, while the card's draw bound holds a session (handoverDraw).
 func (a Action) offerRefusal(f CaseFacts, rung int) string {
 	p := probe(a, f)
 	res := Resolution{Action: a.Name, Args: p.Args, Note: p.Note}
 	why := a.refusal(f, rung, res)
-	if why != "" && a.handoverNeedsDraw(f, rung) {
+	if why != "" && a.Name == ActExtend && a.refusal(f, rung, Resolution{Action: a.Name, Args: moneylessRoom}) == "" {
+		return ""
+	}
+	if _, ok := a.handoverDraw(f, rung); why != "" && ok {
 		return ""
 	}
 	return why
 }
 
-// handoverNeedsDraw says a is the handover, refused at the cap for want of a
-// session, and rung 1's answer may draw the one session that makes room.
-func (a Action) handoverNeedsDraw(f CaseFacts, rung int) bool {
+// moneylessRoom is the extend's probe without its money.
+var moneylessRoom = map[string]any{"sessions": 1, "money": false}
+
+// handoverDraw is the room of 1 session's worth, with its money where that
+// passes and else without it, that rung 1's answer may draw for a, the
+// handover refused at the cap for want of a session; false when a is no
+// such handover or neither room makes it pass.
+func (a Action) handoverDraw(f CaseFacts, rung int) (RoomAsk, bool) {
 	if rung != 1 || a.Name != ActHandover {
-		return false
+		return RoomAsk{}, false
 	}
 	p := probe(a, f)
 	res := Resolution{Action: a.Name, Args: p.Args, Note: p.Note}
 	if a.refusal(f, rung, res) == "" {
-		return false
+		return RoomAsk{}, false
 	}
-	res.Fund = &policy.Draw{Sessions: 1}
-	return a.refusal(f, rung, res) == ""
+	for _, money := range []bool{true, false} {
+		res.Room = &RoomAsk{Sessions: 1, Money: money}
+		if a.refusal(f, rung, res) == "" {
+			return *res.Room, true
+		}
+	}
+	return RoomAsk{}, false
 }
 
 // refusal is why rung may not answer f with r by a, "" when it may: a's
-// rungs, its Applies, and the draw r makes. Money is drawn only on the
-// rungs that may fund. A draw that buys sessions, agent time or budget is
-// refused while the reads it is weighed on failed, and after a draw that
-// bought nothing. drawWithin bounds it by rung: every part against the
-// pool and the card's bound, the money for the budget against the
-// ceiling, which a raise beside it lifts first.
+// rungs, its Applies, and the room r gives. Money is drawn only on the
+// rungs of moneyRungs and the spend limit raised only on those of
+// limitRungs. A room is refused while the reads it is weighed on failed,
+// after a draw that bought nothing, past the project's money left this
+// month, and past the bounds of its rung (drawWithin), each refusal with
+// the largest count that fits.
 func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if rung < 0 || rung > 3 {
 		return fmt.Sprintf("there is no decider %d", rung)
@@ -780,6 +774,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		return fmt.Sprintf("%s may not pick `%s`: %s may", who(rung), a.Name, rungsText(a.Rungs))
 	}
 	if why := holdRefusal(f, rung, a.Name, r.Args); why != "" {
+		return why
+	}
+	if _, _, why := r.roomAsk(); why != "" {
 		return why
 	}
 	// Act's rule for an ended card's case (endedRefusal), read before a cap
@@ -797,11 +794,11 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		}
 	}
 	switch {
-	case rung < 3 && !f.AtHuman && slices.Contains(questionKinds, f.Kind) && slices.Contains(capDraws, a.Name):
+	case rung < 3 && !f.AtHuman && slices.Contains(questionKinds, f.Kind) && a.Name == ActExtend:
 		// a rung working the case by itself: a draw would leave it open
 		// with nobody on it
 		const waits = ". A human's draw waits until the question reaches the human"
-		if lifts(f.atCap().Kind, a.Name, r.Args) {
+		if lifts(f.atCap(), r) {
 			return "this ask is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation" + waits
 		}
 		return "this ask is the agent's question, which a draw does not answer: answer it, or hand it up" + waits
@@ -860,97 +857,104 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up (`hand_up`) with `restart_plan` as the recommendation",
 			OpenCriteriaPhrase(f.OpenCriteria))
 	}
-	if slices.Contains(mergeDecisions, a.Name) && (r.Fund != nil || !r.drawIsZero()) {
+	if slices.Contains(mergeDecisions, a.Name) && r.Room != nil {
 		return "`" + a.Name + "` decides the merge request alone: it draws nothing"
 	}
 	if a.Name == ActWaitChecks && rung < 3 && f.WaitedOnHead {
 		return "the checks wait on this head was run again once already"
 	}
-	d, budget := r.draw()
-	if d.IsZero() {
+	room, asked := r.room(f)
+	if !asked {
 		return ""
 	}
-	fund, _ := ActionByName(ActFund)
 	unread := slices.IndexFunc(f.Partial, func(p string) bool { return p == "events" || p == "checks" })
-	buys := d.Sessions > 0 || d.AgentTime > 0 || budget > 0
 	switch {
-	case badDraw(d) || r.Fund != nil && badDraw(*r.Fund):
-		return "the draw has a part below 0 or an endless one"
-	case d.EUR > 0 && !fund.Rungs[rung]:
-		return fmt.Sprintf("%s may not draw money: %s may", who(rung), rungsText(fund.Rungs))
-	case buys && unread >= 0:
+	case room.EUR > 0 && !moneyRungs[rung]:
+		return fmt.Sprintf("%s may not draw money: %s may", who(rung), rungsText(moneyRungs))
+	case room.Limit > 0 && !limitRungs[rung]:
+		return "only the factory agent or a human raises the spend limit: " + fitWords(f, room, "fits under it", func(o Room) bool { return o.Limit == 0 })
+	case unread >= 0:
 		return fmt.Sprintf("the card's %s could not be read, so a draw cannot be weighed against the last one: try again in a minute, or close the card", f.Partial[unread])
-	case buys && boughtNothing(f):
+	case boughtNothing(f):
 		return boughtNothingText(f)
 	}
-	if why := drawWithin(f, rung, d, a.need(f), false); why != "" || budget == 0 {
+	if why := monthWithin(f, room); why != "" {
 		return why
 	}
-	if r.Action == ActRaiseCeiling {
-		raise, _ := r.Args["eur"].(float64)
-		f.CeilingEUR += raise
+	return drawWithin(f, rung, room)
+}
+
+// moneyRungs are the deciders who draw money for a card, limitRungs those
+// who raise its spend limit.
+var (
+	moneyRungs = rungs(1, 2, 3)
+	limitRungs = rungs(2, 3)
+)
+
+// worthWords says n sessions' worth: "1 session's worth", "2 sessions'
+// worth".
+func worthWords(n int) string {
+	if n == 1 {
+		return "1 session's worth"
 	}
-	return drawWithin(f, rung, policy.Draw{EUR: budget}, policy.Draw{}, true)
+	return fmt.Sprintf("%d sessions' worth", n)
 }
 
-// draw is everything r draws from the pool: an extend's sessions and
-// agent time, a fund's or a ceiling raise's money, and the draw beside
-// the action; and of its money the part that goes to the card's budget,
-// which the ceiling bounds.
-func (r Resolution) draw() (policy.Draw, float64) {
-	var d policy.Draw
-	var budget float64
-	switch r.Action {
-	case ActExtend:
-		d = extendDraw(r.Args)
-	case ActFund:
-		budget, _ = r.Args["eur"].(float64)
-		d.EUR = budget
-	case ActRaiseCeiling:
-		d.EUR, _ = r.Args["eur"].(float64)
+// moreWorthWords says n more sessions' worth: "1 more session's worth".
+func moreWorthWords(n int) string { return strings.Replace(worthWords(n), " ", " more ", 1) }
+
+// roomFit is the largest count below room's whose room on f fits, false for
+// none: the counts tried from the one asked down to 1.
+func roomFit(f CaseFacts, room Room, fits func(Room) bool) (Room, bool) {
+	for n := room.N - 1; n >= 1; n-- {
+		if o := RoomFor(f, n, room.Money); fits(o) {
+			return o, true
+		}
 	}
-	if r.Fund != nil {
-		d, budget = d.Plus(*r.Fund), budget+r.Fund.EUR
+	return Room{}, false
+}
+
+// fitWords names the largest count below room's that fits, and what of:
+// "1 session's worth fits under it", "no session's worth fits under it".
+func fitWords(f CaseFacts, room Room, what string, fits func(Room) bool) string {
+	if o, ok := roomFit(f, room, fits); ok {
+		return worthWords(o.N) + " " + what
 	}
-	return d, budget
+	return "no session's worth " + what
 }
 
-// drawIsZero reports a resolution that draws nothing from the pool.
-func (r Resolution) drawIsZero() bool {
-	d, budget := r.draw()
-	return d.IsZero() && budget == 0
-}
-
-// badDraw reports a draw with a part below 0 or an endless one.
-func badDraw(d policy.Draw) bool {
-	return d.Sessions < 0 || d.AgentTime < 0 || !(d.EUR >= 0) || math.IsInf(d.EUR, 1)
-}
-
-// extendDraw is the draw of an extend's args: its sessions and its agent
-// time in seconds.
-func extendDraw(args map[string]any) policy.Draw {
-	sessions, _ := toInt(args["sessions"])
-	seconds, _ := toInt(args["agent_time_s"])
-	return policy.Draw{Sessions: sessions, AgentTime: time.Duration(min(seconds, math.MaxInt32)) * time.Second}
-}
-
-// raiseRefusal is why a raise of the ceiling by eur is refused, "" when it
-// is a whole cent or more: the store keeps cents.
-func raiseRefusal(eur float64) string {
-	if math.IsNaN(eur) || math.IsInf(eur, 0) || Cents(eur) <= 0 {
-		return fmt.Sprintf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
+// monthWithin is why room's money passes the project's money left this
+// month, which every decider draws within, "" when it does not: the count
+// that fits names what to give instead. An overspent month leaves nothing.
+func monthWithin(f CaseFacts, room Room) string {
+	switch {
+	case room.EUR <= 0:
+		return ""
+	case slices.Contains(f.Partial, "month"):
+		return "the project's money left this month could not be read, so a room's money cannot be weighed against it: try again in a minute, or give the room without its money"
 	}
-	return ""
+	left := max(0, f.MonthLeftEUR)
+	if Cents(room.EUR) <= Cents(left) {
+		return ""
+	}
+	fit, ok := roomFit(f, room, func(o Room) bool { return Cents(o.EUR) <= Cents(left) })
+	if !ok {
+		return fmt.Sprintf("the project has %s EUR left this month, which pays for no session's worth: raise budget.month_eur by a commit", textutil.EUR(left))
+	}
+	return fmt.Sprintf("the project has %s EUR left this month, which pays for %s: give that, or raise budget.month_eur by a commit", textutil.EUR(left), worthWords(fit.N))
 }
 
-// withDraw is f with what r draws beside its action counted: the sessions
-// and agent time raise the caps, the money the room left to spend, so a
-// decision that rides a draw is weighed as one record.
+// withDraw is f with the room r gives beside its action counted: the
+// starts and agent time raise the caps, the money the room left to spend,
+// so a decision that rides a room is weighed as one record.
 func (f CaseFacts) withDraw(r Resolution) CaseFacts {
-	d, _ := r.draw()
-	f.SessionCap += d.Sessions
-	f.AgentTimeCapS += d.AgentTime.Seconds()
-	f.LeftEUR += d.EUR
+	room, ok := r.room(f)
+	if !ok {
+		return f
+	}
+	f.SessionCap += room.Starts
+	f.AgentTimeCapS += room.AgentTime.Seconds()
+	f.LeftEUR += room.EUR
 	return f
 }
 
@@ -1108,23 +1112,28 @@ func boughtNothingText(f CaseFacts) string {
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 
-// drawWithin reports why draw d does not fit rung's
-// bounds on f: the pool for rungs 0 to 2, the card bound for rungs 0 and 1,
-// the ceiling for fund. need is the smallest draw the answer's action
-// takes (Action.need).
-func drawWithin(f CaseFacts, rung int, d, need policy.Draw, toBudget bool) string {
-	if rung < 0 || rung > 3 {
-		return fmt.Sprintf("there is no decider %d", rung)
+// drawWithin is why room does not fit rung's bounds on f, "" when it fits:
+// the card's draw bound for rungs 0 and 1, the pool for rungs 0 to 2, each
+// refusal with the largest count that fits and what it is worth.
+func drawWithin(f CaseFacts, rung int, room Room) string {
+	bound := func(o Room) *DrawBoundError {
+		return newDrawBound(rung, o.draw(), policy.Draw{}, f.CardDrawLeft, f.PoolLeft)
 	}
-	if e := newDrawBound(rung, d, need, f.CardDrawLeft, f.PoolLeft); e != nil {
-		return e.Error()
+	e := bound(room)
+	if e == nil {
+		return ""
 	}
-	switch {
-	case toBudget && Cents(f.BudgetEUR)+Cents(d.EUR) > Cents(f.CeilingEUR):
-		return fmt.Sprintf("%s EUR more takes the budget of %s EUR past the card's ceiling of %s EUR: raise the ceiling first",
-			textutil.EUR(d.EUR), textutil.EUR(f.BudgetEUR), textutil.EUR(f.CeilingEUR))
+	leaves, more := "the escalation pool leaves room for %s this month", "the human"
+	if e.Card {
+		leaves, more = "the card's draw bound leaves room for %s", "the factory agent or the human"
 	}
-	return ""
+	fit, ok := roomFit(f, room, func(o Room) bool { return bound(o) == nil })
+	if !ok {
+		return fmt.Sprintf(leaves, "no more session's worth") + ": hand it up (`hand_up`) for " + more + " to give more"
+	}
+	return fmt.Sprintf(leaves, moreWorthWords(fit.N)) +
+		fmt.Sprintf(", about %s and %s EUR: ask for that, or hand it up (`hand_up`) for %s to give more",
+			minutesWord(time.Duration(fit.N)*fit.Est.Time), textutil.EUR(float64(fit.N)*fit.Est.EUR), more)
 }
 
 // fitsIn is policy.Draw.Fits with money compared in cents, as the store

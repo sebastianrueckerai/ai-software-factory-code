@@ -85,6 +85,8 @@ func RoomFor(f CaseFacts, n int, money bool) Room {
 	if priced {
 		r.EUR = fundFor(float64(r.Now+n)*est.EUR, r.MoneyLeft)
 	}
-	r.Limit = float64(max(0, Cents(f.BudgetEUR+r.EUR-f.CeilingEUR))) / 100
+	if r.EUR > 0 {
+		r.Limit = float64(max(0, Cents(f.BudgetEUR+r.EUR-f.CeilingEUR))) / 100
+	}
 	return r
 }

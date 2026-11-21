@@ -1152,7 +1152,7 @@ func TestReplayFixtures(t *testing.T) {
 var replayCoverage = map[string]string{
 	"I1":  "TestFilePlanRefileOfTheNewestIsANoop",
 	"I2":  "open: declined, the ask quotes the refusal instead",
-	"I3":  "internal/factoryd/pg TestOneSendCarriesTheDecisionTheFundAndTheNote",
+	"I3":  "internal/factoryd/pg TestOneSendCarriesTheDecisionTheRoomAndTheNote",
 	"I4":  "internal/console TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered",
 	"I5":  "internal/factoryd/pg TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",

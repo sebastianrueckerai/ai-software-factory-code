@@ -507,8 +507,9 @@ func TestRung2OffersTheExtendAtAnAgentTimeCap(t *testing.T) {
 }
 
 // Register entry 50, first half: a planner that stopped for time is extended
-// by rung 2 with the cut as its guidance: the extend is offered, the
-// draw of agent time is taken, and the session's note carries the cut.
+// by rung 2 with the cut as its guidance: the extend is offered, a room of
+// 1, its 20 minutes of agent time, is taken, and the session's note
+// carries the cut.
 func TestRung2ExtendsAPlannerWithTheCutAsGuidance(t *testing.T) {
 	const cut = "land one card compiling, then one card per proof"
 	f := CaseFacts{Kind: CaseAgentTimeCap, Planner: true, FloorFree: true, SessionCap: 3, Attempts: 1,
@@ -517,7 +518,7 @@ func TestRung2ExtendsAPlannerWithTheCutAsGuidance(t *testing.T) {
 		t.Fatalf("rung 2 is offered %v, want extend among them", offered)
 	}
 	extend, _ := ActionByName(ActExtend)
-	res := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 1800}, Note: cut}
+	res := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: cut}
 	if why := extend.PgRefusal(f, 2, res); why != "" {
 		t.Fatalf("rung 2's extend of a planner with the cut is refused: %s", why)
 	}

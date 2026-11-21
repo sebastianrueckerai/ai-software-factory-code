@@ -728,7 +728,7 @@ func TestTheGateSupervisorRecommendsAnAnswerByField(t *testing.T) {
 		}
 	}
 	if want := []string{"reverify=Check the work again", "continue=Go on with my note", "replan=Send back to the planner", "close=End the card",
-		"extend=Allow more sessions", "reverify/overrule=Overrule the review", "successor=Start a fresh card on this work"}; !slices.Equal(labels, want) {
+		"extend=Give more room", "reverify/overrule=Overrule the review", "successor=Start a fresh card on this work"}; !slices.Equal(labels, want) {
 		t.Errorf("a review stop's answers = %q, want %q", labels, want)
 	}
 	if got, want := GateStopAnswers(ActivityWaitChecks), []string{"wait_checks", "rerun_checks", "close"}; !slices.Equal(got, want) {

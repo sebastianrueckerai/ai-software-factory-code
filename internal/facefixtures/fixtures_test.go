@@ -13,8 +13,7 @@ import (
 // human's press sends with it.
 func answer(name string) factoryd.Resolution {
 	args := map[string]map[string]any{
-		factoryd.ActHandover: {"model": "same"}, factoryd.ActExtend: {"sessions": 1}, factoryd.ActFund: {"eur": 1.0},
-		factoryd.ActRaiseCeiling: {"eur": 1.0}, factoryd.ActSetDependency: {"depends_on": "t-2188"},
+		factoryd.ActHandover: {"model": "same"}, factoryd.ActExtend: {"sessions": 1}, factoryd.ActSetDependency: {"depends_on": "t-2188"},
 		factoryd.ActRemoveDependency: {"depends_on": "t-2188"}, factoryd.ActFileCard: {"title": "Board export: the snapshot writer"},
 		factoryd.ActAnswerCriteria: {"criterion": "size_bound_escape", "verdict": "met"},
 		factoryd.ActConfirmAudit:   {"findings": factoryd.FindingID("secrets at acceptance/price_floor_acceptance_test.go:71")},

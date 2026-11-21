@@ -23,7 +23,7 @@ var rungFacts = CaseFacts{Kind: CaseGateStop, Gate: "review", Attempts: 1, Sessi
 	CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
 	PoolLeft:     policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
 
-var rungOffered = []string{"resume", "continue", "handover", "reverify", "extend", "fund", "successor", "replan"}
+var rungOffered = []string{"resume", "continue", "handover", "reverify", "extend", "successor", "replan"}
 
 func rungAnswerText(t *testing.T, over map[string]any) string {
 	t.Helper()
@@ -33,7 +33,7 @@ func rungAnswerText(t *testing.T, over map[string]any) string {
 		"verdicts":       map[string]any{rungFinding: map[string]any{"verdict": "dropped", "evidence": "x.go:3 at head: the line is gone"}},
 		"note":           "one more session",
 		"recommendation": map[string]any{"action": "successor", "grounds": "the finding is dropped"},
-		"draw":           map[string]any{"sessions": 1},
+		"draw":           map[string]any{"sessions": 1, "money": true},
 	}
 	for k, v := range over {
 		a[k] = v
@@ -96,7 +96,7 @@ func TestRungRepairsOneRefusedAnswer(t *testing.T) {
 	if chat.calls != 2 {
 		t.Fatalf("calls = %d, want the first and one repair", chat.calls)
 	}
-	const refusal = `decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor and replan, or hand_up when it cannot resolve`
+	const refusal = `decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, successor and replan, or hand_up when it cannot resolve`
 	if in := chat.gots[1].Input; !strings.Contains(in, refusal) || !strings.HasSuffix(in, "Answer again through the answer tool.") {
 		t.Fatalf("repair input = %q", in)
 	}
@@ -335,7 +335,7 @@ func TestRungCapAfterARefusalKeepsTheRefusal(t *testing.T) {
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, answerCall(t, map[string]any{"decision": "teleport"}), {ToolName: "transcript_search"}}}
 	out := runRungWith(chat, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
 	const want = "the rung's call cap of 2 calls ended it before an answer; its answer was refused: " +
-		`decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor and replan, or hand_up when it cannot resolve`
+		`decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, successor and replan, or hand_up when it cannot resolve`
 	if out.End != RungCallCap || out.Found != want {
 		t.Fatalf("outcome = %+v, want found %q", out, want)
 	}

@@ -89,8 +89,8 @@ type ReceiptGate struct {
 type ReceiptDecision struct {
 	Kind     string `json:"kind"`
 	Decision string `json:"decision"`
-	// Draw is what an answer drew when it drew: its sessions, agent time
-	// or money, in the factory's own words.
+	// Draw is the room an answer gave when it gave one: its sessions'
+	// worth, and whether without money, in the factory's own words.
 	Draw string     `json:"draw,omitempty"`
 	By   string     `json:"by"`
 	Note string     `json:"note,omitempty"`
@@ -172,9 +172,8 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 		if res == nil || res.Rung != 3 || !isPerson(res.By) || c.Kind == CaseMergeApproval {
 			continue
 		}
-		d, _ := Resolution{Action: res.Action, Args: res.Args}.draw()
 		rec.Facts.Decisions = append(rec.Facts.Decisions, ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
-			Draw: drawWords(d), Note: res.Reason, At: c.ResolvedAt})
+			Draw: Resolution{Action: res.Action, Args: res.Args}.roomWords(), Note: res.Reason, At: c.ResolvedAt})
 	}
 	slices.SortStableFunc(rec.Facts.Decisions, func(a, b ReceiptDecision) int { return receiptWhen(a).Compare(receiptWhen(b)) })
 	// the judgement criteria's verdicts: the model's assessments on the

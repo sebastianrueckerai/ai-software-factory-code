@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -114,13 +113,9 @@ var Vocabulary = []Answer{
 	{Action: ActConfirmAudit, Label: "Clear the audit's findings", Effect: "Marks the findings you tick as safe test data and checks the work again.",
 		Fields: []Field{{Name: "findings", Label: "The findings to clear", Kind: FieldCheck, Required: true, Hint: "Tick at least one finding to clear"},
 			requiredNote("Your reason", "Why the findings are safe")}},
-	{Action: ActExtend, Label: "Allow more sessions", Effect: "Gives the card more sessions or agent time, and it goes on.",
-		Fields: []Field{{Name: "sessions", Label: "More sessions", Kind: FieldNumber, Default: extendSessions},
-			{Name: "minutes", Label: "More minutes of agent time", Kind: FieldNumber, Default: extendMinutes}}},
-	{Action: ActFund, Label: "Add money", Effect: "Adds the amount to the card's budget and goes on.",
-		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return textutil.EUR(shortfall(f.CaseFacts)) }}}},
-	{Action: ActRaiseCeiling, Label: "Raise the spend limit", Effect: "Raises the most this card may ever spend.",
-		Fields: []Field{{Name: "eur", Label: "EUR to raise the limit by", Kind: FieldMoney, Default: func(f Facts) string { return textutil.EUR(ceilingPass(f.CaseFacts)) }}}},
+	{Action: ActExtend, Label: "Give more room", Effect: "Gives the card more sessions' worth of time and money, and it goes on.",
+		Fields: []Field{{Name: "sessions", Label: "Sessions' worth", Kind: FieldNumber, Default: roomSessions},
+			{Name: "money", Label: "With its money", Kind: FieldCheck, Default: roomMoney}}},
 	{Action: ActSuccessor, Label: "Start a fresh card on this work", Effect: "Ends this card. A new card goes on from its branch with a full budget."},
 	{Action: ActRetry, Label: "Try the failed card again", Effect: "Files the failed card again as a new card."},
 	{Action: ActRetry, Variant: variantRoll, Label: "Try the roll again", Effect: "Starts the image roll again."},
@@ -241,59 +236,36 @@ func sizeOptions() []Option {
 	return out
 }
 
-// extendSessions is the sessions an extend adds by default: one, none at
-// an agent time cap, whose stop names time.
-func extendSessions(f Facts) string {
-	if f.Kind == CaseAgentTimeCap {
-		return "0"
+// proposedRoom is the room a proposal on f asks for, false for none.
+func proposedRoom(f Facts) (RoomAsk, bool) {
+	if f.Recommend.Action != ActExtend {
+		return RoomAsk{}, false
 	}
-	return "1"
+	ask, _, why := Resolution{Action: ActExtend, Args: f.Recommend.Args}.roomAsk()
+	return ask, why == ""
 }
 
-// extendMinutes is the agent time an extend adds by default: one session's
-// length at an agent time cap, none elsewhere.
-func extendMinutes(f Facts) string {
-	if f.Kind != CaseAgentTimeCap {
-		return "0"
+// roomCount is the count a room opens at: the proposal's, else 1.
+func roomCount(f Facts) int {
+	if ask, ok := proposedRoom(f); ok {
+		return ask.Sessions
 	}
-	return fmt.Sprint(max(1, int(math.Ceil(f.SessionLeastS/60))))
+	return 1
 }
 
-// shortfall is what the card's next session costs past what a session may
-// spend, in cents rounded up; 0 when it has the room to open one.
-func shortfall(f CaseFacts) float64 {
-	if f.SessionLeft() >= f.FloorEUR {
-		return 0
+func roomSessions(f Facts) string { return strconv.Itoa(roomCount(f)) }
+
+// roomMoney ticks a room's money as the proposal asks, else when the card
+// lacks money for a room of 1.
+func roomMoney(f Facts) string {
+	ask, ok := proposedRoom(f)
+	if !ok {
+		ask.Money = RoomFor(f.CaseFacts, 1, true).EUR > 0
 	}
-	return fundFor(sessionPrice(f), f.SessionLeft())
-}
-
-// sessionPrice is what the card's next session costs: about what its last
-// one cost, but never less than what an opening needs.
-func sessionPrice(f CaseFacts) float64 {
-	if s := f.LastSession; s != nil && s.CostEUR > f.FloorEUR {
-		return s.CostEUR
+	if ask.Money {
+		return "yes"
 	}
-	return f.FloorEUR
-}
-
-// pricedBySession: the card's next session is priced at what its last one
-// cost, which the story names, not at the opening's floor.
-func pricedBySession(f CaseFacts) bool { return sessionPrice(f) > f.FloorEUR }
-
-// raiseFund is what a raise of the spend limit adds to the budget beside
-// it: a card out of money gets the shortfall, so it goes on; 0 elsewhere.
-func raiseFund(f CaseFacts) float64 {
-	if f.Kind != CaseBudgetFloor {
-		return 0
-	}
-	return shortfall(f)
-}
-
-// ceilingPass is what a fund of the shortfall takes the budget past the
-// card's spend limit by, 0 when it stays under.
-func ceilingPass(f CaseFacts) float64 {
-	return max(0, float64(Cents(f.BudgetEUR)+Cents(shortfall(f))-Cents(f.CeilingEUR))/100)
+	return ""
 }
 
 // openDependency is the one dependency the card still waits for, "" for none
@@ -313,18 +285,6 @@ func openDependency(f Facts) string {
 
 // effectFills are the effect lines the facts write, by answer key.
 var effectFills = map[string]func(Facts) string{
-	ActFund: func(f Facts) string {
-		if slices.Contains(questionKinds, f.Case.Kind) {
-			return "Adds the amount to the card's budget, and " + onward(f, "") + "."
-		}
-		return ""
-	},
-	ActRaiseCeiling: func(f Facts) string {
-		if need := raiseFund(f.CaseFacts); need > 0 {
-			return fmt.Sprintf("Raises the spend limit by %s EUR and adds %s EUR, and %s.", textutil.EUR(ceilingPass(f.CaseFacts)), textutil.EUR(need), onward(f, "the card goes on"))
-		}
-		return ""
-	},
 	ActNote: waitEffect, KeyPark: waitEffect,
 	ActClose + "/" + variantDone: func(f Facts) string { return factString(f.Case, "check") },
 	ActApproveMerge: func(f Facts) string {
@@ -367,10 +327,7 @@ var effectFills = map[string]func(Facts) string{
 		return ""
 	},
 	ActExtend: func(f Facts) string {
-		if m := extendMinutes(f); m != "0" {
-			return "Gives the card " + m + " more minutes of agent time, and " + onward(f, "it goes on") + "."
-		}
-		return "Gives the card one more session, and " + onward(f, "it goes on") + "."
+		return "Gives the card " + moreWorthWords(roomCount(f)) + ", and " + onward(f, "it goes on") + "."
 	},
 	ActReplan: func(f Facts) string {
 		switch {
@@ -495,20 +452,17 @@ func init() {
 	for kind, s := range map[CaseKind]FaceSpec{
 		CaseSessionCap:   limit,
 		CaseAgentTimeCap: limit,
-		CaseBudgetFloor: work(FaceSpec{Ask: budgetFaceAsk, Why: budgetWhy,
-			Answers: func(f Facts) []string {
-				return append(holding(f, ActFund, ActRaiseCeiling), ActSuccessor, ActClose, ActNote)
-			}}),
-		CaseDayCap:     capFace("The factory's spending limit for today is reached. Wait for it to reset, or end the card?"),
-		CaseMonthCap:   capFace("The factory's spending limit for this month is reached. Wait for it to reset, or end the card?"),
-		CaseProjectCap: capFace("This project's spending limit for the month is reached. Wait for it to reset, or end the card?"),
+		CaseBudgetFloor:  work(FaceSpec{Ask: budgetFaceAsk, Why: budgetWhy, Answers: keys(ActExtend, ActSuccessor, ActClose, ActNote)}),
+		CaseDayCap:       capFace("The factory's spending limit for today is reached. Wait for it to reset, or end the card?"),
+		CaseMonthCap:     capFace("The factory's spending limit for this month is reached. Wait for it to reset, or end the card?"),
+		CaseProjectCap:   capFace("This project's spending limit for the month is reached. Wait for it to reset, or end the card?"),
 		CaseCheckinHuman: work(FaceSpec{Ask: fixed("The session's check found a question only you can settle. How should the card go on?"),
 			Why:     reasonWhy("A check during the session found a question that only a human can settle."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
 		CasePolicyClass: work(FaceSpec{Ask: fixed("The change touches files only a human may approve. How should the card go on?"),
 			Why:     reasonWhy("The factory's rules let only a human approve a change to these files."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
-		CaseCheckinShare: work(FaceSpec{Ask: fixed("The last session spent more than its share of the card's money. Allow one more session, or end the card?"),
+		CaseCheckinShare: work(FaceSpec{Ask: fixed("The last session spent more than its share of the card's money. Give the card more room, or end it?"),
 			Why: fixed("A session may spend only a share of the card's money before a human looks."), Answers: keys(ActExtend, ActClose, ActNote)}),
 		CaseCheckinFailed: work(FaceSpec{Ask: fixed("The factory's own check of the session failed, not the work. Run one more session?"),
 			Why: fixed("The check that judges each session gave no answer, so the card stopped to be safe."), Answers: keys(ActResume, ActClose, ActNote)}),
@@ -1010,10 +964,15 @@ func leftLine(f Facts) string {
 	if f.MergeConflict != "" {
 		out = strings.TrimSpace(out + " " + conflictLine)
 	}
-	// at the budget floor a session priced at the opening costs what the
-	// why's amount buys, so the story names no second price
-	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 && (f.Kind != CaseBudgetFloor || pricedBySession(f.CaseFacts)) {
+	// at the budget floor the why's amount is worked out from a session's
+	// worth, so the story names where that comes from: the card's own
+	// sessions, when they cost more than an opening
+	switch est, s := SessionEstimate(f.CaseFacts), f.LastSession; {
+	case s == nil || s.CostEUR < 0.005:
+	case f.Kind != CaseBudgetFloor:
 		out = strings.TrimSpace(out + fmt.Sprintf(" One more session costs about %s EUR.", textutil.EUR(s.CostEUR)))
+	case est.FromSessions > 0 && est.EUR > f.FloorEUR:
+		out = strings.TrimSpace(out + fmt.Sprintf(" A session's worth costs about %s EUR, from its %s so far.", textutil.EUR(est.EUR), plural(est.FromSessions, "session")))
 	}
 	return out
 }
@@ -1089,11 +1048,11 @@ func limitWhy(f Facts) string {
 }
 
 // budgetFaceAsk names the stop and no answer to it: the money left does
-// not pay the next session, at the spend limit where a fund would pass it,
-// with the findings open on the head.
+// not pay the next session, at the spend limit where a room of 1 would
+// pass it, with the findings open on the head.
 func budgetFaceAsk(f Facts) string {
 	ask := "The card's money left does not pay its next session"
-	n, limit := openFindings(f.CaseFacts), ceilingPass(f.CaseFacts) > 0
+	n, limit := openFindings(f.CaseFacts), RoomFor(f.CaseFacts, 1, true).Limit > 0
 	open := fmt.Sprintf("%s %s open", plural(n, openWord(f.CaseFacts)), isAre(n))
 	switch {
 	case limit && n > 0:
@@ -1108,9 +1067,9 @@ func budgetFaceAsk(f Facts) string {
 
 // budgetWhy says what the card has left, what the review and the audit
 // need of it, and what the card needs more for its next session: the
-// amount its money answer adds.
+// money a room of 1 adds.
 func budgetWhy(f Facts) string {
-	left, need := textutil.EUR(f.LeftEUR), textutil.EUR(shortfall(f.CaseFacts))
+	left, need := textutil.EUR(f.LeftEUR), textutil.EUR(RoomFor(f.CaseFacts, 1, true).EUR)
 	if f.ReserveEUR > 0 {
 		return fmt.Sprintf("The card has %s EUR left, the review and the audit need %s EUR for themselves, and the card needs %s EUR more to pay its next session.",
 			left, textutil.EUR(f.ReserveEUR), need)

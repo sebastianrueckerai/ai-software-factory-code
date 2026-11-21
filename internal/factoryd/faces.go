@@ -9,8 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // FieldKind is what a field of an answer takes.
@@ -103,8 +101,12 @@ type Facts struct {
 }
 
 // Recommendation is an answer a rung or the case writer recommends: its
-// key, who recommends it and on what grounds.
-type Recommendation struct{ Action, By, Grounds string }
+// key, who recommends it and on what grounds, and the args it proposes
+// the answer with, which its fields open at.
+type Recommendation struct {
+	Action, By, Grounds string
+	Args                map[string]any
+}
 
 // AskFace is a face as a human reads it: one question, why it came up, the
 // story, at most four answers with the suggested one first, the ask's own
@@ -116,8 +118,11 @@ type AskFace struct {
 	Story                           Story
 	Answers, Over                   []Answer
 	Suggested, SuggestedBy, Grounds string
-	More                            []Answer
-	Findings                        []string
+	// SuggestedArgs are the args a rung's proposal names for the suggested
+	// answer, which its fields open at.
+	SuggestedArgs map[string]any
+	More          []Answer
+	Findings      []string
 }
 
 // factoryNames are the names of the factory's own machinery, which no face
@@ -174,8 +179,8 @@ func RecommendationOf(detail map[string]any) Recommendation {
 	var r Recommendation
 	if p, ok := detail["preselected"].(map[string]any); ok {
 		r.Action, _ = p["action"].(string)
-		args, _ := p["args"].(map[string]any)
-		r.Action = verdictKey(r.Action, args)
+		r.Args, _ = p["args"].(map[string]any)
+		r.Action = verdictKey(r.Action, r.Args)
 	}
 	r.Grounds, _ = detail["recommendation"].(string)
 	if r.Action == "" {
@@ -336,6 +341,9 @@ func FaceOf(c Case, f Facts) AskFace {
 		return true
 	}
 	led := lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds)
+	if led {
+		face.SuggestedArgs = f.Recommend.Args
+	}
 	if spec.Suggest != nil {
 		// words that lead no answer, beside a recommendation or alone, are
 		// their writer's view
@@ -404,14 +412,6 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 		// the retry of a frozen card ends its freeze
 		thaw, _ := AnswerOf(ActRetry + "/" + variantThaw)
 		a.Label, a.Effect = thaw.Label, thaw.Effect
-	}
-	if a.Action == ActExtend && f.Kind == CaseAgentTimeCap {
-		// the stop asks agent time: its minutes lead
-		a.Fields = slices.Clone(a.Fields)
-		if i := slices.IndexFunc(a.Fields, func(x Field) bool { return x.Name == "minutes" }); i > 0 {
-			minutes := a.Fields[i]
-			a.Fields = slices.Insert(slices.Delete(a.Fields, i, i+1), 0, minutes)
-		}
 	}
 	if a.Action == ActConfirmCriteria && f.ClosedCard {
 		a.Fields = []Field{requiredNote("What shows it", "The line that shows main meets the promises")}
@@ -558,8 +558,8 @@ func openFindingTexts(f CaseFacts) []string {
 }
 
 // MoreOf are the actions of card t, which holds no case, by its state: a
-// live card's replan, more sessions, money, a word to its running session
-// and its end; a failed card's retry and its close; a plan at rest its
+// live card's replan, more room, a word to its running session and its
+// end; a failed card's retry and its close; a plan at rest its
 // close, whose note waives the promises it leaves open; a held card's
 // release first, and the hold of a card that has not started, held or not; and on every
 // card its brief, its colour and a thread.
@@ -575,7 +575,7 @@ func MoreOf(t Task, f Facts) []Answer {
 	case t.Status == "failed":
 		keys = []string{ActRetry, ActClose}
 	case !Final(t.Status):
-		keys = []string{ActReplan, ActExtend, ActFund, AnswerSteer, ActClose}
+		keys = []string{ActReplan, ActExtend, AnswerSteer, ActClose}
 	}
 	if t.Held() {
 		keys = append([]string{AnswerRelease}, keys...)
@@ -622,7 +622,8 @@ func (a Answer) Defaults(f Facts) map[string]string {
 
 // ArgsOf parses the fields of answer a from get, a field's posted value by
 // name: the action's arguments, the variant's own among them, and the
-// amount in EUR a money field holds. An empty field is left out.
+// amount in EUR a money field holds. An empty field is left out, but a
+// room's money box, which unticked gives the room without its money.
 func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, error) {
 	args := map[string]any{}
 	switch a.Action {
@@ -630,11 +631,13 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 		args["action"] = cmp.Or(a.Variant, "request_changes")
 	case ActAnswerCriteria:
 		args["verdict"] = cmp.Or(a.Variant, "met")
+	case ActExtend:
+		args["money"] = strings.TrimSpace(get("money")) == "yes"
 	}
 	var eur float64
 	for _, field := range a.Fields {
 		v := strings.TrimSpace(get(field.Name))
-		if v == "" || field.Name == noteField {
+		if _, set := args[field.Name]; set || v == "" || field.Name == noteField {
 			continue
 		}
 		switch field.Kind {
@@ -649,11 +652,7 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 			if err != nil || n < 0 {
 				return nil, 0, fmt.Errorf("%s takes a whole number, such as 1, and you wrote %q", field.Label, v)
 			}
-			if field.Name == "minutes" {
-				args["agent_time_s"] = n * 60
-			} else {
-				args[field.Name] = n
-			}
+			args[field.Name] = n
 		default:
 			args[field.Name] = v
 		}
@@ -665,16 +664,20 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 }
 
 // Press is the resolution a human's press of answer a makes on facts f,
-// every field at values' entry or else its default, and note: the words an
-// agent offered lead the note, a money field goes to the fund's or the
-// raise's amount, and an overrule drops the review's findings with the
-// note as its reason. A required field left empty refuses the press,
-// saying what to write.
+// every field at values' entry or else its default, a box posted clear
+// staying clear, and note: the words an agent offered lead the note, a money
+// field goes to the chat budget's amount, and an overrule drops the
+// review's findings with the note as its reason. A required field left
+// empty refuses the press, saying what to write.
 func (a Answer) Press(f Facts, values map[string]string, note string) (Resolution, error) {
 	defaults := a.Defaults(f)
 	f.CaseFacts = f.atCap()
+	boxes := map[string]bool{}
+	for _, field := range a.Fields {
+		boxes[field.Name] = field.Kind == FieldCheck
+	}
 	get := func(name string) string {
-		if v := values[name]; strings.TrimSpace(v) != "" {
+		if v, posted := values[name]; strings.TrimSpace(v) != "" || posted && boxes[name] {
 			return v
 		}
 		return defaults[name]
@@ -699,16 +702,11 @@ func (a Answer) Press(f Facts, values map[string]string, note string) (Resolutio
 	switch {
 	case a.Variant == sayVariant:
 		res.Note = strings.TrimSpace(a.Label + "\n\n" + res.Note)
-	case a.Action == ActFund || a.Action == ActRaiseCeiling || a.Action == AnswerFundChat:
-		if eur > 0 {
-			if res.Args == nil {
-				res.Args = map[string]any{}
-			}
-			res.Args["eur"] = eur
+	case a.Action == AnswerFundChat && eur > 0:
+		if res.Args == nil {
+			res.Args = map[string]any{}
 		}
-		if need := raiseFund(f.CaseFacts); a.Action == ActRaiseCeiling && need > 0 {
-			res.Fund = &policy.Draw{EUR: need}
-		}
+		res.Args["eur"] = eur
 	case a.Action == ActReverify && a.Variant == variantOverrule:
 		res.Verdicts = Overruled(f.CaseFacts, res.Note)
 	}

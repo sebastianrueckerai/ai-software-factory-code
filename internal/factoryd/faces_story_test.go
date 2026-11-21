@@ -29,7 +29,7 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 			Happened: "It spent 1.12 of 2.00 EUR in 2 sessions. Its sessions used all 2 hours of agent time it was given.", Left: green},
 		factoryd.CaseBudgetFloor: {Planned: "This card builds “The three faults end to end: priced, asked, funded”.",
 			Happened: "It spent 5.36 of 5.70 EUR in 2 sessions.",
-			Left:     "8 findings are open, and the checks failed. One more session costs about 2.62 EUR."},
+			Left:     "8 findings are open, and the checks failed. A session's worth costs about 2.68 EUR, from its 2 sessions so far."},
 		factoryd.CaseDayCap: {Planned: "This card builds “Review: retry the review on a provider refusal”.",
 			Happened: one + " The factory's spending reached its limit of 40.00 EUR for the day.", Left: green},
 		factoryd.CaseMonthCap: {Planned: "This card builds “Pulse: name the failed cards first”.",
@@ -110,23 +110,24 @@ func TestTheStoryOf2004(t *testing.T) {
 	got := face.Story
 	want := factoryd.Story{Planned: "This card builds “The three faults end to end: priced, asked, funded”.",
 		Happened: "It spent 4.00 of 4.00 EUR in 3 sessions. Before the last session, 10 review findings were open.",
-		Left:     "8 findings are open. One more session costs about 2.00 EUR."}
+		Left:     "8 findings are open. A session's worth costs about 1.33 EUR, from its 3 sessions so far."}
 	if got.Planned != want.Planned || got.Happened != want.Happened || got.Left != want.Left {
 		t.Errorf("the story is\n %q\n %q\n %q\nwant\n %q\n %q\n %q", got.Planned, got.Happened, got.Left, want.Planned, want.Happened, want.Left)
 	}
-	// one number: the why and the fund's default name the 2.00 EUR session
-	// the story prices and the 0.40 EUR the gates need, with 0.00 EUR left
-	if ask, why := "The card's money left does not pay its next session, and 8 review findings are open. How should it go on?", "The card has 0.00 EUR left, the review and the audit need 0.40 EUR for themselves, and the card needs 2.40 EUR more to pay its next session."; face.Ask != ask || face.Why != why {
+	// one number: the why and the room's money name the 4.00 / 3 = 1.33
+	// EUR session's worth the story prices and the 0.40 EUR the gates
+	// need, with 0.00 EUR left, rounded up to the cent
+	if ask, why := "The card's money left does not pay its next session, and 8 review findings are open. How should it go on?", "The card has 0.00 EUR left, the review and the audit need 0.40 EUR for themselves, and the card needs 1.74 EUR more to pay its next session."; face.Ask != ask || face.Why != why {
 		t.Errorf("ask %q, why %q; want %q, %q", face.Ask, face.Why, ask, why)
 	}
-	fund := slices.IndexFunc(face.Answers, func(a factoryd.Answer) bool { return a.Action == factoryd.ActFund })
-	if fund < 0 || face.Answers[fund].Fields[0].Default(f) != "2.40" {
-		t.Errorf("the fund's default is not the why's 2.40 EUR: %+v", face.Answers)
+	room := slices.IndexFunc(face.Answers, func(a factoryd.Answer) bool { return a.Action == factoryd.ActExtend })
+	if room < 0 || face.Answers[room].Defaults(f)["money"] != "yes" || factoryd.RoomFor(f.CaseFacts, 1, true).EUR != 1.74 {
+		t.Errorf("the room's money is not the why's 1.74 EUR: %+v", face.Answers)
 	}
-	// a last session cheaper than the opening: the why names the opening's
-	// 0.60 EUR and the gates' 0.40 EUR as one sum, and the story names no
-	// other price
-	f.LastSession.CostEUR = 0.3
+	// sessions cheaper than the opening: the why names the opening's 0.60
+	// EUR and the gates' 0.40 EUR as one sum, and the story names no other
+	// price
+	f.SpentEUR = 1.2
 	face = factoryd.FaceOf(x.c, f)
 	if ask, why, left := "The card's money left does not pay its next session, and 8 review findings are open. How should it go on?",
 		"The card has 0.00 EUR left, the review and the audit need 0.40 EUR for themselves, and the card needs 1.00 EUR more to pay its next session.",
@@ -149,7 +150,7 @@ func TestARewordedFindingIsStillOpen(t *testing.T) {
 	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 2, Pushed: true, Judged: []string{"review"}, Review: before}
 	face := factoryd.FaceOf(x.c, f)
 	if happened, left := "It spent 4.00 of 4.00 EUR in 3 sessions. Before the last session, 3 review findings were open.",
-		"2 findings are open. One more session costs about 2.00 EUR."; face.Story.Happened != happened || face.Story.Left != left {
+		"2 findings are open. A session's worth costs about 1.33 EUR, from its 3 sessions so far."; face.Story.Happened != happened || face.Story.Left != left {
 		t.Errorf("happened %q, left %q; want %q, %q", face.Story.Happened, face.Story.Left, happened, left)
 	}
 	if ask := "The card's money left does not pay its next session, and 2 review findings are open. How should it go on?"; face.Ask != ask {
@@ -380,7 +381,7 @@ func TestTheIssueNamesOnlyTheBoardsAnswers(t *testing.T) {
 			}
 		}
 	}
-	for _, label := range []string{"Allow more sessions", "Add money", "Raise the spend limit", "Overrule the review", "Start a fresh card on this work"} {
+	for _, label := range []string{"Give more room", "Overrule the review", "Start a fresh card on this work"} {
 		if !named[label] {
 			t.Errorf("no fixture's issue line names %q", label)
 		}

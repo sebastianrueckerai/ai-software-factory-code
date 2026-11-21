@@ -216,8 +216,9 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 // A reply at the session cap, the agent-time cap or the budget floor
 // starts no session: the run asks the stop again, and the face says a reply
 // alone starts none and names every answer the face holds: the floor's
-// "Add money" with the 0.22 EUR the 0.08 a session may spend lacks of the
-// 0.30 an opening needs, well under the card's limit of 6 EUR.
+// "Give more room", whose money is the 0.22 EUR the 0.08 a session may
+// spend lacks of the 0.30 an opening needs, well under the card's limit of
+// 6 EUR and the project's 41.20 EUR left this month.
 func TestReplyAtACapStartsNone(t *testing.T) {
 	for name, tc := range map[string]struct {
 		usage   TaskUsage
@@ -226,10 +227,10 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 		money   map[string]any
 		press   string
 	}{
-		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", CapReachedLadder, nil, "Press “Allow more sessions”, “End the card” or “Not now” on the board"},
-		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", TimeCapReachedLadder, nil, "Press “Allow more sessions”, “End the card” or “Not now” on the board"},
+		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", CapReachedLadder, nil, "Press “Give more room”, “End the card” or “Not now” on the board"},
+		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", TimeCapReachedLadder, nil, "Press “Give more room”, “End the card” or “Not now” on the board"},
 		"budget floor": {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, BudgetRefused,
-			map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3, "ceiling_eur": 6}, "Press “Add money” (EUR to add: 0.22), “End the card” or “Not now” on the board"},
+			map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3, "ceiling_eur": 6, "month_left_eur": 41.2}, "Press “Give more room”, “End the card” or “Not now” on the board"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)

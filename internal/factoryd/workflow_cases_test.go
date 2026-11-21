@@ -462,14 +462,14 @@ func TestWorkflowFilesAResolutionWithNoNoteUnderItsComment(t *testing.T) {
 	h.env.RegisterDelayedCallback(func() {
 		h.rowUsage.RaisedSessions = 1
 		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 7))
-		h.env.SignalWorkflow(SignalHumanComment, TaskSignal{Author: "sebastian", Body: "sebastian answered with “Allow more sessions”: 1 session from the pool.", Comment: 7})
+		h.env.SignalWorkflow(SignalHumanComment, TaskSignal{Author: "sebastian", Body: "sebastian answered with “Give more room”: 1 session's worth.", Comment: 7})
 	}, time.Hour)
 	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	want := []string{`sebastian, to "` + CapReachedLadder + `": “Allow more sessions”: 1 session from the pool`}
+	want := []string{`sebastian, to "` + CapReachedLadder + `": “Give more room”: 1 session's worth`}
 	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the fourth with the one answer %q", h.sessions, want)
 	}
@@ -1061,7 +1061,7 @@ func TestWorkflowBudgetFloorWaitsForAFund(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 650})
 	h.env.RegisterDelayedCallback(func() {
 		funded = true
-		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(702, Resolution{Action: ActFund, Args: map[string]any{"eur": 1}}, 660))
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(702, Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}, 660))
 	}, 2*time.Hour)
 	h.signalAfter(4*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 

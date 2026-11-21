@@ -2203,8 +2203,8 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 // ceiling. A raise of no whole cent above zero is refused. No task:
 // ErrNotFound.
 func (s *PGStore) raiseCeiling(ctx context.Context, tx *sql.Tx, taskID string, eur, policyCeiling float64, e Event) (stored Event, err error) {
-	if why := raiseRefusal(eur); why != "" {
-		return Event{}, errors.New(why)
+	if math.IsNaN(eur) || math.IsInf(eur, 0) || Cents(eur) <= 0 {
+		return Event{}, fmt.Errorf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
 	}
 	var ceiling, budget float64
 	err = tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = COALESCE(ceiling_eur, $3) + $2 WHERE id = $1

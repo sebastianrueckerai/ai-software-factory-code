@@ -197,7 +197,7 @@ var labelPattern = func() *regexp.Regexp {
 var statementLabel = regexp.MustCompile(`^(?:It|I|The|Not)\b|^\pL+$`)
 
 // NamedLabel is the first answer's label that line names, a button the
-// card shows below the story, "" for none. An order ("Add money") names
+// card shows below the story, "" for none. An order ("Give more room") names
 // its button wherever it stands; a statementLabel names one only inside a
 // sentence, where its capital marks a name.
 func NamedLabel(line string) string {

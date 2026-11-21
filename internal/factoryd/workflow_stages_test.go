@@ -2280,7 +2280,7 @@ func TestStagesReviewConcernsLoopTripsTheCapAtTheLastRound(t *testing.T) {
 	})
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"), pushed("s3", "c3"), pushed("s4", "c4"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
-	handover := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: "fix the flag in cli.go", Fund: &policy.Draw{Sessions: 1}}
+	handover := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: "fix the flag in cli.go", Room: &RoomAsk{Sessions: 1, Money: true}}
 	g.env.RegisterDelayedCallback(func() {
 		g.rowUsage.RaisedSessions = 1
 		g.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, handover, 605))

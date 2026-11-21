@@ -46,7 +46,7 @@ func humanOnly(c Case, f CaseFacts) (bool, string) {
 			return true, "the pool could not be read, so the card's need of money cannot be weighed against it"
 		}
 		// the board's ask on the live facts, whatever the case stored
-		if need := shortfall(f); Cents(need) > Cents(f.PoolLeft.EUR) {
+		if need := RoomFor(f, 1, true).EUR; Cents(need) > Cents(f.PoolLeft.EUR) {
 			return true, fmt.Sprintf("the card needs %s EUR and the pool holds %s EUR", textutil.EUR(need), textutil.EUR(f.PoolLeft.EUR))
 		}
 	}
@@ -83,13 +83,15 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	if c.Kind == CaseRollHeld {
 		rollHeldLines(c, line)
 	}
+	// the board's figures: a session's worth on this card, and the money a room of 1 adds
+	est, room := SessionEstimate(f), RoomFor(f, 1, true)
 	var need string
-	if eur := shortfall(f); eur > 0 {
-		// the board's amount: a session like the last one, past what the card may spend
-		need = fmt.Sprintf("; the next session needs %s EUR more", textutil.EUR(eur))
+	if room.EUR > 0 {
+		need = fmt.Sprintf("; a room of 1 session's worth needs %s EUR more", textutil.EUR(room.EUR))
 	}
-	line("Money: budget %s, spent %s, left %s EUR, ceiling %s EUR; card draw left %s; pool left %s%s.",
-		textutil.EUR(f.BudgetEUR), textutil.EUR(f.SpentEUR), textutil.EUR(f.LeftEUR), textutil.EUR(f.CeilingEUR), drawText(f.CardDrawLeft), drawText(f.PoolLeft), need)
+	line("Money: budget %s, spent %s, left %s EUR, ceiling %s EUR; card draw left %s; pool left %s; the project has %s EUR left this month; a session's worth is about %s and %s EUR%s.",
+		textutil.EUR(f.BudgetEUR), textutil.EUR(f.SpentEUR), textutil.EUR(f.LeftEUR), textutil.EUR(f.CeilingEUR), drawText(f.CardDrawLeft), drawText(f.PoolLeft),
+		textutil.EUR(max(0, f.MonthLeftEUR)), minutesWord(est.Time), textutil.EUR(est.EUR), need)
 	line("%s", r.Scrub.String(digest))
 	if f.Killed != nil {
 		line("The sandbox killed the last session for its memory (%s, exit code %d) while it ran: %s", cut(f.Killed.Reason), f.Killed.ExitCode, cut(f.Killed.Command))
@@ -136,11 +138,21 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 		if !a.Rungs[rung] {
 			continue
 		}
-		if why := a.offerRefusal(f.forRung(rung), rung); why != "" {
+		fr := f.forRung(rung)
+		why := a.offerRefusal(fr, rung)
+		room, drawn := a.handoverDraw(f, rung)
+		switch {
+		case why != "":
 			line("- %s: not offered: %s", a.Name, why)
-		} else if a.handoverNeedsDraw(f, rung) {
-			line("- %s, with a draw of at least one session: the cap is reached", a.Name)
-		} else {
+		case drawn:
+			line("- %s, with a draw of 1 session's worth and money %t: the cap is reached", a.Name, room.Money)
+		case a.Name == ActExtend:
+			if why := a.refusal(fr, rung, Resolution{Action: a.Name, Args: probe(a, fr).Args}); why != "" {
+				line("- %s, with money false: with money true, %s", a.Name, why)
+			} else {
+				line("- %s", a.Name)
+			}
+		default:
 			line("- %s", a.Name)
 		}
 	}
@@ -526,26 +538,20 @@ func (p *CaseTools) grep(ctx context.Context, args map[string]any) (string, erro
 }
 
 // rungResolution is the resolution answer a asks for: its decision with
-// the arguments of the action's row, the draw as the row takes it, and
-// the verdicts keyed by the finding's text.
+// the arguments of the action's row, the draw as the room an extend gives
+// or the room beside the decision, and the verdicts keyed by the
+// finding's text.
 func rungResolution(a RungAnswer, f CaseFacts) Resolution {
 	res := Resolution{Action: a.Decision, Note: a.Note}
-	var draw policy.Draw
-	if a.Draw != nil {
-		draw = policy.Draw{Sessions: a.Draw.Sessions, AgentTime: time.Duration(a.Draw.AgentTimeS) * time.Second, EUR: a.Draw.EUR}
+	switch {
+	case a.Draw == nil:
+	case a.Decision == ActExtend:
+		res.Args = map[string]any{"sessions": a.Draw.Sessions, "money": a.Draw.Money}
+	default:
+		res.Room = &RoomAsk{Sessions: a.Draw.Sessions, Money: a.Draw.Money}
 	}
-	switch a.Decision {
-	case ActHandover:
+	if a.Decision == ActHandover {
 		res.Args = map[string]any{"model": a.Model}
-	case ActExtend:
-		res.Args = map[string]any{"sessions": float64(draw.Sessions), "agent_time_s": draw.AgentTime.Seconds()}
-		draw.Sessions, draw.AgentTime = 0, 0
-	case ActFund:
-		res.Args = map[string]any{"eur": draw.EUR}
-		draw.EUR = 0
-	}
-	if !draw.IsZero() {
-		res.Fund = &draw
 	}
 	for id, v := range a.Verdicts {
 		if text := f.FindingTexts[id]; text != "" {

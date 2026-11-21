@@ -222,10 +222,13 @@ func TestAMergeCaseIsAboutOneHead(t *testing.T) {
 	}
 }
 
-// One send: a session cap answered with handover (model same), a draw of
-// 1.50 EUR and a note is one Act call: one pool card_funded row of 1.50 on
-// rung 3, the case resolved with handover, the note on the step.
-func TestOneSendCarriesTheDecisionTheFundAndTheNote(t *testing.T) {
+// One send: a session cap answered with handover (model same), a room of
+// 1 beside it and a note is one Act call: one pool card_extended row on
+// rung 3, the case resolved with handover, the note on the step. Before
+// its first session the medium card's session's worth is 5 minutes and
+// the 0.30 EUR opening; its 3 starts, 10 minutes and 4.60 EUR hold 2, so
+// the room of 1 adds 5 minutes alone.
+func TestOneSendCarriesTheDecisionTheRoomAndTheNote(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.atAutonomy(policy.AutonomyManual)
 	ctx := context.Background()
@@ -235,18 +238,18 @@ func TestOneSendCarriesTheDecisionTheFundAndTheNote(t *testing.T) {
 	out := g.trip(t, tripCap)
 	g.settle()
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaConsole, Rung: 3,
-		Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Fund: &policy.Draw{EUR: 1.5}, Note: "go on with the cache"}}); err != nil {
+		Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Room: &RoomAsk{Sessions: 1, Money: true}, Note: "go on with the cache"}}); err != nil {
 		t.Fatalf("Act: %v", err)
 	}
-	var rows int
-	var eur float64
-	var rung float64
-	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*), COALESCE(max((detail->>'amount_eur')::float), 0), COALESCE(max((detail->>'rung')::float), 0)
-		FROM events WHERE task_id = 't1' AND kind = $1 AND detail->>'pool' = 'true'`, EventCardFunded).Scan(&rows, &eur, &rung); err != nil {
+	var rows, funded int
+	var sessions, seconds, rung float64
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE kind = $1), count(*) FILTER (WHERE kind = $2),
+		COALESCE(max((detail->>'sessions')::float), 0), COALESCE(max((detail->>'agent_time_s')::float), 0), COALESCE(max((detail->>'rung')::float), 0)
+		FROM events WHERE task_id = 't1' AND detail->>'pool' = 'true'`, EventCardExtended, EventCardFunded).Scan(&rows, &funded, &sessions, &seconds, &rung); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 1 || eur != 1.5 || rung != 3 {
-		t.Fatalf("card_funded rows %d, amount %v, rung %v; want one of 1.50 on rung 3", rows, eur, rung)
+	if rows != 1 || funded != 0 || sessions != 0 || seconds != 300 || rung != 3 {
+		t.Fatalf("card_extended rows %d, card_funded %d, sessions %v, seconds %v, rung %v; want one of 300 s on rung 3 and no money", rows, funded, sessions, seconds, rung)
 	}
 	c := caseByID(t, g.s, out.CaseID)
 	if c.Status != CaseResolved || c.Resolution.Action != ActHandover || c.Resolution.Reason != "go on with the cache" {

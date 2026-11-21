@@ -418,9 +418,9 @@ func TestTheDigestNamesAHoldsEndAtTheCardsClose(t *testing.T) {
 // settle, rung 2's note, the hand-up) and the actions it may take, and so
 // is rung 2's close with no case. A restart_plan of rung 2, on the held
 // card's case or on its done sibling's, would close the plan and file its
-// work again: it is refused naming the held card. Rung 2's note and fund
-// and rung 0's retry of the failed dependency start and close nothing:
-// they are taken, and the card stays held in waiting-deps.
+// work again: it is refused naming the held card. Rung 2's note, its room
+// for the card and rung 0's retry of the failed dependency start and close
+// nothing: they are taken, and the card stays held in waiting-deps.
 func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := newRetryRig(t)
@@ -436,8 +436,8 @@ func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	const held = "card #6 is on hold until #31 (plan #30) is merged or done: waits for the pg split. Only a human releases a held card, starts it or closes it, so "
-	const rung0, rung1 = ": settle it or hand it up to the human, and the factory may take `retry`, `settle` and `withdraw`", ": settle it or hand it up to the human, and the check-in may take `fund`, `retry`, `settle` and `withdraw`"
-	const rung2 = ": note the ask, settle it or hand it up to the human, and the factory agent may take `fund`, `raise_ceiling`, `retry`, `settle` and `note`"
+	const rung0, rung1 = ": settle it or hand it up to the human, and the factory may take `retry`, `settle` and `withdraw`", ": settle it or hand it up to the human, and the check-in may take `retry`, `settle` and `withdraw`"
+	const rung2 = ": note the ask, settle it or hand it up to the human, and the factory agent may take `retry`, `settle` and `note`"
 	for _, c := range []struct {
 		in   ActInput
 		want string
@@ -447,7 +447,7 @@ func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "the factory agent takes no `close` on it" + rung2},
 		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActReplan, Note: "the plan is wrong"}}, held + "the factory agent takes no `replan` on it" + rung2},
 		{ActInput{TaskID: "t-b", By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}},
-			held + "the factory agent takes no `close` on it: ask the human instead, and the factory agent may take `extend`, `fund`, `raise_ceiling`, `retry`, `set_dependency` and `remove_dependency`"},
+			held + "the factory agent takes no `close` on it: ask the human instead, and the factory agent may take `extend`, `retry`, `set_dependency` and `remove_dependency`"},
 		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}}, held + "the factory agent takes no `restart_plan` on its plan" + rung2},
 		{ActInput{TaskID: "t-f", CaseID: 5, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}},
 			held + "the factory agent takes no `restart_plan` on its plan: note the ask, settle it or hand it up to the human, and the factory agent may take `close`, `settle` and `note`"},
@@ -463,8 +463,8 @@ func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActNote, Note: "the human holds it"}}); err != nil {
 		t.Fatalf("rung 2's note = %v, want it taken", err)
 	}
-	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}}); err != nil {
-		t.Fatalf("rung 2's fund = %v, want it taken", err)
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", By: "sebastian", Rung: 2, Res: extendBy(map[string]any{"sessions": 1})}); err != nil {
+		t.Fatalf("rung 2's room = %v, want it taken", err)
 	}
 	store.cases = append(store.cases, Case{ID: 4, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseOpen})
 	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 4, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}}); err != nil {

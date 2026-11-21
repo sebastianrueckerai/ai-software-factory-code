@@ -37,7 +37,7 @@ func TestCardMessageComesFromTheFace(t *testing.T) {
 	suggested := fx.Ask.Detail
 	suggested["preselected"], suggested["recommended_by"] = map[string]any{"action": factoryd.ActExtend}, "the factory agent"
 	m, _ = factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Detail: suggested}, fx.Task, factoryd.Task{})
-	if want += " The factory agent suggests “Allow more sessions”."; m.Content != want {
+	if want += " The factory agent suggests “Give more room”."; m.Content != want {
 		t.Errorf("the suggested message = %q\nwant %q", m.Content, want)
 	}
 }

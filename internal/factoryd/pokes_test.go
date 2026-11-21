@@ -53,9 +53,9 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Both stores pass the load test."}, true},
 		{"a session cap names its why, not the budget", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "The card used all 3 sessions. How should it go on?",
 			"why": "A card runs only the sessions it was given, and this one has used all 3.", "source": "cap",
-			"offers":      []any{map[string]any{"value": "extend", "label": "Allow more sessions", "effect": "Gives the card more sessions or agent time, and it goes on."}},
+			"offers":      []any{map[string]any{"value": "extend", "label": "Give more room", "effect": "Gives the card more sessions or agent time, and it goes on."}},
 			"preselected": map[string]any{"action": "extend"}, "recommended_by": "the factory agent"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. A card runs only the sessions it was given, and this one has used all 3. The factory agent suggests “Allow more sessions”."}, true},
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. A card runs only the sessions it was given, and this one has used all 3. The factory agent suggests “Give more room”."}, true},
 		// a row after the card's escalation, so the inbox's answer row
 		// offers it no more
 		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,
@@ -808,7 +808,7 @@ func TestAnAsksMessageDropsAWhyPastItsBound(t *testing.T) {
 // agent passes, in brackets, goes.
 func TestForHumanNamesTheAnswersByTheirLabels(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"the human may take `extend`, `close` and `note`", "the human may take “Allow more sessions”, “End the card” and “Not now”"},
+		{"the human may take `extend`, `close` and `note`", "the human may take “Give more room”, “End the card” and “Not now”"},
 		{"send it back (`deny_merge` with `request_changes`) or close it (`deny_merge` with `reject`)", "send it back (“Send it back”) or close it (“Reject and close it”)"},
 		{"`withdraw` ends a monitor flag's ask", "`withdraw` ends a monitor flag's ask"},
 		{"`set_dependency` names the card to wait for (`depends_on`)", "“Make it wait for a card” names the card to wait for"},
