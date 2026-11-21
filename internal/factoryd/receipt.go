@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The receipt of a merged task (roadmap 66): the deterministic facts of
@@ -89,8 +91,9 @@ type ReceiptGate struct {
 type ReceiptDecision struct {
 	Kind     string `json:"kind"`
 	Decision string `json:"decision"`
-	// Draw is the room an answer gave when it gave one: its sessions'
-	// worth, and whether without money, in the factory's own words.
+	// Draw is what the answer's case drew, read off the rows the draw
+	// wrote: the starts, the agent time and the money, and the spend
+	// limit a raise set, in the factory's own words.
 	Draw string     `json:"draw,omitempty"`
 	By   string     `json:"by"`
 	Note string     `json:"note,omitempty"`
@@ -167,13 +170,17 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	if err != nil {
 		return MergeReceipt{}, err
 	}
+	drew, err := caseDrawWords(ctx, r.store, taskID)
+	if err != nil {
+		return MergeReceipt{}, err
+	}
 	for _, c := range cases {
 		res := c.Resolution
 		if res == nil || res.Rung != 3 || !isPerson(res.By) || c.Kind == CaseMergeApproval {
 			continue
 		}
 		rec.Facts.Decisions = append(rec.Facts.Decisions, ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
-			Draw: Resolution{Action: res.Action, Args: res.Args}.roomWords(), Note: res.Reason, At: c.ResolvedAt})
+			Draw: drew[c.ID], Note: res.Reason, At: c.ResolvedAt})
 	}
 	slices.SortStableFunc(rec.Facts.Decisions, func(a, b ReceiptDecision) int { return receiptWhen(a).Compare(receiptWhen(b)) })
 	// the judgement criteria's verdicts: the model's assessments on the
@@ -201,6 +208,46 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 			Verdict: v.Verdict, Evidence: v.Evidence})
 	}
 	return rec, nil
+}
+
+// receiptDraws is the most draw rows of a kind a receipt reads of a card.
+const receiptDraws = 500
+
+// caseDrawWords are the words of what each case of card taskID drew, by
+// case id, read off the draw rows that name the case: the starts and the
+// agent time of its extend rows, the money of its fund rows and the spend
+// limit its ceiling row set. Rows from before the room read the same.
+func caseDrawWords(ctx context.Context, events interface {
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+}, taskID string) (map[int64]string, error) {
+	drawn, limit := map[int64]policy.Draw{}, map[int64]float64{}
+	for _, kind := range []string{EventCardExtended, EventCardFunded} {
+		rows, err := events.TaskEventsOfKind(ctx, taskID, kind, receiptDraws)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range rows {
+			id, _ := toInt(e.Detail["case_id"])
+			if id == 0 {
+				continue
+			}
+			sessions, _ := toInt(e.Detail["sessions"])
+			secs, _ := toInt(e.Detail["agent_time_s"])
+			eur, _ := e.Detail["amount_eur"].(float64)
+			drawn[int64(id)] = drawn[int64(id)].Plus(policy.Draw{Sessions: sessions, AgentTime: time.Duration(secs) * time.Second, EUR: eur})
+			if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok {
+				limit[int64(id)] = max(limit[int64(id)], ceiling)
+			}
+		}
+	}
+	words := map[int64]string{}
+	for id, d := range drawn {
+		words[id] = drawWords(d)
+		if l := limit[id]; l > 0 {
+			words[id] = strings.TrimPrefix(words[id]+", with the spend limit raised to "+textutil.EUR(l)+" EUR", ", ")
+		}
+	}
+	return words, nil
 }
 
 // storeMergeReceipt builds the task's receipt and stores it, reporting

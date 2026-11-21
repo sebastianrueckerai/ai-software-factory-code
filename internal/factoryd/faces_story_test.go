@@ -136,6 +136,32 @@ func TestTheStoryOf2004(t *testing.T) {
 	}
 }
 
+// The readout on #2004's facts as the plan fixed them: 0.00 EUR left and
+// 0.40 held for the gates leave -0.40, which shows as none left. A
+// session's worth is 1500 s / 3 = 8 min and 4.00 / 3 = 1.33 EUR; the room
+// of 1 adds 1.33 + 0.40 = 1.74 EUR, rounded up to the cent, then 1.74 -
+// 0.40 = 1.34 EUR, and 1 start, as the 3 sessions spent the cap of 3; the
+// 7200 - 1500 s = 95 minutes left hold the time. Without its money the
+// line shows none left too.
+func TestTheReadoutOf2004SaysNoneLeft(t *testing.T) {
+	x := fixture(t, facefixtures.GroupCase, string(factoryd.CaseBudgetFloor))
+	f := x.facts.CaseFacts
+	f.BudgetEUR, f.SpentEUR, f.LeftEUR, f.Attempts = 4, 4, 0, 3
+	want := []string{
+		"About 8 min and 1.33 EUR per session, from its 3 sessions so far",
+		"Enough: 95 min left",
+		"Adds 1.74 EUR: none left, then 1.34 EUR",
+		"It may also start 1 more session.",
+		"The project has 41.20 EUR left this month.",
+	}
+	if got := factoryd.RoomLines(f, factoryd.RoomFor(f, 1, true)); !slices.Equal(got, want) {
+		t.Errorf("RoomLines = %q, want %q", got, want)
+	}
+	if got := factoryd.RoomLines(f, factoryd.RoomFor(f, 1, false)); len(got) < 3 || got[2] != "Adds no money: none left" {
+		t.Errorf("RoomLines without money = %q, want the money line %q", got, "Adds no money: none left")
+	}
+}
+
 // A finding the review words anew after the last session is open: of the
 // 3 review findings open before it, the review raises one in other words
 // and one as before, so the story counts 3 before and 2 open now, and no

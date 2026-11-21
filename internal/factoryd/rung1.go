@@ -45,9 +45,10 @@ func humanOnly(c Case, f CaseFacts) (bool, string) {
 		if slices.Contains(f.Partial, "pool") {
 			return true, "the pool could not be read, so the card's need of money cannot be weighed against it"
 		}
-		// the board's ask on the live facts, whatever the case stored
-		if need := RoomFor(f, 1, true).EUR; Cents(need) > Cents(f.PoolLeft.EUR) {
-			return true, fmt.Sprintf("the card needs %s EUR and the pool holds %s EUR", textutil.EUR(need), textutil.EUR(f.PoolLeft.EUR))
+		// the board's room on the live facts, whatever the case stored,
+		// weighed as Act weighs rung 2's answer
+		if room := RoomFor(f, 1, true); drawWithin(f, 2, room) != "" {
+			return true, fmt.Sprintf("a room of 1 session's worth draws %s from the pool, which holds %s", drawWords(room.draw()), drawText(f.PoolLeft))
 		}
 	}
 	return false, ""

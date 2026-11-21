@@ -85,6 +85,21 @@ func seedReceiptRecords(ctx context.Context, t *testing.T, store *fakeStore, obj
 		t.Fatal(err)
 	}
 
+	// the rows the human's extend on case 3 drew, from before the room: 2
+	// starts and 30 minutes, 1.50 EUR, and the spend limit raised to 7.50;
+	// case 1's row is the chat's, no row of the human's case
+	for _, e := range []Event{
+		{Kind: EventCardExtended, Detail: map[string]any{"case_id": int64(3), "sessions": 2, "agent_time_s": 1800}},
+		{Kind: EventCardFunded, Detail: map[string]any{"case_id": int64(3), "ceiling_eur": 7.5, "amount_eur": 0.0}},
+		{Kind: EventCardFunded, Detail: map[string]any{"case_id": int64(3), "amount_eur": 1.5}},
+		{Kind: EventCardExtended, Detail: map[string]any{"case_id": int64(1), "sessions": 1}},
+	} {
+		e.Repository, e.TaskID, e.Actor = gateTask.Repository, "t1", "sebastian"
+		if _, err := store.Record(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// the gates' reading of the head, with the policy version it read
 	fact := GateHeadFact{Task: "t1", Head: "c1", Gate: GateMerge, Decision: "approval", Size: "medium",
 		Bound: 600, PolicyVersion: 7, Files: 3, Insertions: 120, Deletions: 20}
@@ -111,7 +126,7 @@ func seedReceiptRecords(ctx context.Context, t *testing.T, store *fakeStore, obj
 			ResolvedAt: &receiptApprovedAt, Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: "approve", Reason: "the strict improvement holds"}},
 		{ID: 3, TaskID: "t1", Repository: "sf/repo", Kind: CaseSessionCap, Status: CaseResolved, OpenedAt: handedUp, // the human's answer
 			ResolvedAt: &receiptAnsweredAt, Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend,
-				Args: map[string]any{"sessions": 2}, Reason: "the flaky checkout needs two more sessions"}},
+				Args: map[string]any{"sessions": 2, "agent_time_s": 1800}, Reason: "the flaky checkout needs two more sessions"}},
 		{ID: 4, TaskID: "t1", Repository: "sf/repo", Kind: CaseCheckinShare, Status: CaseAtHuman, OpenedAt: receiptAnsweredAt}, // still open
 	}
 
@@ -167,7 +182,7 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 			CostEUR: 3.5, // the task row's settled spend
 			Decisions: []ReceiptDecision{ // the human's, oldest first: the approval, the case it answered
 				{Kind: ApprovalMerge, Decision: "approved", By: "sebastian", Note: "the strict improvement holds", At: &receiptApprovedAt},
-				{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions' worth",
+				{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions, 30 minutes of agent time and 1.50 EUR, with the spend limit raised to 7.50 EUR",
 					Note: "the flaky checkout needs two more sessions", At: &receiptAnsweredAt},
 			},
 		},
@@ -470,7 +485,7 @@ func TestRecordReceiptPostsTheCommentOnce(t *testing.T) {
 		"Gate policy: auto", "Gate reproduction: not run", "Gate reproduction: bash check (exit 0): passed",
 		"Cost: 3.50 EUR",
 		"Decision: merge approved by sebastian — the strict improvement holds",
-		"Decision: case extend by sebastian, drew 2 sessions' worth — the flaky checkout needs two more sessions",
+		"Decision: case extend by sebastian, drew 2 sessions, 30 minutes of agent time and 1.50 EUR, with the spend limit raised to 7.50 EUR — the flaky checkout needs two more sessions",
 	} {
 		if !strings.Contains(facts, want) {
 			t.Fatalf("the comment's facts miss %q:\n%s", want, body)

@@ -616,7 +616,7 @@ func TestActDrawsThePoolOnceUnderTwoAnswers(t *testing.T) {
 	wg.Wait()
 	var refused ErrActRefused
 	landed := slices.IndexFunc(errs, func(err error) bool { return err == nil })
-	if landed < 0 || !errors.As(errs[1-landed], &refused) || !strings.Contains(errs[1-landed].Error(), "the escalation pool leaves 0 sessions") {
+	if landed < 0 || !errors.As(errs[1-landed], &refused) || !strings.Contains(errs[1-landed].Error(), "the escalation pool leaves room for no more session's worth this month") {
 		t.Fatalf("errors = %v, want one answer to land and the other refused by the pool", errs)
 	}
 	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn.Sessions != 30 {
@@ -639,9 +639,9 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
 	res := CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}
 	var spent *DrawBoundError
-	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil); !errors.As(err, &spent) || spent.Card ||
-		spent.Left != (policy.Draw{AgentTime: 30 * time.Hour, EUR: 60}) {
-		t.Fatalf("ResolveCase past the pool = %v, want the pool's DrawBoundError leaving 0 sessions", err)
+	const want = "the escalation pool leaves room for no more session's worth this month: hand it up (`hand_up`) for the human to give more"
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil); !errors.As(err, &spent) || spent.Card || err.Error() != want {
+		t.Fatalf("ResolveCase past the pool = %v, want the pool's DrawBoundError: %s", err, want)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 || len(caseStepsOf(t, g.s, g.c.ID)) != 0 {
 		t.Fatalf("case %s, raised %d: want it live, nothing raised and no step", c.Status, g.card(t).Usage.RaisedSessions)
@@ -654,9 +654,10 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 
 // A pool drawn past its 30 sessions, 30 hours and 60 EUR, to 49 sessions,
 // 52554 s and 84.30 EUR, by rung 2 before a change lowered it. Under the
-// lock rung 2's draw of a session and 30 minutes is refused naming the
-// sessions and the fit, and its draw of the 30 minutes alone lands: a part
-// drawn past its bound refuses only a draw that asks for some of it.
+// lock rung 2's room of 2 without money, a session and 30 minutes, is
+// refused naming the room of 1 below it, its 30 minutes alone, which the
+// pool's 924 minutes hold; that draw lands: a part drawn past its bound
+// refuses only a draw that asks for some of it.
 func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
@@ -670,14 +671,13 @@ func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
 		}
 	}
 	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
-		Need:  policy.Draw{AgentTime: time.Minute},
+		Below: []Room{{N: 1, Est: Estimate{Time: 30 * time.Minute}, AgentTime: 30 * time.Minute}},
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
 	res := CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}
-	const want = "the escalation pool leaves 0 sessions, 924 minutes of agent time and 0.00 EUR this month: only the human draws more. " +
-		"This draw does not fit in sessions (asked 1, left 0). The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that"
+	const want = "the escalation pool leaves room for 1 more session's worth this month, about 30 minutes: ask for that, or hand it up (`hand_up`) for the human to give more"
 	var spent *DrawBoundError
 	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil)
-	if !errors.As(err, &spent) || spent.Want != (policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}) || err.Error() != want {
+	if !errors.As(err, &spent) || spent.Fit.N != 1 || err.Error() != want {
 		t.Fatalf("rung 2's session and 30 minutes = %v, want the pool's refusal\n%s", err, want)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedTime != 0 {
@@ -689,10 +689,11 @@ func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
 	}
 }
 
-// The store names a fit by the answer's need as drawWithin does: with the
-// pool's 30 hours drawn, rung 2's session and 30 minutes at an agent time
-// cap, whose extend needs a minute, fits nothing, not the session alone.
-func TestResolveCaseNamesNoFitWithoutTheNeed(t *testing.T) {
+// The store names a fit among the rooms below the one asked, as
+// drawWithin does: with the pool's 30 hours drawn, rung 2's room of 2 at
+// an agent time cap, a session and 30 minutes, has below it a room of 1
+// that needs a minute, so nothing fits, not the session alone.
+func TestResolveCaseNamesNoFitWhenNoRoomBelowFits(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
 	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventCardExtended, Actor: ChatUser, Via: ViaChat,
@@ -700,10 +701,9 @@ func TestResolveCaseNamesNoFitWithoutTheNeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
-		Need:  policy.Draw{AgentTime: time.Minute},
+		Below: []Room{{N: 1, Est: Estimate{Time: 30 * time.Minute}, AgentTime: time.Minute}},
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
-	const want = "the escalation pool leaves 20 sessions, 0 seconds of agent time and 60.00 EUR this month: only the human draws more. " +
-		"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
+	const want = "the escalation pool leaves room for no more session's worth this month: hand it up (`hand_up`) for the human to give more"
 	err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil)
 	var spent *DrawBoundError
 	if !errors.As(err, &spent) || err.Error() != want {
@@ -728,8 +728,7 @@ func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
 	res := CaseResolution{By: FactoryDecider, Rung: 1, Action: ActExtend}
 	var bound *DrawBoundError
 	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil)
-	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: the factory agent or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation" {
+	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves room for no more session's worth: hand it up (`hand_up`) for the factory agent or the human to give more" {
 		t.Fatalf("ResolveCase past the card's bound = %v, want the card's DrawBoundError", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 {

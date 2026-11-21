@@ -327,6 +327,55 @@ func TestAPoolRefusalNamesTheLargestCountThatFits(t *testing.T) {
 		"the card's draw bound leaves room for 2 more sessions' worth, about 28 minutes and 2.40 EUR: ask for that, or hand it up (`hand_up`) for the factory agent or the human to give more"; got != want {
 		t.Errorf("the check-in's room of 3 = %q, want %q", got, want)
 	}
+	// without its money a room names no EUR: a room of 3 takes 3 starts, a
+	// room of 1 the 1 start and 10 minutes the pool holds
+	f = aheadOfTime()
+	f.PoolLeft = policy.Draw{Sessions: 1, AgentTime: time.Hour, EUR: 5}
+	if got, want := refusalOn(t, f, 2, extendBy(map[string]any{"sessions": 3, "money": false})),
+		"the escalation pool leaves room for 1 more session's worth this month, about 14 minutes: ask for that, or hand it up (`hand_up`) for the human to give more"; got != want {
+		t.Errorf("the factory agent's room of 3 without money = %q, want %q", got, want)
+	}
+}
+
+// At an agent time overrun, 42 minutes spent of a 40 minute cap, the time
+// line shows none left and the real total after the press: a room of 1
+// needs 14 - (-2) = 16 minutes, then 14 minutes; the 2.10 EUR left hold
+// the 1.20 EUR, and the start left takes the session.
+func TestRoomLinesAtATimeOverrunSayNoneLeft(t *testing.T) {
+	f := aheadOfTime()
+	f.AgentTimeCapS = 40 * 60
+	want := []string{
+		"About 14 min and 1.20 EUR per session, from its 3 sessions so far",
+		"Adds 16 min: none left, then 14 min",
+		"Enough: 2.10 EUR left",
+		"The project has 41.20 EUR left this month.",
+	}
+	if got := RoomLines(f, RoomFor(f, 1, true)); !slices.Equal(got, want) {
+		t.Errorf("RoomLines = %q, want %q", got, want)
+	}
+}
+
+// A draw that Act's facts let through meets the store's own weighing: with
+// 29 of the pool's 30 sessions drawn after the facts were read, the room of
+// 3 on the ahead-of-time row (3 starts) is refused naming the count that
+// fits, 1 session's worth with its 1 start, as Act's refusal names it.
+func TestARacingDrawIsRefusedInSessionsWorth(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	card := g.store.tasks["t1"]
+	d := g.r.caseDraw(card, aheadOfTime(), Case{ID: 7}, ActInput{Rung: 2, Res: extendBy(map[string]any{"sessions": 3})}, ViaChat)
+	if d == nil {
+		t.Fatal("no draw for a room of 3")
+	}
+	d.Pool = policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}
+	if _, err := g.store.Record(ctx, Event{Repository: card.Repository, TaskID: "t2", Kind: EventCardExtended, Actor: ChatUser, Via: ViaChat,
+		Detail: map[string]any{"pool": true, "rung": 2, "sessions": 29}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := g.store.DrawCard(ctx, "t1", *d)
+	if want := "the escalation pool leaves room for 1 more session's worth this month, about 14 minutes and 1.20 EUR: ask for that, or hand it up (`hand_up`) for the human to give more"; err == nil || err.Error() != want {
+		t.Errorf("the racing draw = %v, want %q", err, want)
+	}
 }
 
 // The readout of a room of 2 on the ahead-of-time row, word for word, and

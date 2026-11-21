@@ -1504,7 +1504,7 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	beside(detail, in.Detail)
 	esc := v.EscalationOf(t.Repository)
 	return &CaseDraw{Rung: in.Rung, Raise: room.Limit, Extend: policy.Draw{Sessions: room.Starts, AgentTime: room.AgentTime}, FundEUR: room.EUR,
-		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool, Need: RoomFor(f, 1, room.Money).draw(),
+		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool, Below: below(f, room),
 		Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: in.By, Via: via, Detail: detail}}
 }
 

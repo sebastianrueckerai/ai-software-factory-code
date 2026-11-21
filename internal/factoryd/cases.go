@@ -737,9 +737,10 @@ func (e ErrCaseEnded) Error() string {
 // agent time, then FundEUR into the budget, which the card's
 // ceiling bounds, else PolicyCeiling. CardBound and Pool are the card's
 // draw bound, which rungs 0 and 1 draw within, and the project's month of
-// draws, which rungs 0 to 2 draw within. Need is the smallest draw the
-// answer's action takes on its case (Action.need), zero for none, which a
-// refusal past a bound names a fit by. RunGrants: the card's run grants
+// draws, which rungs 0 to 2 draw within. Below are the rooms of the counts
+// under the one asked, with the money as asked, smallest first, among
+// which a refusal past a bound names the largest that fits; none for a
+// draw no room made. RunGrants: the card's run grants
 // Extend's sessions and agent time itself, so the rows record them against
 // the pool and the card's row raises neither. Event is the rows'
 // repository, issue, actor, via and detail.
@@ -751,7 +752,7 @@ type CaseDraw struct {
 	PolicyCeiling float64
 	CardBound     policy.Draw
 	Pool          policy.Draw
-	Need          policy.Draw
+	Below         []Room
 	RunGrants     bool
 	Event         Event
 }

@@ -228,7 +228,9 @@ func TestHumanOnly(t *testing.T) {
 	ci := func(kind string) Case {
 		return Case{Kind: CaseCheckinHuman, Facts: map[string]any{"reason_kind": kind}}
 	}
-	// a card with nothing left whose next session needs 5 EUR to open
+	// a card with nothing left whose next session needs 5 EUR to open, its
+	// start and its time left: a room of 1 draws the 5 EUR from the pool,
+	// and at a spend limit of 0 the 5 EUR the limit rises by too
 	floor := Case{Kind: CaseBudgetFloor}
 	for _, c := range []struct {
 		name string
@@ -252,8 +254,15 @@ func TestHumanOnly(t *testing.T) {
 		{"floor beyond pool", floor, 4, true},
 		{"floor within pool", floor, 60, false},
 		{"floor equal to pool", floor, 5, false},
+		{"floor and the limit's raise beyond pool", floor, -5, true},
+		{"floor and the limit's raise within pool", floor, -10, false},
 	} {
-		got, why := humanOnly(c.c, CaseFacts{FloorEUR: 5, PoolLeft: policy.Draw{EUR: c.pool}})
+		f := CaseFacts{FloorEUR: 5, SessionCap: 1, AgentTimeCapS: 3600, CeilingEUR: 18,
+			PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: c.pool}}
+		if c.pool < 0 {
+			f.CeilingEUR, f.PoolLeft.EUR = 0, -c.pool
+		}
+		got, why := humanOnly(c.c, f)
 		if got != c.want || got == (why == "") {
 			t.Errorf("%s: humanOnly = %v %q, want %v with a reason iff true", c.name, got, why, c.want)
 		}
@@ -271,8 +280,9 @@ func TestHumanOnly(t *testing.T) {
 func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	c := Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget"}}
 	f := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5.7, SpentEUR: 5.36, LeftEUR: 0.34, ReserveEUR: 0.4, FloorEUR: 0.6, CeilingEUR: 18, MonthLeftEUR: 41.2,
-		Attempts: 2, LastSession: &LastSessionFacts{CostEUR: 2.62}, PoolLeft: policy.Draw{EUR: 2}}
-	if got, why := humanOnly(c, f); !got || why != "the card needs 2.74 EUR and the pool holds 2.00 EUR" {
+		Attempts: 2, SessionCap: 3, AgentTimeCapS: 7200, LastSession: &LastSessionFacts{CostEUR: 2.62},
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 2}}
+	if got, why := humanOnly(c, f); !got || why != "a room of 1 session's worth draws 2.74 EUR from the pool, which holds 30 sessions, 30 hours of agent time and 2.00 EUR" {
 		t.Errorf("humanOnly = %v %q, want the human for 2.74 EUR against the pool's 2.00", got, why)
 	}
 	if got := (&Runner{}).rungStatement(c, f, "D", nil, 1); !strings.Contains(got, "; a room of 1 session's worth needs 2.74 EUR more.\n") {

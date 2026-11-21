@@ -903,21 +903,40 @@ func worthWords(n int) string {
 // moreWorthWords says n more sessions' worth: "1 more session's worth".
 func moreWorthWords(n int) string { return strings.Replace(worthWords(n), " ", " more ", 1) }
 
-// roomFit is the largest count below room's whose room on f fits, false for
-// none: the counts tried from the one asked down to 1.
-func roomFit(f CaseFacts, room Room, fits func(Room) bool) (Room, bool) {
-	for n := room.N - 1; n >= 1; n-- {
-		if o := RoomFor(f, n, room.Money); fits(o) {
+// below are the rooms on f of the counts under room's, with its money,
+// smallest first: the counts a refusal tries, from the one asked down to 1.
+func below(f CaseFacts, room Room) []Room {
+	var out []Room
+	for n := 1; n < room.N; n++ {
+		out = append(out, RoomFor(f, n, room.Money))
+	}
+	return out
+}
+
+// roomFit is the largest of rooms that fits, false for none.
+func roomFit(rooms []Room, fits func(Room) bool) (Room, bool) {
+	for _, o := range slices.Backward(rooms) {
+		if fits(o) {
 			return o, true
 		}
 	}
 	return Room{}, false
 }
 
+// worthText is what r's count of sessions' worth is: "28 minutes and 2.40
+// EUR", the money left out when r has none or a session's worth costs none.
+func (r Room) worthText() string {
+	words := minutesWord(time.Duration(r.N) * r.Est.Time)
+	if eur := float64(r.N) * r.Est.EUR; r.Money && Cents(eur) > 0 {
+		words += " and " + textutil.EUR(eur) + " EUR"
+	}
+	return words
+}
+
 // fitWords names the largest count below room's that fits, and what of:
 // "1 session's worth fits under it", "no session's worth fits under it".
 func fitWords(f CaseFacts, room Room, what string, fits func(Room) bool) string {
-	if o, ok := roomFit(f, room, fits); ok {
+	if o, ok := roomFit(below(f, room), fits); ok {
 		return worthWords(o.N) + " " + what
 	}
 	return "no session's worth " + what
@@ -937,7 +956,7 @@ func monthWithin(f CaseFacts, room Room) string {
 	if Cents(room.EUR) <= Cents(left) {
 		return ""
 	}
-	fit, ok := roomFit(f, room, func(o Room) bool { return Cents(o.EUR) <= Cents(left) })
+	fit, ok := roomFit(below(f, room), func(o Room) bool { return Cents(o.EUR) <= Cents(left) })
 	if !ok {
 		return fmt.Sprintf("the project has %s EUR left this month, which pays for no session's worth: raise budget.month_eur by a commit", textutil.EUR(left))
 	}
@@ -1114,26 +1133,13 @@ func boughtNothingText(f CaseFacts) string {
 
 // drawWithin is why room does not fit rung's bounds on f, "" when it fits:
 // the card's draw bound for rungs 0 and 1, the pool for rungs 0 to 2, each
-// refusal with the largest count that fits and what it is worth.
+// refusal with the largest count that fits and what it is worth, as the
+// store's own weighing refuses it.
 func drawWithin(f CaseFacts, rung int, room Room) string {
-	bound := func(o Room) *DrawBoundError {
-		return newDrawBound(rung, o.draw(), policy.Draw{}, f.CardDrawLeft, f.PoolLeft)
+	if e := newDrawBound(rung, room.draw(), below(f, room), f.CardDrawLeft, f.PoolLeft); e != nil {
+		return e.Error()
 	}
-	e := bound(room)
-	if e == nil {
-		return ""
-	}
-	leaves, more := "the escalation pool leaves room for %s this month", "the human"
-	if e.Card {
-		leaves, more = "the card's draw bound leaves room for %s", "the factory agent or the human"
-	}
-	fit, ok := roomFit(f, room, func(o Room) bool { return bound(o) == nil })
-	if !ok {
-		return fmt.Sprintf(leaves, "no more session's worth") + ": hand it up (`hand_up`) for " + more + " to give more"
-	}
-	return fmt.Sprintf(leaves, moreWorthWords(fit.N)) +
-		fmt.Sprintf(", about %s and %s EUR: ask for that, or hand it up (`hand_up`) for %s to give more",
-			minutesWord(time.Duration(fit.N)*fit.Est.Time), textutil.EUR(float64(fit.N)*fit.Est.EUR), more)
+	return ""
 }
 
 // fitsIn is policy.Draw.Fits with money compared in cents, as the store

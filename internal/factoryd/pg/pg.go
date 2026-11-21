@@ -331,6 +331,7 @@ type (
 	DrawBoundError        = factoryd.DrawBoundError
 	ErrCaseEnded          = factoryd.ErrCaseEnded
 	ErrActRefused         = factoryd.ErrActRefused
+	Estimate              = factoryd.Estimate
 	Event                 = factoryd.Event
 	ErrMainRed            = factoryd.ErrMainRed
 	Forgejo               = factoryd.Forgejo
@@ -351,6 +352,7 @@ type (
 	QuestionChoice        = factoryd.QuestionChoice
 	ReleaseKeeper         = factoryd.ReleaseKeeper
 	Resolution            = factoryd.Resolution
+	Room                  = factoryd.Room
 	RoomAsk               = factoryd.RoomAsk
 	RoutineRunInput       = factoryd.RoutineRunInput
 	RungTwoRecommendation = factoryd.RungTwoRecommendation

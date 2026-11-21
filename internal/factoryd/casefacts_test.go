@@ -518,13 +518,13 @@ func pressedRoom(t *testing.T, f Facts) float64 {
 }
 
 // A floor case asks the opening price the run's next session needs: the
-// case's need is the raise the refusal text names, so a fund of exactly
-// it clears SessionFunded. Spent 4.40 of 5 with nothing held leaves 0.60,
-// less the 0.40 reserve 0.20 for a session, and the recorded opening on
-// small needs 0.607001: the raise and the case's need are both 0.41.
-// "Give more room" opens with a room of 1, a session's worth of 4.40 / 3
-// = 1.47 EUR from the card's 3 sessions, which adds 1.47 - 0.20 = 1.27 EUR,
-// and with it the session is funded too.
+// case's need is the raise the refusal text names, so money of exactly it
+// clears SessionFunded and a cent less does not. Spent 4.40 of 5 with
+// nothing held leaves 0.60, less the 0.40 reserve 0.20 for a session, and
+// the recorded opening on small needs 0.607001: the raise and the case's
+// need are both 0.41, and 0.20 + 0.40 = 0.60 stays short. "Give more room"
+// opens with a room of 1, a session's worth of 4.40 / 3 = 1.47 EUR from
+// the card's 3 sessions, which adds 1.47 - 0.20 = 1.27 EUR.
 func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	g := newFactsRig(t)
 	card := g.store.tasks["t1"]
@@ -556,14 +556,19 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if c.Kind != CaseBudgetFloor || c.Money == nil {
 		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
 	}
-	eur := pressedRoom(t, Facts{CaseFacts: FactsOf(c), Card: card, Case: c})
-	if Cents(eur) != 127 {
+	if eur := pressedRoom(t, Facts{CaseFacts: FactsOf(c), Card: card, Case: c}); Cents(eur) != 127 {
 		t.Fatalf("the room of 1 adds %v, want 1.27", eur)
 	}
-	card.BudgetEUR += eur
+	budget := card.BudgetEUR
+	card.BudgetEUR = budget + raise - 0.01
+	g.store.tasks["t1"] = card
+	if why, err := g.r.SessionFunded(ctx, "t1", "factory/small"); err != nil || !BudgetRefusal(why) {
+		t.Fatalf("a cent short of the need: SessionFunded = (%q, %v), want the money ask", why, err)
+	}
+	card.BudgetEUR = budget + raise
 	g.store.tasks["t1"] = card
 	if why, err := g.r.SessionFunded(ctx, "t1", "factory/small"); err != nil || why != "" {
-		t.Fatalf("after a room of %.2f: SessionFunded = (%q, %v), want the session funded", eur, why, err)
+		t.Fatalf("after the case's %.2f: SessionFunded = (%q, %v), want the session funded", raise, why, err)
 	}
 }
 

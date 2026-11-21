@@ -2238,72 +2238,40 @@ func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (bool
 	return wrote && err == nil, err
 }
 
-// DrawBoundError refuses draw Want past a bound of its rung: the card's
-// draw bound (Card) or the project's pool, with what the bound left when
-// the draw met it, and the largest part of Want every bound of the rung
-// leaves room for (Fit). Least is the smallest draw the answer's action
-// takes when it fits those bounds, so the action stays on offer; while it
-// does not, nothing is a fit.
+// DrawBoundError refuses a draw past a bound of its rung: the card's draw
+// bound (Card) or the project's pool. Fit is the largest of the rooms
+// below the one asked that every bound of the rung leaves room for, of
+// count 0 for none.
 type DrawBoundError struct {
-	Card                   bool
-	Want, Left, Fit, Least policy.Draw
+	Card bool
+	Fit  Room
 }
 
-// newDrawBound is the refusal of draw want on rung:
-// against cardLeft on rungs 0 and 1 first, then against poolLeft on rungs
-// 0 to 2. need is the smallest draw the answer's action takes (its probe's,
-// Action.need), zero for none. nil when want fits.
-func newDrawBound(rung int, want, need policy.Draw, cardLeft, poolLeft policy.Draw) *DrawBoundError {
+// newDrawBound is the refusal of draw want on rung: against cardLeft on
+// rungs 0 and 1 first, then against poolLeft on rungs 0 to 2, with the
+// largest of below that fits. nil when want fits.
+func newDrawBound(rung int, want policy.Draw, below []Room, cardLeft, poolLeft policy.Draw) *DrawBoundError {
 	within := func(d policy.Draw) bool {
 		return rung > 2 || fitsIn(d, poolLeft) && (rung == 2 || fitsIn(d, cardLeft))
 	}
 	if within(want) {
 		return nil
 	}
-	e := &DrawBoundError{Card: rung <= 1 && !fitsIn(want, cardLeft), Want: want, Left: poolLeft, Fit: want.Min(poolLeft)}
-	if rung <= 1 {
-		e.Fit = e.Fit.Min(cardLeft)
-	}
-	if e.Card {
-		e.Left = cardLeft
-	}
-	if e.Fit.AgentTime < want.AgentTime {
-		// minutesWord rounds: a fit cut to the minute is never named above what is left
-		e.Fit.AgentTime = e.Fit.AgentTime.Truncate(time.Minute)
-	}
-	switch {
-	case need.IsZero():
-	case within(need):
-		e.Least = need
-	default:
-		e.Fit = policy.Draw{}
-	}
+	e := &DrawBoundError{Card: rung <= 1 && !fitsIn(want, cardLeft)}
+	e.Fit, _ = roomFit(below, func(o Room) bool { return within(o.draw()) })
 	return e
 }
 
+// Error names the bound, the largest count that fits and what it is worth.
 func (e *DrawBoundError) Error() string {
-	bound := fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
+	leaves, more := "the escalation pool leaves room for %s this month", "the human"
 	if e.Card {
-		bound = fmt.Sprintf("the card's draw bound leaves %s: the factory agent or the human may draw more", drawText(e.Left))
+		leaves, more = "the card's draw bound leaves room for %s", "the factory agent or the human"
 	}
-	var over []string
-	if e.Want.Sessions > e.Left.Sessions {
-		over = append(over, fmt.Sprintf("sessions (asked %d, left %d)", e.Want.Sessions, e.Left.Sessions))
+	if e.Fit.N == 0 {
+		return fmt.Sprintf(leaves, "no more session's worth") + ": hand it up (`hand_up`) for " + more + " to give more"
 	}
-	if e.Want.AgentTime > e.Left.AgentTime {
-		over = append(over, fmt.Sprintf("agent time (asked %s, left %s)", minutesWord(e.Want.AgentTime), minutesWord(e.Left.AgentTime)))
-	}
-	if Cents(e.Want.EUR) > Cents(e.Left.EUR) {
-		over = append(over, fmt.Sprintf("EUR (asked %s, left %s)", textutil.EUR(e.Want.EUR), textutil.EUR(e.Left.EUR)))
-	}
-	bound += ". This draw does not fit in " + textutil.AndList(over)
-	switch {
-	case e.Fit.IsZero() && !e.Least.IsZero():
-		return fmt.Sprintf("%s, and nothing of it fits, but %s does: ask for that", bound, drawText(e.Least))
-	case e.Fit.IsZero():
-		return bound + ", and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
-	}
-	return fmt.Sprintf("%s. The largest draw that fits is %s: ask for that", bound, drawText(e.Fit))
+	return fmt.Sprintf(leaves, moreWorthWords(e.Fit.N)) + ", about " + e.Fit.worthText() + ": ask for that, or hand it up (`hand_up`) for " + more + " to give more"
 }
 
 // drawFits takes the project's pool lock for tx, so draws on one project
@@ -2340,7 +2308,7 @@ func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 		}
 		poolLeft = d.Pool.Minus(drawn)
 	}
-	if e := newDrawBound(d.Rung, d.amount(), d.Need, cardLeft, poolLeft); e != nil {
+	if e := newDrawBound(d.Rung, d.amount(), d.Below, cardLeft, poolLeft); e != nil {
 		return e
 	}
 	return nil

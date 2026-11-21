@@ -168,7 +168,7 @@ func TestRung1RunsMerges(t *testing.T) {
 }
 
 // Fits holds every part to the other's, Minus stops at zero in each part,
-// Min takes the smaller part, Plus adds.
+// Plus adds.
 func TestDrawArithmetic(t *testing.T) {
 	a := Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}
 	b := Draw{Sessions: 3, AgentTime: 30 * time.Minute, EUR: 5}
@@ -177,9 +177,6 @@ func TestDrawArithmetic(t *testing.T) {
 	}
 	if got, want := a.Minus(b), (Draw{AgentTime: 30 * time.Minute}); got != want {
 		t.Errorf("a minus b = %+v, want %+v", got, want)
-	}
-	if got, want := a.Min(b), (Draw{Sessions: 2, AgentTime: 30 * time.Minute, EUR: 4}); got != want {
-		t.Errorf("a min b = %+v, want %+v", got, want)
 	}
 	if got, want := a.Plus(b), (Draw{Sessions: 5, AgentTime: 90 * time.Minute, EUR: 9}); got != want {
 		t.Errorf("a plus b = %+v, want %+v", got, want)

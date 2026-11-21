@@ -386,7 +386,7 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (wr
 	if d.Event.IdentityKey == "" || !slices.ContainsFunc(s.events, func(e Event) bool { return e.IdentityKey == d.Event.IdentityKey }) {
 		cardDrawn, _ := s.CardDrawn(ctx, taskID)
 		poolDrawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
-		if e := newDrawBound(d.Rung, d.amount(), d.Need, d.CardBound.Minus(cardDrawn), d.Pool.Minus(poolDrawn)); e != nil {
+		if e := newDrawBound(d.Rung, d.amount(), d.Below, d.CardBound.Minus(cardDrawn), d.Pool.Minus(poolDrawn)); e != nil {
 			return false, e
 		}
 	}
