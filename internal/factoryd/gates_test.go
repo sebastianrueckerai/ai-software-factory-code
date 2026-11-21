@@ -4281,15 +4281,15 @@ func TestRedPlainRevertRetryLinksTheSameCard(t *testing.T) {
 
 // The card's line bound, the same rule the worker enforces on the push,
 // refuses a head however the over-bound diff was made: no approval
-// lifts it, findings go back to the agent, and an extend raise lifts it
+// lifts it, findings go back to the agent, and the card's proof lines lift it
 // (fix 1 of the stuck-card faults). A card with no size is bound by the
 // policy's large_lines, as every line-bound check reads it.
 func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
-	run := func(size string, extra, lines int) (PolicyGate, *gateForgejo) {
+	run := func(size string, proofs, lines int) (PolicyGate, *gateForgejo) {
 		fj := &gateForgejo{diff: modDiff("internal/a.go", lines, 0)}
 		task := gateTask
 		task.Size = size
-		task.Usage.ExtraLines = extra
+		task.Usage.ProofLines = proofs
 		r, _, _ := newGateRunner(t, task, fj)
 		val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 		return getInto[PolicyGate](t, val, err), fj
@@ -4306,7 +4306,7 @@ func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
 		t.Fatalf("a small card at its 300-line bound is refused: %q", g.OverBound)
 	}
 	if g, _ := run("small", 30, 320); g.OverBound != "" {
-		t.Fatalf("an extend raise of 30 lines does not lift the refusal: %q", g.OverBound)
+		t.Fatalf("30 proof lines do not lift the bound to 330: %q", g.OverBound)
 	}
 	if g, _ := run("", 0, 320); g.OverBound != "" {
 		t.Fatalf("a card with no size is refused under the large bound: %q", g.OverBound)

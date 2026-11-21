@@ -291,7 +291,7 @@ func TestOpenTripKeepsTheCheckinStopsMark(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
 	rung1Off(g.r)
-	mark := CheckinStopMark{Kind: CheckGoalConflict, Tip: "h2", ExtraLines: 40, RaisedSessions: 1}
+	mark := CheckinStopMark{Kind: CheckGoalConflict, Tip: "h2", RaisedSessions: 1}
 	for _, in := range []TripInput{
 		{TaskID: "t1", Reason: "check-in: goal_conflict: the objective contradicts the review", Extra: map[string]any{FactCheckinMark: CheckinStopMark{Kind: CheckSpend, Tip: "h0"}}},
 		{TaskID: "t1", Reason: "check-in: goal_conflict: the review asks for what the spec forbids", Head: "h2", Extra: map[string]any{FactCheckinMark: mark}},

@@ -113,7 +113,7 @@ func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
 // repeat on c1 as the run that granted it would: the restart produced no
 // new commit.
 func TestARestartAfterACallCapGrantNamesTheUnchangedCommit(t *testing.T) {
-	mark := map[string]any{"Kind": CheckSpend, "Tip": "c1", "ExtraLines": 0, "RaisedSessions": 0}
+	mark := map[string]any{"Kind": CheckSpend, "Tip": "c1", "RaisedSessions": 0}
 	kept := func(status, action string) *CheckinStopMark {
 		c := Case{ID: 4, Status: status, Facts: map[string]any{FactCheckinMark: mark, "checkin_stop": CheckinStopCallCap}}
 		if action != "" {

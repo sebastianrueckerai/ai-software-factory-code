@@ -23,7 +23,7 @@ const (
 	ActRerunChecks   = "rerun_checks"
 	ActWaitChecks    = "wait_checks"   // runs a stopped checks wait again: no session, no agent time
 	ActConfirmAudit  = "confirm_audit" // args: findings, their ids, one per line; note: the reason
-	ActExtend        = "extend"        // args: sessions, agent_time_s, lines
+	ActExtend        = "extend"        // args: sessions, agent_time_s
 	ActFund          = "fund"          // args: eur
 	ActRaiseCeiling  = "raise_ceiling" // args: eur
 	ActSuccessor     = "successor"
@@ -251,9 +251,8 @@ var Actions = []Action{
 	}},
 	{Name: ActExtend, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		d := extendDraw(r.Args)
-		lines, _ := toInt(r.Args["lines"])
 		switch {
-		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0:
+		case d.Sessions < 0 || d.AgentTime < 0:
 			return "an extend takes no part below 0"
 		case f.Final != "":
 			return "this card ended " + f.Final + ": an extend buys nothing, file a new card"
@@ -265,8 +264,8 @@ var Actions = []Action{
 			return "this card waits on the month cap, not a session: reset the month's count in the console's status panel, raise the month cap in policy.yaml by a commit, or wait for the month to turn, then `fund` or `retry`"
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
-		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0:
-			return "an extend needs sessions, agent time or lines above 0"
+		case d.Sessions == 0 && d.AgentTime == 0:
+			return "an extend needs sessions or agent time above 0"
 		case d.AgentTime > MaxExtendMinutes*time.Minute:
 			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
 		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
@@ -277,7 +276,7 @@ var Actions = []Action{
 				}
 				return "up to " + textutil.Plural(minutes, "minute", "minutes")
 			}
-			return fmt.Sprintf("this card stopped for agent time: an extend of its agent time starts the next session, and sessions or lines alone buy none. "+
+			return fmt.Sprintf("this card stopped for agent time: an extend of its agent time starts the next session, and sessions alone buy none. "+
 				"The card's draw leaves %s and the pool %s of agent time, so the check-in may ask for %s, the factory agent for %s and the human for %s",
 				textutil.Plural(card, "minute", "minutes"), textutil.Plural(pool, "minute", "minutes"),
 				upTo(min(card, pool, MaxExtendMinutes)), upTo(min(pool, MaxExtendMinutes)), upTo(MaxExtendMinutes))
@@ -884,14 +883,14 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	case buys && boughtNothing(f):
 		return boughtNothingText(f)
 	}
-	if why := drawWithin(f, rung, d, a.need(f), r.lines(), false); why != "" || budget == 0 {
+	if why := drawWithin(f, rung, d, a.need(f), false); why != "" || budget == 0 {
 		return why
 	}
 	if r.Action == ActRaiseCeiling {
 		raise, _ := r.Args["eur"].(float64)
 		f.CeilingEUR += raise
 	}
-	return drawWithin(f, rung, policy.Draw{EUR: budget}, policy.Draw{}, 0, true)
+	return drawWithin(f, rung, policy.Draw{EUR: budget}, policy.Draw{}, true)
 }
 
 // draw is everything r draws from the pool: an extend's sessions and
@@ -922,23 +921,13 @@ func (r Resolution) drawIsZero() bool {
 	return d.IsZero() && budget == 0
 }
 
-// lines is the line bound an extend r raises its card's by, 0 for any other
-// action.
-func (r Resolution) lines() int {
-	if r.Action != ActExtend {
-		return 0
-	}
-	lines, _ := toInt(r.Args["lines"])
-	return lines
-}
-
 // badDraw reports a draw with a part below 0 or an endless one.
 func badDraw(d policy.Draw) bool {
 	return d.Sessions < 0 || d.AgentTime < 0 || !(d.EUR >= 0) || math.IsInf(d.EUR, 1)
 }
 
 // extendDraw is the draw of an extend's args: its sessions and its agent
-// time in seconds. Its lines ride free.
+// time in seconds.
 func extendDraw(args map[string]any) policy.Draw {
 	sessions, _ := toInt(args["sessions"])
 	seconds, _ := toInt(args["agent_time_s"])
@@ -1119,15 +1108,15 @@ func boughtNothingText(f CaseFacts) string {
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 
-// drawWithin reports why draw d, lines beside it, does not fit rung's
+// drawWithin reports why draw d does not fit rung's
 // bounds on f: the pool for rungs 0 to 2, the card bound for rungs 0 and 1,
 // the ceiling for fund. need is the smallest draw the answer's action
 // takes (Action.need).
-func drawWithin(f CaseFacts, rung int, d, need policy.Draw, lines int, toBudget bool) string {
+func drawWithin(f CaseFacts, rung int, d, need policy.Draw, toBudget bool) string {
 	if rung < 0 || rung > 3 {
 		return fmt.Sprintf("there is no decider %d", rung)
 	}
-	if e := newDrawBound(rung, d, need, lines, f.CardDrawLeft, f.PoolLeft); e != nil {
+	if e := newDrawBound(rung, d, need, f.CardDrawLeft, f.PoolLeft); e != nil {
 		return e.Error()
 	}
 	switch {

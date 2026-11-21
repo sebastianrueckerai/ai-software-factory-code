@@ -44,7 +44,7 @@ func TestFileChildrenCarriesTheRaisesOfTheCardItContinues(t *testing.T) {
 			ui2.Directories = tc.dirs
 			if err := store.CreateTask(ctx, Task{ID: "t-ui", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "t-plan", PlanKey: "ui",
 				Repository: "linkshort/linkshort", IssueNumber: 31, SHA: "b0", Status: "closed", PlanRevision: 1, CeilingEUR: ceiling,
-				Usage: TaskUsage{RaisedSessions: 1, RaisedTime: 30 * time.Minute, ExtraLines: 200}}); err != nil {
+				Usage: TaskUsage{RaisedSessions: 1, RaisedTime: 30 * time.Minute}}); err != nil {
 				t.Fatal(err)
 			}
 			plan := store.tasks["t-plan"]
@@ -66,15 +66,15 @@ func TestFileChildrenCarriesTheRaisesOfTheCardItContinues(t *testing.T) {
 				t.Fatalf("fileChildren = %+v, %v", cards, err)
 			}
 			got := store.tasks[cards[0].ID]
-			wantCeiling, wantSessions, wantTime, wantLines := 0.0, 0, time.Duration(0), 0
+			wantCeiling, wantSessions, wantTime := 0.0, 0, time.Duration(0)
 			if tc.inherit {
-				wantSessions, wantTime, wantLines = 1, 30*time.Minute, 200
+				wantSessions, wantTime = 1, 30*time.Minute
 				if ceiling > 5 {
 					wantCeiling = ceiling
 				}
 			}
-			if got.Usage.RaisedSessions != wantSessions || got.Usage.RaisedTime != wantTime || got.Usage.ExtraLines != wantLines || got.CeilingEUR != wantCeiling {
-				t.Errorf("new card %+v, ceiling %.2f; want %d sessions, %v, %d lines, ceiling %.2f", got.Usage, got.CeilingEUR, wantSessions, wantTime, wantLines, wantCeiling)
+			if got.Usage.RaisedSessions != wantSessions || got.Usage.RaisedTime != wantTime || got.CeilingEUR != wantCeiling {
+				t.Errorf("new card %+v, ceiling %.2f; want %d sessions, %v, ceiling %.2f", got.Usage, got.CeilingEUR, wantSessions, wantTime, wantCeiling)
 			}
 			var rows []Event
 			for _, e := range store.events {
@@ -99,9 +99,9 @@ func TestFileChildrenCarriesTheRaisesOfTheCardItContinues(t *testing.T) {
 // not a fresh extension of 0.00 EUR.
 func TestDigestNamesAnInheritedRaise(t *testing.T) {
 	e := Event{Kind: EventCardExtended, Actor: FactoryDecider, Detail: map[string]any{"inherited_from": "t-ui", "inherited_issue": int64(31), "pool": false,
-		"sessions": 1, "agent_time_s": int64(1800), "lines": 200, "amount_eur": 0.0, "ceiling_eur": 9.0}}
+		"sessions": 1, "agent_time_s": int64(1800), "amount_eur": 0.0, "ceiling_eur": 9.0}}
 	steps := eventSteps(redact.New(), Task{}, []Event{e}, nil, nil)
-	want := "inherited from #31: 1 session, 30 minutes of agent time, 200 lines, ceiling 9.00 EUR"
+	want := "inherited from #31: 1 session, 30 minutes of agent time, ceiling 9.00 EUR"
 	if len(steps) != 1 || steps[0].Kind != "extended" || steps[0].Outcome != want {
 		t.Fatalf("steps %+v, want one extended step %q", steps, want)
 	}

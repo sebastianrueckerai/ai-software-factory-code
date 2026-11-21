@@ -434,7 +434,7 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 		}, nil},
 		{"a budget a fund and an extend moved", func(c *Task) { c.BudgetEUR = 7.5 }, func(t *testing.T, g digestRig) {
 			g.event(5, EventCardFunded, "sebastian", map[string]any{"amount_eur": 2.0})
-			g.event(6, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "lines": 0, "amount_eur": 0.5})
+			g.event(6, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "amount_eur": 0.5})
 		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -493,13 +493,13 @@ func TestCardDigestWithoutATimelineRendersTheEventsAlone(t *testing.T) {
 func TestCardDigestReadsTheCeilingAndTheAgentTime(t *testing.T) {
 	g := newDigestRig(func(c *Task) { c.BudgetEUR = 5.5 })
 	g.event(1, EventCardFunded, "sebastian", map[string]any{"ceiling_eur": 9.0, "amount_eur": 0.0, "from_eur": 5.0, "to_eur": 5.0})
-	g.event(2, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "agent_time_s": 1800, "lines": 0, "amount_eur": 0.0})
-	g.event(3, EventCardExtended, "sebastian", map[string]any{"sessions": 2, "agent_time_s": 0, "lines": 100, "amount_eur": 0.5})
+	g.event(2, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "agent_time_s": 1800, "amount_eur": 0.0})
+	g.event(3, EventCardExtended, "sebastian", map[string]any{"sessions": 2, "agent_time_s": 0, "amount_eur": 0.5})
 	want := "#1410 · budget 5.50 spent 0.00 holds 0.00 EUR · slot held · running\n" +
 		"   1 +0:00   filed by webhook       → direct card\n" +
 		"   2 +0:01   ceiling by sebastian   → raised to 9.00 EUR\n" +
-		"   3 +0:02   extended by sebastian  → 1 session, 30 minutes of agent time, 0 lines, 0.00 EUR\n" +
-		"   4 +0:03   extended by sebastian  → 2 sessions, 100 lines, 0.50 EUR\n" +
+		"   3 +0:02   extended by sebastian  → 1 session, 30 minutes of agent time, 0.00 EUR\n" +
+		"   4 +0:03   extended by sebastian  → 2 sessions, 0.50 EUR\n" +
 		"flags: none\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
@@ -532,7 +532,7 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 	g.event(3, EventTaskStatus, FactoryDecider, map[string]any{"status": "running", "gate": GateSession})
 	g.event(4, EventTaskStatus, FactoryDecider, map[string]any{"status": "running", "gate": GateChecks})
 	g.event(5, EventCardFunded, "sebastian", map[string]any{"amount_eur": 1.0})
-	g.event(6, EventCardExtended, "sebastian", map[string]any{"sessions": 2, "lines": 100, "amount_eur": 0.5})
+	g.event(6, EventCardExtended, "sebastian", map[string]any{"sessions": 2, "amount_eur": 0.5})
 	g.line(t, 7, "checks", map[string]any{"commit": "f00dfeed1234", "state": "failure", "findings": []string{"vet: x unused"}})
 	g.line(t, 8, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings,
 		"findings": []AuditFinding{{Item: "Token in a log line", Why: "leaks"}}})
@@ -558,7 +558,7 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 		"   3 +0:02   status                 → queued, intake\n" +
 		"   4 +0:03   status                 → running, session\n" +
 		"   5 +0:05   funded by sebastian    → 1.00 EUR\n" +
-		"   6 +0:06   extended by sebastian  → 2 sessions, 100 lines, 0.50 EUR\n" +
+		"   6 +0:06   extended by sebastian  → 2 sessions, 0.50 EUR\n" +
 		"   7 +0:07   checks                 → failure at f00dfee, findings 4285c299662c\n" +
 		"   8 +0:08   audit                  → findings d095c64ba7a3\n" +
 		"   9 +0:09   handover               → Fix the vet finding first.\n" +
@@ -585,7 +585,7 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 		{Text: "Status: queued, intake."},
 		{Text: "Status: running, session."},
 		{Text: "Money added by sebastian: 1.00 EUR."},
-		{Text: "More allowed by sebastian: 2 sessions, 100 lines, 0.50 EUR."},
+		{Text: "More allowed by sebastian: 2 sessions, 0.50 EUR."},
 		{Text: "The checks: failure, 1 finding."},
 		{Text: "The security audit: 1 finding."},
 		{Text: "Handed over:", Quote: "Fix the vet finding first."},

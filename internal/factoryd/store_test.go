@@ -309,10 +309,10 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float6
 	return from, t.BudgetEUR, err
 }
 
-// extendCard raises task id's caps by d and lines and records e with the
+// extendCard raises task id's caps by d and records e with the
 // raise in its detail, as PGStore's drawCase does: d's sessions and agent
 // time in the row alone when the run grants them (runGrants).
-func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines int, runGrants bool, e Event) (from, to float64, err error) {
+func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, runGrants bool, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
@@ -322,7 +322,6 @@ func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, li
 		t.Usage.RaisedSessions += d.Sessions
 		t.Usage.RaisedTime += d.AgentTime
 	}
-	t.Usage.ExtraLines += lines
 	s.tasks[id] = t
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
@@ -383,7 +382,7 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (wr
 	if d.Event.IdentityKey == "" || !slices.ContainsFunc(s.events, func(e Event) bool { return e.IdentityKey == d.Event.IdentityKey }) {
 		cardDrawn, _ := s.CardDrawn(ctx, taskID)
 		poolDrawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
-		if e := newDrawBound(d.Rung, d.amount(), d.Need, d.Lines, d.CardBound.Minus(cardDrawn), d.Pool.Minus(poolDrawn)); e != nil {
+		if e := newDrawBound(d.Rung, d.amount(), d.Need, d.CardBound.Minus(cardDrawn), d.Pool.Minus(poolDrawn)); e != nil {
 			return false, e
 		}
 	}
@@ -403,8 +402,8 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (wr
 			return false, err
 		}
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 {
-		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.RunGrants, extend); err != nil {
+	if !d.Extend.IsZero() {
+		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.RunGrants, extend); err != nil {
 			return false, err
 		}
 	}
@@ -1533,7 +1532,7 @@ func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	t.Usage = TaskUsage{ExtraLines: t.Usage.ExtraLines}
+	t.Usage = TaskUsage{}
 	s.tasks[id] = t
 	return nil
 }
@@ -1545,7 +1544,7 @@ func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) er
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
+	u.RaisedSessions, u.RaisedTime, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ProofLines
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -3341,7 +3340,7 @@ func TestPGStore(t *testing.T) {
 	}
 	// the console's Extend raises columns the workflow's snapshot leaves:
 	// a snapshot written after the raise, holding none of it, keeps it
-	if _, err := s.DrawCard(ctx, "t1", CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1}, Lines: 150,
+	if _, err := s.DrawCard(ctx, "t1", CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1},
 		Event: Event{Repository: "sf/code", TaskID: "t1", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -3349,7 +3348,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	raised := usage
-	raised.RaisedSessions, raised.ExtraLines = 1, 150
+	raised.RaisedSessions = 1
 	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.SessionsAdded() != 2 {
 		t.Fatalf("usage after the raise and a snapshot = %+v, want %+v: the snapshot keeps the raise", got.Usage, raised)
 	}
@@ -3364,8 +3363,8 @@ func TestPGStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	raised.ProofLines = 300
-	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.LinesAdded() != 450 {
-		t.Fatalf("usage after the proof lines and a snapshot = %+v, want %+v and 450 lines added", got.Usage, raised)
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised {
+		t.Fatalf("usage after the proof lines and a snapshot = %+v, want %+v", got.Usage, raised)
 	}
 	if err := s.SetTaskProofLines(ctx, "nope", 300); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskProofLines unknown task = %v, want ErrNotFound", err)
@@ -3373,8 +3372,8 @@ func TestPGStore(t *testing.T) {
 	if err := s.ResetTaskUsage(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{ExtraLines: 150}) {
-		t.Fatalf("usage after the reset = %+v, want every counter zero but the line raise of 150", got.Usage)
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{}) {
+		t.Fatalf("usage after the reset = %+v, want every counter zero", got.Usage)
 	}
 	// t1 holds 10 EUR: a write that read 1000 cents sets the budget, one
 	// that read 200 sets the size and leaves it

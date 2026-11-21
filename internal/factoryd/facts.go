@@ -18,7 +18,7 @@ type SessionFacts struct {
 	Attempt, Sessions   int
 	Size                string    // the card's size; "" for an unsized card
 	LargeLines          int       // the policy's risk.large_lines
-	Usage               TaskUsage // the card's usage, whose added lines raise the bound
+	Usage               TaskUsage // the card's usage, whose proof lines raise the bound
 	Carries             int64     // the pull request a carry card carries, 0 for none
 }
 

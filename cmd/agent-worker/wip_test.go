@@ -76,7 +76,7 @@ func seedWipSession(t *testing.T) (h http.Handler, wip *wipServe, dir string, e 
 	}
 	wip = newWipServe(e, dir, base, mainHead, nolog)
 	h = messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil },
-		newCheckinServe(t.TempDir(), nolog), wip, nil)
+		newCheckinServe(t.TempDir(), nolog), wip)
 	return h, wip, dir, e, base, mainHead, pushURL, holder
 }
 
@@ -213,7 +213,7 @@ func TestWipShipsMainsContentAnAgentResetBehindTheStart(t *testing.T) {
 			dir, e, s, m1 := seedResetBehindTheStart(t, "factory/t-wip", func(dir string) { write(dir, "own.txt", "own\n") }, tc.main)
 			write(dir, "own.txt", "own\n"+tc.more)
 			h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil },
-				newCheckinServe(t.TempDir(), nolog), newWipServe(e, dir, s, m1, nolog), nil)
+				newCheckinServe(t.TempDir(), nolog), newWipServe(e, dir, s, m1, nolog))
 
 			code, commit, body := postWip(t, h)
 			if code != tc.code {

@@ -4828,7 +4828,7 @@ func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
 				return h.rowUsage, nil
 			}
 			raised := h.rowUsage
-			raised.ExtraLines = 500
+			raised.RaisedSessions = 1
 			return raised, nil
 		})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
@@ -4867,7 +4867,7 @@ func TestRaiseDuringASessionReachesTheCapCheck(t *testing.T) {
 		func(ctx context.Context, taskID string) (TaskUsage, error) {
 			row := h.rowUsage
 			if len(h.sessions) >= 3 {
-				row.RaisedSessions, row.ExtraLines = 1, 150
+				row.RaisedSessions = 1
 			}
 			return row, nil
 		})

@@ -551,8 +551,7 @@ func successorMarker(id string) string {
 // session starts at that head and its clone holds the work: an interim
 // commit the line bound refused, or work the old card took on through its
 // from. An old card with no branch leaves it to start from main's tip. A
-// successor that carries work, a pull request or a branch, keeps the old
-// card's line raise. The row lands first, with the old card's dependencies
+// successor's row lands first, with the old card's dependencies
 // and its dependents, and its issue after, so a filing that stops part way
 // runs again to the same one card: the row's identity holds the card and
 // the marker holds the issue.
@@ -592,9 +591,6 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		t.Process = old.Process
 		if head != "" {
 			t.SHA = old.SHA
-		}
-		if pr > 0 || head != "" {
-			t.Usage.ExtraLines = old.Usage.ExtraLines
 		}
 		if err := r.store.CreateSuccessor(ctx, old.ID, t); err != nil {
 			return "", err
@@ -1119,7 +1115,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("opened proofs", err)
 	}
 	// the proofs are new files of the card's pull request: their lines
-	// raise the card's line bound, set again by every session
+	// add to the card's line bound, set again by every session
 	lines := 0
 	for _, pp := range opened {
 		s.proofs = append(s.proofs, harness.ProofFile{Path: pp.Path, Content: pp.Code})

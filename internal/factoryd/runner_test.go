@@ -4096,7 +4096,7 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
-	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour, 1000), spendSupervisor(t, nil))
+	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour), spendSupervisor(t, nil))
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
@@ -4105,124 +4105,6 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	}
 	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "this session spent 4.90 EUR of the 5.00 EUR the card had left at its start (98 percent, the line is 60) and no work is pushed" {
 		t.Fatalf("trip = %+v, want the no-push trip at 4.90 of 5.00", trip)
-	}
-}
-
-// An extend's line raise reaches the running session at the next read of
-// the card's row: a medium card under large_lines 1000 plans 600 lines,
-// the bound its pod started with, and a raise of 600 between two ticks
-// hands the worker's push rule 600 + 600 = 1200 on POST /bound, lifts the
-// size detector to 1200, and tells the agent the new bound once, the added
-// time and session from the next session. A watch whose pod started at 600
-// while the row already holds the raise, as after a restart, hands the
-// worker 1200 on its first tick.
-func TestRaiseReachesTheRunningSession(t *testing.T) {
-	kube := newFakeKube()
-	runner, _, store := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base",
-		BudgetEUR: 5, Track: "direct", Size: "medium"}, kube, &fakeObjectStore{})
-	ctx := context.Background()
-	s := sessionSpec{id: "s1", attempt: 1, sessions: 3, messageToken: "tok", policy: policy.Document{Risk: policy.Risk{LargeLines: 1000}}}
-	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
-	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
-	worker.start(t, runner)
-	start := store.tasks["t1"]
-	watch := newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour, 600)
-	sup := spendSupervisor(t, func(c *SupervisorConfig) { c.SizeLines = 600 })
-	tick := func() {
-		t.Helper()
-		if trip := runner.watchLimits(ctx, start, s, "ns", "pod", watch, sup); trip != nil {
-			t.Fatalf("trip = %+v, want none", trip)
-		}
-	}
-	tick()
-	worker.mu.Lock()
-	early := slices.Clone(worker.texts)
-	worker.mu.Unlock()
-	if len(early) != 0 {
-		t.Fatalf("worker got %q before any raise, want nothing", early)
-	}
-	tk := store.tasks["t1"]
-	tk.Usage.ExtraLines = 600
-	store.tasks["t1"] = tk
-	tick()
-	tick()
-	worker.mu.Lock()
-	texts, bounds := slices.Clone(worker.texts), slices.Clone(worker.bounds)
-	worker.mu.Unlock()
-	if len(texts) != 2 || texts[0] != "POST /bound " || !slices.Equal(bounds, []string{`{"lines":1200}`}) {
-		t.Fatalf("worker got %q with bounds %q, want one POST /bound of 1200 and one message", texts, bounds)
-	}
-	if !strings.HasPrefix(texts[1], "POST /message ") || !strings.Contains(texts[1], "1200 changed lines") || !strings.Contains(texts[1], "from the next session") {
-		t.Fatalf("message = %q, want the new bound of 1200 and the added time and session from the next session", texts[1])
-	}
-	if sup.cfg.SizeLines != 1200 {
-		t.Fatalf("the size detector's bound = %d, want 1200", sup.cfg.SizeLines)
-	}
-
-	worker.mu.Lock()
-	worker.texts, worker.bounds = nil, nil
-	worker.mu.Unlock()
-	restarted := store.tasks["t1"]
-	if trip := runner.watchLimits(ctx, restarted, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour, 600), spendSupervisor(t, nil)); trip != nil {
-		t.Fatalf("trip = %+v, want none", trip)
-	}
-	worker.mu.Lock()
-	bounds = slices.Clone(worker.bounds)
-	worker.mu.Unlock()
-	if !slices.Equal(bounds, []string{`{"lines":1200}`}) {
-		t.Fatalf("the first tick of a watch from 600 on a row raised to 1200 posted %q, want one POST /bound of 1200", bounds)
-	}
-}
-
-// A raise that lands while factoryd is down reaches the session it
-// reattaches to: the watch starts from the LINE_BOUND the pod holds, 1000
-// for an unsized card under no large_lines, not from the row the retry
-// reads, which already holds the raise of 600, so its first tick hands the
-// worker 1000 + 600 = 1600.
-func TestRaiseDuringARestartReachesTheReattachedSession(t *testing.T) {
-	kube := newFakeKube()
-	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
-	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 60})
-	endpoint := &fakeWorkerEndpoint{status: http.StatusNoContent}
-	endpoint.start(t, runner)
-	stop := make(chan struct{})
-	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
-	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
-		env.SetWorkerStopChannel(stop)
-	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
-		t.Fatalf("err = %v, want the detach", err)
-	}
-	if got := podEnv(kube.podAt(0))["LINE_BOUND"]; got != "1000" {
-		t.Fatalf("the pod's LINE_BOUND = %q, want 1000", got)
-	}
-	first := store.liveSessions["t2"]
-	tk := store.tasks["t2"]
-	tk.Usage.ExtraLines = 600
-	store.tasks["t2"] = tk
-	runner.tick = 20 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		defer cancel()
-		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-			endpoint.mu.Lock()
-			n := len(endpoint.bounds)
-			endpoint.mu.Unlock()
-			if n > 0 {
-				time.Sleep(100 * time.Millisecond) // five further ticks: no second post
-				return
-			}
-		}
-	}()
-	runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
-		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
-		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true})
-	})
-	endpoint.mu.Lock()
-	bounds := slices.Clone(endpoint.bounds)
-	endpoint.mu.Unlock()
-	if !slices.Equal(bounds, []string{`{"lines":1600}`}) {
-		t.Fatalf("the reattached session's worker got bounds %q, want one POST /bound of 1600", bounds)
 	}
 }
 
@@ -6005,12 +5887,12 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 }
 
 // A raise that lands during the check-in reaches its answer: the first
-// answer hands up on the pace it was built with, a medium card's 600 lines
-// under large_lines 1000 at session 3 of 3, while an extend raised the
-// card's row by 600 lines and one session, and the first run spent 0.35
-// EUR of the project's judgment budget of 10. The check-in reads the row
-// before it acts, judges again on 600 + 600 = 1200 lines, 3 + 1 = 4
-// sessions and 10 - 0.35 = 9.65 EUR of judgment budget read again, and the
+// answer hands up on the pace it was built with, session 3 of 3 of a
+// medium card under large_lines 1000, while an extend raised the card's
+// row by one session, and the first run spent 0.35 EUR of the project's
+// judgment budget of 10. The check-in reads the row before it acts, judges
+// again on 3 + 1 = 4 sessions and 10 - 0.35 = 9.65 EUR of judgment budget
+// read again, with the line bound of 600 unchanged, and the
 // first answer opens no case: the session runs on, and the record holds
 // both runs' calls.
 func TestCheckinReadsTheRaiseBeforeItHandsUp(t *testing.T) {
@@ -6027,7 +5909,6 @@ func TestCheckinReadsTheRaiseBeforeItHandsUp(t *testing.T) {
 		chat.onCall = func() {
 			if chat.calls == 1 {
 				tk := store.tasks["t2"]
-				tk.Usage.ExtraLines += 600
 				tk.Usage.RaisedSessions++
 				store.tasks["t2"] = tk
 				store.chatSpent = 0.35
@@ -6042,7 +5923,7 @@ func TestCheckinReadsTheRaiseBeforeItHandsUp(t *testing.T) {
 		}
 		for i, want := range [][]string{
 			{"796 changed lines so far against its bound of 600;", "session 3 of 3.", "10.00 EUR left in the project's judgment budget this month"},
-			{"796 changed lines so far against its bound of 1200;", "session 3 of 4.", "9.65 EUR left in the project's judgment budget this month"},
+			{"796 changed lines so far against its bound of 600;", "session 3 of 4.", "9.65 EUR left in the project's judgment budget this month"},
 		} {
 			for _, w := range want {
 				if !strings.Contains(chat.gots[i].Input, w) {
@@ -6076,7 +5957,7 @@ func TestCheckinReadsTheRaiseBeforeItHandsUp(t *testing.T) {
 }
 
 // The worker pod carries the card's line bound as LINE_BOUND: the size's
-// plan plus the raises its extend answers added — the same effective
+// plan plus its proofs' lines — the same effective
 // number the gate and the supervisor read. An unsized card is bound by
 // the policy's large_lines, like every line-bound check.
 func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
@@ -6092,8 +5973,8 @@ func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
 	if got := pod(Task{ID: "t1", Size: "small"})["LINE_BOUND"]; got != "120" {
 		t.Fatalf("LINE_BOUND = %q for a small card under large_lines 400, want 120", got)
 	}
-	if got := pod(Task{ID: "t1", Size: "small", Usage: TaskUsage{ExtraLines: 30}})["LINE_BOUND"]; got != "150" {
-		t.Fatalf("LINE_BOUND = %q for a small card raised by 30, want 150", got)
+	if got := pod(Task{ID: "t1", Size: "small", Usage: TaskUsage{ProofLines: 30}})["LINE_BOUND"]; got != "150" {
+		t.Fatalf("LINE_BOUND = %q for a small card with 30 proof lines, want 150", got)
 	}
 	if got := pod(Task{ID: "t1"})["LINE_BOUND"]; got != "400" {
 		t.Fatalf("LINE_BOUND = %q for a card with no size under large_lines 400, want 400", got)

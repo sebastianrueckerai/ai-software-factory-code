@@ -463,52 +463,6 @@ func TestSuccessorFilesOneCard(t *testing.T) {
 	}
 }
 
-// A successor that carries the old card's work, its pull request or its
-// branch, keeps the old card's line raise, as a plan card that goes on
-// from another does, and one card_extended row names where the raise came
-// from. A successor that carries nothing starts at its size's bound.
-func TestSuccessorCarriesTheLineRaise(t *testing.T) {
-	for name, tc := range map[string]struct {
-		pr     int64
-		branch bool
-		lines  int
-	}{"a pull request": {7, false, 600}, "a branch": {0, true, 600}, "no work": {0, false, 0}} {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			r, store, _, fj, _ := newRetryRig(t)
-			if !tc.branch {
-				delete(fj.branches, "factory/t-a")
-			}
-			a := store.tasks["t-a"]
-			a.PRNumber, a.Usage.ExtraLines = tc.pr, 600
-			store.tasks["t-a"] = a
-			id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", Findings: "\n- one finding"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := store.tasks[id].Usage.ExtraLines; got != tc.lines {
-				t.Fatalf("the successor's line raise = %d, want %d", got, tc.lines)
-			}
-			var rows []Event
-			for _, e := range store.events {
-				if e.Kind == EventCardExtended && e.TaskID == id {
-					rows = append(rows, e)
-				}
-			}
-			if tc.lines == 0 {
-				if len(rows) != 0 {
-					t.Fatalf("card_extended rows %+v, want none", rows)
-				}
-				return
-			}
-			if len(rows) != 1 || rows[0].Detail["inherited_from"] != "t-a" || rows[0].Detail["inherited_issue"] != int64(5) ||
-				rows[0].Detail["lines"] != 600 || rows[0].Detail["pool"] != false {
-				t.Fatalf("card_extended rows %+v, want one of 600 lines inherited from t-a (#5), pool false", rows)
-			}
-		})
-	}
-}
-
 // A successor takes over the stuck card's edges: it waits on what the old
 // card waited on, and the card that waited on the old card waits on the
 // successor, so the old card's failed end leaves it waiting with no failed

@@ -734,8 +734,7 @@ func (e ErrCaseEnded) Error() string {
 
 // CaseDraw is what an answer on Rung draws beside its resolution: a raise
 // of the card's ceiling by Raise (0 for none), then Extend's sessions and
-// agent time with Lines, which draws nothing
-// from the pool, then FundEUR into the budget, which the card's
+// agent time, then FundEUR into the budget, which the card's
 // ceiling bounds, else PolicyCeiling. CardBound and Pool are the card's
 // draw bound, which rungs 0 and 1 draw within, and the project's month of
 // draws, which rungs 0 to 2 draw within. Need is the smallest draw the
@@ -748,7 +747,6 @@ type CaseDraw struct {
 	Rung          int
 	Raise         float64
 	Extend        policy.Draw
-	Lines         int
 	FundEUR       float64
 	PolicyCeiling float64
 	CardBound     policy.Draw
@@ -869,8 +867,8 @@ func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 		}
 		wrote(stored)
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 {
-		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.RunGrants, extend)
+	if !d.Extend.IsZero() {
+		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.RunGrants, extend)
 		if err != nil {
 			return nil, err
 		}

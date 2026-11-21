@@ -19,7 +19,7 @@ func TestCreatePlanCardStoresInheritedRaises(t *testing.T) {
 	}
 	raised, plain := base, base
 	raised.ID, raised.PlanKey, raised.CeilingEUR = "c1", "a", 9
-	raised.Usage = TaskUsage{RaisedSessions: 1, RaisedTime: 30 * time.Minute, ExtraLines: 200}
+	raised.Usage = TaskUsage{RaisedSessions: 1, RaisedTime: 30 * time.Minute}
 	plain.ID, plain.PlanKey = "c2", "b"
 	for _, c := range []Task{raised, plain} {
 		if _, err := s.CreatePlanCard(ctx, c); err != nil {
@@ -27,7 +27,7 @@ func TestCreatePlanCardStoresInheritedRaises(t *testing.T) {
 		}
 	}
 	got, _, _ := s.Task(ctx, "c1")
-	if got.Usage.RaisedSessions != 1 || got.Usage.RaisedTime != 30*time.Minute || got.Usage.ExtraLines != 200 || got.CeilingEUR != 9 {
+	if got.Usage.RaisedSessions != 1 || got.Usage.RaisedTime != 30*time.Minute || got.CeilingEUR != 9 {
 		t.Errorf("c1 %+v ceiling %.2f", got.Usage, got.CeilingEUR)
 	}
 	got, _, _ = s.Task(ctx, "c2")

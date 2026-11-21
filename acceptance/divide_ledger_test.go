@@ -110,7 +110,7 @@ func TestDivideConquerLedgerIntegrity(t *testing.T) {
 	t.Run("gate readings keep their snapshot", func(t *testing.T) {
 		s, db := divideStore(t)
 		accCard(t, s, "t-gate-1", "sf/code", "small", "head-a", 72)
-		if _, err := db.Exec(`UPDATE tasks SET extra_lines = 10 WHERE id = 't-gate-1'`); err != nil {
+		if _, err := db.Exec(`UPDATE tasks SET proof_lines = 10 WHERE id = 't-gate-1'`); err != nil {
 			t.Fatal(err)
 		}
 		r := newLedgerRunner(t, &accLedger{PGStore: s}, "", "", accKube{})

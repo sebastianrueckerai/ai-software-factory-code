@@ -1484,15 +1484,14 @@ func (r *Runner) closeEnded(ctx context.Context, t Task, in ActInput, posted boo
 }
 
 // caseDraw is what in draws for card t on facts f, nil for nothing: a raise
-// of the ceiling, an extend's sessions, agent time and lines, and the
+// of the ceiling, an extend's sessions and agent time, and the
 // money for the budget, with the card's draw bound and the pool its rung
 // draws within. Its rows are
 // pool draws of in's rung for case c, with the head, the checks and, when
 // the timeline was read, the findings they were weighed on (boughtNothing).
 func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) *CaseDraw {
 	d, budget := in.Res.draw()
-	lines := in.Res.lines()
-	if d.IsZero() && lines <= 0 {
+	if d.IsZero() {
 		return nil
 	}
 	v := r.cfg.Policy()
@@ -1510,8 +1509,6 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	switch in.Res.Action {
 	case ActRaiseCeiling:
 		draw.Raise, _ = in.Res.Args["eur"].(float64)
-	case ActExtend:
-		draw.Lines = lines
 	}
 	return draw
 }
@@ -1604,26 +1601,21 @@ func drawActions(res Resolution, d CaseDraw) []CaseAction {
 	switch {
 	case res.Action == ActRaiseCeiling:
 		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the ceiling by %s EUR.", textutil.EUR(d.Raise))})
-	case !own.IsZero() || d.Lines > 0:
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Added " + raisedWords(own, d.Lines) + "."})
+	case !own.IsZero():
+		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Added " + raisedWords(own) + "."})
 	}
 	if res.Fund != nil && !res.Fund.IsZero() {
-		out = append(out, CaseAction{Action: ActFund, Result: "Added " + raisedWords(*res.Fund, 0) + "."})
+		out = append(out, CaseAction{Action: ActFund, Result: "Added " + raisedWords(*res.Fund) + "."})
 	}
 	return out
 }
 
-// raisedWords says every part an answer raises: draw d from the pool,
-// lines on the line bound.
-func raisedWords(d policy.Draw, lines int) string {
-	var parts []string
-	if !d.IsZero() {
-		parts = append(parts, drawWords(d)+" from the pool")
+// raisedWords says what an answer raises: draw d from the pool.
+func raisedWords(d policy.Draw) string {
+	if d.IsZero() {
+		return ""
 	}
-	if lines > 0 {
-		parts = append(parts, textutil.Plural(lines, "line", "lines")+" to its line bound")
-	}
-	return textutil.AndList(parts)
+	return drawWords(d) + " from the pool"
 }
 
 // drawWords says the parts of d that are not zero: "1 session and 1.00
@@ -1645,7 +1637,7 @@ func drawWords(d policy.Draw) string {
 // Sentence says r in a few words: its action and every part it raises.
 func (r Resolution) Sentence() string {
 	d, _ := r.draw()
-	if said := raisedWords(d, r.lines()); said != "" {
+	if said := raisedWords(d); said != "" {
 		return AnswerWords(r.Action) + ": " + said
 	}
 	return AnswerWords(r.Action)

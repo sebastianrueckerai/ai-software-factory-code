@@ -259,11 +259,6 @@ type TaskUsage struct {
 	// when its agent time ran short; non-zero once
 	// granted
 	RetryTime time.Duration
-	// ExtraLines is the line-bound raise the console's Extend added: the
-	// effective bound every line-bound check reads is the size's plan
-	// plus this. The console alone writes it; the workflow's snapshot
-	// (SetTaskUsage) leaves it, so a raise on a running card stands.
-	ExtraLines int
 	// RaisedSessions are the sessions the console's Extend added, beside
 	// the ExtraAttempts the workflow's own grants count: the console alone
 	// writes them, the workflow reads them at each cap check (readRaise).
@@ -280,10 +275,6 @@ type TaskUsage struct {
 // SessionsAdded is every session added to the policy's cap: the grants
 // the workflow's answers bought and the raises the console's Extend made.
 func (u TaskUsage) SessionsAdded() int { return u.ExtraAttempts + u.RaisedSessions }
-
-// LinesAdded is every line added to the bound the card's size plans: the
-// raises the console's Extend made and the opened proofs' lines.
-func (u TaskUsage) LinesAdded() int { return u.ExtraLines + u.ProofLines }
 
 // TimeAdded is every agent time added to the policy's cap: the answers'
 // grants, the planner's retry and the extends.
@@ -1260,20 +1251,20 @@ func InsertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur,
+		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, ceiling_eur,
 		                    why, summary, brief_unchecked, chat_filed, tool_image, plan_revision)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
-         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0),
-         $37, $38, $39, $40, NULLIF($41, ''), $42)
+         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, NULLIF($35::numeric, 0),
+         $36, $37, $38, $39, NULLIF($40, ''), $41)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem,
-		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR,
+		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.CeilingEUR,
 		t.Why, t.Summary, t.BriefUnchecked, t.ChatFiled, t.ToolImage, t.PlanRevision)
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
@@ -1464,7 +1455,7 @@ const heldEURSQL = "(SELECT round(COALESCE(sum(eur), 0), 6)::float8 FROM holds W
 
 const taskColumns = `id, priority, required_capabilities, risk_class, round(budget_eur, 6)::float8, round(spent_eur, 6)::float8, ` + heldEURSQL + `, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, last_uncounted, repro_command, extra_lines, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, last_uncounted, repro_command, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	why, summary, brief_unchecked, chat_filed, COALESCE(tool_image, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
@@ -1482,7 +1473,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var holdAt *time.Time
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.Why, &t.Summary, &t.BriefUnchecked, &t.ChatFiled, &t.ToolImage, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
@@ -1811,7 +1802,7 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 }
 
 // SetTaskUsage overwrites task id's usage counters with the snapshot u,
-// the workflow's own: the console's raises (ExtraLines, RaisedSessions,
+// the workflow's own: the console's raises (RaisedSessions,
 // RaisedTime) and the proof lines it leaves as they stand. RunSession's
 // RecordUsage writes it. oneRow answers ErrNotFound for an unknown task.
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
@@ -1823,8 +1814,7 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 
 // ResetTaskUsage zeroes every usage counter of task id and the console's
 // raised sessions and agent time: BecomePlan and a replan's reopen start
-// the card over. The line raise stays: a planner pushes nothing, and the
-// card that lands the plan row's work inherits it.
+// the card over.
 func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
 		last_uncounted = false, retry_time_ns = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
@@ -2174,11 +2164,11 @@ func (s *PGStore) fundCard(ctx context.Context, tx *sql.Tx, id string, eur, ceil
 }
 
 // extendCard raises task id's caps by d (its sessions, its agent time
-// and its budget) and its line bound by lines, and writes e, its card_extended row, inside tx, which
+// and its budget) and writes e, its card_extended row, inside tx, which
 // the caller commits before it publishes stored. With runGrants the row
 // records d's sessions and agent time, which the card's run grants
 // itself, and the caps take neither. No task: ErrNotFound.
-func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, lines int, runGrants bool, e Event) (from, to float64, stored Event, err error) {
+func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, runGrants bool, e Event) (from, to float64, stored Event, err error) {
 	seconds := int64(d.AgentTime / time.Second)
 	sessions, raised := d.Sessions, seconds
 	if runGrants {
@@ -2186,10 +2176,10 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 	}
 	err = tx.QueryRowContext(ctx,
 		`UPDATE tasks SET raised_sessions = raised_sessions + $2, raised_time_s = raised_time_s + $3,
-			   extra_lines = extra_lines + $4, budget_eur = budget_eur + $5
+			   budget_eur = budget_eur + $4
 		 WHERE id = $1
-		 RETURNING (budget_eur - $5::numeric)::float8, budget_eur::float8`,
-		id, sessions, raised, lines, d.EUR).Scan(&from, &to)
+		 RETURNING (budget_eur - $4::numeric)::float8, budget_eur::float8`,
+		id, sessions, raised, d.EUR).Scan(&from, &to)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, Event{}, ErrNotFound
 	}
@@ -2198,7 +2188,7 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 	}
 	detail := map[string]any{}
 	maps.Copy(detail, e.Detail)
-	detail["sessions"], detail["agent_time_s"], detail["lines"] = d.Sessions, seconds, lines
+	detail["sessions"], detail["agent_time_s"] = d.Sessions, seconds
 	detail["amount_eur"], detail["from_eur"], detail["to_eur"] = d.EUR, from, to
 	e.Detail = detail
 	if stored, _, err = s.insertEvent(ctx, tx, e); err != nil {
@@ -2253,26 +2243,24 @@ func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (bool
 // the draw met it, and the largest part of Want every bound of the rung
 // leaves room for (Fit). Least is the smallest draw the answer's action
 // takes when it fits those bounds, so the action stays on offer; while it
-// does not, nothing is a fit. Lines are the lines asked beside the draw,
-// which no bound weighs.
+// does not, nothing is a fit.
 type DrawBoundError struct {
 	Card                   bool
 	Want, Left, Fit, Least policy.Draw
-	Lines                  int
 }
 
-// newDrawBound is the refusal of draw want, lines beside it, on rung:
+// newDrawBound is the refusal of draw want on rung:
 // against cardLeft on rungs 0 and 1 first, then against poolLeft on rungs
 // 0 to 2. need is the smallest draw the answer's action takes (its probe's,
 // Action.need), zero for none. nil when want fits.
-func newDrawBound(rung int, want, need policy.Draw, lines int, cardLeft, poolLeft policy.Draw) *DrawBoundError {
+func newDrawBound(rung int, want, need policy.Draw, cardLeft, poolLeft policy.Draw) *DrawBoundError {
 	within := func(d policy.Draw) bool {
 		return rung > 2 || fitsIn(d, poolLeft) && (rung == 2 || fitsIn(d, cardLeft))
 	}
 	if within(want) {
 		return nil
 	}
-	e := &DrawBoundError{Card: rung <= 1 && !fitsIn(want, cardLeft), Want: want, Left: poolLeft, Fit: want.Min(poolLeft), Lines: lines}
+	e := &DrawBoundError{Card: rung <= 1 && !fitsIn(want, cardLeft), Want: want, Left: poolLeft, Fit: want.Min(poolLeft)}
 	if rung <= 1 {
 		e.Fit = e.Fit.Min(cardLeft)
 	}
@@ -2288,7 +2276,7 @@ func newDrawBound(rung int, want, need policy.Draw, lines int, cardLeft, poolLef
 	case within(need):
 		e.Least = need
 	default:
-		e.Fit, e.Lines = policy.Draw{}, 0
+		e.Fit = policy.Draw{}
 	}
 	return e
 }
@@ -2309,16 +2297,11 @@ func (e *DrawBoundError) Error() string {
 		over = append(over, fmt.Sprintf("EUR (asked %s, left %s)", textutil.EUR(e.Want.EUR), textutil.EUR(e.Left.EUR)))
 	}
 	bound += ". This draw does not fit in " + textutil.AndList(over)
-	lines := textutil.Plural(e.Lines, "line", "lines")
 	switch {
-	case e.Fit.IsZero() && e.Lines > 0:
-		return fmt.Sprintf("%s. An extend of the %s alone fits, as lines ride free: ask for that", bound, lines)
 	case e.Fit.IsZero() && !e.Least.IsZero():
 		return fmt.Sprintf("%s, and nothing of it fits, but %s does: ask for that", bound, drawText(e.Least))
 	case e.Fit.IsZero():
 		return bound + ", and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
-	case e.Lines > 0:
-		return fmt.Sprintf("%s. The largest draw that fits is %s with %s beside it, as lines ride free: ask for that", bound, drawText(e.Fit), lines)
 	}
 	return fmt.Sprintf("%s. The largest draw that fits is %s: ask for that", bound, drawText(e.Fit))
 }
@@ -2329,8 +2312,7 @@ func (e *DrawBoundError) Error() string {
 // leaves past the card's rows of those rungs, on rungs 0 to 2 against what
 // Pool leaves past the month's pool rows, a raise of the ceiling included,
 // each part on its own: a part the human drew past its bound refuses only
-// a draw that asks for some of it, and a draw of nothing, or of lines
-// alone, fits. The human's draw takes the lock and is refused nothing. A
+// a draw that asks for some of it, and a draw of nothing fits. The human's draw takes the lock and is refused nothing. A
 // draw whose identity key a row holds already, a retry's after its commit,
 // writes no row and is refused nothing: its own row stands in the pool.
 func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) error {
@@ -2358,7 +2340,7 @@ func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 		}
 		poolLeft = d.Pool.Minus(drawn)
 	}
-	if e := newDrawBound(d.Rung, d.amount(), d.Need, d.Lines, cardLeft, poolLeft); e != nil {
+	if e := newDrawBound(d.Rung, d.amount(), d.Need, cardLeft, poolLeft); e != nil {
 		return e
 	}
 	return nil

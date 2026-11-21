@@ -181,13 +181,13 @@ decimals: a task's model calls cost fractions of a cent.
   action can resume the card, hand it to the same, a stronger or a
   cheaper model, check it again, route it for approval, rerun its
   checks, run a stopped checks wait again (no agent time), give it more
-  sessions, agent time or lines, fund it, raise its ceiling,
+  sessions or agent time, fund it, raise its ceiling,
   file a successor, retry or replan a failed dependency, close it, or note
   a step while the card waits (“Not now”). An extend answers a cap, or the owner exits
   of a gate stop and of findings that repeat, never a question, and a
   stop on money takes a fund. At the month cap a fund waits for a raise
   of budget.month_eur or the month's turn. An extend grants one more
-  check-in share at a time, and an extend of lines or a share draws
+  check-in share at a time, and an extend of a share draws
   nothing. “Allow more sessions” buys what the stop asks for: one session at
   a session cap, the card draw's agent time at an agent time cap, one
   more check-in share at the check-in's share stop, one session at its
@@ -202,8 +202,8 @@ decimals: a task's model calls cost fractions of a cent.
   first, and its case takes the comment that work posted. A card that
   waits with no open case refuses the answer until the heal pass opens
   one, within a minute. The project agent's `answer` takes the same
-  `action`, its `args` (a handover's model, an extend's sessions, agent
-  time and lines, the EUR of a fund or a ceiling raise) and a `fund_eur`
+  `action`, its `args` (a handover's model, an extend's sessions and agent
+  time, the EUR of a fund or a ceiling raise) and a `fund_eur`
   beside it. Every answer meets the same gates first: a running card's
   words steer its session, and an action on a card no answer fits is
   refused.

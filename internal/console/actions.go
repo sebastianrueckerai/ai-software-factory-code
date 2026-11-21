@@ -1259,7 +1259,7 @@ func (c *Console) heldOnRungs(ctx context.Context, a actor, t factoryd.Task) err
 // answerArgs are the keys of an action's args the answer tool's schema
 // and the case form name; any other key is dropped. A chat's file_card
 // passes the door on its own tries whatever as_written says.
-var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "eur",
+var answerArgs = []string{"model", "sessions", "agent_time_s", "eur",
 	"action", "task_id", "depends_on", "title", "why", "summary", "body", "size", "criterion", "verdict", "head",
 	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of", factoryd.AsWritten}
 
@@ -1365,7 +1365,7 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 	case factoryd.ActReplan:
 		return c.doReplan(ctx, a, id, note, field(factoryd.OffMainField) != "")
 	case factoryd.ActExtend:
-		return c.doExtend(ctx, a, id, n("sessions"), n("lines"), n("agent_time_s")/60, 0, note)
+		return c.doExtend(ctx, a, id, n("sessions"), n("agent_time_s")/60, 0, note)
 	case factoryd.ActFund:
 		return c.doFund(ctx, a, id, eur, note, 0)
 	case factoryd.AnswerSteer:
@@ -1534,22 +1534,22 @@ func (c *Console) cardTime(ctx context.Context, t factoryd.Task) time.Duration {
 }
 
 // doExtend raises card id's caps on any live agent card through Act: its
-// sessions, its agent time (minutes of it) and its line bound as an
+// sessions and its agent time (minutes of it) as an
 // extend, its budget as the money drawn beside it, or a fund alone when
-// it raises no session, minute or line. On a card waiting at its case
+// it raises no session or minute. On a card waiting at its case
 // the note, or when none a line naming the raise, is the answer Act has
 // posted as the human's comment; a card waiting on no case reads the
 // raise at its next cap check.
-func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines, minutes int, eur float64, note string) (string, error) {
+func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, minutes int, eur float64, note string) (string, error) {
 	switch {
-	case sessions < 0 || lines < 0 || minutes < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
-		(sessions == 0 && lines == 0 && minutes == 0 && !(eur > 0)):
-		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions, minutes, lines and an amount in EUR")
+	case sessions < 0 || minutes < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
+		(sessions == 0 && minutes == 0 && !(eur > 0)):
+		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions and minutes and an amount in EUR")
 	}
 	if minutes > factoryd.MaxExtendMinutes {
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an extend raises at most %d minutes of agent time at once", factoryd.MaxExtendMinutes))
 	}
-	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, minutes, eur)))
+	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, minutes, eur)))
 	if err := answerFits(note); err != nil {
 		return "", err
 	}
@@ -1561,8 +1561,8 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to extend")
 	}
 	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}
-	if sessions > 0 || lines > 0 || minutes > 0 {
-		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "lines": lines, "agent_time_s": minutes * 60}
+	if sessions > 0 || minutes > 0 {
+		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "agent_time_s": minutes * 60}
 		if eur > 0 {
 			res.Fund = &policy.Draw{EUR: eur}
 		}
@@ -1575,10 +1575,10 @@ func extendable(t factoryd.Task) bool {
 	return t.Kind == "agent" && t.IssueNumber != 0 && slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
 }
 
-// raiseLine names an extend's raise: the sessions, minutes of agent time,
-// lines and EUR it adds.
-func raiseLine(sessions, lines, minutes int, eur float64) string {
-	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%d %s, +%s EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), lines, plural(lines, "line"), textutil.EUR(eur))
+// raiseLine names an extend's raise: the sessions, minutes of agent time
+// and EUR it adds.
+func raiseLine(sessions, minutes int, eur float64) string {
+	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%s EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), textutil.EUR(eur))
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the

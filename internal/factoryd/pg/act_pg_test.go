@@ -873,31 +873,6 @@ func TestActCarriesTheCallersDetailOnEveryRow(t *testing.T) {
 	}
 }
 
-// An extend of 200 lines alone resolves the case and raises the card's
-// line bound by 200: one card_extended row of 200 lines and no session,
-// agent time or money, nothing drawn from the pool, and the step says
-// what it raised.
-func TestActExtendsTheLinesAlone(t *testing.T) {
-	g := newActRig(t)
-	got, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActExtend, Args: map[string]any{"lines": 200}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"lines": 200}, Result: "Added 200 lines to its line bound."}}
-	if !got.Drawn.IsZero() || !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved {
-		t.Fatalf("result = %+v, want case resolved, nothing drawn and the step %+v", got, want)
-	}
-	if card := g.card(t); card.Usage.ExtraLines != 200 || card.Usage.RaisedSessions != 0 {
-		t.Fatalf("extra lines %d, raised sessions %d; want 200 and 0", card.Usage.ExtraLines, card.Usage.RaisedSessions)
-	}
-	rows := g.rows(t, EventCardExtended)
-	if len(rows) != 1 || rows[0].Detail["lines"] != 200.0 || rows[0].Detail["sessions"] != 0.0 || rows[0].Detail["agent_time_s"] != 0.0 ||
-		rows[0].Detail["amount_eur"] != 0.0 {
-		t.Fatalf("card_extended rows = %+v, want one of 200 lines and nothing else", rows)
-	}
-}
-
 // Closing a human card is open to the human whatever its question offers,
 // as its Close button is: Act resolves its case with close on a card whose
 // ask offers no close.
@@ -966,40 +941,20 @@ func TestActRefusesAnExtendOnAnEndedCard(t *testing.T) {
 	}
 }
 
-// A lines extend on rung 2 lands on a pool the month has overdrawn in a
-// part it does not draw: in sessions, where a session is refused.
-func TestActLandsALinesExtendOnAPoolOverdrawnInAnotherPart(t *testing.T) {
-	g := newActRig(t)
-	ctx := context.Background()
-	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t0", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,
-		Detail: map[string]any{"pool": true, "rung": 3, "sessions": 31}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", By: ChatUser, Rung: 2, CaseID: g.c.ID, Res: oneSession}); err == nil {
-		t.Fatal("rung 2's session past the overdrawn pool went through")
-	}
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"lines": 100}}}); err != nil {
-		t.Fatalf("rung 2's lines on the overdrawn pool: %v", err)
-	}
-	if card := g.card(t); card.Usage.ExtraLines != 100 {
-		t.Fatalf("extra lines = %d, want 100", card.Usage.ExtraLines)
-	}
-}
-
-// An extend's step and its answer's text name every part it raised: a
-// session from the pool and the line bound beside it.
-func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
+// An extend's step and its answer's text name what it raised: a session
+// from the pool.
+func TestActStepNamesWhatAnExtendRaised(t *testing.T) {
 	g := newActRig(t)
 	got, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "lines": 100}}})
+		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"sessions": 1, "lines": 100}, Result: "Added 1 session from the pool and 100 lines to its line bound."}}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"sessions": 1}, Result: "Added 1 session from the pool."}}
 	if !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("did = %+v, want %+v", got.Did, want)
 	}
-	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with “Allow more sessions”: 1 session from the pool and 100 lines to its line bound.`; got.Text != text {
+	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with “Allow more sessions”: 1 session from the pool.`; got.Text != text {
 		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 }

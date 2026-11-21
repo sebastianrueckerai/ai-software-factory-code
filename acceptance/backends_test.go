@@ -758,7 +758,7 @@ func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
-	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
+	u.RaisedSessions, u.RaisedTime, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ProofLines
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1329,8 +1329,8 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur, ceiling fl
 	return from, t.BudgetEUR, nil
 }
 
-// extendCard raises card id's caps by d and lines, as PGStore's drawCase does.
-func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines int, runGrants bool) error {
+// extendCard raises card id's caps by d, as PGStore's drawCase does.
+func (s *acceptanceStore) extendCard(id string, d policy.Draw, runGrants bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
@@ -1342,7 +1342,6 @@ func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines int, runGra
 		t.Usage.RaisedSessions += d.Sessions
 		t.Usage.RaisedTime += d.AgentTime
 	}
-	t.Usage.ExtraLines += lines
 	s.tasks[id] = t
 	return nil
 }
@@ -1373,8 +1372,8 @@ func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.Ca
 			return false, factoryd.ErrNotFound
 		}
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 {
-		if err := s.extendCard(id, d.Extend, d.Lines, d.RunGrants); err != nil {
+	if !d.Extend.IsZero() {
+		if err := s.extendCard(id, d.Extend, d.RunGrants); err != nil {
 			return false, err
 		}
 	}

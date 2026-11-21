@@ -5630,3 +5630,9 @@ func TestFileChildrenKeepsTheEdgeOfAnUndeliveredDependency(t *testing.T) {
 		})
 	}
 }
+
+func TestLineBoundIsTheSizesAndTheProofs(t *testing.T) {
+	if got := EffectiveLineBound("medium", 1000, TaskUsage{ProofLines: 40, RaisedSessions: 2, RaisedTime: time.Hour}); got != 640 {
+		t.Fatalf("EffectiveLineBound = %d, want 640 (60%% of 1000 plus 40 proof lines)", got)
+	}
+}

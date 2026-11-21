@@ -37,7 +37,6 @@ type fakeWorkerEndpoint struct {
 	texts  []string
 	briefs []string // the raw body of each POST /brief
 	lists  []string // the raw body of each POST /proofs
-	bounds []string // the raw body of each POST /bound
 	onPush func()
 	// onTool answers POST /tool with its status and body; tools records
 	// every ask as the tool's name with its args
@@ -71,8 +70,6 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 			f.briefs = append(f.briefs, string(b))
 		case "/proofs":
 			f.lists = append(f.lists, string(b))
-		case "/bound":
-			f.bounds = append(f.bounds, string(b))
 		}
 		status := f.status
 		if req.Method == http.MethodPost && req.URL.Path == "/message" && f.messageSeen != nil {

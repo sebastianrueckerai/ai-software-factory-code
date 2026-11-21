@@ -344,7 +344,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 			s.oc.SetModel(model)
 		}
 		return s.oc.Message(ctx, text)
-	}, checkin, wip, s.env.lineBound, log)
+	}, checkin, wip, log)
 	if err != nil {
 		return s, startError{"message endpoint", err}
 	}
@@ -585,10 +585,9 @@ type workerEnv struct {
 	cheapModel                             string
 	answerTokens, headroomTokens           int
 	steps                                  int
-	// lineBound is the card's line bound, LINE_BOUND until factoryd's POST
-	// /bound raises it: the changed lines the pushed diff against its
-	// merge base may hold; nil or 0 is off. Every copy of the env shares it.
-	lineBound                            *atomic.Int64
+	// lineBound is the card's line bound, LINE_BOUND: the changed lines the
+	// pushed diff against its merge base may hold; 0 is off.
+	lineBound                            int
 	findings, answers, posterInfo, tools []string
 	author, authorStanding               string
 	home                                 string
@@ -706,7 +705,7 @@ func loadEnv() (workerEnv, error) {
 	if err != nil || bound < 0 {
 		return e, fmt.Errorf("LINE_BOUND must be a non-negative line bound, is %q", str("LINE_BOUND"))
 	}
-	e.lineBound = lineBoundOf(bound)
+	e.lineBound = bound
 	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS, DIRECTORIES, MIGRATION_GLOBS and LEFT_OUT arrive as JSON arrays; absent means none.
 	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools,
 		"DIRECTORIES": &e.directories, "MIGRATION_GLOBS": &e.migrationGlobs, "LEFT_OUT": &e.leftOut} {
@@ -722,21 +721,6 @@ func loadEnv() (workerEnv, error) {
 		}
 	}
 	return e, nil
-}
-
-// lineBoundOf is a line bound of n lines.
-func lineBoundOf(n int) *atomic.Int64 {
-	b := new(atomic.Int64)
-	b.Store(int64(n))
-	return b
-}
-
-// bound is the card's line bound now; 0 is off.
-func (e workerEnv) bound() int {
-	if e.lineBound == nil {
-		return 0
-	}
-	return int(e.lineBound.Load())
 }
 
 func authHeader(token string) string {
@@ -1203,7 +1187,7 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err != nil {
 		return "", err
 	}
-	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.bound()); err != nil {
+	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.lineBound); err != nil {
 		if tree == baseTree && errors.Is(err, errPushOverBound) {
 			// the start is over the bound and the session added nothing
 			return "", startOverBound{err}

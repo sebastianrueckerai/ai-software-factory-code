@@ -41,7 +41,7 @@ func TestProofExtendFormOffTheAskingFace(t *testing.T) {
 		}
 		_, form, _ := strings.Cut(where(opened), `data-answer="extend"`)
 		form, _, _ = strings.Cut(form, "</form>")
-		for _, want := range []string{`name="extend.sessions"`, `name="extend.lines"`, `name="extend.minutes"`} {
+		for _, want := range []string{`name="extend.sessions"`, `name="extend.minutes"`} {
 			if !strings.Contains(form, want) {
 				t.Errorf("the extend form of %s lacks %s:\n%s", id, want, form)
 			}

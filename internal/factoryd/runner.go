@@ -988,22 +988,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.overBound = fmt.Sprintf("%s %s at %s", overBoundNote, taskBranch(t), s.startRef)
 		}
 	}()
-	// the line bound the worker holds is the LINE_BOUND workerPodSpec gave
-	// it, read back from a pod a stopped factoryd left running: the row
-	// the retry read may hold a raise that landed meanwhile. One that
-	// cannot be read is 0, so the first tick hands the worker the card's.
-	held := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
-	if live != nil {
-		env, err := r.kube.PodEnv(ctx, ns, podName, workerContainer)
-		if err == nil {
-			held, err = strconv.Atoi(env["LINE_BOUND"])
-		}
-		if err != nil {
-			held = 0
-			log.Printf("task %s: session %s: read the line bound its pod holds: %s", t.ID, s.id, r.scrub(err.Error()))
-		}
-	}
-	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline), held)
+	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
 	var messages []string
@@ -1644,19 +1629,19 @@ func (r *Runner) cardNow(ctx context.Context, t Task, s sessionSpec) (Task, sess
 
 // judged runs the check-in through run, which builds its pace from the
 // card's row, with eurLeft of the judgment budget, and again while the
-// answer hands up and the row holds a higher line bound or session cap
-// than the pace that answer read: an extend answered the hand-up during
+// answer hands up and the row holds a higher session cap than the pace
+// that answer read: an extend answered the hand-up during
 // the conversation. Each run after the first reads the judgment budget
 // again. The record holds every run's calls, cost and time.
 func (r *Runner) judged(ctx context.Context, t Task, s sessionSpec, ask *CheckInAsk, eurLeft float64, run func(eurLeft float64) CheckInOutcome) CheckInOutcome {
 	out := run(eurLeft)
 	for out.Decision == RungHandUp && ask.Pace != nil {
 		read, now := ask.Pace, r.pace(ctx, t, s, 0, time.Now(), time.Now())
-		if now.BoundLines <= read.BoundLines && now.Sessions <= read.Sessions {
+		if now.Sessions <= read.Sessions {
 			break
 		}
-		log.Printf("task %s: session %s: the check-in handed up on %d lines and %d sessions, and the card now holds %d and %d: it judges again",
-			t.ID, s.id, read.BoundLines, read.Sessions, now.BoundLines, now.Sessions)
+		log.Printf("task %s: session %s: the check-in handed up on %d sessions, and the card now holds %d: it judges again",
+			t.ID, s.id, read.Sessions, now.Sessions)
 		if _, left, err := r.checkinMoney(ctx, t); err != nil {
 			eurLeft -= out.Record.CostEUR
 			log.Printf("task %s: session %s: the judgment budget could not be read again, so the check-in states %.2f EUR, the first figure less the first run's cost: %s",
@@ -3473,9 +3458,8 @@ func (k *InClusterKube) Namespace() string {
 	return string(bytes.TrimSpace(b))
 }
 
-// watchLimits reads the card's row once per tick: an extend's line raise
-// reaches the session at once, and the agent gets the warning it is due;
-// a warning the pod did not take stays due, and only its first failure is
+// watchLimits reads the card's row once per tick: the agent gets the
+// warning it is due; a warning the pod did not take stays due, and only its first failure is
 // recorded on the timeline.
 func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor) *Trip {
 	cur, ok, err := r.store.Task(ctx, t.ID)
@@ -3485,29 +3469,6 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 	}
 	if !ok {
 		return nil
-	}
-	// a bound the row raised past the worker's reaches the worker's push
-	// rule, the size detector and the agent; a raise the pod did not take
-	// stays due, unless no retry changes its answer
-	if bound := EffectiveLineBound(cur.Size, s.policy.Risk.LargeLines, cur.Usage); bound > w.bound {
-		switch err := r.postWorker(ctx, ns, pod, s.messageToken, "/bound", map[string]int{"lines": bound}); {
-		case err == nil:
-			w.bound = bound
-			log.Printf("task %s: session %s takes the raised line bound of %d lines", t.ID, s.id, bound)
-			if sizeBounded(t, s) {
-				sup.SetSizeLines(bound)
-			}
-			text := fmt.Sprintf("factoryd: this card's line bound is now %d changed lines, and your push may hold that many from now on. "+
-				"Agent time and sessions an extend added apply from the next session; this session's time is unchanged.", bound)
-			if err := r.message(ctx, t, s, ns, pod, text); err != nil {
-				log.Printf("task %s: tell the agent its raised line bound: %s", t.ID, r.scrub(err.Error()))
-			}
-		case postFinal(err):
-			w.bound = bound
-			log.Printf("task %s: session %s did not take the raised line bound of %d lines, which its next session gets: %s", t.ID, s.id, bound, r.scrub(err.Error()))
-		default:
-			log.Printf("task %s: hand session %s the raised line bound of %d lines: %s", t.ID, s.id, bound, r.scrub(err.Error()))
-		}
 	}
 	for _, wn := range w.due(cur.EnforcedSpent(), cur.BudgetEUR, time.Now()) {
 		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)

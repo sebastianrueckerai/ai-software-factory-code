@@ -1029,12 +1029,10 @@ const (
 
 // CheckinStopMark is a check-in stop's state: what a repeated stop
 // compares itself against. Tip is the branch's head at the stop: the
-// session's own push, else the head it started from. ExtraLines and
-// RaisedSessions are the console's raises of the line bound and the
-// sessions; Granted says the stop's answer bought a restart that pushed nothing.
+// session's own push, else the head it started from. RaisedSessions is
+// the console's raise of the sessions; Granted says the stop's answer bought a restart that pushed nothing.
 type CheckinStopMark struct {
 	Kind, Tip      string
-	ExtraLines     int
 	RaisedSessions int
 	Granted        bool
 }
@@ -2084,7 +2082,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// card's question holds the findings and the review verdict
 			reason := CheckinReason(cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")), res.Reason, res.CheckIn.Findings, res.CheckIn.Review)
 			mark := CheckinStopMark{Kind: res.CheckIn.ReasonKind, Tip: cmp.Or(res.Commit, startRef),
-				ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
+				RaisedSessions: u.RaisedSessions}
 			if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
 				reason = cmp.Or(RepeatAsk(prev, mark), reason)
 			}
@@ -2723,13 +2721,13 @@ func (t *taskRun) grant(u *TaskUsage) {
 // RepeatAsk is the ask a check-in stop with mark asks instead of its
 // own when it repeats the stop with prev, "" for none: the restart's
 // unchanged head when prev's answer bought one, else the deadlock's when
-// the branch's head and the card's limits (its lines and the sessions the
-// console raised) are unchanged.
+// the branch's head and the card's sessions the console raised are
+// unchanged.
 func RepeatAsk(prev, mark CheckinStopMark) string {
 	if prev.Tip == "" || prev.Tip != mark.Tip {
 		return ""
 	}
-	same := prev.ExtraLines == mark.ExtraLines && prev.RaisedSessions == mark.RaisedSessions
+	same := prev.RaisedSessions == mark.RaisedSessions
 	sha := ShortSHA(mark.Tip)
 	label := CheckinSpendAsk
 	if checkinFailedKind(mark.Kind) {
@@ -2910,12 +2908,12 @@ func (t *taskRun) readUsage(held TaskUsage) TaskUsage {
 }
 
 // readRaise takes the console's raises from the row into u:
-// the sessions, agent time and lines an Extend
+// the sessions and agent time an Extend
 // added, which the workflow never writes, so the row's numbers are the
 // truth and the rest of u stays the run's own.
 func (t *taskRun) readRaise(u *TaskUsage) {
 	row := t.readUsage(*u)
-	u.RaisedSessions, u.RaisedTime, u.ExtraLines = row.RaisedSessions, row.RaisedTime, row.ExtraLines
+	u.RaisedSessions, u.RaisedTime = row.RaisedSessions, row.RaisedTime
 }
 
 // verify takes a pushed commit through its pull request, the checks and

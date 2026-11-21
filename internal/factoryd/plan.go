@@ -1590,13 +1590,11 @@ func cardLineBound(size string, largeLines int) (lines int, sized bool) {
 }
 
 // EffectiveLineBound is the card's line bound: what its size plans under
-// the policy plus every line its usage added (TaskUsage.LinesAdded), the
-// raises its extend answers made and its opened proofs' lines. The
-// worker's push rule, the gate's check and the supervisor's trip all read
-// this one number, so a raise lifts them at once.
+// the policy plus its opened proofs' lines. The worker's push rule, the
+// gate's check and the supervisor's trip all read this one number.
 func EffectiveLineBound(size string, largeLines int, u TaskUsage) int {
 	lines, _ := cardLineBound(size, largeLines)
-	return lines + u.LinesAdded()
+	return lines + u.ProofLines
 }
 
 // PlanAnswerComment is the console's comment, as the member, on the plan's
@@ -4206,7 +4204,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer,
 			Why: r.untrusted(t, c.Why), Summary: r.untrusted(t, c.Summary), BriefUnchecked: c.Unchecked}
 		if inherits {
-			row.Usage.RaisedSessions, row.Usage.RaisedTime, row.Usage.ExtraLines = from.Usage.RaisedSessions, from.Usage.RaisedTime, from.Usage.ExtraLines
+			row.Usage.RaisedSessions, row.Usage.RaisedTime = from.Usage.RaisedSessions, from.Usage.RaisedTime
 			if ceiling := CardCeiling(v.Document, project); from.CeilingEUR > ceiling {
 				row.CeilingEUR = from.CeilingEUR
 			}
@@ -4344,9 +4342,9 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 // recordInherited records the raises card took over from old card from,
 // when it holds any: a card_extended row that is no pool draw.
 func (r *Runner) recordInherited(ctx context.Context, from, card Task) {
-	if u := card.Usage; u.RaisedSessions > 0 || u.RaisedTime > 0 || u.ExtraLines > 0 || card.CeilingEUR > 0 {
+	if u := card.Usage; u.RaisedSessions > 0 || u.RaisedTime > 0 || card.CeilingEUR > 0 {
 		r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,
-			"sessions": u.RaisedSessions, "agent_time_s": int64(u.RaisedTime / time.Second), "lines": u.ExtraLines,
+			"sessions": u.RaisedSessions, "agent_time_s": int64(u.RaisedTime / time.Second),
 			"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
 	}
 }

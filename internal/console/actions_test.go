@@ -562,11 +562,11 @@ func TestAParkedCardStillAnswers(t *testing.T) {
 	// the extend one session more on the same parked card: Act's, posted
 	before = ev.count()
 	if rec := r.do(post("/tasks/t-q/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
-		"extend.sessions": {"1"}, "extend.lines": {"0"}, "extend.note": {"one more run"}}), ck); rec.Code >= 400 {
+		"extend.sessions": {"1"}, "extend.note": {"one more run"}}), ck); rec.Code >= 400 {
 		t.Fatalf("the extend = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the extend", the(2), factoryd.ActInput{TaskID: "t-q", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 0, "agent_time_s": 0}, Note: "one more run"}})
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 0}, Note: "one more run"}})
 	equal(t, "the extend's answer", r.fg.commentBodies(comments), []string{"Park it", "one more run"})
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventSessionGranted, repo: "sf/code", taskID: "t-q",
 		detail: map[string]any{"action": factoryd.ActExtend, "answer": "one more run", "case_id": int64(1), "comment": int64(2)}})
@@ -616,17 +616,17 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 }
 
 // The extend action is an extend through Act on the card's live case:
-// its sessions and lines, the money drawn beside it, and the note Act has
+// its sessions and minutes, the money drawn beside it, and the note Act has
 // posted as the answer. A raise of money alone is a fund.
 func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, "the restructure is worth it"); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 0, 2, "the restructure is worth it"); err != nil {
 		t.Fatalf("extend: %v", err)
 	}
 	got, posts := actedOnce(t, r)
 	equal(t, "the extend", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 500, "agent_time_s": 0}, Fund: &policy.Draw{EUR: 2},
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 0}, Fund: &policy.Draw{EUR: 2},
 			Note: "the restructure is worth it"}}, true})
 	r.fg.mu.Lock()
 	posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]
@@ -636,20 +636,20 @@ func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
 	// the Extend form's minutes field raises the card's agent time, the
 	// chat's extend's agent_time_s by its own door
 	r = fundRig(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 20, 0, ""); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 20, 0, ""); err != nil {
 		t.Fatalf("extend by minutes: %v", err)
 	}
 	got, _ = actedOnce(t, r)
-	equal(t, "the minutes alone", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 0, "lines": 0, "agent_time_s": 1200},
-		Note: "Extended the card: +0 sessions, +20 minutes of agent time, +0 lines, +0.00 EUR."})
+	equal(t, "the minutes alone", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 0, "agent_time_s": 1200},
+		Note: "Extended the card: +0 sessions, +20 minutes of agent time, +0.00 EUR."})
 
 	r = fundRig(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 0, 1.5, ""); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 1.5, ""); err != nil {
 		t.Fatalf("extend by money alone: %v", err)
 	}
 	got, _ = actedOnce(t, r)
 	equal(t, "the money alone", got.Res, factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.5},
-		Note: "Extended the card: +0 sessions, +0 minutes of agent time, +0 lines, +1.50 EUR."})
+		Note: "Extended the card: +0 sessions, +0 minutes of agent time, +1.50 EUR."})
 }
 
 // Nothing extends when the raise names nothing or names a negative: the
@@ -658,12 +658,12 @@ func TestExtendRefusesWhatChangesNothing(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
 	for _, in := range []struct {
-		sessions, lines, minutes int
-		eur                      float64
+		sessions, minutes int
+		eur               float64
 	}{
-		{0, 0, 0, 0}, {-1, 0, 0, 0}, {0, -500, 0, 0}, {0, 0, -20, 0}, {0, 0, 0, -2}, {1, 0, 0, -5},
+		{0, 0, 0}, {-1, 0, 0}, {0, -20, 0}, {0, 0, -2}, {1, 0, -5},
 	} {
-		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.lines, in.minutes, in.eur, "")
+		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.minutes, in.eur, "")
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusBadRequest {
 			t.Errorf("extend %+v = %v, want a 400 refusal", in, err)
@@ -686,7 +686,7 @@ func TestExtendRouteRefusesNonNumeric(t *testing.T) {
 	setStatus(r, "running")
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
-		"extend.sessions": {"many"}, "extend.lines": {"500"}}), ck)
+		"extend.sessions": {"many"}}), ck)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "whole number") {
 		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
 	}
@@ -707,7 +707,7 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	seatAsk(r, "t-e", factoryd.CaseGateStop, facts)
 	ck, _ := r.loggedIn(t)
 	body := escalationOf(t, r, ck, "t-e")
-	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.minutes"`, `name="extend.sessions"`, `name="extend.lines"`,
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.minutes"`, `name="extend.sessions"`,
 		`name="action" value="` + factoryd.ActReverify + `/overrule"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %s", want)
@@ -740,13 +740,13 @@ func TestExtendRouteTakesMinutes(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	form := func(minutes string) url.Values {
 		return url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
-			"extend.sessions": {"0"}, "extend.minutes": {minutes}, "extend.lines": {"0"}}
+			"extend.sessions": {"0"}, "extend.minutes": {minutes}}
 	}
 	if rec := r.do(post("/tasks/t-e/resolve", form("20")), ck); rec.Code >= 400 {
 		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
 	}
 	got, _ := actedOnce(t, r)
-	equal(t, "the posted minutes", got.Res.Args, map[string]any{"sessions": 0, "lines": 0, "agent_time_s": 1200})
+	equal(t, "the posted minutes", got.Res.Args, map[string]any{"sessions": 0, "agent_time_s": 1200})
 	r = fundRig(t)
 	setStatus(r, "running")
 	ck, s = r.loggedIn(t)
@@ -758,7 +758,7 @@ func TestExtendRouteTakesMinutes(t *testing.T) {
 		t.Errorf("a refused extend acted %d times", n)
 	}
 	if rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
-		"extend.sessions": {"1"}, "extend.lines": {"0"}}), ck); rec.Code >= 400 {
+		"extend.sessions": {"1"}}), ck); rec.Code >= 400 {
 		t.Errorf("an extend with no minutes field = %d: %s", rec.Code, rec.Body)
 	}
 }
@@ -776,7 +776,7 @@ func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
 		r := fundRig(t)
 		setStatus(r, status)
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, ""); err != nil {
+		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 0, 2, ""); err != nil {
 			t.Fatalf("%s: extend: %v", status, err)
 		}
 		got, _ := actedOnce(t, r)
@@ -797,7 +797,7 @@ func TestExtendRefusesADoneCard(t *testing.T) {
 	r := fundRig(t)
 	setStatus(r, "done")
 	_, s := r.loggedIn(t)
-	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, "")
+	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 0, 2, "")
 	var no *refusal
 	if !errors.As(err, &no) || no.status != http.StatusConflict {
 		t.Fatalf("extend of a done card = %v, want a 409 refusal", err)
@@ -815,7 +815,7 @@ func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
 	setStatus(r, "running")
 	ck, _ := r.loggedIn(t)
 	more := otherActionsOf(t, drawer(t, r, ck, "t-e", "overview"))
-	for _, want := range []string{`action="/tasks/t-e/resolve"`, `data-answer="extend"`, `name="extend.minutes"`, `name="extend.sessions"`, `name="extend.lines"`,
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `data-answer="extend"`, `name="extend.minutes"`, `name="extend.sessions"`,
 		`data-answer="fund"`, `name="fund.eur"`} {
 		if !strings.Contains(more, want) {
 			t.Errorf("the running card's other actions lack %s:\n%s", want, more)

@@ -222,8 +222,9 @@ func TestWorkflowReplaysAHistoryRecordedBeforeTheCheckinDecisionUnchanged(t *tes
 			}
 			continue
 		}
-		if gotInputs[i] != inputs[i] {
-			t.Fatalf("activity %d (%s): the replay recorded\n%s\nthe recording\n%s", i+1, a, gotInputs[i], inputs[i])
+		// the recording predates the removal of TaskUsage.ExtraLines
+		if want := strings.Replace(inputs[i], `"ExtraLines":0,`, "", 1); gotInputs[i] != want {
+			t.Fatalf("activity %d (%s): the replay recorded\n%s\nthe recording\n%s", i+1, a, gotInputs[i], want)
 		}
 	}
 }
@@ -265,7 +266,7 @@ func TestReplayHumanWaitQueueBefore(t *testing.T) {
 	for i := range got {
 		// a replay does not compare activity input; the gate's input ends in the checked head, empty on these runs,
 		// and the workflow writes its lines on why a human decides in today's words
-		want := strings.NewReplacer("risk class normal is requires_approval", "risk class normal needs a human's approval",
+		want := strings.NewReplacer(`"ExtraLines":0,`, "", "risk class normal is requires_approval", "risk class normal needs a human's approval",
 			"a strict improvement with no drawback: does what the brief asks", "a strict improvement with no drawback").Replace(inputs[i])
 		switch {
 		case got[i] == ActivityGateCriteria:

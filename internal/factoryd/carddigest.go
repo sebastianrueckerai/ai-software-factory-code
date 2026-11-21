@@ -436,7 +436,6 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 			if seconds := number("agent_time_s"); seconds > 0 {
 				parts = append(parts, minutesWord(time.Duration(seconds)*time.Second)+" of agent time")
 			}
-			parts = append(parts, textutil.Plural(number("lines"), "line", "lines"))
 			if from := word("inherited_from"); from != "" {
 				if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok && ceiling > 0 {
 					parts = append(parts, fmt.Sprintf("ceiling %s EUR", textutil.EUR(ceiling)))

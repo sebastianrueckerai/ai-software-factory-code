@@ -90,18 +90,17 @@ func TestBecomePlanTurnsADirectCard(t *testing.T) {
 	}
 }
 
-// A card that turns plan keeps its line raise, which the card that lands
-// its work inherits; the raised sessions and agent time go with the
-// counters, as the plan loop has caps of its own.
-func TestBecomePlanKeepsTheLineRaise(t *testing.T) {
+// A card that turns plan loses its raised sessions and agent time with
+// the counters, as the plan loop has caps of its own.
+func TestBecomePlanResetsTheRaises(t *testing.T) {
 	card := directCard()
-	card.Usage.ExtraLines, card.Usage.RaisedSessions, card.Usage.RaisedTime = 600, 1, time.Hour
+	card.Usage.RaisedSessions, card.Usage.RaisedTime = 1, time.Hour
 	r, store, _, _ := becomePlanRig(t, card, specTracks)
 	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); !got.Switched {
 		t.Fatalf("BecomePlan = %+v, want switched", got)
 	}
-	if u := store.tasks["t1"].Usage; u.ExtraLines != 600 || u.RaisedSessions != 0 || u.RaisedTime != 0 {
-		t.Fatalf("usage %+v, want 600 extra lines, 0 raised sessions and 0 raised time", u)
+	if u := store.tasks["t1"].Usage; u.RaisedSessions != 0 || u.RaisedTime != 0 {
+		t.Fatalf("usage %+v, want 0 raised sessions and 0 raised time", u)
 	}
 }
 

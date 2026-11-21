@@ -437,10 +437,6 @@ func (s *Supervisor) Spent(spent, budget float64) *Trip {
 // cap no longer applies.
 func (s *Supervisor) Climbed() { s.cfg.CheapCap = 0 }
 
-// SetSizeLines sets the line bound the size detector trips past: an
-// extend raised the card's bound during the session.
-func (s *Supervisor) SetSizeLines(n int) { s.cfg.SizeLines = n }
-
 // AgentAsks opens an agent escalation's reason, before its question;
 // agentAsksAuthor an information request's.
 const (
