@@ -19,13 +19,18 @@ decimals: a task's model calls cost fractions of a cent.
   nothing on the server: the state and the PKCE verifier travel in the
   `__Host-console-login` cookie, signed with HMAC-SHA256 under
   `session_key` (`CONSOLE_SESSION_KEY`, at least 32 bytes) and valid for
-  10 minutes. Only the trust gate's writers
+  10 minutes. A `/login` that carries a pending login reuses it, so a
+  page and its event stream, or two tabs, reaching `/login` at once keep
+  one state; a callback whose state the cookie does not hold (expired, or
+  another login's) exchanges nothing and starts again at `/login`, which
+  a live session answers with the board. Only the trust gate's writers
   of the code repository get in, checked at login and on every request
   (list cached a minute, fetched by one request while the others wait, the
   last list served up to 5 minutes while Forgejo fails); others get 403.
   A refused login's fresh tokens are dropped, not revoked: Forgejo has no
-  token revocation API, so they lapse within their hour. Sessions are in memory (a
-  restart logs everyone out), the tokens never leave the server and are
+  token revocation API, so they lapse within their hour. Sessions are rows
+  of `console_sessions` that outlive a restart and end 12 hours after the
+  login; the tokens never leave the server, sealed in the row, and are
   refreshed before their hour runs out; the cookie is `__Host-`,
   HttpOnly, Secure, SameSite=Lax. Every POST needs the session's CSRF
   token (form field `csrf` or header `X-CSRF-Token`). Responses carry

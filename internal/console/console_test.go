@@ -2061,24 +2061,80 @@ func TestLoginExchangesCodeInClusterWithVerifierAndSecret(t *testing.T) {
 	}
 }
 
-func TestCallbackRefusesAForeignState(t *testing.T) {
+// A callback whose state the login cookie does not hold exchanges nothing
+// and starts the login again, keeping the cookie: it may be the pending
+// login of another tab.
+func TestCallbackRestartsAForeignState(t *testing.T) {
 	r := newRig(t)
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
 	state := cookie(t, rec, loginCookie)
 	cb := r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state=other", nil), state)
-	if cb.Code != http.StatusBadRequest || cookie(t, cb, sessionCookie) != nil || len(r.fg.grants) != 0 {
-		t.Fatalf("foreign state: %d, grants %d: want 400, no exchange, no session", cb.Code, len(r.fg.grants))
+	if cb.Code != http.StatusSeeOther || cb.Header().Get("Location") != "/login" || cookie(t, cb, sessionCookie) != nil || len(r.fg.grants) != 0 {
+		t.Fatalf("foreign state: %d to %q, grants %d: want 303 to /login, no exchange, no session", cb.Code, cb.Header().Get("Location"), len(r.fg.grants))
+	}
+	if cookie(t, cb, loginCookie) != nil {
+		t.Fatal("a foreign state's callback touched the pending login's cookie")
 	}
 	st := strings.SplitN(state.Value, ".", 2)[0]
 	cb = r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state="+st, nil))
-	if cb.Code != http.StatusBadRequest {
-		t.Fatalf("no state cookie: %d, want 400", cb.Code)
+	if cb.Code != http.StatusSeeOther || cb.Header().Get("Location") != "/login" {
+		t.Fatalf("no state cookie: %d to %q, want 303 to /login", cb.Code, cb.Header().Get("Location"))
+	}
+}
+
+// An idle tab whose session ended sends its page and its event stream's
+// reconnect to /login at once, as two tabs do. A /login that carries a
+// pending login reuses it; two that cross before either cookie lands each
+// mint one, and the callback of the overwritten one starts again and
+// finishes on the login the cookie holds.
+func TestConcurrentLoginsEndInOneSession(t *testing.T) {
+	r := newRig(t)
+	stateOf := func(rec *httptest.ResponseRecorder) (state, challenge string) {
+		t.Helper()
+		loc, err := url.Parse(rec.Header().Get("Location"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loc.Query().Get("state"), loc.Query().Get("code_challenge")
+	}
+	page := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
+	pending := cookie(t, page, loginCookie)
+	stream := r.do(httptest.NewRequest(http.MethodGet, "/login", nil), pending)
+	if a, _ := stateOf(page); a == "" {
+		t.Fatal("no state")
+	} else if b, _ := stateOf(stream); b != a || cookie(t, stream, loginCookie) != nil {
+		t.Fatalf("a /login with a pending login: state %q, want its %q and no new cookie", b, a)
+	}
+
+	crossed := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
+	kept := cookie(t, crossed, loginCookie)
+	pageState, _ := stateOf(page)
+	cb := r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=the-code&state="+url.QueryEscape(pageState), nil), kept)
+	if cb.Code != http.StatusSeeOther || cb.Header().Get("Location") != "/login" || len(r.fg.grants) != 0 {
+		t.Fatalf("the overwritten login's callback: %d to %q, grants %d: want 303 to /login, no exchange",
+			cb.Code, cb.Header().Get("Location"), len(r.fg.grants))
+	}
+	again := r.do(httptest.NewRequest(http.MethodGet, "/login", nil), kept)
+	state, challenge := stateOf(again)
+	if want, _ := stateOf(crossed); state != want {
+		t.Fatalf("the restart's state %q, want the kept login's %q", state, want)
+	}
+	r.fg.mu.Lock()
+	r.fg.challenge = challenge
+	r.fg.mu.Unlock()
+	cb = r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=the-code&state="+url.QueryEscape(state), nil), kept)
+	if ck := cookie(t, cb, sessionCookie); cb.Code != http.StatusSeeOther || cb.Header().Get("Location") != "/" || ck == nil || r.readSession(t, ck) == nil {
+		t.Fatalf("the restart's callback: %d to %q: want 303 to / with a session", cb.Code, cb.Header().Get("Location"))
+	}
+	if gone := cookie(t, cb, loginCookie); gone == nil || gone.MaxAge >= 0 {
+		t.Fatalf("login cookie after the callback %+v: want it deleted", gone)
 	}
 }
 
 // An anonymous /login keeps nothing on the server: the state and the PKCE
 // verifier travel in the signed login cookie, and a cookie whose parts or
-// signature were changed, or that expired, is refused before any exchange.
+// signature were changed, or that expired, exchanges nothing: the login
+// starts again.
 func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 	r := newRig(t)
 	for range 1000 {
@@ -2113,8 +2169,8 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 	} {
 		cb := r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state="+parts[0], nil),
 			&http.Cookie{Name: loginCookie, Value: v})
-		if cb.Code != http.StatusBadRequest || cookie(t, cb, sessionCookie) != nil {
-			t.Errorf("%s: %d, want 400 and no session", name, cb.Code)
+		if cb.Code != http.StatusSeeOther || cb.Header().Get("Location") != "/login" || cookie(t, cb, sessionCookie) != nil {
+			t.Errorf("%s: %d to %q, want 303 to /login and no session", name, cb.Code, cb.Header().Get("Location"))
 		}
 	}
 	if len(r.fg.grants) != 0 {

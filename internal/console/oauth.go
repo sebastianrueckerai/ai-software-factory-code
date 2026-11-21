@@ -63,7 +63,9 @@ func (c *Console) pendingLogin(r *http.Request) (state, verifier string, ok bool
 
 // login starts the authorization-code flow with PKCE (S256). The state and
 // the verifier travel in a signed host-only cookie, so an anonymous visit
-// keeps nothing on the server; the state also goes in the query.
+// keeps nothing on the server; the state also goes in the query. A pending
+// login is reused, so a page and its event stream, or two tabs, that reach
+// /login at once do not overwrite each other's state.
 func (c *Console) login(w http.ResponseWriter, r *http.Request) {
 	s, err := c.session(r)
 	if err != nil {
@@ -75,8 +77,11 @@ func (c *Console) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	state, verifier := randomToken(), randomToken()
-	setCookie(w, loginCookie, c.loginCookieValue(state, verifier, time.Now().Add(loginTTL)), int(loginTTL.Seconds()))
+	state, verifier, ok := c.pendingLogin(r)
+	if !ok {
+		state, verifier = randomToken(), randomToken()
+		setCookie(w, loginCookie, c.loginCookieValue(state, verifier, time.Now().Add(loginTTL)), int(loginTTL.Seconds()))
+	}
 	challenge := sha256.Sum256([]byte(verifier))
 	q := url.Values{
 		"client_id":             {c.cfg.ClientID},
@@ -93,14 +98,17 @@ func (c *Console) login(w http.ResponseWriter, r *http.Request) {
 // callback completes the flow: the signed login cookie must hold the
 // query's state, the code is exchanged in-cluster with the client secret
 // and the cookie's verifier, and only a writer of a project gets a session.
+// A state the cookie does not hold, one expired or overwritten by a newer
+// login, exchanges nothing and starts again at /login, which a session
+// already made answers with the board; the cookie stays for its own login.
 func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state, verifier, ok := c.pendingLogin(r)
-	setCookie(w, loginCookie, "", -1)
 	if !ok || q.Get("state") == "" || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
-		http.Error(w, "The login does not match or has expired. Start again at /login.", http.StatusBadRequest)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	setCookie(w, loginCookie, "", -1)
 	if e := q.Get("error"); e != "" {
 		log.Printf("console: Forgejo refused a login: %.200q", e) // #nosec G706 -- %q escapes every control character
 		http.Error(w, "Forgejo refused the login", http.StatusForbidden)
