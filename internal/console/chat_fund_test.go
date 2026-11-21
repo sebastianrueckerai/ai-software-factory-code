@@ -639,7 +639,23 @@ func TestTheChatBudgetCardShowsTheMoneyRow(t *testing.T) {
 			t.Errorf("the then figure at %q = %d %q, want %q", amount, rec.Code, rec.Body, want)
 		}
 	}
-	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+chat.ID+"/fund?field=x.eur", nil), ck); rec.Code < 400 {
-		t.Errorf("the then figure of a card that asks for no chat money = %d, want it refused", rec.Code)
+	// an agent card is a card the console shows, so only the readout's own
+	// guard answers it 404, as a button answers every 404
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ag", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 62,
+		Objective: "Cache the board", BudgetEUR: 4}})
+	for _, tc := range []struct {
+		path string
+		code int
+		want string
+	}{
+		{"/tasks/t-ag/fund?field=" + url.QueryEscape(name), http.StatusNotFound, "404 page not found"},
+		{"/tasks/t-cb/fund?field=csrf", http.StatusBadRequest, "The query names no amount in EUR: its field ends in .eur."},
+	} {
+		if rec := r.do(httptest.NewRequest(http.MethodGet, tc.path, nil), ck); rec.Code != tc.code || strings.TrimSpace(rec.Body.String()) != tc.want {
+			t.Errorf("GET %s = %d %q, want %d %q", tc.path, rec.Code, rec.Body, tc.code, tc.want)
+		}
+	}
+	if !strings.Contains(body, `<td class="then" id="`+then+`" aria-live="polite">`) {
+		t.Errorf("the then cell is not read aloud when it changes:\n%s", body)
 	}
 }

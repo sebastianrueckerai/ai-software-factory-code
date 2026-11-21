@@ -44,12 +44,7 @@ type tickView struct {
 func readoutOf(f factoryd.CaseFacts, get func(field string) string, at string, name func(string) string) roomView {
 	answer, _ := factoryd.AnswerOf(factoryd.ActExtend)
 	v := roomView{ID: at + "-room", Each: factoryd.EachLine(f), EachID: at + "-each",
-		Tick: tickView{ID: at + "-money", Name: name("money"), Checked: strings.TrimSpace(get("money")) == "yes"}}
-	for _, field := range answer.Fields {
-		if field.Name == "money" {
-			v.Tick.Label = field.Label
-		}
-	}
+		Tick: tickView{ID: at + "-money", Name: name("money"), Label: moneyName(), Checked: strings.TrimSpace(get("money")) == "yes"}}
 	args, _, err := factoryd.ArgsOf(answer, get)
 	if err != nil {
 		v.Why = err.Error()
@@ -70,6 +65,18 @@ func readoutOf(f factoryd.CaseFacts, get func(field string) string, at string, n
 		v.Guard = append(v.Guard, hidden{name(k), shown[k]})
 	}
 	return v
+}
+
+// moneyName is the money row's name in a room's table and in the chat's:
+// the label of the room's money field in the vocabulary.
+func moneyName() string {
+	answer, _ := factoryd.AnswerOf(factoryd.ActExtend)
+	for _, field := range answer.Fields {
+		if field.Name == "money" {
+			return field.Label
+		}
+	}
+	return ""
 }
 
 // countOf is the room's count field fv as its buttons, one per count from
@@ -126,12 +133,14 @@ func (c *Console) roomFactsOf(ctx context.Context, v *boardView, t factoryd.Task
 	return f
 }
 
-// fundView is the money row of "Add money to the chat" (C48): the chat's
-// money left, the EUR field in the adds column, what the chat then has,
-// read again from Get with the field named in Params into the element ID,
-// and the project's month, or Note where the chat could not be read.
+// fundView is the money row of "Add money to the chat" (C48): its name,
+// the chat's money left, the EUR field in the adds column, what the chat
+// then has, read again from Get with the field named in Params into the
+// element ID, and the project's month, or Note where the chat could not be
+// read.
 type fundView struct {
 	ID, Get, Params string
+	Name            string
 	Field           fieldView
 	Row             factoryd.RoomRow
 	Month, Note     string
@@ -140,7 +149,7 @@ type fundView struct {
 // fundOf is the money row of chat budget card t's raise of amount, read
 // as the press reads it, an empty amount at its default.
 func (c *Console) fundOf(ctx context.Context, t factoryd.Task, amount string) fundView {
-	var v fundView
+	v := fundView{Name: moneyName()}
 	chat, ok, err := c.cfg.Tasks.Task(ctx, t.Parent)
 	if err != nil || !ok {
 		log.Printf("console: the chat task %s of %s: found %v, %v", t.Parent, t.ID, ok, err)
@@ -161,7 +170,8 @@ func (c *Console) fundOf(ctx context.Context, t factoryd.Task, amount string) fu
 }
 
 // fundReadout answers what the chat of chat budget card id then has at the
-// amount its query names under the field the query's field names.
+// amount its query names under the field the query's field names, an
+// amount field (".eur").
 func (c *Console) fundReadout(w http.ResponseWriter, r *http.Request) {
 	t, err := c.cardIn(r.Context(), button(r), r.PathValue("id"))
 	if err != nil {
@@ -173,5 +183,10 @@ func (c *Console) fundReadout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	c.render(w, "fund-then", c.fundOf(r.Context(), t, q.Get(q.Get("field"))))
+	field := q.Get("field")
+	if !strings.HasSuffix(field, ".eur") {
+		c.fail(w, r, refuse(http.StatusBadRequest, "The query names no amount in EUR: its field ends in .eur."))
+		return
+	}
+	c.render(w, "fund-then", c.fundOf(r.Context(), t, q.Get(field)))
 }
