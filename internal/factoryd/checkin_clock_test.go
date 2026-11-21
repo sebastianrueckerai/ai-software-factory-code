@@ -181,20 +181,23 @@ func TestRunSessionCheckinTakesNoTimeOfTheSession(t *testing.T) {
 	}
 }
 
-// The window of a session's activity is the card's remaining time and the
-// grace, and for the session that opens with a check-in the 30m extra on top
-// of them. With the 20m cap, s1 gets 20m + 2m = 22m. After s1's minute the
-// card has 19m left: s2 gets 19m + 30m + 2m = 51m, and a run from before
-// the change 19m + 2m = 21m. s2 used 1m less its check-in's 40s, so the card
-// has used 1m20s and s3 gets 18m40s + 2m = 20m40s; before the change it has
-// used 2m and s3 gets 18m + 2m = 20m.
+// The window of a session's activity is the card's remaining time, the raise
+// headroom and the grace, and for the session that opens with a check-in the
+// 30m extra on top of them. A session's worth is 5m in each: a quarter of
+// the 20m cap before s1, and the floor after (1m over s1, 1m20s or 2m over
+// two), so the headroom is 25m. With the 20m cap, s1 gets 20m + 25m + 2m =
+// 47m. After s1's minute the card has 19m left: s2 gets 19m + 30m + 25m +
+// 2m = 76m, and a run from before the check-in change 19m + 25m + 2m = 46m.
+// s2 used 1m less its check-in's 40s, so the card has used 1m20s and s3 gets
+// 18m40s + 25m + 2m = 45m40s; before the change it has used 2m and s3 gets
+// 18m + 25m + 2m = 45m.
 func TestWorkflowSessionWindowCarriesTheCheckinExtra(t *testing.T) {
 	for name, tc := range map[string]struct {
 		pinned bool
 		want   []time.Duration
 	}{
-		"gated":  {false, []time.Duration{22 * time.Minute, 51 * time.Minute, 20*time.Minute + 40*time.Second}},
-		"pinned": {true, []time.Duration{22 * time.Minute, 21 * time.Minute, 20 * time.Minute}},
+		"gated":  {false, []time.Duration{47 * time.Minute, 76 * time.Minute, 45*time.Minute + 40*time.Second}},
+		"pinned": {true, []time.Duration{47 * time.Minute, 46 * time.Minute, 45 * time.Minute}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := checkinClockRun(t, tc.pinned)

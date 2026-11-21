@@ -3006,6 +3006,16 @@ func (s *fakeStore) SetLiveSessionLines(ctx context.Context, taskID string, line
 	return nil
 }
 
+func (s *fakeStore) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if l, ok := s.liveSessions[taskID]; ok {
+		l.Deadline = deadline
+		s.liveSessions[taskID] = l
+	}
+	return nil
+}
+
 func (s *fakeStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()

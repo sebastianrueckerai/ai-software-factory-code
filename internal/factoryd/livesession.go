@@ -45,6 +45,11 @@ func (s *PGStore) SetLiveSessionLines(ctx context.Context, taskID string, lines 
 	return err
 }
 
+func (s *PGStore) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE live_sessions SET deadline = $2 WHERE task_id = $1`, taskID, deadline)
+	return err
+}
+
 func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	var l LiveSession
 	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity

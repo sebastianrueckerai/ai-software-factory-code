@@ -437,6 +437,10 @@ func (s *Supervisor) Spent(spent, budget float64) *Trip {
 // cap no longer applies.
 func (s *Supervisor) Climbed() { s.cfg.CheapCap = 0 }
 
+// Lengthen moves the session's wall-clock cap out by d: a raise of the
+// card's agent time the session took.
+func (s *Supervisor) Lengthen(d time.Duration) { s.deadline = s.deadline.Add(d) }
+
 // AgentAsks opens an agent escalation's reason, before its question;
 // agentAsksAuthor an information request's.
 const (

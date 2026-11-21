@@ -708,6 +708,10 @@ func (s *acceptanceStore) PutLiveSession(context.Context, factoryd.LiveSession) 
 
 func (s *acceptanceStore) SetLiveSessionLines(context.Context, string, int) error { return nil }
 
+func (s *acceptanceStore) SetLiveSessionDeadline(context.Context, string, time.Time) error {
+	return nil
+}
+
 func (s *acceptanceStore) LiveSession(context.Context, string) (factoryd.LiveSession, bool, error) {
 	return factoryd.LiveSession{}, false, nil
 }

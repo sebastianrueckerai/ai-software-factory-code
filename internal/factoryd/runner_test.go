@@ -4096,7 +4096,10 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
-	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour), spendSupervisor(t, nil))
+	watch := newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour)
+	watch.budget = 5
+	deadline := time.Now().Add(time.Hour)
+	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", watch, spendSupervisor(t, nil), &deadline)
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
@@ -4105,6 +4108,206 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	}
 	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "this session spent 4.90 EUR of the 5.00 EUR the card had left at its start (98 percent, the line is 60) and no work is pushed" {
 		t.Fatalf("trip = %+v, want the no-push trip at 4.90 of 5.00", trip)
+	}
+}
+
+// raiseRig is a running session of card t1, which had 18 minutes of agent
+// time left and 4.50 of 5.00 EUR spent when the session started 15 minutes
+// ago: its deadline is 3 minutes away, and the end of its activity's window
+// headroom past that. Both wrap-up warnings reached the agent, the time
+// warning at its 80 percent share, 14.4 of the 18 minutes. The card's row
+// then takes the raise of time and of budget.
+type raiseRig struct {
+	runner   *Runner
+	store    *fakeStore
+	worker   *fakeWorkerEndpoint
+	task     Task
+	s        sessionSpec
+	watch    *limitWatch
+	sup      *Supervisor
+	started  time.Time
+	deadline time.Time
+}
+
+func newRaiseRig(t *testing.T, headroom time.Duration) *raiseRig {
+	t.Helper()
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 4.5, Track: "direct",
+		Usage: TaskUsage{AgentTime: 42 * time.Minute, Attempts: 3}}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	started := time.Now().Add(-15 * time.Minute)
+	deadline := started.Add(18 * time.Minute)
+	if err := store.PutLiveSession(context.Background(), LiveSession{TaskID: "t1", SessionID: "s1", Namespace: "ns", Pod: "pod", StartedAt: started, Deadline: deadline}); err != nil {
+		t.Fatal(err)
+	}
+	sup, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 18 * time.Minute, RepetitionEvents: 100, NoWriteAfter: 100 * time.Hour},
+		deadline.Add(-18*time.Minute), started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := newLimitWatch(policy.Limits{}, false, started, 18*time.Minute)
+	watch.added, watch.budget = task.Usage.TimeAdded(), task.BudgetEUR
+	watch.sent(warnTime)
+	watch.sent(warnBudget)
+	return &raiseRig{runner: runner, store: store, worker: worker, task: task, s: sessionSpec{id: "s1", messageToken: "tok", ceiling: deadline.Add(headroom)},
+		watch: watch, sup: sup, started: started, deadline: deadline}
+}
+
+// raise puts d more agent time and eur more budget on the card's row.
+func (g *raiseRig) raise(d time.Duration, eur float64) {
+	row := g.store.tasks["t1"]
+	row.Usage.RaisedTime += d
+	row.BudgetEUR += eur
+	g.store.tasks["t1"] = row
+}
+
+// tick runs one watch of the session's limits and answers what the worker
+// got from it.
+func (g *raiseRig) tick(t *testing.T) []string {
+	t.Helper()
+	g.worker.mu.Lock()
+	before := len(g.worker.texts)
+	g.worker.mu.Unlock()
+	if trip := g.runner.watchLimits(context.Background(), g.task, g.s, "ns", "pod", g.watch, g.sup, &g.deadline); trip != nil {
+		t.Fatalf("trip = %+v", trip)
+	}
+	g.worker.mu.Lock()
+	defer g.worker.mu.Unlock()
+	return slices.Clone(g.worker.texts[before:])
+}
+
+// By hand: the card's agent-time cap grows by 24 minutes and its budget by
+// 1.50 EUR during the session, inside its window's headroom of 70 minutes.
+// The deadline, the supervisor's and the live row's move from 18 to 42
+// minutes past the start and the watch's span with them. The time warning,
+// sent at 14.4 minutes, is due again: 15 minutes in is under 80 percent of
+// 42 (33.6), and at 34 minutes 8 are left. 4.50 is under 80 percent of the
+// 6.50 budget (5.20), so the budget warning is due again too. The agent
+// hears one line, and a tick with no new raise says nothing.
+func TestARaiseLengthensTheRunningSession(t *testing.T) {
+	g := newRaiseRig(t, 70*time.Minute)
+	g.raise(24*time.Minute, 1.5)
+	texts := g.tick(t)
+	want := g.started.Add(42 * time.Minute)
+	if !g.deadline.Equal(want) || !g.sup.deadline.Equal(want) || g.watch.span != 42*time.Minute {
+		t.Fatalf("deadline %v, supervisor %v, span %v; want %v, %v, 42m", g.deadline, g.sup.deadline, g.watch.span, want, want)
+	}
+	if l, _, _ := g.store.LiveSession(context.Background(), "t1"); !l.Deadline.Equal(want) {
+		t.Fatalf("live row's deadline %v, want %v", l.Deadline, want)
+	}
+	if !slices.Equal(texts, []string{"POST /message factoryd: the card got 24 more minutes of agent time and 1.50 EUR. Go on with the work in this session."}) {
+		t.Fatalf("worker got %q, want the room line alone", texts)
+	}
+	if g.watch.done[warnTime] || g.watch.done[warnBudget] {
+		t.Fatalf("warnings sent %v, want both due again", g.watch.done)
+	}
+	if got := g.watch.due(4.5, 6.5, g.started.Add(34*time.Minute)); len(got) != 1 || got[0].text != "factoryd: 8 minutes of agent time are left. "+codingWrapUp {
+		t.Fatalf("due at 34 minutes = %+v, want the time warning with 8 minutes left", got)
+	}
+	if texts := g.tick(t); len(texts) != 0 || !g.deadline.Equal(want) {
+		t.Fatalf("a tick with no raise sent %q and left the deadline at %v", texts, g.deadline)
+	}
+}
+
+// By hand: a raise of 200 minutes against a headroom of 70 moves the
+// deadline to the window's end, 18 + 70 = 88 minutes past the start, and no
+// further; the agent hears of the 70 the session got. A raise of 10 more
+// minutes after that moves nothing and says nothing.
+func TestARaiseStopsAtTheWindow(t *testing.T) {
+	g := newRaiseRig(t, 70*time.Minute)
+	g.raise(200*time.Minute, 0)
+	texts := g.tick(t)
+	if !g.deadline.Equal(g.s.ceiling) || !g.sup.deadline.Equal(g.s.ceiling) || g.watch.span != 88*time.Minute {
+		t.Fatalf("deadline %v, supervisor %v, span %v; want the ceiling %v and 88m", g.deadline, g.sup.deadline, g.watch.span, g.s.ceiling)
+	}
+	if !slices.Equal(texts, []string{"POST /message factoryd: the card got 70 more minutes of agent time. Go on with the work in this session."}) {
+		t.Fatalf("worker got %q, want the 70 minutes the session got", texts)
+	}
+	g.raise(10*time.Minute, 0)
+	if texts := g.tick(t); len(texts) != 0 || !g.deadline.Equal(g.s.ceiling) {
+		t.Fatalf("a raise past the window sent %q and moved the deadline to %v", texts, g.deadline)
+	}
+}
+
+// A session with no window known, a report's or one scheduled before the
+// room window, keeps its deadline; the money still reaches it, and the
+// agent hears of the money alone.
+func TestARaiseWithNoWindowGivesTheMoneyAlone(t *testing.T) {
+	g := newRaiseRig(t, 0)
+	g.s.ceiling = time.Time{}
+	g.raise(24*time.Minute, 1.5)
+	texts := g.tick(t)
+	if !g.deadline.Equal(g.started.Add(18*time.Minute)) || !g.sup.deadline.Equal(g.deadline) || g.watch.span != 18*time.Minute {
+		t.Fatalf("deadline %v, supervisor %v, span %v; want them unmoved", g.deadline, g.sup.deadline, g.watch.span)
+	}
+	if !slices.Equal(texts, []string{"POST /message factoryd: the card got 1.50 EUR. Go on with the work in this session."}) {
+		t.Fatalf("worker got %q, want the money alone", texts)
+	}
+}
+
+// The activity's window of 10 minutes in the test environment holds a
+// session's own time, its grace of 2 and, where the workflow gave it, the
+// raise headroom past them. With 5 minutes of headroom a coding session's
+// own time ends at the card's 3 minutes left, a planner's at 10 - 5 - 2 =
+// 3; with none, both at the window less the grace, 8. The live row holds
+// it.
+func TestASessionsOwnTimeEndsWhereItsRoomBegins(t *testing.T) {
+	ownTime := func(t *testing.T, spy *liveSpy) time.Duration {
+		t.Helper()
+		spy.mu.Lock()
+		defer spy.mu.Unlock()
+		if len(spy.puts) == 0 {
+			t.Fatal("no live row was written")
+		}
+		return spy.puts[0].Deadline.Sub(spy.puts[0].StartedAt)
+	}
+	for name, tc := range map[string]struct {
+		room     time.Duration
+		min, max time.Duration
+	}{
+		"with headroom": {5 * time.Minute, 2 * time.Minute, 3 * time.Minute},
+		"without":       {0, 7 * time.Minute, 8 * time.Minute},
+	} {
+		t.Run("coding, "+name, func(t *testing.T) {
+			task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, Track: "direct"}
+			runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			spy := &liveSpy{Store: store}
+			runner.store = spy
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 3, Model: "factory/small", AgentTime: time.Hour,
+				RoomExtra: tc.room, Remaining: 3 * time.Minute}, nil, pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+				t.Fatal(err)
+			}
+			if got := ownTime(t, spy); got <= tc.min || got > tc.max {
+				t.Fatalf("the session's own time is %v, want past %v and at most %v", got, tc.min, tc.max)
+			}
+		})
+		t.Run("planner, "+name, func(t *testing.T) {
+			plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+				SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+				Objective: "Link shortener\n\nBuild a link shortener."}
+			kube := newFakeKube()
+			runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
+			pinned := fixtureVersion(t)
+			runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			spy := &liveSpy{Store: store}
+			runner.store = spy
+			done := make(chan error)
+			go func() {
+				_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil), tc.room)
+				done <- err
+			}()
+			awaitPod(t, kube, done)
+			kube.scriptPods(0, resultLine(true, "no plan"))
+			if err := <-done; err != nil {
+				t.Fatalf("RunPlan: %v", err)
+			}
+			if got := ownTime(t, spy); got <= tc.min || got > tc.max {
+				t.Fatalf("the planner's own time is %v, want past %v and at most %v", got, tc.min, tc.max)
+			}
+		})
 	}
 }
 
@@ -4234,6 +4437,84 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	timeline, _ := runner.objects.Get(context.Background(), "sessions/t2/timeline.jsonl")
 	if steps := strings.Count(string(timeline), `"step":"message"`); steps != 1 {
 		t.Fatalf("%d message steps recorded, want only the first failure:\n%s", steps, timeline)
+	}
+}
+
+// deadlineSpy records the live row's deadlines: the one the session's start
+// writes and each one a raise moves it to.
+type deadlineSpy struct {
+	Store
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (s *deadlineSpy) PutLiveSession(ctx context.Context, l LiveSession) error {
+	s.mu.Lock()
+	s.deadlines = append(s.deadlines, l.Deadline)
+	s.mu.Unlock()
+	return s.Store.PutLiveSession(ctx, l)
+}
+
+func (s *deadlineSpy) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time) error {
+	s.mu.Lock()
+	s.deadlines = append(s.deadlines, deadline)
+	s.mu.Unlock()
+	return s.Store.SetLiveSessionDeadline(ctx, taskID, deadline)
+}
+
+// By hand: the workflow scheduled the session with no agent time added to
+// the card's cap, and an extend of 2 minutes reached the row before the
+// session's start. The session's first tick takes it: the live row's
+// deadline moves 2 minutes past the 3 the workflow gave, inside the
+// window's 5 of headroom, and the agent hears of the 2 minutes. A session
+// the workflow scheduled with the extend already counted moves nothing.
+func TestARaiseBeforeTheSessionsStartLengthensItAtItsFirstTick(t *testing.T) {
+	for name, tc := range map[string]struct {
+		counted time.Duration
+		moved   []time.Duration
+		lines   []string
+	}{
+		"after the scheduling": {0, []time.Duration{2 * time.Minute}, []string{"POST /message factoryd: the card got 2 more minutes of agent time. Go on with the work in this session."}},
+		"counted at it":        {2 * time.Minute, nil, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			task := supervisedTask("t2")
+			task.Usage.RaisedTime = 2 * time.Minute
+			runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+			spy := &deadlineSpy{Store: store}
+			runner.store = spy
+			runner.tick = 50 * time.Millisecond
+			worker := &fakeWorkerEndpoint{status: http.StatusNoContent, messageSeen: make(chan struct{}, 16)}
+			worker.start(t, runner)
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				select {
+				case <-worker.messageSeen:
+				case <-time.After(time.Second):
+				}
+				cancel()
+			}()
+			runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", AgentTime: time.Hour,
+				RoomExtra: 5 * time.Minute, Remaining: 3 * time.Minute, TimeAdded: tc.counted}, nil, hangLogs)
+			spy.mu.Lock()
+			var moved []time.Duration
+			for _, d := range spy.deadlines[1:] {
+				moved = append(moved, d.Sub(spy.deadlines[0]))
+			}
+			spy.mu.Unlock()
+			worker.mu.Lock()
+			var lines []string
+			for _, text := range worker.texts {
+				if strings.HasPrefix(text, "POST /message ") {
+					lines = append(lines, text)
+				}
+			}
+			worker.mu.Unlock()
+			if !slices.Equal(moved, tc.moved) || !slices.Equal(lines, tc.lines) {
+				t.Fatalf("deadline moved %v, worker got %q; want %v and %q", moved, lines, tc.moved, tc.lines)
+			}
+		})
 	}
 }
 

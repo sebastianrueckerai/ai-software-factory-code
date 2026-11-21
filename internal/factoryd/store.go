@@ -574,10 +574,12 @@ type Store interface {
 	MarkReverted(ctx context.Context, id string, at time.Time) (bool, error)
 	// PutLiveSession records a running session's sandbox; a retried
 	// RunSession reattaches to it (LiveSession), SetLiveSessionLines
-	// keeps how much of the pod's log the loop consumed, and the session's
+	// keeps how much of the pod's log the loop consumed,
+	// SetLiveSessionDeadline the deadline a raise moved, and the session's
 	// end deletes it.
 	PutLiveSession(ctx context.Context, l LiveSession) error
 	SetLiveSessionLines(ctx context.Context, taskID string, lines int) error
+	SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time) error
 	LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error)
 	DeleteLiveSession(ctx context.Context, taskID string) error
 	// ReleaseLiveSession deletes the row only while owner holds it and

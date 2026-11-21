@@ -255,6 +255,24 @@ func TestSupervisorWallClockSpansSessions(t *testing.T) {
 	}
 }
 
+// A raise lengthens the session's wall clock: a 30 minute cap lengthened by
+// 24 trips at 54 minutes, not at 30.
+func TestALengthenedSupervisorTripsAtItsNewDeadline(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 30 * time.Minute, RepetitionEvents: 100}
+	start := time.Unix(0, 0)
+	s, err := NewSupervisor(cfg, start, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Lengthen(24 * time.Minute)
+	if trip := s.Tick(start.Add(53*time.Minute + 59*time.Second)); trip != nil {
+		t.Fatalf("tripped before the lengthened cap: %+v", trip)
+	}
+	if trip := s.Tick(start.Add(54 * time.Minute)); trip == nil || trip.Kind != TripWallClock {
+		t.Fatalf("trip = %+v, want wall_clock at 54 minutes", trip)
+	}
+}
+
 func TestSupervisorTripIsSticky(t *testing.T) {
 	s := mustSupervisor(t, time.Minute, time.Hour, 5)
 	t0 := time.Unix(0, 0)

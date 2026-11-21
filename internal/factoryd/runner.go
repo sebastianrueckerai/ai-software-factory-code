@@ -643,11 +643,15 @@ type sessionSpec struct {
 	// check-in took, so it costs the session none of its own time
 	checkinExtra time.Duration
 	// remaining is the card's agent time at the session's scheduling, which
-	// bounds the session's own time when checkinExtra is set; ceiling is
-	// the end of the activity's window, past which no deadline moves, zero
-	// for none
+	// bounds the session's own time when the workflow added time to its
+	// window; ceiling is the end of the activity's window, past which no
+	// deadline moves, zero for none: no raise lengthens such a session
 	remaining time.Duration
 	ceiling   time.Time
+	// added is the agent time added to the card's cap that the session's
+	// deadline counts: the workflow's at the scheduling when it gave the
+	// window raise headroom, else the card's at the session's start
+	added time.Duration
 	// report is a report session's guide; "" for a coding
 	// session
 	report string
@@ -990,6 +994,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
+	watch.added, watch.budget = s.added, t.BudgetEUR
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
 	var messages []string
@@ -1453,7 +1458,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			trip := sup.Tick(time.Now())
 			if trip == nil {
-				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup)
+				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup, &deadline)
 			}
 			if trip != nil {
 				if end, err := onTrip(trip); end {
@@ -1584,6 +1589,15 @@ func (s sessionSpec) pastCheckin(t time.Time) time.Time {
 		return t
 	}
 	return earliest(t, s.ceiling)
+}
+
+// lengthened is deadline moved out by d, never past the end of the
+// activity's window; a session with no window known keeps it.
+func (s sessionSpec) lengthened(deadline time.Time, d time.Duration) time.Time {
+	if s.ceiling.IsZero() || d <= 0 || !deadline.Before(s.ceiling) {
+		return deadline
+	}
+	return earliest(deadline.Add(d), s.ceiling)
 }
 
 // checkinTook is the time a start check-in took that the session's deadline
@@ -3459,10 +3473,12 @@ func (k *InClusterKube) Namespace() string {
 	return string(bytes.TrimSpace(b))
 }
 
-// watchLimits reads the card's row once per tick: the agent gets the
-// warning it is due; a warning the pod did not take stays due, and only its first failure is
-// recorded on the timeline.
-func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor) *Trip {
+// watchLimits reads the card's row once per tick: a raise of its agent time
+// past what the session took moves deadline, the supervisor's and the
+// watch's span out by as much as the window allows, and the agent gets the
+// line on the raise and the warning it is due; a line the pod did not take
+// stays due, and only its first failure is recorded on the timeline.
+func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor, deadline *time.Time) *Trip {
 	cur, ok, err := r.store.Task(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the card's spend: %v", t.ID, err)
@@ -3470,6 +3486,20 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 	}
 	if !ok {
 		return nil
+	}
+	// a raise of the card's agent time lengthens the session as far as its
+	// window allows, and the money reaches it at its next call
+	if grew, cents := cur.Usage.TimeAdded()-w.added, Cents(cur.BudgetEUR)-Cents(w.budget); grew > 0 || cents > 0 {
+		w.added, w.budget = cur.Usage.TimeAdded(), cur.BudgetEUR
+		d := s.lengthened(*deadline, grew).Sub(*deadline)
+		if d > 0 {
+			*deadline = deadline.Add(d)
+			sup.Lengthen(d)
+			if err := r.store.SetLiveSessionDeadline(ctx, t.ID, *deadline); err != nil {
+				log.Printf("task %s: session %s: record the deadline a raise moved: %s", t.ID, s.id, r.scrub(err.Error()))
+			}
+		}
+		w.Lengthen(d, max(cents, 0), cur.EnforcedSpent(), cur.BudgetEUR, time.Now())
 	}
 	for _, wn := range w.due(cur.EnforcedSpent(), cur.BudgetEUR, time.Now()) {
 		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)

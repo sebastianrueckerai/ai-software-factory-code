@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -410,9 +411,16 @@ type SessionInput struct {
 	// CheckinExtra is the time the workflow added to the session's activity
 	// beside its own, for the check-in that opens it (versionCheckinClock).
 	CheckinExtra time.Duration `json:",omitempty"`
+	// RoomExtra is the time the workflow added to the session's activity
+	// for raises of the card's agent time during the session, 5 sessions'
+	// worth (versionRoomWindow). TimeAdded, set with it, is the agent time
+	// added to the card's cap when the session was scheduled: a raise past
+	// it, one before the session's start too, lengthens the session.
+	RoomExtra time.Duration `json:",omitempty"`
+	TimeAdded time.Duration `json:",omitempty"`
 	// Remaining is the agent time the card had left when the session was
-	// scheduled, set with CheckinExtra: the session's own time ends there
-	// and the check-in's time comes after it.
+	// scheduled, set with CheckinExtra or RoomExtra: the session's own time
+	// ends there, and the check-in's time and the raises come after it.
 	Remaining time.Duration `json:",omitempty"`
 }
 
@@ -635,6 +643,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.noTypedSuccessor = workflow.GetVersion(ctx, "no-typed-successor", workflow.DefaultVersion, versionNoTypedSuccessor)
 	run.retryPressDrop = workflow.GetVersion(ctx, "retry-press-drop", workflow.DefaultVersion, versionRetryPressDrop)
 	run.humanWaitQueue = workflow.GetVersion(ctx, "human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue)
+	run.roomWindow = workflow.GetVersion(ctx, "room-window", workflow.DefaultVersion, versionRoomWindow)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -965,6 +974,17 @@ const (
 	// resolution the answer. A run from before takes such a face as another
 	// case's and queues or drops such a resolution.
 	versionAskedAgainCase workflow.Version = 1
+	// versionRoomWindow (change id "room-window"): a session's activity
+	// window, the planner's too, holds 5 sessions' worth of headroom past
+	// the card's agent time left (SessionInput.RoomExtra), so a raise of
+	// the card's agent time lengthens the running session; and the run's
+	// own grant gives the starts and the agent time the card lacks for one
+	// more session's worth at its own average session (SessionRoom), a
+	// grant of time alone up to that average. Read where a session is
+	// scheduled and where the run grants. A run from before schedules a
+	// session with its time left alone, and grants an attempt at the
+	// session cap, else agent time, up to a quarter of the card's.
+	versionRoomWindow workflow.Version = 1
 )
 
 // keysCard tells whether the run's card is its key's card in its plan: a
@@ -1172,6 +1192,9 @@ type taskRun struct {
 	// held before AutoMerge's, which regate's ask again carries
 	asked     ApprovalInput
 	askedCard []string
+	// roomWindow: a session's window holds raise headroom, and a grant is
+	// a session's worth at the card's average (versionRoomWindow)
+	roomWindow workflow.Version
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -1275,15 +1298,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return unsized
 	}
-	// capAnswer is what an answer at a cap buys: an attempt only at the
-	// session cap, else the agent time alone
-	capAnswer := func() {
-		if u.Attempts < t.cfg.MaxSessions+u.SessionsAdded() {
-			t.grantTime(&u)
-			return
-		}
-		t.grant(&u)
-	}
 	// apply takes a verification's findings for the next session. A
 	// writer's change request with no session left is the human's answer:
 	// it buys the session, answered, and what it bought is the writer's
@@ -1318,7 +1332,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if v.requested &&
 			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least()) {
 			before := u
-			capAnswer()
+			t.capGrant(&u)
 			draw := policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}
 			refused := false
 			switch {
@@ -1876,6 +1890,10 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		in.LastGates = gates
 		window := remaining
+		if t.roomWindow >= versionRoomWindow {
+			in.RoomExtra, in.TimeAdded, in.Remaining = t.roomExtra(u), u.TimeAdded(), remaining
+			window += in.RoomExtra
+		}
 		if checkinPending {
 			if t.checkinClock >= versionCheckinClock {
 				in.CheckinExtra, in.Remaining = policy.MaxCheckinTime, remaining
@@ -2711,11 +2729,31 @@ func (t *taskRun) sessionAnswered(res SessionResult, began time.Time, attempt in
 	return ok
 }
 
-// grant is what a human answer buys; only a human raises a limit. One
-// more attempt, and grantTime's agent time.
+// grant is what a human answer buys; only a human raises a limit: the
+// starts and the agent time the card lacks for one more session's worth
+// (versionRoomWindow), else one more attempt and grantTime's agent time.
 func (t *taskRun) grant(u *TaskUsage) {
+	if t.roomWindow >= versionRoomWindow {
+		_, starts, add := SessionRoom(t.cfg.MaxSessions+u.SessionsAdded()-u.Attempts, t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime,
+			t.sessionWorth(*u), math.MaxInt, 1)
+		u.ExtraAttempts += starts
+		u.ExtraTime += add
+		t.recordUsage(*u)
+		return
+	}
 	u.ExtraAttempts++
 	t.grantTime(u)
+}
+
+// capGrant is what an answer at a cap buys: grant's, and in a run from
+// before the room window an attempt only at the session cap, else the
+// agent time alone.
+func (t *taskRun) capGrant(u *TaskUsage) {
+	if t.roomWindow < versionRoomWindow && u.Attempts < t.cfg.MaxSessions+u.SessionsAdded() {
+		t.grantTime(u)
+		return
+	}
+	t.grant(u)
 }
 
 // RepeatAsk is the ask a check-in stop with mark asks instead of its
@@ -2793,20 +2831,31 @@ func (t *taskRun) marksKept() bool {
 	return workflow.GetVersion(t.ctx, "checkin-mark", workflow.DefaultVersion, versionCheckinMark) >= versionCheckinMark
 }
 
-// grantTime is an answer's agent time: when less than answerTime of agent
-// time is left, the difference, so the attempt is not born at the cap.
+// grantTime is an answer's agent time: when less than sessionWorth of
+// agent time is left, the difference, so the attempt is not born at the
+// cap.
 func (t *taskRun) grantTime(u *TaskUsage) {
-	if left, slice := t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime, t.answerTime(); left < slice {
+	if left, slice := t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime, t.sessionWorth(*u); left < slice {
 		u.ExtraTime += slice - left
 	}
 	t.recordUsage(*u)
 }
 
-// answerTime is the agent time an answer leaves the next session: a
+// sessionWorth is the agent time an answer leaves the next session: the
+// card's session's worth by u (EstimateTime, versionRoomWindow), else a
 // quarter of the resolved agent time, never under the 5 minutes a session
 // needs to start.
-func (t *taskRun) answerTime() time.Duration {
+func (t *taskRun) sessionWorth(u TaskUsage) time.Duration {
+	if t.roomWindow >= versionRoomWindow {
+		return EstimateTime(u.AgentTime, u.Attempts, t.cfg.WallClockCap)
+	}
 	return AnswerSlice(t.cfg.WallClockCap)
+}
+
+// roomExtra is the raise headroom a session's window holds past the card's
+// agent time left: MaxRoomSessions of its sessions' worth by u.
+func (t *taskRun) roomExtra(u TaskUsage) time.Duration {
+	return MaxRoomSessions * t.sessionWorth(u)
 }
 
 // AnswerSlice is the agent time an answer leaves the next session under

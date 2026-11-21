@@ -1275,9 +1275,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			return SessionResult{}, named("namespace", err)
 		}
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
-		if s.checkinExtra > 0 {
+		if s.checkinExtra > 0 || in.RoomExtra > 0 {
 			deadline = earliest(deadline, activity.GetInfo(ctx).StartedTime.Add(s.remaining))
-			s.ceiling = activity.GetInfo(ctx).Deadline.Add(-sessionGrace)
 		}
 		r.record(ctx, t.ID, "session_start", map[string]any{
 			"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
@@ -1285,6 +1284,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	} else {
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, time.Until(live.Deadline)), live.StartedAt
 		r.record(ctx, t.ID, "session_reattached", map[string]any{"session": s.id, "pod": live.Pod, "lines": live.Lines, "attempt": in.Attempt})
+	}
+	if s.checkinExtra > 0 || in.RoomExtra > 0 {
+		s.ceiling = activity.GetInfo(ctx).Deadline.Add(-sessionGrace)
+	}
+	s.added = t.Usage.TimeAdded()
+	if live == nil && in.RoomExtra > 0 {
+		s.added = in.TimeAdded
 	}
 	began := rfc3339(startedAt)
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), live)

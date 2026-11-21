@@ -64,3 +64,67 @@ func TestLimitWatchSkipsWhatHasNoBudgetOrSpan(t *testing.T) {
 		t.Fatalf("a zero budget and a zero span warned: %v", got)
 	}
 }
+
+// A raise during the session grows the watch's span and makes a sent
+// warning due again when the new figures put the session under its share.
+// 97 minutes into a 2h span the time warning went; 30 more minutes make the
+// span 150, whose 80 percent is 120: due again, and due at 120. The budget
+// warning went at 4.50 of 5.00; a budget of 6.00 puts 4.50 under its 4.80,
+// one of 5.50 leaves it over its 4.40.
+func TestLimitWatchLengthenMakesAWarningDueAgain(t *testing.T) {
+	start := time.Unix(0, 0)
+	w := newLimitWatch(policy.Limits{}, false, start, 2*time.Hour)
+	w.sent(warnTime)
+	w.sent(warnBudget)
+	w.Lengthen(30*time.Minute, 0, 4.5, 5.5, start.Add(97*time.Minute))
+	if w.span != 150*time.Minute || w.done[warnTime] || !w.done[warnBudget] {
+		t.Fatalf("span %v, done %v; want 150m, the time warning due again and the budget one sent", w.span, w.done)
+	}
+	if got := w.due(4.5, 5.5, start.Add(119*time.Minute)); len(got) != 1 || got[0].kind != warnRoom {
+		t.Fatalf("due at 119m = %+v, want the room line alone", got)
+	}
+	w.sent(warnRoom)
+	if got := w.due(4.5, 5.5, start.Add(120*time.Minute)); len(got) != 1 || got[0].text != "factoryd: 30 minutes of agent time are left. "+codingWrapUp {
+		t.Fatalf("due at 120m = %+v, want the time warning with 30 minutes left", got)
+	}
+	w.Lengthen(0, 50, 4.5, 6, start.Add(120*time.Minute))
+	if w.done[warnBudget] {
+		t.Fatal("a budget of 6.00 leaves the budget warning sent at 4.50")
+	}
+}
+
+// The room line names only what grew, and stays due until it reaches the
+// agent; two raises before it does are one line.
+func TestLimitWatchOwesTheRoomLineUntilItIsSent(t *testing.T) {
+	start := time.Unix(0, 0)
+	line := func(w *limitWatch) string {
+		for _, wn := range w.due(0, 10, start) {
+			if wn.kind == warnRoom {
+				return wn.text
+			}
+		}
+		return ""
+	}
+	w := newLimitWatch(policy.Limits{}, false, start, time.Hour)
+	w.Lengthen(time.Minute, 0, 0, 10, start)
+	if got := line(w); got != "factoryd: the card got 1 more minute of agent time. Go on with the work in this session." {
+		t.Fatalf("time alone: %q", got)
+	}
+	w.Lengthen(0, 150, 0, 10, start)
+	if got := line(w); got != "factoryd: the card got 1 more minute of agent time and 1.50 EUR. Go on with the work in this session." {
+		t.Fatalf("time and money: %q", got)
+	}
+	w.sent(warnRoom)
+	if got := line(w); got != "" {
+		t.Fatalf("a sent line is due again: %q", got)
+	}
+	w.Lengthen(30*time.Second, 120, 0, 10, start)
+	if got := line(w); got != "factoryd: the card got 1.20 EUR. Go on with the work in this session." {
+		t.Fatalf("money and half a minute: %q", got)
+	}
+	w.sent(warnRoom)
+	w.Lengthen(30*time.Second, 0, 0, 10, start)
+	if got := line(w); got != "" {
+		t.Fatalf("half a minute alone is owed, not told: %q", got)
+	}
+}

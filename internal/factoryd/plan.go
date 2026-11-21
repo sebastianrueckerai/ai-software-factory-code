@@ -2290,11 +2290,7 @@ func (t *taskRun) planLoop() (string, error) {
 		if waited && !asked && by != "" && t.planAsksAgain(u) &&
 			workflow.GetVersion(t.ctx, "plan-answer-grant", workflow.DefaultVersion, versionPlanAnswerGrant) >= versionPlanAnswerGrant {
 			before := u
-			if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
-				t.grant(&u)
-			} else {
-				t.grantTime(&u)
-			}
+			t.capGrant(&u)
 			t.recordGrant(by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}, u)
 		}
 		if waited && t.planAsksAgain(u) {
@@ -2404,7 +2400,12 @@ func (t *taskRun) planLoop() (string, error) {
 		began := workflow.Now(t.ctx)
 		var res PlanResult
 		t.dropRetryPresses()
-		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
+		window, args := remaining, []any{t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings}
+		if t.roomWindow >= versionRoomWindow {
+			room := t.roomExtra(u)
+			window, args = window+room, append(args, room, u.TimeAdded())
+		}
+		v, decided, err := t.race(t.sessionOptions(window), &res, ActivityRunPlan, args...)
 		if err == nil && !decided && res.Refused.Status != 0 {
 			ask = t.providerRefused(&refusals, res.Refused, t.cfg.Models.Stronger)
 			if final, why, ok := t.decided(); ok {
@@ -2876,7 +2877,10 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 // which checks the whole plan json while it runs: RunPlan takes the
 // filing the tool stored (FilePlan) and returns it; a session that ends
 // without filing one says so, with its last message beside the finding.
-func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
+// room is the time the workflow added to the activity's window for raises
+// during the session (versionRoomWindow), 0 for none, and added the agent
+// time added to the card's cap when the session was scheduled.
+func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string, room, added time.Duration) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanResult{}, err
@@ -2942,6 +2946,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, err
 	}
+	extra.room, extra.added = room, added
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	r.newBriefSession(taskID)
 	began := time.Now()

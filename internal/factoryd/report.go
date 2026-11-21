@@ -186,6 +186,8 @@ type reportExtra struct {
 	record   *carryState
 	role     string        // the session's role on its timeline lines; "" for none
 	reserve  time.Duration // what the activity keeps after the session, taken off its agent time and its deadline
+	room     time.Duration // the raise headroom the activity's window holds past the session's own time
+	added    time.Duration // with room, the agent time added to the card's cap when the session was scheduled
 	summary  func() string // the session_end summary in factoryd's words; nil keeps the agent's
 }
 
@@ -265,7 +267,11 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if s.cache, s.image, err = r.setupNamespace(ctx, &t, base); err != nil {
 		return reportEnd{}, err
 	}
-	deadline, startedAt := reportDeadline(activity.GetInfo(ctx).Deadline, s.agentTime, extra.reserve), time.Now()
+	deadline, startedAt := reportDeadline(activity.GetInfo(ctx).Deadline.Add(-extra.room), s.agentTime, extra.reserve), time.Now()
+	s.added = t.Usage.TimeAdded()
+	if extra.room > 0 {
+		s.ceiling, s.added = activity.GetInfo(ctx).Deadline.Add(-extra.reserve-sessionGrace), extra.added
+	}
 	began := rfc3339(startedAt)
 	line := func(detail map[string]any) map[string]any {
 		if extra.role != "" {

@@ -282,7 +282,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return nil
 		},
 		ActivityWithdrawApproval: func(ctx context.Context, taskID string) error { return nil },
-		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string, judgment bool) (PlanResult, error) {
+		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string, room, added time.Duration) (PlanResult, error) {
 			return PlanResult{}, nil
 		},
 		ActivityRequestPlan: func(ctx context.Context, taskID string, revision int, pin int64) (PlanRef, error) {
@@ -613,7 +613,9 @@ func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
 // instead of the class shows up in either assertion. Breaking any of the
 // three lines this depends on (program()'s t.cfg.Task assignment, its
 // WallClockCap override, or the lifecycle's SessionInput literal) turns
-// this red.
+// this red. The window holds 5 sessions' worth of raise headroom past
+// it: before the first session a session's worth is a quarter of the
+// class's 2h, 30m, so 2h30m.
 func TestWorkflowSessionCarriesTheTasksOwnAgentTimeAndCheckIn(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
@@ -634,25 +636,29 @@ func TestWorkflowSessionCarriesTheTasksOwnAgentTimeAndCheckIn(t *testing.T) {
 	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 2*time.Hour || h.sessions[0].CheckIn != 45*time.Minute {
 		t.Fatalf("sessions = %+v, want the class's AgentTime 2h, CheckIn 45m", h.sessions)
 	}
-	if want := 2*time.Hour + sessionGrace; len(deadlines) != 1 || deadlines[0] != want {
-		t.Fatalf("activity StartToCloseTimeout = %v, want %v (the class's own agent_time plus grace, not the workflow's 20m cap)", deadlines, want)
+	if want := 2*time.Hour + 150*time.Minute + sessionGrace; len(deadlines) != 1 || deadlines[0] != want || h.sessions[0].RoomExtra != 150*time.Minute {
+		t.Fatalf("activity StartToCloseTimeout = %v, room extra %v; want %v (the class's own agent_time, its headroom of 2h30m and the grace, not the workflow's 20m cap)",
+			deadlines, h.sessions[0].RoomExtra, want)
 	}
 }
 
 // A session's own agent time is the card's, sized: a class of 2h gives a
 // large card 3h (2h and half of it), a medium one 2h and a small one 1h,
-// the same as its activity's window, so the session's clock does not stop
-// it before the card's cap. Time added to the card rides it too.
+// the same as its activity's window less the raise headroom, so the
+// session's clock does not stop it before the card's cap. Time added to
+// the card rides it too. The headroom is 5 sessions' worth, before the
+// first session each a quarter of the sized time, which no time added
+// moves: 5 x 45m, 5 x 30m, 5 x 15m, and 5 x 30m for the added card.
 func TestWorkflowSessionRunsOnTheCardsSizedTime(t *testing.T) {
 	for _, c := range []struct {
-		size  string
-		added time.Duration
-		want  time.Duration
+		size       string
+		added      time.Duration
+		want, room time.Duration
 	}{
-		{"large", 0, 3 * time.Hour},
-		{"medium", 0, 2 * time.Hour},
-		{"small", 0, time.Hour},
-		{"", 30 * time.Minute, 2*time.Hour + 30*time.Minute},
+		{"large", 0, 3 * time.Hour, 225 * time.Minute},
+		{"medium", 0, 2 * time.Hour, 150 * time.Minute},
+		{"small", 0, time.Hour, 75 * time.Minute},
+		{"", 30 * time.Minute, 2*time.Hour + 30*time.Minute, 150 * time.Minute},
 	} {
 		h := newWorkflowHarness(t)
 		h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
@@ -671,8 +677,8 @@ func TestWorkflowSessionRunsOnTheCardsSizedTime(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("size %q: final = %q, want done", c.size, final)
 		}
-		if len(h.sessions) != 1 || h.sessions[0].AgentTime != c.want || len(windows) != 1 || windows[0] != c.want+sessionGrace {
-			t.Errorf("size %q, %v added: sessions %+v in windows %v; want one of agent time %v in a window of it and the grace", c.size, c.added, h.sessions, windows, c.want)
+		if len(h.sessions) != 1 || h.sessions[0].AgentTime != c.want || h.sessions[0].RoomExtra != c.room || len(windows) != 1 || windows[0] != c.want+c.room+sessionGrace {
+			t.Errorf("size %q, %v added: sessions %+v in windows %v; want one of agent time %v in a window of it, %v of headroom and the grace", c.size, c.added, h.sessions, windows, c.want, c.room)
 		}
 	}
 }
@@ -1415,7 +1421,8 @@ func TestCapTimeoutWithCommitsGoesToVerification(t *testing.T) {
 // left is the human's answer. It buys the next session, which gets the
 // change request, and no cap card follows: at the last regular attempt
 // and at the session cap an extra attempt, with no agent time left and
-// attempts to spare the time alone.
+// attempts to spare the time alone, a session's worth: the card's 20
+// minutes over its one session.
 func TestChangeRequestWithNoSessionLeftIsTheAnswer(t *testing.T) {
 	change := "reviewer sebastian requested changes: keep the old flag"
 	for name, tc := range map[string]struct {
@@ -1447,7 +1454,7 @@ func TestChangeRequestWithNoSessionLeftIsTheAnswer(t *testing.T) {
 			state:   RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c3", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}},
 			results: []SessionResult{pushed("s2", "c4")},
 			want:    []string{"pr c3 after 0 cards", "approval c3", "session 2 after 0 cards", "pr c4 after 0 cards", "approval c4"},
-			usage:   TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute},
+			usage:   TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 20 * time.Minute},
 		},
 	} {
 		h := newWorkflowHarness(t)
@@ -5129,5 +5136,112 @@ func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
 	}
 	if len(h.sessions) != 1 || len(h.plans) != 0 {
 		t.Fatalf("coding sessions %d, planner sessions %d; want 1, 0", len(h.sessions), len(h.plans))
+	}
+}
+
+// roomWindowRun runs a card of 50 minutes, 10 more added, and 4 sessions
+// restored after it used 42 minutes over 3 sessions, with no check-in
+// pending. Its fourth session pushes c4, which merges; the run records
+// that session's window.
+func roomWindowRun(t *testing.T, pinned bool) *workflowHarness {
+	t.Helper()
+	cfg := testWorkflowConfig
+	cfg.MaxSessions, cfg.WallClockCap = 4, 50*time.Minute
+	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+	if pinned {
+		h.env.OnGetVersion("room-window", workflow.DefaultVersion, versionRoomWindow).Return(workflow.DefaultVersion)
+	}
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 42 * time.Minute, Attempts: 3, ExtraTime: 10 * time.Minute}}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			h.windows = append(h.windows, activity.GetInfo(ctx).StartToCloseTimeout)
+			return pushed("s4", "c4"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 1 {
+		t.Fatalf("final = %q after %d sessions, finals %v", final, len(h.sessions), h.finals)
+	}
+	return h
+}
+
+// By hand: the card has 50 + 10 - 42 = 18 minutes left, and a session's
+// worth is its 42 minutes over its 3 sessions, 14. The fourth session's
+// window holds the 18 minutes, 5 sessions' worth of headroom (70 minutes)
+// and the 2 minutes of grace: 90 minutes. The session's own time ends at
+// the 18, and a raise past the 10 minutes added lengthens it.
+func TestTheRoomWindowHoldsFiveSessionsWorth(t *testing.T) {
+	h := roomWindowRun(t, false)
+	if in := h.sessions[0]; h.windows[0] != 90*time.Minute || in.RoomExtra != 70*time.Minute || in.Remaining != 18*time.Minute || in.TimeAdded != 10*time.Minute || in.CheckinExtra != 0 {
+		t.Fatalf("window %v, room extra %v, remaining %v, time added %v, check-in extra %v; want 90m, 70m, 18m, 10m, 0", h.windows[0], in.RoomExtra, in.Remaining, in.TimeAdded, in.CheckinExtra)
+	}
+}
+
+// roomGrantRun runs a card of cap agent time and sessions sessions whose
+// three sessions of 14 minutes each used 42 minutes, the third pushing c2
+// at a cap. sebastian's change request on c2's approval is the answer at
+// the cap, and the fourth session, of a minute, pushes c4, which merges.
+// It answers the grants the answer drew.
+func roomGrantRun(t *testing.T, sessions int, cap time.Duration, pinned bool) []policy.Draw {
+	t.Helper()
+	cfg := testWorkflowConfig
+	cfg.MaxSessions, cfg.WallClockCap = sessions, cap
+	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+	if pinned {
+		h.env.OnGetVersion("room-window", workflow.DefaultVersion, versionRoomWindow).Return(workflow.DefaultVersion)
+	}
+	h.branchHead = "c2"
+	var grants []policy.Draw
+	h.env.OnActivity(ActivityRecordGrant, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+			grants = append(grants, d)
+			return nil
+		})
+	var steps []string
+	h.onVerify(&steps, nil)
+	results := []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")}
+	session := func(ctx context.Context, in SessionInput) (SessionResult, error) {
+		h.sessions = append(h.sessions, in)
+		return results[min(len(h.sessions), len(results))-1], nil
+	}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(14 * time.Minute).Return(session).Times(3)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(session)
+	h.signalAfter(2*time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 4 {
+		t.Fatalf("final = %q after %d sessions, steps %q, finals %v", final, len(h.sessions), steps, h.finals)
+	}
+	return grants
+}
+
+// By hand, with a session's worth of 42 / 3 = 14 minutes: at the session
+// cap of 3 with 60 - 42 = 18 minutes left the room is 0, and one more
+// session's worth lacks one start and no time (14 < 18). At the agent-time
+// cap of 44 minutes with a start of 4 left, 2 minutes left hold no session's
+// worth, and one more lacks 14 - 2 = 12 minutes and no start.
+func TestTheFactorysGrantUsesTheCardsAverage(t *testing.T) {
+	if got := roomGrantRun(t, 3, time.Hour, false); !slices.Equal(got, []policy.Draw{{Sessions: 1}}) {
+		t.Fatalf("grants at the session cap = %+v, want one start and no time", got)
+	}
+	if got := roomGrantRun(t, 4, 44*time.Minute, false); !slices.Equal(got, []policy.Draw{{AgentTime: 12 * time.Minute}}) {
+		t.Fatalf("grants at the agent-time cap = %+v, want 12 minutes and no start", got)
+	}
+}
+
+// A run that started before the room window keeps its window, the 18
+// minutes and the 2 of grace, and its grant at the agent-time cap: the
+// quarter of 44 minutes, 11, less the 2 left, 9.
+func TestAnOldRunKeepsItsWindowAndItsGrant(t *testing.T) {
+	h := roomWindowRun(t, true)
+	if in := h.sessions[0]; h.windows[0] != 20*time.Minute || in.RoomExtra != 0 || in.TimeAdded != 0 {
+		t.Fatalf("window %v, room extra %v, time added %v; want 20m and none", h.windows[0], in.RoomExtra, in.TimeAdded)
+	}
+	if got := roomGrantRun(t, 4, 44*time.Minute, true); !slices.Equal(got, []policy.Draw{{AgentTime: 9 * time.Minute}}) {
+		t.Fatalf("grants at the agent-time cap = %+v, want the old slice's 9 minutes", got)
 	}
 }

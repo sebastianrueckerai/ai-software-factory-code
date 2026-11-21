@@ -574,7 +574,7 @@ func (g *replayRig) stubs() {
 		g.env.OnActivity(name, args...).Return(fn)
 	}
 	ok(ActivityRunSession, 2, g.runSession)
-	ok(ActivityRunPlan, 5, g.runPlan)
+	ok(ActivityRunPlan, 7, g.runPlan)
 	ok(ActivityOpenPullRequest, 3, func(ctx context.Context, taskID, sha string) (PullRequest, error) {
 		_, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 9 WHERE id = $1`, taskID)
 		return PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, err
@@ -695,7 +695,7 @@ func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionRes
 // recorded one, which ended without a plan: the findings the runner gives a
 // planner that filed none (noPlanFindings), with the recorded reason. Past the record it ends
 // the run as runSession does.
-func (g *replayRig) runPlan(_ context.Context, taskID, _ string, _ int64, findings []string) (PlanResult, error) {
+func (g *replayRig) runPlan(_ context.Context, taskID, _ string, _ int64, findings []string, _, _ time.Duration) (PlanResult, error) {
 	g.mu.Lock()
 	g.sessions = append(g.sessions, SessionInput{TaskID: taskID, Findings: findings})
 	n := len(g.sessions)

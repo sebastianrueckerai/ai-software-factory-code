@@ -25,6 +25,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -1684,7 +1685,8 @@ type planHarness struct {
 	*workflowHarness
 	plans       [][]string // RunPlan's findings, per call
 	models      []string
-	judgments   []bool // RunPlan's flag, per call
+	rooms       []time.Duration // RunPlan's raise headroom, per call
+	added       []time.Duration // RunPlan's agent time added to the cap at the scheduling, per call
 	requests    []int
 	pins        []int64          // RequestPlan's pins, per call
 	file        map[int]bool     // the revisions RequestPlan files
@@ -1698,9 +1700,9 @@ type planHarness struct {
 func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 	h := &planHarness{workflowHarness: newWorkflowHarness(t)}
 	h.taskConfig = &TaskConfig{Process: "spec", Track: policy.TrackPlan, Class: "planner", Session: policy.SessionPlan, PlanShape: &testShape}
-	h.env.OnActivity(ActivityRunPlan, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, pin int64, findings []string, judgment bool) (PlanResult, error) {
-			h.plans, h.models, h.judgments = append(h.plans, findings), append(h.models, model), append(h.judgments, judgment)
+	h.env.OnActivity(ActivityRunPlan, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, model string, pin int64, findings []string, room, added time.Duration) (PlanResult, error) {
+			h.plans, h.models, h.rooms, h.added = append(h.plans, findings), append(h.models, model), append(h.rooms, room), append(h.added, added)
 			return results[min(len(h.plans), len(results))-1], nil
 		}).After(planSession)
 	h.env.OnActivity(ActivityRequestPlan, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
@@ -2850,7 +2852,7 @@ func TestPlanConfirmAtTheCapFilesWithNoSession(t *testing.T) {
 
 // A person's answer to a revision whose planner has sessions left but no
 // agent time, its automatic session used, buys the agent time a session
-// needs: the answer's slice, a quarter of the 20 minutes.
+// needs: a session's worth, the 25 minutes its one session used.
 func TestPlanAnswerByAHumanOutOfTimeGrantsTime(t *testing.T) {
 	h, grants := waitingRevision(t, TaskUsage{Attempts: 1, AgentTime: 25 * time.Minute, RetryTime: 5 * time.Minute}, false)
 	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "sebastian", Revision: 3, Index: 1})
@@ -2860,7 +2862,7 @@ func TestPlanAnswerByAHumanOutOfTimeGrantsTime(t *testing.T) {
 	if len(h.plans) != 1 || len(h.escalated) != 0 {
 		t.Fatalf("plans %q, escalated %q; want one planner session, no ask", h.plans, h.escalated)
 	}
-	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{AgentTime: 5 * time.Minute}, "card_extended default-test-run-id 0 5m0s")}; !slices.Equal(*grants, want) {
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{AgentTime: 25 * time.Minute}, "card_extended default-test-run-id 0 25m0s")}; !slices.Equal(*grants, want) {
 		t.Fatalf("grants %q, want %q", *grants, want)
 	}
 }
@@ -4977,12 +4979,7 @@ func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
 	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. Their text ended with it: grep the files for what the plan needs, and read only that part."}
 	h := newPlanHarness(t, PlanResult{Findings: found}, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute, Attempts: 1}}
-	var budgets []time.Duration
-	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
-		if info.ActivityType.Name == ActivityRunPlan {
-			budgets = append(budgets, info.StartToCloseTimeout)
-		}
-	})
+	budgets := planBudgets(h)
 	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final %q, finals %v, want done after a second planner", final, h.finals)
@@ -4990,11 +4987,48 @@ func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
 	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], found) {
 		t.Fatalf("plans %q, want a second session with the first's findings", h.plans)
 	}
-	if !slices.Equal(budgets, []time.Duration{7 * time.Minute, 12 * time.Minute}) {
-		t.Fatalf("RunPlan budgets %v, want 7m and 12m", budgets)
+	if !slices.Equal(*budgets, []time.Duration{7 * time.Minute, 12 * time.Minute}) {
+		t.Fatalf("RunPlan budgets %v, want 7m and 12m", *budgets)
 	}
 	if want := (TaskUsage{AgentTime: 25 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 2}); len(h.usage) < 2 || h.usage[1] != want {
 		t.Fatalf("usage %+v, want the grant %+v second", h.usage, want)
+	}
+}
+
+// By hand: a planner of 50 minutes, 10 more added, that used 42 over 3
+// sessions has 18 left and a session's worth of 14. Its session's window
+// holds the 18, 5 sessions' worth of headroom (70) and the 2 of grace, 90
+// minutes, and RunPlan learns the 70 and the 10 added; a run from before
+// the room window gets 20 and neither.
+func TestThePlannersWindowHoldsFiveSessionsWorth(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pinned              bool
+		window, room, added time.Duration
+	}{
+		"gated":  {false, 90 * time.Minute, 70 * time.Minute, 10 * time.Minute},
+		"pinned": {true, 20 * time.Minute, 0, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+			h.taskConfig.AgentTime, h.taskConfig.Sessions = 50*time.Minute, 4
+			if tc.pinned {
+				h.env.OnGetVersion("room-window", workflow.DefaultVersion, versionRoomWindow).Return(workflow.DefaultVersion)
+			}
+			h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 42 * time.Minute, Attempts: 3, ExtraTime: 10 * time.Minute}}
+			var windows []time.Duration
+			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+				if info.ActivityType.Name == ActivityRunPlan {
+					windows = append(windows, info.StartToCloseTimeout)
+				}
+			})
+			h.file = map[int]bool{1: true}
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final %q, finals %v", final, h.finals)
+			}
+			if !slices.Equal(windows, []time.Duration{tc.window}) || !slices.Equal(h.rooms, []time.Duration{tc.room}) || !slices.Equal(h.added, []time.Duration{tc.added}) {
+				t.Fatalf("windows %v, rooms %v, added %v; want %v, %v and %v", windows, h.rooms, h.added, tc.window, tc.room, tc.added)
+			}
+		})
 	}
 }
 
@@ -5061,12 +5095,20 @@ func TestPlanLoopOutOfTimeUnderCasesTakesTheRowsTime(t *testing.T) {
 	}
 }
 
-// planBudgets records the agent time each planner session was given.
+// planBudgets records the agent time each planner session was given, with
+// its grace: its activity's window less the raise headroom RunPlan learns.
 func planBudgets(h *planHarness) *[]time.Duration {
 	budgets := &[]time.Duration{}
-	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
 		if info.ActivityType.Name == ActivityRunPlan {
-			*budgets = append(*budgets, info.StartToCloseTimeout)
+			var taskID, model string
+			var pin int64
+			var findings []string
+			var room time.Duration
+			if err := args.Get(&taskID, &model, &pin, &findings, &room); err != nil {
+				panic(err)
+			}
+			*budgets = append(*budgets, info.StartToCloseTimeout-room)
 		}
 	})
 	return budgets
