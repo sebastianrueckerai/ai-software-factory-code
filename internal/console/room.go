@@ -38,11 +38,6 @@ type tickView struct {
 	Checked         bool
 }
 
-// moneyTouched is the room's field that says the human touched the money
-// box, yes once console.js set it, else no: the tick then stops following
-// the count.
-const moneyTouched = "money_touched"
-
 // readoutOf is the readout of the room the fields get names ask for on
 // facts f, read as the press reads them, under the form whose ids start
 // with at, its fields named by name. Until the human touched the money
@@ -51,10 +46,10 @@ const moneyTouched = "money_touched"
 // shows why alone, as the press would be refused.
 func readoutOf(f factoryd.CaseFacts, get func(field string) string, at string, name func(string) string) roomView {
 	answer, _ := factoryd.AnswerOf(factoryd.ActExtend)
-	touched := strings.TrimSpace(get(moneyTouched)) == "yes"
+	touched := strings.TrimSpace(get(factoryd.MoneyTouched)) == "yes"
 	v := roomView{ID: at + "-room", Each: factoryd.EachLine(f), EachID: at + "-each",
 		Tick:    tickView{ID: at + "-money", Name: name("money"), Label: moneyName(), Checked: strings.TrimSpace(get("money")) == "yes"},
-		Touched: hidden{Name: name(moneyTouched), Value: "no"}}
+		Touched: hidden{Name: name(factoryd.MoneyTouched), Value: "no"}}
 	if touched {
 		v.Touched.Value = "yes"
 	}

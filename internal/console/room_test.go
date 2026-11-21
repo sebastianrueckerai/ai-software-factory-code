@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -523,5 +524,101 @@ func TestTheReadoutShowsTheMonthsAndAnUnreadCapsRefusal(t *testing.T) {
 		if got := roomIn(t, body); got.Why != tc.want || got.Rows != nil || len(guard) != 0 {
 			t.Errorf("at %s: the readout shows %+v, guard %v; want %q alone", tc.sessions, got, guard, tc.want)
 		}
+	}
+}
+
+// The chat's proposal holds the room's guard, as the readout's press
+// does, so a Do it after the card ran on is refused with the new figures.
+// On #32 give_room of 2 proposes 2 starts, 24 minutes and 1.60 EUR. Once
+// its agent time moved from 42 to 46 minutes, the room of 2 adds 1 start,
+// 17 minutes and 0.40 EUR, so the Do it is refused naming them and gives
+// nothing. A proposal made on the moved card and confirmed at once gives
+// them: 1 + 1 = 2 raised sessions, 40 + 17 = 57 minutes and 6.40 EUR.
+func TestADoItAfterTheRoomMovedIsRefused(t *testing.T) {
+	r, ra := aheadRig(t)
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.cfg.Confirm, trn.owner = []string{"give_room"}, s.user
+	tool, _ := r.c.chatTool("give_room")
+	propose := func(want string) factoryd.ChatProposal {
+		t.Helper()
+		trn.a.decider = ""
+		result, token, _ := trn.call(factoryd.OperatorCall{Name: "give_room", Arguments: `{"task_id":"t-run","sessions":2,"text":"go on"}`})
+		if token == "" || !strings.Contains(result, want) {
+			t.Fatalf("give_room = %q, token %q; want a proposal naming %s", result, token, want)
+		}
+		p, err := trn.take("proposal", token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	do := func(p factoryd.ChatProposal) string {
+		var in toolInput
+		if err := json.Unmarshal(p.Args, &in); err != nil {
+			t.Fatal(err)
+		}
+		trn.a.decider = "member"
+		out, _ := trn.runTool(tool, string(p.Args), in)
+		return out
+	}
+	stale := propose("2 sessions' worth (24 min, 1.60 EUR and 2 more sessions to start)")
+	if _, err := ra.pg.DB().ExecContext(t.Context(), `UPDATE tasks SET agent_time_ns = $2 WHERE id = $1`, "t-run", int64(46*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := do(stale), "Refused: The room changed since this opened: 2 sessions' worth now add 17 min and 0.40 EUR. It may also start 1 more session."; !strings.HasPrefix(got, want) {
+		t.Fatalf("the Do it after the card ran on = %q, want it to start %q", got, want)
+	}
+	if card := ra.stored(t, "t-run"); card.Usage.RaisedSessions != 1 || card.Usage.RaisedTime != 40*time.Minute || factoryd.Cents(card.BudgetEUR) != 600 {
+		t.Fatalf("the refused Do it changed #32: %d raised sessions, %s raised time, %.2f EUR", card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR)
+	}
+	if got := do(propose("2 sessions' worth (17 min, 0.40 EUR and 1 more session to start)")); strings.HasPrefix(got, "Refused") {
+		t.Fatalf("the Do it at once = %q, want it given", got)
+	}
+	if card := ra.stored(t, "t-run"); card.Usage.RaisedSessions != 2 || card.Usage.RaisedTime != 57*time.Minute || factoryd.Cents(card.BudgetEUR) != 640 {
+		t.Fatalf("#32 after the Do it: %d raised sessions, %s raised time, %.2f EUR; want 2, 57m and 6.40", card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR)
+	}
+}
+
+// An untouched money box reads the room with its money, as its readout
+// does, so the guard weighs money that became short. #35 has 6.40 - 3.60 -
+// 0.40 = 2.40 EUR left, and 1 more needs 2 x 1.20 = 2.40 EUR, which is
+// enough: its readout shows the money enough, its tick clear, and guards
+// no money. A model call then settles 0.30 EUR: a session's worth is 3.90
+// / 3 = 1.30 EUR, 2.10 EUR is left, and 1 more needs 2.60 - 2.10 = 0.50
+// EUR, so the press of the untouched clear box is refused with it. A box
+// the human cleared gives the room without money on the same guard: 1
+// start and 2 x 14 - 18 = 10 minutes, 2 raised sessions and 50 minutes,
+// the budget still 6.40.
+func TestAnUntouchedBoxWeighsMoneyThatBecameShort(t *testing.T) {
+	r, ra, _ := roomRig(t, policy.AutonomyManual, roomCard{task: factoryd.Task{ID: "t-short", Status: "running", IssueNumber: 35, BudgetEUR: 6.4, SpentEUR: 3.6,
+		CeilingEUR: 10, Usage: factoryd.TaskUsage{RaisedSessions: 1, RaisedTime: 40 * time.Minute}}, attempts: 3, agentTime: 42 * time.Minute})
+	r.c.cfg.RoomFacts = storedRoomFacts(ra)
+	ck, s := r.loggedIn(t)
+	body, guard := readoutOn(t, r, ck, "t-short", url.Values{"at": {"f-t"}, "extend.sessions": {"1"}, "extend.money_touched": {"no"}})
+	if got := roomIn(t, body); got.Ticked || !slices.Equal(got.Rows[1], []string{"Money", "2.40 EUR", "enough", "2.40 EUR"}) ||
+		guard.Encode() != (url.Values{"extend.shown_now": {"1"}, "extend.shown_starts": {"1"}, "extend.shown_agent_time_s": {"600"}, "extend.shown_eur": {"0.00"}, "extend.shown_limit": {"0.00"}}).Encode() {
+		t.Fatalf("the readout shows %+v and guards %v; want the money enough, its tick clear, and no money guarded", got, guard)
+	}
+	if _, err := ra.pg.DB().ExecContext(t.Context(), `UPDATE tasks SET spent_eur = 3.9 WHERE id = $1`, "t-short"); err != nil {
+		t.Fatal(err)
+	}
+	press := func(touched string) *httptest.ResponseRecorder {
+		form := url.Values{"csrf": {s.csrf}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}, "extend.money_touched": {touched}}
+		for k, v := range guard {
+			form[k] = v
+		}
+		return r.do(post("/tasks/t-short/resolve", form), ck)
+	}
+	const want = "The room changed since this opened: 1 session's worth now add 10 min and 0.50 EUR. It may also start 1 more session. Press again to give them."
+	if rec := press("no"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("the untouched box's press = %d %q, want 409 %q", rec.Code, rec.Body, want)
+	}
+	if rec := press("yes"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the cleared box's press = %d %q, want it given", rec.Code, rec.Body)
+	}
+	if card := ra.stored(t, "t-short"); card.Usage.RaisedSessions != 2 || card.Usage.RaisedTime != 50*time.Minute || factoryd.Cents(card.BudgetEUR) != 640 {
+		t.Fatalf("#35 after the cleared press: %d raised sessions, %s raised time, %.2f EUR; want 2, 50m and 6.40", card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR)
 	}
 }

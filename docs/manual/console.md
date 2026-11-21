@@ -194,7 +194,8 @@ decimals: a task's model calls cost fractions of a cent.
   count, and a table of what is left, what the press adds and what the
   card then has shows the agent time and the money. The money's tick
   follows the count, set when the card lacks money for it, until the human
-  sets it. A press whose money and spend limit moved by 0.10 EUR at most
+  sets it; until then the press weighs the room with its money, as the
+  table does. A press whose money and spend limit moved by 0.10 EUR at most
   since the table showed them, as a running card's do with each model
   call, gives the money worked out at the press. “Add money to the
   chat” on the chat's budget card shows the money row alone, the amount
@@ -461,7 +462,9 @@ decimals: a task's model calls cost fractions of a cent.
   of room, 1 to 5, with its money unless `money` is false: on a card at a stop it answers
   the stop, on a live card without one it gives room ahead of time, and the action
   table refuses it on a card that asked a
-  question, and `set_dependency` adds or removes a dependency of a card that has
+  question. Its proposal names the minutes, the money and any raise of the
+  spend limit, and holds them as the guard a press posts, so a Do it after
+  the room moved is refused with the new figures; and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
   one, and the refusal of an edge across two names the fitting action: a

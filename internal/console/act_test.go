@@ -270,6 +270,26 @@ func TestWordsAloneRaiseNoSpendLimit(t *testing.T) {
 	}
 }
 
+// Words alone that may give no money on a card that cannot pay to open a
+// session name the control that can: at #13's session cap 0.20 EUR is
+// left under the 0.30 EUR an opening needs, and a session's worth of 1.20
+// EUR adds 1.00, a budget of 3.80 + 1.00 = 4.80 past its 3.90 limit. Act
+// would refuse the room without money, so the words are refused naming
+// “Give more room”, and Act is not called.
+func TestWordsAloneOnAnUnfundedCardNameTheControl(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	caseCard(r)
+	r.openCases["t-e"][0].Kind = factoryd.CaseSessionCap
+	r.roomFacts = map[string]factoryd.CaseFacts{"t-e": {Kind: factoryd.CaseSessionCap, Attempts: 3, SessionCap: 3, AgentTimeS: 42 * 60, AgentTimeCapS: 60 * 60,
+		SpentEUR: 3.6, BudgetEUR: 3.8, LeftEUR: 0.2, FloorEUR: 0.3, CeilingEUR: 3.9, MonthLeftEUR: 50}}
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck)
+	const want = "Words alone give no money past the card's spend limit, and this card lacks the money to open a session: press “Give more room” on the card, which raises the limit first."
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want || len(r.acted) != 0 {
+		t.Fatalf("the words = %d %q with %d Act calls; want 409 %q and none", rec.Code, rec.Body, len(r.acted), want)
+	}
+}
+
 // An answer with an action meets every answer's gates before Act, on
 // every entry: the chat's close on a human card runs the close's work, the
 // human's words posted and the issue closed, and resolves the card's case

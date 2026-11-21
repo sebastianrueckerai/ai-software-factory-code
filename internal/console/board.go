@@ -3069,7 +3069,7 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 		values[f.Name] = field(f.Name)
 	}
 	if answer.Action == factoryd.ActExtend {
-		for _, k := range factoryd.RoomGuard {
+		for _, k := range append([]string{factoryd.MoneyTouched}, factoryd.RoomGuard...) {
 			values[k] = field(k)
 		}
 	}

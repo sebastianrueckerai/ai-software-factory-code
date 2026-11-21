@@ -374,28 +374,32 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 	}
 }
 
-// give_room proposes on the card at its session cap, naming the room; Do
-// it gives its live case the room through Act on the human's rung, the
-// human's answer the note posted on its issue, and Act's grant row names
-// the comment.
+// give_room proposes on the card at its session cap, naming the room and
+// holding its guard; Do it gives its live case the room through Act on the
+// human's rung, with the guard Act weighs, the human's answer the note
+// posted on its issue, and Act's grant row names the comment.
 func TestChatGiveRoom(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
-	// at the cap, with no start left, 2 more aim at 2 on the ahead-of-time
-	// row: 2 starts, 2 x 14 - 18 = 10 minutes and 2 x 1.20 - 2.10 = 0.30 EUR
+	// at the cap, with no start left, the room now is 0 and 2 more aim at 2
+	// on the ahead-of-time row: 2 starts, 2 x 14 - 18 = 10 minutes (600 s)
+	// and 2 x 1.20 - 2.10 = 0.30 EUR, a budget of 6.30 under the 7.00 limit
 	f := aheadRow()
 	f.Kind, f.SessionCap = factoryd.CaseSessionCap, 3
 	r.roomFacts = map[string]factoryd.CaseFacts{"t-cap": f}
 	before := r.events.count()
 	args := `{"task_id":"t-cap","sessions":2,"money":true,"text":"Trim to 1 MB first."}`
+	stored := `{"task_id":"t-cap","text":"Trim to 1 MB first.","sessions":2,"money":true,` +
+		`"shown":{"shown_agent_time_s":"600","shown_eur":"0.30","shown_limit":"0.00","shown_now":"0","shown_starts":"2"}}`
 	proposed, done, _ := proposeAndDo(t, r, g, "give_room", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Give a card more room, #14 t-cap \"Trim the logs.\", 2 sessions' worth (10 min, 0.30 EUR and 2 more sessions to start), text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"give_room"}`,
+		`proposal {"arguments":` + stored + `,"description":"Give a card more room, #14 t-cap \"Trim the logs.\", 2 sessions' worth (10 min, 0.30 EUR and 2 more sessions to start), text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"give_room"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("give_room", args, "Case 1 took extend."))
+	equal(t, "Do it", done, ran("give_room", stored, "Case 1 took extend."))
 	got, posts := actedOnce(t, r)
 	equal(t, "the room", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-cap", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 2, "money": true}, Note: "Trim to 1 MB first."}}, true})
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 2, "money": true, "shown_now": "0", "shown_starts": "2",
+			"shown_agent_time_s": "600", "shown_eur": "0.30", "shown_limit": "0.00"}, Note: "Trim to 1 MB first."}}, true})
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-cap", IssueNumber: 14, Kind: factoryd.EventSessionGranted,

@@ -574,10 +574,10 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 		f.CaseFacts = c.roomFactsOf(ctx, v, f.Card)
 		defaults = a.Defaults(f)
 		if factoryd.RoomProposed(f) {
-			defaults[moneyTouched] = "yes"
+			defaults[factoryd.MoneyTouched] = "yes"
 		}
 		room := readoutOf(f.CaseFacts, func(field string) string { return defaults[field] }, id, name)
-		room.Get, room.Params = "/tasks/"+f.Card.ID+"/room?at="+id, strings.Join([]string{name("sessions"), name("money"), name(moneyTouched)}, ",")
+		room.Get, room.Params = "/tasks/"+f.Card.ID+"/room?at="+id, strings.Join([]string{name("sessions"), name("money"), name(factoryd.MoneyTouched)}, ",")
 		view.Room = &room
 	case factoryd.AnswerFundChat:
 		fund := c.fundOf(ctx, f.Card, "")

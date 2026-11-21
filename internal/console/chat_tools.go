@@ -165,6 +165,10 @@ type toolInput struct {
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
+
+	// Shown is a give_room proposal's guard, the room its line named by
+	// factoryd.RoomGuard's names, which Act weighs at Do it.
+	Shown map[string]string `json:"shown,omitempty"`
 }
 
 // PlanAnswerInput is one answer of the answer tool's answers list: the
@@ -508,7 +512,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if why := factoryd.HumanRefusal(f, res); why != "" {
 			return "", refuseAgent(http.StatusConflict, why)
 		}
-		parts = append(parts, factoryd.RoomFor(f, in.Sessions, in.Money).Summary(f))
+		room := factoryd.RoomFor(f, in.Sessions, in.Money)
+		in.Shown = room.Shown()
+		parts = append(parts, room.Summary(f))
 	}
 	if in.CaseID > 0 {
 		parts = append(parts, fmt.Sprintf("case %d", in.CaseID))
@@ -1883,7 +1889,11 @@ func init() {
 			required: []string{"task_id", "text"},
 			about:    "Give a card more sessions' worth of time and money, at its stop or ahead of time.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				note, err := t.c.doExtend(t.r.Context(), t.a, in.TaskID, map[string]any{"sessions": in.Sessions, "money": in.Money}, in.Text)
+				args := map[string]any{"sessions": in.Sessions, "money": in.Money}
+				for k, v := range in.Shown {
+					args[k] = v
+				}
+				note, err := t.c.doExtend(t.r.Context(), t.a, in.TaskID, args, in.Text)
 				return note, nil, err
 			}},
 		{name: "set_dependency", title: "Set a dependency", write: true,

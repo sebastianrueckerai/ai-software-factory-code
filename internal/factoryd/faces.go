@@ -622,12 +622,19 @@ func (a Answer) Defaults(f Facts) map[string]string {
 	return out
 }
 
+// MoneyTouched is the field of a room's press that says whether the human
+// touched its money box: no while the box follows the count, yes once
+// touched; a door with no box posts none.
+const MoneyTouched = "money_touched"
+
 // ArgsOf parses the fields of answer a from get, a field's posted value by
 // name: the action's arguments, the variant's own among them, and the
 // amount in EUR a money field holds. An empty field is left out, but a
-// room's money box, which unticked gives the room without its money. A
-// room's press carries its guard (RoomGuard) as posted, and its count is
-// refused off 1 to MaxRoomSessions, a blank one too.
+// room's money box, which unticked gives the room without its money,
+// unless the human never touched it (MoneyTouched no): then the room is
+// weighed with its money, as its readout was. A room's press carries its
+// guard (RoomGuard) as posted, and its count is refused off 1 to
+// MaxRoomSessions, a blank one too.
 func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, error) {
 	args := map[string]any{}
 	switch a.Action {
@@ -636,7 +643,7 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 	case ActAnswerCriteria:
 		args["verdict"] = cmp.Or(a.Variant, "met")
 	case ActExtend:
-		args["money"] = strings.TrimSpace(get("money")) == "yes"
+		args["money"] = strings.TrimSpace(get("money")) == "yes" || strings.TrimSpace(get(MoneyTouched)) == "no"
 		for _, k := range RoomGuard {
 			if v := strings.TrimSpace(get(k)); v != "" {
 				args[k] = v

@@ -1515,7 +1515,15 @@ func (c *Console) grantOf(ctx context.Context, t factoryd.Task, k factoryd.Case)
 		log.Printf("console: the room facts of %s: %v", t.ID, err)
 		return nil, false, refuse(http.StatusServiceUnavailable, "The card's facts could not be read, so nothing was answered. Try again.")
 	}
-	return map[string]any{"sessions": 1, "money": factoryd.RoomFor(f, 1, true).Limit == 0}, true, nil
+	money := factoryd.RoomFor(f, 1, true).Limit == 0
+	args := map[string]any{"sessions": 1, "money": money}
+	if !money && factoryd.HumanRefusal(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: args}) != "" &&
+		factoryd.HumanRefusal(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}}) == "" {
+		// the room fails for the money the words may not give
+		return nil, false, refuse(http.StatusConflict, "Words alone give no money past the card's spend limit, and this card lacks the money to open a session: press "+
+			factoryd.AnswerWords(factoryd.ActExtend)+" on the card, which raises the limit first.")
+	}
+	return args, true, nil
 }
 
 // doExtend gives card id the room an extend's args ask for, its count

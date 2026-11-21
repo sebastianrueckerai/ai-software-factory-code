@@ -4728,15 +4728,16 @@ func (s lateCheckin) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, ok, err
 }
 
-// deafChat answers a check-in once past says so, whatever its context
-// says, so a conversation can end past the session's deadline.
+// deafChat answers a check-in once past says so, or after 10 s, whatever
+// its context says, so a conversation can end past the session's
+// deadline, and a deadline that never passes fails the test, not hangs it.
 type deafChat struct {
 	past   func() bool
 	answer string
 }
 
 func (c deafChat) Call(context.Context, string, string, CheckinRequest) (CheckinResponse, error) {
-	for !c.past() {
+	for end := time.Now().Add(10 * time.Second); !c.past() && time.Now().Before(end); {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return CheckinResponse{Text: c.answer}, nil
