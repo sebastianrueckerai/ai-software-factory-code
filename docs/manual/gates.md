@@ -552,8 +552,9 @@ A session's activity window also holds 5 sessions' worth of headroom past
 the card's agent time left (change id `room-window`). A raise of the card's
 agent time while the session runs moves the session's deadline and its
 supervisor's wall-clock cap out by the raise, never past the window's end.
-The live row keeps the moved deadline, so a session reattached after a
-restart keeps it too. A wrap-up warning already sent comes again once the
+The live row keeps the moved deadline and the time and money the session
+took, so a session reattached after a restart keeps them, and takes a raise
+or a fund made while factoryd was away. A wrap-up warning already sent comes again once the
 session passes its share of the new time or budget. The agent hears what
 it got: "factoryd: the card got 24 more minutes of agent time and 1.50 EUR.
 Go on with the work in this session." Where the window cuts the raise, the

@@ -707,7 +707,7 @@ func (s *accBatchStore) PutLiveSession(ctx context.Context, l factoryd.LiveSessi
 func (s *accBatchStore) SetLiveSessionLines(ctx context.Context, taskID string, lines int) error {
 	panic("unused")
 }
-func (s *accBatchStore) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time, added time.Duration) error {
+func (s *accBatchStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner string, deadline time.Time, added time.Duration, budget float64) error {
 	panic("unused")
 }
 func (s *accBatchStore) LiveSession(ctx context.Context, taskID string) (factoryd.LiveSession, bool, error) {

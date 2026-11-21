@@ -268,7 +268,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 		return reportEnd{}, err
 	}
 	deadline, startedAt := reportDeadline(activity.GetInfo(ctx).Deadline.Add(-extra.room), s.agentTime, extra.reserve), time.Now()
-	s.added = t.Usage.TimeAdded()
+	s.added, s.budget = t.Usage.TimeAdded(), t.BudgetEUR
 	if extra.room > 0 {
 		s.ceiling, s.added = activity.GetInfo(ctx).Deadline.Add(-extra.reserve-sessionGrace), extra.added
 	}

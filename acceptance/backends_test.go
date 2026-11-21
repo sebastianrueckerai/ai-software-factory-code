@@ -708,7 +708,7 @@ func (s *acceptanceStore) PutLiveSession(context.Context, factoryd.LiveSession) 
 
 func (s *acceptanceStore) SetLiveSessionLines(context.Context, string, int) error { return nil }
 
-func (s *acceptanceStore) SetLiveSessionDeadline(context.Context, string, time.Time, time.Duration) error {
+func (s *acceptanceStore) SetLiveSessionDeadline(context.Context, string, string, time.Time, time.Duration, float64) error {
 	return nil
 }
 

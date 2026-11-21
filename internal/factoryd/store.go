@@ -575,11 +575,12 @@ type Store interface {
 	// PutLiveSession records a running session's sandbox; a retried
 	// RunSession reattaches to it (LiveSession), SetLiveSessionLines
 	// keeps how much of the pod's log the loop consumed,
-	// SetLiveSessionDeadline the deadline a raise moved and the agent time
-	// added it counts, and the session's end deletes it.
+	// SetLiveSessionDeadline, for the owner holding the row, the deadline a
+	// raise moved, the agent time added it counts and the budget the
+	// session took, and the session's end deletes it.
 	PutLiveSession(ctx context.Context, l LiveSession) error
 	SetLiveSessionLines(ctx context.Context, taskID string, lines int) error
-	SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time, added time.Duration) error
+	SetLiveSessionDeadline(ctx context.Context, taskID, owner string, deadline time.Time, added time.Duration, budget float64) error
 	LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error)
 	DeleteLiveSession(ctx context.Context, taskID string) error
 	// ReleaseLiveSession deletes the row only while owner holds it and

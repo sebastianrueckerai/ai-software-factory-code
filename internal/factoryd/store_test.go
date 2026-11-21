@@ -3006,11 +3006,11 @@ func (s *fakeStore) SetLiveSessionLines(ctx context.Context, taskID string, line
 	return nil
 }
 
-func (s *fakeStore) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time, added time.Duration) error {
+func (s *fakeStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner string, deadline time.Time, added time.Duration, budget float64) error {
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
-	if l, ok := s.liveSessions[taskID]; ok {
-		l.Deadline, l.TimeAdded = deadline, &added
+	if l, ok := s.liveSessions[taskID]; ok && l.Owner == owner {
+		l.Deadline, l.TimeAdded, l.BudgetEUR = deadline, &added, &budget
 		s.liveSessions[taskID] = l
 	}
 	return nil

@@ -651,8 +651,10 @@ type sessionSpec struct {
 	// added is the agent time added to the card's cap that the session's
 	// deadline counts: the workflow's at the scheduling when it gave the
 	// window raise headroom, a reattached session's live row's, else the
-	// card's at the session's start
-	added time.Duration
+	// card's at the session's start; budget is the card's budget the
+	// session took, a reattached session's live row's, else the card's
+	added  time.Duration
+	budget float64
 	// report is a report session's guide; "" for a coding
 	// session
 	report string
@@ -836,9 +838,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
-		added := s.added
+		added, budget := s.added, s.budget
 		row = LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity, TimeAdded: &added}
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity,
+			TimeAdded: &added, BudgetEUR: &budget}
 		if err := r.store.PutLiveSession(ctx, row); err != nil {
 			return out, err
 		}
@@ -996,7 +999,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
-	watch.added, watch.budget = s.added, t.BudgetEUR
+	watch.added, watch.budget = s.added, s.budget
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
 	var messages []string
@@ -1361,6 +1364,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, ck, ride, out.digest)
+		if !time.Now().Before(deadline) {
+			// a raise during the conversation counts before the wall clock
+			// does
+			r.takeRaise(ctx, t, s, watch, sup, &deadline)
+		}
 		note := ""
 		rode := false
 		switch {
@@ -3485,9 +3493,10 @@ func (k *InClusterKube) Namespace() string {
 
 // takeRaise reads the card's row: a raise of its agent time past what the
 // session took moves deadline, the supervisor's and the watch's span out by
-// as much as the window allows, the live row keeps both, and the watch owes
-// the agent the line on it; the money reaches the session at its next call.
-// It answers the row, ok false when it could not be read.
+// as much as the window allows, the live row keeps them and the budget
+// while the session holds it, and the watch owes the agent the line on it;
+// the money reaches the session at its next call. It answers the row, ok
+// false when it could not be read.
 func (r *Runner) takeRaise(ctx context.Context, t Task, s sessionSpec, w *limitWatch, sup *Supervisor, deadline *time.Time) (Task, bool) {
 	cur, ok, err := r.store.Task(ctx, t.ID)
 	if err != nil {
@@ -3507,10 +3516,8 @@ func (r *Runner) takeRaise(ctx context.Context, t Task, s sessionSpec, w *limitW
 		*deadline = deadline.Add(d)
 		sup.Lengthen(d)
 	}
-	if grew > 0 {
-		if err := r.store.SetLiveSessionDeadline(ctx, t.ID, *deadline, w.added); err != nil {
-			log.Printf("task %s: session %s: record the deadline a raise moved: %s", t.ID, s.id, r.scrub(err.Error()))
-		}
+	if err := r.store.SetLiveSessionDeadline(ctx, t.ID, s.owner, *deadline, w.added, w.budget); err != nil {
+		log.Printf("task %s: session %s: record the deadline a raise moved: %s", t.ID, s.id, r.scrub(err.Error()))
 	}
 	w.Lengthen(max(grew, 0), d, max(cents, 0), cur.EnforcedSpent(), cur.BudgetEUR, time.Now())
 	return cur, true

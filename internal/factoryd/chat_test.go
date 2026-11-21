@@ -760,9 +760,12 @@ func TestPGStoreLiveSessionKeepsItsSpendBaseline(t *testing.T) {
 	}
 }
 
-// A raise moves the live row's deadline and the agent time added it counts,
-// and nothing else of it: the lines the loop consumed and the owner stand,
-// so a reattach resumes the log where it was with the lengthened deadline.
+// The live row keeps the agent time added its deadline counts and the
+// budget the session took: a row written without them, as an older
+// factoryd wrote it, reads none, and one written with them reads them back.
+// A raise moves the deadline and both, for the row's owner alone, and
+// nothing else of it: the lines the loop consumed and the owner stand, so a
+// reattach resumes the log where it was with the lengthened deadline.
 func TestPGStoreLiveSessionDeadlineMovesAlone(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	task, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 5, time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC))
@@ -770,21 +773,36 @@ func TestPGStoreLiveSessionDeadlineMovesAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
-	if err := s.PutLiveSession(ctx, LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: deadline.Add(-time.Hour), Deadline: deadline, Owner: "a"}); err != nil {
+	row := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: deadline.Add(-time.Hour), Deadline: deadline, Owner: "a"}
+	if err := s.PutLiveSession(ctx, row); err != nil {
 		t.Fatal(err)
+	}
+	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || l.TimeAdded != nil || l.BudgetEUR != nil {
+		t.Fatalf("live row %+v, %v; want no time added and no budget on a row written without them", l, err)
+	}
+	added, budget := 10*time.Minute, 5.0
+	row.TimeAdded, row.BudgetEUR = &added, &budget
+	if err := s.PutLiveSession(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || l.TimeAdded == nil || *l.TimeAdded != 10*time.Minute || l.BudgetEUR == nil || *l.BudgetEUR != 5 {
+		t.Fatalf("live row %+v, %v; want 10 minutes added and a budget of 5.00", l, err)
 	}
 	if err := s.SetLiveSessionLines(ctx, task.ID, 40); err != nil {
 		t.Fatal(err)
 	}
-	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || l.TimeAdded != nil {
-		t.Fatalf("live row %+v, %v; want no time added on a row written without one", l, err)
-	}
-	if err := s.SetLiveSessionDeadline(ctx, task.ID, deadline.Add(24*time.Minute), 34*time.Minute); err != nil {
+	if err := s.SetLiveSessionDeadline(ctx, task.ID, "b", deadline.Add(time.Hour), time.Hour, 9); err != nil {
 		t.Fatal(err)
 	}
-	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || !l.Deadline.Equal(deadline.Add(24*time.Minute)) || l.TimeAdded == nil || *l.TimeAdded != 34*time.Minute ||
+	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || !l.Deadline.Equal(deadline) || *l.TimeAdded != 10*time.Minute || *l.BudgetEUR != 5 {
+		t.Fatalf("live row %+v, %v; want a stranger's write to change nothing", l, err)
+	}
+	if err := s.SetLiveSessionDeadline(ctx, task.ID, "a", deadline.Add(24*time.Minute), 34*time.Minute, 6.5); err != nil {
+		t.Fatal(err)
+	}
+	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || !l.Deadline.Equal(deadline.Add(24*time.Minute)) || *l.TimeAdded != 34*time.Minute || *l.BudgetEUR != 6.5 ||
 		l.Lines != 40 || l.Owner != "a" {
-		t.Fatalf("live row %+v, %v; want the deadline 24 minutes later with 34 minutes added, 40 lines and owner a", l, err)
+		t.Fatalf("live row %+v, %v; want the deadline 24 minutes later with 34 minutes added and 6.50 EUR, 40 lines and owner a", l, err)
 	}
 }
 

@@ -1288,7 +1288,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.checkinExtra > 0 || in.RoomExtra > 0 {
 		s.ceiling = activity.GetInfo(ctx).Deadline.Add(-sessionGrace)
 	}
-	s.added = t.Usage.TimeAdded()
+	s.added, s.budget = t.Usage.TimeAdded(), t.BudgetEUR
 	switch {
 	case live == nil && in.RoomExtra > 0:
 		s.added = in.TimeAdded
@@ -1296,6 +1296,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		// the raises the live row's deadline holds: one made while factoryd
 		// was away is past them
 		s.added = *live.TimeAdded
+	}
+	if live != nil && live.BudgetEUR != nil {
+		s.budget = *live.BudgetEUR
 	}
 	began := rfc3339(startedAt)
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), live)

@@ -4462,11 +4462,11 @@ func (s *deadlineSpy) PutLiveSession(ctx context.Context, l LiveSession) error {
 	return s.Store.PutLiveSession(ctx, l)
 }
 
-func (s *deadlineSpy) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time, added time.Duration) error {
+func (s *deadlineSpy) SetLiveSessionDeadline(ctx context.Context, taskID, owner string, deadline time.Time, added time.Duration, budget float64) error {
 	s.mu.Lock()
 	s.deadlines = append(s.deadlines, deadline)
 	s.mu.Unlock()
-	return s.Store.SetLiveSessionDeadline(ctx, taskID, deadline, added)
+	return s.Store.SetLiveSessionDeadline(ctx, taskID, owner, deadline, added, budget)
 }
 
 // By hand: the workflow scheduled the session with no agent time added to
@@ -4710,6 +4710,163 @@ func TestAnEventPastTheDeadlineTakesARaiseFirst(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+// lateCheckin is a card's row whose spend rises 2.50 EUR once its pod runs,
+// which trips spend_no_push, and which shows an extend of 2 minutes once the
+// session's deadline, as its live row holds it, has passed.
+type lateCheckin struct {
+	*deadlineSpy
+	spend *atomic.Bool
+}
+
+func (s lateCheckin) Task(ctx context.Context, id string) (Task, bool, error) {
+	t, ok, err := lateRaise{s.deadlineSpy}.Task(ctx, id)
+	if s.spend.Load() {
+		t.SpentEUR += 2.5
+	}
+	return t, ok, err
+}
+
+// deafChat answers a check-in after delay whatever its context says, so a
+// conversation can end past the session's deadline.
+type deafChat struct {
+	delay  time.Duration
+	answer string
+}
+
+func (c deafChat) Call(context.Context, string, string, CheckinRequest) (CheckinResponse, error) {
+	time.Sleep(c.delay)
+	return CheckinResponse{Text: c.answer}, nil
+}
+
+// By hand: a session of a second trips spend_no_push at its first tick (1
+// EUR spent of 5 at its start, 2.50 more after it: 62.5 percent of the 4
+// left), and the check-in's conversation answers continue a second and a
+// half later, past the deadline, after the card got 2 more minutes. The raise
+// counts before the wall clock does: the deadline moves 2 minutes, and the
+// session runs on.
+func TestARaiseDuringACheckinCountsBeforeTheWallClock(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	store.tasks["t2"] = tk
+	pod := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	pod.start(t, runner)
+	runner.Checkin = deafChat{delay: 1500 * time.Millisecond, answer: `{"decision":"continue","reason":"it is making progress"}`}
+	spy := &deadlineSpy{Store: store}
+	spend := &atomic.Bool{}
+	runner.store = lateCheckin{spy, spend}
+	kube.onCreatePod = func() { spend.Store(true) }
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
+	runner.tick = 50 * time.Millisecond
+	runner.stopWait, runner.endpointWait = 100*time.Millisecond, 100*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", AgentTime: time.Hour,
+			RoomExtra: 5 * time.Minute, Remaining: time.Second}, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
+			env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		})
+		done <- err
+	}()
+	moves := func() []time.Duration {
+		spy.mu.Lock()
+		defer spy.mu.Unlock()
+		var moved []time.Duration
+		for _, d := range spy.deadlines[1:] {
+			moved = append(moved, d.Sub(spy.deadlines[0]))
+		}
+		return moved
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the session ended (%v) with its deadline moved %v, want it running on 2 minutes later", err, moves())
+	case <-time.After(3 * time.Second):
+	}
+	if got := moves(); !slices.Equal(got, []time.Duration{2 * time.Minute}) {
+		t.Fatalf("deadline moved %v, want 2m", got)
+	}
+	cancel()
+	<-done
+}
+
+// By hand: another attempt took the session's live row over, and the card
+// got 2 more minutes past the deadline; the superseded attempt reads an
+// event past it. It takes the raise into its own clocks, but the row is the
+// new owner's: its deadline stays where the session's start wrote it.
+func TestASupersededSessionWritesNoDeadline(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	spy := &deadlineSpy{Store: store}
+	runner.store = lateRaise{spy}
+	runner.tick = time.Hour
+	runner.stopWait, runner.endpointWait = 100*time.Millisecond, 100*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", AgentTime: time.Hour,
+			RoomExtra: 5 * time.Minute, Remaining: time.Second}, nil, func(env *testsuite.TestActivityEnvironment) {
+			env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		})
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	var first LiveSession
+	for passed := false; !passed; time.Sleep(10 * time.Millisecond) {
+		store.liveMu.Lock()
+		first = store.liveSessions["t2"]
+		store.liveMu.Unlock()
+		passed = first.Owner != "" && time.Now().After(first.Deadline.Add(50*time.Millisecond))
+	}
+	if ok, err := store.TakeLiveSession(context.Background(), "t2", first.Owner, "another attempt"); err != nil || !ok {
+		t.Fatalf("take = %v, %v", ok, err)
+	}
+	kube.scriptPods(0, envLine(readEvent("/workspace/repo/go.mod"))+"\n"+sigtermLogs+resultLine(true, "stopped"))
+	time.Sleep(500 * time.Millisecond)
+	store.liveMu.Lock()
+	row := store.liveSessions["t2"]
+	store.liveMu.Unlock()
+	if !row.Deadline.Equal(first.Deadline) || row.Owner != "another attempt" {
+		t.Fatalf("live row's deadline %v owned by %q, want %v by the new owner", row.Deadline, row.Owner, first.Deadline)
+	}
+	cancel()
+	<-done
+}
+
+// By hand: factoryd stops while the session runs, and a fund of 1.50 EUR
+// reaches the card before the next factoryd reattaches. The reattached
+// session takes it at its first tick, past the budget its live row counts:
+// the agent hears of the money.
+func TestAFundDuringARestartIsToldToTheReattachedSession(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	runner.tick = 50 * time.Millisecond
+	pod := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	pod.start(t, runner)
+	in := SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", AgentTime: time.Hour, RoomExtra: 5 * time.Minute, Remaining: 3 * time.Minute}
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	if _, err := runSessionIn(t, runner, in, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	first := store.liveSessions["t2"]
+	tk := store.tasks["t2"]
+	tk.BudgetEUR += 1.5
+	store.tasks["t2"] = tk
+	ctx := untilRoomLine(pod, 2*time.Second)
+	runSessionIn(t, runner, in, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if got := roomLines(pod); !slices.Equal(got, []string{"POST /message factoryd: the card got 1.50 EUR. Go on with the work in this session."}) {
+		t.Fatalf("worker got %q, want the 1.50 EUR", got)
+	}
 }
 
 // spendingStore reports the spend a session adds once the test sets it.
