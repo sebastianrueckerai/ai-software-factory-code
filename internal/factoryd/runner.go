@@ -650,7 +650,8 @@ type sessionSpec struct {
 	ceiling   time.Time
 	// added is the agent time added to the card's cap that the session's
 	// deadline counts: the workflow's at the scheduling when it gave the
-	// window raise headroom, else the card's at the session's start
+	// window raise headroom, a reattached session's live row's, else the
+	// card's at the session's start
 	added time.Duration
 	// report is a report session's guide; "" for a coding
 	// session
@@ -835,8 +836,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
+		added := s.added
 		row = LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity}
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity, TimeAdded: &added}
 		if err := r.store.PutLiveSession(ctx, row); err != nil {
 			return out, err
 		}
@@ -1456,9 +1458,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				out.superseded = true
 				return out, errSuperseded
 			}
+			// a raise in the last tick before the deadline counts before the
+			// wall clock does
+			cur, read := r.takeRaise(ctx, t, s, watch, sup, &deadline)
 			trip := sup.Tick(time.Now())
-			if trip == nil {
-				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup, &deadline)
+			if trip == nil && read {
+				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup, cur)
 			}
 			if trip != nil {
 				if end, err := onTrip(trip); end {
@@ -1489,6 +1494,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				log.Printf("task %s: record the lines consumed of session %s: %v", t.ID, s.id, err)
 			}
 			now := time.Now()
+			if !now.Before(deadline) {
+				// an event past the deadline trips the wall clock: a raise
+				// since the last tick counts first
+				r.takeRaise(ctx, t, s, watch, sup, &deadline)
+			}
 			digest.add(*ev, now)
 			trip := sup.Event(*ev, now)
 			if n := sup.TakeNudge(); n != nil && trip == nil && r.holds(ctx, t.ID, s.owner) {
@@ -3473,34 +3483,44 @@ func (k *InClusterKube) Namespace() string {
 	return string(bytes.TrimSpace(b))
 }
 
-// watchLimits reads the card's row once per tick: a raise of its agent time
-// past what the session took moves deadline, the supervisor's and the
-// watch's span out by as much as the window allows, and the agent gets the
-// line on the raise and the warning it is due; a line the pod did not take
-// stays due, and only its first failure is recorded on the timeline.
-func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor, deadline *time.Time) *Trip {
+// takeRaise reads the card's row: a raise of its agent time past what the
+// session took moves deadline, the supervisor's and the watch's span out by
+// as much as the window allows, the live row keeps both, and the watch owes
+// the agent the line on it; the money reaches the session at its next call.
+// It answers the row, ok false when it could not be read.
+func (r *Runner) takeRaise(ctx context.Context, t Task, s sessionSpec, w *limitWatch, sup *Supervisor, deadline *time.Time) (Task, bool) {
 	cur, ok, err := r.store.Task(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the card's spend: %v", t.ID, err)
-		return nil
+		return Task{}, false
 	}
 	if !ok {
-		return nil
+		return Task{}, false
 	}
-	// a raise of the card's agent time lengthens the session as far as its
-	// window allows, and the money reaches it at its next call
-	if grew, cents := cur.Usage.TimeAdded()-w.added, Cents(cur.BudgetEUR)-Cents(w.budget); grew > 0 || cents > 0 {
-		w.added, w.budget = cur.Usage.TimeAdded(), cur.BudgetEUR
-		d := s.lengthened(*deadline, grew).Sub(*deadline)
-		if d > 0 {
-			*deadline = deadline.Add(d)
-			sup.Lengthen(d)
-			if err := r.store.SetLiveSessionDeadline(ctx, t.ID, *deadline); err != nil {
-				log.Printf("task %s: session %s: record the deadline a raise moved: %s", t.ID, s.id, r.scrub(err.Error()))
-			}
+	grew, cents := cur.Usage.TimeAdded()-w.added, Cents(cur.BudgetEUR)-Cents(w.budget)
+	if grew <= 0 && cents <= 0 {
+		return cur, true
+	}
+	w.added, w.budget = cur.Usage.TimeAdded(), cur.BudgetEUR
+	d := s.lengthened(*deadline, grew).Sub(*deadline)
+	if d > 0 {
+		*deadline = deadline.Add(d)
+		sup.Lengthen(d)
+	}
+	if grew > 0 {
+		if err := r.store.SetLiveSessionDeadline(ctx, t.ID, *deadline, w.added); err != nil {
+			log.Printf("task %s: session %s: record the deadline a raise moved: %s", t.ID, s.id, r.scrub(err.Error()))
 		}
-		w.Lengthen(d, max(cents, 0), cur.EnforcedSpent(), cur.BudgetEUR, time.Now())
 	}
+	w.Lengthen(max(grew, 0), d, max(cents, 0), cur.EnforcedSpent(), cur.BudgetEUR, time.Now())
+	return cur, true
+}
+
+// watchLimits sends the agent what its card's row cur owes it: the line on
+// a raise the session took and the warning it is due; a line the pod did
+// not take stays due, and only its first failure is recorded on the
+// timeline. Then the spend check.
+func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor, cur Task) *Trip {
 	for _, wn := range w.due(cur.EnforcedSpent(), cur.BudgetEUR, time.Now()) {
 		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)
 		if err == nil || !w.failed[wn.kind] {

@@ -551,12 +551,18 @@ check-in takes at a session's start is no agent time of the card, and the sessio
 A session's activity window also holds 5 sessions' worth of headroom past
 the card's agent time left (change id `room-window`). A raise of the card's
 agent time while the session runs moves the session's deadline and its
-supervisor's wall-clock cap out by the raise, never past the window's end,
-a wrap-up warning already sent comes again once the session passes its
-share of the new time or budget, and the agent hears what it got:
-"factoryd: the card got 24 more minutes of agent time and 1.50 EUR. Go on
-with the work in this session." The money reaches the session at its next
-call. A raise past the headroom reaches the next session.
+supervisor's wall-clock cap out by the raise, never past the window's end.
+The live row keeps the moved deadline, so a session reattached after a
+restart keeps it too. A wrap-up warning already sent comes again once the
+session passes its share of the new time or budget. The agent hears what
+it got: "factoryd: the card got 24 more minutes of agent time and 1.50 EUR.
+Go on with the work in this session." Where the window cuts the raise, the
+line also names the session's share: "this session may use 70 of the
+minutes". The money reaches the session at its next call, and the time
+past the headroom reaches the next session. With no bound of its own in
+the policy, a session's or a planner's gate watch trips a minute past its
+window's end less the grace, so a lengthened session raises no gate_bound
+alert.
 A stop that rung 0 cannot resolve opens a case, and rung 1 judges it: the
 check-in's model (`checkin_model`, purpose `checkin`) runs on the case, not
 in a session, with read tools only: `transcript_search` and `transcript_read`
@@ -613,11 +619,11 @@ heal pass starts keeps them too. The opencode prompt puts the answers
 ahead of the objective as settled
 answers the agent must not escalate again; the `session_start` timeline
 step records them. The
-human is the one party allowed to raise a limit: the answer buys room for
-one more session's worth, the start and the agent time the card lacks for
-it at its own average session (its agent time over its sessions, before
-the first a quarter of its sized agent time, never under the 5 minutes a
-session needs to start), and no money.
+answer buys room for one more session's worth: the start and the agent
+time the card lacks for it at its own average session, in whole minutes,
+and no money. The average is the card's agent time over its sessions;
+before the first session it is a quarter of its sized agent time, and it
+is never under the 5 minutes a session needs to start.
 Both grants are recorded on the task row. Every
 decision is a `supervisor` event in the session record, a timeline step
 and an issue comment.

@@ -41,9 +41,10 @@ type limitWatch struct {
 	// budget as the session last took them
 	added  time.Duration
 	budget float64
-	// owedTime and owedCents are the raise the agent was not told of yet
-	owedTime  time.Duration
-	owedCents int64
+	// owedCard, owedTime and owedCents are the raise the agent was not told
+	// of yet: the card's agent time, the session's share of it and the money
+	owedCard, owedTime time.Duration
+	owedCents          int64
 }
 
 func newLimitWatch(l policy.Limits, planner bool, started time.Time, span time.Duration) *limitWatch {
@@ -54,12 +55,13 @@ func newLimitWatch(l policy.Limits, planner bool, started time.Time, span time.D
 	return w
 }
 
-// Lengthen takes a raise into the session: d more agent time into its span
-// and cents more money, both owed to the agent in one line. A warning sent
-// is due again when the span or the budget puts the session under its
-// share, spent being the card's spend.
-func (w *limitWatch) Lengthen(d time.Duration, cents int64, spent, budget float64, now time.Time) {
+// Lengthen takes a raise of grew more agent time into the session, d of it
+// into its span, and of cents more money, all owed to the agent in one line.
+// A warning sent is due again when the span or the budget puts the session
+// under its share, spent being the card's spend.
+func (w *limitWatch) Lengthen(grew, d time.Duration, cents int64, spent, budget float64, now time.Time) {
 	w.span += d
+	w.owedCard += grew
 	w.owedTime += d
 	w.owedCents += cents
 	if float64(now.Sub(w.started)) < w.share*float64(w.span) {
@@ -87,11 +89,17 @@ func (w *limitWatch) due(spent, budget float64, now time.Time) []warning {
 }
 
 // roomLine tells the agent the raise it is owed, naming only the parts that
-// grew; "" for none.
+// grew for the session, and the session's share where the window cut the
+// card's agent time; "" for none.
 func (w *limitWatch) roomLine() string {
 	var got []string
+	share := ""
 	if m := int(w.owedTime / time.Minute); m > 0 {
-		got = append(got, plural(m, "more minute")+" of agent time")
+		card := int(w.owedCard / time.Minute)
+		got = append(got, plural(card, "more minute")+" of agent time")
+		if card != m {
+			share = fmt.Sprintf("; this session may use %d of the minutes", m)
+		}
 	}
 	if w.owedCents > 0 {
 		got = append(got, textutil.EUR(float64(w.owedCents)/100)+" EUR")
@@ -99,12 +107,12 @@ func (w *limitWatch) roomLine() string {
 	if len(got) == 0 {
 		return ""
 	}
-	return "factoryd: the card got " + strings.Join(got, " and ") + ". Go on with the work in this session."
+	return "factoryd: the card got " + strings.Join(got, " and ") + share + ". Go on with the work in this session."
 }
 
 func (w *limitWatch) sent(kind string) {
 	if kind == warnRoom {
-		w.owedTime, w.owedCents = 0, 0
+		w.owedCard, w.owedTime, w.owedCents = 0, 0, 0
 		return
 	}
 	w.done[kind] = true

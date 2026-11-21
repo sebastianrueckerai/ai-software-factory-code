@@ -760,9 +760,9 @@ func TestPGStoreLiveSessionKeepsItsSpendBaseline(t *testing.T) {
 	}
 }
 
-// A raise moves the live row's deadline and nothing else of it: the lines
-// the loop consumed and the owner stand, so a reattach resumes the log
-// where it was with the lengthened deadline.
+// A raise moves the live row's deadline and the agent time added it counts,
+// and nothing else of it: the lines the loop consumed and the owner stand,
+// so a reattach resumes the log where it was with the lengthened deadline.
 func TestPGStoreLiveSessionDeadlineMovesAlone(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	task, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 5, time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC))
@@ -776,11 +776,15 @@ func TestPGStoreLiveSessionDeadlineMovesAlone(t *testing.T) {
 	if err := s.SetLiveSessionLines(ctx, task.ID, 40); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetLiveSessionDeadline(ctx, task.ID, deadline.Add(24*time.Minute)); err != nil {
+	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || l.TimeAdded != nil {
+		t.Fatalf("live row %+v, %v; want no time added on a row written without one", l, err)
+	}
+	if err := s.SetLiveSessionDeadline(ctx, task.ID, deadline.Add(24*time.Minute), 34*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || !l.Deadline.Equal(deadline.Add(24*time.Minute)) || l.Lines != 40 || l.Owner != "a" {
-		t.Fatalf("live row %+v, %v; want the deadline 24 minutes later, 40 lines and owner a", l, err)
+	if l, _, err := s.LiveSession(ctx, task.ID); err != nil || !l.Deadline.Equal(deadline.Add(24*time.Minute)) || l.TimeAdded == nil || *l.TimeAdded != 34*time.Minute ||
+		l.Lines != 40 || l.Owner != "a" {
+		t.Fatalf("live row %+v, %v; want the deadline 24 minutes later with 34 minutes added, 40 lines and owner a", l, err)
 	}
 }
 

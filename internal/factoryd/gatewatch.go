@@ -430,25 +430,31 @@ func activityBeside(args []any) bool {
 // read), the current version for 0 or a version it cannot read, since a
 // bound only decides when to alert. A review's or an audit's stays
 // fanOutTripMargin under its attempt's reviewActivityMax, so the watch
-// trips, and the supervisor decides, before Temporal ends it.
-func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, activity string, pin int64, waves int) time.Duration {
-	return func(ctx context.Context, activity string, pin int64, waves int) time.Duration {
+// trips, and the supervisor decides, before Temporal ends it. A session's
+// or a planner's with no bound of the policy's own reaches a minute past
+// its window's end less the grace: a raise lengthens the session up to
+// there.
+func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, name string, pin int64, waves int) time.Duration {
+	return func(ctx context.Context, name string, pin int64, waves int) time.Duration {
 		tree := current().Tree
 		if pin != 0 {
 			v, ok, err := read(ctx, pin)
 			if err == nil && ok {
 				tree = v.Tree
 			} else {
-				log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", activity, pin, err, ok)
+				log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", name, pin, err, ok)
 			}
 		}
-		bound := tree.Document.PartsBound(activity, waves)
-		if activity == ActivityWaitChecks {
+		bound := tree.Document.PartsBound(name, waves)
+		_, own := tree.Document.Bounds[name]
+		switch {
+		case name == ActivityWaitChecks:
 			repository, _ := ctx.Value(repositoryKey{}).(string)
 			bound = tree.ChecksBound(repository)
-		}
-		if activity == ActivityModelReview || activity == ActivityGateAudit {
+		case name == ActivityModelReview || name == ActivityGateAudit:
 			bound = min(bound, reviewActivityMax-fanOutTripMargin)
+		case (name == ActivityRunSession || name == ActivityRunPlan) && !own && activity.IsActivity(ctx):
+			bound = max(bound, activity.GetInfo(ctx).StartToCloseTimeout-sessionGrace+time.Minute)
 		}
 		return bound
 	}

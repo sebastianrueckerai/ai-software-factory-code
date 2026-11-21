@@ -4099,7 +4099,9 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	watch := newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour)
 	watch.budget = 5
 	deadline := time.Now().Add(time.Hour)
-	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", watch, spendSupervisor(t, nil), &deadline)
+	sup := spendSupervisor(t, nil)
+	cur, _ := runner.takeRaise(ctx, Task{ID: "t1"}, s, watch, sup, &deadline)
+	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", watch, sup, cur)
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
@@ -4171,7 +4173,11 @@ func (g *raiseRig) tick(t *testing.T) []string {
 	g.worker.mu.Lock()
 	before := len(g.worker.texts)
 	g.worker.mu.Unlock()
-	if trip := g.runner.watchLimits(context.Background(), g.task, g.s, "ns", "pod", g.watch, g.sup, &g.deadline); trip != nil {
+	cur, ok := g.runner.takeRaise(context.Background(), g.task, g.s, g.watch, g.sup, &g.deadline)
+	if !ok {
+		t.Fatal("the card's row was not read")
+	}
+	if trip := g.runner.watchLimits(context.Background(), g.task, g.s, "ns", "pod", g.watch, g.sup, cur); trip != nil {
 		t.Fatalf("trip = %+v", trip)
 	}
 	g.worker.mu.Lock()
@@ -4214,8 +4220,9 @@ func TestARaiseLengthensTheRunningSession(t *testing.T) {
 
 // By hand: a raise of 200 minutes against a headroom of 70 moves the
 // deadline to the window's end, 18 + 70 = 88 minutes past the start, and no
-// further; the agent hears of the 70 the session got. A raise of 10 more
-// minutes after that moves nothing and says nothing.
+// further; the agent hears of the card's 200 and of the 70 the session may
+// use. A raise of 10 more minutes after that moves nothing and says
+// nothing: the next session starts with them.
 func TestARaiseStopsAtTheWindow(t *testing.T) {
 	g := newRaiseRig(t, 70*time.Minute)
 	g.raise(200*time.Minute, 0)
@@ -4223,8 +4230,8 @@ func TestARaiseStopsAtTheWindow(t *testing.T) {
 	if !g.deadline.Equal(g.s.ceiling) || !g.sup.deadline.Equal(g.s.ceiling) || g.watch.span != 88*time.Minute {
 		t.Fatalf("deadline %v, supervisor %v, span %v; want the ceiling %v and 88m", g.deadline, g.sup.deadline, g.watch.span, g.s.ceiling)
 	}
-	if !slices.Equal(texts, []string{"POST /message factoryd: the card got 70 more minutes of agent time. Go on with the work in this session."}) {
-		t.Fatalf("worker got %q, want the 70 minutes the session got", texts)
+	if !slices.Equal(texts, []string{"POST /message factoryd: the card got 200 more minutes of agent time; this session may use 70 of the minutes. Go on with the work in this session."}) {
+		t.Fatalf("worker got %q, want the card's 200 minutes and the session's 70", texts)
 	}
 	g.raise(10*time.Minute, 0)
 	if texts := g.tick(t); len(texts) != 0 || !g.deadline.Equal(g.s.ceiling) {
@@ -4455,11 +4462,11 @@ func (s *deadlineSpy) PutLiveSession(ctx context.Context, l LiveSession) error {
 	return s.Store.PutLiveSession(ctx, l)
 }
 
-func (s *deadlineSpy) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time) error {
+func (s *deadlineSpy) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time, added time.Duration) error {
 	s.mu.Lock()
 	s.deadlines = append(s.deadlines, deadline)
 	s.mu.Unlock()
-	return s.Store.SetLiveSessionDeadline(ctx, taskID, deadline)
+	return s.Store.SetLiveSessionDeadline(ctx, taskID, deadline, added)
 }
 
 // By hand: the workflow scheduled the session with no agent time added to
@@ -4516,6 +4523,193 @@ func TestARaiseBeforeTheSessionsStartLengthensItAtItsFirstTick(t *testing.T) {
 			}
 		})
 	}
+}
+
+// roomLines are the worker's posts that tell it of a raise.
+func roomLines(w *fakeWorkerEndpoint) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var lines []string
+	for _, text := range w.texts {
+		if strings.HasPrefix(text, "POST /message factoryd: the card got") {
+			lines = append(lines, text)
+		}
+	}
+	return lines
+}
+
+// untilRoomLine cancels once the worker got a room line, or after wait.
+func untilRoomLine(w *fakeWorkerEndpoint, wait time.Duration) context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer cancel()
+		for end := time.Now().Add(wait); time.Now().Before(end) && len(roomLines(w)) == 0; {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	return ctx
+}
+
+// By hand: the workflow scheduled the session with no agent time added and
+// 3 minutes left; factoryd stops while the session runs, and an extend of 2
+// minutes reaches the card's row before the next factoryd reattaches. The
+// reattached session takes it at its first tick, past the time added its
+// live row counts: its deadline moves 2 minutes past the live row's, and
+// the agent hears of them. A row an older factoryd wrote counts no time
+// added: the reattach reads the card's row, extend included, and moves
+// nothing.
+func TestARaiseDuringARestartLengthensTheReattachedSession(t *testing.T) {
+	for name, tc := range map[string]struct {
+		older bool
+		moved bool
+		lines []string
+	}{
+		"the row counts its time added": {false, true, []string{"POST /message factoryd: the card got 2 more minutes of agent time. Go on with the work in this session."}},
+		"a row from an older factoryd":  {true, false, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+			spy := &deadlineSpy{Store: store}
+			runner.store = spy
+			runner.tick = 50 * time.Millisecond
+			pod := &fakeWorkerEndpoint{status: http.StatusNoContent}
+			pod.start(t, runner)
+			in := SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", AgentTime: time.Hour, RoomExtra: 5 * time.Minute, Remaining: 3 * time.Minute}
+			stop := make(chan struct{})
+			kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+			if _, err := runSessionIn(t, runner, in, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
+				env.SetWorkerStopChannel(stop)
+			}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+				t.Fatalf("err = %v, want the detach", err)
+			}
+			store.liveMu.Lock()
+			first := store.liveSessions["t2"]
+			if first.TimeAdded == nil || *first.TimeAdded != 0 {
+				t.Fatalf("live row's time added %v, want the workflow's 0", first.TimeAdded)
+			}
+			if tc.older {
+				first.TimeAdded = nil
+				store.liveSessions["t2"] = first
+			}
+			store.liveMu.Unlock()
+			tk := store.tasks["t2"]
+			tk.Usage.RaisedTime = 2 * time.Minute
+			store.tasks["t2"] = tk
+			ctx := untilRoomLine(pod, time.Second)
+			runSessionIn(t, runner, in, nil, func(env *testsuite.TestActivityEnvironment) {
+				env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+				env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+			})
+			spy.mu.Lock()
+			moves := spy.deadlines[1:]
+			spy.mu.Unlock()
+			if len(moves) > 0 != tc.moved {
+				t.Fatalf("deadline moves %v, want moved %v", moves, tc.moved)
+			}
+			// the reattach reads the live row's deadline as the time until it,
+			// so its own lies a few nanoseconds past
+			if tc.moved {
+				if moved := moves[len(moves)-1].Sub(first.Deadline); moved < 2*time.Minute || moved > 2*time.Minute+time.Second {
+					t.Fatalf("the reattached session's deadline moved %v past the live row's, want 2m", moved)
+				}
+			}
+			if got := roomLines(pod); !slices.Equal(got, tc.lines) {
+				t.Fatalf("worker got %q, want %q", got, tc.lines)
+			}
+		})
+	}
+}
+
+// lateRaise is a card's row that shows an extend of 2 minutes once the
+// session's deadline, as its live row holds it, has passed: a raise in the
+// session's last tick.
+type lateRaise struct{ *deadlineSpy }
+
+func (s lateRaise) Task(ctx context.Context, id string) (Task, bool, error) {
+	t, ok, err := s.Store.Task(ctx, id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.deadlines) > 0 && time.Now().After(s.deadlines[0]) {
+		t.Usage.RaisedTime += 2 * time.Minute
+	}
+	return t, ok, err
+}
+
+// By hand: a session of 2 seconds whose card gets 2 more minutes after its
+// last tick before the deadline takes them at the tick after it, before its
+// wall clock trips: the deadline moves 2 minutes and the agent hears of
+// them, and the session runs on.
+func TestARaiseInTheLastTickBeforeTheDeadlineIsTaken(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	spy := &deadlineSpy{Store: store}
+	runner.store = lateRaise{spy}
+	runner.tick = 50 * time.Millisecond
+	runner.stopWait, runner.endpointWait = 100*time.Millisecond, 100*time.Millisecond
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	ctx := untilRoomLine(worker, 10*time.Second)
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", AgentTime: time.Hour,
+		RoomExtra: 5 * time.Minute, Remaining: 2 * time.Second}, nil, hangLogs)
+	spy.mu.Lock()
+	var moved []time.Duration
+	for _, d := range spy.deadlines[1:] {
+		moved = append(moved, d.Sub(spy.deadlines[0]))
+	}
+	spy.mu.Unlock()
+	if !slices.Equal(moved, []time.Duration{2 * time.Minute}) || len(roomLines(worker)) != 1 {
+		t.Fatalf("deadline moved %v, room lines %q; want 2m and one line", moved, roomLines(worker))
+	}
+}
+
+// By hand: a session of a second with no tick to take a raise reads an
+// event past its deadline, after the card got 2 more minutes: the event
+// takes them before the wall clock trips, so the session runs on, its log
+// held until a stop that never comes, and its deadline is 2 minutes later.
+func TestAnEventPastTheDeadlineTakesARaiseFirst(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	spy := &deadlineSpy{Store: store}
+	runner.store = lateRaise{spy}
+	runner.tick = time.Hour
+	runner.stopWait, runner.endpointWait = 100*time.Millisecond, 100*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", AgentTime: time.Hour,
+			RoomExtra: 5 * time.Minute, Remaining: time.Second}, nil, func(env *testsuite.TestActivityEnvironment) {
+			env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		})
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	moves := func() []time.Duration {
+		spy.mu.Lock()
+		defer spy.mu.Unlock()
+		var moved []time.Duration
+		for _, d := range spy.deadlines[1:] {
+			moved = append(moved, d.Sub(spy.deadlines[0]))
+		}
+		return moved
+	}
+	for passed := false; !passed; time.Sleep(10 * time.Millisecond) {
+		spy.mu.Lock()
+		passed = len(spy.deadlines) > 0 && time.Now().After(spy.deadlines[0].Add(50*time.Millisecond))
+		spy.mu.Unlock()
+	}
+	kube.scriptPods(0, envLine(readEvent("/workspace/repo/go.mod"))+"\n"+sigtermLogs+resultLine(true, "stopped"))
+	select {
+	case err := <-done:
+		t.Fatalf("the session ended (%v) with its deadline moved %v, want it running on 2 minutes later", err, moves())
+	case <-time.After(time.Second):
+	}
+	if got := moves(); !slices.Equal(got, []time.Duration{2 * time.Minute}) {
+		t.Fatalf("deadline moved %v, want 2m", got)
+	}
+	cancel()
+	<-done
 }
 
 // spendingStore reports the spend a session adds once the test sets it.

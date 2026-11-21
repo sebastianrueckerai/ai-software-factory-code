@@ -1141,8 +1141,9 @@ func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 // never born under the 5 minutes a session needs to start. Each case's first
 // session ends with no model answer, all but one minute of the cap spent, so
 // the grant tops the one minute up to the slice: ExtraTime is the slice less
-// that minute. The session after it (1 minute, inside even the smallest
-// slice) takes the number the first left.
+// that minute, rounded up to a whole minute (7m30s - 1m = 6m30s is 7m). The
+// session after it (1 minute, inside even the smallest slice) takes the
+// number the first left.
 func TestAnswerSliceIsAQuarterOfTheAgentTime(t *testing.T) {
 	for name, tc := range map[string]struct {
 		cap       time.Duration
@@ -1150,7 +1151,7 @@ func TestAnswerSliceIsAQuarterOfTheAgentTime(t *testing.T) {
 	}{
 		"2h, used 119m, a quarter": {cap: 2 * time.Hour, wantExtra: 29 * time.Minute},
 		"10m, used 9m, the floor":  {cap: 10 * time.Minute, wantExtra: 4 * time.Minute},
-		"30m, used 29m, a quarter": {cap: 30 * time.Minute, wantExtra: 6*time.Minute + 30*time.Second},
+		"30m, used 29m, a quarter": {cap: 30 * time.Minute, wantExtra: 7 * time.Minute},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := testWorkflowConfig

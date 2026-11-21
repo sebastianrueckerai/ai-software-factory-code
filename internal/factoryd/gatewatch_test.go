@@ -429,6 +429,51 @@ func TestPinnedBoundStaysUnderTheFanOutsAttempt(t *testing.T) {
 	}
 }
 
+// A raise lengthens a session up to its activity's window, so a session or
+// a planner with no bound of its own is bound a minute past the window's end
+// less the grace, still under Temporal's timeout. By hand, in the test
+// environment's window of 10 minutes under an agent time of 4: the old
+// default is a large card's 6 minutes and one, 7; the window's is 10 - 2 + 1
+// = 9, so a session lengthened past 7 minutes raises no gate_bound alert. A
+// policy's own bound of 5 minutes stands, and a report keeps the default.
+func TestPinnedBoundOfASessionHoldsItsWindow(t *testing.T) {
+	for _, tc := range []struct {
+		activity string
+		bounds   map[string]int
+		want     time.Duration
+	}{
+		{ActivityRunSession, nil, 9 * time.Minute},
+		{ActivityRunPlan, nil, 9 * time.Minute},
+		{ActivityRunSession, map[string]int{"RunSession": 300}, 5 * time.Minute},
+		{ActivityRunReport, nil, 7 * time.Minute},
+	} {
+		v := testPolicyVersion()
+		v.Document.Limits.AgentTime = 4 * time.Minute
+		if tc.bounds != nil {
+			v.Document.Bounds = tc.bounds
+		}
+		store := newFakeStore()
+		store.CreateTask(context.Background(), Task{ID: "t1", Status: "running", Track: "direct"})
+		g := &GateWatch{Store: store, Bound: PinnedBound(func() policy.Version { return v },
+			func(context.Context, int64) (policy.Version, bool, error) { return v, false, nil })}
+		env := signallingEnv(g)
+		var bound time.Duration
+		env.RegisterActivityWithOptions(func(ctx context.Context, _ string) error {
+			info := activity.GetInfo(ctx)
+			g.mu.Lock()
+			bound = g.runs[runKey(info.WorkflowExecution.ID, info.ActivityID)].bound
+			g.mu.Unlock()
+			return nil
+		}, activity.RegisterOptions{Name: tc.activity})
+		if _, err := env.ExecuteActivity(tc.activity, "t1"); err != nil {
+			t.Fatal(err)
+		}
+		if bound != tc.want || len(store.alertRows()) != 0 {
+			t.Errorf("%s with bounds %v: bound %s and %d alerts, want %s and none", tc.activity, tc.bounds, bound, len(store.alertRows()), tc.want)
+		}
+	}
+}
+
 // The watch hands the bound the pin of the activity's input.
 func TestActivityPin(t *testing.T) {
 	for _, tc := range []struct {

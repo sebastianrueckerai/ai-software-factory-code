@@ -51,9 +51,14 @@ func SessionRoom(startsLeft int, timeLeft, per time.Duration, moneyRoom, n int) 
 	now = max(0, min(startsLeft, int(timeLeft/per), moneyRoom))
 	target := now + n
 	starts = max(0, target-startsLeft)
-	need := time.Duration(target)*per - timeLeft
-	agentTime = max(0, (need+time.Minute-1)/time.Minute*time.Minute)
+	agentTime = max(0, wholeMinutes(time.Duration(target)*per-timeLeft))
 	return now, starts, agentTime
+}
+
+// wholeMinutes is d rounded up to a whole minute, the grain of every agent
+// time a room or a grant adds.
+func wholeMinutes(d time.Duration) time.Duration {
+	return (d + time.Minute - 1) / time.Minute * time.Minute
 }
 
 // Room is the card's room now and the raises that make it n more sessions' worth.

@@ -2833,10 +2833,14 @@ func (t *taskRun) marksKept() bool {
 
 // grantTime is an answer's agent time: when less than sessionWorth of
 // agent time is left, the difference, so the attempt is not born at the
-// cap.
+// cap; in whole minutes, as grant's (versionRoomWindow).
 func (t *taskRun) grantTime(u *TaskUsage) {
 	if left, slice := t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime, t.sessionWorth(*u); left < slice {
-		u.ExtraTime += slice - left
+		add := slice - left
+		if t.roomWindow >= versionRoomWindow {
+			add = wholeMinutes(add)
+		}
+		u.ExtraTime += add
 	}
 	t.recordUsage(*u)
 }

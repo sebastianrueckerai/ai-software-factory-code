@@ -76,7 +76,7 @@ func TestLimitWatchLengthenMakesAWarningDueAgain(t *testing.T) {
 	w := newLimitWatch(policy.Limits{}, false, start, 2*time.Hour)
 	w.sent(warnTime)
 	w.sent(warnBudget)
-	w.Lengthen(30*time.Minute, 0, 4.5, 5.5, start.Add(97*time.Minute))
+	w.Lengthen(30*time.Minute, 30*time.Minute, 0, 4.5, 5.5, start.Add(97*time.Minute))
 	if w.span != 150*time.Minute || w.done[warnTime] || !w.done[warnBudget] {
 		t.Fatalf("span %v, done %v; want 150m, the time warning due again and the budget one sent", w.span, w.done)
 	}
@@ -87,14 +87,15 @@ func TestLimitWatchLengthenMakesAWarningDueAgain(t *testing.T) {
 	if got := w.due(4.5, 5.5, start.Add(120*time.Minute)); len(got) != 1 || got[0].text != "factoryd: 30 minutes of agent time are left. "+codingWrapUp {
 		t.Fatalf("due at 120m = %+v, want the time warning with 30 minutes left", got)
 	}
-	w.Lengthen(0, 50, 4.5, 6, start.Add(120*time.Minute))
+	w.Lengthen(0, 0, 50, 4.5, 6, start.Add(120*time.Minute))
 	if w.done[warnBudget] {
 		t.Fatal("a budget of 6.00 leaves the budget warning sent at 4.50")
 	}
 }
 
 // The room line names only what grew, and stays due until it reaches the
-// agent; two raises before it does are one line.
+// agent; two raises before it does are one line. Where the window cut the
+// card's raise, it names the session's share beside it.
 func TestLimitWatchOwesTheRoomLineUntilItIsSent(t *testing.T) {
 	start := time.Unix(0, 0)
 	line := func(w *limitWatch) string {
@@ -106,11 +107,11 @@ func TestLimitWatchOwesTheRoomLineUntilItIsSent(t *testing.T) {
 		return ""
 	}
 	w := newLimitWatch(policy.Limits{}, false, start, time.Hour)
-	w.Lengthen(time.Minute, 0, 0, 10, start)
+	w.Lengthen(time.Minute, time.Minute, 0, 0, 10, start)
 	if got := line(w); got != "factoryd: the card got 1 more minute of agent time. Go on with the work in this session." {
 		t.Fatalf("time alone: %q", got)
 	}
-	w.Lengthen(0, 150, 0, 10, start)
+	w.Lengthen(0, 0, 150, 0, 10, start)
 	if got := line(w); got != "factoryd: the card got 1 more minute of agent time and 1.50 EUR. Go on with the work in this session." {
 		t.Fatalf("time and money: %q", got)
 	}
@@ -118,13 +119,23 @@ func TestLimitWatchOwesTheRoomLineUntilItIsSent(t *testing.T) {
 	if got := line(w); got != "" {
 		t.Fatalf("a sent line is due again: %q", got)
 	}
-	w.Lengthen(30*time.Second, 120, 0, 10, start)
+	w.Lengthen(30*time.Second, 30*time.Second, 120, 0, 10, start)
 	if got := line(w); got != "factoryd: the card got 1.20 EUR. Go on with the work in this session." {
 		t.Fatalf("money and half a minute: %q", got)
 	}
 	w.sent(warnRoom)
-	w.Lengthen(30*time.Second, 0, 0, 10, start)
+	w.Lengthen(30*time.Second, 30*time.Second, 0, 0, 10, start)
 	if got := line(w); got != "" {
 		t.Fatalf("half a minute alone is owed, not told: %q", got)
+	}
+	w.sent(warnRoom)
+	w.Lengthen(200*time.Minute, 70*time.Minute, 150, 0, 10, start)
+	if got := line(w); got != "factoryd: the card got 200 more minutes of agent time and 1.50 EUR; this session may use 70 of the minutes. Go on with the work in this session." {
+		t.Fatalf("a raise the window cut: %q", got)
+	}
+	w.sent(warnRoom)
+	w.Lengthen(10*time.Minute, 0, 0, 0, 10, start)
+	if got := line(w); got != "" {
+		t.Fatalf("a raise the session gets none of is the next session's, not told: %q", got)
 	}
 }

@@ -1289,8 +1289,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		s.ceiling = activity.GetInfo(ctx).Deadline.Add(-sessionGrace)
 	}
 	s.added = t.Usage.TimeAdded()
-	if live == nil && in.RoomExtra > 0 {
+	switch {
+	case live == nil && in.RoomExtra > 0:
 		s.added = in.TimeAdded
+	case live != nil && live.TimeAdded != nil:
+		// the raises the live row's deadline holds: one made while factoryd
+		// was away is past them
+		s.added = *live.TimeAdded
 	}
 	began := rfc3339(startedAt)
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), live)

@@ -28,15 +28,18 @@ type LiveSession struct {
 	// SpentAtStart is the card's enforced spend when the session started;
 	// nil where it could not be read.
 	SpentAtStart *float64
+	// TimeAdded is the agent time added to the card's cap that Deadline
+	// counts; nil in a row an older factoryd wrote.
+	TimeAdded *time.Duration
 }
 
 func (s *PGStore) PutLiveSession(ctx context.Context, l LiveSession) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (task_id) DO UPDATE SET session_id = EXCLUDED.session_id, namespace = EXCLUDED.namespace, pod = EXCLUDED.pod,
 		message_token = EXCLUDED.message_token, started_at = EXCLUDED.started_at, deadline = EXCLUDED.deadline, lines = EXCLUDED.lines,
-		spent_at_start = EXCLUDED.spent_at_start, owner = EXCLUDED.owner, activity = EXCLUDED.activity`,
-		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart, l.Owner, l.Activity)
+		spent_at_start = EXCLUDED.spent_at_start, owner = EXCLUDED.owner, activity = EXCLUDED.activity, time_added_ns = EXCLUDED.time_added_ns`,
+		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart, l.Owner, l.Activity, l.TimeAdded)
 	return err
 }
 
@@ -45,15 +48,15 @@ func (s *PGStore) SetLiveSessionLines(ctx context.Context, taskID string, lines 
 	return err
 }
 
-func (s *PGStore) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE live_sessions SET deadline = $2 WHERE task_id = $1`, taskID, deadline)
+func (s *PGStore) SetLiveSessionDeadline(ctx context.Context, taskID string, deadline time.Time, added time.Duration) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE live_sessions SET deadline = $2, time_added_ns = $3 WHERE task_id = $1`, taskID, deadline, added)
 	return err
 }
 
 func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	var l LiveSession
-	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity
-		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart, &l.Owner, &l.Activity)
+	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns
+		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart, &l.Owner, &l.Activity, &l.TimeAdded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LiveSession{}, false, nil
 	}
