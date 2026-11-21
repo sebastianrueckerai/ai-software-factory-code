@@ -228,6 +228,21 @@ func (s *acceptanceStore) Task(_ context.Context, id string) (factoryd.Task, boo
 }
 
 func (s *acceptanceStore) TransitionTask(_ context.Context, id string, from []string, to string) error {
+	if to == "closed" {
+		return fmt.Errorf("task %s: a card ends closed through EndClosed, which stores why it closed", id)
+	}
+	return s.transition(id, from, to, "")
+}
+
+// EndClosed moves task id to closed and stores reason, as PGStore.EndClosed
+// does.
+func (s *acceptanceStore) EndClosed(_ context.Context, id string, from []string, reason string) error {
+	return s.transition(id, from, "closed", reason)
+}
+
+// transition moves task id from one of from to to, with reason as its
+// closing reason when it ends closed.
+func (s *acceptanceStore) transition(id string, from []string, to, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
@@ -238,6 +253,9 @@ func (s *acceptanceStore) TransitionTask(_ context.Context, id string, from []st
 	if factoryd.Final(to) {
 		now := time.Now()
 		t.FinishedAt, t.Gate, t.GateSince = &now, "", nil
+	}
+	if to == "closed" {
+		t.ClosingReason = reason
 	}
 	s.tasks[id] = t
 	return nil
@@ -509,12 +527,22 @@ func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.Intake
 	}) {
 		return 0, nil
 	}
-	e.ID = int64(len(s.events) + 1)
+	e.ID = 1
+	if n := len(s.events); n > 0 {
+		e.ID = s.events[n-1].ID + 1
+	}
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()
 	}
 	s.events = append(s.events, e)
 	return e.ID, nil
+}
+
+func (s *acceptanceStore) DeleteIntakeEvent(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = slices.DeleteFunc(s.events, func(e factoryd.IntakeEvent) bool { return e.ID == id })
+	return nil
 }
 
 func (s *acceptanceStore) ConfirmFactoryClose(_ context.Context, taskID string, issue int64) error {
@@ -1021,7 +1049,7 @@ func (s *acceptanceStore) SetAskFace(_ context.Context, t factoryd.Task, _ int64
 	return nil
 }
 
-func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
+func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, taskID, reason string) error {
 	s.mu.Lock()
 	t, ok := s.tasks[taskID]
 	open := slices.ContainsFunc(s.alerts, func(a factoryd.Alert) bool {
@@ -1035,7 +1063,7 @@ func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, t
 	if err := s.ResolveAlert(ctx, alertID, factoryd.AlertSigNoz, factoryd.VerdictUnjudged, factoryd.FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		return err
 	}
-	return s.TransitionTask(ctx, taskID, waits, "closed")
+	return s.EndClosed(ctx, taskID, waits, reason)
 }
 
 func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdict, by string, detail map[string]any) error {

@@ -414,8 +414,8 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	const reason = "the factory closed pull request #1: the copies on main equal the factory's schemas of build 0123456"
-	if got := store.tasks[card.ID]; got.Status != "closed" {
-		t.Fatalf("card %+v, want closed", got)
+	if got := store.tasks[card.ID]; got.Status != "closed" || got.ClosingReason != reason {
+		t.Fatalf("card %+v, want closed for %q", got, reason)
 	}
 	var ended, withdrawn []Event
 	for _, e := range rows.rows {
@@ -445,8 +445,9 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	}
 }
 
-// The copier's close of this build's agent card ends it outside Finish: its
-// open alerts close with it, unjudged by factoryd, and another card's stay.
+// The copier's close of this build's agent card ends it outside Finish, for
+// the copier's close of its pull request: its open alerts close with it,
+// unjudged by factoryd, and another card's stay.
 func TestSchemaCopierClosesTheOpenAlertsOfTheCardItCloses(t *testing.T) {
 	ctx := context.Background()
 	fj, c, store, _ := cardRig(t)
@@ -463,8 +464,9 @@ func TestSchemaCopierClosesTheOpenAlertsOfTheCardItCloses(t *testing.T) {
 	if err := c.SyncOnce(ctx, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := store.tasks[card.ID]; got.Status != "closed" {
-		t.Fatalf("card %+v, want closed", got)
+	const reason = "the factory closed pull request #1: the copies on main equal the factory's schemas of build 0123456"
+	if got := store.tasks[card.ID]; got.Status != "closed" || got.ClosingReason != reason {
+		t.Fatalf("card %+v, want closed for %q", got, reason)
 	}
 	var got []string
 	for _, a := range store.alertRows() {
@@ -561,11 +563,11 @@ func (s *failingCardSteps) JudgeOpenTaskAlerts(ctx context.Context, taskID, verd
 	return s.fakeStore.JudgeOpenTaskAlerts(ctx, taskID, verdict, by)
 }
 
-func (s *failingCardSteps) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+func (s *failingCardSteps) EndClosed(ctx context.Context, id string, from []string, reason string) error {
 	if s.fails(&s.transition) {
 		return errStoreDown
 	}
-	return s.fakeStore.TransitionTask(ctx, id, from, to)
+	return s.fakeStore.EndClosed(ctx, id, from, reason)
 }
 
 func (s *failingCardSteps) WithdrawPRCard(ctx context.Context, t Task, pr int64, why string) error {

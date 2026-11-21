@@ -490,6 +490,8 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 	cfg.HoldCard = func(context.Context, string, string, string, string) (bool, error) { return false, nil }
 	cfg.ReleaseCardHold = func(context.Context, string) (bool, error) { return false, nil }
 	cfg.CloseCard = func(context.Context, string, string) error { return nil }
+	cfg.RecordCloseAnswer = func(context.Context, string, string, string) (int64, error) { return 1, nil }
+	cfg.DropCloseAnswer = func(context.Context, int64) error { return nil }
 	cfg.RerunStall = func(context.Context, string, string) error { return nil }
 	cfg.DismissStall = func(context.Context, string, string, string) error { return nil }
 	cfg.RetryRoll = func(context.Context, factoryd.Task) error { return nil }

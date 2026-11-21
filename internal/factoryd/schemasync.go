@@ -41,7 +41,7 @@ type SchemaCopier struct {
 		CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 		InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 		TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-		TransitionTask(ctx context.Context, id string, from []string, to string) error
+		EndClosed(ctx context.Context, id string, from []string, reason string) error
 		JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 		ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
@@ -294,7 +294,7 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 			if err := c.Store.JudgeOpenTaskAlerts(ctx, t.ID, VerdictUnjudged, FactoryDecider); err != nil {
 				return fmt.Errorf("close the alerts of the card %s: %w", t.ID, err)
 			}
-			if err := c.Store.TransitionTask(ctx, t.ID, []string{status}, "closed"); err != nil {
+			if err := c.Store.EndClosed(ctx, t.ID, []string{status}, fmt.Sprintf("the factory closed pull request #%d: %s", number, why)); err != nil {
 				return fmt.Errorf("close the card %s of pull request #%d: %w", t.ID, number, err)
 			}
 			mirrorTaskState(ctx, c.Forgejo, t, "closed")

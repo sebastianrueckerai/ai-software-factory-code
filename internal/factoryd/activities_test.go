@@ -1430,6 +1430,89 @@ func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 	}
 }
 
+// A card that ends closed stores why. The run's own reason stands; one that
+// says only that the issue closed gives way to the card's records: the
+// close answer of a case or the console, recorded ahead of the close, else
+// the first sentence of the factory's close record, else the close of a
+// human in Forgejo. A merged card a human closes stores the run's end too.
+func TestAClosedCardStoresWhyItClosed(t *testing.T) {
+	answer := func(by, note string) func(*fakeStore) {
+		return func(s *fakeStore) {
+			if _, err := recordCloseAnswer(context.Background(), s, "t1", by, note); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	record := func(body string) func(*fakeStore) {
+		return func(s *fakeStore) {
+			s.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4, Body: body})
+		}
+	}
+	closedBy := func(login string) func(*fakeStore) {
+		return func(s *fakeStore) {
+			s.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: "issue_closed", Author: login, CommentID: 4, Trusted: true})
+		}
+	}
+	for _, tc := range []struct {
+		name, reason string
+		records      []func(*fakeStore)
+		want         string
+	}{
+		{"the run's own reason", "salvaged into #5", []func(*fakeStore){answer("sebastian", "Superseded.")}, "salvaged into #5"},
+		{"a case's close answer", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){record(""), answer("sebastian", "Superseded: the tests are on main. Session 3 proved it.")},
+			"closed by sebastian: Superseded: the tests are on main."},
+		{"the factory's answer with no note", ReasonIssueClosed + " without merge", []func(*fakeStore){answer(FactoryDecider, "")}, "closed by the factory"},
+		{"a note of two sentences", ReasonIssueClosed + " without merge", []func(*fakeStore){answer("sebastian", "Moved to the local plan. It lands there.")},
+			"closed by sebastian: Moved to the local plan."},
+		{"a plan's close words", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){answer("controller", "closed by controller: Closed: the credits are out. The work lands locally.")},
+			"closed by controller: Closed: the credits are out."},
+		{"the newest answer", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){answer("sebastian", "Superseded."), answer("alice", "Done by hand.")}, "closed by alice: Done by hand."},
+		{"the factory's close record", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){record("The plan's revision 3 drops this card. Its work moved.\n\nIt no longer waits on #7."), closedBy("factory-agent")},
+			"The plan's revision 3 drops this card."},
+		{"an answer over the record", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){record("The plan's revision 3 drops this card."), answer("sebastian", "Superseded.")}, "closed by sebastian: Superseded."},
+		{"a record of the old form", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){record("factoryd: task t-23bbfa2371f4 closed: stopped for the replan of plan #1915\n\nIt no longer waits on #2176.")},
+			"stopped for the replan of plan #1915"},
+		{"a record with the old lead alone", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){record("factoryd: sebastian answered with close.\n\n```\nnot needed\n```")}, "sebastian answered with close."},
+		{"a record of dropped dependencies alone", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){record("It no longer waits on #1911."), closedBy("factory-agent")}, ReasonIssueClosed + " without merge"},
+		{"a record over a human's close", ReasonIssueClosed + " without merge",
+			[]func(*fakeStore){record("Retried as #12."), closedBy("alice")}, "Retried as #12."},
+		{"a human's close in Forgejo", ReasonIssueClosed + " without merge", []func(*fakeStore){closedBy("alice")}, "closed in Forgejo by alice"},
+		{"a close before the plan filed", ReasonIssueClosed + " before the plan filed its cards", []func(*fakeStore){closedBy("alice")},
+			"closed in Forgejo by alice"},
+		{"no record", ReasonIssueClosed + " without merge", nil, ReasonIssueClosed + " without merge"},
+	} {
+		fj := &prForgejo{issueOff: true, labels: map[int64][]string{4: {"agent", "state/in-review"}}}
+		r, store, _ := newActivityRunner(t, prTask, fj)
+		for _, add := range tc.records {
+			add(store)
+		}
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", tc.reason); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := store.tasks["t1"]; got.Status != "closed" || got.ClosingReason != tc.want {
+			t.Errorf("%s: %s for %q, want closed for %q", tc.name, got.Status, got.ClosingReason, tc.want)
+		}
+	}
+	fj := &prForgejo{labels: map[int64][]string{4: {"state/merged"}}}
+	merged := withStatus(withPR(prTask, 12), "merged")
+	merged.Kind, merged.MergeCommit = "agent", "m12"
+	r, store, _ := newActivityRunner(t, merged, fj)
+	if err := r.CloseMerged(context.Background(), "t1", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := store.tasks["t1"], "closed by sebastian: ended without a live chain"; got.Status != "closed" || got.ClosingReason != want {
+		t.Errorf("the merged card: %s for %q, want closed for %q", got.Status, got.ClosingReason, want)
+	}
+}
+
 // A merged card that its chain covers later ends done without a second
 // close: its issue closed at the merge, and one a person reopened since
 // stays open.

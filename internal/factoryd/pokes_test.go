@@ -65,7 +65,17 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: "The flag on " + named + " needs you no more: the wait ended."}, true},
 		{"a case's withdrawn face is the card's own", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(14), "case_kind": string(CaseSessionCap), "question": "Which store?", "reason": "reviewer sebastian requested changes"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: named + " needs you no more: reviewer sebastian requested changes."}, true},
-		{"a withdrawal past a notice's length drops its reason", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"reason": "factoryd closed pull request #12: the branch it came from was deleted, and no other branch holds its commits any more"}}, card,
+		// a withdrawal's line past a notice's length names the card by its
+		// number alone: 182 runes with the title, 142 without
+		{"a withdrawal past a notice's length drops the card's title", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"reason": "factoryd closed pull request #12: the branch it came from was deleted, and no other branch holds its commits any more"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: factoryd closed pull request #12: the branch it came from was deleted, and no other branch holds its commits any more."}, true},
+		// a roll's 58-rune title takes the line to 163 runes, its number alone to 102
+		{"rung 0's withdrawal on a roll card keeps its reason", Event{Kind: EventQuestionWithdrawn, TaskID: "t-r", Detail: map[string]any{"case_kind": string(CaseGateStop),
+			"reason": "every check on head 1a2b3c4 is green, so the factory resumed the checks wait"}},
+			Task{ID: "t-r", Kind: "agent", IssueNumber: 2255, Source: SourceRoll, Objective: "Deploy the new images factoryd, gateway, worker, ci-runner"},
+			ChatMessage{Kind: MessagePoke, Content: "#2255 needs you no more: every check on head 1a2b3c4 is green, so the factory resumed the checks wait."}, true},
+		// a reason of 188 runes passes a notice's length with the number alone (213)
+		{"a withdrawal past a notice's length even by number drops its reason", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"reason": "factoryd closed pull request #12: the branch it came from was deleted on the fork, no other branch of the fork or of the repository holds its commits any more, and none can be pushed again"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: named + " needs you no more."}, true},
 		// a merge request's case climbs first: its face's ask is the poke
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card, ChatMessage{}, false},

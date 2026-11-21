@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -203,7 +204,7 @@ func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
 			if run, _, _ := s.Task(ctx, "t-run"); run.Status != "running" || run.ResumedAt != nil {
 				t.Fatalf("a running card became a waiter: %s, %v", run.Status, run.ResumedAt)
 			}
-			if err := s.TransitionTask(ctx, "t-a", []string{"queued"}, "closed"); err != nil {
+			if err := s.EndClosed(ctx, "t-a", []string{"queued"}, "closed in Forgejo by sebastian"); err != nil {
 				t.Fatal(err)
 			}
 			closed, _, _ := s.Task(ctx, "t-a")
@@ -225,6 +226,35 @@ func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
 			}
 			if n, _ := s.CountAdmitted(ctx, "sf/r"); n != 3 {
 				t.Fatalf("CountAdmitted = %d, want 3: t-run, t-b running and the reopened, admitted t-a queued", n)
+			}
+		})
+	}
+}
+
+// A card ends closed through EndClosed alone, which stores why it closed:
+// TransitionTask refuses the move and leaves the card, and EndClosed from
+// a status the card is not in answers ErrNotFound.
+func TestACardEndsClosedWithWhy(t *testing.T) {
+	for name, open := range fakeStores {
+		t.Run(name, func(t *testing.T) {
+			ctx, s := context.Background(), open(t)
+			if err := s.CreateTask(ctx, Task{ID: "t-a", Repository: "sf/r", Kind: "agent", Track: "direct", Status: "failed", Objective: "a"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.TransitionTask(ctx, "t-a", []string{"failed"}, "closed"); err == nil {
+				t.Fatal("TransitionTask moved the card to closed")
+			}
+			if err := s.EndClosed(ctx, "t-a", []string{"running"}, "closed by sebastian"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("EndClosed from running = %v, want ErrNotFound", err)
+			}
+			if got, _, _ := s.Task(ctx, "t-a"); got.Status != "failed" || got.ClosingReason != "" {
+				t.Fatalf("after the refusals: %s for %q, want failed for none", got.Status, got.ClosingReason)
+			}
+			if err := s.EndClosed(ctx, "t-a", []string{"failed"}, "closed in Forgejo by alice"); err != nil {
+				t.Fatal(err)
+			}
+			if got, _, _ := s.Task(ctx, "t-a"); got.Status != "closed" || got.ClosingReason != "closed in Forgejo by alice" || got.FinishedAt == nil {
+				t.Fatalf("after EndClosed: %s for %q, finished %v; want closed for the close in Forgejo, finished", got.Status, got.ClosingReason, got.FinishedAt)
 			}
 		})
 	}

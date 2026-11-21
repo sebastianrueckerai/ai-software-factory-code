@@ -732,15 +732,16 @@ func TestReleaseKeeperEndsTheHoldThoughItsAskCannotClose(t *testing.T) {
 }
 
 // An ask whose issue Forgejo refuses to close for good ends closed in the
-// store at the hold's end, so the next hold files its own ask after its
-// hours.
+// store at the hold's end, for the first sentence of its close, so the next
+// hold files its own ask after its hours.
 func TestReleaseKeeperAsksInTheNextHoldAfterAnAskThatCannotClose(t *testing.T) {
 	k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
 	store.chainNow = func() time.Time { return *clock }
 	f.closeFail = http.StatusNotFound
 	keeperPass(t, k)
-	if got := store.tasks["t-ask"]; got.Status != "closed" || got.FinishedAt == nil || !got.FinishedAt.Equal(keeperAt(18, 0)) {
-		t.Fatalf("ask %s finished %v, want closed at 18:00", got.Status, got.FinishedAt)
+	const why = "No plan is open on main any more, so production goes ahead."
+	if got := store.tasks["t-ask"]; got.Status != "closed" || got.ClosingReason != why || got.FinishedAt == nil || !got.FinishedAt.Equal(keeperAt(18, 0)) {
+		t.Fatalf("ask %s for %q finished %v, want closed for %q at 18:00", got.Status, got.ClosingReason, got.FinishedAt, why)
 	}
 	openPlanIn(store, demoRepo, "t-next", 13, keeperAt(18, 30))
 	*clock = keeperAt(18, 31)

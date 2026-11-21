@@ -3335,6 +3335,18 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 
 	t.Run("Act's close closes the failed card and the plan closes", func(t *testing.T) {
 		r, store, fj, c := waitCase(t)
+		// the close's webhook ends the failed card at the close, before
+		// Act writes the answer's rows, and the card still says why
+		answered := true
+		fj.onClose = func(n int64) {
+			if n != 5 {
+				return
+			}
+			answered = slices.ContainsFunc(store.events, func(e Event) bool { return e.Kind == EventQuestionAnswered })
+			if _, err := (&Intake{Store: store, BotUser: "factory-agent"}).issueClosed(context.Background(), store.tasks["t-a"], "factory-agent"); err != nil {
+				t.Error(err)
+			}
+		}
 		if _, err := r.Act(context.Background(), ActInput{TaskID: "t-plan", CaseID: c.ID, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActClose, Note: "the feature is not wanted"}}); err != nil {
 			t.Fatal(err)
@@ -3342,10 +3354,10 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 		if is := fj.issues[5]; is == nil || is.state != "closed" {
 			t.Fatalf("the failed card's issue = %+v, want closed", fj.issues[5])
 		}
-		if got := store.tasks["t-a"].Status; got != "failed" {
-			t.Fatalf("the failed card is %s in the store; the webhook ends it", got)
+		if got := store.tasks["t-a"]; answered || got.Status != "closed" || got.ClosingReason != "closed by sebastian: the feature is not wanted" {
+			t.Fatalf("the failed card is %s for %q, the answer's row written at its end %t; want closed for the human's note before the row",
+				got.Status, got.ClosingReason, answered)
 		}
-		setStatus(store, "t-a", "closed")
 		r.planCloseCheck(context.Background(), "t-plan")
 		r.planCloseCheck(context.Background(), "t-plan")
 		if _, ok := store.closed["t-plan"]; !ok {
@@ -3355,6 +3367,34 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 			t.Fatalf("cases %+v, want the one case resolved and no second", store.cases)
 		}
 	})
+
+	// a close Forgejo fails leaves no close answer, so anna's later close
+	// in Forgejo is why the card closed: when the failure came before
+	// factoryd recorded its close (the issue's dependencies would not
+	// read); a close Forgejo refused leaves factoryd's recorded close,
+	// which the heal finishes, and that is why
+	for _, tc := range []struct{ fail, want string }{
+		{"GET issues/5/dependencies", "closed in Forgejo by anna"},
+		{"PATCH issues/5", "sebastian answered with “End the card”."},
+	} {
+		t.Run("a failed close of "+tc.fail+" leaves no close answer", func(t *testing.T) {
+			r, store, fj, c := waitCase(t)
+			fj.failCall = tc.fail
+			if _, err := r.Act(context.Background(), ActInput{TaskID: "t-plan", CaseID: c.ID, By: "sebastian", Rung: 3,
+				Res: Resolution{Action: ActClose, Note: "the feature is not wanted"}}); err == nil {
+				t.Fatal("the close went through")
+			}
+			if slices.ContainsFunc(store.intakeEvents, func(e IntakeEvent) bool { return e.Kind == IntakeCloseAnswer }) {
+				t.Fatalf("intake rows %+v, want no close answer after the failed close", store.intakeEvents)
+			}
+			if err := (&Intake{Store: store, BotUser: "factory-agent"}).endByClose(context.Background(), store.tasks["t-a"], "anna"); err != nil {
+				t.Fatal(err)
+			}
+			if got := store.tasks["t-a"]; got.Status != "closed" || got.ClosingReason != tc.want {
+				t.Fatalf("the failed card is %s for %q, want closed for %q", got.Status, got.ClosingReason, tc.want)
+			}
+		})
+	}
 }
 
 // A plan that can take no replan refuses, and the refusal lands as a

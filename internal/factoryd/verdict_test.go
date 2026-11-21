@@ -1685,7 +1685,7 @@ func TestClosedPlanCardKeepsItsCriteriaApprovalUntilAnApproverCloses(t *testing.
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
 		t.Fatalf("the failed plan's gap: pending %+v, want the criteria approval", pending)
 	}
-	if err := s.TransitionTask(ctx, "t-plan", []string{"failed"}, "closed"); err != nil {
+	if err := s.EndClosed(ctx, "t-plan", []string{"failed"}, "closed in Forgejo by sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	r.planCloseCheck(ctx, "t-plan")

@@ -2289,9 +2289,24 @@ func (c *Console) commentOnce(ctx context.Context, a actor, t factoryd.Task, tex
 	return c.comment(ctx, a, t, text, nil)
 }
 
-// closeIssueNoted is closeIssue after its note was posted: it closes the
-// issue, or the card alone, and records note on the close.
-func (c *Console) closeIssueNoted(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
+// closeIssueNoted is closeIssue after its note was posted: it records the
+// close answer, closes the issue, or the card alone, and records note on
+// the close. A close that fails deletes the close answer, so no later
+// close reads it.
+func (c *Console) closeIssueNoted(ctx context.Context, a actor, t factoryd.Task, note string) (_ string, err error) {
+	answer, err := c.cfg.RecordCloseAnswer(ctx, t.ID, a.approver(), note)
+	if err != nil {
+		log.Printf("console: %s closes %s: record the close answer: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The card could not be closed: its close answer was not recorded: "+errText(err)+". Press the button again.")
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if derr := c.cfg.DropCloseAnswer(context.WithoutCancel(ctx), answer); derr != nil {
+			log.Printf("console: %s closes %s: delete the close answer of the failed close: %v", a.s.user, t.ID, derr)
+		}
+	}()
 	if t.IssueNumber == 0 || t.Status == "merged" {
 		if err := c.cfg.CloseCard(ctx, t.ID, a.approver()); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)

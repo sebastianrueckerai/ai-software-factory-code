@@ -648,7 +648,7 @@ func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approve
 	}
 	words = PlanCloseWords(by, note, merged)
 	if endFailed {
-		return 0, words, merged, r.store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+		return 0, words, merged, r.store.EndClosed(ctx, id, []string{"failed"}, answerReason(by, note))
 	}
 	criteria := 0
 	recorded := false
@@ -2917,7 +2917,8 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 // finishPlanClose finishes the close of done or failed plan id whose issue
 // close failed after plan_closed was recorded, or whose failed card factoryd
 // closed itself (no words): the issue hears the closing words once, if any,
-// and closes, and the card ends closed. A words post that fails
+// and closes, and the card ends closed, for the words or for the factory
+// (answerReason). A words post that fails
 // leaves the issue open and the close to the next pass.
 func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 	t, repo, err := r.task(ctx, id)
@@ -2936,7 +2937,7 @@ func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 			return
 		}
 	}
-	if err := r.store.TransitionTask(ctx, id, []string{"done", "failed"}, "closed"); err != nil {
+	if err := r.store.EndClosed(ctx, id, []string{"done", "failed"}, answerReason(FactoryDecider, words)); err != nil {
 		log.Printf("plan %s: finish its close: %v", id, err)
 	}
 }

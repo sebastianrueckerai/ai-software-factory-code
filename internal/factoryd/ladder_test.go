@@ -152,6 +152,27 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 	}
 }
 
+// route_approval's words for the human whose case it takes say what its
+// rule checked: green checks, the newest review's approval and a pull
+// request that still merges into main, and for a policy class, which goes
+// to the approval unreviewed, green checks and the merge alone.
+func TestRouteApprovalSaysWhatItChecked(t *testing.T) {
+	i := slices.IndexFunc(rung0, func(r resolver) bool { return r.Name == "route_approval" })
+	for kind, want := range map[CaseKind]string{
+		CaseSessionCap:  "every check on head 1a2b3c4 is green, its newest review approved it and it still merges into main, so the factory sent it to the approval",
+		CasePolicyClass: "every check on head 1a2b3c4 is green and it still merges into main, so the factory sent it to the approval",
+	} {
+		f := CaseFacts{Kind: kind, SessionCap: 3, AgentTimeCapS: 3600, Head: "1a2b3c4d5e6f", PR: 9, PROpen: true, Checks: "green", ReviewApproved: kind != CasePolicyClass}
+		res, err := rung0[i].Fire(context.Background(), nil, Case{Kind: kind}, f)
+		if err != nil || res == nil {
+			t.Fatalf("%s: route_approval took %+v (%v) on %+v, want it to fire", kind, res, err, f)
+		}
+		if got := rung0[i].Took(Case{Kind: kind}, f, *res); got != want {
+			t.Errorf("%s: words %q, want %q", kind, got, want)
+		}
+	}
+}
+
 // A trip's state key: the head for a stop at it, the dependency's id for a
 // dependency's, else the first line of the stop's reason.
 func TestTripKeyByKind(t *testing.T) {

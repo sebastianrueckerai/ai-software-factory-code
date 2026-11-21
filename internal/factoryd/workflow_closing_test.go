@@ -11,6 +11,7 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
@@ -163,4 +164,117 @@ func reconciled(t *testing.T, hist *historypb.History) map[string]any {
 	}
 	t.Fatal("the recording holds no Reconcile answer")
 	return nil
+}
+
+const closingReasonBackfill = "factoryd/20261127103000_closing_reason_backfill.sql"
+
+// The backfill gives a closed card whose reason is empty or says only that
+// its issue closed why from its records, by the end's order: the newest
+// close answer (c-answer, c-factory, c-console, the plan's words of c-plan,
+// over a record on c-over), else the first sentence of the newest close
+// record (c-old and c-alert without the old lead, c-new, c-fenced), else
+// the human's close in Forgejo (c-human, c-before). A record of dropped
+// dependencies alone and the bot's own close say nothing (c-deps), and so
+// does an empty newest record (c-newest). A card with its own reason
+// (c-own), one not closed (c-failed) and one with no record (c-none) stay.
+// A second run changes nothing.
+func TestClosingReasonBackfill(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_closing_reason_backfill"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, q := range []string{
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, track, issue_number, closing_reason, finished_at) VALUES
+			('c-answer', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 1, '', now()),
+			('c-factory', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 2, 'issue closed without merge', now()),
+			('c-console', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 3, '', now()),
+			('c-plan', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 4, '', now()),
+			('c-old', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 5, 'issue closed without merge', now()),
+			('c-alert', 1, 0, 'closed', 'sf/r', 'human', NULL, 6, '', now()),
+			('c-new', 1, 0, 'closed', 'sf/r', 'human', NULL, 7, '', now()),
+			('c-deps', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 8, 'issue closed without merge', now()),
+			('c-human', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 9, 'issue closed without merge', now()),
+			('c-before', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 10, 'issue closed before the plan filed its cards', now()),
+			('c-own', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 11, 'salvaged into #5', now()),
+			('c-failed', 1, 0, 'failed', 'sf/r', 'agent', 'direct', 12, '', now()),
+			('c-none', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 13, '', now()),
+			('c-over', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 14, '', now()),
+			('c-fenced', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 15, 'issue closed without merge', now()),
+			('c-newest', 1, 0, 'closed', 'sf/r', 'agent', 'direct', 16, '', now())`,
+		`INSERT INTO cases (id, task_id, kind, state_key, status, problem, resolution) VALUES
+			(901, 'c-answer', 'session_cap', 'cap', 'resolved', 'p', '{"by": "sebastian", "action": "close", "reason": "Superseded: the tests are on main. Session 3 proved it."}'),
+			(902, 'c-factory', 'gate_stop', 'stop', 'resolved', 'p', '{"by": "factoryd", "action": "close"}'),
+			(914, 'c-over', 'session_cap', 'cap', 'resolved', 'p', '{"by": "sebastian", "action": "close", "reason": "Superseded."}')`,
+		`INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES
+			('sf/r', 'c-answer', 'question_answered', 'sebastian', 'console', '{"action": "close", "case_id": 901, "answer": "Superseded: the tests are on main. Session 3 proved it."}'),
+			('sf/r', 'c-factory', 'question_answered', 'factoryd', 'factoryd', '{"action": "close", "case_id": 902, "answer": "close"}'),
+			('sf/r', 'c-console', 'card_closed', 'alice', 'console', '{"note": "Done by hand.\n\nTwice."}'),
+			('sf/r', 'c-plan', 'card_closed', 'controller', 'console', '{"note": "closed by controller: Closed: the credits are out. The work lands locally."}'),
+			('sf/r', 'c-own', 'card_closed', 'alice', 'console', '{"note": "Done."}'),
+			('sf/r', 'c-failed', 'card_closed', 'alice', 'console', '{"note": "Done."}'),
+			('sf/r', 'c-over', 'question_answered', 'sebastian', 'console', '{"action": "close", "case_id": 914, "answer": "Superseded."}')`,
+		`INSERT INTO intake_events (task_id, kind, author, body, comment_id) VALUES
+			('c-answer', 'factory_closed', 'factoryd', '', 1),
+			('c-old', 'factory_closed', 'factoryd', E'factoryd: task t-23bbfa2371f4 closed: stopped for the replan of plan #1915\n\nIt no longer waits on #2176.', 5),
+			('c-alert', 'factory_closed', 'factoryd', 'factoryd: the alert cleared at 2026-11-17T03:54:05Z; nobody touched the card, so it closes.', 6),
+			('c-new', 'factory_closed', 'factoryd', 'The alert cleared at 2026-11-19T22:35:56Z. Nobody touched the card, so it closes.', 0),
+			('c-deps', 'factory_closed', 'factoryd', 'It no longer waits on #1911.', 8),
+			('c-deps', 'issue_closed', 'factory-agent', '', 8),
+			('c-human', 'issue_closed', 'alice', '', 9),
+			('c-before', 'issue_closed', 'alice', '', 10),
+			('c-over', 'factory_closed', 'factoryd', 'Retried as #12.', 14),
+			('c-fenced', 'factory_closed', 'factoryd', E'sebastian answered with “Close”.\n\n` + "```" + `\nnot needed\n` + "```" + `', 15),
+			('c-newest', 'factory_closed', 'factoryd', 'Old reason.', 0),
+			('c-newest', 'factory_closed', 'factoryd', '', 16)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	want := map[string]string{
+		"c-answer":  "closed by sebastian: Superseded: the tests are on main.",
+		"c-factory": "closed by the factory",
+		"c-console": "closed by alice: Done by hand.",
+		"c-plan":    "closed by controller: Closed: the credits are out.",
+		"c-old":     "stopped for the replan of plan #1915",
+		"c-alert":   "the alert cleared at 2026-11-17T03:54:05Z; nobody touched the card, so it closes.",
+		"c-new":     "The alert cleared at 2026-11-19T22:35:56Z.",
+		"c-deps":    "issue closed without merge",
+		"c-human":   "closed in Forgejo by alice",
+		"c-before":  "closed in Forgejo by alice",
+		"c-own":     "salvaged into #5",
+		"c-failed":  "",
+		"c-none":    "",
+		"c-over":    "closed by sebastian: Superseded.",
+		"c-fenced":  "sebastian answered with “Close”.",
+		"c-newest":  "",
+	}
+	for run := 1; run <= 2; run++ {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE name = $1`, closingReasonBackfill); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Migrate(ctx, s.db); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id, closing_reason FROM tasks`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for rows.Next() {
+			var id, reason string
+			if err := rows.Scan(&id, &reason); err != nil {
+				t.Fatal(err)
+			}
+			got[id] = reason
+		}
+		rows.Close()
+		for id, w := range want {
+			if got[id] != w {
+				t.Errorf("run %d: %s's closing reason %q, want %q", run, id, got[id], w)
+			}
+		}
+	}
 }

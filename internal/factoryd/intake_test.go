@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -2100,25 +2101,40 @@ func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 // A trusted close of a failed card's issue ends the card closed in the
 // store, keeps its branch on the bot's fork, where the sweep ends it, and
 // signals nothing: the workflow is over. A running card's close is its
-// workflow's signal, as before.
+// workflow's signal, as before. A human card a Close answer asked closed
+// ends closed on the close. A card that ends closed stores why: the close
+// answer recorded ahead of the close, else the factory's close record,
+// else the human's close in Forgejo.
 func TestClosingAFailedCardEndsItClosed(t *testing.T) {
 	for _, tc := range []struct {
-		status, closer, after string
-		recorded              bool
-		deletes               []string
-		signals               []string
+		kind, status, closer, after string
+		recorded, answered          bool
+		reason                      string
+		deletes                     []string
+		signals                     []string
 	}{
-		{status: "failed", closer: "sebastian", after: "closed"},
-		{status: "failed", closer: "factory-agent", recorded: true, after: "closed"},
+		{status: "failed", closer: "sebastian", after: "closed", reason: "closed in Forgejo by sebastian"},
+		{status: "failed", closer: "factory-agent", recorded: true, after: "closed", reason: "This card ended failed, so its issue closes."},
 		{status: "failed", closer: "factory-agent", after: "failed"},
 		{status: "failed", closer: "mallory", after: "failed"},
 		{status: "done", closer: "sebastian", after: "done", signals: []string{"t1 issue_closed sebastian #0: "}},
 		{status: "running", closer: "sebastian", after: "running", signals: []string{"t1 issue_closed sebastian #0: "}},
+		{kind: "human", status: "waiting-human", closer: "sebastian", after: "closed", reason: "closed in Forgejo by sebastian"},
+		{kind: "human", status: "waiting-human", closer: "sebastian", answered: true, after: "closed", reason: "closed by sebastian: Done by hand."},
 	} {
 		in, store, requests := newTestIntake(t)
-		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: tc.status, Kind: "agent", IssueNumber: 4}
+		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: tc.status, Kind: cmp.Or(tc.kind, "agent"), IssueNumber: 4}
+		if tc.kind == "human" {
+			store.cases = append(store.cases, Case{ID: 3, TaskID: "t1", Kind: CaseHumanCard, Status: CaseResolved, Facts: map[string]any{endsFact: "closed"}})
+		}
+		if tc.answered {
+			if _, err := in.RecordCloseAnswer(context.Background(), "t1", "sebastian", "Done by hand. Twice."); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if tc.recorded {
-			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4})
+			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4,
+				Body: "This card ended failed, so its issue closes."})
 		}
 		body, _ := json.Marshal(map[string]any{
 			"action":     "closed",
@@ -2135,9 +2151,9 @@ func TestClosingAFailedCardEndsItClosed(t *testing.T) {
 				deletes = append(deletes, r)
 			}
 		}
-		if after := store.tasks["t1"].Status; after != tc.after || !slices.Equal(deletes, tc.deletes) || !slices.Equal(workflowsOf(in).signals, tc.signals) {
-			t.Errorf("%s task closed by %s (recorded %v): status %q, deletes %q, signals %q; want %q, %q, %q",
-				tc.status, tc.closer, tc.recorded, after, deletes, workflowsOf(in).signals, tc.after, tc.deletes, tc.signals)
+		if got := store.tasks["t1"]; got.Status != tc.after || got.ClosingReason != tc.reason || !slices.Equal(deletes, tc.deletes) || !slices.Equal(workflowsOf(in).signals, tc.signals) {
+			t.Errorf("%s %s task closed by %s (recorded %v): status %q for %q, deletes %q, signals %q; want %q for %q, %q, %q",
+				tc.kind, tc.status, tc.closer, tc.recorded, got.Status, got.ClosingReason, deletes, workflowsOf(in).signals, tc.after, tc.reason, tc.deletes, tc.signals)
 		}
 	}
 }
@@ -2156,15 +2172,16 @@ func TestClosingADonePlanEndsItClosed(t *testing.T) {
 	free := last
 	free.Criteria = nil
 	for _, tc := range []struct {
-		name, closer, after string
-		plan                Plan
-		recorded            bool
+		name, closer, after, reason string
+		plan                        Plan
+		recorded                    bool
 	}{
-		{name: "between rounds", plan: roundOne(), closer: "sebastian", after: "closed"},
-		{name: "between rounds, factoryd's recorded close", plan: roundOne(), closer: "factory-agent", recorded: true, after: "closed"},
+		{name: "between rounds", plan: roundOne(), closer: "sebastian", after: "closed", reason: "closed in Forgejo by sebastian"},
+		{name: "between rounds, factoryd's recorded close", plan: roundOne(), closer: "factory-agent", recorded: true, after: "closed",
+			reason: "Closing pull request #3: superseded."},
 		{name: "between rounds, the bot's unrecorded close", plan: roundOne(), closer: "factory-agent", after: "done"},
 		{name: "between rounds, a stranger's close", plan: roundOne(), closer: "mallory", after: "done"},
-		{name: "the last round, no criteria", plan: free, closer: "sebastian", after: "closed"},
+		{name: "the last round, no criteria", plan: free, closer: "sebastian", after: "closed", reason: "closed in Forgejo by sebastian"},
 		{name: "the last round, three criteria and no integration card", plan: last, closer: "sebastian", after: "done"},
 		{name: "the last round, factoryd's recorded close", plan: free, closer: "factory-agent", recorded: true, after: "done"},
 	} {
@@ -2176,7 +2193,8 @@ func TestClosingADonePlanEndsItClosed(t *testing.T) {
 		// a merged card makes the plan hold production
 		store.tasks["t-card"] = Task{ID: "t-card", Repository: "sf/ai-software-factory-code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done", MergeCommit: "abc"}
 		if tc.recorded {
-			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t-plan", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4})
+			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t-plan", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4,
+				Body: "Closing pull request #3: superseded. This card ends with it."})
 		}
 		body, _ := json.Marshal(map[string]any{
 			"action":     "closed",
@@ -2187,8 +2205,8 @@ func TestClosingADonePlanEndsItClosed(t *testing.T) {
 		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d", tc.name, rr.Code)
 		}
-		if after := store.tasks["t-plan"].Status; after != tc.after || len(workflowsOf(in).signals) != 0 {
-			t.Errorf("%s: status %q, signals %q; want %q and none", tc.name, after, workflowsOf(in).signals, tc.after)
+		if got := store.tasks["t-plan"]; got.Status != tc.after || got.ClosingReason != tc.reason || len(workflowsOf(in).signals) != 0 {
+			t.Errorf("%s: status %q for %q, signals %q; want %q for %q and none", tc.name, got.Status, got.ClosingReason, workflowsOf(in).signals, tc.after, tc.reason)
 		}
 	}
 }
@@ -2702,17 +2720,22 @@ func TestHumanLaneAlertVerdictFollowsTheClose(t *testing.T) {
 }
 
 // The console's Close of a card without an issue (roadmap 170) ends it in
-// the store alone, with no Forgejo call: a failed card closed;
+// the store alone, with no Forgejo call: a failed card closed, for the
+// close answer the console recorded first, the closer and the first
+// sentence of their note;
 // one waiting on a human through its workflow, signalled as by its
 // issue's close.
 func TestIntakeCloseCardWithoutAnIssue(t *testing.T) {
 	in, store, requests := newTestIntake(t)
 	ctx := context.Background()
-	for status, want := range map[string]string{"failed": "closed", "waiting-human": "waiting-human"} {
+	for status, want := range map[string][2]string{"failed": {"closed", "closed by sebastian: Moved to the local plan."}, "waiting-human": {"waiting-human", ""}} {
 		store.CreateTask(ctx, Task{ID: "t-" + status, Kind: "agent", Status: status, Repository: "sf/ai-software-factory-code", Track: "direct"})
+		if _, err := in.RecordCloseAnswer(ctx, "t-"+status, "sebastian", "Moved to the local plan. It lands there."); err != nil {
+			t.Fatal(err)
+		}
 		err := in.CloseCard(ctx, "t-"+status, "sebastian")
-		if got, _, _ := store.Task(ctx, "t-"+status); err != nil || got.Status != want {
-			t.Fatalf("close %s: %v, status %q, want %q", status, err, got.Status, want)
+		if got, _, _ := store.Task(ctx, "t-"+status); err != nil || got.Status != want[0] || got.ClosingReason != want[1] {
+			t.Fatalf("close %s: %v, status %q for %q, want %q for %q", status, err, got.Status, got.ClosingReason, want[0], want[1])
 		}
 	}
 	if signals := workflowsOf(in).signals; !slices.Equal(signals, []string{"t-waiting-human issue_closed sebastian #0: "}) || len(*requests) != 0 {

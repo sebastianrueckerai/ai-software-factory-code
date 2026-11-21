@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -165,6 +166,12 @@ const IntakePosterComment = "poster_comment"
 // bot close ends a task (review-task73 m8).
 const IntakeFactoryClosed = "factory_closed"
 
+// IntakeCloseAnswer records, before a close answer closes a card's issue
+// or signals its run, why the answer closes it: Author the answerer, Body
+// answerReason's words. The end at closed reads it (closedWhy), so an end
+// the close drives ahead of the answer's own rows still says why.
+const IntakeCloseAnswer = "close_answer"
+
 // IntakeUntrustedClose records a close of a task's issue by a user who
 // cannot write the repository, keyed by the close's time (CommentID, in
 // microseconds since the epoch): never signalled, and recorded once per
@@ -230,6 +237,110 @@ func NoLongerWaits(numbers []int64) string {
 		names[i] = fmt.Sprintf("#%d", n)
 	}
 	return "It no longer waits on " + textutil.AndList(names) + "."
+}
+
+// closeRecords are the reads that say why a card ended closed (closedWhy)
+// and the one write that ends it closed.
+type closeRecords interface {
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	EndClosed(ctx context.Context, id string, from []string, reason string) error
+}
+
+// recordCloseAnswer records by's close answer on card id, with note, before
+// the close it makes (IntakeCloseAnswer), and answers the row's id, which
+// a close that fails deletes.
+func recordCloseAnswer(ctx context.Context, store interface {
+	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
+}, id, by, note string) (int64, error) {
+	return store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: id, Kind: IntakeCloseAnswer, Author: by, Body: answerReason(by, note)})
+}
+
+// endClosed ends card id closed from one of from for reason, the reason of
+// the path that ends it. A reason that says no more than that the card's
+// issue closed, or none, gives way to the card's records (closedWhy), closer
+// the close's author where the path knows one, bot the factory's account;
+// with no record it stands, "issue closed" for none.
+func endClosed(ctx context.Context, store closeRecords, id string, from []string, reason, closer, bot string) error {
+	if reason == "" || strings.HasPrefix(reason, ReasonIssueClosed) {
+		why, err := closedWhy(ctx, store, id, closer, bot)
+		if err != nil {
+			return err
+		}
+		reason = cmp.Or(why, reason, ReasonIssueClosed)
+	}
+	return store.EndClosed(ctx, id, from, reason)
+}
+
+// closedWhy is why card id closed by its records, "" for none: its newest
+// close answer (IntakeCloseAnswer), else the factory's newest close record
+// (closeBodyReason), else the close of its issue in Forgejo by closer, or
+// with closer "" by the author of its newest issue_closed row, unless the
+// factory's account bot closed it.
+func closedWhy(ctx context.Context, store closeRecords, id, closer, bot string) (string, error) {
+	rows, err := store.IntakeEvents(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	var answer, record *IntakeEvent
+	for i, e := range slices.Backward(rows) {
+		switch {
+		case e.Kind == IntakeCloseAnswer && answer == nil:
+			answer = &rows[i]
+		case e.Kind == IntakeFactoryClosed && record == nil:
+			record = &rows[i]
+		case e.Kind == "issue_closed" && closer == "":
+			closer = e.Author
+		}
+	}
+	if answer != nil {
+		return answer.Body, nil
+	}
+	if record != nil {
+		if why := closeBodyReason(record.Body); why != "" {
+			return why, nil
+		}
+	}
+	if closer == "" || closer == bot {
+		return "", nil
+	}
+	return "closed in Forgejo by " + closer, nil
+}
+
+// answerReason is why a close answer by actor ended a card: "closed by"
+// who answered, and the first sentence of note. A note that names its
+// closer already, a plan's close words (PlanCloseWords), stands as it is.
+func answerReason(actor, note string) string {
+	note = leadSentence(note)
+	switch {
+	case strings.HasPrefix(note, "closed by "):
+		return note
+	case note == "":
+		return "closed by " + DeciderWords(actor)
+	}
+	return "closed by " + DeciderWords(actor) + ": " + note
+}
+
+// oldCloseLead is the lead an older factoryd put on its close records:
+// "factoryd: ", then "task <id> closed: " where it named the card.
+var oldCloseLead = regexp.MustCompile(`^factoryd: (?:task \S+ closed: )?`)
+
+// closeBodyReason is why the factory's close record with body ended its
+// card: the body's first sentence, an older record's lead taken off. A
+// body that holds only the sentence a close adds on the dependencies it
+// dropped (NoLongerWaits) says none.
+func closeBodyReason(body string) string {
+	why := oldCloseLead.ReplaceAllString(leadSentence(body), "")
+	if strings.HasPrefix(why, "It no longer waits on ") {
+		return ""
+	}
+	return why
+}
+
+// leadSentence is the first sentence of text's first paragraph, on one
+// line.
+func leadSentence(text string) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(text), "\n\n")
+	return firstSentence(oneLine(first))
 }
 
 // closeIssueAsFactory closes t's issue as the bot, the one way factoryd

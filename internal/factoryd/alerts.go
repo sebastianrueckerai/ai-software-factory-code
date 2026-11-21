@@ -269,11 +269,12 @@ const resolveAlertSQL = `UPDATE alerts SET verdict = $2, resolved_by = $3, resol
 	WHERE id = $1 AND kind = $5 AND verdict IS NULL`
 
 // CloseClearedCard judges alert alertID unjudged by factoryd, closed as
-// cleared, and moves human card taskID from its wait to closed, both or
-// neither: a row either update misses rolls both back with ErrNotFound.
+// cleared, and moves human card taskID from its wait to closed for reason,
+// as EndClosed does, both or neither: a row either update misses rolls
+// both back with ErrNotFound.
 // The task's status event is recorded after the commit, as changeStatus
 // does, so a failed record never undoes the close.
-func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
+func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID, reason string) error {
 	b, err := json.Marshal(map[string]any{"closed": "cleared"})
 	if err != nil {
 		return err
@@ -287,7 +288,7 @@ func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID st
 	if err := oneRow(res, err, "open "+AlertSigNoz+" alert"); err != nil {
 		return err
 	}
-	events, changed, err := changeStatusOn(ctx, tx, transitionSet, transitionWhere, taskID, "closed", humanCardWaits)
+	events, changed, err := changeStatusOn(ctx, tx, transitionSet+`, closing_reason = $4`, transitionWhere, taskID, "closed", humanCardWaits, reason)
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w (not waiting, cannot move to closed)", taskID, ErrNotFound)
 	}

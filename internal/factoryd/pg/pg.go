@@ -162,6 +162,7 @@ var (
 	GateMerge                 = factoryd.GateMerge
 	HealPass                  = factoryd.HealPass
 	HealedReason              = factoryd.HealedReason
+	IntakeCloseAnswer         = factoryd.IntakeCloseAnswer
 	IntakeFactoryClosed       = factoryd.IntakeFactoryClosed
 	IdentityKey               = factoryd.IdentityKey
 	LeaveCaseToAct            = factoryd.LeaveCaseToAct

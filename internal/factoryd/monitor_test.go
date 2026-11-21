@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -91,5 +93,85 @@ func TestAFlagsIssueLineNamesItsAnswers(t *testing.T) {
 	want := "The card goes on meanwhile. Press “Rescue the work into a new card”, “It is fine, go on” or “Not now” on the board."
 	if got := tripNext(quiet, MonitorFlagReason(DigestFlag{Name: "wait_over_bound", Detail: "run_quiet since +5:19"})); got != want {
 		t.Errorf("the issue line %q, want %q", got, want)
+	}
+}
+
+// The minute's re-take runs rung 0 on a case at the human again, on the
+// facts Act reads: t1's checks wait stop on h2, whose checks are green,
+// resolves at rung 0 with wait_checks and the finding as its reason, and
+// the run hears it. t1 has no issue here, so no comment withdraws the
+// question (the Postgres test reads that comment). On facts read partly (t1's timeline unreadable) the
+// stop stays at the human, and so does one whose head a human's
+// wait_checks already ran the wait on again (case 4, WaitedOnHead): the
+// pass writes no step, no event and no signal for either.
+func TestRetakeTakesAGreenChecksWaitOnFactsReadWhole(t *testing.T) {
+	stop := Case{ID: 7, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2"}}
+	waited := Case{ID: 4, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, Status: CaseResolved,
+		Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2"}, Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActWaitChecks}}
+	took := &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Reason: "every check on head h2 is green, so the factory resumed the checks wait"}
+	for name, tc := range map[string]struct {
+		setup func(g factsRig)
+		want  *CaseResolution
+	}{
+		"read whole": {func(factsRig) {}, took},
+		"timeline unreadable": {func(g factsRig) {
+			g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
+		}, nil},
+		"waited on h2": {func(g factsRig) { g.store.cases = append(g.store.cases, waited) }, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			g := newFactsRig(t)
+			g.card()
+			g.timeline(t)
+			card := g.store.tasks["t1"]
+			card.IssueNumber = 0
+			g.store.tasks["t1"] = card
+			g.store.cases = append(g.store.cases, stop)
+			tc.setup(g)
+			events := len(g.store.events)
+			m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+			if err := m.Retake(ctx); err != nil {
+				t.Fatal(err)
+			}
+			c, _ := g.store.CaseByID(ctx, stop.ID)
+			signals := g.r.cfg.Workflows.(*fakeWorkflows).signals
+			if tc.want == nil {
+				if c.Status != CaseAtHuman || c.Resolution != nil || len(g.store.caseSteps[stop.ID]) != 0 || len(g.store.events) != events || len(signals) != 0 {
+					t.Fatalf("case %+v, steps %+v, events %d (were %d), signals %q; want the stop at the human and nothing written",
+						c, g.store.caseSteps[stop.ID], len(g.store.events), events, signals)
+				}
+				return
+			}
+			if c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, tc.want) || !slices.Equal(signals, []string{"t1 case_resolved factoryd #0: "}) {
+				t.Fatalf("case %s by %+v, signals %q; want it resolved by %+v and the run told", c.Status, c.Resolution, signals, tc.want)
+			}
+		})
+	}
+}
+
+// The re-take reads only the cases at the human of a kind rung 0 tries a
+// Fire row on: a human card's case, whose kind names none, costs no read
+// of its card, and a day cap's, whose cap_wait row fires on none, costs
+// one read of t1's timeline and takes nothing.
+func TestRetakeReadsOnlyKindsWithAFiringRow(t *testing.T) {
+	ctx := context.Background()
+	g := newFactsRig(t)
+	reads := &timelineReads{fakeObjectStore: g.r.objects.(*fakeObjectStore), n: map[string]int{}}
+	g.r.objects = reads
+	m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+	g.store.cases = []Case{{ID: 7, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, Status: CaseAtHuman}}
+	if err := m.Retake(ctx); err != nil || reads.n["t1"] != 0 {
+		t.Fatalf("a human card's case: %v, t1's timeline read %d times; want no read", err, reads.n["t1"])
+	}
+	g.store.cases = append(g.store.cases, Case{ID: 8, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseDayCap, Status: CaseAtHuman})
+	if err := m.Retake(ctx); err != nil || reads.n["t1"] != 1 {
+		t.Fatalf("beside a day cap's case: %v, t1's timeline read %d times; want one read", err, reads.n["t1"])
+	}
+	for _, c := range g.store.cases {
+		if c.Status != CaseAtHuman || c.Resolution != nil {
+			t.Fatalf("case %d = %s by %+v; want it at the human", c.ID, c.Status, c.Resolution)
+		}
 	}
 }

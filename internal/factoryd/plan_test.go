@@ -896,6 +896,8 @@ type planForgejo struct {
 	failStatus int
 	// onIssue runs as an issue is created, with its title
 	onIssue func(title string)
+	// onClose runs as issue n closes, as its webhook would
+	onClose func(n int64)
 	// pulls are "head title\n\nbody" of each pull request created
 	pulls []string
 }
@@ -1031,6 +1033,9 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 				break
 			}
 			f.issues[n].state = body["state"].(string)
+			if f.onClose != nil && body["state"] == "closed" {
+				f.onClose(n)
+			}
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{}`))
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/linkshort/branches/"):

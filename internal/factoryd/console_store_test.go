@@ -672,8 +672,8 @@ func TestPGStoreResolveAlert(t *testing.T) {
 	}
 }
 
-// CloseClearedCard writes the alert's verdict and the card's end together
-// or not at all.
+// CloseClearedCard writes the alert's verdict and the card's end, with why
+// it closed, together or not at all.
 func TestCloseClearedCardIsOneStep(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -707,7 +707,7 @@ func TestCloseClearedCardIsOneStep(t *testing.T) {
 	}
 
 	finished := add("t-done", "done")
-	if err := s.CloseClearedCard(ctx, finished, "t-done"); !errors.Is(err, ErrNotFound) {
+	if err := s.CloseClearedCard(ctx, finished, "t-done", "The alert cleared."); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a finished card: err = %v, want ErrNotFound", err)
 	}
 	if status, verdict := state("t-done", finished); status != "done" || verdict != "" {
@@ -718,7 +718,7 @@ func TestCloseClearedCardIsOneStep(t *testing.T) {
 	if err := s.ResolveAlert(ctx, judged, AlertSigNoz, VerdictReal, "sebastian", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CloseClearedCard(ctx, judged, "t-judged"); !errors.Is(err, ErrNotFound) {
+	if err := s.CloseClearedCard(ctx, judged, "t-judged", "The alert cleared."); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a judged alert: err = %v, want ErrNotFound", err)
 	}
 	if status, verdict := state("t-judged", judged); status != "waiting-human" || verdict != VerdictReal {
@@ -726,20 +726,20 @@ func TestCloseClearedCardIsOneStep(t *testing.T) {
 	}
 
 	fresh := add("t-fresh", "waiting-human")
-	if err := s.CloseClearedCard(ctx, fresh, "t-fresh"); err != nil {
+	if err := s.CloseClearedCard(ctx, fresh, "t-fresh", "The alert cleared."); err != nil {
 		t.Fatal(err)
 	}
 	if status, verdict := state("t-fresh", fresh); status != "closed" || verdict != VerdictUnjudged {
 		t.Fatalf("a fresh pair: task %s, verdict %q; want closed and unjudged", status, verdict)
 	}
-	var by, closed string
+	var by, closed, reason string
 	var finishedAt sql.NullTime
-	if err := s.db.QueryRowContext(ctx, `SELECT a.resolved_by, a.detail->>'closed', t.finished_at FROM alerts a, tasks t WHERE a.id = $1 AND t.id = 't-fresh'`, fresh).
-		Scan(&by, &closed, &finishedAt); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT a.resolved_by, a.detail->>'closed', t.finished_at, t.closing_reason FROM alerts a, tasks t WHERE a.id = $1 AND t.id = 't-fresh'`, fresh).
+		Scan(&by, &closed, &finishedAt, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if by != "factoryd" || closed != "cleared" || !finishedAt.Valid {
-		t.Fatalf("resolved_by %q, detail closed %q, finished_at %v; want factoryd, cleared, set", by, closed, finishedAt)
+	if by != "factoryd" || closed != "cleared" || !finishedAt.Valid || reason != "The alert cleared." {
+		t.Fatalf("resolved_by %q, detail closed %q, finished_at %v, closing reason %q; want factoryd, cleared, set, the alert's clearing", by, closed, finishedAt, reason)
 	}
 	evs, err := s.TaskEvents(ctx, "t-fresh", 10)
 	if err != nil {

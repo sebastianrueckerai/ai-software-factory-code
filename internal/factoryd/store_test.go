@@ -1068,6 +1068,11 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	return e.ID, nil
 }
 
+func (s *fakeStore) DeleteIntakeEvent(ctx context.Context, id int64) error {
+	s.intakeEvents = slices.DeleteFunc(s.intakeEvents, func(e IntakeEvent) bool { return e.ID == id })
+	return nil
+}
+
 func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error {
 	if !slices.ContainsFunc(s.intakeEvents, func(e IntakeEvent) bool {
 		return e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue
@@ -1213,6 +1218,25 @@ func (s *fakeStore) CloseTask(ctx context.Context, id string, from []string, fin
 }
 
 func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+	if to == "closed" {
+		return fmt.Errorf("task %s: a card ends closed through EndClosed, which stores why it closed", id)
+	}
+	return s.transition(id, from, to)
+}
+
+// EndClosed moves task id to closed as transition does and stores reason,
+// as PGStore.EndClosed does.
+func (s *fakeStore) EndClosed(ctx context.Context, id string, from []string, reason string) error {
+	if err := s.transition(id, from, "closed"); err != nil {
+		return err
+	}
+	t := s.tasks[id]
+	t.ClosingReason = reason
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) transition(id string, from []string, to string) error {
 	t, ok := s.tasks[id]
 	if !ok || !slices.Contains(from, t.Status) {
 		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, ErrNotFound, from, to)
@@ -3110,7 +3134,7 @@ func (s *fakeStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts,
 	return s.SetCaseFace(ctx, caseID, face)
 }
 
-func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
+func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID, reason string) error {
 	t, ok := s.tasks[taskID]
 	s.alertsMu.Lock()
 	open := slices.ContainsFunc(s.alerts, func(a Alert) bool { return a.ID == alertID && a.Kind == AlertSigNoz && a.Verdict == "" })
@@ -3121,7 +3145,7 @@ func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID 
 	if err := s.ResolveAlert(ctx, alertID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		return err
 	}
-	return s.TransitionTask(ctx, taskID, humanCardWaits, "closed")
+	return s.EndClosed(ctx, taskID, humanCardWaits, reason)
 }
 
 func (s *fakeStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
@@ -4448,7 +4472,7 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 	if err := s.MarkStarted(ctx, "t-w"); err != nil {
 		t.Fatalf("waiting-poster to running: %v", err)
 	}
-	if err := s.TransitionTask(ctx, "t-w", []string{"running"}, "closed"); err != nil {
+	if err := s.EndClosed(ctx, "t-w", []string{"running"}, "closed in Forgejo by sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ = s.Task(ctx, "t-w")

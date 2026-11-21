@@ -453,9 +453,10 @@ func TestARoomPressIsNotBoughtNothing(t *testing.T) {
 	}
 }
 
-// The human's close of a card with an issue posts the note and closes the
-// issue as factoryd's recorded close, which the webhook then ends the card
-// on. The case reads resolved with close.
+// The human's close of a card with an issue records the close answer,
+// then posts the note and closes the issue as factoryd's recorded close,
+// which the webhook then ends the card on. The case reads resolved with
+// close.
 func TestActClosesTheIssueAsFactory(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
@@ -467,8 +468,9 @@ func TestActClosesTheIssueAsFactory(t *testing.T) {
 		t.Fatalf("closed %v, comments %q; want the issue closed after one comment naming sebastian and the note", g.forge.closed, g.forge.comments)
 	}
 	events, err := g.s.IntakeEvents(ctx, "t1")
-	if err != nil || len(events) != 1 || events[0].Kind != IntakeFactoryClosed || events[0].CommentID != 12 {
-		t.Fatalf("intake rows = %+v, %v; want factoryd's recorded close of issue 12", events, err)
+	if err != nil || len(events) != 2 || events[0].Kind != IntakeCloseAnswer || events[0].Author != "sebastian" || events[0].Body != "closed by sebastian: not worth it" ||
+		events[1].Kind != IntakeFactoryClosed || events[1].CommentID != 12 {
+		t.Fatalf("intake rows = %+v, %v; want sebastian's close answer, then factoryd's recorded close of issue 12", events, err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseResolved || c.Resolution.Action != ActClose {
 		t.Fatalf("case = %s, %+v; want resolved with close", c.Status, c.Resolution)
@@ -476,9 +478,9 @@ func TestActClosesTheIssueAsFactory(t *testing.T) {
 }
 
 // The human's comment comes after the close: a close Forgejo refuses
-// leaves the case open with nothing posted, and once the close goes
-// through, Post runs on the closed issue and factoryd posts no comment of
-// its own.
+// leaves the case open with nothing posted and no close answer, and once
+// the close goes through, Post runs on the closed issue and factoryd posts
+// no comment of its own, one close answer standing.
 func TestActPostsTheHumansCommentAfterTheClose(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
@@ -494,15 +496,28 @@ func TestActPostsTheHumansCommentAfterTheClose(t *testing.T) {
 	if _, err := g.r.Act(ctx, in); err == nil {
 		t.Fatal("the close Forgejo refused went through")
 	}
-	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || len(closedAtPost) != 0 {
-		t.Fatalf("case %s, Post called %d times; want the case open and no Post", c.Status, len(closedAtPost))
+	answers := func() (n int) {
+		t.Helper()
+		rows, err := g.s.IntakeEvents(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range rows {
+			if e.Kind == IntakeCloseAnswer {
+				n++
+			}
+		}
+		return n
+	}
+	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || len(closedAtPost) != 0 || answers() != 0 {
+		t.Fatalf("case %s, Post called %d times, %d close answers; want the case open, no Post and no close answer", c.Status, len(closedAtPost), answers())
 	}
 	g.forge.closeFails = false
 	got, err := g.r.Act(ctx, in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(closedAtPost, []bool{true}) || got.Comment != 91 || len(g.forge.comments) != 0 || caseByID(t, g.s, g.c.ID).Status != CaseResolved {
+	if !slices.Equal(closedAtPost, []bool{true}) || got.Comment != 91 || len(g.forge.comments) != 0 || caseByID(t, g.s, g.c.ID).Status != CaseResolved || answers() != 1 {
 		t.Fatalf("closed at Post %v, comment %d, factoryd's comments %q; want one Post after the close, comment 91, none of factoryd's, the case resolved",
 			closedAtPost, got.Comment, g.forge.comments)
 	}
@@ -565,6 +580,8 @@ func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 // factoryd withdraws a case the card outgrew on rung 0, withdraw being
 // the factory's own: the case reads withdrawn by factoryd with the
 // reason, its step says so, and no comment, answer row or signal follows.
+// The case is at the human, so its question_withdrawn row says why, and it
+// was never faced, so the row names no withdrawal comment.
 func TestActWithdrawsTheCase(t *testing.T) {
 	g := newActRig(t)
 	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: FactoryDecider, Rung: 0,
@@ -581,6 +598,51 @@ func TestActWithdrawsTheCase(t *testing.T) {
 	}
 	if len(g.forge.comments) != 0 || len(g.signals.got) != 0 || len(g.rows(t, EventQuestionAnswered)) != 0 {
 		t.Fatalf("comments %q, signals %+v: want none", g.forge.comments, g.signals.got)
+	}
+	if rows := g.rows(t, EventQuestionWithdrawn); len(rows) != 1 || rows[0].Detail["reason"] != "the card moved past its cap" || rows[0].Detail["withdrawal"] != nil {
+		t.Fatalf("withdrawals %+v; want one with the reason and no comment", rows)
+	}
+}
+
+// Rung 0's withdrawal of a case at the human posts its note exactly where
+// the case's face asked. A session cap faced at comment 400 gets the note
+// as comment 501, which its question_withdrawn row names. A merge approval
+// gets none and its row names none: a merge's face posts no comment, and
+// its kind alone keeps the note off, even beside a face step naming 400.
+func TestActWithdrawalPostsItsNoteWhereTheFaceAsked(t *testing.T) {
+	for _, tc := range []struct {
+		kind       CaseKind
+		comments   []string
+		withdrawal any
+	}{
+		{CaseSessionCap, []string{"This card withdraws its question above because the stop cleared. It needs no answer."}, float64(501)},
+		{CaseMergeApproval, nil, nil},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			ctx := context.Background()
+			g := newActRig(t)
+			c := g.c
+			if tc.kind == CaseMergeApproval {
+				var err error
+				if c, _, err = openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMergeApproval, StateKey: "merge",
+					Problem: "Merge #9?"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 3, Actor: FactoryDecider, CommentID: 400, Outcome: StepInProgress}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: FactoryDecider, Rung: 0,
+				Res: Resolution{Action: ActWithdraw, Note: "the stop cleared"}}); err != nil {
+				t.Fatal(err)
+			}
+			if got := caseByID(t, g.s, c.ID); got.Status != CaseWithdrawn || !slices.Equal(g.forge.comments, tc.comments) {
+				t.Fatalf("case %s, comments %q; want it withdrawn and the comments %q", got.Status, g.forge.comments, tc.comments)
+			}
+			if rows := g.rows(t, EventQuestionWithdrawn); len(rows) != 1 || rows[0].Detail["case_id"] != float64(c.ID) || rows[0].Detail["withdrawal"] != tc.withdrawal {
+				t.Fatalf("withdrawals %+v; want one naming case %d and the comment %v", rows, c.ID, tc.withdrawal)
+			}
+		})
 	}
 }
 

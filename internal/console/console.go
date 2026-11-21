@@ -293,6 +293,12 @@ type Config struct {
 	// CloseCard ends card taskID, which has no issue, closed for by
 	// (factoryd's Intake.CloseCard).
 	CloseCard func(ctx context.Context, taskID, by string) error
+	// RecordCloseAnswer records by's Close of card taskID with note ahead
+	// of the close, so the card's end says why however soon it comes, and
+	// answers the record's id; DropCloseAnswer deletes the record of a close
+	// that failed (factoryd's Intake.RecordCloseAnswer and DropCloseAnswer).
+	RecordCloseAnswer func(ctx context.Context, taskID, by, note string) (int64, error)
+	DropCloseAnswer   func(ctx context.Context, id int64) error
 	// RerunStall and DismissStall are a chain stall card's answers on its
 	// commit sha (factoryd's ChainPoller.RerunStall,
 	// PGStore.DismissChainStall): the stuck runs of the head re-run now,
@@ -725,6 +731,10 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no HoldCard or ReleaseCardHold")
 	case cfg.CloseCard == nil:
 		return nil, errors.New("console: no CloseCard")
+	case cfg.RecordCloseAnswer == nil:
+		return nil, errors.New("console: no RecordCloseAnswer")
+	case cfg.DropCloseAnswer == nil:
+		return nil, errors.New("console: no DropCloseAnswer")
 	case cfg.RerunStall == nil:
 		return nil, errors.New("console: no RerunStall")
 	case cfg.DismissStall == nil:

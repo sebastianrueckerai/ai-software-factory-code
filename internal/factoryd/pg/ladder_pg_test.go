@@ -955,6 +955,135 @@ func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
 	}
 }
 
+// The checks wait stop of 2026-11-19, case 7455 of a roll card: the roll's
+// checks wait past its bound, on head 1a2b3c4 whose checks are pending,
+// reaches the human after rung 0 found no resolver and rung 2 handed it
+// up, its face comment 501 on #12. The minute's re-take takes nothing and
+// writes nothing, no step, no row, no comment, no signal and no log line,
+// while the checks are pending. Once they are green the next re-take
+// resolves the case on rung 0 with wait_checks, its reason the finding:
+// the human's step ends, rung 0's step resolves the case, the run hears
+// case_resolved, the issue's comment 502 withdraws the question with the
+// finding, and the human's inbox thread reads that the card needs them no
+// more, the ask itself withdrawn.
+func TestRetakeResumesAChecksWaitAtTheHumanOnceItsChecksAreGreen(t *testing.T) {
+	ctx := context.Background()
+	const head = "1a2b3c4d5e6f708192a3b4c5d6e7f80910a1b2c3"
+	const took = "every check on head 1a2b3c4 is green, so the factory resumed the checks wait"
+	g := newTripRig(t, "pending")
+	rung1Off(g.r)
+	if _, err := g.s.PgDB().ExecContext(ctx, `TRUNCATE chat_messages, chat_conversations, chat_seen, chat_poke_cursor CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET pr_number = 9, source = $1 WHERE id = 't1'`, SourceRoll); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventGateHead, Actor: FactoryDecider,
+		Via: ViaFactoryd, Detail: map[string]any{"gate": GateMerge, "head": head}}); err != nil {
+		t.Fatal(err)
+	}
+	checks := func(state string) {
+		g.forge.mu.Lock()
+		defer g.forge.mu.Unlock()
+		g.forge.checks[head] = state
+	}
+	checks("pending")
+	tree := projectTree(t)
+	demo := tree.Projects["demo-app"]
+	demo.Notify = []string{"sebastian"}
+	tree.Projects["demo-app"] = demo
+	p := &Poker{Store: g.s, Current: func() policy.Version { return policy.Version{Tree: tree} }, Line: &busyLine{busy: map[string]bool{}, landed: map[string][]int64{}}}
+	if err := p.Pass(ctx); err != nil { // the first pass plants the cursor past the history
+		t.Fatal(err)
+	}
+	asked := g.faced(t, tripChecksWait)
+	if c := caseByID(t, g.s, asked.CaseID); c.Kind != CaseGateStop || c.Status != CaseAtHuman || asked.Comment != 501 {
+		t.Fatalf("outcome %+v, case %+v; want the checks wait's stop at the human on comment 501", asked, c)
+	}
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return tree }, Now: time.Now}
+	comments := func() []string {
+		g.forge.mu.Lock()
+		defer g.forge.mu.Unlock()
+		return slices.Clone(g.forge.comments)
+	}
+	written := func() (events int, steps []CaseStep, signals int) {
+		t.Helper()
+		rows, err := g.s.TaskEvents(ctx, "t1", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if steps, err = g.s.CaseSteps(ctx, asked.CaseID); err != nil {
+			t.Fatal(err)
+		}
+		return len(rows), steps, len(g.signals.got)
+	}
+	events, steps, signals := written()
+	logged := logs(t)
+	if err := m.Retake(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if e, st, sig := written(); e != events || !reflect.DeepEqual(st, steps) || sig != signals || len(comments()) != 1 || logged.Len() != 0 ||
+		caseByID(t, g.s, asked.CaseID).Status != CaseAtHuman {
+		t.Fatalf("on pending checks: events %d (were %d), steps %+v (were %+v), signals %d (were %d), comments %q, log %q; want the case at the human and nothing written",
+			e, events, st, steps, sig, signals, comments(), logged.String())
+	}
+
+	checks("success")
+	if err := m.Retake(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c := caseByID(t, g.s, asked.CaseID)
+	if want := (&CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Reason: took}); c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, want) {
+		t.Fatalf("case %s by %+v; want it resolved by %+v", c.Status, c.Resolution, want)
+	}
+	_, after, _ := written()
+	face, last := steps[len(steps)-1], after[len(after)-1]
+	if len(after) != len(steps)+1 || face.Rung != 3 || face.Outcome != StepInProgress || after[len(steps)-1].Outcome != StepResolved ||
+		last.Rung != 0 || last.Outcome != StepResolved || last.Decision != ActWaitChecks || last.Grounds != took {
+		t.Fatalf("steps %+v; want the human's step ended and rung 0's resolving the case with wait_checks", after)
+	}
+	sent := g.signals.got[signals:]
+	if len(sent) != 1 || sent[0].signal != SignalCaseResolved || sent[0].sig.Case == nil || sent[0].sig.Case.CaseID != c.ID || sent[0].sig.Case.Rung != 0 ||
+		sent[0].sig.Case.Res.Action != ActWaitChecks {
+		t.Fatalf("signals %+v; want case_resolved of case %d with rung 0's wait_checks", sent, c.ID)
+	}
+	posted := comments()
+	var note struct{ Body string }
+	if len(posted) == 2 {
+		_ = json.Unmarshal([]byte(posted[1]), &note)
+	}
+	if want := "This card withdraws its question above because " + took + ". It needs no answer."; len(posted) != 2 || note.Body != want {
+		t.Fatalf("comments %q; want the face and then %q", posted, want)
+	}
+	if rows := (actRig{s: g.s}).rows(t, EventQuestionWithdrawn); len(rows) != 1 || rows[0].Detail["withdrawal"] != float64(502) || rows[0].Detail["reason"] != took {
+		t.Fatalf("withdrawals %+v; want one naming comment 502 and the finding", rows)
+	}
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := g.s.EnsureInbox(ctx, "demo-app/demo-app", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := g.s.ChatMessages(ctx, "demo-app/demo-app", "sebastian", inbox, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "#12 (x) needs you no more: " + took + "."; len(rows) != 2 || rows[0].Kind != MessageEscalation || rows[1].Content != want {
+		t.Fatalf("the inbox = %+v; want the ask and then %q", rows, want)
+	}
+	all, err := g.s.TaskEvents(ctx, "t1", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := SettleOf(rows[0], all, "waiting-human", false); s.Word != "withdrawn" || s.By != FactoryDecider {
+		t.Fatalf("the ask settles as %+v; want it withdrawn by the factory", s)
+	}
+}
+
 // A restart asks the question again with no face of its own, as production
 // writes it: the newest ask of the case is a whole face all the same, and
 // the case's Why stays on its own reason.

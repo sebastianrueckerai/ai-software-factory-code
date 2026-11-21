@@ -252,9 +252,9 @@ func pokeTo(tree policy.Tree, repository string) []string {
 // task's message names its step on parent, the card the step stands on:
 // its ask is the parent's, and says which step asks.
 func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
-	name, step := inboxName(e, t), ""
+	name, bare, step := inboxName(e, t), inboxNumber(e, t), ""
 	if s := HelperStep(t.Source); s != "" && parent.ID != "" {
-		name = s + " of " + inboxName(e, parent)
+		name, bare = s+" of "+inboxName(e, parent), s+" of "+inboxNumber(e, parent)
 		if e.Kind == EventQuestionAsked {
 			name, step = inboxName(e, parent), capitalize(s)+" asks."
 		}
@@ -304,11 +304,16 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		if bl("held") {
 			return m, false
 		}
-		who := capitalize(name)
-		if e.Detail["case_kind"] == string(CaseMonitorFlag) {
-			who = "The flag on " + name
+		// the reason is the human's record: past a notice's length the card
+		// keeps its number alone, and only past that the reason goes
+		noMore := func(card string) string {
+			if e.Detail["case_kind"] == string(CaseMonitorFlag) {
+				return "The flag on " + card + " needs you no more"
+			}
+			return capitalize(card) + " needs you no more"
 		}
-		m.Content = notice(who+" needs you no more: "+strings.TrimSuffix(str("reason"), ".")+".", who+" needs you no more.")
+		reason := ": " + strings.TrimSuffix(str("reason"), ".") + "."
+		m.Content = notice(noMore(name)+reason, notice(noMore(bare)+reason, noMore(name)+"."))
 	case EventPullRequestMerged:
 		// a card still merged informs once at its merge, its words the
 		// chain's facts as this poke reads them (chain, repair and covered
@@ -546,6 +551,12 @@ func mergePoke(e Event, t Task) (ask, why, suggested string, choices []string) {
 // card with neither issue nor title.
 func inboxName(e Event, t Task) string {
 	return cmp.Or(CardName(t, e.IssueNumber), "A card")
+}
+
+// inboxNumber is inboxName without the card's title: its number alone,
+// the whole name for a card with none.
+func inboxNumber(e Event, t Task) string {
+	return cmp.Or(CardName(Task{IssueNumber: t.IssueNumber}, e.IssueNumber), inboxName(e, t))
 }
 
 // nameTitleMax bounds the title a line names a card by, in runes.

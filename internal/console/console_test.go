@@ -1350,14 +1350,19 @@ type rig struct {
 	invited     []string // "repository user permission" per AddCollaborator
 	issueDeps   []string // "repository#issue on #dependency", the bot's issue dependencies
 	closed      []string // "task by user" per CloseCard
-	reran       []string // "repository@sha" per RerunStall
-	rerunErr    error
-	dismissed   []string // "repository@sha by user" per DismissStall
-	rollRetried []string // card id per RetryRoll
-	dismissErr  error
-	synced      []string // "project by user" per GitHubSync
-	syncErr     error
-	syncGate    chan struct{} // GitHubSync waits on it, when set
+	// closeAnswers are "task by user "note" after [writes]" per
+	// RecordCloseAnswer: the Forgejo writes made before it; its id is the
+	// entry's number, which dropped lists per DropCloseAnswer
+	closeAnswers []string
+	dropped      []int64
+	reran        []string // "repository@sha" per RerunStall
+	rerunErr     error
+	dismissed    []string // "repository@sha by user" per DismissStall
+	rollRetried  []string // card id per RetryRoll
+	dismissErr   error
+	synced       []string // "project by user" per GitHubSync
+	syncErr      error
+	syncGate     chan struct{} // GitHubSync waits on it, when set
 	// chatToken is every project's chat token, the wake's identity
 	chatToken string
 	// imageAsks are "repository: tool | need | image, by user" per
@@ -1835,6 +1840,14 @@ func newRig(t *testing.T) *rig {
 			r.closed = append(r.closed, taskID+" by "+by)
 			return nil
 		},
+		RecordCloseAnswer: func(_ context.Context, taskID, by, note string) (int64, error) {
+			r.closeAnswers = append(r.closeAnswers, fmt.Sprintf("%s by %s %q after %v", taskID, by, note, writesOf(fg)))
+			return int64(len(r.closeAnswers)), nil
+		},
+		DropCloseAnswer: func(_ context.Context, id int64) error {
+			r.dropped = append(r.dropped, id)
+			return nil
+		},
 		RerunStall: func(_ context.Context, repository, sha string) error {
 			r.reran = append(r.reran, repository+"@"+sha)
 			return r.rerunErr
@@ -2139,6 +2152,8 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"RetryCard":                func(c *Config) { c.RetryCard = nil },
 		"GoCard":                   func(c *Config) { c.GoCard = nil },
 		"CloseCard":                func(c *Config) { c.CloseCard = nil },
+		"RecordCloseAnswer":        func(c *Config) { c.RecordCloseAnswer = nil },
+		"DropCloseAnswer":          func(c *Config) { c.DropCloseAnswer = nil },
 		"RerunStall":               func(c *Config) { c.RerunStall = nil },
 		"DismissStall":             func(c *Config) { c.DismissStall = nil },
 		"RetryRoll":                func(c *Config) { c.RetryRoll = nil },
