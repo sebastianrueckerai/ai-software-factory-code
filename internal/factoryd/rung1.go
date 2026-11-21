@@ -160,6 +160,17 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	return b.String()
 }
 
+// statementOffers says statement, statementOf's, offers action: its line
+// is the action alone, or the action with what it takes.
+func statementOffers(statement, action string) bool {
+	for line := range strings.SplitSeq(statement, "\n") {
+		if line == "- "+action || strings.HasPrefix(line, "- "+action+", ") {
+			return true
+		}
+	}
+	return false
+}
+
 // answersByChoices says case c is answered by one of its ask's choices:
 // a human card's kinds and a plan's questions.
 func answersByChoices(c Case) bool {

@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -938,22 +939,24 @@ type roomCard struct {
 	stop      factoryd.CaseKind
 }
 
-// roomRig is the console rig on the real Act and the real store, at the
-// manual level, with cards in both, each a direct card of the maintenance
-// process, whose policy sets 3 sessions, 20 minutes of agent time, a
-// spend limit of 5.00 EUR, a gate reserve of 0.40 EUR, no session floor
-// and a month of 50.00 EUR. Each stop's case stands at the human after its
-// trip's step; roomRig answers the cases by card.
-func roomRig(t *testing.T, cards ...roomCard) (*rig, *realAct, map[string]int64) {
+// roomRig is the console rig on the real Act and the real store, with
+// linkshort at level, and cards in both, each a direct card of the
+// maintenance process, on sf/code unless it names its repository, whose
+// policy sets 3 sessions, 20 minutes of agent time, a spend limit of 5.00
+// EUR, a gate reserve of 0.40 EUR, no session floor and a month of 50.00
+// EUR. Each stop's case stands at the human after its trip's step;
+// roomRig answers the cases by card.
+func roomRig(t *testing.T, level string, cards ...roomCard) (*rig, *realAct, map[string]int64) {
 	t.Helper()
 	ctx := context.Background()
 	r := newRig(t)
-	ra := newRealRunner(t, policy.AutonomyManual)
+	ra := newRealRunner(t, level)
 	cases := map[string]int64{}
 	var tasks []factoryd.Task
 	for _, k := range cards {
 		card := k.task
-		card.Kind, card.Repository, card.Track, card.Process, card.Objective = "agent", "sf/code", policy.TrackDirect, "maintenance", "Speed up the board."
+		card.Kind, card.Track, card.Process, card.Objective = "agent", policy.TrackDirect, "maintenance", "Speed up the board."
+		card.Repository = cmp.Or(card.Repository, "sf/code")
 		if err := ra.pg.CreateTask(ctx, card); err != nil {
 			t.Fatal(err)
 		}
@@ -1029,7 +1032,7 @@ func (ra *realAct) drawRows(t *testing.T, id string) []factoryd.Event {
 // EUR, the budget to 7.60 under the limit of 10.00. A count of 0 or 6
 // before it is Act's to refuse, and changes nothing.
 func TestGiveRoomAtAStopAndAheadOfTime(t *testing.T) {
-	r, ra, cases := roomRig(t,
+	r, ra, cases := roomRig(t, policy.AutonomyManual,
 		roomCard{task: factoryd.Task{ID: "t-cap", Status: "waiting-human", IssueNumber: 31, BudgetEUR: 2, SpentEUR: 0.9},
 			attempts: 3, agentTime: 15 * time.Minute, stop: factoryd.CaseSessionCap},
 		roomCard{task: factoryd.Task{ID: "t-run", Status: "running", IssueNumber: 32, BudgetEUR: 6, SpentEUR: 3.6, CeilingEUR: 10,
@@ -1107,11 +1110,14 @@ func TestAnswerRefusesARoom(t *testing.T) {
 		[]string{"action", "body", "criterion", "depends_on", "model", "size", "summary", "task_id", "title", "verdict", "why"})
 }
 
-// Room for a card is an approver's on every door: the opened card's Give
-// more room and the chat's give_room give one verdict for the same human.
-// A writer is refused on both, at the chat's door before the tool runs
-// too, and Act takes nothing; an approver reaches Act on both, on rung 3.
+// A human's room for a card is an approver's on every door: the opened
+// card's Give more room and the chat's give_room give one verdict for the
+// same human. The chat's door admits a writer, whose turn the factory agent
+// may take on its own; the press on the human's rung meets the approver's
+// rule. A writer is refused on both doors and Act takes nothing; an
+// approver reaches Act on both, on rung 3.
 func TestGiveRoomNeedsAnApprover(t *testing.T) {
+	const words = "Only the approvers of project ai-software-factory-code may give a card room."
 	for _, tc := range []struct {
 		who  string
 		acts int
@@ -1130,24 +1136,71 @@ func TestGiveRoomNeedsAnApprover(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		trn := &turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
 			a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}
-		door := trn.admitTool("give_room", toolInput{TaskID: "t-g"})
-		const words = "Only the approvers of project ai-software-factory-code may give a card room."
-		var no, atDoor *refusal
+		if door := trn.admitTool("give_room", toolInput{TaskID: "t-g"}); door != nil {
+			t.Errorf("%s, a writer of the card: the chat's door = %v, want it admitted", tc.who, door)
+		}
+		var no *refusal
 		switch {
 		case tc.acts == 0 && (press.Code != http.StatusForbidden || strings.TrimSpace(press.Body.String()) != words ||
-			!errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != words || !errors.As(door, &atDoor) || atDoor.msg != words):
-			t.Errorf("%s, a writer: the press = %d %q, the chat's give_room = %v, its door = %v; want each refused with 403 %q", tc.who, press.Code, press.Body, err, door, words)
-		case tc.acts > 0 && (press.Code != http.StatusSeeOther || err != nil || door != nil):
-			t.Errorf("%s, an approver: the press = %d: %s, the chat's give_room = %v, its door = %v; want each taken", tc.who, press.Code, press.Body, err, door)
+			!errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != words):
+			t.Errorf("%s, a writer: the press = %d %q, the chat's give_room = %v; want both refused with 403 %q", tc.who, press.Code, press.Body, err, words)
+		case tc.acts > 0 && (press.Code != http.StatusSeeOther || err != nil):
+			t.Errorf("%s, an approver: the press = %d: %s, the chat's give_room = %v; want both taken", tc.who, press.Code, press.Body, err)
 		}
 		if len(r.acted) != tc.acts {
 			t.Fatalf("%s: Act took %+v, want %d answers", tc.who, r.acted, tc.acts)
 		}
 		for _, in := range r.acted {
-			if in.Rung != 3 || in.CaseID != 91 || in.Res.Action != factoryd.ActExtend || !reflect.DeepEqual(in.Res.Args, map[string]any{"sessions": 1, "money": true}) {
+			if in.Rung != 3 || in.CaseID != 91 || in.Res.Action != factoryd.ActExtend || in.Res.Args["sessions"] != 1 || in.Res.Args["money"] != true {
 				t.Errorf("%s: Act took %+v, want the human's room of 1 session's worth with its money on case 91", tc.who, in)
 			}
 		}
+	}
+}
+
+// The factory agent's room comes from the policy and the pool, not from
+// the role of the human whose turn it takes: the Waker, woken on a card's
+// session cap as alice, who writes linkshort and approves nothing, gives
+// it 1 session's worth without money on rung 2, past the chat's confirm
+// list, and the pool counts it. By hand: #36 ran 3 sessions of 3 in 15 of
+// its 20 minutes, so a session's worth is 5 minutes; with no start and 5
+// minutes left, the room now is 0, and 1 session's worth needs 1 start
+// and no time, and no money, left out.
+func TestTheWakerAsAWriterGivesRoomFromThePool(t *testing.T) {
+	r, ra, cases := roomRig(t, policy.AutonomyAutonomous, roomCard{task: factoryd.Task{ID: "t-wk", Status: "waiting-human", Repository: "linkshort/linkshort",
+		IssueNumber: 36, BudgetEUR: 2, SpentEUR: 0.9}, attempts: 3, agentTime: 15 * time.Minute, stop: factoryd.CaseSessionCap})
+	withLinkshort(r)
+	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
+	r.forgetWriters()
+	p := factoryd.Project{Name: "linkshort", Repository: "linkshort/linkshort"}
+	s, err := r.c.wakeSession(p, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.c.isApprover(t.Context(), "alice", p.Repository) {
+		t.Fatal("alice approves linkshort, want a writer alone")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/projects/linkshort/chat", nil)
+	trn := &turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)), p: p,
+		a:   actor{s: s, repository: p.Repository, via: factoryd.ViaChat, wake: true, birth: factoryd.EventCaseClimbed, level: policy.AutonomyAutonomous},
+		cfg: policy.ChatConfig{Confirm: policy.ConfirmFor(policy.AutonomyManual, policy.MergeHuman, policy.DefaultChat.Confirm)}}
+	var events []string
+	trn.stream(func(line string) error { events = append(events, line); return nil }, nil)
+	result, proposal, status := trn.call(factoryd.OperatorCall{Name: "give_room",
+		Arguments: `{"task_id":"t-wk","sessions":1,"money":false,"text":"The last test needs one more run, and the money holds."}`})
+	if proposal != "" || status != 0 || !strings.Contains(result, " Added 1 session.") {
+		t.Fatalf("the Waker's room = %q, proposal %q, status %d; want it given on rung 2", result, proposal, status)
+	}
+	k, err := ra.pg.CaseByID(t.Context(), cases["t-wk"])
+	if err != nil || k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Rung != 2 || k.Resolution.By != factoryd.ChatUser {
+		t.Fatalf("the session cap's case = %+v, %v; want it resolved by the factory agent on rung 2", k.Resolution, err)
+	}
+	rows := ra.drawRows(t, "t-wk")
+	if len(rows) != 1 || rows[0].Kind != factoryd.EventCardExtended || rows[0].Detail["rung"] != 2.0 || rows[0].Detail["pool"] != true || rows[0].Detail["sessions"] != 1.0 {
+		t.Fatalf("the draw rows = %+v, want one rung 2 pool row of 1 start", rows)
+	}
+	if d, err := ra.pg.PoolDrawn(t.Context(), p.Repository, time.Now()); err != nil || d != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("the pool counts %+v, %v; want the Waker's 1 session", d, err)
 	}
 }
 
@@ -1165,7 +1218,7 @@ func TestTheChatAgentsRoomIsRungTwo(t *testing.T) {
 		return roomCard{task: factoryd.Task{ID: id, Status: "running", IssueNumber: issue, BudgetEUR: 6, SpentEUR: 3.6, CeilingEUR: 10,
 			Usage: factoryd.TaskUsage{RaisedSessions: 1, RaisedTime: 40 * time.Minute}}, attempts: 3, agentTime: 42 * time.Minute}
 	}
-	r, ra, _ := roomRig(t, ran("t-agent", 33), ran("t-human", 34))
+	r, ra, _ := roomRig(t, policy.AutonomyManual, ran("t-agent", 33), ran("t-human", 34))
 	want := policy.Draw{Sessions: 1, AgentTime: 10 * time.Minute, EUR: 0.4}
 	pool := func() policy.Draw {
 		d, err := ra.pg.PoolDrawn(t.Context(), "sf/code", time.Now())
@@ -1205,7 +1258,7 @@ func TestTheChatAgentsRoomIsRungTwo(t *testing.T) {
 // room now is 0, and 1 session's worth needs no start, 10 minutes and no
 // money (0.30 <= 1.00).
 func TestWordsAloneAtACapGiveOneSessionsWorth(t *testing.T) {
-	r, ra, cases := roomRig(t, roomCard{task: factoryd.Task{ID: "t-time", Status: "waiting-human", IssueNumber: 35, BudgetEUR: 2, SpentEUR: 0.6},
+	r, ra, cases := roomRig(t, policy.AutonomyManual, roomCard{task: factoryd.Task{ID: "t-time", Status: "waiting-human", IssueNumber: 35, BudgetEUR: 2, SpentEUR: 0.6},
 		attempts: 2, agentTime: 20 * time.Minute, stop: factoryd.CaseAgentTimeCap})
 	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-time", Text: "The last test needs ten more minutes."}); err != nil {
 		t.Fatalf("words at the agent-time cap: %v", err)

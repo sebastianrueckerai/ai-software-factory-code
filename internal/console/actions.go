@@ -1309,7 +1309,7 @@ var approverRules = map[string]accessRule{
 	factoryd.ActRetry:           accessTable["retry"],
 	factoryd.ActReplan:          accessTable["replan"],
 	factoryd.ActHandBack:        accessTable["replan"],
-	factoryd.ActExtend:          accessTable["give_room"],
+	factoryd.ActExtend:          {need: approver, scope: scCard, what: "give a card room"},
 	factoryd.ActApproveMerge:    accessTable["approve_merge"],
 	factoryd.ActGrantCriteria:   accessTable["answer_criteria"],
 	factoryd.ActConfirmCriteria: accessTable["answer_criteria"],
@@ -1516,9 +1516,10 @@ func grantOf(k factoryd.Case) (map[string]any, bool) {
 // case the note, or when none the room in words, is the answer Act has
 // posted as the human's comment. The text names the raises Act applied.
 func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions int, money bool, note string) (string, error) {
-	note = strings.TrimSpace(note)
-	if len(note) > factoryd.MaxAnswer {
-		return "", answerFits(note)
+	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": sessions, "money": money}}
+	res.Note = cmp.Or(strings.TrimSpace(note), res.Sentence())
+	if err := answerFits(res.Note); err != nil {
+		return "", err
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
@@ -1531,7 +1532,6 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions int
 	if err != nil {
 		return "", err
 	}
-	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": sessions, "money": money}, Note: note}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
 		return "", err
@@ -1933,7 +1933,7 @@ func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseI
 func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	rule, ok := approverRules[res.Action]
 	if !ok && res.Room != nil {
-		rule, ok = accessTable["give_room"], true
+		rule, ok = approverRules[factoryd.ActExtend], true
 	}
 	if res.Action == factoryd.ActRetry {
 		rule = retryRule(t)

@@ -8,7 +8,7 @@ Learned the hard way in this suite:
 - No test re-asserts a production table (routes, policy lists) that a
   behavioral test already drives. The behavioral test is the proof.
 - Expected wording is written as the literal in the test, never produced by
-  the formatter under test (comparing to `capSpent(...)` guards nothing).
+  the formatter under test (comparing to `wrongState(...)` guards nothing).
 - Every refusal row asserts its exact status code, not a union of codes.
 - Fakes mirror the store's guards exactly: a fake missing a store error
   (the wake cap once) keeps the suite green over a production bug.

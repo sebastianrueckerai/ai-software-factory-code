@@ -228,11 +228,13 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 // member's turn proposes an answer on a case and a room; so does a wake
 // turn that is no Waker's (a refill's resume); the Waker's turns, wake_ask
 // and case_climbed, run them as rung 2's, the room on the card's live case
-// 5; the Waker's answer with no case proposes; the Waker's other tools
-// propose even with a stray case_id.
+// 5; the Waker's answer with no case proposes, and so does its room on a
+// card with no live case, #14, which Act would give on no case at any
+// level; the Waker's other tools propose even with a stray case_id.
 func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	caseCard(r)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 14}})
 	_, s := r.loggedIn(t)
 	var events []string
 	answer := `{"task_id":"13","case_id":5,"text":"go on"}`
@@ -247,6 +249,7 @@ func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 		{"a member's room", "", "give_room", room, false, true},
 		{"a refill's room", "resume", "give_room", room, true, true},
 		{"the Waker's room", "case_climbed", "give_room", room, true, false},
+		{"the Waker's room on a card with no case", "case_climbed", "give_room", `{"task_id":"14","sessions":1,"money":true,"text":"go on"}`, true, true},
 		{"the Waker's answer on no case", "case_climbed", "answer", `{"task_id":"13","text":"go on"}`, true, true},
 		{"the Waker's retry with a stray case_id", "case_climbed", "retry", `{"task_id":"13","case_id":5}`, true, true},
 		{"the Waker's set_autonomy with a stray case_id", "case_climbed", "set_autonomy", `{"autonomy":"autonomous","case_id":5}`, true, true},

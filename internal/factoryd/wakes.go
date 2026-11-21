@@ -546,6 +546,8 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, repository strin
 		end := fmt.Sprintf("End case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", id)
 		kind, _ := a.e.Detail["kind"].(string)
 		switch {
+		case statementOffers(statement, ActExtend):
+			end = fmt.Sprintf("End case %d with give_room for more room, with answer and its case_id for its other actions, or with attach_analysis, its case_id and the recommended action.", id)
 		case kind == string(CasePlanQuestion) || kind == string(CasePlanConfirmation):
 			end = fmt.Sprintf("End case %d with answer on the plan's revision and question, with no case_id, or with attach_analysis, case_id %d and the recommended answer.", id, id)
 		case ChoiceKind(CaseKind(kind)):

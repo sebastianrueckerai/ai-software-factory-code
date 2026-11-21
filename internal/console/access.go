@@ -181,7 +181,7 @@ var accessTable = map[string]accessRule{
 	"github_sync":      {need: writer | approver, scope: scChat, what: "sync it from GitHub"},
 	"close":            rCard,
 	"edit":             rCard,
-	"give_room":        {need: approver, scope: scCard, what: "give a card room"},
+	"give_room":        rCard,
 	"set_dependency":   rCard,
 	"hold_card":        rCard,
 	"release_hold":     rCard,

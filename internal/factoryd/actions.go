@@ -116,6 +116,14 @@ func (r Resolution) roomAsk() (ask RoomAsk, asked bool, why string) {
 	return ask, true, ""
 }
 
+// RoomRefusal is why the room r asks for is none a decider may ask for, ""
+// when it is one or r asks for none: Act's own check of the count and the
+// money, which a door runs before it offers the ask to a human.
+func (r Resolution) RoomRefusal() string {
+	_, _, why := r.roomAsk()
+	return why
+}
+
 // room is the room r gives on f: an extend's, or the one beside its
 // action; false for none, or for an ask roomAsk refuses.
 func (r Resolution) room(f CaseFacts) (Room, bool) {

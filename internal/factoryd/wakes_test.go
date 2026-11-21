@@ -598,6 +598,47 @@ func TestWakeTextNamesCards(t *testing.T) {
 	}
 }
 
+// A case whose statement offers extend ends with give_room, the chat's
+// tool for room, beside answer for its other actions; a case that offers
+// none, or names extend as not offered, ends with answer as before. The
+// statement's lines are statementOf's: "- extend", "- extend, with money
+// false: ..." and "- extend: not offered: ...".
+func TestTheWakeNamesGiveRoomWhereTheCaseOffersRoom(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, nil)
+	statements := map[string]string{
+		"Grant the cap?":    "Case: the session cap\n- extend\n- close",
+		"Fund the build?":   "Case: the budget floor\n- extend, with money false: with money true, the project has 0.00 EUR left this month\n- close",
+		"Merge the branch?": "Case: a question\n- extend: not offered: this card asked a question, not for room\n- close",
+	}
+	ids := map[string]int64{}
+	for i, problem := range []string{"Grant the cap?", "Fund the build?", "Merge the branch?"} {
+		wakeClimb(t, s, "sf/wake", fmt.Sprintf("t-%d", i+1), problem)
+	}
+	cs, err := s.cases(t.Context(), `SELECT `+caseColumns+` FROM cases ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]string{}
+	for _, c := range cs {
+		ids[c.Problem], byID[c.ID] = c.ID, c.Problem
+	}
+	w.Statement = func(_ context.Context, id int64) (string, error) { return statements[byID[id]], nil }
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+	room := "End case %d with give_room for more room, with answer and its case_id for its other actions, or with attach_analysis, its case_id and the recommended action."
+	plain := "End case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action."
+	for problem, end := range map[string]string{"Grant the cap?": room, "Fund the build?": room, "Merge the branch?": plain} {
+		if want := fmt.Sprintf(end, ids[problem]); !strings.Contains(calls[0].text, want) {
+			t.Errorf("the wake for %q lacks %q:\n%s", problem, want, calls[0].text)
+		}
+	}
+}
+
 // The wake line counts cases in the singular and the plural: one case
 // waits, two cases wait, then the cards they wait on, which WakeCards reads
 // back.

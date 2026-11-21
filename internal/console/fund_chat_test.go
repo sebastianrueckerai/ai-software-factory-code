@@ -96,3 +96,24 @@ func TestGiveRoomProposalNamesTheRoom(t *testing.T) {
 		}
 	}
 }
+
+// A count off 1 to 5 is refused when the call is made, by Act's own check
+// of the count, so the agent corrects it before any human reads a
+// proposal: no proposal is kept and nothing reaches Act.
+func TestGiveRoomRefusesABadCountBeforeItsProposal(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	caseCard(r)
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.cfg.Confirm = []string{"give_room"}
+	for _, n := range []string{"0", "6"} {
+		result, proposal, status := trn.call(factoryd.OperatorCall{Name: "give_room", Arguments: `{"task_id":"13","sessions":` + n + `,"text":"go on"}`})
+		if proposal != "" || status != http.StatusBadRequest || result != "Refused: a room counts 1 to 5 sessions' worth" {
+			t.Errorf("a room of %s = %q, proposal %q, status %d; want 400 with the count's range and no proposal", n, result, proposal, status)
+		}
+	}
+	if len(r.acted) != 0 {
+		t.Errorf("a refused count reached Act: %+v", r.acted)
+	}
+}

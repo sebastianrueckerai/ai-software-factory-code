@@ -496,6 +496,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("%s EUR", textutil.EUR(in.EUR)))
 	}
 	if tool.name == "give_room" {
+		if why := (factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": in.Sessions, "money": in.Money}}).RoomRefusal(); why != "" {
+			return "", refuseAgent(http.StatusBadRequest, why)
+		}
 		room := textutil.Plural(in.Sessions, "session's worth", "sessions' worth")
 		if !in.Money {
 			room += " without money"

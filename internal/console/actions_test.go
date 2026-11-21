@@ -617,7 +617,8 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 
 // The room is an extend through Act on the card's live case: its count
 // of sessions' worth and its money, and the note Act has posted as the
-// answer; with no note, the answer posted is the room in words.
+// answer; with no note, the note and the answer posted are the room in
+// words.
 func TestExtendGivesTheRoomAndAnswers(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
@@ -637,7 +638,8 @@ func TestExtendGivesTheRoomAndAnswers(t *testing.T) {
 		t.Fatalf("the room without money: %v", err)
 	}
 	got, _ = actedOnce(t, r)
-	equal(t, "the room without money", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "money": false}})
+	equal(t, "the room without money", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "money": false},
+		Note: "“Give more room”: 1 session's worth without money"})
 	r.fg.mu.Lock()
 	posted = r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]
 	r.fg.mu.Unlock()

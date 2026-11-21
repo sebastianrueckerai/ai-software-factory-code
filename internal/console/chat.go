@@ -1559,7 +1559,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 			break
 		}
 		confirm := slices.Contains(t.cfg.Confirm, tool.name) || tool.name == "close" && t.c.waivesCriteria(t.r.Context(), in.TaskID)
-		if !tool.memberOnly && (!confirm || t.a.caseWake() && rungTwoEnds(tool.name, in)) {
+		if !tool.memberOnly && (!confirm || t.a.caseWake() && t.rungTwoEnds(tool.name, in)) {
 			t.a.decider = "agent"
 			out, code := t.runTool(tool, args, in)
 			return out, "", code
@@ -1595,11 +1595,26 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 
 // rungTwoEnds says call in of tool name ends rung 2's case in its wake, so
 // it runs as the agent at every level, past the confirm list: an answer to
-// the case, the room that answers the card's stop, which Act proposes
+// the case, the room on a card that holds a live case, which Act proposes
 // below autonomous, or a plan's answer or request for changes, whose guard
-// refuses rung 2 below full auto with the hand-up's words.
-func rungTwoEnds(name string, in toolInput) bool {
-	return name == "answer" && (in.CaseID != 0 || in.Revision != 0) || name == "give_room" || name == "request_changes"
+// refuses rung 2 below full auto with the hand-up's words. A room on a
+// card with no live case would run on no case, which Act never proposes,
+// so it stays on the confirm list.
+func (t *turn) rungTwoEnds(name string, in toolInput) bool {
+	switch name {
+	case "answer":
+		return in.CaseID != 0 || in.Revision != 0
+	case "request_changes":
+		return true
+	case "give_room":
+		k, err := t.card(in)
+		if err != nil {
+			return false
+		}
+		live, err := t.c.newestCase(t.r.Context(), k)
+		return err == nil && live.ID != 0
+	}
+	return false
 }
 
 // tokenMask stands in for a GitHub token in every message, row and log
