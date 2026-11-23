@@ -29,9 +29,9 @@ type deathReader struct {
 
 // deathInput names the pod and what factoryd knows of it: its UID, node and
 // the node's boot when it started, empty when unknown, and its life. live
-// is a read of a pod that may still run. It and a pod factoryd stopped are
-// classed by the end's evidence alone: a node that went NotReady and
-// answers again ended nothing.
+// is a read of a pod that may still run, or whose worker reported its own
+// end. It and a pod factoryd stopped are classed by the end's evidence
+// alone: a node that went NotReady and answers again ended nothing.
 type deathInput struct {
 	ns, pod                              string
 	uid, node, boot                      string

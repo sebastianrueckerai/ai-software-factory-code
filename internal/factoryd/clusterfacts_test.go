@@ -173,7 +173,7 @@ func TestIncidentsTextRefusals(t *testing.T) {
 	}
 	_, err := r.SessionText(t.Context(), "t1", "s9", cfNow, false)
 	var no *FactsRefusal
-	if !errors.As(err, &no) || no.Status != 404 || no.Msg != "session s9 has no death record: it ended with a push or before the factory recorded deaths. Read card_step for its end." {
+	if !errors.As(err, &no) || no.Status != 404 || no.Msg != "session s9 has no death record on this card: it pushed or reported, never began its work, was cancelled, ended before the factory recorded deaths, or is no session of this card. Read card_step for its end." {
 		t.Errorf("no record: %v", err)
 	}
 	_, err = r.Text(t.Context(), "t1", "s1", h(-time.Hour), h(0), now, false)

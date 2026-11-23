@@ -331,6 +331,33 @@ func TestATerminationMessageReachesNoPrompt(t *testing.T) {
 	}
 }
 
+// A worker that reports its own failure and pushed nothing ended without a
+// push: its death is read from the end's evidence and stored. No cluster
+// cause ended it, and Forgejo's restart in its life explains its git
+// errors: the line rides on to the next session with the death, and
+// cluster_facts answers the record.
+func TestAReportedFailureGetsItsDeath(t *testing.T) {
+	ctx := context.Background()
+	g := newDeathRig(t, "t5r", nil)
+	from, until := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
+	if _, err := g.cluster.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "restart/forgejo-pod/forgejo/x", At: from, Until: &until,
+		Kind: IncidentRestart, Subject: ServiceForgejo, Node: "sf-2", Namespace: "forgejo", PodUID: "forgejo-pod"}}); err != nil {
+		t.Fatal(err)
+	}
+	res := g.run(t, modelCall+resultLine(false, "git push failed: connection refused"))
+	line := "Forgejo restarted from " + clock(from) + " to " + clock(until) + " UTC during your previous session. Git errors in that window came from the restart."
+	if res.Outcome != OutcomeNoPush || res.Death == nil || res.Death.Class != DeathUnknown || !slices.Equal(res.Death.Lines, []string{line}) {
+		t.Fatalf("result = %+v, death %+v; want no_push with no cluster cause and the line %q", res, res.Death, line)
+	}
+	if rec := g.stored(t, "t5r", res.SessionID); rec.Class != DeathUnknown || len(rec.Restarts) != 1 || rec.Restarts[0].Service != ServiceForgejo {
+		t.Fatalf("stored = %+v, want the unknown record with Forgejo's restart", rec)
+	}
+	text, err := ClusterFactsReader{Store: g.cluster}.SessionText(ctx, "t5r", res.SessionID, time.Now(), false)
+	if err != nil || !strings.HasPrefix(text, "class: unknown\nrule: none\n") || !strings.Contains(text, "- forgejo ") || !strings.Contains(text, line) {
+		t.Fatalf("cluster_facts = %q, %v; want the record with Forgejo's restart and the line", text, err)
+	}
+}
+
 // A worker that reports a stop factoryd did not send got its SIGTERM from
 // the cluster: a pod a preemption took is the platform's death. One with no
 // cluster cause keeps its outcome, its record unknown.

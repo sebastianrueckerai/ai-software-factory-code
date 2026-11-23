@@ -972,6 +972,31 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// podStopped is when stop() asked the pod to end: the grace the worker
 	// has to ship its work runs from then
 	var podStopped atomic.Int64
+	digest := newDigestBuilder(time.Now())
+	// deathNow reads how the pod ended, or is ending when live; the last
+	// push is the session's own, else its interim one, else the branch's at
+	// its start
+	deathNow := func(live bool) DeathRecord {
+		last := cmp.Or(out.commit, out.wip)
+		if last == "" && s.startRef != s.base {
+			last = s.startRef
+		}
+		return r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
+			stoppedByFactory: stoppedBefore || podStopped.Load() != 0, live: live, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
+	}
+	keepDeath := func(death DeathRecord) {
+		out.death = &death
+		log.Printf("task %s: session %s: the pod ended: %s (%s, %s)", t.ID, s.id, death.Short(), death.Class, death.Rule)
+	}
+	// every other end that delivers neither a push nor a report reads the
+	// pod's death before the pod goes, from the end's evidence alone, once
+	// the over-bound push settled the last push its line names
+	defer func() {
+		delivered := out.commit != "" || s.report != "" && out.result != nil && out.result.Success
+		if err == nil && !detached && !out.superseded && out.death == nil && !delivered {
+			keepDeath(deathNow(true))
+		}
+	}()
 	defer func() {
 		out.model, out.reads = s.model, sup.Reads()
 		// an over-bound push under way ends before the outcome is read, at
@@ -1009,7 +1034,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	watch.added, watch.budget = s.added, s.budget
-	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
 	var messages []string
 
@@ -1102,21 +1126,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
 	lines := followed.lines
-	// deathNow reads how the pod ended, or is ending when live; the last
-	// push is the session's own, else its interim one, else the branch's at
-	// its start
-	deathNow := func(live bool) DeathRecord {
-		last := cmp.Or(out.commit, out.wip)
-		if last == "" && s.startRef != s.base {
-			last = s.startRef
-		}
-		return r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
-			stoppedByFactory: stoppedBefore || podStopped.Load() != 0, live: live, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
-	}
-	keepDeath := func(death DeathRecord) {
-		out.death = &death
-		log.Printf("task %s: session %s: the pod ended: %s (%s, %s)", t.ID, s.id, death.Short(), death.Class, death.Rule)
-	}
 	// ended says why the log ended without a result, plain the generic
 	// words: how the pod ended when its diagnosis says, else the log's
 	// own error

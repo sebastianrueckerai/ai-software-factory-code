@@ -216,7 +216,8 @@ func (r ClusterFactsReader) liveText(ctx context.Context, taskID, sessionID stri
 		return "", err
 	}
 	if !ok || live.SessionID != sessionID {
-		return "", factsRefuse(http.StatusNotFound, "session %s has no death record: it ended with a push or before the factory recorded deaths. Read card_step for its end.", sessionID)
+		return "", factsRefuse(http.StatusNotFound, "session %s has no death record on this card: it pushed or reported, never began its work, was cancelled, "+
+			"ended before the factory recorded deaths, or is no session of this card. Read card_step for its end.", sessionID)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s is running\n", sessionID)
