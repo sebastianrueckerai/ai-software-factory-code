@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,22 +20,40 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// scriptedKernel answers the kernel lines of each call, counted from 1.
+// scriptedKernel answers each call, counted from 1: kills names its
+// lines, fail its error, and block makes the call wait for its context's
+// end. It keeps the pod UID each call named.
 type scriptedKernel struct {
 	mu    sync.Mutex
 	calls int
+	uids  []string
 	kills func(call int) []KernelKill
-	err   error
+	fail  func(call int) error
+	block func(call int) bool
 }
 
-func (k *scriptedKernel) KernelLines(context.Context, time.Time, time.Time) ([]KernelKill, error) {
+func (k *scriptedKernel) KernelLines(ctx context.Context, _, _ time.Time, podUID string) ([]KernelKill, error) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
 	k.calls++
-	if k.err != nil || k.kills == nil {
-		return nil, k.err
+	call := k.calls
+	k.uids = append(k.uids, podUID)
+	k.mu.Unlock()
+	if k.block != nil && k.block(call) {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
-	return k.kills(k.calls), nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if k.fail != nil {
+		if err := k.fail(call); err != nil {
+			return nil, err
+		}
+	}
+	if k.kills == nil {
+		return nil, nil
+	}
+	return k.kills(call), nil
 }
 
 func (k *scriptedKernel) called() int {
@@ -99,12 +118,21 @@ func stoppedResultLine(summary string) string {
 
 var modelCall = envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n"
 
-// placeSpy keeps the live row as each write of the pod's place left it.
+// placeSpy keeps the live row as each write of the pod's place left it,
+// and the owners of the stops written to it.
 type placeSpy struct {
 	Store
-	mu   sync.Mutex
-	puts []LiveSession
-	rows []LiveSession
+	mu    sync.Mutex
+	puts  []LiveSession
+	rows  []LiveSession
+	stops []string
+}
+
+func (s *placeSpy) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
+	s.mu.Lock()
+	s.stops = append(s.stops, owner)
+	s.mu.Unlock()
+	return s.Store.SetLiveSessionStopping(ctx, taskID, owner, at)
 }
 
 func (s *placeSpy) PutLiveSession(ctx context.Context, l LiveSession) error {
@@ -225,6 +253,9 @@ func TestOwnMemoryLimitStaysAnAttempt(t *testing.T) {
 			if len(d.Lines) != 1 || d.Lines[0] != tc.line {
 				t.Fatalf("lines = %q, want %q", d.Lines, tc.line)
 			}
+			if end := timelineStep(t, g.objects, "t6k", "session_end"); end["cause"] != "the pod reached its memory limit" {
+				t.Fatalf("session_end = %v, want the memory limit as its cause", end)
+			}
 		})
 	}
 }
@@ -278,6 +309,8 @@ func TestTheFactorysStopIsNoPlatformDeath(t *testing.T) {
 	})
 	g.kube.keepDeleted = true
 	g.r.stopWait = 5 * time.Second
+	spy := &placeSpy{Store: g.store}
+	g.r.store = spy
 	setDetectors(g.r, map[string]int{policy.DetectorNoProgress: 3})
 	setLimits(g.r, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
 	res := g.run(t, modelCall+sigtermLogs)
@@ -286,6 +319,11 @@ func TestTheFactorysStopIsNoPlatformDeath(t *testing.T) {
 	}
 	if rec := g.stored(t, "t5s", res.SessionID); rec.Class == DeathPlatform {
 		t.Fatalf("stored = %+v, want no platform death", rec)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.stops) != 1 || spy.stops[0] != "own" {
+		t.Fatalf("stops written %q, want the stop on the session's row, for its owner", spy.stops)
 	}
 }
 
@@ -300,43 +338,93 @@ func deadPod() (*fakeKube, deathInput) {
 }
 
 // A pod that ended 137 with no cause yet waits for a kill line up to the
-// bound and is unknown after it; a kill line that arrives in the wait names
-// the kill. A kernel source that fails ends the wait at once, and so does a
-// context whose deadline leaves no room for it.
+// bound, asking at each poll, and is unknown after it; a kill line that
+// arrives in the wait names the kill, and so does one the incident pass
+// records meanwhile. The wait stops at the kernel source's first error,
+// at once or partway, ends at the bound however slow a read is, and does
+// not start for a stop factoryd sent or a context whose deadline leaves no
+// room. A reader that does not wait still reads once. Every read names the
+// pod's UID.
 func TestTheKillWaitEnds(t *testing.T) {
-	ctx := context.Background()
 	kube, in := deadPod()
-	quiet := &scriptedKernel{}
-	began := time.Now()
-	r := deathReader{kube: kube, kernel: quiet, wait: 300 * time.Millisecond}.read(ctx, in)
-	if took := time.Since(began); r.Class != DeathUnknown || r.Rule != RuleNone || took < 300*time.Millisecond || took > 10*time.Second || quiet.called() != 2 {
-		t.Fatalf("quiet kernel: %s %s after %s and %d calls; want unknown at the 300ms bound, asked twice", r.Class, r.Rule, took, quiet.called())
-	}
-
-	late := &scriptedKernel{kills: func(call int) []KernelKill {
-		if call < 2 {
+	failed := errors.New("signoz: login refused")
+	guard := []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: in.ended.Add(-time.Second), Seq: 9}}
+	after := func(n int) func(int) bool { return func(call int) bool { return call >= n } }
+	for name, tc := range map[string]struct {
+		kernel            *scriptedKernel
+		wait              time.Duration
+		ctx               func() (context.Context, context.CancelFunc)
+		stopped, recorded bool
+		rule              DeathRule
+		calls             int // 0: three or more
+		atLeast, atMost   time.Duration
+	}{
+		"quiet": {kernel: &scriptedKernel{}, wait: 300 * time.Millisecond, rule: RuleNone, atLeast: 300 * time.Millisecond, atMost: 2 * time.Second},
+		"a line in the wait": {kernel: &scriptedKernel{kills: func(call int) []KernelKill {
+			if call < 2 {
+				return nil
+			}
+			return guard
+		}}, wait: time.Hour, rule: RuleGuardKill, calls: 2, atMost: 5 * time.Second},
+		"recorded meanwhile": {kernel: &scriptedKernel{}, wait: time.Hour, recorded: true, rule: RuleGuardKill, calls: 2, atMost: 5 * time.Second},
+		"failing at once":    {kernel: &scriptedKernel{fail: func(int) error { return failed }}, wait: time.Hour, rule: RuleNone, calls: 1, atMost: time.Second},
+		"failing partway": {kernel: &scriptedKernel{fail: func(call int) error {
+			if call == 2 {
+				return failed
+			}
 			return nil
-		}
-		return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: in.ended.Add(-time.Second), Seq: 9}}
-	}}
-	if r := (deathReader{kube: kube, kernel: late, wait: 300 * time.Millisecond}).read(ctx, in); r.Rule != RuleGuardKill {
-		t.Fatalf("a kill line in the wait: %s, want guard_kill", r.Rule)
-	}
-
-	failing := &scriptedKernel{err: errors.New("signoz: login refused")}
-	began = time.Now()
-	r = deathReader{kube: kube, kernel: failing, wait: time.Hour}.read(ctx, in)
-	if took := time.Since(began); r.Class != DeathUnknown || took > 10*time.Second || failing.called() != 1 {
-		t.Fatalf("failing kernel: %s after %s and %d calls; want unknown at once", r.Class, took, failing.called())
-	}
-
-	near, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	quiet = &scriptedKernel{}
-	began = time.Now()
-	r = deathReader{kube: kube, kernel: quiet, wait: time.Hour}.read(near, in)
-	if took := time.Since(began); r.Class != DeathUnknown || took > 10*time.Second || quiet.called() != 1 {
-		t.Fatalf("near deadline: %s after %s and %d calls; want unknown at once", r.Class, took, quiet.called())
+		}, kills: func(call int) []KernelKill {
+			if call < 3 {
+				return nil
+			}
+			return guard
+		}}, wait: time.Hour, rule: RuleNone, calls: 2, atMost: 5 * time.Second},
+		"slow partway": {kernel: &scriptedKernel{block: after(2)}, wait: 300 * time.Millisecond, rule: RuleNone, calls: 2,
+			atLeast: 300 * time.Millisecond, atMost: 800 * time.Millisecond},
+		"slow at once": {kernel: &scriptedKernel{block: after(1)}, wait: 300 * time.Millisecond, rule: RuleNone, calls: 1,
+			atLeast: 300 * time.Millisecond, atMost: 800 * time.Millisecond},
+		"factoryd's stop": {kernel: &scriptedKernel{}, wait: time.Hour, stopped: true, rule: RuleNone, calls: 1, atMost: time.Second},
+		"near the deadline": {kernel: &scriptedKernel{}, wait: time.Hour, rule: RuleNone, calls: 1, atMost: time.Second,
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 20*time.Second)
+			}},
+		"no wait": {kernel: &scriptedKernel{kills: func(int) []KernelKill { return guard }}, wait: 0, rule: RuleGuardKill, calls: 1, atMost: time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			if tc.ctx != nil {
+				ctx, cancel = tc.ctx()
+			}
+			defer cancel()
+			d := deathReader{kube: kube, kernel: tc.kernel, wait: tc.wait, poll: 100 * time.Millisecond}
+			if tc.recorded {
+				cluster := newFakeClusterStore()
+				d.cluster = cluster
+				tc.kernel.kills = func(call int) []KernelKill {
+					if call == 1 {
+						cluster.AddPlatformIncidents(context.Background(), []PlatformIncident{{Key: kmsgKey(guard[0]), At: guard[0].At, Kind: IncidentGuardKill,
+							Subject: deathUID, Node: "sf-1", PodUID: deathUID}})
+					}
+					return nil
+				}
+			}
+			in := in
+			in.stoppedByFactory = tc.stopped
+			began := time.Now()
+			r := d.read(ctx, in)
+			took, calls := time.Since(began), tc.kernel.called()
+			if r.Rule != tc.rule || tc.calls == 0 && calls < 3 || tc.calls != 0 && calls != tc.calls || took < tc.atLeast || took > tc.atMost {
+				t.Fatalf("%s after %s and %d calls; want %s in [%s, %s] after %d calls (0: three or more)", r.Rule, took, calls, tc.rule, tc.atLeast, tc.atMost, tc.calls)
+			}
+			if r.Rule == RuleNone && r.Class != DeathUnknown {
+				t.Fatalf("class %s, want unknown", r.Class)
+			}
+			for _, uid := range tc.kernel.uids {
+				if uid != deathUID {
+					t.Fatalf("a kernel read named %q, want the pod's UID %s", uid, deathUID)
+				}
+			}
+		})
 	}
 }
 
@@ -397,9 +485,50 @@ func TestTheIncidentLogNamesKillsAndRestarts(t *testing.T) {
 
 // A pod gone when factoryd came back is the platform's death: its record is
 // stored under the dead session's id, and the fresh session that starts over
-// reads its line.
+// reads its line. A pod factoryd itself was stopping when it went is no
+// platform death: its record names no cause, and no line rides on.
 func TestReattachFindsThePodGone(t *testing.T) {
-	g := newDeathRig(t, "t2", nil)
+	for name, stopping := range map[string]bool{"gone": false, "gone in factoryd's stop": true} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t2", nil)
+			first := g.detach(t, hangLogs)
+			g.kube.mu.Lock()
+			delete(g.kube.pods, first.Namespace+"/"+first.Pod)
+			g.kube.mu.Unlock()
+			if stopping {
+				if err := g.store.SetLiveSessionStopping(context.Background(), "t2", first.Owner, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{pushedLine("c2") + "\n" + resultLine(true, "pushed")}, func(env *testsuite.TestActivityEnvironment) {
+				env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+			})
+			if err != nil || res.Outcome != OutcomePushed || res.SessionID == first.SessionID {
+				t.Fatalf("result = (%+v, %v), want a fresh session's push", res, err)
+			}
+			rec := g.stored(t, "t2", first.SessionID)
+			findings, _ := timelineStep(t, g.objects, "t2", "session_start")["findings"].([]any)
+			if stopping {
+				if rec.Class != DeathUnknown || len(rec.Lines) != 0 || slices.ContainsFunc(findings, func(f any) bool { return strings.HasPrefix(f.(string), "Your previous session") }) {
+					t.Fatalf("stored = %+v, findings %q; want no cause and no line", rec, findings)
+				}
+				return
+			}
+			if rec.Class != DeathPlatform || rec.Rule != RuleGoneAfterRestart || rec.PodUID != deathUID || len(rec.Lines) != 1 {
+				t.Fatalf("stored = %+v, want gone_after_restart of the old pod", rec)
+			}
+			if !slices.Contains(findings, any(rec.Lines[0])) {
+				t.Fatalf("the fresh session's findings %q, want %q", findings, rec.Lines[0])
+			}
+		})
+	}
+}
+
+// detach runs a session whose pod logs body until factoryd stops, which
+// detaches from the pod, and answers the live row it left: the place of
+// the pod and its owner.
+func (g deathRig) detach(t *testing.T, body string) LiveSession {
+	t.Helper()
 	stop := make(chan struct{})
 	create := g.kube.onCreatePod
 	g.kube.onCreatePod = func() {
@@ -408,36 +537,106 @@ func TestReattachFindsThePodGone(t *testing.T) {
 			go func() { time.Sleep(20 * time.Millisecond); close(stop) }()
 		}
 	}
-	if _, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
+	if _, err := runSessionIn(t, g.r, SessionInput{TaskID: g.taskID, Attempt: 1, Model: "m"}, []string{body}, func(env *testsuite.TestActivityEnvironment) {
 		env.SetWorkerStopChannel(stop)
 	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
 		t.Fatalf("err = %v, want the detach", err)
 	}
-	first := g.store.liveSessions["t2"]
+	first := g.store.liveSessions[g.taskID]
 	if first.PodUID != deathUID || first.Node != "sf-1" || first.BootID != "b-1" {
 		t.Fatalf("live row = %+v, want the pod's place", first)
 	}
-	g.kube.mu.Lock()
-	delete(g.kube.pods, first.Namespace+"/"+first.Pod)
-	g.kube.mu.Unlock()
+	return first
+}
 
-	res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{pushedLine("c2") + "\n" + resultLine(true, "pushed")}, func(env *testsuite.TestActivityEnvironment) {
+// A factoryd that died inside its own stop leaves the pod deleting: the
+// next one reattaches, reads the worker's stopped result, and the stop the
+// row records is factoryd's own, so the deletion is no platform death.
+func TestReattachToAPodFactorydWasStopping(t *testing.T) {
+	g := newDeathRig(t, "t2", nil)
+	g.kube.keepDeleted = true
+	first := g.detach(t, modelCall+cutLogs+stoppedResultLine("stopped; no work in progress to push")+"\n")
+	if err := g.store.SetLiveSessionStopping(context.Background(), "t2", first.Owner, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	g.kube.mu.Lock()
+	g.kube.pods[first.Namespace+"/"+first.Pod].deleted = true
+	g.kube.mu.Unlock()
+	res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
 		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
 	})
-	if err != nil || res.Outcome != OutcomePushed || res.SessionID == first.SessionID {
-		t.Fatalf("result = (%+v, %v), want a fresh session's push", res, err)
+	if err != nil || res.SessionID != first.SessionID || res.Outcome != OutcomeNoPush || res.Death == nil || res.Death.Class != DeathUnknown {
+		t.Fatalf("result = (%+v, %v), death %+v; want the reattached session's no_push with no cluster cause", res, err, res.Death)
 	}
-	rec := g.stored(t, "t2", first.SessionID)
-	if rec.Class != DeathPlatform || rec.Rule != RuleGoneAfterRestart || rec.PodUID != deathUID || len(rec.Lines) != 1 {
-		t.Fatalf("stored = %+v, want gone_after_restart of the old pod", rec)
+}
+
+// A node that went NotReady during the session is the platform's, though
+// it answers again at the end: the incident log holds the flip. A flip of
+// another node, or one before the session, is not.
+func TestANodeNotReadyDuringTheSessionIsPlatform(t *testing.T) {
+	ctx := context.Background()
+	kube, in := deadPod()
+	kube.pods["ns/worker-s1"].containers[0].ExitCode = 1
+	for name, tc := range map[string]struct {
+		node string
+		at   time.Time
+		want DeathRule
+	}{
+		"its node in its life": {"sf-1", in.started.Add(5 * time.Minute), RuleNodeNotReady},
+		"another node":         {"sf-2", in.started.Add(5 * time.Minute), RuleNone},
+		"its node before":      {"sf-1", in.started.Add(-time.Hour), RuleNone},
+	} {
+		cluster := newFakeClusterStore()
+		if _, err := cluster.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "notready/" + tc.node, At: tc.at, Kind: IncidentNodeNotReady, Subject: tc.node, Node: tc.node}}); err != nil {
+			t.Fatal(err)
+		}
+		if r := (deathReader{kube: kube, cluster: cluster}).read(ctx, in); r.Rule != tc.want {
+			t.Errorf("%s: %s, want %s", name, r.Rule, tc.want)
+		}
 	}
-	findings, _ := timelineStep(t, g.objects, "t2", "session_start")["findings"].([]any)
-	found := false
-	for _, f := range findings {
-		found = found || f == rec.Lines[0]
+}
+
+// The pod's events stay on the stored record: the result the workflow
+// takes, which rides the trip into the case facts, carries the class, the
+// rule and the lines, and no kubelet text.
+func TestTheEventsStayOnTheStoredRecord(t *testing.T) {
+	const msg = "The node was low on resource: memory. Threshold quantity: 100Mi, available: 50Mi."
+	var kube *fakeKube
+	g := newDeathRig(t, "t5e", func(p *fakePod) {
+		p.reason, p.message = "Evicted", msg
+		kube.podEvents = map[string][]PodEvent{p.ns + "/" + p.name: {{Reason: "Evicted", Type: "Warning", Message: msg}}}
+	})
+	kube = g.kube
+	res := g.run(t, modelCall)
+	stored := g.stored(t, "t5e", res.SessionID)
+	if len(stored.Events) != 1 || stored.Events[0].Message != msg {
+		t.Fatalf("stored events = %+v, want the eviction", stored.Events)
 	}
-	if !found {
-		t.Fatalf("the fresh session's findings %q, want %q", findings, rec.Lines[0])
+	if d := res.Death; d == nil || d.Events != nil || d.Class != DeathPlatform || d.Rule != RuleNodePressure || len(d.Lines) != 1 || !slices.Equal(d.Lines, stored.Lines) {
+		t.Fatalf("the result's death = %+v, want the stored one's class, rule and lines without its events", d)
+	}
+}
+
+// A death with no cluster cause is stored, and the card's timeline stays as
+// it was: no cause on the end's line or its fact row.
+func TestAnUnknownDeathKeepsTheTimelinePlain(t *testing.T) {
+	g := newDeathRig(t, "t5u", func(p *fakePod) {
+		p.containers = []ContainerState{{Name: "worker", State: "terminated", Reason: "Error", ExitCode: 1}}
+	})
+	res := g.run(t, modelCall)
+	if res.Outcome != OutcomeNoPush || res.Death == nil || res.Death.Class != DeathUnknown {
+		t.Fatalf("result = %+v, death %+v; want no_push with no cluster cause", res, res.Death)
+	}
+	if rec := g.stored(t, "t5u", res.SessionID); rec.Class != DeathUnknown {
+		t.Fatalf("stored = %+v, want the unknown record", rec)
+	}
+	if end := timelineStep(t, g.objects, "t5u", "session_end"); end["cause"] != nil {
+		t.Fatalf("session_end = %v, want no cause", end)
+	}
+	for _, e := range g.store.events {
+		if e.Kind == EventSessionEnd && e.Detail["cause"] != nil {
+			t.Fatalf("session_end fact = %+v, want no cause", e)
+		}
 	}
 }
 

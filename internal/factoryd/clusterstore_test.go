@@ -239,6 +239,39 @@ func TestLiveSessionPodForItsOwner(t *testing.T) {
 	}
 }
 
+// The stop factoryd sent is written for the owner holding the row alone,
+// reads back, and a new session's row holds none.
+func TestLiveSessionStoppingForItsOwner(t *testing.T) {
+	s, ctx := clusterStore(t), t.Context()
+	task, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 5, clk(9, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: clk(10, 0), Deadline: clk(11, 0), Owner: "a"}
+	if err := s.PutLiveSession(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLiveSessionStopping(ctx, task.ID, "b", clk(10, 30)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.LiveSession(ctx, task.ID); got.StoppingAt != nil {
+		t.Fatalf("after another owner's stop: %v, want none", got.StoppingAt)
+	}
+	if err := s.SetLiveSessionStopping(ctx, task.ID, "a", clk(10, 30)); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.LiveSession(ctx, task.ID); err != nil || !ok || got.StoppingAt == nil || !got.StoppingAt.Equal(clk(10, 30)) {
+		t.Fatalf("live session %+v, %v, %v; want the stop at 10:30", got, ok, err)
+	}
+	l.SessionID = "s2"
+	if err := s.PutLiveSession(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.LiveSession(ctx, task.ID); got.StoppingAt != nil {
+		t.Fatalf("the next session's row stops at %v, want none", got.StoppingAt)
+	}
+}
+
 // The fake and Postgres agree: equal times come back in key order, and a
 // nil Detail reads back as an empty map.
 func TestClusterStoreFakeMatchesPostgres(t *testing.T) {

@@ -40,52 +40,73 @@ const kernelAnswer = `{"status":"success","data":{"type":"raw","data":{"results"
 ]}]}}}`
 
 func TestSigNozKernelLinesQueriesTheWindow(t *testing.T) {
-	var logins atomic.Int32
 	to := time.Date(2026, 11, 23, 14, 5, 0, 0, time.UTC)
 	from := to.Add(-KernelWindow)
-	s := signozKernelServer(t, &logins, func(w http.ResponseWriter, r *http.Request, _ int32) {
-		if r.Header.Get("Authorization") != "Bearer tok-1" {
-			t.Errorf("authorization %q", r.Header.Get("Authorization"))
-		}
-		var body struct {
-			SchemaVersion  string `json:"schemaVersion"`
-			Start, End     int64
-			RequestType    string `json:"requestType"`
-			CompositeQuery struct {
-				Queries []struct {
-					Type string `json:"type"`
-					Spec struct {
-						Name, Signal string
-						Filter       struct{ Expression string }
-						Order        []struct {
-							Key       struct{ Name string }
-							Direction string
-						}
-						Limit int
-					}
+	const kills = "resource.service.name = 'talos-kmsg' AND (body CONTAINS 'Sending SIGKILL to cgroup' OR body CONTAINS 'oom-kill:')"
+	for name, tc := range map[string]struct{ uid, filter string }{
+		"every pod":    {"", kills},
+		"one pod":      {"91adbc7d-6406-4a24-ac91-c1979b028d36", kills + " AND body CONTAINS '91adbc7d-6406-4a24-ac91-c1979b028d36'"},
+		"a static pod": {"95b8e1d73a17b344fb5a65306746a377", kills + " AND body CONTAINS '95b8e1d73a17b344fb5a65306746a377'"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logins atomic.Int32
+			s := signozKernelServer(t, &logins, func(w http.ResponseWriter, r *http.Request, _ int32) {
+				if r.Header.Get("Authorization") != "Bearer tok-1" {
+					t.Errorf("authorization %q", r.Header.Get("Authorization"))
 				}
-			} `json:"compositeQuery"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		q := body.CompositeQuery.Queries
-		const filter = "resource.service.name = 'talos-kmsg' AND (body CONTAINS 'Sending SIGKILL to cgroup' OR body CONTAINS 'oom-kill:')"
-		if body.SchemaVersion != "v1" || body.RequestType != "raw" || len(q) != 1 || q[0].Type != "builder_query" ||
-			q[0].Spec.Name != "A" || q[0].Spec.Signal != "logs" || q[0].Spec.Filter.Expression != filter || q[0].Spec.Limit != 1000 ||
-			len(q[0].Spec.Order) != 2 || q[0].Spec.Order[0].Key.Name != "timestamp" || q[0].Spec.Order[1].Key.Name != "id" ||
-			q[0].Spec.Order[0].Direction != "asc" || q[0].Spec.Order[1].Direction != "asc" {
-			t.Errorf("query = %+v", body)
-		}
-		if body.Start != from.UnixMilli() || body.End != to.UnixMilli() {
-			t.Errorf("window = %d..%d, want %d..%d", body.Start, body.End, from.UnixMilli(), to.UnixMilli())
-		}
-		io.WriteString(w, kernelAnswer)
+				var body struct {
+					SchemaVersion  string `json:"schemaVersion"`
+					Start, End     int64
+					RequestType    string `json:"requestType"`
+					CompositeQuery struct {
+						Queries []struct {
+							Type string `json:"type"`
+							Spec struct {
+								Name, Signal string
+								Filter       struct{ Expression string }
+								Order        []struct {
+									Key       struct{ Name string }
+									Direction string
+								}
+								Limit int
+							}
+						}
+					} `json:"compositeQuery"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				q := body.CompositeQuery.Queries
+				if body.SchemaVersion != "v1" || body.RequestType != "raw" || len(q) != 1 || q[0].Type != "builder_query" ||
+					q[0].Spec.Name != "A" || q[0].Spec.Signal != "logs" || q[0].Spec.Filter.Expression != tc.filter || q[0].Spec.Limit != 1000 ||
+					len(q[0].Spec.Order) != 2 || q[0].Spec.Order[0].Key.Name != "timestamp" || q[0].Spec.Order[1].Key.Name != "id" ||
+					q[0].Spec.Order[0].Direction != "asc" || q[0].Spec.Order[1].Direction != "asc" {
+					t.Errorf("query = %+v", body)
+				}
+				if body.Start != from.UnixMilli() || body.End != to.UnixMilli() {
+					t.Errorf("window = %d..%d, want %d..%d", body.Start, body.End, from.UnixMilli(), to.UnixMilli())
+				}
+				io.WriteString(w, kernelAnswer)
+			})
+			got, err := s.KernelLines(context.Background(), from, to, tc.uid)
+			want := KernelKill{Source: "guard", Node: "sf-2", PodUID: "91adbc7d-6406-4a24-ac91-c1979b028d36", Seq: 711, At: time.Date(2026, 11, 23, 14, 2, 0, 500000000, time.UTC)}
+			if err != nil || len(got) != 1 || got[0] != want {
+				t.Fatalf("KernelLines = %+v, %v; want [%+v]", got, err, want)
+			}
+		})
+	}
+}
+
+// A pod UID that is no Kubernetes UID never enters the query.
+func TestSigNozKernelLinesRefusesAnyOtherUID(t *testing.T) {
+	var logins atomic.Int32
+	s := signozKernelServer(t, &logins, func(w http.ResponseWriter, r *http.Request, _ int32) {
+		t.Errorf("a query was sent")
 	})
-	got, err := s.KernelLines(context.Background(), from, to)
-	want := KernelKill{Source: "guard", Node: "sf-2", PodUID: "91adbc7d-6406-4a24-ac91-c1979b028d36", Seq: 711, At: time.Date(2026, 11, 23, 14, 2, 0, 500000000, time.UTC)}
-	if err != nil || len(got) != 1 || got[0] != want {
-		t.Fatalf("KernelLines = %+v, %v; want [%+v]", got, err, want)
+	for _, uid := range []string{"x' OR body CONTAINS '", "91ADBC7D-6406-4A24-AC91-C1979B028D36", "91adbc7d-6406-4a24-ac91-c1979b028d3", "pod91adbc7d-6406-4a24-ac91-c1979b028d36"} {
+		if _, err := s.KernelLines(context.Background(), time.Now().Add(-time.Minute), time.Now(), uid); err == nil {
+			t.Errorf("uid %q: no refusal", uid)
+		}
 	}
 }
 
@@ -102,7 +123,7 @@ func TestSigNozKernelLinesLogsInAgainAfter401(t *testing.T) {
 		io.WriteString(w, kernelAnswer)
 	})
 	now := time.Now()
-	got, err := s.KernelLines(context.Background(), now.Add(-time.Minute), now)
+	got, err := s.KernelLines(context.Background(), now.Add(-time.Minute), now, "")
 	if err != nil || len(got) != 1 || logins.Load() != 2 {
 		t.Fatalf("got %+v, %v after %d logins; want one kill after 2", got, err, logins.Load())
 	}
@@ -113,10 +134,11 @@ type fakeKernel struct {
 	err   error
 	from  time.Time
 	to    time.Time
+	uid   string
 }
 
-func (f *fakeKernel) KernelLines(_ context.Context, from, to time.Time) ([]KernelKill, error) {
-	f.from, f.to = from, to
+func (f *fakeKernel) KernelLines(_ context.Context, from, to time.Time, podUID string) ([]KernelKill, error) {
+	f.from, f.to, f.uid = from, to, podUID
 	return f.kills, f.err
 }
 
@@ -168,8 +190,8 @@ func TestIncidentSweepRecordsEachSourceOnce(t *testing.T) {
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !kernel.to.Equal(now) || !kernel.from.Equal(now.Add(-KernelWindow)) {
-		t.Errorf("kernel window %v..%v", kernel.from, kernel.to)
+	if !kernel.to.Equal(now) || !kernel.from.Equal(now.Add(-KernelWindow)) || kernel.uid != "" {
+		t.Errorf("kernel window %v..%v for pod %q, want every pod's", kernel.from, kernel.to, kernel.uid)
 	}
 	// a pass a minute later reads an overlapping window and finds the same incidents
 	later := now.Add(time.Minute)
@@ -259,7 +281,7 @@ func TestSigNozWaitGivesUpWhenItsContextEnds(t *testing.T) {
 	})
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.KernelLines(context.Background(), time.Now().Add(-time.Minute), time.Now())
+		_, err := s.KernelLines(context.Background(), time.Now().Add(-time.Minute), time.Now(), "")
 		done <- err
 	}()
 	<-started

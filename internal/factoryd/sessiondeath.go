@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ type deathReader struct {
 	cluster ClusterStore
 	kernel  KernelSource
 	wait    time.Duration
+	// poll is how often the wait asks again; zero is killPoll
+	poll time.Duration
 }
 
 // deathInput names the pod and what factoryd knows of it: its UID, node and
@@ -62,6 +65,14 @@ func (r *Runner) putDeath(ctx context.Context, taskID, sessionID string, rec Dea
 }
 
 func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
+	// the wait for a kill line ends at waitEnd, and no kernel read outlasts
+	// it; the first read may take one poll when the wait is shorter. Both
+	// leave the margin before the context's deadline.
+	start, poll := time.Now(), cmp.Or(d.poll, killPoll)
+	waitEnd, firstEnd := start.Add(d.wait), start.Add(max(d.wait, poll))
+	if dl, ok := ctx.Deadline(); ok {
+		waitEnd, firstEnd = earliest(waitEnd, dl.Add(-deathMargin)), earliest(firstEnd, dl.Add(-deathMargin))
+	}
 	f := DeathFacts{StoppedByFactory: in.stoppedByFactory, AfterRestart: in.afterRestart, BootAtStart: in.boot,
 		Started: in.started, Ended: in.ended, LastCommand: in.lastCommand}
 	pod, err := d.kube.PodDiagnosis(ctx, in.ns, in.pod)
@@ -89,6 +100,15 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 			log.Printf("death of pod %s/%s: read node %s: %v", in.ns, in.pod, f.Pod.Node, err)
 		}
 	}
+	var life []PlatformIncident
+	if d.cluster != nil {
+		if life, err = d.cluster.PlatformIncidents(ctx, in.started, in.ended, 0); err != nil {
+			log.Printf("death of pod %s/%s: read the incidents of its life: %v", in.ns, in.pod, err)
+		}
+	}
+	f.NodeNotReadyDuring = f.Pod.Node != "" && slices.ContainsFunc(life, func(p PlatformIncident) bool {
+		return p.Kind == IncidentNodeNotReady && (p.Subject == f.Pod.Node || p.Node == f.Pod.Node)
+	})
 	seen := map[string]bool{}
 	add := func(key string, k KernelKill) {
 		if !seen[key] {
@@ -96,7 +116,11 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 			f.Kills = append(f.Kills, k)
 		}
 	}
-	if d.cluster != nil && f.Pod.UID != "" {
+	// readStored takes the pod's kills the incident pass recorded
+	readStored := func() {
+		if d.cluster == nil || f.Pod.UID == "" {
+			return
+		}
 		incidents, err := d.cluster.PodIncidents(ctx, f.Pod.UID)
 		if err != nil {
 			log.Printf("death of pod %s/%s: read its incidents: %v", in.ns, in.pod, err)
@@ -107,13 +131,15 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 			}
 		}
 	}
-	// readKernel asks the nodes' kernel logs for the pod's kills; false
-	// when there is nothing to ask or the source failed
-	readKernel := func() bool {
+	// readKernel asks the nodes' kernel logs for the pod's kills, at most
+	// until end; false when there is nothing to ask or the source failed
+	readKernel := func(end time.Time) bool {
 		if d.kernel == nil || f.Pod.UID == "" {
 			return false
 		}
-		lines, err := d.kernel.KernelLines(ctx, in.started.Add(-time.Minute), time.Now())
+		kctx, cancel := context.WithDeadline(ctx, end)
+		defer cancel()
+		lines, err := d.kernel.KernelLines(kctx, in.started.Add(-time.Minute), time.Now(), f.Pod.UID)
 		if err != nil {
 			log.Printf("death of pod %s/%s: read the kernel lines: %v", in.ns, in.pod, err)
 			return false
@@ -125,25 +151,22 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		}
 		return true
 	}
-	asked := readKernel()
+	readStored()
+	asked := readKernel(firstEnd)
 	r := Classify(f)
+	// after factoryd's own stop a 137 is the kubelet's kill at the grace's end
 	killed137 := slices.ContainsFunc(f.Pod.Containers, func(c ContainerState) bool { return c.State == "terminated" && c.ExitCode == 137 })
-	if asked && r.Rule == RuleNone && killed137 {
-		until := time.Now().Add(d.wait)
-		if dl, ok := ctx.Deadline(); ok {
-			until = earliest(until, dl.Add(-deathMargin))
-		}
+	if asked && !in.stoppedByFactory && r.Rule == RuleNone && killed137 {
 	wait:
-		for time.Now().Before(until) {
+		for time.Now().Before(waitEnd) {
 			select {
 			case <-ctx.Done():
 				break wait
-			case <-time.After(min(killPoll, time.Until(until))):
+			case <-time.After(min(poll, time.Until(waitEnd))):
 			}
-			if !readKernel() {
-				break
-			}
-			if r = Classify(f); r.Rule != RuleNone {
+			readStored()
+			ok := readKernel(waitEnd)
+			if r = Classify(f); !ok || r.Rule != RuleNone {
 				break
 			}
 		}
@@ -156,24 +179,17 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		e.Message = textutil.Truncate(e.Message, eventMessageB)
 		r.Events = append(r.Events, e)
 	}
-	r.Restarts = d.restarts(ctx, in)
+	r.Restarts = d.restarts(ctx, in, life)
 	r.Lines = GateLines(r, in.lastPush)
 	return r
 }
 
-// restarts are the watched services' restarts in the pod's life, each with
-// the kill of its own pod within a minute of it as its cause.
-func (d deathReader) restarts(ctx context.Context, in deathInput) []ServiceRestart {
-	if d.cluster == nil {
-		return nil
-	}
-	incidents, err := d.cluster.PlatformIncidents(ctx, in.started, in.ended, 0)
-	if err != nil {
-		log.Printf("death of pod %s/%s: read the incidents of its life: %v", in.ns, in.pod, err)
-		return nil
-	}
+// restarts are the watched services' restarts among the incidents of the
+// pod's life, each with the kill of its own pod within a minute of it as
+// its cause.
+func (d deathReader) restarts(ctx context.Context, in deathInput, life []PlatformIncident) []ServiceRestart {
 	var out []ServiceRestart
-	for _, p := range incidents {
+	for _, p := range life {
 		if p.Kind != IncidentRestart {
 			continue
 		}

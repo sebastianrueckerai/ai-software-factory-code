@@ -36,16 +36,18 @@ type LiveSession struct {
 	// PodUID, Node and BootID name the pod, the node it sits on and that
 	// node's boot at the session's start; empty where they were not read.
 	PodUID, Node, BootID string
+	// StoppingAt is when factoryd sent its stop to the pod, nil before.
+	StoppingAt *time.Time
 }
 
 func (s *PGStore) PutLiveSession(ctx context.Context, l LiveSession) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur, pod_uid, node, boot_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur, pod_uid, node, boot_id, stopping_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (task_id) DO UPDATE SET session_id = EXCLUDED.session_id, namespace = EXCLUDED.namespace, pod = EXCLUDED.pod,
 		message_token = EXCLUDED.message_token, started_at = EXCLUDED.started_at, deadline = EXCLUDED.deadline, lines = EXCLUDED.lines,
 		spent_at_start = EXCLUDED.spent_at_start, owner = EXCLUDED.owner, activity = EXCLUDED.activity, time_added_ns = EXCLUDED.time_added_ns,
-		budget_eur = EXCLUDED.budget_eur, pod_uid = EXCLUDED.pod_uid, node = EXCLUDED.node, boot_id = EXCLUDED.boot_id`,
-		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart, l.Owner, l.Activity, l.TimeAdded, l.BudgetEUR, l.PodUID, l.Node, l.BootID)
+		budget_eur = EXCLUDED.budget_eur, pod_uid = EXCLUDED.pod_uid, node = EXCLUDED.node, boot_id = EXCLUDED.boot_id, stopping_at = EXCLUDED.stopping_at`,
+		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart, l.Owner, l.Activity, l.TimeAdded, l.BudgetEUR, l.PodUID, l.Node, l.BootID, l.StoppingAt)
 	return err
 }
 
@@ -66,10 +68,15 @@ func (s *PGStore) SetLiveSessionPod(ctx context.Context, taskID, owner, uid, nod
 	return err
 }
 
+func (s *PGStore) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE live_sessions SET stopping_at = $3 WHERE task_id = $1 AND owner = $2`, taskID, owner, at)
+	return err
+}
+
 func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	var l LiveSession
-	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur, pod_uid, node, boot_id
-		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart, &l.Owner, &l.Activity, &l.TimeAdded, &l.BudgetEUR, &l.PodUID, &l.Node, &l.BootID)
+	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur, pod_uid, node, boot_id, stopping_at
+		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart, &l.Owner, &l.Activity, &l.TimeAdded, &l.BudgetEUR, &l.PodUID, &l.Node, &l.BootID, &l.StoppingAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LiveSession{}, false, nil
 	}

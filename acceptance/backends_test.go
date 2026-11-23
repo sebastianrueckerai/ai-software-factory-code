@@ -744,6 +744,10 @@ func (s *acceptanceStore) SetLiveSessionPod(context.Context, string, string, str
 	return nil
 }
 
+func (s *acceptanceStore) SetLiveSessionStopping(context.Context, string, string, time.Time) error {
+	return nil
+}
+
 func (s *acceptanceStore) LiveSession(context.Context, string) (factoryd.LiveSession, bool, error) {
 	return factoryd.LiveSession{}, false, nil
 }

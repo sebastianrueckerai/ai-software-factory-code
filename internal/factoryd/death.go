@@ -76,9 +76,12 @@ type DeathFacts struct {
 	BootAtStart                             string
 	Node                                    *NodeState
 	NodeGone                                bool
-	Started, Ended                          time.Time
-	Kills                                   []KernelKill
-	LastCommand                             string
+	// NodeNotReadyDuring: the incident log holds the node going NotReady
+	// inside the session's life.
+	NodeNotReadyDuring bool
+	Started, Ended     time.Time
+	Kills              []KernelKill
+	LastCommand        string
 }
 
 type DeathRecord struct {
@@ -144,7 +147,7 @@ func Classify(f DeathFacts) DeathRecord {
 	if f.BootAtStart != "" && f.Node != nil && f.Node.BootID != f.BootAtStart {
 		return set(DeathPlatform, RuleNodeRebooted)
 	}
-	if f.NodeGone || (f.Node != nil && !f.Node.Ready) {
+	if f.NodeGone || (f.Node != nil && !f.Node.Ready) || f.NodeNotReadyDuring {
 		return set(DeathPlatform, RuleNodeNotReady)
 	}
 	for _, c := range f.Pod.Conditions {
@@ -153,7 +156,7 @@ func Classify(f DeathFacts) DeathRecord {
 			return set(DeathPlatform, RuleDisruption)
 		}
 	}
-	if f.AfterRestart {
+	if f.AfterRestart && !f.StoppedByFactory {
 		return set(DeathPlatform, RuleGoneAfterRestart)
 	}
 	if (f.PodGone || f.Pod.Deleting) && !f.StoppedByFactory {

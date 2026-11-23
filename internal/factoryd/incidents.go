@@ -16,8 +16,10 @@ const KernelFilter = "resource.service.name = 'talos-kmsg' AND (body CONTAINS 'S
 // has a key.
 const KernelWindow = 15 * time.Minute
 
+// KernelSource reads the kill lines of [from, to], those naming podUID
+// alone when it is not "".
 type KernelSource interface {
-	KernelLines(ctx context.Context, from, to time.Time) ([]KernelKill, error)
+	KernelLines(ctx context.Context, from, to time.Time, podUID string) ([]KernelKill, error)
 }
 
 var _ KernelSource = (*SigNoz)(nil)
@@ -67,7 +69,7 @@ func (w *IncidentSweep) Run(ctx context.Context) error {
 		}
 	}
 	if w.Kernel != nil {
-		kills, err := w.Kernel.KernelLines(ctx, now.Add(-KernelWindow), now)
+		kills, err := w.Kernel.KernelLines(ctx, now.Add(-KernelWindow), now, "")
 		var rows []PlatformIncident
 		for _, k := range kills {
 			p := PlatformIncident{Key: kmsgKey(k), At: k.At, Kind: IncidentGuardKill, Subject: k.PodUID, Node: k.Node, PodUID: k.PodUID}

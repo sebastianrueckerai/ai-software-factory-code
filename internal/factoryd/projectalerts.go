@@ -339,7 +339,14 @@ func (s *SigNoz) FiringAlerts(ctx context.Context) ([]FiringAlert, error) {
 
 // KernelLines reads the kill lines of the nodes' kernel logs in [from, to]
 // from SigNoz, where the nodes' Talos send them as service talos-kmsg.
-func (s *SigNoz) KernelLines(ctx context.Context, from, to time.Time) ([]KernelKill, error) {
+func (s *SigNoz) KernelLines(ctx context.Context, from, to time.Time, podUID string) ([]KernelKill, error) {
+	filter := KernelFilter
+	if podUID != "" {
+		if !kubeUID.MatchString(podUID) {
+			return nil, fmt.Errorf("kernel lines: %q is no Kubernetes pod UID, so no query names it", podUID)
+		}
+		filter += " AND body CONTAINS '" + podUID + "'"
+	}
 	query := map[string]any{
 		"schemaVersion": "v1",
 		"start":         from.UnixMilli(),
@@ -350,7 +357,7 @@ func (s *SigNoz) KernelLines(ctx context.Context, from, to time.Time) ([]KernelK
 			"spec": map[string]any{
 				"name":   "A",
 				"signal": "logs",
-				"filter": map[string]any{"expression": KernelFilter},
+				"filter": map[string]any{"expression": filter},
 				"order": []any{
 					map[string]any{"key": map[string]any{"name": "timestamp"}, "direction": "asc"},
 					map[string]any{"key": map[string]any{"name": "id"}, "direction": "asc"},

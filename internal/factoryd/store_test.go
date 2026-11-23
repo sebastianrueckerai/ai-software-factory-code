@@ -3050,6 +3050,16 @@ func (s *fakeStore) SetLiveSessionPod(ctx context.Context, taskID, owner, uid, n
 	return nil
 }
 
+func (s *fakeStore) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if l, ok := s.liveSessions[taskID]; ok && l.Owner == owner {
+		l.StoppingAt = &at
+		s.liveSessions[taskID] = l
+	}
+	return nil
+}
+
 func (s *fakeStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()

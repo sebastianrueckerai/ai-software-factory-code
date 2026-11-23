@@ -18,8 +18,13 @@ type KernelKill struct {
 	Seq        int64
 }
 
+// uidPattern is a Kubernetes pod UID: a UUID, or a static pod's 32 hex
+// digits.
+const uidPattern = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}`
+
 var (
-	podUIDPattern     = regexp.MustCompile(`pod([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})`)
+	podUIDPattern     = regexp.MustCompile(`pod(` + uidPattern + `)`)
+	kubeUID           = regexp.MustCompile(`^(?:` + uidPattern + `)$`)
 	guardCgroup       = regexp.MustCompile(`"cgroup":\s*"([^"]*)"`)
 	killConstraint    = regexp.MustCompile(`constraint=([A-Z_]+)`)
 	killTaskMemcgPath = regexp.MustCompile(`task_memcg=([^,\s]*)`)

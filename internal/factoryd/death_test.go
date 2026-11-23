@@ -51,6 +51,10 @@ func TestClassifyFollowsTheRules(t *testing.T) {
 		}, DeathUnknown, RuleNone, "", ""},
 		{"node gone", func(f *DeathFacts) { f.NodeGone = true }, DeathPlatform, RuleNodeNotReady, "", ""},
 		{"node not ready", func(f *DeathFacts) { f.Node = &NodeState{Name: "sf-2", Ready: false} }, DeathPlatform, RuleNodeNotReady, "", ""},
+		{"node not ready during the session", func(f *DeathFacts) {
+			f.Node = &NodeState{Name: "sf-2", Ready: true}
+			f.NodeNotReadyDuring = true
+		}, DeathPlatform, RuleNodeNotReady, "", ""},
 		{"disruption", func(f *DeathFacts) {
 			f.Pod.Conditions = []PodCondition{{Type: "Ready", Status: "False"}, {Type: "DisruptionTarget", Status: "True", Reason: "TerminationByKubelet"}}
 		}, DeathPlatform, RuleDisruption, "", ""},
@@ -58,6 +62,7 @@ func TestClassifyFollowsTheRules(t *testing.T) {
 			f.Pod.Conditions = []PodCondition{{Type: "DisruptionTarget", Status: "False"}}
 		}, DeathUnknown, RuleNone, "", ""},
 		{"after restart", func(f *DeathFacts) { f.AfterRestart = true }, DeathPlatform, RuleGoneAfterRestart, "", ""},
+		{"after restart, in factoryd's stop", func(f *DeathFacts) { f.AfterRestart, f.PodGone, f.StoppedByFactory = true, true, true }, DeathUnknown, RuleNone, "", ""},
 		{"pod gone", func(f *DeathFacts) { f.PodGone = true }, DeathPlatform, RuleDeleted, "", ""},
 		{"pod deleting", func(f *DeathFacts) { f.Pod.Deleting = true }, DeathPlatform, RuleDeleted, "", ""},
 		{"memcg kill", func(f *DeathFacts) {

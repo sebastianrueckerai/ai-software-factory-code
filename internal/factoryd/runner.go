@@ -831,10 +831,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, err
 		}
 	}
-	// the session's start and its pod's place, which the pod's death reads
-	started, uid, node, boot := row.StartedAt, "", "", ""
+	// the session's start, its pod's place and whether a factoryd before
+	// this one sent the pod its stop, which the pod's death reads
+	started, uid, node, boot, stoppedBefore := row.StartedAt, "", "", "", false
 	if live != nil {
-		started, uid, node, boot = live.StartedAt, live.PodUID, live.Node, live.BootID
+		started, uid, node, boot, stoppedBefore = live.StartedAt, live.PodUID, live.Node, live.BootID, live.StoppingAt != nil
 	}
 	defer r.trackPod(t.ID, ns, podName)()
 	// detached: factoryd is stopping and the pod runs on for the next
@@ -1108,7 +1109,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			last = s.startRef
 		}
 		death := r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
-			stoppedByFactory: podStopped.Load() != 0, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
+			stoppedByFactory: stoppedBefore || podStopped.Load() != 0, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
 		out.death = &death
 		log.Printf("task %s: session %s: the pod ended: %s (%s, %s)", t.ID, s.id, death.Short(), death.Class, death.Rule)
 	}
@@ -1190,7 +1191,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.superseded = true
 			return
 		}
-		podStopped.CompareAndSwap(0, time.Now().UnixNano())
+		if now := time.Now(); podStopped.CompareAndSwap(0, now.UnixNano()) {
+			// a factoryd that dies inside the stop leaves it to the next one
+			if err := r.store.SetLiveSessionStopping(ctx, t.ID, s.owner, now); err != nil {
+				log.Printf("task %s: session %s: record the stop: %s", t.ID, s.id, r.scrub(err.Error()))
+			}
+		}
 		out.trip = r.abandon(recorder, trip)
 		if err := r.kube.DeletePod(ctx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: stop pod %s: %v", t.ID, podName, err)

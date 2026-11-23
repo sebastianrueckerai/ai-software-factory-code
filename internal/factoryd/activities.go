@@ -1227,7 +1227,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 					last = s.startRef
 				}
 				death := r.deathOf(ctx, deathInput{ns: l.Namespace, pod: l.Pod, uid: l.PodUID, node: l.Node, boot: l.BootID,
-					started: l.StartedAt, ended: time.Now(), afterRestart: true, lastPush: last})
+					started: l.StartedAt, ended: time.Now(), stoppedByFactory: l.StoppingAt != nil, afterRestart: true, lastPush: last})
 				r.putDeath(ctx, t.ID, l.SessionID, death)
 				s.findings = slices.Concat(s.findings, death.Lines)
 			}
@@ -1392,8 +1392,15 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	cause := ""
 	if res.Death != nil {
 		r.putDeath(ctx, t.ID, s.id, *res.Death)
-		cause = res.Death.Short()
-		end["cause"] = cause
+		// the pod's events stay on the stored record: the result rides the
+		// card's stops into the case facts, which a model reads
+		death := *res.Death
+		death.Events = nil
+		res.Death = &death
+		if death.Class != DeathUnknown {
+			cause = death.Short()
+			end["cause"] = cause
+		}
 	}
 	r.record(ctx, t.ID, "session_end", end)
 	if res.Outcome != OutcomeNotStarted && !res.StartFailed {

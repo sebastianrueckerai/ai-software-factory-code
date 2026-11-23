@@ -29,6 +29,12 @@ func TestOpenTripCarriesTheDeath(t *testing.T) {
 	if _, ok := c.Facts["killed"]; ok {
 		t.Fatal("the case carries a killed fact beside the death")
 	}
+	if lines, _ := d["lines"].([]any); len(lines) != 1 || lines[0] != "the line" {
+		t.Fatalf("case facts death lines = %v, want the line", d["lines"])
+	}
+	if _, ok := d["events"]; ok {
+		t.Fatalf("case facts death = %v, want no events", d)
+	}
 	g2 := newTripRig(t, "success")
 	plain := g2.trip(t, tripCap)
 	if _, ok := caseByID(t, g2.s, plain.CaseID).Facts["death"]; ok {
