@@ -122,8 +122,9 @@ func (r ClusterFactsReader) nodeFacts(ctx context.Context, b *strings.Builder, n
 
 // SessionText is what the cluster did to session sessionID of card taskID:
 // the record kept at its end, or, for the card's running session, the pod
-// and its node as they are now.
-func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID string, now time.Time) (string, error) {
+// and its node as they are now. hideCommand leaves out the record's last
+// command and the lines for the next session, whose class line quotes it.
+func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID string, now time.Time, hideCommand bool) (string, error) {
 	if r.Store == nil {
 		return "", factsRefuse(http.StatusConflict, "the factory keeps no cluster facts here")
 	}
@@ -160,7 +161,9 @@ func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID s
 	default:
 		line("kill", d.KillSource)
 	}
-	line("last command", d.LastCommand)
+	if !hideCommand {
+		line("last command", d.LastCommand)
+	}
 	r.nodeFacts(ctx, &b, d.Node)
 	if len(d.Restarts) > 0 {
 		b.WriteString("service restarts in the session's life:\n")
@@ -191,7 +194,7 @@ func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID s
 			return "", err
 		}
 	}
-	if len(d.Lines) > 0 {
+	if len(d.Lines) > 0 && !hideCommand {
 		b.WriteString("lines given to the next session:\n")
 		for _, l := range d.Lines {
 			b.WriteString(l + "\n")
@@ -291,12 +294,12 @@ func (r ClusterFactsReader) IncidentsText(ctx context.Context, since, until, now
 
 // Text answers a cluster_facts call: a session of card taskID
 // when sessionID is set, else the window.
-func (r ClusterFactsReader) Text(ctx context.Context, taskID, sessionID string, since, until, now time.Time) (string, error) {
+func (r ClusterFactsReader) Text(ctx context.Context, taskID, sessionID string, since, until, now time.Time, hideCommand bool) (string, error) {
 	if sessionID != "" {
 		if !since.IsZero() || !until.IsZero() {
 			return "", factsRefuse(http.StatusBadRequest, "ask for a session or for a window, not both.")
 		}
-		return r.SessionText(ctx, taskID, sessionID, now)
+		return r.SessionText(ctx, taskID, sessionID, now, hideCommand)
 	}
 	return r.IncidentsText(ctx, since, until, now)
 }
@@ -334,5 +337,5 @@ func cardClusterFacts(ctx context.Context, r ClusterFactsReader, taskID, defSess
 	if session == "" && from.IsZero() && to.IsZero() {
 		session = defSession
 	}
-	return r.Text(ctx, taskID, session, from, to, now)
+	return r.Text(ctx, taskID, session, from, to, now, false)
 }

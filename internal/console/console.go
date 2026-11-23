@@ -230,8 +230,9 @@ type Config struct {
 	DeploymentHealth func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error)
 	// ClusterFacts reads what the cluster did to a session of card taskID,
 	// or, with no session, the incidents between since and until
-	// (factoryd.ClusterFactsReader.Text); its refusals are *factoryd.FactsRefusal.
-	ClusterFacts func(ctx context.Context, taskID, sessionID string, since, until time.Time) (string, error)
+	// (factoryd.ClusterFactsReader.Text), leaving out the session's last command
+	// and its lines for the next session when hideCommand; its refusals are *factoryd.FactsRefusal.
+	ClusterFacts func(ctx context.Context, taskID, sessionID string, since, until time.Time, hideCommand bool) (string, error)
 	Projects     Projects
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).

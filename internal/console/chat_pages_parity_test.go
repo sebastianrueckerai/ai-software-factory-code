@@ -470,7 +470,8 @@ func TestChatClusterFactsReadsARunningSession(t *testing.T) {
 }
 
 // A prover's session holds the plan's blind proofs: the chat's read leaves
-// out the last command, as the chat refuses its transcript.
+// out the last command and the lines whose class line quotes it, as the
+// chat refuses its transcript.
 func TestChatClusterFactsOmitsAProversLastCommand(t *testing.T) {
 	r, g := newSessionsRig(t)
 	r.tasks.mu.Lock()
@@ -478,11 +479,18 @@ func TestChatClusterFactsOmitsAProversLastCommand(t *testing.T) {
 		Source: factoryd.SourceProver, Parent: "t-plan", Track: policy.TrackDirect, Repository: "sf/code"}})
 	r.tasks.mu.Unlock()
 	r.objects["sessions/t-prove/timeline.jsonl"] = []byte(sessionsTimeline)
-	rec := factoryd.DeathRecord{Class: factoryd.DeathUnknown, Rule: factoryd.RuleNone, At: time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC),
+	rec := factoryd.DeathRecord{Class: factoryd.DeathOwnLimit, Rule: factoryd.RuleMemoryLimit, At: time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC),
 		LastCommand: "go test ./proofs/key_log"}
+	rec.Lines = factoryd.GateLines(rec, "")
+	if len(rec.Lines) == 0 || !strings.Contains(strings.Join(rec.Lines, "\n"), "proofs/key_log") {
+		t.Fatalf("lines = %q, want a class line that quotes the command", rec.Lines)
+	}
 	r.deaths = map[[2]string]factoryd.DeathRecord{{"t-prove", "s1"}: rec, {"t-r", "s1"}: rec}
 	got := reads(t, r, g, "cluster_facts", `{"task_id":"t-prove","n":1}`, "cluster_facts", `{"task_id":"t-r","n":1}`)
-	equal(t, "the reads", got, []string{
-		"class: unknown\nrule: none\nat: 2026-10-11T10:00:00Z",
-		"class: unknown\nrule: none\nat: 2026-10-11T10:00:00Z\nlast command: go test ./proofs/key_log"})
+	if strings.Contains(got[0], "key_log") || strings.Contains(got[0], "lines given") || !strings.HasPrefix(got[0], "class: own_limit\nrule: memory_limit\n") {
+		t.Errorf("the prover's read = %q, want no command and no lines", got[0])
+	}
+	if !strings.Contains(got[1], "last command: go test ./proofs/key_log") || !strings.Contains(got[1], "lines given to the next session:\n") {
+		t.Errorf("the other card's read = %q, want the command and the lines", got[1])
+	}
 }

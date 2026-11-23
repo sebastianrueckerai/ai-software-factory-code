@@ -712,8 +712,8 @@ func main() {
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
 			return factoryd.DeploymentHealthText(ctx, kube, p, deployment, namespace, time.Now())
 		},
-		ClusterFacts: func(ctx context.Context, taskID, sessionID string, since, until time.Time) (string, error) {
-			return factoryd.ClusterFactsReader{Store: store, Live: store, Kube: kube}.Text(ctx, taskID, sessionID, since, until, time.Now())
+		ClusterFacts: func(ctx context.Context, taskID, sessionID string, since, until time.Time, hideCommand bool) (string, error) {
+			return factoryd.ClusterFactsReader{Store: store, Live: store, Kube: kube}.Text(ctx, taskID, sessionID, since, until, time.Now(), hideCommand)
 		},
 		Projects:           store,
 		Events:             store,
