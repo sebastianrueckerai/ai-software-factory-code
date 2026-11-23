@@ -722,7 +722,7 @@ var humanSources = []humanSource{
 		fx := b.filedHuman(group, name, n, factoryd.SourcePlatformDeaths, "", q, 35*time.Minute)
 		fx.Task.Objective = factoryd.IssueObjective(q.Ask, q.Info)
 		return fx
-	}, factoryd.BriefFacts{Name: "4"}},
+	}, factoryd.BriefFacts{}},
 }
 
 // platformDeathsQuestion is the platform card's ask over four deaths of the

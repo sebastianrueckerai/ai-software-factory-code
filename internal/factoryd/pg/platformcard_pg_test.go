@@ -26,7 +26,7 @@ func TestPlatformCardFaceIsOneWritePG(t *testing.T) {
 	}
 	t.Cleanup(func() { s.DB().Close() })
 	base := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
-	ask := factoryd.HumanAsk{Q: factoryd.HumanQuestion{Ask: "The platform ended 3 sessions in 24 hours. Check the nodes.", Info: "the first face"},
+	ask := factoryd.HumanAsk{Q: factoryd.HumanQuestion{Ask: "The platform keeps ending the factory's work. Check the nodes.", Info: "the first face"},
 		By: "factoryd", Asker: factoryd.SourcePlatformDeaths, Via: ViaFactoryd}
 	old := Task{ID: "pd-old", Kind: "human", Status: "done", Track: policy.TrackDirect, Source: factoryd.SourcePlatformDeaths,
 		Repository: "sf/other", IssueNumber: 3, Objective: "the old face", CreatedAt: base}

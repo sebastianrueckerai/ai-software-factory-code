@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"log"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // SourcePlatformDeaths is the source of the human-lane card factoryd files
@@ -16,7 +17,8 @@ import (
 const SourcePlatformDeaths = "platform_deaths"
 
 // platformDeathsFile platform deaths within platformDeathsWindow, across
-// every card, file the card; its face lists the platformDeathsShown newest.
+// every card, file the card; its face lists the platformDeathsShown newest
+// since platformDeathsWindow before its filing.
 const (
 	platformDeathsFile   = 3
 	platformDeathsWindow = 24 * time.Hour
@@ -38,10 +40,11 @@ type PlatformCardStore interface {
 
 // PlatformCard files one card in the human's lane when the platform ends
 // platformDeathsFile sessions, CI jobs or gate pods within
-// platformDeathsWindow, and keeps the open card's face on the deaths of
-// the window: while it is open no second card is filed, and a death at or
-// before the end of the newest closed card counts no more. No agent works
-// the card, since a fix of the nodes needs their admin key.
+// platformDeathsWindow, and keeps the open card's face on every death since
+// platformDeathsWindow before its filing: while it is open no second card
+// is filed, and a death at or before the end of the newest closed card
+// counts no more. No agent works the card, since a fix of the nodes needs
+// their admin key.
 type PlatformCard struct {
 	Store   PlatformCardStore
 	Forgejo *Forgejo
@@ -68,7 +71,11 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 			ended = *c.FinishedAt
 		}
 	}
-	deaths, err := w.Store.PlatformDeaths(ctx, w.Now().Add(-platformDeathsWindow))
+	since := w.Now().Add(-platformDeathsWindow)
+	if open != nil && open.CreatedAt.Add(-platformDeathsWindow).Before(since) {
+		since = open.CreatedAt.Add(-platformDeathsWindow)
+	}
+	deaths, err := w.Store.PlatformDeaths(ctx, since)
 	if err != nil {
 		return err
 	}
@@ -86,21 +93,18 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 		}
 	}
 	if open != nil {
-		title, _, _ := strings.Cut(open.Objective, "\n\n")
 		info := platformDeathsInfo(deaths, hit, open.Repository)
-		if face := IssueObjective(title, info); face != open.Objective {
+		if face := IssueObjective(platformCardTitle, info); face != open.Objective {
 			return w.Store.FacePlatformCard(ctx, open.ID, face, info)
 		}
 		return nil
 	}
-	repo := w.Repo
-	if i := slices.IndexFunc(deaths, func(d PodDeath) bool { return hit[d.TaskID].Repository != "" }); i >= 0 {
-		if repo, err = SplitRepo(hit[deaths[i].TaskID].Repository); err != nil {
-			return err
-		}
+	repo, err := w.fileRepo(ctx, deaths, hit)
+	if err != nil {
+		return err
 	}
 	q := PlatformDeathsQuestion(deaths, hit, repo.String())
-	t := Task{ID: NewTaskID(), RiskClass: "standard", Source: SourcePlatformDeaths, Author: w.Forgejo.BotUser}
+	t := Task{ID: NewTaskID(), RiskClass: "standard", Source: SourcePlatformDeaths, Author: w.Forgejo.BotUser, CreatedAt: w.Now()}
 	got, _, err := FileHumanCard(ctx, w.Store, w.Forgejo, repo, BriefText{Title: q.Ask, Why: q.Why, Body: q.Info}, []string{"human"}, t,
 		HumanAsk{Q: q, By: "factoryd", Asker: SourcePlatformDeaths, Via: ViaFactoryd})
 	if err != nil {
@@ -111,34 +115,68 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 	return nil
 }
 
-// PlatformDeathsQuestion is the platform card's ask over deaths, newest
-// first, on repository repo; hit holds the cards they hit by id.
+// platformCardTitle is the platform card's title and ask, the same at
+// every filing, so a filing whose row failed finds its issue by it.
+var platformCardTitle = SourceBriefs[SourcePlatformDeaths](BriefFacts{}).Title
+
+// fileRepo is the repository a new card files on: the first of the
+// repositories the deaths' cards stand on, newest first, then the
+// configuration repository, that holds the bot's open issue of the card's
+// title with no card, which a filing whose row failed left; else the
+// first of them.
+func (w *PlatformCard) fileRepo(ctx context.Context, deaths []PodDeath, hit map[string]Task) (Repo, error) {
+	var repos []Repo
+	for _, d := range deaths {
+		name := hit[d.TaskID].Repository
+		if name == "" || slices.ContainsFunc(repos, func(r Repo) bool { return r.String() == name }) {
+			continue
+		}
+		r, err := SplitRepo(name)
+		if err != nil {
+			return Repo{}, err
+		}
+		repos = append(repos, r)
+	}
+	if !slices.Contains(repos, w.Repo) {
+		repos = append(repos, w.Repo)
+	}
+	for _, r := range repos {
+		if n, err := strandedIssue(ctx, w.Store, w.Forgejo, r, platformCardTitle); err != nil || n != 0 {
+			return r, err
+		}
+	}
+	return repos[0], nil
+}
+
+// PlatformDeathsQuestion is the platform card's ask at its filing over
+// deaths, newest first, on repository repo; hit holds the cards they hit by
+// id. Its story names the deaths' span, which later deaths leave true.
 func PlatformDeathsQuestion(deaths []PodDeath, hit map[string]Task, repo string) HumanQuestion {
-	b := SourceBriefs[SourcePlatformDeaths](BriefFacts{Name: strconv.Itoa(len(deaths))})
+	b := SourceBriefs[SourcePlatformDeaths](BriefFacts{})
 	q := HumanQuestion{Ask: b.Title, Why: b.Why, Info: platformDeathsInfo(deaths, hit, repo), Choices: choices(ActClose+"/"+variantNoted, KeyPark)}
 	if len(deaths) > 0 {
-		q.Happened = "The newest, at " + clock(deaths[0].Record.At) + " UTC: " + platformCause(deaths[0].Record) + "."
+		q.Happened = fmt.Sprintf("The platform ended the factory's work %s between %s and %s.",
+			textutil.Plural(len(deaths), "time", "times"), dayStamp(deaths[len(deaths)-1].Record.At), dayStamp(deaths[0].Record.At))
 	}
 	return q
 }
 
+// dayStamp is at in UTC with its day, "23 Nov 14:02 UTC".
+func dayStamp(at time.Time) string { return at.UTC().Format("2 Jan 15:04") + " UTC" }
+
 // platformDeathsInfo is the platform card's face on repository repo: the
-// newest platformDeathsShown deaths, one a line.
+// count of deaths and the newest platformDeathsShown, one a line.
 func platformDeathsInfo(deaths []PodDeath, hit map[string]Task, repo string) string {
 	var b strings.Builder
-	if len(deaths) == 0 {
-		b.WriteString("The platform ended nothing in the last 24 hours.\n")
-	} else {
-		b.WriteString("The platform ended these in the last 24 hours, newest first:\n\n")
-	}
+	fmt.Fprintf(&b, "The platform ended the factory's work %s, newest first:\n\n", textutil.Plural(len(deaths), "time", "times"))
 	for _, d := range deaths[:min(len(deaths), platformDeathsShown)] {
 		b.WriteString("- " + platformDeathLine(d, hit[d.TaskID], repo) + "\n")
 	}
 	if more := len(deaths) - platformDeathsShown; more > 0 {
 		fmt.Fprintf(&b, "- and %d more\n", more)
 	}
-	b.WriteString("\nThis card updates when the platform ends another session, and no second card is filed while it is open. " +
-		"No agent works it: a fix of the nodes needs their admin key, which no agent holds.")
+	b.WriteString("\nWhile this card is open, its list in the console grows with each session, CI job or gate pod the platform ends, " +
+		"and no second card is filed. No agent works it: a fix of the nodes needs their admin key, which no agent holds.")
 	return b.String()
 }
 
@@ -160,7 +198,7 @@ func platformDeathLine(d PodDeath, card Task, repo string) string {
 			who = "a gate of " + who
 		}
 	}
-	return clock(d.Record.At) + " UTC, " + who + ": " + platformCause(d.Record)
+	return dayStamp(d.Record.At) + ", " + who + ": " + platformCause(d.Record)
 }
 
 // platformCause is what ended the pod, on its node when the record names

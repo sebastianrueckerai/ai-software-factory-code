@@ -223,13 +223,17 @@ since only a commit fixes the door.
 The platform deaths' card (source `platform_deaths`) is factoryd's own,
 filed by a pass each minute when the platform ends 3 sessions, CI jobs or
 gate pods within 24 hours, across every card, by their death records
-(class `platform`). It files on the repository of the newest death that
-hit a card, or on the configuration repository when none did. Its face
-lists the deaths, newest first and the newest 10 at most, each with its
-time, the card or CI job it hit, its cause and its node. One card is open
-at a time: a new death rewrites the open card's face wherever it stands,
-and a death at or before the end of the last closed card counts no more.
-Its answers are Noted, which ends it, and Not now; no agent works it.
+(class `platform`). Its title is always the same, so a filing whose card
+row failed takes on its open issue at the next pass, on whichever of the
+deaths' repositories or the configuration repository holds it. Otherwise
+it files on the repository of the newest death that hit a card, or on the
+configuration repository when none did. Its face counts the deaths and
+lists the newest 10, each with its day and time, the card or CI job it
+hit, its cause and its node. One card is open at a time: its face holds
+every death since 24 hours before its filing, a new death rewrites it
+wherever the card stands, and a death at or before the end of the last
+closed card counts no more. Its answers are Noted, which ends it, and Not
+now; no agent works it.
 
 ## Task workflow
 

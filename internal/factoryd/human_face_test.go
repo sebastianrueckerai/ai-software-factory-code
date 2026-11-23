@@ -258,6 +258,12 @@ func TestPlatformCardFaceIsPlain(t *testing.T) {
 		deaths = append(deaths, d)
 	}
 	q := factoryd.PlatformDeathsQuestion(deaths, cards, facefixtures.Repository)
+	if want := "The platform keeps ending the factory's work. Check the nodes."; q.Ask != want {
+		t.Errorf("the ask %q, want %q", q.Ask, want)
+	}
+	if want := "The platform ended the factory's work 12 times between 23 Nov 12:45 UTC and 23 Nov 14:02 UTC."; q.Happened != want {
+		t.Errorf("the story %q, want %q", q.Happened, want)
+	}
 	ladder := regexp.MustCompile(`(?i)\b(rungs?|cases?|pools?)\b`)
 	for part, text := range map[string]string{"ask": q.Ask, "why": q.Why, "happened": q.Happened, "face": q.Info} {
 		if faults := slices.Concat(facefixtures.HumanFaults(text), facefixtures.TextFaults(text)); len(faults) > 0 {
@@ -270,11 +276,11 @@ func TestPlatformCardFaceIsPlain(t *testing.T) {
 	if refusals := factoryd.CheckBrief(factoryd.BriefText{Title: q.Ask, Why: q.Why, Body: q.Info}, factoryd.BriefAsk, everyRef{}); len(refusals) > 0 {
 		t.Errorf("the door refuses the card's brief: %q", refusals)
 	}
-	for _, want := range []string{"- 14:02 UTC, card #2004: the node's memory guard killed the pod on sf-1\n",
-		"- 13:55 UTC, CI job ci-job-41: the node ran out of memory on sf-2\n",
-		"- 13:48 UTC, a gate of card #2004: the node ran low on memory on sf-3\n",
-		"- 13:41 UTC, card sf/infra#14: the node restarted on sf-1\n",
-		"- 13:34 UTC, card #2004: the node stopped answering\n", "- and 2 more\n"} {
+	for _, want := range []string{"- 23 Nov 14:02 UTC, card #2004: the node's memory guard killed the pod on sf-1\n",
+		"- 23 Nov 13:55 UTC, CI job ci-job-41: the node ran out of memory on sf-2\n",
+		"- 23 Nov 13:48 UTC, a gate of card #2004: the node ran low on memory on sf-3\n",
+		"- 23 Nov 13:41 UTC, card sf/infra#14: the node restarted on sf-1\n",
+		"- 23 Nov 13:34 UTC, card #2004: the node stopped answering\n", "- and 2 more\n"} {
 		if !strings.Contains(q.Info, want) {
 			t.Errorf("the face lacks %q:\n%s", want, q.Info)
 		}

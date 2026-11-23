@@ -66,8 +66,8 @@ const (
 	// CasePlatformFault is a card whose sessions the platform ended
 	// platformDeathsAsk times in a row
 	CasePlatformFault CaseKind = "platform_fault"
-	// CasePlatformDeaths is the ask of the card the platform's deaths
-	// across every card file
+	// CasePlatformDeaths is the ask of the human card filed when the
+	// platform ends work on any card again and again
 	CasePlatformDeaths CaseKind = "platform_deaths"
 )
 
