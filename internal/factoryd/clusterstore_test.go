@@ -91,6 +91,9 @@ func TestPrunePlatformIncidents(t *testing.T) {
 	if _, err := s.AddPlatformIncidents(ctx, []PlatformIncident{
 		{Key: "old", At: now.Add(-31 * 24 * time.Hour), Kind: IncidentNodeBoot, Subject: "n1"},
 		{Key: "new", At: now.Add(-29 * 24 * time.Hour), Kind: IncidentNodeBoot, Subject: "n1"},
+		{Key: "quiet-old", At: now.Add(-40 * 24 * time.Hour), Kind: IncidentNodeBoot, Subject: "n2"},
+		{Key: "quiet-older", At: now.Add(-50 * 24 * time.Hour), Kind: IncidentNodeBoot, Subject: "n2"},
+		{Key: "quiet-restart", At: now.Add(-40 * 24 * time.Hour), Kind: IncidentRestart, Subject: "n2"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -98,8 +101,13 @@ func TestPrunePlatformIncidents(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.PlatformIncidents(ctx, now.Add(-60*24*time.Hour), now, 0)
-	if err != nil || len(got) != 1 || got[0].Key != "new" {
-		t.Fatalf("after prune %+v, %v; want only new", got, err)
+	var keys []string
+	for _, g := range got {
+		keys = append(keys, g.Key)
+	}
+	slices.Sort(keys)
+	if want := []string{"new", "quiet-old"}; err != nil || !slices.Equal(keys, want) {
+		t.Fatalf("after prune %v, %v; want %v: a node's newest boot stays, any other old row goes", keys, err, want)
 	}
 }
 
@@ -228,6 +236,21 @@ func TestClusterStoreFakeMatchesPostgres(t *testing.T) {
 		}
 		if _, err := cs.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "k", At: when, Kind: IncidentNodeBoot, Subject: "n1"}}); err != nil {
 			t.Fatal(err)
+		}
+		old := time.Now().Add(-31 * 24 * time.Hour)
+		if _, err := cs.AddPlatformIncidents(ctx, []PlatformIncident{
+			{Key: "b1", At: old, Kind: IncidentNodeBoot, Subject: "n9"},
+			{Key: "b2", At: old.Add(time.Hour), Kind: IncidentNodeBoot, Subject: "n9"},
+			{Key: "r", At: old, Kind: IncidentRestart, Subject: "n9"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := cs.PrunePlatformIncidents(ctx, IncidentRetention); err != nil {
+			t.Fatal(err)
+		}
+		left, err := cs.PlatformIncidents(ctx, old.Add(-time.Hour), old.Add(2*time.Hour), 0)
+		if err != nil || len(left) != 1 || left[0].Key != "b2" {
+			t.Fatalf("after prune %+v, %v; want only the newest boot b2", left, err)
 		}
 		inc, err := cs.PlatformIncidents(ctx, when, when, 0)
 		if err != nil || len(inc) != 1 || inc[0].Detail == nil || len(inc[0].Detail) != 0 {

@@ -242,17 +242,33 @@ func digestRunning(images []string, digest string) (string, bool) {
 	return "", true
 }
 
-// SigNoz reads the alerts SigNoz v0.143.0 holds firing: GET /api/v1/alerts
-// (its Alertmanager's list) with a bearer from its email/password login,
-// the viewer-role user of secret factory/signoz-factoryd. A 401 logs in
-// again once.
+// SigNoz reads the alerts SigNoz v0.143.0 holds firing (GET /api/v1/alerts,
+// its Alertmanager's list) and the nodes' kernel kill lines (POST
+// /api/v5/query_range) with a bearer from its email/password login, the
+// viewer-role user of secret factory/signoz-factoryd. A 401 logs in again
+// once. One call runs at a time; a caller whose context ends while it waits
+// gives up.
 type SigNoz struct {
 	BaseURL, Email, Password string
 	HTTP                     *http.Client // nil = 15 s timeout
 
-	mu    sync.Mutex
+	once  sync.Once
+	slot  chan struct{}
 	token string
 }
+
+// lock takes the client's one slot, or fails when ctx ends first.
+func (s *SigNoz) lock(ctx context.Context) error {
+	s.once.Do(func() { s.slot = make(chan struct{}, 1) })
+	select {
+	case s.slot <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *SigNoz) unlock() { <-s.slot }
 
 func (s *SigNoz) client() *http.Client {
 	if s.HTTP != nil {
@@ -261,7 +277,7 @@ func (s *SigNoz) client() *http.Client {
 	return &http.Client{Timeout: 15 * time.Second}
 }
 
-// do sends one bearer request with s.mu held by the caller; a 401 logs in
+// do sends one bearer request with the slot held by the caller; a 401 logs in
 // again once. It returns the status and at most 4 MiB of the body.
 func (s *SigNoz) do(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
 	for attempt := 0; ; attempt++ {
@@ -300,8 +316,10 @@ func (s *SigNoz) do(ctx context.Context, method, path string, payload []byte) (i
 }
 
 func (s *SigNoz) FiringAlerts(ctx context.Context) ([]FiringAlert, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer s.unlock()
 	code, body, err := s.do(ctx, http.MethodGet, "/api/v1/alerts", nil)
 	if err != nil {
 		return nil, err
@@ -341,8 +359,10 @@ func (s *SigNoz) KernelLines(ctx context.Context, from, to time.Time) ([]KernelK
 			},
 		}}},
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer s.unlock()
 	code, body, err := s.do(ctx, http.MethodPost, "/api/v5/query_range", mustJSON(query))
 	if err != nil {
 		return nil, err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -26,11 +27,11 @@ var _ KernelSource = (*SigNoz)(nil)
 type WatchedService struct{ Name, Namespace, Selector string }
 
 var WatchedServices = []WatchedService{
-	{"factoryd", "factory", "app=factoryd"},
-	{"factory-gateway", "factory", "app=factory-gateway"},
-	{"litellm", "platform", "app.kubernetes.io/name=litellm-helm,app.kubernetes.io/instance=litellm"},
-	{"openbao", "platform", "app.kubernetes.io/name=openbao,app.kubernetes.io/instance=openbao"},
-	{"forgejo", "forgejo", "app.kubernetes.io/name=forgejo,app.kubernetes.io/instance=forgejo"},
+	{ServiceFactoryd, "factory", "app=factoryd"},
+	{ServiceGateway, "factory", "app=factory-gateway"},
+	{ServiceLiteLLM, "platform", "app.kubernetes.io/name=litellm,app.kubernetes.io/instance=litellm"},
+	{ServiceOpenBao, "platform", "app.kubernetes.io/name=openbao,app.kubernetes.io/instance=openbao"},
+	{ServiceForgejo, "forgejo", "app.kubernetes.io/name=forgejo,app.kubernetes.io/instance=forgejo"},
 	{ServiceAPIServer, "kube-system", "k8s-app=kube-apiserver"},
 }
 
@@ -51,6 +52,14 @@ func (w *IncidentSweep) Run(ctx context.Context) error {
 	var errs []error
 	record := func(source string, rows []PlatformIncident, err error) {
 		if err == nil {
+			// a row already past the retention would be pruned and written again every pass
+			rows = slices.DeleteFunc(rows, func(p PlatformIncident) bool {
+				end := p.At
+				if p.Until != nil {
+					end = *p.Until
+				}
+				return end.Before(now.Add(-IncidentRetention))
+			})
 			_, err = w.Store.AddPlatformIncidents(ctx, rows)
 		}
 		if err != nil {
@@ -74,6 +83,9 @@ func (w *IncidentSweep) Run(ctx context.Context) error {
 		pods, err := w.Kube.ServicePods(ctx, svc.Namespace, svc.Selector)
 		var rows []PlatformIncident
 		for _, pod := range pods {
+			if pod.Phase != "Running" {
+				continue
+			}
 			for _, c := range pod.Containers {
 				if c.LastFinished.IsZero() {
 					continue

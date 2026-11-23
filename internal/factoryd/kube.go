@@ -851,8 +851,8 @@ func (k *InClusterKube) Nodes(ctx context.Context) ([]NodeState, error) {
 // ServicePod is a pod of a service a session depends on, with each
 // container's restarts and last termination.
 type ServicePod struct {
-	Namespace, Name, UID, Node string
-	Containers                 []ServiceContainer
+	Namespace, Name, UID, Node, Phase string
+	Containers                        []ServiceContainer
 }
 
 type ServiceContainer struct {
@@ -878,6 +878,7 @@ func (k *InClusterKube) ServicePods(ctx context.Context, namespace, selector str
 				NodeName string `json:"nodeName"`
 			} `json:"spec"`
 			Status struct {
+				Phase             string `json:"phase"`
 				ContainerStatuses []struct {
 					Name         string `json:"name"`
 					RestartCount int    `json:"restartCount"`
@@ -904,7 +905,7 @@ func (k *InClusterKube) ServicePods(ctx context.Context, namespace, selector str
 	}
 	out := make([]ServicePod, 0, len(l.Items))
 	for _, p := range l.Items {
-		sp := ServicePod{Namespace: cmp.Or(p.Metadata.Namespace, namespace), Name: p.Metadata.Name, UID: p.Metadata.UID, Node: p.Spec.NodeName}
+		sp := ServicePod{Namespace: cmp.Or(p.Metadata.Namespace, namespace), Name: p.Metadata.Name, UID: p.Metadata.UID, Node: p.Spec.NodeName, Phase: p.Status.Phase}
 		for _, c := range p.Status.ContainerStatuses {
 			sc := ServiceContainer{Name: c.Name, Restarts: c.RestartCount}
 			if r := c.State.Running; r != nil {

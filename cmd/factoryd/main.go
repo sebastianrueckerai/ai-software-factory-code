@@ -166,8 +166,9 @@ func main() {
 	// queued card goes through the project's work_in_progress (roadmap 225)
 	workflows := factoryd.BoundedWorkflows{Workflows: &inner, Store: store,
 		Policy: func() policy.Tree { return policyLoader.Current().Tree }}
-	// SigNoz's firing alerts: the project endpoint and the alert card's
-	// pre-check (roadmap 181, Stage 18 item 3.12). Its root password is
+	// SigNoz's firing alerts (the project endpoint and the alert card's
+	// pre-check, roadmap 181, Stage 18 item 3.12) and the nodes' kernel
+	// kill lines (the incident pass). Its root password is
 	// read here so the boot's secret scrubber knows it.
 	signozPassword := secrets["SIGNOZ_PASSWORD"]
 	signoz := &factoryd.SigNoz{

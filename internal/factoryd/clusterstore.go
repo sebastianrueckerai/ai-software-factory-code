@@ -129,8 +129,12 @@ func (s *PGStore) PodIncidents(ctx context.Context, podUID string) ([]PlatformIn
 	return s.incidents(ctx, incidentSelect+`WHERE pod_uid = $1 ORDER BY at, id`, podUID)
 }
 
+// PrunePlatformIncidents deletes the rows that ended before now-age, except
+// each node's newest node_boot row: a node that stays up keeps its boot.
 func (s *PGStore) PrunePlatformIncidents(ctx context.Context, age time.Duration) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM platform_incidents WHERE coalesce(until, at) < now() - make_interval(secs => $1)`, age.Seconds())
+	_, err := s.db.ExecContext(ctx, `DELETE FROM platform_incidents p WHERE coalesce(p.until, p.at) < now() - make_interval(secs => $1)
+		AND NOT (p.kind = 'node_boot' AND NOT EXISTS (
+			SELECT 1 FROM platform_incidents q WHERE q.kind = 'node_boot' AND q.subject = p.subject AND (q.at, q.id) > (p.at, p.id)))`, age.Seconds())
 	return err
 }
 

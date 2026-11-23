@@ -85,7 +85,13 @@ func (f *fakeClusterStore) PrunePlatformIncidents(_ context.Context, age time.Du
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cutoff := time.Now().Add(-age)
+	all := slices.Clone(f.incidents)
 	f.incidents = slices.DeleteFunc(f.incidents, func(p PlatformIncident) bool {
+		if p.Kind == IncidentNodeBoot && !slices.ContainsFunc(all, func(q PlatformIncident) bool {
+			return q.Kind == IncidentNodeBoot && q.Subject == p.Subject && (q.At.After(p.At) || q.At.Equal(p.At) && q.ID > p.ID)
+		}) {
+			return false
+		}
 		end := p.At
 		if p.Until != nil {
 			end = *p.Until
