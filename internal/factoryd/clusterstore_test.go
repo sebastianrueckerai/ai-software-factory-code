@@ -198,3 +198,34 @@ func TestLiveSessionKeepsItsPod(t *testing.T) {
 		t.Fatalf("live session %+v, %v, %v", got, ok, err)
 	}
 }
+
+// The fake and Postgres agree: equal times come back in key order, and a
+// nil Detail reads back as an empty map.
+func TestClusterStoreFakeMatchesPostgres(t *testing.T) {
+	run := func(t *testing.T, cs ClusterStore) {
+		ctx := t.Context()
+		when := clk(10, 0)
+		for _, d := range []PodDeath{
+			{Kind: "gate", Record: DeathRecord{Class: DeathPlatform, At: when, PodUID: "x"}},
+			{Kind: "ci", Runner: "b", Record: DeathRecord{Class: DeathPlatform, At: when}},
+			{Kind: "ci", Runner: "a", Record: DeathRecord{Class: DeathPlatform, At: when}},
+		} {
+			if err := cs.PutPodDeath(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := cs.PlatformDeaths(ctx, clk(9, 0))
+		if err != nil || len(got) != 3 || got[0].Runner != "a" || got[1].Runner != "b" || got[2].Kind != "gate" {
+			t.Fatalf("deaths %+v, %v; want ci/a, ci/b, gate/x", got, err)
+		}
+		if _, err := cs.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "k", At: when, Kind: IncidentNodeBoot, Subject: "n1"}}); err != nil {
+			t.Fatal(err)
+		}
+		inc, err := cs.PlatformIncidents(ctx, when, when, 0)
+		if err != nil || len(inc) != 1 || inc[0].Detail == nil || len(inc[0].Detail) != 0 {
+			t.Fatalf("incidents %+v, %v; want an empty, non-nil Detail", inc, err)
+		}
+	}
+	t.Run("fake", func(t *testing.T) { run(t, newFakeClusterStore()) })
+	t.Run("postgres", func(t *testing.T) { run(t, clusterStore(t)) })
+}

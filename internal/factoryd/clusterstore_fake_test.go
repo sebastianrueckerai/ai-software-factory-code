@@ -34,8 +34,7 @@ func (f *fakeClusterStore) AddPlatformIncidents(_ context.Context, in []Platform
 		}
 		f.nextID++
 		p.ID = f.nextID
-		p.Detail = maps.Clone(p.Detail)
-		f.incidents = append(f.incidents, p)
+		f.incidents = append(f.incidents, cloneIncident(p))
 		added++
 	}
 	return added, nil
@@ -51,6 +50,9 @@ func (f *fakeClusterStore) matching(keep func(PlatformIncident) bool) []Platform
 	slices.SortFunc(out, func(a, b PlatformIncident) int {
 		return cmp.Or(a.At.Compare(b.At), cmp.Compare(a.ID, b.ID))
 	})
+	for i := range out {
+		out[i] = cloneIncident(out[i])
+	}
 	return out
 }
 
@@ -100,6 +102,7 @@ func (f *fakeClusterStore) PutPodDeath(_ context.Context, d PodDeath) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	d.Record = cloneRecord(d.Record)
 	f.deaths[key] = d
 	return nil
 }
@@ -108,7 +111,7 @@ func (f *fakeClusterStore) death(key string) (DeathRecord, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d, ok := f.deaths[key]
-	return d.Record, ok, nil
+	return cloneRecord(d.Record), ok, nil
 }
 
 func (f *fakeClusterStore) SessionDeath(_ context.Context, taskID, sessionID string) (DeathRecord, bool, error) {
@@ -123,11 +126,29 @@ func (f *fakeClusterStore) PlatformDeaths(_ context.Context, since time.Time) ([
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []PodDeath
-	for _, d := range f.deaths {
+	for _, key := range slices.Sorted(maps.Keys(f.deaths)) {
+		d := f.deaths[key]
 		if d.Record.Class == DeathPlatform && !d.Record.At.Before(since) {
+			d.Record = cloneRecord(d.Record)
 			out = append(out, d)
 		}
 	}
-	slices.SortFunc(out, func(a, b PodDeath) int { return b.Record.At.Compare(a.Record.At) })
+	slices.SortStableFunc(out, func(a, b PodDeath) int { return b.Record.At.Compare(a.Record.At) })
 	return out, nil
+}
+
+// cloneIncident gives Detail the shape Postgres reads back: never nil.
+func cloneIncident(p PlatformIncident) PlatformIncident {
+	p.Detail = maps.Clone(p.Detail)
+	if p.Detail == nil {
+		p.Detail = map[string]any{}
+	}
+	return p
+}
+
+func cloneRecord(r DeathRecord) DeathRecord {
+	r.Restarts = slices.Clone(r.Restarts)
+	r.Events = slices.Clone(r.Events)
+	r.Lines = slices.Clone(r.Lines)
+	return r
 }
