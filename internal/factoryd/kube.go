@@ -757,8 +757,9 @@ func (k *InClusterKube) NewestPodEvent(ctx context.Context, namespace, name stri
 
 const podEventsKept = 20
 
-// PodEvents is the pod's newest events, oldest first, messages whole. An event's time is its series' last observation,
-// else its last, event or first timestamp.
+// PodEvents is the pod's newest events, oldest first, messages whole. An
+// event's time is its series' last observation, else its last, event or
+// first timestamp.
 func (k *InClusterKube) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
 	q := url.Values{"fieldSelector": {"involvedObject.kind=Pod,involvedObject.name=" + pod}}
 	var evs struct {
