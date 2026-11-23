@@ -5215,6 +5215,134 @@ func TestRunSessionOfAPersonsReplanSkipsTheCheckin(t *testing.T) {
 	}
 }
 
+// A human's hold stops the running session as a person's replan does: no
+// check-in is asked and no detector's alert raised, the pod is deleted,
+// and the worker's end push is the held stop's commit.
+func TestAHeldStopEndsHeldWithItsPush(t *testing.T) {
+	runner, hub, kube, _, chat, store, objects := liveRig(t)
+	runner.stopWait = 10 * time.Second
+	kube.onDeletePod = func() { go kube.scriptPods(0, stoppedWorkerAt("t2", "abc123")) }
+	ask := AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way"}
+	delivered := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := runner.EscalateSession(t.Context(), "t2", ask)
+			if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
+				delivered <- err
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small", HoldStop: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("EscalateSession = %v", err)
+	}
+	if res.Outcome != OutcomeHeld || res.Reason != "held by sebastian: out of the way" || res.Trip != string(TripHold) || res.Commit != "abc123" {
+		t.Fatalf("result = %+v, want the held stop with the end push abc123", res)
+	}
+	if chat.calls != 0 {
+		t.Fatalf("check-in conversations = %d, want none", chat.calls)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the worker was not stopped")
+	}
+	if tl := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"detector":"hold"`) {
+		t.Fatalf("timeline = %s, want the hold's step", tl)
+	}
+	if alerts := store.alertRows(); len(alerts) != 0 {
+		t.Fatalf("alerts = %+v, want none: a hold trips no detector", alerts)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments = %q, want none: a human's hold is recorded, not commented", hub.comments)
+	}
+}
+
+// A session of a run from before the held stop has no outcome for it: it
+// answers the hold's ask as a card between sessions does, and runs on to
+// its own end.
+func TestAnOldSessionRefusesTheHoldAsk(t *testing.T) {
+	runner, _, kube, _, _, _, objects := liveRig(t)
+	registered := func() bool {
+		runner.liveMu.Lock()
+		defer runner.liveMu.Unlock()
+		_, ok := runner.live["t2"]
+		return ok
+	}
+	refused := make(chan error, 1)
+	go func() {
+		for deadline := time.Now().Add(5 * time.Second); !registered() && time.Now().Before(deadline); {
+			time.Sleep(5 * time.Millisecond)
+		}
+		refused <- runner.EscalateSession(t.Context(), "t2", AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way"})
+		kube.scriptPods(0, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	}()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-refused; !errors.Is(err, ErrNoLiveSession) {
+		t.Fatalf("the hold's ask = %v, want ErrNoLiveSession", err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.Trip != "" {
+		t.Fatalf("result = %+v, want the session's own push", res)
+	}
+	if rec := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")); strings.Contains(rec, `"detector"`) {
+		t.Fatalf("record = %s, want no stop", rec)
+	}
+}
+
+// A press during the session's start check-in finds no session to ask:
+// the session reads the hold when it registers for asks and stops on it
+// at once, its record holding the stop before the agent's first step.
+func TestASessionRegisteringOnAHeldCardStopsAtOnce(t *testing.T) {
+	finding := "no test covers the handler"
+	runner, _, kube, _, chat, store, objects := checkinRig(t,
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"handover","handover":"fix the handler test first"}`)
+	card := store.tasks["t2"]
+	card.Kind = "agent"
+	store.tasks["t2"] = card
+	var press HoldResult
+	chat.onCall = func() {
+		var err error
+		if press, err = runner.HoldCard(context.Background(), "t2", "", "out of the way", "sebastian"); err != nil {
+			t.Error(err)
+		}
+	}
+	first := envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(), Detail: map[string]any{"tool": "read", "status": "completed", "args": map[string]any{"filePath": "README.md"}}})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", AgentTime: 5 * time.Second, HoldStop: true,
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil,
+		first+"\n"+sigtermLogs+resultLine(false, "stopped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if press != (HoldResult{Held: true}) {
+		t.Fatalf("the press during the check-in = %+v, want held with no session to stop", press)
+	}
+	if signals := runner.cfg.Workflows.(*fakeWorkflows).signals; !slices.Equal(signals, []string{"t2 held sebastian #0: "}) {
+		t.Fatalf("signals = %q, want the press's one held signal", signals)
+	}
+	if res.Outcome != OutcomeHeld || res.Trip != string(TripHold) || res.Reason != "held by sebastian: out of the way" {
+		t.Fatalf("result = %+v, want the held stop", res)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("check-in conversations = %d, want the start check-in's alone", chat.calls)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the worker was not stopped")
+	}
+	rec := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
+	if stop, step := strings.Index(rec, `"detector":"hold"`), strings.Index(rec, `"filePath":"README.md"`); stop < 0 || step < stop {
+		t.Fatalf("record = %s, want the hold's stop before the agent's first step", rec)
+	}
+}
+
 // cutAsk is an agent's request_cut with two parts.
 var cutAsk = AgentAsk{Kind: AskCut, Reason: "a store and a UI", Parts: []string{"the store", "the UI"}}
 

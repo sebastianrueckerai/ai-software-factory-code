@@ -4363,6 +4363,12 @@ func TestSessionResultPushBeatsCheckin(t *testing.T) {
 		res.LastMessage != "the branch holds the work" || res.CheckIn == nil {
 		t.Fatalf("mid-session handover on a trip: %+v", res)
 	}
+	start := &CheckInOutcome{Decision: CheckHandover, Handover: "fix the handler test first",
+		Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}}
+	res = sessionResult(sessionSpec{id: "s3"}, sessionOutcome{trip: &Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"}, checkIn: start})
+	if res.Outcome != OutcomeWallClock || res.Trip != string(TripWallClock) || res.CheckIn != start {
+		t.Fatalf("a later stop of a session its start check-in handed over to: %+v, want the stop's own outcome with the record riding", res)
+	}
 }
 
 // A replan's result carries the planner's text: the check-in's names the

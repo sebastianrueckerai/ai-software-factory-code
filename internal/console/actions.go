@@ -2793,12 +2793,12 @@ func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason s
 			return "", err
 		}
 	}
-	ok, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.approver())
+	held, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.approver())
 	if err != nil {
 		log.Printf("console: %s holds %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The hold could not be stored. Hold the card again.")
 	}
-	if !ok {
+	if !held.Held {
 		fresh, found, err := c.cfg.Tasks.Task(ctx, t.ID)
 		if err != nil || !found {
 			log.Printf("console: card %s after its refused hold: %v", t.ID, err)

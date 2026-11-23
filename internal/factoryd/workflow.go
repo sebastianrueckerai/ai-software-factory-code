@@ -88,6 +88,10 @@ const (
 	// and ignores the signal. TaskSignal's Case carries the case id and the
 	// comment (versionCaseFaced).
 	SignalCaseFaced = "case_faced"
+	// SignalHeld is a human's hold of a running card that has no live
+	// session: a wait that holds the card's slot ends, and the card parks
+	// before its next session.
+	SignalHeld = "held"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -334,6 +338,9 @@ const (
 	// card's replan (Replan carries the text for the planner); its work is
 	// pushed and kept.
 	OutcomeReplan SessionOutcome = "replan"
+	// OutcomeHeld: a human's hold stopped the session (Reason says whose
+	// and why); its work is pushed and kept, Commit its head.
+	OutcomeHeld SessionOutcome = "held"
 )
 
 // StepProviderRefused is the timeline step of a task waiting on the model
@@ -422,6 +429,10 @@ type SessionInput struct {
 	// scheduled, set with CheckinExtra or RoomExtra: the session's own time
 	// ends there, and the check-in's time and the raises come after it.
 	Remaining time.Duration `json:",omitempty"`
+	// HoldStop: the run handles OutcomeHeld, so a human's hold stops the
+	// session (versionHoldStop); a run from before it leaves the session
+	// to its end.
+	HoldStop bool `json:",omitempty"`
 }
 
 type SessionResult struct {

@@ -225,7 +225,9 @@ func TestAHoldWhoseRereadFailsSaysSo(t *testing.T) {
 	withPlan(r)
 	_, s := r.loggedIn(t)
 	r.c.cfg.Tasks = &rereadFails{Tasks: r.c.cfg.Tasks, id: "t-k2"}
-	r.c.cfg.HoldCard = func(context.Context, string, string, string, string) (bool, error) { return false, nil }
+	r.c.cfg.HoldCard = func(context.Context, string, string, string, string) (factoryd.HoldResult, error) {
+		return factoryd.HoldResult{}, nil
+	}
 	_, err := r.c.doHoldCard(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-k2", "", "after the split")
 	var no *refusal
 	want := "Card #32 could not be read again after the store refused its hold, so nothing was held: hold it again in a minute."

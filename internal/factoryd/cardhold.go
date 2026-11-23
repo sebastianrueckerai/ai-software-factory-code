@@ -245,11 +245,44 @@ func cardHoldWait(ctx context.Context, store Store, t Task) (string, error) {
 	return "", nil
 }
 
+// HoldResult is a press of "Put on hold": Held, the card took the hold;
+// Stopped, its live session took the ask to stop.
+type HoldResult struct{ Held, Stopped bool }
+
 // HoldCard puts card id on hold for by, a human, for reason, until a
-// human releases it or release ("" for none) ends done or merged. False:
-// the card has started or holds a work slot already.
-func (r *Runner) HoldCard(ctx context.Context, id, release, reason, by string) (bool, error) {
-	return r.store.SetCardHold(ctx, id, CardHold{Reason: reason, Release: release, By: by, At: r.Clock()})
+// human releases it or release ("" for none) ends done or merged. A
+// running card's live session is asked to stop; one between sessions
+// is signalled (SignalHeld), so a wait that holds its slot ends. Held
+// false: the card is in no state to take a hold.
+func (r *Runner) HoldCard(ctx context.Context, id, release, reason, by string) (HoldResult, error) {
+	t, ok, err := r.store.Task(ctx, id)
+	if err != nil || !ok {
+		return HoldResult{}, err
+	}
+	h := CardHold{Reason: reason, Release: release, By: by, At: r.Clock()}
+	if held, err := r.store.SetCardHold(ctx, id, h); err != nil || !held {
+		return HoldResult{}, err
+	}
+	if t.Status != "running" {
+		return HoldResult{Held: true}, nil
+	}
+	switch err := r.EscalateSession(ctx, id, holdAsk(h)); {
+	case err == nil:
+		return HoldResult{Held: true, Stopped: true}, nil
+	case !errors.Is(err, ErrNoLiveSession):
+		return HoldResult{Held: true}, err
+	}
+	if r.cfg.Workflows != nil {
+		if err := r.cfg.Workflows.Signal(ctx, id, SignalHeld, TaskSignal{Author: by}); err != nil {
+			log.Printf("task %s: signal %s after its hold: %s", id, SignalHeld, maskedErr(err))
+		}
+	}
+	return HoldResult{Held: true}, nil
+}
+
+// holdAsk is the ask that stops the live session of a card held by h.
+func holdAsk(h CardHold) AgentAsk {
+	return AgentAsk{Kind: AskHold, Reason: "held by " + h.By + ": " + h.Reason}
 }
 
 // ReleaseCardHold ends card id's hold for a human and wakes the card: a

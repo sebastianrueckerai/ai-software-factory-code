@@ -275,12 +275,12 @@ type Config struct {
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
 	GoCard func(ctx context.Context, taskID, by string) (int64, error)
-	// HoldCard puts card taskID, which has not started, on hold for by
-	// until a human releases it or release ("" for none) ends done or
-	// merged; ReleaseCardHold ends its hold and wakes it (factoryd's
-	// Runner.HoldCard and Runner.ReleaseCardHold). False: the card is in no
-	// state to take a hold, or holds none.
-	HoldCard        func(ctx context.Context, taskID, release, reason, by string) (bool, error)
+	// HoldCard puts card taskID on hold for by until a human releases it or
+	// release ("" for none) ends done or merged, and stops a running card's
+	// live session; ReleaseCardHold ends its hold and wakes it (factoryd's
+	// Runner.HoldCard and Runner.ReleaseCardHold). Not held, or false: the
+	// card is in no state to take a hold, or holds none.
+	HoldCard        func(ctx context.Context, taskID, release, reason, by string) (factoryd.HoldResult, error)
 	ReleaseCardHold func(ctx context.Context, taskID string) (bool, error)
 	// RequestImage puts by's ask in the chat of repository for tool, for
 	// need, on the tool card of image, else of one named after the tool

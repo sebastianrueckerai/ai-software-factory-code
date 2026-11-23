@@ -261,17 +261,18 @@ type liveSession struct {
 	// basics records that the session was given the factory basics on its
 	// first human-sourced message.
 	basics bool
-	// replan: a replan ask is on its way to the session or was taken.
-	replan bool
+	// replan, hold: an ask of that kind is on its way to the session or
+	// was taken.
+	replan, hold bool
 }
 
 // sessionWorker is a running session's pod and the bearer of its worker's
 // message endpoint; report marks a report session, whose card restarts on
-// no image, and cuttable a session whose card the planner can cut
-// (cuttable).
+// no image, cuttable a session whose card the planner can cut (cuttable),
+// and holdStop one whose run takes a held stop (SessionInput.HoldStop).
 type sessionWorker struct {
-	session, ns, pod, token string
-	report, cuttable        bool
+	session, ns, pod, token    string
+	report, cuttable, holdStop bool
 }
 
 // ErrNoLiveSession: the task has no session running in this factoryd.
@@ -310,19 +311,32 @@ var ErrNoCut = errors.New("this card cannot be cut: finish it as it is, or escal
 // answers ErrNoLiveSession, a report session's request_tool
 // ErrNoImageWait, and a cut of a session that cannot be cut ErrNoCut. A
 // session takes one replan ask: a later one answers errReplanAsked at
-// once.
+// once. It takes one hold ask, and only when its run takes a held stop
+// (SessionInput.HoldStop): a later one answers nil at once, as the session
+// stops for the first, and a session without it answers ErrNoLiveSession,
+// as a card between sessions does.
 func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error {
-	replan := ask.Kind == AskReplan
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
-	asked := ok && replan && ls.replan
-	if ok && replan {
-		ls.replan = true
+	ok = ok && (ask.Kind != AskHold || ls.worker.holdStop)
+	// once is the session's flag of its one ask of this kind
+	var once *bool
+	switch {
+	case ok && ask.Kind == AskReplan:
+		once = &ls.replan
+	case ok && ask.Kind == AskHold:
+		once = &ls.hold
+	}
+	asked := once != nil && *once
+	if once != nil {
+		*once = true
 	}
 	r.liveMu.Unlock()
 	switch {
 	case !ok:
 		return ErrNoLiveSession
+	case asked && ask.Kind == AskHold:
+		return nil
 	case asked:
 		return errReplanAsked
 	case ask.Kind == AskTool && ls.worker.report:
@@ -336,13 +350,42 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 	case <-ls.done:
 		return ErrNoLiveSession
 	case <-ctx.Done():
-		if replan {
+		if once != nil {
 			r.liveMu.Lock()
-			ls.replan = false
+			*once = false
 			r.liveMu.Unlock()
 		}
 		return ctx.Err()
 	}
+}
+
+// heldAtStart is the hold ask of card t's session s as it registers for
+// asks: a press during its start check-in found no session to ask. It
+// takes the session's one hold ask, so a press that races it asks
+// nothing; false when s takes no held stop, no hold stands, or a press's
+// ask is on its way.
+func (r *Runner) heldAtStart(ctx context.Context, t Task, s sessionSpec) (AgentAsk, bool) {
+	if !s.holdStop {
+		return AgentAsk{}, false
+	}
+	cur, ok, err := r.store.Task(ctx, t.ID)
+	line := ""
+	if err == nil && ok {
+		line, err = cardHoldWait(ctx, r.store, cur)
+	}
+	if err != nil {
+		log.Printf("task %s: session %s: read the card's hold: %s", t.ID, s.id, r.scrub(err.Error()))
+	}
+	if line == "" {
+		return AgentAsk{}, false
+	}
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	if ls, ok := r.live[t.ID]; ok && ls.worker.session == s.id && !ls.hold {
+		ls.hold = true
+		return holdAsk(*cur.Hold), true
+	}
+	return AgentAsk{}, false
 }
 
 // AdmitAsk passes an agent's escalation on card t through the filing
@@ -692,6 +735,8 @@ type sessionSpec struct {
 	// clone, each file the row's code: an integration or delta card's
 	// alone
 	proofs []harness.ProofFile
+	// holdStop is SessionInput.HoldStop
+	holdStop bool
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -1162,7 +1207,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// reads on until it has pushed its work in progress and reported, or
 	// its grace period is over.
 	// the agent's escalate reaches the session here until it stops
-	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s)})
+	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s), holdStop: s.holdStop})
 	defer unregister()
 	stop := func(trip *Trip) {
 		// a stopping session takes no escalation: the gateway tells the
@@ -1446,6 +1491,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return true, ctx.Err()
 	}
 
+	if ask, held := r.heldAtStart(ctx, t, s); held {
+		if end, err := onTrip(sup.AgentAsk(ask)); end {
+			return out, err
+		}
+	}
 	tick := time.NewTicker(r.supervisionTick(supCfg))
 	defer tick.Stop()
 	for {
@@ -2262,8 +2312,8 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 		detail["session"] = s.id
 		r.record(ctx, t.ID, "checkin", detail)
 	}
-	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripAgentCut || trip.Kind == TripCheckIn || trip.Kind == TripReplan {
-		return // the agent's ask (its case is its record; an information request has its alert), a person's replan, or no detector
+	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripAgentCut || trip.Kind == TripCheckIn || trip.Kind == TripReplan || trip.Kind == TripHold {
+		return // the agent's ask (its case is its record; an information request has its alert), a person's replan, a human's hold, or no detector
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "checkin",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}

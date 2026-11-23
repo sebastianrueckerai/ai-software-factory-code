@@ -798,3 +798,77 @@ func TestNoRungStopsAHeldRunningCard(t *testing.T) {
 		}
 	}
 }
+
+// Two presses a second apart while the session stops ask it once: the
+// second replaces the stored reason, and both answer that the session
+// stops.
+func TestASecondHoldPressSendsNoSecondAsk(t *testing.T) {
+	store := newFakeStore()
+	store.tasks["t-run"] = Task{ID: "t-run", Kind: "agent", Repository: "demo/app", Track: policy.TrackDirect, Status: "running", IssueNumber: 2062}
+	wf := &fakeWorkflows{}
+	at := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	r := &Runner{store: store, now: func() time.Time { return at }}
+	r.cfg.Workflows = wf
+	asks, end := r.liveSession("t-run", sessionWorker{session: "s1", holdStop: true})
+	var took []AgentAsk
+	stop, read := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(read)
+		for {
+			select {
+			case a := <-asks:
+				took = append(took, a)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	for _, reason := range []string{"out of the way", "out of the way until the split lands"} {
+		if got, err := r.HoldCard(t.Context(), "t-run", "", reason, "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
+			t.Fatalf("the press for %q = %+v, %v; want held and stopped", reason, got, err)
+		}
+		at = at.Add(time.Second)
+	}
+	end()
+	close(stop)
+	<-read
+	if want := []AgentAsk{{Kind: AskHold, Reason: "held by sebastian: out of the way"}}; !reflect.DeepEqual(took, want) {
+		t.Fatalf("the session took %+v, want the first press's ask alone", took)
+	}
+	if h := store.tasks["t-run"].Hold; h == nil || h.Reason != "out of the way until the split lands" || !h.At.Equal(time.Date(2026, 11, 21, 10, 0, 1, 0, time.UTC)) {
+		t.Fatalf("hold = %+v, want the second press's", h)
+	}
+	if len(wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none: the session stops", wf.signals)
+	}
+}
+
+// A running card with no live session is between sessions: the press
+// stores the hold and signals the card's run once, so a wait that holds
+// its slot ends. A card that is not running takes the hold alone, and a
+// card the store refuses takes nothing.
+func TestHoldCardBetweenSessionsSignalsHeld(t *testing.T) {
+	store := newFakeStore()
+	for _, k := range []Task{
+		{ID: "t-run", Status: "running", IssueNumber: 1},
+		{ID: "t-q", Status: "queued", IssueNumber: 2},
+		{ID: "t-rev", Status: "in-review", IssueNumber: 3},
+	} {
+		k.Kind, k.Repository, k.Track = "agent", "demo/app", policy.TrackDirect
+		store.tasks[k.ID] = k
+	}
+	wf := &fakeWorkflows{}
+	r := &Runner{store: store}
+	r.cfg.Workflows = wf
+	for _, c := range []struct {
+		id   string
+		want HoldResult
+	}{{"t-run", HoldResult{Held: true}}, {"t-q", HoldResult{Held: true}}, {"t-rev", HoldResult{}}} {
+		if got, err := r.HoldCard(t.Context(), c.id, "", "out of the way", "sebastian"); err != nil || got != c.want {
+			t.Errorf("the press on %s = %+v, %v; want %+v", c.id, got, err, c.want)
+		}
+	}
+	if want := []string{"t-run held sebastian #0: "}; !slices.Equal(wf.signals, want) {
+		t.Fatalf("signals = %q, want %q", wf.signals, want)
+	}
+}

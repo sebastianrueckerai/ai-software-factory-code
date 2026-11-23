@@ -1084,7 +1084,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	info := activity.GetInfo(ctx)
 	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), activity: info.WorkflowExecution.RunID + "/" + info.ActivityID, parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
 		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
-		lastGates: in.LastGates, handover: in.Handover}
+		lastGates: in.LastGates, handover: in.Handover, holdStop: in.HoldStop}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("policy", err)
 	}
@@ -1621,8 +1621,9 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 			return res
 		case CheckHandover:
 			// a mid-session handover is not the escalate a stop would read;
-			// a start-moment one falls through to the result's own shape
-			if out.trip != nil {
+			// a start-moment one falls through to the result's own shape,
+			// as does a later stop of its session
+			if out.trip != nil && out.checkIn.Record != nil && out.checkIn.Record.Moment == CheckInSession {
 				res.Summary = fmt.Sprintf("check-in: handover after %s", out.trip.Kind)
 				return res
 			}
@@ -1652,6 +1653,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 			res.Outcome, res.DeadEnd = OutcomeRetryStronger, d.Judged
 		case d.Action == ActionReplan:
 			res.Outcome, res.Reason, res.Replan = OutcomeReplan, d.Reason, replanText(out.trip, *d)
+		case d.Action == ActionHold:
+			res.Outcome, res.Reason, res.Commit = OutcomeHeld, d.Reason, cmp.Or(out.commit, out.wip)
 		default:
 			res.Outcome, res.Choices = OutcomeEscalate, d.Choices
 			res.Reason = fmt.Sprintf("%s\n\nDetector: %s (%s)\nProgress: %s", d.Reason, out.trip.Kind, out.trip.Detail, out.digest)

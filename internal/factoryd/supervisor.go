@@ -33,6 +33,9 @@ const (
 	// ActionReplan stops the session, its work pushed and kept, and the
 	// planner cuts the card's remaining work into smaller cards.
 	ActionReplan SupervisorAction = "replan"
+	// ActionHold stops the session, its work pushed and kept, and the card
+	// waits in Queued until its hold ends.
+	ActionHold SupervisorAction = "hold"
 )
 
 type Decision struct {

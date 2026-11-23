@@ -1868,8 +1868,8 @@ func newRig(t *testing.T) *rig {
 			r.handed = append(r.handed, taskID+" by "+by)
 			return 16, r.goErr
 		},
-		HoldCard: func(_ context.Context, taskID, release, reason, by string) (bool, error) {
-			return r.tasks.setHold(taskID, &factoryd.CardHold{Reason: reason, Release: release, By: by}), nil
+		HoldCard: func(_ context.Context, taskID, release, reason, by string) (factoryd.HoldResult, error) {
+			return factoryd.HoldResult{Held: r.tasks.setHold(taskID, &factoryd.CardHold{Reason: reason, Release: release, By: by})}, nil
 		},
 		ReleaseCardHold: func(_ context.Context, taskID string) (bool, error) {
 			return r.tasks.setHold(taskID, nil), nil
