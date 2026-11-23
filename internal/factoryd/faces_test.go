@@ -1071,3 +1071,25 @@ func TestRoomOpensAtTheProposal(t *testing.T) {
 		t.Errorf("a press with the box ticked = %+v, want the money", res)
 	}
 }
+
+func TestDeathLinesReadPlainly(t *testing.T) {
+	at := time.Date(2026, 11, 23, 14, 2, 0, 0, time.UTC)
+	var records []factoryd.DeathRecord
+	for _, rule := range []factoryd.DeathRule{factoryd.RuleGuardKill, factoryd.RuleNodeOOM, factoryd.RuleNodePressure, factoryd.RuleNodeRebooted,
+		factoryd.RuleNodeNotReady, factoryd.RuleGoneAfterRestart, factoryd.RuleDeleted} {
+		records = append(records, factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: rule, At: at, Node: "sf-2", Resource: "memory"})
+	}
+	for _, reason := range []string{"PreemptionByScheduler", "DeletionByTaintManager", "EvictionByEvictionAPI", "DeletionByPodGC", "TerminationByKubelet", "SomeNewReason"} {
+		records = append(records, factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: factoryd.RuleDisruption, At: at, Condition: reason})
+	}
+	for _, r := range records {
+		for _, l := range factoryd.GateLines(r, "abc1234def") {
+			if faults := facefixtures.TextFaults(l); len(faults) > 0 {
+				t.Errorf("%q: %v", l, faults)
+			}
+		}
+		if faults := facefixtures.HumanFaults(r.Short()); len(faults) > 0 {
+			t.Errorf("%q: %v", r.Short(), faults)
+		}
+	}
+}

@@ -1,11 +1,13 @@
 package factoryd
 
 import (
+	"cmp"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 type DeathClass string
@@ -117,18 +119,20 @@ func Classify(f DeathFacts) DeathRecord {
 		r.Class, r.Rule = class, rule
 		return r
 	}
-
 	kills := f.sessionKills()
-	for _, k := range kills {
-		if k.Source == "guard" {
-			r.KillSource = "guard"
-			return set(DeathPlatform, RuleGuardKill)
+	killed := func(match func(KernelKill) bool) bool {
+		i := slices.IndexFunc(kills, match)
+		if i >= 0 {
+			r.KillSource, r.Node = kills[i].Source, cmp.Or(r.Node, kills[i].Node)
 		}
+		return i >= 0
 	}
-	for _, k := range kills {
-		if k.Constraint == "CONSTRAINT_NONE" {
-			return set(DeathPlatform, RuleNodeOOM)
-		}
+
+	if killed(func(k KernelKill) bool { return k.Source == "guard" }) {
+		return set(DeathPlatform, RuleGuardKill)
+	}
+	if killed(func(k KernelKill) bool { return k.Constraint == "CONSTRAINT_NONE" }) {
+		return set(DeathPlatform, RuleNodeOOM)
 	}
 	evicted := f.Pod.Reason == "Evicted"
 	if evicted && strings.HasPrefix(f.Pod.Message, "The node was low on resource") {
@@ -156,7 +160,7 @@ func Classify(f DeathFacts) DeathRecord {
 		return set(DeathPlatform, RuleDeleted)
 	}
 	oom := slices.IndexFunc(f.Pod.Containers, func(c ContainerState) bool { return c.State == "terminated" && c.Reason == "OOMKilled" })
-	if oom >= 0 || slices.ContainsFunc(kills, func(k KernelKill) bool { return k.Constraint == "CONSTRAINT_MEMCG" }) {
+	if memcg := killed(func(k KernelKill) bool { return k.Constraint == "CONSTRAINT_MEMCG" }); oom >= 0 || memcg {
 		// A kernel kill names no container: the limit is the ended one's.
 		if oom < 0 {
 			oom = failed
@@ -217,7 +221,7 @@ func (r DeathRecord) Short() string {
 	case RuleNodeOOM:
 		return "the node ran out of memory"
 	case RuleNodePressure:
-		return "the node ran low on " + r.Resource
+		return "the node ran low on " + r.lowOn()
 	case RuleNodeRebooted:
 		return "the node restarted"
 	case RuleNodeNotReady:
@@ -271,20 +275,28 @@ func classLine(r DeathRecord, lastPush string) string {
 	at := clock(r.At)
 	switch r.Class {
 	case DeathPlatform:
+		node, on := "Its node", ""
+		if r.Node != "" {
+			node, on = "The node "+r.Node, " on "+r.Node
+		}
 		var sentence string
 		switch r.Rule {
 		case RuleGuardKill:
-			sentence = "The node's memory guard killed its pod on " + r.Node + " at " + at + " UTC."
+			sentence = "The node's memory guard killed its pod" + on + " at " + at + " UTC."
 		case RuleNodeOOM:
-			sentence = "The node " + r.Node + " ran out of memory at " + at + " UTC, and the kernel killed its pod."
+			sentence = node + " ran out of memory at " + at + " UTC, and the kernel killed its pod."
 		case RuleNodePressure:
-			sentence = "The node " + r.Node + " ran low on " + r.Resource + " at " + at + " UTC, and Kubernetes evicted its pod."
+			sentence = node + " ran low on " + r.lowOn() + " at " + at + " UTC, and Kubernetes evicted its pod."
 		case RuleNodeRebooted:
-			sentence = "The node " + r.Node + " restarted at about " + at + " UTC."
+			sentence = node + " restarted at about " + at + " UTC."
 		case RuleNodeNotReady:
-			sentence = "The node " + r.Node + " stopped answering at about " + at + " UTC."
+			sentence = node + " stopped answering at about " + at + " UTC."
 		case RuleDisruption:
-			sentence = "Kubernetes stopped its pod at " + at + " UTC (" + r.Condition + ")."
+			sentence = "Kubernetes stopped its pod at " + at + " UTC"
+			if why, ok := disruptionWhy[r.Condition]; ok {
+				sentence += ": " + why
+			}
+			sentence += "."
 		case RuleGoneAfterRestart:
 			sentence = "Its pod was gone when the factory restarted at " + at + " UTC."
 		case RuleDeleted:
@@ -299,8 +311,8 @@ func classLine(r DeathRecord, lastPush string) string {
 		return "Your previous session did not fail on its own. " + sentence + " " + lost + " That session does not count against the card."
 	case DeathOwnLimit:
 		ran := ""
-		if r.LastCommand != "" {
-			ran = " while it ran `" + cutCommand(r.LastCommand) + "`"
+		if c := oneLine(r.LastCommand); c != "" {
+			ran = " while it ran " + codeSpan(textutil.Truncate(c, commandCut))
 		}
 		switch r.Rule {
 		case RuleMemoryLimit:
@@ -347,16 +359,17 @@ func restartLine(s ServiceRestart) string {
 
 func clock(t time.Time) string { return t.UTC().Format("15:04") }
 
-func cutCommand(c string) string {
-	if len(c) <= commandCut {
-		return c
-	}
-	n := commandCut
-	for n > 0 && !utf8.RuneStart(c[n]) {
-		n--
-	}
-	return c[:n] + "…"
+// disruptionWhy says why Kubernetes stopped a pod, by its DisruptionTarget
+// condition's reason.
+var disruptionWhy = map[string]string{
+	"PreemptionByScheduler":  "a pod of higher priority took its place",
+	"DeletionByTaintManager": "its node was marked for eviction",
+	"EvictionByEvictionAPI":  "an eviction request",
+	"DeletionByPodGC":        "the cleanup of pods on a lost node",
+	"TerminationByKubelet":   "the node's kubelet ended it",
 }
+
+func (r DeathRecord) lowOn() string { return cmp.Or(r.Resource, "resources") }
 
 func quantity(q string) string {
 	for _, u := range []string{"Ki", "Mi", "Gi", "Ti"} {

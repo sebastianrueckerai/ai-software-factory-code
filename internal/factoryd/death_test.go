@@ -96,6 +96,39 @@ func TestClassifyFollowsTheRules(t *testing.T) {
 		if c.rule == RuleDisruption && r.Condition != "TerminationByKubelet" {
 			t.Errorf("%s: condition = %q", c.name, r.Condition)
 		}
+		if want := map[string]string{"guard": "guard", "node oom": "kernel", "memcg kill": "kernel"}[c.name]; r.KillSource != want {
+			t.Errorf("%s: kill source = %q; want %q", c.name, r.KillSource, want)
+		}
+	}
+}
+
+func TestClassifyTakesTheNodeFromTheKill(t *testing.T) {
+	for _, k := range []KernelKill{killAt("guard", "", deathEnd), killAt("kernel", "CONSTRAINT_NONE", deathEnd), killAt("kernel", "CONSTRAINT_MEMCG", deathEnd)} {
+		k.Node = "sf-3"
+		f := deathFacts()
+		f.Pod.Node = ""
+		f.Kills = []KernelKill{k}
+		if r := Classify(f); r.Node != "sf-3" {
+			t.Errorf("%s %s kill on sf-3 with no pod node: node %q", k.Source, k.Constraint, r.Node)
+		}
+	}
+}
+
+func TestClassifyIgnoresOtherPodsKills(t *testing.T) {
+	f := deathFacts()
+	other := killAt("guard", "", deathEnd)
+	other.PodUID = "0f1e2d3c-4b5a-6978-8091-a2b3c4d5e6f7"
+	f.Kills = []KernelKill{other}
+	if r := Classify(f); r.Class != DeathUnknown {
+		t.Errorf("another pod's kill = %s %s", r.Class, r.Rule)
+	}
+	f = deathFacts()
+	f.Pod.UID = ""
+	unnamed := killAt("guard", "", deathEnd)
+	unnamed.PodUID = ""
+	f.Kills = []KernelKill{unnamed}
+	if r := Classify(f); r.Class != DeathUnknown {
+		t.Errorf("a kill naming no pod, for a pod of no UID = %s %s", r.Class, r.Rule)
 	}
 }
 
@@ -125,6 +158,39 @@ func TestClassifyOrder(t *testing.T) {
 	f.Pod.Deleting = true
 	if r := Classify(f); r.Class != DeathUnknown {
 		t.Errorf("a factory stop of a deleting pod = %s %s", r.Class, r.Rule)
+	}
+
+	// Every rule's fact at once, then each winner's fact peeled off: each
+	// rule must beat every rule after it.
+	in := deathEnd.Add(-time.Minute)
+	f = deathFacts()
+	f.Kills = []KernelKill{killAt("guard", "", in), killAt("kernel", "CONSTRAINT_NONE", in), killAt("kernel", "CONSTRAINT_MEMCG", in)}
+	f.Pod.Reason, f.Pod.Message = "Evicted", "The node was low on resource: memory. "
+	f.BootAtStart, f.Node = "boot-1", &NodeState{Name: "sf-2", BootID: "boot-2"}
+	f.Pod.Conditions = []PodCondition{{Type: "DisruptionTarget", Status: "True", Reason: "PreemptionByScheduler"}}
+	f.AfterRestart, f.PodGone = true, true
+	f.Pod.Containers = []ContainerState{{Name: "agent", State: "terminated", Reason: "OOMKilled", ExitCode: 137}}
+	for _, step := range []struct {
+		rule   DeathRule
+		source string
+		peel   func()
+	}{
+		{RuleGuardKill, "guard", func() { f.Kills = f.Kills[1:] }},
+		{RuleNodeOOM, "kernel", func() { f.Kills = f.Kills[1:] }},
+		{RuleNodePressure, "", func() { f.Pod.Message = `Usage of EmptyDir volume "tmp" exceeds the limit "4Gi". ` }},
+		{RuleNodeRebooted, "", func() { f.Node.BootID = "boot-1" }},
+		{RuleNodeNotReady, "", func() { f.Node.Ready = true }},
+		{RuleDisruption, "", func() { f.Pod.Conditions = nil }},
+		{RuleGoneAfterRestart, "", func() { f.AfterRestart = false }},
+		{RuleDeleted, "", func() { f.PodGone = false }},
+		{RuleMemoryLimit, "kernel", func() { f.Kills, f.Pod.Containers = nil, nil }},
+		{RuleStorageLimit, "", func() { f.Pod.Reason = "" }},
+		{RuleNone, "", func() {}},
+	} {
+		if r := Classify(f); r.Rule != step.rule || r.KillSource != step.source {
+			t.Fatalf("got %s %q; want %s %q", r.Rule, r.KillSource, step.rule, step.source)
+		}
+		step.peel()
 	}
 }
 
@@ -159,7 +225,12 @@ func TestGateLinesExact(t *testing.T) {
 	if got := GateLines(mem, ""); len(got) != 1 || got[0] != want {
 		t.Errorf("memory lines = %q", got)
 	}
-	mem.Limit, mem.LastCommand = "", ""
+	mem.LastCommand = "echo `date`\n  go test ./..."
+	want = "Your previous session's pod reached its 4 GiB memory limit while it ran ``echo `date` go test ./...``, and the kernel killed it."
+	if got := GateLines(mem, ""); len(got) != 1 || got[0] != want {
+		t.Errorf("two-line command lines = %q", got)
+	}
+	mem.Limit, mem.LastCommand = "", " \n "
 	want = "Your previous session's pod reached its memory limit, and the kernel killed it."
 	if got := GateLines(mem, ""); len(got) != 1 || got[0] != want {
 		t.Errorf("bare memory lines = %q", got)
@@ -203,7 +274,19 @@ func TestGateLinesRuleSentences(t *testing.T) {
 		{DeathRecord{Rule: RuleNodePressure, Node: "sf-2", Resource: "memory"}, "The node sf-2 ran low on memory at 14:02 UTC, and Kubernetes evicted its pod."},
 		{DeathRecord{Rule: RuleNodeRebooted, Node: "sf-2"}, "The node sf-2 restarted at about 14:02 UTC."},
 		{DeathRecord{Rule: RuleNodeNotReady, Node: "sf-2"}, "The node sf-2 stopped answering at about 14:02 UTC."},
-		{DeathRecord{Rule: RuleDisruption, Condition: "TerminationByKubelet"}, "Kubernetes stopped its pod at 14:02 UTC (TerminationByKubelet)."},
+		{DeathRecord{Rule: RuleNodePressure, Node: "sf-2"}, "The node sf-2 ran low on resources at 14:02 UTC, and Kubernetes evicted its pod."},
+		{DeathRecord{Rule: RuleGuardKill}, "The node's memory guard killed its pod at 14:02 UTC."},
+		{DeathRecord{Rule: RuleNodeOOM}, "Its node ran out of memory at 14:02 UTC, and the kernel killed its pod."},
+		{DeathRecord{Rule: RuleNodePressure, Resource: "memory"}, "Its node ran low on memory at 14:02 UTC, and Kubernetes evicted its pod."},
+		{DeathRecord{Rule: RuleNodeRebooted}, "Its node restarted at about 14:02 UTC."},
+		{DeathRecord{Rule: RuleNodeNotReady}, "Its node stopped answering at about 14:02 UTC."},
+		{DeathRecord{Rule: RuleDisruption, Condition: "TerminationByKubelet"}, "Kubernetes stopped its pod at 14:02 UTC: the node's kubelet ended it."},
+		{DeathRecord{Rule: RuleDisruption, Condition: "PreemptionByScheduler"}, "Kubernetes stopped its pod at 14:02 UTC: a pod of higher priority took its place."},
+		{DeathRecord{Rule: RuleDisruption, Condition: "DeletionByTaintManager"}, "Kubernetes stopped its pod at 14:02 UTC: its node was marked for eviction."},
+		{DeathRecord{Rule: RuleDisruption, Condition: "EvictionByEvictionAPI"}, "Kubernetes stopped its pod at 14:02 UTC: an eviction request."},
+		{DeathRecord{Rule: RuleDisruption, Condition: "DeletionByPodGC"}, "Kubernetes stopped its pod at 14:02 UTC: the cleanup of pods on a lost node."},
+		{DeathRecord{Rule: RuleDisruption, Condition: "SomeNewReason"}, "Kubernetes stopped its pod at 14:02 UTC."},
+		{DeathRecord{Rule: RuleDisruption}, "Kubernetes stopped its pod at 14:02 UTC."},
 		{DeathRecord{Rule: RuleGoneAfterRestart}, "Its pod was gone when the factory restarted at 14:02 UTC."},
 		{DeathRecord{Rule: RuleDeleted}, "Something outside the factory deleted its pod at 14:02 UTC."},
 	} {
@@ -223,6 +306,18 @@ func TestGateLinesCaps(t *testing.T) {
 	}
 	if got := GateLines(r, ""); len(got) != 3 {
 		t.Errorf("four restarts gave %d lines", len(got))
+	}
+	r.Restarts = []ServiceRestart{
+		{Service: ServiceLiteLLM, From: at.Add(8 * time.Minute), Until: at.Add(9 * time.Minute)},
+		{Service: ServiceGateway, From: at.Add(3 * time.Minute), Until: at.Add(4 * time.Minute)},
+		{Service: ServiceForgejo, From: at, Until: at.Add(time.Minute)},
+	}
+	oldest := []string{
+		"Forgejo restarted from 14:02 to 14:03 UTC during your previous session. Git errors in that window came from the restart.",
+		"The model gateway restarted from 14:05 to 14:06 UTC during your previous session. Model call errors in that window came from the restart.",
+	}
+	if got := GateLines(r, ""); len(got) != 3 || got[1] != oldest[0] || got[2] != oldest[1] {
+		t.Errorf("restarts given newest first = %q; want the two oldest, oldest first", got)
 	}
 
 	vol := strings.Repeat("v", 63)
@@ -267,5 +362,8 @@ func TestDeathRecordShort(t *testing.T) {
 		if got := (DeathRecord{Rule: rule, Resource: "ephemeral-storage"}).Short(); got != want {
 			t.Errorf("Short(%s) = %q; want %q", rule, got, want)
 		}
+	}
+	if got := (DeathRecord{Rule: RuleNodePressure}).Short(); got != "the node ran low on resources" {
+		t.Errorf("Short of a pressure with no resource = %q", got)
 	}
 }
