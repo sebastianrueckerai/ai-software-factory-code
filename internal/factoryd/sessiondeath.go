@@ -8,8 +8,6 @@ import (
 	"log"
 	"slices"
 	"time"
-
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // deathReader reads how a pod ended: the pod, its node, its kills in the
@@ -47,8 +45,9 @@ const (
 	killPoll  = 15 * time.Second
 	// deathMargin is the time a read leaves before its context's deadline
 	// for the rest of the end it is part of.
-	deathMargin   = 30 * time.Second
-	eventMessageB = 200
+	deathMargin = 30 * time.Second
+	// evictionChars bounds the kubelet's eviction message a record keeps.
+	evictionChars = 200
 	// restartKill is how close to a restart a kill of its pod names its
 	// cause.
 	restartKill = time.Minute
@@ -196,8 +195,14 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		log.Printf("death of pod %s/%s: read its events: %v", in.ns, in.pod, err)
 	}
 	for _, e := range events {
-		e.Message = textutil.Truncate(e.Message, eventMessageB)
+		e.Message = ""
 		r.Events = append(r.Events, e)
+	}
+	if f.Pod.Reason == "Evicted" {
+		r.Eviction = f.Pod.Message
+		if m := []rune(r.Eviction); len(m) > evictionChars {
+			r.Eviction = string(m[:evictionChars]) + "…"
+		}
 	}
 	r.Started = in.started
 	r.Restarts = d.restarts(ctx, in, life)

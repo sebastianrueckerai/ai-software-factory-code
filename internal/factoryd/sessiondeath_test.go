@@ -13,14 +13,12 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // scriptedKernel answers each call, counted from 1: kills names its
@@ -525,12 +523,11 @@ func TestAGoneNodeIsAPlatformDeath(t *testing.T) {
 // The incident log names the pod's kills, which a kernel source without
 // them does not, once each; the restarts of the pod's life, a kill of the
 // service's own pod within a minute naming the cause; and the pod's events,
-// each message cut.
+// with no message.
 func TestTheIncidentLogNamesKillsAndRestarts(t *testing.T) {
 	ctx := context.Background()
 	kube, in := deadPod()
-	long := strings.Repeat("é", 150)
-	kube.podEvents = map[string][]PodEvent{"ns/worker-s1": {{Reason: "Killing", Type: "Normal", Message: long, At: in.ended}}}
+	kube.podEvents = map[string][]PodEvent{"ns/worker-s1": {{Reason: "Killing", Type: "Normal", Message: "Stopping container worker", At: in.ended}}}
 	kill := KernelKill{Source: "guard", Node: "sf-1", PodUID: deathUID, At: in.started.Add(5 * time.Minute), Seq: 40}
 	forgejoAt, until := in.started.Add(3*time.Minute), in.started.Add(4*time.Minute)
 	cluster := newFakeClusterStore()
@@ -559,8 +556,8 @@ func TestTheIncidentLogNamesKillsAndRestarts(t *testing.T) {
 	if len(r.Lines) != 3 || !strings.Contains(r.Lines[2], "Forgejo restarted from") || !strings.Contains(r.Lines[2], "The node's memory guard killed it.") {
 		t.Fatalf("lines = %q, want the class line and both restarts", r.Lines)
 	}
-	if len(r.Events) != 1 || r.Events[0].Message != textutil.Truncate(long, eventMessageB) || len(r.Events[0].Message) > eventMessageB+len("…") || !utf8.ValidString(r.Events[0].Message) {
-		t.Fatalf("events = %+v, want the message cut to %d bytes on a character", r.Events, eventMessageB)
+	if want := []PodEvent{{Reason: "Killing", Type: "Normal", At: in.ended}}; !reflect.DeepEqual(r.Events, want) {
+		t.Fatalf("events = %+v, want %+v: no message", r.Events, want)
 	}
 
 	stored := deathReader{kube: kube, cluster: cluster}.read(ctx, in)
@@ -695,24 +692,29 @@ func TestANodeNotReadyDuringTheSessionIsPlatform(t *testing.T) {
 	}
 }
 
-// The pod's events stay on the stored record: the result the workflow
-// takes, which rides the trip into the case facts, carries the class, the
-// rule and the lines, and no kubelet text.
+// The stored record keeps the pod's events without their messages, and the
+// kubelet's eviction message cut to 200 characters, the one text it holds.
+// The result the workflow takes, which rides the trip into the case facts,
+// carries the class, the rule and the lines, and no kubelet text.
 func TestTheEventsStayOnTheStoredRecord(t *testing.T) {
-	const msg = "The node was low on resource: memory. Threshold quantity: 100Mi, available: 50Mi."
+	msg := "The node was low on resource: memory. Threshold quantity: 100Mi, available: 50Mi. " + strings.Repeat("é", 200)
 	var kube *fakeKube
 	g := newDeathRig(t, "t5e", func(p *fakePod) {
 		p.reason, p.message = "Evicted", msg
-		kube.podEvents = map[string][]PodEvent{p.ns + "/" + p.name: {{Reason: "Evicted", Type: "Warning", Message: msg}}}
+		kube.podEvents = map[string][]PodEvent{p.ns + "/" + p.name: {{Reason: "Evicted", Type: "Warning", Message: msg, Count: 1}}}
 	})
 	kube = g.kube
 	res := g.run(t, modelCall)
 	stored := g.stored(t, "t5e", res.SessionID)
-	if len(stored.Events) != 1 || stored.Events[0].Message != msg {
-		t.Fatalf("stored events = %+v, want the eviction", stored.Events)
+	if want := []PodEvent{{Reason: "Evicted", Type: "Warning", Count: 1}}; !reflect.DeepEqual(stored.Events, want) {
+		t.Fatalf("stored events = %+v, want %+v: the eviction with no message", stored.Events, want)
 	}
-	if d := res.Death; d == nil || d.Events != nil || d.Class != DeathPlatform || d.Rule != RuleNodePressure || len(d.Lines) != 1 || !slices.Equal(d.Lines, stored.Lines) {
-		t.Fatalf("the result's death = %+v, want the stored one's class, rule and lines without its events", d)
+	if want := string([]rune(msg)[:200]) + "…"; stored.Eviction != want {
+		t.Fatalf("stored eviction = %q, want the kubelet's message cut to 200 characters %q", stored.Eviction, want)
+	}
+	if d := res.Death; d == nil || d.Events != nil || d.Eviction != "" || d.Class != DeathPlatform || d.Rule != RuleNodePressure ||
+		len(d.Lines) != 1 || !slices.Equal(d.Lines, stored.Lines) {
+		t.Fatalf("the result's death = %+v, want the stored one's class, rule and lines without its events and eviction", d)
 	}
 }
 

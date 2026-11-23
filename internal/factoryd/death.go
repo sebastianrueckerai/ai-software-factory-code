@@ -100,8 +100,12 @@ type DeathRecord struct {
 	KillSource  string           `json:"kill_source,omitempty"`
 	LastCommand string           `json:"last_command,omitempty"`
 	Restarts    []ServiceRestart `json:"restarts,omitempty"`
-	Events      []PodEvent       `json:"events,omitempty"`
-	Lines       []string         `json:"lines,omitempty"`
+	// Events hold no message, and Eviction is the kubelet's eviction
+	// message cut to evictionChars: the one text a record keeps, on the
+	// stored record alone
+	Events   []PodEvent `json:"events,omitempty"`
+	Eviction string     `json:"eviction,omitempty"`
+	Lines    []string   `json:"lines,omitempty"`
 }
 
 var (
