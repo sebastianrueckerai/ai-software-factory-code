@@ -174,7 +174,7 @@ func (s *PGStore) CIDeath(ctx context.Context, runner string) (DeathRecord, bool
 
 func (s *PGStore) PlatformDeaths(ctx context.Context, since time.Time) ([]PodDeath, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT kind, coalesce(task_id, ''), session_id, runner, record FROM pod_deaths
-		WHERE class = 'platform' AND at >= $1 ORDER BY at DESC, key`, since)
+		WHERE class = 'platform' AND at >= $1 ORDER BY at DESC, key COLLATE "C"`, since)
 	if err != nil {
 		return nil, err
 	}

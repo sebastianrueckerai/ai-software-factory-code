@@ -1,7 +1,9 @@
 package factoryd
 
 import (
+	"cmp"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -209,14 +211,20 @@ func TestClusterStoreFakeMatchesPostgres(t *testing.T) {
 			{Kind: "gate", Record: DeathRecord{Class: DeathPlatform, At: when, PodUID: "x"}},
 			{Kind: "ci", Runner: "b", Record: DeathRecord{Class: DeathPlatform, At: when}},
 			{Kind: "ci", Runner: "a", Record: DeathRecord{Class: DeathPlatform, At: when}},
+			{Kind: "ci", Runner: "ab", Record: DeathRecord{Class: DeathPlatform, At: when}},
+			{Kind: "ci", Runner: "a-c", Record: DeathRecord{Class: DeathPlatform, At: when}},
 		} {
 			if err := cs.PutPodDeath(ctx, d); err != nil {
 				t.Fatal(err)
 			}
 		}
 		got, err := cs.PlatformDeaths(ctx, clk(9, 0))
-		if err != nil || len(got) != 3 || got[0].Runner != "a" || got[1].Runner != "b" || got[2].Kind != "gate" {
-			t.Fatalf("deaths %+v, %v; want ci/a, ci/b, gate/x", got, err)
+		var order []string
+		for _, d := range got {
+			order = append(order, cmp.Or(d.Runner, d.Kind))
+		}
+		if want := []string{"a", "a-c", "ab", "b", "gate"}; err != nil || !slices.Equal(order, want) {
+			t.Fatalf("deaths %v, %v; want byte order of the keys %v", order, err, want)
 		}
 		if _, err := cs.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "k", At: when, Kind: IncidentNodeBoot, Subject: "n1"}}); err != nil {
 			t.Fatal(err)
