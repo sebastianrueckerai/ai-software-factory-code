@@ -486,6 +486,8 @@ func init() {
 			"Several starts in a row waited for a machine with room, and no agent ran."),
 		CaseProviderRefused: modelStop("The model provider refused the card's last starts.",
 			"The provider turned down the first call of several starts in a row."),
+		CasePlatformFault: modelStop("The platform ended the card's last sessions.",
+			"The machines the card's sessions ran on ended several in a row, not the card's own work."),
 		CaseNoAnswer: modelStop("The model gave no answer to the card's last starts.",
 			"Several starts in a row ended without an answer from the model."),
 		CaseContentFilter: modelStop("The provider's content filter refused the session.",
@@ -655,6 +657,7 @@ var stopSentences = map[CaseKind]func(Facts) string{
 	CaseWaitExpired:      waitedLine,
 	CasePodNeverStarted:  inARow(`(\d+) sessions in a row waited`),
 	CaseProviderRefused:  inARow(`first call of (\d+) sessions in a row`),
+	CasePlatformFault:    platformLine,
 	CaseNoAnswer:         inARow(`(\d+) sessions in a row ended without one`),
 	CaseContentFilter:    fixed("The provider's content filter refused the request of the last session."),
 	CaseImageWait:        imageWaitLine,
@@ -873,6 +876,20 @@ func inARow(shape string) func(Facts) string {
 		n, _ := strconv.Atoi(m[1])
 		return plural(n, "start") + " in a row failed."
 	}
+}
+
+// platformRow reads the count and the last end of PlatformEndedReason.
+var platformRow = regexp.MustCompile(`(\d+) in a row\. The last: (.+)\.$`)
+
+// platformLine names the sessions in a row the platform ended and how it
+// ended the last.
+func platformLine(f Facts) string {
+	m := platformRow.FindStringSubmatch(factString(f.Case, "reason"))
+	if m == nil {
+		return ""
+	}
+	n, _ := strconv.Atoi(m[1])
+	return fmt.Sprintf("The platform ended %s in a row; in the last one, %s.", plural(n, "session"), m[2])
 }
 
 // imageTool reads the tool card an image wait waits for and its tool.

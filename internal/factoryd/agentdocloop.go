@@ -93,7 +93,8 @@ func agentDocLoopPosters() (kept []string, notes []string) {
 // agentDocLoopBrief is the fixture task's brief as the mode's session
 // reads it: the direct fixture's task — the same outside issue on the same
 // repository — with what a loop session carries: the class's tools,
-// factoryd's facts, the mode's guide.
+// factoryd's facts, the mode's guide. The coding session follows one the
+// platform ended, so its findings hold the platform's line.
 func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	b := agentDocObjective()
 	b.IssueURL = "https://git.example/owner/name/issues/7"
@@ -107,6 +108,8 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 		b.Facts = SessionFacts{BudgetEUR: 5, ReserveEUR: v.Document.Limits.GateReserve(), TimeLeft: 29 * time.Minute}.Line()
 	}
 	switch id {
+	case "coding":
+		b.Findings = GateLines(DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, Node: "sf-2", At: time.Date(2026, 11, 21, 14, 2, 0, 0, time.UTC)}, "abc1234")
 	case "screening":
 		b.Report = (&Runner{}).reportGuide()
 	case "sizing":
@@ -181,6 +184,15 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 				Text: "\n\nPoster information (oldest first):"},
 			agentdoc.Span{Name: "the author's answers", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
 				Text: posters.String()})
+	}
+	if len(b.Findings) > 0 {
+		var lines strings.Builder
+		for _, f := range b.Findings {
+			fmt.Fprintf(&lines, "\n- %s", f)
+			s = append(s, agentdoc.Span{Name: "the platform's line", Symbol: "GateLines", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: f})
+		}
+		s = append(s, agentdoc.Span{Name: "the findings", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: "\nFindings from earlier attempts:" + lines.String() + "\nEnd the session with one line per finding you were given: fixed, disputed with the reason, or open."})
 	}
 	if len(b.Tools) > 0 {
 		s = append(s, agentdoc.Span{Name: "the tools line", Symbol: "toolsLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,

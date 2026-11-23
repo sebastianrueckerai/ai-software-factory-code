@@ -2223,7 +2223,7 @@ func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time
 		(SELECT count(DISTINCT st.detail->>'session')::float8 FROM events st
 			WHERE st.task_id = m.task_id AND st.kind = 'session_started' AND st.detail->>'session' <> '') AS starts,
 		(SELECT count(DISTINCT en.detail->>'session')::float8 FROM events en
-			WHERE en.task_id = m.task_id AND en.kind = 'session_end' AND en.detail->>'outcome' <> 'not_started'
+			WHERE en.task_id = m.task_id AND en.kind = 'session_end' AND en.detail->>'outcome' NOT IN ('not_started', 'platform_killed')
 				AND NOT EXISTS (SELECT 1 FROM events st WHERE st.task_id = en.task_id
 					AND st.kind = 'session_started' AND st.detail->>'session' = en.detail->>'session')) AS ends_no_start
 		FROM (SELECT DISTINCT ON (e.task_id) e.task_id, e.at
@@ -2255,14 +2255,15 @@ func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time
 // metricDivideSessionEnds — panel 3: the window's session ends by
 // cause, ordered by count descending then name. The causes are the
 // session outcomes the runner records; a not_started end is no
-// session's — a pod that never became one — so however its row landed,
-// it inflates no distribution. An end whose start row is missing stays
+// session's — a pod that never became one — and a platform_killed end
+// is the cluster's, not the card's, so however their rows landed, they
+// inflate no distribution. An end whose start row is missing stays
 // the fact it is: the ends panel keeps it, the sessions panel's
 // coverage names the hole.
 func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
 	rows, err := db.QueryContext(ctx, `SELECT e.detail->>'outcome', count(*)::float8
 		FROM events e JOIN tasks t ON t.id = e.task_id
-		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.detail->>'outcome' <> 'not_started'
+		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.detail->>'outcome' NOT IN ('not_started', 'platform_killed')
 			AND e.at >= $2 AND e.at < $3
 		GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To)
 	if err != nil {

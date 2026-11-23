@@ -1601,7 +1601,7 @@ func tripNext(c Case, reason string) string {
 		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
-	case CaseCheckinHuman, CasePolicyClass, CasePodNeverStarted, CaseProviderRefused,
+	case CaseCheckinHuman, CasePolicyClass, CasePodNeverStarted, CaseProviderRefused, CasePlatformFault,
 		CaseContentFilter, CaseAgentEscalate, CaseOther:
 		if no := noRoom(c, false, false); no != "" {
 			return no

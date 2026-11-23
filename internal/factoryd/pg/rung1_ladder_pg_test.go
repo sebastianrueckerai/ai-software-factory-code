@@ -380,6 +380,32 @@ func TestRung1SkipsHumanCardsAndMergeApprovals(t *testing.T) {
 	}
 }
 
+// A case of sessions the platform ended goes from rung 0 to rung 2: rung 1
+// reads one card's session, and the platform's fault is no session's, so
+// no conversation runs and rung 1 records no step, while the same rig's
+// rung 1 takes pods that never started.
+func TestPlatformFaultSkipsTheCheckin(t *testing.T) {
+	for reason, kind := range map[string]CaseKind{
+		PlatformEndedReason(3, DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill}): CasePlatformFault,
+		podNeverStarted + "3 sessions in a row waited for it":                          CasePodNeverStarted,
+	} {
+		g := newRungRig(t, "success")
+		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: reason}, tripAttempt{N: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.settle()
+		want, judged := 1, true
+		if kind == CasePlatformFault {
+			want, judged = 2, false
+		}
+		stepped := slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 })
+		if c := caseByID(t, g.s, out.CaseID); c.Kind != kind || out.Rung != want || stepped != judged || (g.chat.calls != 0) != judged {
+			t.Fatalf("%s: case %s at rung %d, a step of rung 1 %v, %d conversations; want rung %d, rung 1 judging %v", kind, c.Kind, out.Rung, stepped, g.chat.calls, want, judged)
+		}
+	}
+}
+
 // With escalation.judgment autonomous_and_above on a manual project rung 1
 // does not judge: no conversation and no step of rung 1, and rung 2 takes
 // the case, with no face yet.

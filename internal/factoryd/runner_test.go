@@ -1850,6 +1850,59 @@ func TestRunSessionLiveCheckinOpensWithThePolicysCalls(t *testing.T) {
 	}
 }
 
+// stalledOn is a live session on node sf-1 of state node whose log hangs,
+// so the no_progress detector trips after a second.
+func stalledOn(t *testing.T, node NodeState, answers ...CheckinResponse) (*Runner, *scriptedChat, *placeSpy) {
+	runner, _, kube, _, chat, store, _ := liveRig(t, answers...)
+	kube.nodeStates = map[string]NodeState{"sf-1": node}
+	kube.onCreatePod = func() {
+		p := kube.podOrder[len(kube.podOrder)-1]
+		p.uid, p.node = deathUID, "sf-1"
+	}
+	spy := &placeSpy{Store: store}
+	runner.store, runner.tick = spy, 100*time.Millisecond
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 1})
+	return runner, chat, spy
+}
+
+// A session that stops making progress on a node gone NotReady is the
+// platform's death: it ends at once as platform_killed on the trip, with
+// no check-in call and no wait of the stop's minute of grace for a log the
+// lost node never closes, its stop written to its row for its owner.
+func TestNoProgressOnALostNodeEndsWithoutACheckin(t *testing.T) {
+	runner, chat, spy := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: false}, CheckinResponse{Text: `{"decision":"continue"}`})
+	runner.stopWait = time.Minute
+	began := time.Now()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, hangLogs)
+	if err != nil || res.Outcome != OutcomePlatformKilled || res.Trip != string(TripNoProgress) || res.Death == nil || res.Death.Rule != RuleNodeNotReady {
+		t.Fatalf("result = (%+v, %v), death %+v; want platform_killed on the no_progress trip, by the node gone NotReady", res, err, res.Death)
+	}
+	if chat.calls != 0 {
+		t.Fatalf("check-in calls = %d, want none", chat.calls)
+	}
+	if took := time.Since(began); took > 30*time.Second {
+		t.Fatalf("the session took %s, want its end without the stop's grace", took)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if !slices.Equal(spy.stops, []string{"own"}) {
+		t.Fatalf("stops written %q, want the stop on the session's row, for its owner", spy.stops)
+	}
+}
+
+// On a node that stays Ready the stall is the session's own: the check-in
+// judges it as before, and the end keeps no death of the trip's read.
+func TestNoProgressOnAHealthyNodeStillAsksTheCheckin(t *testing.T) {
+	runner, chat, _ := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: true}, CheckinResponse{Text: `{"decision":"handover","handover":"stop here"}`})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, hangLogs)
+	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripNoProgress) || res.Death != nil {
+		t.Fatalf("result = (%+v, %v), death %+v; want the check-in's handover on the no_progress trip, no death", res, err, res.Death)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("check-in calls = %d, want the trip's one", chat.calls)
+	}
+}
+
 // The check-in's provider refusing every call is not a stop: the session
 // continues on the refusal's deterministic continue, the timeline and the
 // record say why, and the next trip asks again.

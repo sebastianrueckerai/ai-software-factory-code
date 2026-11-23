@@ -16,7 +16,7 @@ func CaseKinds() []CaseKind {
 		CaseNoAnswer, CaseContentFilter, CaseImageWait, CaseScreeningSuspect, CaseAgentEscalate,
 		CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation, CaseMergeApproval, CaseHumanCard,
 		CaseOther, CaseMonitorFlag, CaseJudgmentBudget, CasePolicyClass, CaseRedMain, CaseRollHeld,
-		CaseConfigRefused, CasePlanCriteria, CasePlanHeld, CaseProviderFreeze,
+		CaseConfigRefused, CasePlanCriteria, CasePlanHeld, CaseProviderFreeze, CasePlatformFault,
 	}
 }
 

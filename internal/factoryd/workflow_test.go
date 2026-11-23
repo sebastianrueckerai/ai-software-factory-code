@@ -3160,6 +3160,116 @@ func TestWorkflowPodsThatNeverStartAskAHumanAtTheBound(t *testing.T) {
 	}
 }
 
+// guardLine is the class line of a session the node's memory guard killed.
+const guardLine = "Your previous session did not fail on its own. The node's memory guard killed its pod on sf-2 at 14:02 UTC. " +
+	"Work it did not push is lost. That session does not count against the card."
+
+// platformDeath is a session the node's memory guard killed, as
+// sessionResult ends it.
+func platformDeath(session string) SessionResult {
+	return SessionResult{Outcome: OutcomePlatformKilled, SessionID: session, Summary: "pod exited without a result",
+		Findings: []string{"previous session ended without a pushed commit: pod exited without a result"},
+		Death:    &DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, Node: "sf-2", Lines: []string{guardLine}}}
+}
+
+// A session the platform ended is no attempt, no agent time and no step
+// toward the stronger model: two of 10 minutes each, then one that pushes
+// after 5, are one attempt of 5 minutes on the start model, where two
+// sessions of the card's own without a push would have climbed. The
+// first death's pushed work is the next start, under its session, and
+// each next session is told what ended the one before, and nothing else.
+func TestWorkflowPlatformDeathIsNoAttempt(t *testing.T) {
+	first := platformDeath("s1")
+	first.Commit = "w1"
+	h := newWorkflowHarness(t)
+	deaths := []SessionResult{first, platformDeath("s2")}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return deaths[len(h.sessions)-1], nil
+		}).Times(2)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return pushed("s3", "c1"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 || len(h.escalated) != 0 {
+		t.Fatalf("final = %q after %d sessions, escalations %q; want done after 3, none asked", final, len(h.sessions), h.escalated)
+	}
+	for i, in := range h.sessions {
+		if in.Attempt != 1 || in.Model != "factory/small" {
+			t.Fatalf("session %d = attempt %d on %s, want attempt 1 on factory/small", i+1, in.Attempt, in.Model)
+		}
+	}
+	for i, in := range h.sessions[1:] {
+		if in.StartRef != "w1" || in.ParentSessionID != "s1" || !slices.Equal(in.Findings, []string{guardLine}) {
+			t.Fatalf("session %d starts at %q under %q with findings %q; want w1 under s1, told the death's line alone", i+2, in.StartRef, in.ParentSessionID, in.Findings)
+		}
+	}
+	if want := (TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}); len(h.usage) == 0 || h.usage[len(h.usage)-1] != want {
+		t.Fatalf("usage = %+v, want %+v", h.usage, want)
+	}
+}
+
+// Three sessions in a row the platform ended ask once, from source platform
+// as a platform_fault case whose trip carries the last death; the answer
+// starts the fourth, still attempt 1. Two, then a pushed session, then two
+// more ask nothing: the push ends the row.
+func TestWorkflowThreePlatformDeathsOpenACase(t *testing.T) {
+	h := newWorkflowHarness(t)
+	last := platformDeath("s3")
+	deadSessions(h, platformDeath("s1"), platformDeath("s2"), last, pushed("s4", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the node is back", Comment: 700})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 4 {
+		t.Fatalf("final = %q after %d sessions, want done after 4", final, len(h.sessions))
+	}
+	want := "The platform ended the card's last sessions: 3 in a row. The last: the node's memory guard killed the pod."
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "platform" {
+		t.Fatalf("escalations = %q, want %q from source platform", h.escalated, want)
+	}
+	if kind, _ := CaseKindOf(EscalationSource(want), want); kind != CasePlatformFault || !reflect.DeepEqual(h.trips[0].Death, last.Death) {
+		t.Fatalf("kind %s, trip's death %+v; want platform_fault carrying %+v", kind, h.trips[0].Death, last.Death)
+	}
+	if in := h.sessions[3]; in.Attempt != 1 || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the node is back") {
+		t.Fatalf("fourth session = %+v, want attempt 1 with the answer", in)
+	}
+
+	h = newWorkflowHarness(t)
+	deadSessions(h, platformDeath("s1"), platformDeath("s2"), pushed("s3", "c1"), platformDeath("s4"), platformDeath("s5"), pushed("s6", "c2"))
+	h.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red"}}, ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 6 || len(h.escalated) != 0 {
+		t.Fatalf("final = %q after %d sessions, escalations %q; want done after 6, none asked", final, len(h.sessions), h.escalated)
+	}
+	if in := h.sessions[5]; in.Attempt != 2 {
+		t.Fatalf("sixth session = attempt %d, want 2: only the pushed sessions count", in.Attempt)
+	}
+}
+
+// A session that reached its own pod's limit is an attempt as before, and
+// its death's line rides the next session's findings after its own stop.
+func TestWorkflowOwnLimitDeathHandsOverItsLine(t *testing.T) {
+	line := "Your previous session's pod reached its 4 GiB memory limit while it ran `go test -race ./...`, and the kernel killed it."
+	stop := "previous session ended without a pushed commit: pod exited without a result"
+	h := newWorkflowHarness(t)
+	deadSessions(h, SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "pod exited without a result", Findings: []string{stop},
+		Death: &DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Limit: "4Gi", LastCommand: "go test -race ./...", Lines: []string{line}}},
+		pushed("s2", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, want done after 2", final, len(h.sessions))
+	}
+	if in := h.sessions[1]; in.Attempt != 2 || !slices.Equal(in.Findings, []string{stop, line}) {
+		t.Fatalf("second session = attempt %d with findings %q; want attempt 2 told %q", in.Attempt, in.Findings, []string{stop, line})
+	}
+}
+
 // A report session whose pod never started fails no report task: it runs
 // again at once.
 func TestWorkflowReportRunsAgainWhenItsPodNeverStarted(t *testing.T) {

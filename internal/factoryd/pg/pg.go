@@ -254,6 +254,8 @@ var (
 	CaseKindOf                = factoryd.CaseKindOf
 	CaseNoAnswer              = factoryd.CaseNoAnswer
 	CasePodNeverStarted       = factoryd.CasePodNeverStarted
+	CasePlatformFault         = factoryd.CasePlatformFault
+	PlatformEndedReason       = factoryd.PlatformEndedReason
 	CaseProjectCap            = factoryd.CaseProjectCap
 	CaseProviderRefused       = factoryd.CaseProviderRefused
 	CaseScreeningSuspect      = factoryd.CaseScreeningSuspect

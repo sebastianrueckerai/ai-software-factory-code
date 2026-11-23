@@ -707,6 +707,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"provider", providerRefused + "glm-5", CaseProviderRefused, nil},
 		{"queue", leftQueue, CaseGateStop, nil},
 		{"capacity", podNeverStarted + "3 tries", CasePodNeverStarted, nil},
+		{"platform", PlatformEndedReason(3, DeathRecord{Rule: RuleGuardKill}), CasePlatformFault, nil},
 		{"no_answer", noModelAnswer + "3 sessions", CaseNoAnswer, nil},
 		{"content_filter", ContentFilterRefusal + "the prompt", CaseContentFilter, nil},
 		{"image", ImageWaited + "sf/img:1", CaseImageWait, nil},

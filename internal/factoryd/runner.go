@@ -1100,16 +1100,17 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
 	lines := followed.lines
-	// readDeath reads how the pod ended into out.death; the last push is
-	// the session's own, else its interim one, else the branch's at its
-	// start
-	readDeath := func() {
+	// deathNow reads how the pod ended, or is ending; the last push is the
+	// session's own, else its interim one, else the branch's at its start
+	deathNow := func() DeathRecord {
 		last := cmp.Or(out.commit, out.wip)
 		if last == "" && s.startRef != s.base {
 			last = s.startRef
 		}
-		death := r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
+		return r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
 			stoppedByFactory: stoppedBefore || podStopped.Load() != 0, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
+	}
+	keepDeath := func(death DeathRecord) {
 		out.death = &death
 		log.Printf("task %s: session %s: the pod ended: %s (%s, %s)", t.ID, s.id, death.Short(), death.Class, death.Rule)
 	}
@@ -1121,7 +1122,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
 			how = exitedHow(plain, d)
 		}
-		readDeath()
+		keepDeath(deathNow())
 		if how != "" {
 			return how
 		}
@@ -1177,19 +1178,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		events++
 		return env.Event, false
 	}
-	// stop asks the worker to end (SIGTERM through the pod's deletion) and
-	// reads on until it has pushed its work in progress and reported, or
-	// its grace period is over.
 	// the agent's escalate reaches the session here until it stops
 	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s)})
 	defer unregister()
-	stop := func(trip *Trip) {
+	// halt is the stop without its wait: the stop written to the session's
+	// row, the trip abandoned and the pod deleted; false when the session
+	// is another attempt's
+	halt := func(trip *Trip) bool {
 		// a stopping session takes no escalation: the gateway tells the
 		// agent it did not arrive
 		unregister()
 		if !r.holds(ctx, t.ID, s.owner) {
 			out.superseded = true
-			return
+			return false
 		}
 		if now := time.Now(); podStopped.CompareAndSwap(0, now.UnixNano()) {
 			// a factoryd that dies inside the stop leaves it to the next one
@@ -1200,6 +1201,15 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		out.trip = r.abandon(recorder, trip)
 		if err := r.kube.DeletePod(ctx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: stop pod %s: %v", t.ID, podName, err)
+		}
+		return true
+	}
+	// stop asks the worker to end (SIGTERM through the pod's deletion) and
+	// reads on until it has pushed its work in progress and reported, or
+	// its grace period is over.
+	stop := func(trip *Trip) {
+		if !halt(trip) {
+			return
 		}
 		grace := r.stopWait
 		if !stopAt.IsZero() {
@@ -1267,6 +1277,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return true, errSuperseded
 			}
 			return true, ctx.Err()
+		}
+		if trip.Kind == TripNoProgress {
+			// a session the platform ended makes no progress: it ends at
+			// once, with no check-in, and without the stop's wait for a log
+			// a lost node may never close
+			if death := deathNow(); death.Class == DeathPlatform {
+				if !halt(trip) {
+					return true, errSuperseded
+				}
+				out.noResult = "no progress: " + death.Short()
+				keepDeath(death)
+				return true, ctx.Err()
+			}
 		}
 		// the agent's cut during the conversation does not cut it: the
 		// answer stands, and the cut is the next trip of a session that runs
@@ -1519,7 +1542,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if done {
 				// a stop factoryd did not send is the cluster's SIGTERM
 				if out.result.Stopped && out.trip == nil {
-					readDeath()
+					keepDeath(deathNow())
 				}
 				return out, retry
 			}

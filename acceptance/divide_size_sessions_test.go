@@ -91,10 +91,10 @@ func TestDivideConquerSizeBounds(t *testing.T) {
 // began before the window — a retried start keeps one row, the medium
 // card holds two, and a card no reading covers sits the averages out.
 // The ends count the window's terminal results: a reattached end is one
-// end, a never-started attempt's none, and an end at the window's
-// exclusive end falls outside it. The real exported session producer
-// runs over the seeded store at the last: its reattached replay adds
-// neither a session nor a terminal end.
+// end, a never-started attempt's and a platform death's are none, and an
+// end at the window's exclusive end falls outside it. The real exported
+// session producer runs over the seeded store at the last: its reattached
+// replay adds neither a session nor a terminal end.
 func TestDivideConquerSessions(t *testing.T) {
 	rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
 	holds(t, rig.page(), []string{
@@ -140,6 +140,9 @@ func TestDivideConquerSessions(t *testing.T) {
 	end("sd", string(factoryd.OutcomePushed), "s2", 3, 62, accDay(14))
 	// a never-started attempt ends inside the window: no session's end
 	end("sx", string(factoryd.OutcomeNotStarted), "s2", 4, 62, accDay(7))
+	// a session the platform ended inside the window, its start row
+	// missing: no end of the card's own, and no hole in its starts
+	end("sy", string(factoryd.OutcomePlatformKilled), "s2", 4, 62, accDay(7))
 	// m1: medium, two starts
 	merged("m1", "medium", 63, accDay(9))
 	start("se", "m1", 1, 63, accDay(7))
@@ -168,7 +171,7 @@ func TestDivideConquerSessions(t *testing.T) {
 		"pushed 2 · wall_clock 1",
 		"4 cards · 1 unknown size",
 		"TestDivideConquerSessions in acceptance",
-	}, []string{"pushed 3", "wall_clock 2", "not_started"})
+	}, []string{"pushed 3", "wall_clock 2", "not_started", "platform_killed"})
 
 	// the real exported session producer over the seeded store, the one
 	// whose reattachment the workflow replays: it records no start the

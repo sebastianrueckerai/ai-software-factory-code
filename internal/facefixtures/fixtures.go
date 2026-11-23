@@ -805,6 +805,11 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 			unanswered(f)
 			return factoryd.TripInput{Reason: factoryd.ProviderRefusedReason(6, 429, "budget exhausted")}
 		}},
+	factoryd.CasePlatformFault: {"Board export: compress the nightly snapshot", "Gzip each nightly snapshot before it is written, and read both forms back.",
+		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
+			f.Death = &factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: factoryd.RuleGuardKill, Node: "sf-2", LastCommand: "go test ./export/..."}
+			return factoryd.TripInput{Reason: factoryd.PlatformEndedReason(3, *f.Death), Death: f.Death}
+		}},
 	factoryd.CaseNoAnswer: {"Alerts: group a flapping rule's alerts", "Group the alerts of one rule that fires and clears within ten minutes.",
 		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			unanswered(f)
