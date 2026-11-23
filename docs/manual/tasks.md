@@ -227,7 +227,8 @@ gate pods within 24 hours, across every card, by their death records
 row failed takes on its open issue at the next pass, on whichever of the
 deaths' repositories or the configuration repository holds it. Otherwise
 it files on the repository of the newest death that hit a card, or on the
-configuration repository when none did. Its face counts the deaths and
+configuration repository when none did; a repository whose search fails
+is passed over. Its face counts the deaths and
 lists the newest 10, each with its day and time, the card or CI job it
 hit, its cause and its node. One card is open at a time: its face holds
 every death since 24 hours before its filing, a new death rewrites it

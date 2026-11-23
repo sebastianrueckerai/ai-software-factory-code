@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -83,8 +84,14 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 	if open == nil && len(deaths) < platformDeathsFile {
 		return nil
 	}
+	// an open card names the cards of the deaths it shows; a filing
+	// searches every repository its deaths hit for its stranded issue
+	shown := deaths
+	if open != nil {
+		shown = deaths[:min(len(deaths), platformDeathsShown)]
+	}
 	hit := map[string]Task{}
-	for _, d := range deaths {
+	for _, d := range shown {
 		if _, read := hit[d.TaskID]; d.TaskID == "" || read {
 			continue
 		}
@@ -123,7 +130,8 @@ var platformCardTitle = SourceBriefs[SourcePlatformDeaths](BriefFacts{}).Title
 // repositories the deaths' cards stand on, newest first, then the
 // configuration repository, that holds the bot's open issue of the card's
 // title with no card, which a filing whose row failed left; else the
-// first of them.
+// first of them whose search answered. A repository whose search fails is
+// passed over, and only when every search fails is the filing refused.
 func (w *PlatformCard) fileRepo(ctx context.Context, deaths []PodDeath, hit map[string]Task) (Repo, error) {
 	var repos []Repo
 	for _, d := range deaths {
@@ -140,12 +148,24 @@ func (w *PlatformCard) fileRepo(ctx context.Context, deaths []PodDeath, hit map[
 	if !slices.Contains(repos, w.Repo) {
 		repos = append(repos, w.Repo)
 	}
+	var readable []Repo
+	var errs []error
 	for _, r := range repos {
-		if n, err := strandedIssue(ctx, w.Store, w.Forgejo, r, platformCardTitle); err != nil || n != 0 {
-			return r, err
+		n, err := strandedIssue(ctx, w.Store, w.Forgejo, r, platformCardTitle)
+		switch {
+		case err != nil:
+			log.Printf("platform card: %s is passed over for the filing: %s", r, maskedErr(err))
+			errs = append(errs, err)
+		case n != 0:
+			return r, nil
+		default:
+			readable = append(readable, r)
 		}
 	}
-	return repos[0], nil
+	if len(readable) == 0 {
+		return Repo{}, errors.Join(errs...)
+	}
+	return readable[0], nil
 }
 
 // PlatformDeathsQuestion is the platform card's ask at its filing over
@@ -155,8 +175,11 @@ func PlatformDeathsQuestion(deaths []PodDeath, hit map[string]Task, repo string)
 	b := SourceBriefs[SourcePlatformDeaths](BriefFacts{})
 	q := HumanQuestion{Ask: b.Title, Why: b.Why, Info: platformDeathsInfo(deaths, hit, repo), Choices: choices(ActClose+"/"+variantNoted, KeyPark)}
 	if len(deaths) > 0 {
-		q.Happened = fmt.Sprintf("The platform ended the factory's work %s between %s and %s.",
-			textutil.Plural(len(deaths), "time", "times"), dayStamp(deaths[len(deaths)-1].Record.At), dayStamp(deaths[0].Record.At))
+		span := "at " + dayStamp(deaths[0].Record.At)
+		if oldest := dayStamp(deaths[len(deaths)-1].Record.At); oldest != dayStamp(deaths[0].Record.At) {
+			span = "between " + oldest + " and " + dayStamp(deaths[0].Record.At)
+		}
+		q.Happened = "The platform ended the factory's work " + textutil.Plural(len(deaths), "time", "times") + " " + span + "."
 	}
 	return q
 }
@@ -176,7 +199,7 @@ func platformDeathsInfo(deaths []PodDeath, hit map[string]Task, repo string) str
 		fmt.Fprintf(&b, "- and %d more\n", more)
 	}
 	b.WriteString("\nWhile this card is open, its list in the console grows with each session, CI job or gate pod the platform ends, " +
-		"and no second card is filed. No agent works it: a fix of the nodes needs their admin key, which no agent holds.")
+		"and no second card is filed. No agent works it.")
 	return b.String()
 }
 

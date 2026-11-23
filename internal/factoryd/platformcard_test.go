@@ -22,6 +22,13 @@ type platformStore struct {
 	faces int
 	// failCards is how many card rows still fail, after their issue
 	failCards int
+	// taskReads counts the card reads
+	taskReads int
+}
+
+func (s *platformStore) Task(ctx context.Context, id string) (Task, bool, error) {
+	s.taskReads++
+	return s.fakeStore.Task(ctx, id)
 }
 
 func (s *platformStore) PlatformCards(ctx context.Context) ([]Task, error) {
@@ -124,7 +131,7 @@ func platformHead(n int) string {
 const (
 	platformTitle = "The platform keeps ending the factory's work. Check the nodes."
 	platformTail  = "\n\nWhile this card is open, its list in the console grows with each session, CI job or gate pod the platform ends, " +
-		"and no second card is filed. No agent works it: a fix of the nodes needs their admin key, which no agent holds."
+		"and no second card is filed. No agent works it."
 )
 
 // The three deaths of the rig's first card, newest first: a CI job's at
@@ -287,11 +294,13 @@ func TestPlatformCardKeepsItsDeathsWhileOpen(t *testing.T) {
 	}
 }
 
-// Hand-derived: the card filed at 15:00 for three deaths closes at 15:10.
-// The same three file nothing again, and neither does a death at 15:10,
-// the close itself, beside two later ones. The third death after the
-// close, at 15:50, files a new card, on sf/acme, whose face lists the
-// three later deaths alone.
+// Hand-derived: the card filed at 15:00 for three deaths takes a fourth at
+// 15:05 and closes at 15:10. The same four file nothing again, and neither
+// does a death at 15:10, the close itself, beside two later ones. The
+// third death after the close, at 15:50, files a new card, on sf/acme,
+// whose face lists the three later deaths alone. A day later, after one
+// more death, the new card's window reaches back past the close, and its
+// face lists its own four.
 func TestPlatformCardAfterACloseCountsNewDeathsOnly(t *testing.T) {
 	ctx := context.Background()
 	now := nov(23, 15, 0)
@@ -301,6 +310,11 @@ func TestPlatformCardAfterACloseCountsNewDeathsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := platformCards(t, store)[0]
+	putDeaths(t, store, sessionDeath("t-other", "s2", nov(23, 15, 5), RuleDisruption, "sf-3"))
+	now = nov(23, 15, 6)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
 	now = nov(23, 15, 10)
 	if err := store.TransitionTask(ctx, first.ID, humanCardWaits, "done"); err != nil {
 		t.Fatal(err)
@@ -334,6 +348,20 @@ func TestPlatformCardAfterACloseCountsNewDeathsOnly(t *testing.T) {
 	if len(fj.issues) != 2 || len(cards) != 2 || cards[0].ID == first.ID || cards[0].Status != "waiting-human" || cards[0].Repository != "sf/acme" ||
 		cards[0].Objective != want {
 		t.Fatalf("three deaths after the close: %d issues, cards %+v; want a second card on sf/acme under\n%s", len(fj.issues), cards, want)
+	}
+
+	putDeaths(t, store, ciDeath("ci-job-63", nov(24, 16, 0), RuleGuardKill, "sf-1"))
+	now = nov(24, 16, 30)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want = platformTitle + "\n\n" + platformHead(4) +
+		"- 24 Nov 16:00 UTC, CI job ci-job-63: the node's memory guard killed the pod on sf-1\n" +
+		"- 23 Nov 15:50 UTC, CI job ci-job-62: the node restarted on sf-2\n" +
+		"- 23 Nov 15:40 UTC, CI job ci-job-61: the node's memory guard killed the pod on sf-2\n" +
+		"- 23 Nov 15:30 UTC, card #12: the node ran out of memory on sf-1" + platformTail
+	if second, _, _ := store.Task(ctx, cards[0].ID); len(fj.issues) != 2 || second.Objective != want {
+		t.Fatalf("a day later: %d issues, the second card under\n%s\nwant\n%s", len(fj.issues), second.Objective, want)
 	}
 }
 
@@ -369,5 +397,86 @@ func TestPlatformCardTakesOnItsStrandedIssue(t *testing.T) {
 				t.Fatalf("the next pass: %d issues on %v, cards %+v; want the card on issue #1 of sf/acme and no second issue", len(fj.issues), fj.repos, cards)
 			}
 		})
+	}
+}
+
+// Hand-derived: the three deaths hit sf/acme's #12, newest, and sf/other's
+// #7, so the filing searches sf/acme, sf/other and the configuration
+// repository for a stranded issue. A repository that answers 500 is
+// passed over: with sf/other down the card files on sf/acme, with sf/acme
+// down on sf/other. With all three down the pass fails and files nothing.
+func TestPlatformCardFilesPastAnUnreadableRepository(t *testing.T) {
+	for _, c := range []struct {
+		down []string
+		want string
+	}{
+		{[]string{"sf/other"}, "sf/acme"},
+		{[]string{"sf/acme"}, "sf/other"},
+		{[]string{"sf/acme", "sf/other", "sf/ai-software-factory-infra"}, ""},
+	} {
+		t.Run(strings.Join(c.down, ","), func(t *testing.T) {
+			ctx := context.Background()
+			now := nov(23, 15, 0)
+			w, store, fj := platformRig(t, &now)
+			fj.downRepos = map[string]bool{}
+			for _, r := range c.down {
+				fj.downRepos[r] = true
+			}
+			putDeaths(t, store, firstSession, firstCI, firstGate)
+			err := w.Check(ctx)
+			cards := platformCards(t, store)
+			if c.want == "" {
+				if err == nil || len(fj.issues) != 0 || len(cards) != 0 {
+					t.Fatalf("every repository down: err %v, %d issues, %d cards; want an error and nothing filed", err, len(fj.issues), len(cards))
+				}
+				return
+			}
+			if err != nil || len(fj.issues) != 1 || len(cards) != 1 || cards[0].Repository != c.want || fj.repos[0] != c.want {
+				t.Fatalf("%v down: err %v, issues on %v, cards %+v; want one card on %s", c.down, err, fj.repos, cards, c.want)
+			}
+		})
+	}
+}
+
+// Hand-derived: an open card's pass reads the cards of the deaths its face
+// shows, the newest ten, and counts every death: 25 deaths on 25 cards
+// make at most 10 card reads and a face of 25.
+func TestPlatformCardReadsTheCardsItShows(t *testing.T) {
+	ctx := context.Background()
+	now := nov(23, 15, 0)
+	w, store, _ := platformRig(t, &now)
+	var deaths []PodDeath
+	for i := range 25 {
+		id := fmt.Sprintf("t-%02d", i)
+		if err := store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/acme", IssueNumber: int64(100 + i)}); err != nil {
+			t.Fatal(err)
+		}
+		deaths = append(deaths, sessionDeath(id, "s", nov(23, 14, i), RuleGuardKill, "sf-1"))
+	}
+	putDeaths(t, store, deaths[:3]...)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	putDeaths(t, store, deaths[3:]...)
+	now, store.taskReads = nov(23, 15, 1), 0
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card := platformCards(t, store)[0]
+	if store.taskReads > 10 || !strings.HasPrefix(card.Objective, platformTitle+"\n\n"+platformHead(25)+"- 23 Nov 14:24 UTC, card #124:") ||
+		!strings.Contains(card.Objective, "- 23 Nov 14:15 UTC, card #115:") || !strings.Contains(card.Objective, "- and 15 more\n") {
+		t.Fatalf("the open card's pass read %d cards, its face\n%s\nwant at most 10 reads and a face of 25 that lists #124 to #115", store.taskReads, card.Objective)
+	}
+}
+
+// Hand-derived: three deaths in the minute 14:02 make the story name that
+// minute alone.
+func TestPlatformCardStoryOfOneMinute(t *testing.T) {
+	var deaths []PodDeath
+	for _, s := range []int{40, 10, 0} {
+		deaths = append(deaths, ciDeath(fmt.Sprintf("ci-job-%d", s), nov(23, 14, 2).Add(time.Duration(s)*time.Second), RuleGuardKill, "sf-2"))
+	}
+	if q := PlatformDeathsQuestion(deaths, nil, "sf/acme"); q.Happened != "The platform ended the factory's work 3 times at 23 Nov 14:02 UTC." {
+		t.Errorf("the story %q, want the minute alone", q.Happened)
 	}
 }
