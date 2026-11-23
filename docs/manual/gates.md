@@ -570,7 +570,8 @@ in a session, with read tools only: `transcript_search` and `transcript_read`
 over the card's newest session record, `card_facts`, `card_step`, `gates`,
 `read_file` at the case's head (at main when it has none), `grep` at the
 head and at main, and `cluster_facts` (what the cluster did to a session of
-the card, the newest by default, or the platform's incidents of a window). It
+the card, the newest by default, a running one read live from its pod, or
+the platform's incidents of a window). It
 has no `run`. Code builds its statement from the card's
 digest, facts, plan and earlier steps; it gets `limits.checkin_calls` calls
 and `limits.checkin_time`, its calls book on the project's chat task, and it

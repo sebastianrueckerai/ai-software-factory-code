@@ -2087,6 +2087,11 @@ type runnerTools struct {
 	ask            *CheckInAsk
 }
 
+// clusterFacts is the reader of cluster_facts over the runner's stores.
+func (r *Runner) clusterFacts() ClusterFactsReader {
+	return ClusterFactsReader{Store: r.cfg.Cluster, Live: r.store, Kube: r.kube}
+}
+
 func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	switch name {
 	case "transcript_search":
@@ -2155,7 +2160,7 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		out, cut := cutToolOutput(string(b))
 		return out, cut, nil
 	case "cluster_facts":
-		out, err := cardClusterFacts(ctx, p.r.cfg.Cluster, p.taskID, p.ask.ParentSession, args, p.r.Clock())
+		out, err := cardClusterFacts(ctx, p.r.clusterFacts(), p.taskID, p.ask.ParentSession, args, p.r.Clock())
 		if err != nil {
 			return "", false, err
 		}

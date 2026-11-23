@@ -196,6 +196,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		e.Message = textutil.Truncate(e.Message, eventMessageB)
 		r.Events = append(r.Events, e)
 	}
+	r.Started = in.started
 	r.Restarts = d.restarts(ctx, in, life)
 	r.Lines = GateLines(r, in.lastPush)
 	return r

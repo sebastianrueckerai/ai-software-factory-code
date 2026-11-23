@@ -88,6 +88,7 @@ type DeathRecord struct {
 	Class       DeathClass       `json:"class"`
 	Rule        DeathRule        `json:"rule"`
 	At          time.Time        `json:"at"`
+	Started     time.Time        `json:"started,omitzero"`
 	Node        string           `json:"node,omitempty"`
 	PodUID      string           `json:"pod_uid,omitempty"`
 	ExitCode    int32            `json:"exit_code,omitempty"`

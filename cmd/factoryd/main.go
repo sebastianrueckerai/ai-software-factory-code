@@ -713,7 +713,7 @@ func main() {
 			return factoryd.DeploymentHealthText(ctx, kube, p, deployment, namespace, time.Now())
 		},
 		ClusterFacts: func(ctx context.Context, taskID, sessionID string, since, until time.Time) (string, error) {
-			return factoryd.ClusterFactsText(ctx, store, taskID, sessionID, since, until, time.Now())
+			return factoryd.ClusterFactsReader{Store: store, Live: store, Kube: kube}.Text(ctx, taskID, sessionID, since, until, time.Now())
 		},
 		Projects:           store,
 		Events:             store,

@@ -1616,7 +1616,7 @@ func newRig(t *testing.T) *rig {
 			return factoryd.DeploymentHealthText(ctx, healthStub{}, p, deployment, namespace, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
 		},
 		ClusterFacts: func(ctx context.Context, taskID, sessionID string, since, until time.Time) (string, error) {
-			return factoryd.ClusterFactsText(ctx, rigCluster{r: r}, taskID, sessionID, since, until, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
+			return factoryd.ClusterFactsReader{Store: rigCluster{r: r}}.Text(ctx, taskID, sessionID, since, until, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
 		},
 		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, ChatTokens: r.chatTokens, Mirrors: r.mirrors, Routines: r.routines,
 		CardDigest: func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {

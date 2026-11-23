@@ -519,17 +519,24 @@ func (c *Console) deploymentHealthText(ctx context.Context, p factoryd.Project, 
 // keeps its sentence.
 func (t *turn) clusterFactsText(in toolInput) (string, error) {
 	text, err := t.clusterFacts(in)
+	if err != nil {
+		return "", factsRefusal(err)
+	}
+	return text, nil
+}
+
+// factsRefusal is err as the refusal the chat shows: factoryd's with its
+// status, a card read's as it is, anything else a logged 500.
+func factsRefusal(err error) error {
 	var no *factoryd.FactsRefusal
 	switch {
-	case err == nil:
-		return text, nil
 	case errors.As(err, &no):
-		return "", refuse(http.StatusBadRequest, no.Msg)
+		return refuse(no.Status, no.Msg)
 	case errors.As(err, new(*refusal)):
-		return "", err
+		return err
 	}
 	log.Printf("console: cluster facts: %v", err)
-	return "", refuse(http.StatusInternalServerError, "cannot read what the cluster did")
+	return refuse(http.StatusInternalServerError, "cannot read what the cluster did")
 }
 
 func (t *turn) clusterFacts(in toolInput) (string, error) {

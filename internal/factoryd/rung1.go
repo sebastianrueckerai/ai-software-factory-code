@@ -469,11 +469,8 @@ func (p *CaseTools) read(ctx context.Context, name string, args map[string]any) 
 			return ""
 		})
 	case "cluster_facts":
-		var newest string
-		if _, err := p.newestRecord(ctx); err == nil {
-			newest = p.session
-		}
-		return cardClusterFacts(ctx, p.r.cfg.Cluster, p.t.ID, newest, args, p.r.Clock())
+		_, _ = p.newestRecord(ctx) // the newest session's ID stands whether or not its record read
+		return cardClusterFacts(ctx, p.r.clusterFacts(), p.t.ID, p.session, args, p.r.Clock())
 	case "gates":
 		events, err := p.r.store.TaskEvents(ctx, p.t.ID, 300)
 		if err != nil {

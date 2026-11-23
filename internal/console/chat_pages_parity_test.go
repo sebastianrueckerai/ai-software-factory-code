@@ -441,3 +441,22 @@ func TestChatClusterFactsRefusesAnotherProjectsCard(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ls", Kind: "agent", Status: "queued", Repository: "sf/other", IssueNumber: 5}})
 	equal(t, "the reads", reads(t, r, g, "cluster_facts", `{"task_id":"t-ls"}`), []string{"Refused: There is no card t-ls in this project."})
 }
+
+// The chat's refusals carry the status of the factoryd refusal, as
+// deployment_health's do.
+func TestChatClusterFactsRefusalStatuses(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want int
+	}{
+		{&factoryd.FactsRefusal{Status: http.StatusNotFound, Msg: "none"}, 404},
+		{&factoryd.FactsRefusal{Status: http.StatusBadRequest, Msg: "bad"}, 400},
+		{&factoryd.FactsRefusal{Status: http.StatusConflict, Msg: "now"}, 409},
+		{errors.New("db down"), 500},
+		{refuse(http.StatusNotFound, "There is no card"), 404},
+	} {
+		if got := refusalCode(factsRefusal(c.err)); got != c.want {
+			t.Errorf("%v: status %d, want %d", c.err, got, c.want)
+		}
+	}
+}
