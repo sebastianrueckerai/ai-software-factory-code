@@ -202,7 +202,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, deaths: deathReader{kube: kube, cluster: cfg.Cluster, kernel: cfg.Kernel}, deathBound: ciDeathBound, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, pullFails: map[int64]pullFail{}, pullSeen: map[string]time.Time{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, deaths: deathReader{kube: kube, cluster: cfg.Cluster, kernel: cfg.Kernel, margin: ciDeathMargin}, deathBound: ciDeathBound, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, pullFails: map[int64]pullFail{}, pullSeen: map[string]time.Time{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -903,8 +903,12 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 }
 
 // ciDeathBound bounds the read of one ended runner pod's death, so a slow
-// source holds its teardown no longer.
-const ciDeathBound = 10 * time.Second
+// source holds its teardown no longer; the kernel's lines leave the last
+// ciDeathMargin of it to the pod's other reads.
+const (
+	ciDeathBound  = 10 * time.Second
+	ciDeathMargin = 2 * time.Second
+)
 
 // recordDeath stores the death of the runner pod of ns, which ended in
 // phase or is gone, under its runner's registration UUID, which its job's
@@ -946,7 +950,8 @@ func (s *CISpawner) recordDeath(ctx context.Context, ns, phase string, gone bool
 		started = s.now()
 	}
 	death := s.deaths.read(rctx, deathInput{ns: ns, pod: ciPodName, uid: pod.UID, node: pod.Node, started: started, ended: s.now()})
-	death.Started = pod.StartedAt
+	// Lines speak to a session's successor; a runner pod has none
+	death.Started, death.Lines = pod.StartedAt, nil
 	if err := s.deaths.cluster.PutPodDeath(ctx, PodDeath{Kind: "ci", Runner: runner, Record: death}); err != nil {
 		log.Printf("ci spawner: %s: store the death of runner %s: %v", ns, runner, err)
 	}

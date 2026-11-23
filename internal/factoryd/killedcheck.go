@@ -106,7 +106,7 @@ type rerunNote struct {
 // for; a sibling job that merely runs holds nothing back. notes name, for the red verdict, each kill and the
 // re-run or the missing one, and a job that failed again at its re-run.
 // Anything it cannot read leaves the check red as it stands.
-func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs CombinedStatus, logOf func(string) ([]byte, error), reran *[]rerunNote) (unsettled bool, notes []string) {
+func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs CombinedStatus, logOf func(string) ([]byte, error), reran *[]rerunNote, waited map[[2]int64]bool) (unsettled bool, notes []string) {
 	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil || !ok {
 		log.Printf("task %s: killed checks: no project for %s (%v)", t.ID, t.Repository, err)
@@ -114,8 +114,7 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 	}
 	token := r.forgejo.Access(p).Actions
 	seen := map[int64]bool{}
-	// the jobs of one pass share the wait for their records
-	recordBy := time.Now().Add(r.ciDeathWait)
+	records := recordWait{by: time.Now().Add(r.ciDeathWait), waited: waited}
 	for _, s := range cs.Statuses {
 		n, ok := runNumberOf(s, repo)
 		if !ok || seen[n] {
@@ -145,7 +144,7 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 			continue
 		}
 		for _, j := range red {
-			done, note := r.killedJob(ctx, token, repo, n, j, recordBy, reran)
+			done, note := r.killedJob(ctx, token, repo, n, j, records, reran)
 			unsettled = unsettled || done
 			if note != "" {
 				notes = append(notes, note)
@@ -197,12 +196,12 @@ func (r *Runner) runJobs(ctx context.Context, token string, repo Repo, n int64) 
 	return r.forgejo.ActionRunJobs(ctx, token, repo.Owner, repo.Name, runs[i].ID)
 }
 
-// killedJob judges one red job: it re-runs the job when its first attempt
-// was killed or its runner died (asked true), and answers the note the red
-// verdict carries. The death of the pod that ran the attempt, waited for
-// until recordBy, names the kill's cause: the platform's is re-run up to
-// attempt ciPlatformReruns, the pod's own limit is not re-run.
-func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int64, j ActionJob, recordBy time.Time, reran *[]rerunNote) (asked bool, note string) {
+// killedJob judges one red job: it re-runs a killed job (asked true) by
+// the cause the death of the pod that ran the attempt names, waited for
+// as wait says: the platform's at each attempt up to ciPlatformReruns, the
+// pod's own limit never, and a kill without that cause at its first
+// attempt only. It answers the note the red verdict carries.
+func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int64, j ActionJob, wait recordWait, reran *[]rerunNote) (asked bool, note string) {
 	if slices.ContainsFunc(*reran, func(n rerunNote) bool { return n.id == j.ID && n.Attempt > j.Attempt }) {
 		return true, "" // asked; Forgejo still lists the attempt
 	}
@@ -216,7 +215,7 @@ func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int
 		marker = runnerDiedMarker
 	}
 	if marker != "" {
-		switch death := r.jobDeath(ctx, token, repo, j, body, recordBy); death.Class {
+		switch death := r.jobDeath(ctx, token, repo, j, body, wait); death.Class {
 		case DeathPlatform:
 			if j.Attempt > ciPlatformReruns {
 				return false, fmt.Sprintf("job %q of CI run %d: the platform ended its pod again (%s) at attempt %d: no further re-run follows", j.Name, run, death.Short(), j.Attempt)
@@ -265,12 +264,22 @@ func (r *Runner) rerunJob(ctx context.Context, token string, repo Repo, run int6
 	return true, note
 }
 
+// recordWait is the checks gate's wait for the death records of killed
+// jobs' runner pods: the jobs of one pass wait together until by, and an
+// attempt in waited, whose wait ran out in an earlier pass, waits no more.
+// The spawner writes a record before the pod's namespace goes, so one read
+// finds a record written after a wait.
+type recordWait struct {
+	by     time.Time
+	waited map[[2]int64]bool
+}
+
 // jobDeath is the death record of the runner pod that ran j's attempt, by
 // the runner UUID its log's first line names: body is the log's tail, a
 // whole log when shorter than the read, else its head is read for the
-// line. A record not written yet is asked for every ciDeathPoll until
-// recordBy. A zero record when there is none.
-func (r *Runner) jobDeath(ctx context.Context, token string, repo Repo, j ActionJob, body []byte, recordBy time.Time) DeathRecord {
+// line. A record not written yet is asked for every ciDeathPoll as wait
+// allows. A zero record when there is none.
+func (r *Runner) jobDeath(ctx context.Context, token string, repo Repo, j ActionJob, body []byte, wait recordWait) DeathRecord {
 	if r.cfg.Cluster == nil {
 		return DeathRecord{}
 	}
@@ -287,19 +296,23 @@ func (r *Runner) jobDeath(ctx context.Context, token string, repo Repo, j Action
 	if runner == "" {
 		return DeathRecord{}
 	}
+	attempt := [2]int64{j.ID, j.Attempt}
 	for {
 		death, ok, err := r.cfg.Cluster.CIDeath(ctx, runner)
 		switch {
 		case err != nil:
-			log.Printf("checks gate: death of runner %s: %v", runner, err)
+			log.Printf("checks gate: death of runner %s: %s", runner, r.Scrub.String(err.Error()))
 			return DeathRecord{}
-		case ok || !time.Now().Before(recordBy):
+		case ok:
 			return death
+		case wait.waited[attempt] || !time.Now().Before(wait.by):
+			wait.waited[attempt] = true
+			return DeathRecord{}
 		}
 		select {
 		case <-ctx.Done():
 			return DeathRecord{}
-		case <-time.After(min(r.ciDeathPoll, time.Until(recordBy))):
+		case <-time.After(min(r.ciDeathPoll, time.Until(wait.by))):
 		}
 	}
 }

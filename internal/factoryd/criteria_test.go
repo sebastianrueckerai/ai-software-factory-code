@@ -1790,8 +1790,8 @@ func TestAPlatformEndedProofsPodSaysSo(t *testing.T) {
 			if !slices.Equal(results[0].Findings, want) {
 				t.Fatalf("findings = %q, want %q", results[0].Findings, want)
 			}
-			if d, ok := cluster.deaths["gate/"+uid]; !ok || d.Kind != "gate" || d.TaskID != "t1" || d.Record.Class != tc.class {
-				t.Fatalf("stored deaths = %+v; want a gate death of t1, class %s, under gate/%s", cluster.deaths, tc.class, uid)
+			if d, ok := cluster.deaths["gate/"+uid]; !ok || d.Kind != "gate" || d.TaskID != "t1" || d.Record.Class != tc.class || d.Record.Lines != nil {
+				t.Fatalf("stored deaths = %+v; want a gate death of t1, class %s, under gate/%s, with no lines for a next session", cluster.deaths, tc.class, uid)
 			}
 		})
 	}

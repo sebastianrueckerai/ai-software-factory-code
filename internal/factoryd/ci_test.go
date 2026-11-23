@@ -425,9 +425,11 @@ func TestCISpawnerRecordsAPlatformEnd(t *testing.T) {
 			ns := "factory-agents-ci-15"
 			runner := kube.secrets[ns+"/"+ciSecretName]["uuid"]
 			watch := &nsWatch{fakeClusterStore: newFakeClusterStore(), kube: kube, ns: ns}
-			kernel := &fakeKernel{}
+			kernel := &scriptedKernel{}
 			if tc.kill {
-				kernel.kills = []KernelKill{{Node: "sf-1", PodUID: uid, Source: "guard", At: time.Now().Add(-time.Minute)}}
+				kernel.kills = func(int) []KernelKill {
+					return []KernelKill{{Node: "sf-1", PodUID: uid, Source: "guard", At: time.Now().Add(-time.Minute)}}
+				}
 			}
 			spawner.deaths.cluster, spawner.deaths.kernel = watch, kernel
 			switch {
@@ -454,22 +456,33 @@ func TestCISpawnerRecordsAPlatformEnd(t *testing.T) {
 				}
 				return
 			}
-			if runner == "" || !ok || rec.Class != DeathPlatform || rec.Rule != tc.rule || watch.deaths["ci/"+runner].Kind != "ci" {
-				t.Fatalf("record of runner %q = %+v, %v; want a ci record of class platform, rule %s, under the runner's UUID", runner, rec, ok, tc.rule)
+			if runner == "" || !ok || rec.Class != DeathPlatform || rec.Rule != tc.rule || watch.deaths["ci/"+runner].Kind != "ci" || rec.Lines != nil {
+				t.Fatalf("record of runner %q = %+v, %v; want a ci record of class platform, rule %s, under the runner's UUID, with no lines for a next session", runner, rec, ok, tc.rule)
 			}
 			if !slices.Equal(watch.alive, []bool{true}) {
 				t.Fatalf("namespace alive at each store = %v, want [true]: the record comes before the teardown", watch.alive)
 			}
-			if tc.phase != "" && (rec.PodUID != uid || !rec.Started.Equal(started) || kernel.uid != uid) {
-				t.Fatalf("record = %+v, kernel asked for %q; want the pod's UID %s and its start %s", rec, kernel.uid, uid, started)
+			if tc.phase != "" && (rec.PodUID != uid || !rec.Started.Equal(started) || len(kernel.uids) == 0 || slices.ContainsFunc(kernel.uids, func(u string) bool { return u != uid })) {
+				t.Fatalf("record = %+v, kernel asked for %q; want the pod's UID %s and its start %s", rec, kernel.uids, uid, started)
 			}
 		})
 	}
 }
 
-// A kernel source that never answers holds no teardown: the death read
-// of each ended pod ends at its bound, and the record keeps what the pod
-// itself shows.
+// ctxEvents is a kube whose events read fails once its context ended, as
+// the API server's does.
+type ctxEvents struct{ *fakeKube }
+
+func (k ctxEvents) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return k.fakeKube.PodEvents(ctx, namespace, pod)
+}
+
+// A kernel source that never answers holds no teardown: its read of an
+// ended pod ends ciDeathMargin before the pod's bound, the pod's events are
+// still read in that margin, and the record keeps what the pod shows.
 func TestCISpawnerBoundsTheDeathRead(t *testing.T) {
 	kube := newFakeKube()
 	kube.nodeStates = map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1", Ready: true}}
@@ -478,19 +491,24 @@ func TestCISpawnerBoundsTheDeathRead(t *testing.T) {
 	spawner.poll(context.Background())
 	ns := "factory-agents-ci-15"
 	cluster := newFakeClusterStore()
+	spawner.kube, spawner.deaths.kube = ctxEvents{kube}, ctxEvents{kube}
 	spawner.deaths.cluster, spawner.deaths.kernel = cluster, &scriptedKernel{block: func(int) bool { return true }}
-	spawner.deathBound = 200 * time.Millisecond
+	spawner.deathBound = 2500 * time.Millisecond
 	p := kube.pods[ns+"/"+ciPodName]
 	p.phase, p.uid, p.node, p.started = "Failed", "0b6f2f6e-7c1a-4a43-9a51-2f2d2b4e8c11", "sf-1", time.Now().Add(-time.Minute)
 	p.containers = []ContainerState{{Name: "runner", State: "terminated", Reason: "Error", ExitCode: 137}}
+	kube.podEvents = map[string][]PodEvent{ns + "/" + ciPodName: {{Reason: "Killing", Type: "Normal"}}}
 
 	began := time.Now()
 	spawner.reconcile(context.Background(), codeCIRepos)
 	took := time.Since(began)
 
 	rec, ok, _ := cluster.CIDeath(context.Background(), kube.secrets[ns+"/"+ciSecretName]["uuid"])
-	if _, alive := kube.namespaces[ns]; alive || took > 2*time.Second || !ok || rec.Class != DeathUnknown || rec.ExitCode != 137 {
-		t.Fatalf("namespace alive %v after %s, record %+v, %v; want the teardown within the bound and the pod's own facts stored", alive, took, rec, ok)
+	if _, alive := kube.namespaces[ns]; alive || !ok || rec.Class != DeathUnknown || rec.ExitCode != 137 || len(rec.Events) != 1 {
+		t.Fatalf("namespace alive %v, record %+v, %v; want the teardown and the pod's own facts stored with its event", alive, rec, ok)
+	}
+	if want := spawner.deathBound - ciDeathMargin; took < want-200*time.Millisecond || took > want+time.Second {
+		t.Fatalf("the death read took %s, want about %s: the bound less the margin", took, want)
 	}
 }
 

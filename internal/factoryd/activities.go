@@ -2702,8 +2702,8 @@ func FirstLine(s string) string {
 // WaitChecks polls the combined commit status of sha (Forgejo Actions is the
 // first verification gate, architecture 7) until it settles or the checks
 // timeout passes. Forgejo combines worst-state-wins, so a failed job
-// settles the verdict while slower jobs still run, except that a job killed
-// by a signal is re-run once first (killedChecks) and its re-run awaited.
+// settles the verdict while slower jobs still run, except that a killed job
+// is re-run first as its cause allows (killedChecks) and its re-run awaited.
 func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2714,6 +2714,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 	}
 	deadline := activity.GetInfo(ctx).Deadline.Add(-r.checksMargin)
 	var reran []rerunNote
+	waited := map[[2]int64]bool{}
 	for {
 		cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
 		if err != nil {
@@ -2723,7 +2724,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		logOf := r.jobLogOf(ctx, t, repo)
 		res := checksResult(cs, r.forgejo.PublicURL, logOf)
 		if res.State == ChecksFailure {
-			if unsettled, notes := r.killedChecks(ctx, t, repo, cs, logOf, &reran); unsettled {
+			if unsettled, notes := r.killedChecks(ctx, t, repo, cs, logOf, &reran, waited); unsettled {
 				res.State = ""
 			} else {
 				res.Findings = append(res.Findings, notes...)

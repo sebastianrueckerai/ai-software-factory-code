@@ -3143,8 +3143,8 @@ func TestAPlatformEndedReproPodSaysSo(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
-			if d, ok := cluster.deaths["gate/"+uid]; !ok || d.Kind != "gate" || d.TaskID != "t1" || (d.Record.Class == DeathPlatform) != tc.kill {
-				t.Fatalf("stored deaths = %+v; want t1's gate death under gate/%s, platform only with the kill", cluster.deaths, uid)
+			if d, ok := cluster.deaths["gate/"+uid]; !ok || d.Kind != "gate" || d.TaskID != "t1" || (d.Record.Class == DeathPlatform) != tc.kill || d.Record.Lines != nil {
+				t.Fatalf("stored deaths = %+v; want t1's gate death under gate/%s, platform only with the kill, with no lines for a next session", cluster.deaths, uid)
 			}
 		})
 	}

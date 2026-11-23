@@ -4914,6 +4914,28 @@ func TestWaitChecksWaitsForARecordBeingWritten(t *testing.T) {
 	}
 }
 
+// A killed attempt whose record never comes is waited for once: while a
+// re-run of another run keeps the gate polling, the later passes read the
+// record once each and wait no more.
+func TestWaitChecksWaitsOnceForAnAttempt(t *testing.T) {
+	run8 := [4]string{"failure", "pr / lint (pull_request)", "/sf/repo/actions/runs/8/jobs/0", "Failure after 1m"}
+	both := statusBody("failure", [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}, run8)
+	run7 := []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}}
+	rerun8 := []ActionJob{{ID: 21, Name: "lint", Status: "running", Attempt: 2}}
+	r, fj, _ := killedRig(t, []string{both, both, killedFail}, run7, rerun8, run7, rerun8, run7)
+	fj.runs = append(fj.runs, ActionRun{ID: 80, Index: 8, Status: "failure"})
+	fj.jobLogs["11/2"] = openedBy(runnerUUID(31), "go vet ./...\nsignal: killed\n")
+	late := &lateDeaths{fakeClusterStore: killedDeaths(r, nil)}
+	r.cfg.Cluster, r.ciDeathWait, r.ciDeathPoll = late, 300*time.Millisecond, time.Minute
+	res := waitChecksOf(t, r)
+	if res.State != ChecksFailure || len(res.Findings) != 1 || len(fj.reruns) != 0 || fj.jobGets != 5 {
+		t.Fatalf("result = %+v, reruns %v, job lists read %d; want run 7's plain finding after three passes, no re-run", res, fj.reruns, fj.jobGets)
+	}
+	if late.reads != 4 {
+		t.Fatalf("the record was read %d times, want 4: twice across the one wait, once in each later pass", late.reads)
+	}
+}
+
 // A log longer than the tail the gate reads names its runner on its head's
 // first line: the gate reads the head for it and never trusts the tail,
 // whose first line here is a forged opening line of another runner.
