@@ -112,7 +112,7 @@ func (w *IncidentSweep) Run(ctx context.Context) error {
 		}
 	}
 	record("nodes", rows, err)
-	if err := w.Store.PrunePlatformIncidents(ctx, IncidentRetention); err != nil {
+	if err := w.Store.PruneClusterFacts(ctx, IncidentRetention); err != nil {
 		errs = append(errs, fmt.Errorf("prune: %w", err))
 	}
 	return errors.Join(errs...)

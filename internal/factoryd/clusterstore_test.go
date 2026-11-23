@@ -86,7 +86,7 @@ func TestPlatformIncidentsOverlapTheWindow(t *testing.T) {
 	}
 }
 
-func TestPrunePlatformIncidents(t *testing.T) {
+func TestPruneClusterFacts(t *testing.T) {
 	s, ctx := clusterStore(t), t.Context()
 	now := time.Now().UTC()
 	if _, err := s.AddPlatformIncidents(ctx, []PlatformIncident{
@@ -98,7 +98,7 @@ func TestPrunePlatformIncidents(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PrunePlatformIncidents(ctx, IncidentRetention); err != nil {
+	if err := s.PruneClusterFacts(ctx, IncidentRetention); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.PlatformIncidents(ctx, now.Add(-60*24*time.Hour), now, 0)
@@ -310,7 +310,7 @@ func TestClusterStoreFakeMatchesPostgres(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := cs.PrunePlatformIncidents(ctx, IncidentRetention); err != nil {
+		if err := cs.PruneClusterFacts(ctx, IncidentRetention); err != nil {
 			t.Fatal(err)
 		}
 		left, err := cs.PlatformIncidents(ctx, old.Add(-time.Hour), old.Add(2*time.Hour), 0)
@@ -320,6 +320,74 @@ func TestClusterStoreFakeMatchesPostgres(t *testing.T) {
 		inc, err := cs.PlatformIncidents(ctx, bootAt, bootAt, 0)
 		if err != nil || len(inc) != 1 || inc[0].Detail == nil || len(inc[0].Detail) != 0 {
 			t.Fatalf("incidents %+v, %v; want an empty, non-nil Detail", inc, err)
+		}
+	}
+	t.Run("fake", func(t *testing.T) { run(t, newFakeClusterStore()) })
+	t.Run("postgres", func(t *testing.T) { run(t, clusterStore(t)) })
+}
+
+// The prune drops the CI and gate deaths past the retention, which only the
+// checks gate and the human's card read, and keeps every session's death,
+// which cluster_facts answers, and the newer ones.
+func TestPruneKeepsTheSessionsDeaths(t *testing.T) {
+	run := func(t *testing.T, cs ClusterStore, task string) {
+		ctx := t.Context()
+		old, recent := time.Now().Add(-31*24*time.Hour), time.Now().Add(-time.Hour)
+		rec := func(at time.Time, uid string) DeathRecord {
+			return DeathRecord{Class: DeathPlatform, At: at, PodUID: uid}
+		}
+		for _, d := range []PodDeath{
+			{Kind: "session", TaskID: task, SessionID: "s-old", Record: rec(old, "")},
+			{Kind: "session", TaskID: task, SessionID: "s-new", Record: rec(recent, "")},
+			{Kind: "ci", Runner: "r-old", Record: rec(old, "")},
+			{Kind: "ci", Runner: "r-new", Record: rec(recent, "")},
+			{Kind: "gate", Record: rec(old, "g-old")},
+			{Kind: "gate", Record: rec(recent, "g-new")},
+		} {
+			if err := cs.PutPodDeath(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := cs.PruneClusterFacts(ctx, IncidentRetention); err != nil {
+			t.Fatal(err)
+		}
+		got, err := cs.PlatformDeaths(ctx, old.Add(-time.Hour))
+		var left []string
+		for _, d := range got {
+			left = append(left, d.Kind+"/"+d.SessionID+d.Runner+d.Record.PodUID)
+		}
+		slices.Sort(left)
+		if want := []string{"ci/r-new", "gate/g-new", "session/s-new", "session/s-old"}; err != nil || !slices.Equal(left, want) {
+			t.Fatalf("deaths after the prune %v, %v; want %v", left, err, want)
+		}
+	}
+	t.Run("fake", func(t *testing.T) { run(t, newFakeClusterStore(), "t1") })
+	t.Run("postgres", func(t *testing.T) {
+		s := clusterStore(t)
+		task, err := s.EnsureChatTask(t.Context(), "linkshort", "linkshort/linkshort", 5, clk(9, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		run(t, s, task.ID)
+	})
+}
+
+// A restart first seen while its container waits has no end: a later pass
+// that sees it running writes its end, and an end once written stays.
+func TestARestartGetsItsEndOnALaterPass(t *testing.T) {
+	run := func(t *testing.T, cs ClusterStore) {
+		ctx := t.Context()
+		restart := PlatformIncident{Key: "restart/p/forgejo/x", At: clk(14, 2), Kind: IncidentRestart, Subject: ServiceForgejo, PodUID: "p"}
+		ended, later := restart, restart
+		ended.Until, later.Until = timePtr(clk(14, 4)), timePtr(clk(14, 9))
+		for _, p := range []PlatformIncident{restart, ended, later, restart} {
+			if _, err := cs.AddPlatformIncidents(ctx, []PlatformIncident{p}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := cs.PlatformIncidents(ctx, clk(14, 3), clk(14, 3), 0)
+		if err != nil || len(got) != 1 || got[0].Until == nil || !got[0].Until.Equal(clk(14, 4)) {
+			t.Fatalf("incidents at 14:03 %+v, %v; want the restart to 14:04", got, err)
 		}
 	}
 	t.Run("fake", func(t *testing.T) { run(t, newFakeClusterStore()) })

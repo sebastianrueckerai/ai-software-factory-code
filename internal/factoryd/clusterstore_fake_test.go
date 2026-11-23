@@ -29,7 +29,12 @@ func (f *fakeClusterStore) AddPlatformIncidents(_ context.Context, in []Platform
 	defer f.mu.Unlock()
 	added := 0
 	for _, p := range in {
-		if slices.ContainsFunc(f.incidents, func(q PlatformIncident) bool { return q.Key == p.Key }) {
+		if i := slices.IndexFunc(f.incidents, func(q PlatformIncident) bool { return q.Key == p.Key }); i >= 0 {
+			if f.incidents[i].Until == nil && p.Until != nil {
+				until := *p.Until
+				f.incidents[i].Until = &until
+				added++
+			}
 			continue
 		}
 		f.nextID++
@@ -81,7 +86,7 @@ func (f *fakeClusterStore) PodIncidents(_ context.Context, podUID string) ([]Pla
 	return f.matching(func(p PlatformIncident) bool { return p.PodUID == podUID }), nil
 }
 
-func (f *fakeClusterStore) PrunePlatformIncidents(_ context.Context, age time.Duration) error {
+func (f *fakeClusterStore) PruneClusterFacts(_ context.Context, age time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cutoff := time.Now().Add(-age)
@@ -98,6 +103,7 @@ func (f *fakeClusterStore) PrunePlatformIncidents(_ context.Context, age time.Du
 		}
 		return end.Before(cutoff)
 	})
+	maps.DeleteFunc(f.deaths, func(_ string, d PodDeath) bool { return d.Kind != "session" && d.Record.At.Before(cutoff) })
 	return nil
 }
 

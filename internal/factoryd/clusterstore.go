@@ -54,10 +54,12 @@ func (d PodDeath) Key() (string, error) {
 }
 
 type ClusterStore interface {
+	// AddPlatformIncidents writes each incident once per key, and the end
+	// of one written without it; it answers how many rows it wrote.
 	AddPlatformIncidents(ctx context.Context, in []PlatformIncident) (int, error)
 	PlatformIncidents(ctx context.Context, from, to time.Time, limit int) ([]PlatformIncident, error)
 	PodIncidents(ctx context.Context, podUID string) ([]PlatformIncident, error)
-	PrunePlatformIncidents(ctx context.Context, age time.Duration) error
+	PruneClusterFacts(ctx context.Context, age time.Duration) error
 	PutPodDeath(ctx context.Context, d PodDeath) error
 	SessionDeath(ctx context.Context, taskID, sessionID string) (DeathRecord, bool, error)
 	CIDeath(ctx context.Context, runner string) (DeathRecord, bool, error)
@@ -77,7 +79,8 @@ func (s *PGStore) AddPlatformIncidents(ctx context.Context, in []PlatformInciden
 			detail = []byte("{}")
 		}
 		res, err := s.db.ExecContext(ctx, `INSERT INTO platform_incidents (key, at, until, kind, subject, node, namespace, pod_uid, detail)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (key) DO NOTHING`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (key) DO UPDATE SET until = EXCLUDED.until WHERE platform_incidents.until IS NULL AND EXCLUDED.until IS NOT NULL`,
 			p.Key, p.At, p.Until, string(p.Kind), p.Subject, p.Node, p.Namespace, p.PodUID, detail)
 		if err != nil {
 			return added, err
@@ -129,12 +132,18 @@ func (s *PGStore) PodIncidents(ctx context.Context, podUID string) ([]PlatformIn
 	return s.incidents(ctx, incidentSelect+`WHERE pod_uid = $1 ORDER BY at, id`, podUID)
 }
 
-// PrunePlatformIncidents deletes the rows that ended before now-age, except
-// each node's newest node_boot row: a node that stays up keeps its boot.
-func (s *PGStore) PrunePlatformIncidents(ctx context.Context, age time.Duration) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM platform_incidents p WHERE coalesce(p.until, p.at) < now() - make_interval(secs => $1)
+// PruneClusterFacts deletes the incidents that ended before now-age, except
+// each node's newest node_boot row: a node that stays up keeps its boot. It
+// deletes the CI and gate deaths older than age too, which only the checks
+// gate and the platform card read; a session's death stays for
+// cluster_facts.
+func (s *PGStore) PruneClusterFacts(ctx context.Context, age time.Duration) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM platform_incidents p WHERE coalesce(p.until, p.at) < now() - make_interval(secs => $1)
 		AND NOT (p.kind = 'node_boot' AND NOT EXISTS (
-			SELECT 1 FROM platform_incidents q WHERE q.kind = 'node_boot' AND q.subject = p.subject AND (q.at, q.id) > (p.at, p.id)))`, age.Seconds())
+			SELECT 1 FROM platform_incidents q WHERE q.kind = 'node_boot' AND q.subject = p.subject AND (q.at, q.id) > (p.at, p.id)))`, age.Seconds()); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM pod_deaths WHERE kind IN ('ci', 'gate') AND at < now() - make_interval(secs => $1)`, age.Seconds())
 	return err
 }
 
