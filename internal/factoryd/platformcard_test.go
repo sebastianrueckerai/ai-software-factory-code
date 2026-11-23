@@ -74,7 +74,12 @@ func platformRig(t *testing.T, now *time.Time) (*PlatformCard, *platformStore, *
 		}
 	}
 	forgejo, fj := newAlertForgejo(t)
-	return &PlatformCard{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"},
+	kube := newFakeKube()
+	kube.nodeStates = map[string]NodeState{}
+	for _, n := range []string{"sf-1", "sf-2", "sf-3"} {
+		kube.nodeStates[n] = NodeState{Name: n, BootID: n + "-b", Ready: true}
+	}
+	return &PlatformCard{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Kube: kube,
 		Now: func() time.Time { return *now }}, store, fj
 }
 
@@ -208,6 +213,59 @@ func TestPlatformCardFilesAtThree(t *testing.T) {
 	if len(cards) != 1 || cards[0].Repository != "sf/ai-software-factory-infra" || len(fj.repos) != 1 || fj.repos[0] != "sf/ai-software-factory-infra" ||
 		cards[0].Objective != platformTitle+"\n\n"+want {
 		t.Fatalf("three CI deaths filed %+v on %v, want one card on sf/ai-software-factory-infra with the face\n%s", cards, fj.repos, want)
+	}
+}
+
+// A start of the whole cluster, every node the cluster has booting within
+// 10 minutes of the others, explains the sessions it ended: their nodes
+// restarted, or their pods were gone after factoryd's restart. They file no
+// card however many they are. Restarts of one node whose peers stayed up,
+// of every node over more than 10 minutes, or other deaths beside a cold
+// start still file it.
+func TestPlatformCardLeavesOutAColdStart(t *testing.T) {
+	ctx := context.Background()
+	boots := func(at ...time.Time) []PlatformIncident {
+		var out []PlatformIncident
+		for i, n := range []string{"sf-1", "sf-2", "sf-3"} {
+			out = append(out, PlatformIncident{Key: "boot/" + n + "/old", At: nov(20, 9, 0), Kind: IncidentNodeBoot, Subject: n, Node: n})
+			if i < len(at) {
+				out = append(out, PlatformIncident{Key: "boot/" + n + "/new", At: at[i], Kind: IncidentNodeBoot, Subject: n, Node: n})
+			}
+		}
+		return out
+	}
+	died := func(session string, at time.Time, rule DeathRule) PodDeath {
+		d := sessionDeath("t-acme", session, at, rule, "sf-1")
+		d.Record.Started = nov(23, 12, 0)
+		return d
+	}
+	coldStart := []PodDeath{died("s1", nov(23, 13, 6), RuleNodeRebooted), died("s2", nov(23, 13, 7), RuleGoneAfterRestart),
+		died("s3", nov(23, 13, 12), RuleNodeRebooted), died("s4", nov(23, 13, 40), RuleGoneAfterRestart)}
+	guard := []PodDeath{died("g1", nov(23, 14, 0), RuleGuardKill), died("g2", nov(23, 14, 1), RuleGuardKill), died("g3", nov(23, 14, 2), RuleGuardKill)}
+	for name, tc := range map[string]struct {
+		boots  []PlatformIncident
+		deaths []PodDeath
+		filed  int
+	}{
+		"every node within 10 minutes":        {boots(nov(23, 13, 1), nov(23, 13, 5), nov(23, 13, 10)), coldStart, 0},
+		"one node whose peers stayed up":      {boots(nov(23, 13, 5)), coldStart[:3], 1},
+		"every node over half an hour":        {boots(nov(23, 13, 0), nov(23, 13, 15), nov(23, 13, 30)), coldStart[:3], 1},
+		"three guard kills beside cold start": {boots(nov(23, 13, 1), nov(23, 13, 5), nov(23, 13, 10)), slices.Concat(coldStart, guard), 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := nov(23, 15, 0)
+			w, store, _ := platformRig(t, &now)
+			if _, err := store.AddPlatformIncidents(ctx, tc.boots); err != nil {
+				t.Fatal(err)
+			}
+			putDeaths(t, store, tc.deaths...)
+			if err := w.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if cards := platformCards(t, store); len(cards) != tc.filed {
+				t.Fatalf("cards filed %d, want %d", len(cards), tc.filed)
+			}
+		})
 	}
 }
 

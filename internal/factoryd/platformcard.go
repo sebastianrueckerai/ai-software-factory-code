@@ -30,6 +30,7 @@ const (
 type PlatformCardStore interface {
 	humanCardStore
 	PlatformDeaths(ctx context.Context, since time.Time) ([]PodDeath, error)
+	PlatformIncidents(ctx context.Context, from, to time.Time, limit int) ([]PlatformIncident, error)
 	// PlatformCards lists the platform cards, every repository's in any
 	// status, newest first.
 	PlatformCards(ctx context.Context) ([]Task, error)
@@ -41,7 +42,8 @@ type PlatformCardStore interface {
 
 // PlatformCard files one card in the human's lane when the platform ends
 // platformDeathsFile sessions, CI jobs or gate pods within
-// platformDeathsWindow, and keeps the open card's face on every death since
+// platformDeathsWindow, those a start of the whole cluster explains aside
+// (withoutColdStarts), and keeps the open card's face on every death since
 // platformDeathsWindow before its filing: while it is open no second card
 // is filed, and a death at or before the end of the newest closed card
 // counts no more. No agent works the card, since a fix of the nodes needs
@@ -54,7 +56,9 @@ type PlatformCard struct {
 	Repo Repo
 	// Timeline records the card's card_created; nil records none.
 	Timeline *Timeline
-	Now      func() time.Time
+	// Kube lists the nodes the cluster has.
+	Kube Kube
+	Now  func() time.Time
 }
 
 func (w *PlatformCard) Check(ctx context.Context) error {
@@ -81,6 +85,9 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 		return err
 	}
 	deaths = slices.DeleteFunc(deaths, func(d PodDeath) bool { return !d.Record.At.After(ended) })
+	if deaths, err = w.withoutColdStarts(ctx, deaths); err != nil {
+		return err
+	}
 	if open == nil && len(deaths) < platformDeathsFile {
 		return nil
 	}
@@ -120,6 +127,79 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 	w.Timeline.recordEvent(ctx, got.ID, EventCardCreated, map[string]any{"by": cmp.Or(got.Author, w.Forgejo.BotUser), "issue": got.IssueNumber})
 	log.Printf("platform card: %s filed #%d for %d platform deaths", repo, got.IssueNumber, len(deaths))
 	return nil
+}
+
+// coldStartSpread is how close together the boots of every node lie when
+// the whole cluster starts, as after the human's factory-off and
+// factory-on.
+const coldStartSpread = 10 * time.Minute
+
+// withoutColdStarts leaves out the deaths a start of the whole cluster
+// explains: a node that restarted, or a pod gone after factoryd's restart,
+// in a life that spans one. Each node the cluster has boots within
+// coldStartSpread of the others there, by the incident log's first sight
+// of each boot, which a death read on factoryd's own start may precede by
+// as much. The records stay platform deaths; they file no card.
+func (w *PlatformCard) withoutColdStarts(ctx context.Context, deaths []PodDeath) ([]PodDeath, error) {
+	explained := func(d PodDeath) bool {
+		return d.Record.Rule == RuleNodeRebooted || d.Record.Rule == RuleGoneAfterRestart
+	}
+	began := func(r DeathRecord) time.Time {
+		if r.Started.IsZero() {
+			return r.At
+		}
+		return r.Started
+	}
+	if !slices.ContainsFunc(deaths, explained) {
+		return deaths, nil
+	}
+	from := w.Now()
+	for _, d := range deaths {
+		if explained(d) {
+			from = earliest(from, began(d.Record))
+		}
+	}
+	nodes, err := w.Kube.Nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	incidents, err := w.Store.PlatformIncidents(ctx, from.Add(-coldStartSpread), w.Now(), 0)
+	if err != nil {
+		return nil, err
+	}
+	boots := map[string][]time.Time{}
+	for _, p := range incidents {
+		if p.Kind == IncidentNodeBoot {
+			boots[p.Subject] = append(boots[p.Subject], p.At)
+		}
+	}
+	// a start of the whole cluster runs from a boot to the last boot of
+	// every node within coldStartSpread after it
+	type span struct{ first, last time.Time }
+	var starts []span
+	for _, ats := range boots {
+		for _, at := range ats {
+			c, all := span{at, at}, len(nodes) > 0
+			for _, n := range nodes {
+				i := slices.IndexFunc(boots[n.Name], func(b time.Time) bool { return !b.Before(at) && !b.After(at.Add(coldStartSpread)) })
+				if i < 0 {
+					all = false
+					break
+				}
+				if b := boots[n.Name][i]; b.After(c.last) {
+					c.last = b
+				}
+			}
+			if all {
+				starts = append(starts, c)
+			}
+		}
+	}
+	return slices.DeleteFunc(deaths, func(d PodDeath) bool {
+		return explained(d) && slices.ContainsFunc(starts, func(c span) bool {
+			return !began(d.Record).After(c.last) && !c.first.After(d.Record.At.Add(coldStartSpread))
+		})
+	}), nil
 }
 
 // platformCardTitle is the platform card's title and ask, the same at

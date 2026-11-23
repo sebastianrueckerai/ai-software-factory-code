@@ -472,7 +472,7 @@ func main() {
 	})
 	sweep := &factoryd.IncidentSweep{Store: store, Kube: kube, Kernel: signoz}
 	passes.Run(ctx, "platform_incidents", time.Minute, 2*time.Minute, sweep.Run)
-	platformCard := &factoryd.PlatformCard{Store: store, Forgejo: forgejo, Repo: configRepo, Timeline: runner.Timeline(), Now: time.Now}
+	platformCard := &factoryd.PlatformCard{Store: store, Forgejo: forgejo, Repo: configRepo, Timeline: runner.Timeline(), Kube: kube, Now: time.Now}
 	passes.Run(ctx, "platform_card", time.Minute, 2*time.Minute, platformCard.Check)
 	passes.Run(ctx, "cleared_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCleared)
 	passes.Run(ctx, "completed_job_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCompletedJobs)
