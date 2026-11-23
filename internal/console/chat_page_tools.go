@@ -546,7 +546,7 @@ func (t *turn) clusterFacts(in toolInput) (string, error) {
 		if err := t.c.admit(t.r.Context(), accessTable["alerts"], t.a, t.c.writersOwn(), ""); err != nil {
 			var no *refusal
 			if errors.As(err, &no) && no.status == http.StatusForbidden {
-				return "", refuse(http.StatusForbidden, "Only the writers of the factory's own code read the platform's incident log: ask about a card's session with task_id and n.")
+				return "", refuse(http.StatusForbidden, "Only the writers of the factory's own code read the platform's incident log: ask about a session of one of this project's cards instead.")
 			}
 			return "", err
 		}

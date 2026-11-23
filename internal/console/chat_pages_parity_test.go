@@ -462,7 +462,7 @@ func TestChatClusterFactsWindowNeedsTheFactorysAccess(t *testing.T) {
 	}
 	equal(t, "the reads", got, []string{
 		"class: platform\nrule: guard_kill\nat: 2026-10-11T09:40:00Z\nnode: n1\nkill: memory guard",
-		"Refused: Only the writers of the factory's own code read the platform's incident log: ask about a card's session with task_id and n.",
+		"Refused: Only the writers of the factory's own code read the platform's incident log: ask about a session of one of this project's cards instead.",
 	})
 }
 
