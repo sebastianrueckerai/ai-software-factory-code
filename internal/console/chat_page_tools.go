@@ -540,6 +540,17 @@ func factsRefusal(err error) error {
 }
 
 func (t *turn) clusterFacts(in toolInput) (string, error) {
+	if in.TaskID == "" {
+		// the window reads the whole platform's incident log: the factory's
+		// access, as alerts takes
+		if err := t.c.admit(t.r.Context(), accessTable["alerts"], t.a, t.c.writersOwn(), ""); err != nil {
+			var no *refusal
+			if errors.As(err, &no) && no.status == http.StatusForbidden {
+				return "", refuse(http.StatusForbidden, "Only the writers of the factory's own code read the platform's incident log: ask about a card's session with task_id and n.")
+			}
+			return "", err
+		}
+	}
 	since, until, err := factoryd.ParseFactsTimes(strings.TrimSpace(in.Since), strings.TrimSpace(in.Until))
 	if err != nil {
 		return "", err

@@ -436,6 +436,36 @@ func TestChatClusterFactsReadsACardsSession(t *testing.T) {
 	})
 }
 
+// The window form reads the whole platform's incident log: a human
+// without the factory's access reads a session of their project's card,
+// and the window is refused with that way to ask.
+func TestChatClusterFactsWindowNeedsTheFactorysAccess(t *testing.T) {
+	r, _, g := newChatRig(t)
+	members(r)
+	r.ledger.files = map[string]policy.ProjectConfig{"demo": {Repository: "demo/demo", MergeRule: "human", Objects: "factory",
+		Agents: "coder", Process: "maintenance"}}
+	r.tasks.set("", factoryd.Task{ID: "t-dm", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "maintenance",
+		Repository: "demo/demo", IssueNumber: 3, Objective: "Fix the login."})
+	r.objects["sessions/t-dm/timeline.jsonl"] = []byte(readsTimeline)
+	r.deaths = map[[2]string]factoryd.DeathRecord{{"t-dm", "s-1"}: {Class: factoryd.DeathPlatform, Rule: factoryd.RuleGuardKill,
+		At: time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC), Node: "n1", KillSource: "guard"}}
+	g.project = "demo"
+	ck, s := memberLogin(t, r, "bob")
+	g.replies = [][]string{{call(1, "cluster_facts", `{"task_id":"t-dm","n":1}`,
+		"cluster_facts", `{"since":"2026-10-22T09:00:00Z","until":"2026-10-22T10:00:00Z"}`)}, {say("ok")}}
+	chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"what did the cluster do?"}})
+	calls := g.calls()
+	msgs := messages(t, calls[len(calls)-1])
+	var got []string
+	for _, m := range msgs[len(msgs)-2:] {
+		got = append(got, m["content"].(string))
+	}
+	equal(t, "the reads", got, []string{
+		"class: platform\nrule: guard_kill\nat: 2026-10-11T09:40:00Z\nnode: n1\nkill: memory guard",
+		"Refused: Only the writers of the factory's own code read the platform's incident log: ask about a card's session with task_id and n.",
+	})
+}
+
 func TestChatClusterFactsRefusesAnotherProjectsCard(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ls", Kind: "agent", Status: "queued", Repository: "sf/other", IssueNumber: 5}})

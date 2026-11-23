@@ -1557,7 +1557,7 @@ func init() {
 			}},
 		{name: "cluster_facts", title: "Read what the cluster did",
 			params: map[string]any{"task_id": taskParam, "n": sessionN, "since": str("the window's start, RFC 3339"), "until": str("the window's end, RFC 3339, at most 24 hours after since")},
-			about:  "What the cluster did to a card's session (task_id, n), or the platform's incidents of a window.",
+			about:  "What the cluster did to a card's session (task_id, n), or, for the writers of the factory's own code, the platform's incidents of a window.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
 				s, err := t.clusterFactsText(in)
 				return s, nil, err
