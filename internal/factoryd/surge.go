@@ -60,6 +60,13 @@ func (r *Runner) AdmitResume(ctx context.Context, taskID string, since time.Time
 	if err != nil {
 		return ResumeSlot{}, err
 	}
+	line, err := cardHoldWait(ctx, r.store, t)
+	if err != nil {
+		return ResumeSlot{}, err
+	}
+	if line != "" {
+		return ResumeSlot{}, r.parkHeld(ctx, t, line, since)
+	}
 	if !resumesIntoSlot(t) {
 		return ResumeSlot{Granted: true}, nil
 	}
@@ -75,6 +82,20 @@ func (r *Runner) AdmitResume(ctx context.Context, taskID string, since time.Time
 	return slot, nil
 }
 
+// parkHeld parks held card t queued under its hold's line. A card that held
+// a slot gives it up: the queue is pulled and its issue mirrored. A re-check
+// of a parked card wakes no one, or each wake would send it back here.
+func (r *Runner) parkHeld(ctx context.Context, t Task, line string, since time.Time) error {
+	if err := r.store.SetResumeWait(ctx, t.ID, line, since); err != nil {
+		return err
+	}
+	if HoldsSlot(t) || t.Status == "running" {
+		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
+		mirrorTaskState(ctx, r.forgejo, t, "queued")
+	}
+	return nil
+}
+
 func (r *Runner) admitResume(ctx context.Context, t Task, since time.Time) (ResumeSlot, error) {
 	admitMu.Lock()
 	defer admitMu.Unlock()
@@ -88,6 +109,7 @@ func (r *Runner) admitResume(ctx context.Context, t Task, since time.Time) (Resu
 	if err != nil {
 		return ResumeSlot{}, err
 	}
+	waiters = unheld(waiters)
 	ahead := len(waiters)
 	for i, w := range waiters {
 		if w.ID == t.ID {

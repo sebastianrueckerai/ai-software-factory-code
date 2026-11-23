@@ -139,6 +139,7 @@ var (
 	EscalationQuestion        = factoryd.EscalationQuestion
 	EventApprovalRequested    = factoryd.EventApprovalRequested
 	EventCardCreated          = factoryd.EventCardCreated
+	EventCardHoldEnded        = factoryd.EventCardHoldEnded
 	EventCardExtended         = factoryd.EventCardExtended
 	EventCardFunded           = factoryd.EventCardFunded
 	EventCaseClimbed          = factoryd.EventCaseClimbed
@@ -334,6 +335,7 @@ type (
 	ErrActRefused         = factoryd.ErrActRefused
 	Estimate              = factoryd.Estimate
 	Event                 = factoryd.Event
+	BoundedWorkflows      = factoryd.BoundedWorkflows
 	ErrMainRed            = factoryd.ErrMainRed
 	Forgejo               = factoryd.Forgejo
 	GateWatch             = factoryd.GateWatch

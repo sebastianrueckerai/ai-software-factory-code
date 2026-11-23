@@ -524,3 +524,67 @@ func TestSwitchFromWaitBeforeTheChangeAsksNothing(t *testing.T) {
 		t.Fatalf("asks = %d, want none", len(p.at))
 	}
 }
+
+func heldCard(id, status string, since time.Time) Task {
+	t := parkedCard(id, status)
+	t.Hold = &CardHold{Reason: "out of the way", By: "sebastian", At: since}
+	return t
+}
+
+func TestTheBoardCountsNoHeldCardAhead(t *testing.T) {
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	held := heldCard("held", "queued", at)
+	held.ResumedAt = &at
+	fresh := parkedCard("fresh", "queued")
+	fresh.QueueReason = WorkBoundReason + "1 of 1"
+	tasks := []BoardTask{{Task: parkedCard("run", "running")}, {Task: held}, {Task: fresh}}
+	setSlotWaits(tasks)
+	if tasks[1].SlotWait != "" {
+		t.Errorf("the held card waits %q, want no slot wait", tasks[1].SlotWait)
+	}
+	if want := "waits for its turn to start, 0 ahead (1 running)"; tasks[2].SlotWait != want {
+		t.Errorf("the fresh card waits %q, want %q", tasks[2].SlotWait, want)
+	}
+}
+
+func TestReleasingAParkedHoldWakesTheCard(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	held := heldCard("a", "queued", at)
+	held.ResumedAt = &at
+	store.tasks["a"] = held
+	r := surgeRunner(store, surgeTree(1, nil))
+	if ok, err := r.ReleaseCardHold(ctx, "a"); err != nil || !ok {
+		t.Fatalf("ReleaseCardHold = %v, %v", ok, err)
+	}
+	if a, _, _ := store.Task(ctx, "a"); a.Hold != nil {
+		t.Fatalf("the hold stands: %+v", a.Hold)
+	}
+	if got := r.cfg.Workflows.(*recordingWorkflows).signals; fmt.Sprint(got) != "[a]" {
+		t.Fatalf("signals = %v, want one to a", got)
+	}
+}
+
+func TestARecheckOfAParkedHoldWakesNoOne(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	held := heldCard("a", "queued", at)
+	held.ResumedAt = &at
+	held.AdmittedAt = &at
+	store.tasks["a"] = held
+	store.tasks["b"] = parkedCard("b", "queued")
+	r := surgeRunner(store, surgeTree(1, nil))
+	s, err := r.AdmitResume(ctx, "a", at)
+	if err != nil || s.Granted {
+		t.Fatalf("AdmitResume = %+v, %v; want not granted", s, err)
+	}
+	rec := r.cfg.Workflows.(*recordingWorkflows)
+	if len(rec.signals) != 0 || len(rec.starts) != 0 {
+		t.Fatalf("signals %v, starts %v; want none", rec.signals, rec.starts)
+	}
+	if a, _, _ := store.Task(ctx, "a"); a.QueueReason != "on hold: out of the way" {
+		t.Fatalf("reason = %q", a.QueueReason)
+	}
+}
