@@ -588,6 +588,20 @@ func (k *fakeKube) NewestPodEvent(context.Context, string, string) (string, erro
 	return "", nil
 }
 
+func (k *fakeKube) PodEvents(context.Context, string, string) ([]factoryd.PodEvent, error) {
+	return nil, nil
+}
+
+func (k *fakeKube) NodeState(context.Context, string) (factoryd.NodeState, error) {
+	return factoryd.NodeState{}, factoryd.ErrNotFound
+}
+
+func (k *fakeKube) Nodes(context.Context) ([]factoryd.NodeState, error) { return nil, nil }
+
+func (k *fakeKube) ServicePods(context.Context, string, string) ([]factoryd.ServicePod, error) {
+	return nil, nil
+}
+
 func (k *fakeKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolume, error) {
 	return nil, nil
 }

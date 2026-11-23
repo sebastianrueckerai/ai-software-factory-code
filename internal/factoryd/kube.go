@@ -116,6 +116,10 @@ type Kube interface {
 	// NewestPodEvent is the pod's newest event as "Reason: message", "" when it
 	// has none: the cause of a pod that never starts stands there.
 	NewestPodEvent(ctx context.Context, namespace, name string) (string, error)
+	PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error)
+	NodeState(ctx context.Context, name string) (NodeState, error)
+	Nodes(ctx context.Context) ([]NodeState, error)
+	ServicePods(ctx context.Context, namespace, selector string) ([]ServicePod, error)
 	PersistentVolumes(ctx context.Context) ([]PersistentVolume, error)
 	DeletePersistentVolume(ctx context.Context, name string) error
 	CronJobs(ctx context.Context, namespace string) ([]CronJobState, error)
@@ -667,22 +671,55 @@ func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string
 			Terminated *detail   `json:"terminated"`
 		} `json:"state"`
 	}
+	type condition struct {
+		Type               string    `json:"type"`
+		Status             string    `json:"status"`
+		Reason             string    `json:"reason"`
+		Message            string    `json:"message"`
+		LastTransitionTime time.Time `json:"lastTransitionTime"`
+	}
+	type container struct {
+		Name      string `json:"name"`
+		Resources struct {
+			Limits struct {
+				Memory string `json:"memory"`
+			} `json:"limits"`
+		} `json:"resources"`
+	}
 	var pod struct {
+		Metadata struct {
+			UID               string    `json:"uid"`
+			DeletionTimestamp time.Time `json:"deletionTimestamp"`
+		} `json:"metadata"`
+		Spec struct {
+			NodeName       string      `json:"nodeName"`
+			Containers     []container `json:"containers"`
+			InitContainers []container `json:"initContainers"`
+		} `json:"spec"`
 		Status struct {
-			Phase                 string         `json:"phase"`
-			Reason                string         `json:"reason"`
-			Message               string         `json:"message"`
-			Conditions            []PodCondition `json:"conditions"`
-			InitContainerStatuses []status       `json:"initContainerStatuses"`
-			ContainerStatuses     []status       `json:"containerStatuses"`
+			Phase                 string      `json:"phase"`
+			Reason                string      `json:"reason"`
+			Message               string      `json:"message"`
+			StartTime             time.Time   `json:"startTime"`
+			Conditions            []condition `json:"conditions"`
+			InitContainerStatuses []status    `json:"initContainerStatuses"`
+			ContainerStatuses     []status    `json:"containerStatuses"`
 		} `json:"status"`
 	}
 	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
 		return PodDiagnosis{}, err
 	}
-	d := PodDiagnosis{Phase: pod.Status.Phase, Reason: pod.Status.Reason, Message: pod.Status.Message, Conditions: pod.Status.Conditions}
+	d := PodDiagnosis{Phase: pod.Status.Phase, Reason: pod.Status.Reason, Message: pod.Status.Message,
+		UID: pod.Metadata.UID, Node: pod.Spec.NodeName, StartedAt: pod.Status.StartTime, Deleting: !pod.Metadata.DeletionTimestamp.IsZero()}
+	for _, c := range pod.Status.Conditions {
+		d.Conditions = append(d.Conditions, PodCondition{Type: c.Type, Status: c.Status, Reason: c.Reason, Message: c.Message, Since: c.LastTransitionTime})
+	}
+	limits := map[string]string{}
+	for _, c := range slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers) {
+		limits[c.Name] = c.Resources.Limits.Memory
+	}
 	for _, c := range slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses) {
-		cs := ContainerState{Name: c.Name, Restarts: c.RestartCount, State: "running"}
+		cs := ContainerState{Name: c.Name, Restarts: c.RestartCount, State: "running", MemoryLimit: limits[c.Name]}
 		switch {
 		case c.State.Waiting != nil:
 			cs.State, cs.Reason, cs.Message = "waiting", c.State.Waiting.Reason, c.State.Waiting.Message
@@ -708,32 +745,183 @@ func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, 
 // NewestPodEvent is the pod's newest event as "Reason: message", "" when it
 // has none.
 func (k *InClusterKube) NewestPodEvent(ctx context.Context, namespace, name string) (string, error) {
-	q := url.Values{"fieldSelector": {"involvedObject.kind=Pod,involvedObject.name=" + name}}
+	evs, err := k.PodEvents(ctx, namespace, name)
+	if err != nil || len(evs) == 0 {
+		return "", err
+	}
+	last := evs[len(evs)-1]
+	return last.Reason + ": " + last.Message, nil
+}
+
+const (
+	podEventsKept    = 20
+	podEventMessageB = 200
+)
+
+// PodEvents is the pod's newest events, oldest first, each message cut to
+// podEventMessageB bytes. An event's time is its series' last observation,
+// else its last, event or first timestamp.
+func (k *InClusterKube) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
+	q := url.Values{"fieldSelector": {"involvedObject.kind=Pod,involvedObject.name=" + pod}}
 	var evs struct {
 		Items []struct {
 			Reason         string    `json:"reason"`
+			Type           string    `json:"type"`
 			Message        string    `json:"message"`
+			Count          int       `json:"count"`
 			LastTimestamp  time.Time `json:"lastTimestamp"`
 			EventTime      time.Time `json:"eventTime"`
 			FirstTimestamp time.Time `json:"firstTimestamp"`
 			Series         *struct {
+				Count            int       `json:"count"`
 				LastObservedTime time.Time `json:"lastObservedTime"`
 			} `json:"series"`
 		} `json:"items"`
 	}
 	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/events?"+q.Encode(), &evs); err != nil {
-		return "", err
+		return nil, err
 	}
-	var newest time.Time
-	var out string
+	out := make([]PodEvent, 0, len(evs.Items))
 	for _, e := range evs.Items {
-		at := cmp.Or(e.LastTimestamp, e.EventTime, e.FirstTimestamp)
-		if e.Series != nil && !e.Series.LastObservedTime.IsZero() {
-			at = e.Series.LastObservedTime
+		at, count := cmp.Or(e.LastTimestamp, e.EventTime, e.FirstTimestamp), e.Count
+		if e.Series != nil {
+			if !e.Series.LastObservedTime.IsZero() {
+				at = e.Series.LastObservedTime
+			}
+			count = cmp.Or(e.Series.Count, count)
 		}
-		if out == "" || at.After(newest) {
-			newest, out = at, e.Reason+": "+e.Message
+		msg := e.Message
+		if len(msg) > podEventMessageB {
+			msg = strings.ToValidUTF8(msg[:podEventMessageB], "")
 		}
+		out = append(out, PodEvent{Reason: e.Reason, Type: e.Type, Message: msg, At: at, Count: count})
+	}
+	slices.SortStableFunc(out, func(a, b PodEvent) int { return a.At.Compare(b.At) })
+	return out[max(0, len(out)-podEventsKept):], nil
+}
+
+type kubeNodeList struct {
+	Items []struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Status struct {
+			NodeInfo struct {
+				BootID string `json:"bootID"`
+			} `json:"nodeInfo"`
+			Conditions []struct {
+				Type               string    `json:"type"`
+				Status             string    `json:"status"`
+				LastTransitionTime time.Time `json:"lastTransitionTime"`
+			} `json:"conditions"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+func (k *InClusterKube) nodeStates(ctx context.Context, query string) ([]NodeState, error) {
+	var l kubeNodeList
+	if err := k.getJSON(ctx, "/api/v1/nodes"+query, &l); err != nil {
+		return nil, err
+	}
+	out := make([]NodeState, 0, len(l.Items))
+	for _, n := range l.Items {
+		s := NodeState{Name: n.Metadata.Name, BootID: n.Status.NodeInfo.BootID}
+		for _, c := range n.Status.Conditions {
+			if c.Type == "Ready" {
+				s.Ready, s.Since = c.Status == "True", c.LastTransitionTime
+			}
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// NodeState lists nodes filtered by name: factoryd may list nodes, not get
+// one. A node the list does not hold is ErrNotFound.
+func (k *InClusterKube) NodeState(ctx context.Context, name string) (NodeState, error) {
+	ns, err := k.nodeStates(ctx, "?"+url.Values{"fieldSelector": {"metadata.name=" + name}}.Encode())
+	if err != nil {
+		return NodeState{}, err
+	}
+	if len(ns) == 0 {
+		return NodeState{}, ErrNotFound
+	}
+	return ns[0], nil
+}
+
+// Nodes is every node's boot and readiness.
+func (k *InClusterKube) Nodes(ctx context.Context) ([]NodeState, error) {
+	return k.nodeStates(ctx, "")
+}
+
+// ServicePod is a pod of a service a session depends on, with each
+// container's restarts and last termination.
+type ServicePod struct {
+	Namespace, Name, UID, Node string
+	Containers                 []ServiceContainer
+}
+
+type ServiceContainer struct {
+	Name         string
+	Restarts     int
+	LastReason   string
+	LastExitCode int32
+	// LastStarted and LastFinished bound the container's previous run;
+	// RunningSince is when the current one started.
+	LastStarted, LastFinished, RunningSince time.Time
+}
+
+// ServicePods lists the pods a label selector matches in a namespace.
+func (k *InClusterKube) ServicePods(ctx context.Context, namespace, selector string) ([]ServicePod, error) {
+	var l struct {
+		Items []struct {
+			Metadata struct {
+				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
+				UID       string `json:"uid"`
+			} `json:"metadata"`
+			Spec struct {
+				NodeName string `json:"nodeName"`
+			} `json:"spec"`
+			Status struct {
+				ContainerStatuses []struct {
+					Name         string `json:"name"`
+					RestartCount int    `json:"restartCount"`
+					State        struct {
+						Running *struct {
+							StartedAt time.Time `json:"startedAt"`
+						} `json:"running"`
+					} `json:"state"`
+					LastState struct {
+						Terminated *struct {
+							Reason     string    `json:"reason"`
+							ExitCode   int32     `json:"exitCode"`
+							StartedAt  time.Time `json:"startedAt"`
+							FinishedAt time.Time `json:"finishedAt"`
+						} `json:"terminated"`
+					} `json:"lastState"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	q := url.Values{"labelSelector": {selector}}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods?"+q.Encode(), &l); err != nil {
+		return nil, err
+	}
+	out := make([]ServicePod, 0, len(l.Items))
+	for _, p := range l.Items {
+		sp := ServicePod{Namespace: cmp.Or(p.Metadata.Namespace, namespace), Name: p.Metadata.Name, UID: p.Metadata.UID, Node: p.Spec.NodeName}
+		for _, c := range p.Status.ContainerStatuses {
+			sc := ServiceContainer{Name: c.Name, Restarts: c.RestartCount}
+			if r := c.State.Running; r != nil {
+				sc.RunningSince = r.StartedAt
+			}
+			if t := c.LastState.Terminated; t != nil {
+				sc.LastReason, sc.LastExitCode, sc.LastStarted, sc.LastFinished = t.Reason, t.ExitCode, t.StartedAt, t.FinishedAt
+			}
+			sp.Containers = append(sp.Containers, sc)
+		}
+		out = append(out, sp)
 	}
 	return out, nil
 }

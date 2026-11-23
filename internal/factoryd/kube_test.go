@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -948,5 +949,158 @@ func TestPodStatusReadsAWaitingContainer(t *testing.T) {
 		if err != nil || wait != want {
 			t.Errorf("%s: PodStatus = %q %+v %v, want the wait %+v", name, phase, wait, err, want)
 		}
+	}
+}
+
+func TestPodDiagnosisReadsThePodsPlace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"metadata":{"uid":"u-1","deletionTimestamp":"2026-11-20T10:07:00Z"},`+
+			`"spec":{"nodeName":"sf-2","containers":[{"name":"worker","resources":{"limits":{"memory":"4Gi"}}},{"name":"side"}],`+
+			`"initContainers":[{"name":"clone","resources":{"limits":{"memory":"1Gi"}}}]},`+
+			`"status":{"phase":"Running","startTime":"2026-11-20T10:00:00Z","conditions":[`+
+			`{"type":"DisruptionTarget","status":"True","reason":"DeletionByTaintManager","lastTransitionTime":"2026-11-20T10:06:00Z"}],`+
+			`"containerStatuses":[{"name":"worker","state":{"running":{}}},{"name":"side","state":{"running":{}}}],`+
+			`"initContainerStatuses":[{"name":"clone","state":{"terminated":{"reason":"Completed"}}}]}}`)
+	}))
+	defer srv.Close()
+	d, err := kubeAt(t, srv).PodDiagnosis(context.Background(), "ns", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(s string) time.Time { v, _ := time.Parse(time.RFC3339, s); return v }
+	if d.UID != "u-1" || d.Node != "sf-2" || !d.StartedAt.Equal(at("2026-11-20T10:00:00Z")) || !d.Deleting {
+		t.Errorf("place = %+v", d)
+	}
+	if len(d.Conditions) != 1 || d.Conditions[0].Type != "DisruptionTarget" || !d.Conditions[0].Since.Equal(at("2026-11-20T10:06:00Z")) {
+		t.Errorf("conditions = %+v", d.Conditions)
+	}
+	var limits []string
+	for _, c := range d.Containers {
+		limits = append(limits, c.Name+"="+c.MemoryLimit)
+	}
+	if got := strings.Join(limits, ","); got != "clone=1Gi,worker=4Gi,side=" {
+		t.Errorf("limits = %s", got)
+	}
+}
+
+func TestNodeStateReadsTheBootID(t *testing.T) {
+	var sel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/nodes" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		sel = r.URL.Query().Get("fieldSelector")
+		if r.URL.Query().Get("fieldSelector") == "metadata.name=sf-1" {
+			io.WriteString(w, `{"items":[{"metadata":{"name":"sf-1"},"status":{"nodeInfo":{"bootID":"b1"},"conditions":[`+
+				`{"type":"MemoryPressure","status":"False","lastTransitionTime":"2026-11-20T09:00:00Z"},`+
+				`{"type":"Ready","status":"False","lastTransitionTime":"2026-11-20T10:00:00Z"}]}}]}`)
+			return
+		}
+		io.WriteString(w, `{"items":[]}`)
+	}))
+	defer srv.Close()
+	k := kubeAt(t, srv)
+	n, err := k.NodeState(context.Background(), "sf-1")
+	if err != nil || sel != "metadata.name=sf-1" {
+		t.Fatalf("NodeState = %+v, %v, selector %q", n, err, sel)
+	}
+	if n.Name != "sf-1" || n.BootID != "b1" || n.Ready || !n.Since.Equal(time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("node = %+v", n)
+	}
+	if _, err := k.NodeState(context.Background(), "gone"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing node err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestNodesReadsEveryNode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"items":[{"metadata":{"name":"a"},"status":{"nodeInfo":{"bootID":"ba"},"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"2026-11-20T10:00:00Z"}]}},`+
+			`{"metadata":{"name":"b"},"status":{"nodeInfo":{"bootID":"bb"}}}]}`)
+	}))
+	defer srv.Close()
+	ns, err := kubeAt(t, srv).Nodes(context.Background())
+	if err != nil || len(ns) != 2 || !ns[0].Ready || ns[0].BootID != "ba" || ns[1].Ready || !ns[1].Since.IsZero() {
+		t.Fatalf("Nodes = %+v, %v", ns, err)
+	}
+}
+
+func TestPodEventsOldestFirst(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"items":[`+
+			`{"reason":"Late","type":"Warning","message":"`+long+`","lastTimestamp":"2026-11-12T10:09:00Z","count":3},`+
+			`{"reason":"First","type":"Normal","message":"m","firstTimestamp":"2026-11-12T10:00:00Z"},`+
+			`{"reason":"Mid","type":"Normal","message":"m","eventTime":"2026-11-12T10:05:00Z","series":{"count":4,"lastObservedTime":"2026-11-12T10:06:00Z"}}]}`)
+	}))
+	defer srv.Close()
+	evs, err := kubeAt(t, srv).PodEvents(context.Background(), "ns", "p")
+	if err != nil || len(evs) != 3 {
+		t.Fatalf("PodEvents = %+v, %v", evs, err)
+	}
+	if evs[0].Reason != "First" || evs[1].Reason != "Mid" || evs[2].Reason != "Late" {
+		t.Errorf("order = %s %s %s", evs[0].Reason, evs[1].Reason, evs[2].Reason)
+	}
+	if len(evs[2].Message) != 200 || evs[2].Type != "Warning" || evs[2].Count != 3 || evs[1].Count != 4 {
+		t.Errorf("late = %d bytes, %+v, mid count %d", len(evs[2].Message), evs[2], evs[1].Count)
+	}
+	if !evs[1].At.Equal(time.Date(2026, 11, 12, 10, 6, 0, 0, time.UTC)) {
+		t.Errorf("mid at = %v, want the series' last observed time", evs[1].At)
+	}
+}
+
+func TestPodEventsKeepTheNewestTwenty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var items []string
+		for i := 25; i > 0; i-- {
+			items = append(items, fmt.Sprintf(`{"reason":"R%d","lastTimestamp":"2026-11-12T10:%02d:00Z"}`, i, i))
+		}
+		io.WriteString(w, `{"items":[`+strings.Join(items, ",")+`]}`)
+	}))
+	defer srv.Close()
+	evs, err := kubeAt(t, srv).PodEvents(context.Background(), "ns", "p")
+	if err != nil || len(evs) != 20 || evs[0].Reason != "R6" || evs[19].Reason != "R25" {
+		t.Fatalf("PodEvents = %d events, %v", len(evs), err)
+	}
+}
+
+func TestServicePodsReadTheLastTermination(t *testing.T) {
+	var q url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/namespaces/proj/pods" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		q = r.URL.Query()
+		io.WriteString(w, `{"items":[{"metadata":{"namespace":"proj","name":"web-1","uid":"u9"},"spec":{"nodeName":"sf-3"},`+
+			`"status":{"containerStatuses":[{"name":"web","restartCount":2,`+
+			`"state":{"running":{"startedAt":"2026-11-20T10:10:00Z"}},`+
+			`"lastState":{"terminated":{"reason":"OOMKilled","exitCode":137,"startedAt":"2026-11-20T10:00:00Z","finishedAt":"2026-11-20T10:09:00Z"}}}]}}]}`)
+	}))
+	defer srv.Close()
+	ps, err := kubeAt(t, srv).ServicePods(context.Background(), "proj", "app=web")
+	if err != nil || q.Get("labelSelector") != "app=web" || len(ps) != 1 {
+		t.Fatalf("ServicePods = %+v, %v, query %v", ps, err, q)
+	}
+	p := ps[0]
+	if p.Namespace != "proj" || p.Name != "web-1" || p.UID != "u9" || p.Node != "sf-3" || len(p.Containers) != 1 {
+		t.Fatalf("pod = %+v", p)
+	}
+	c := p.Containers
+	at := func(m int) time.Time { return time.Date(2026, 11, 20, 10, m, 0, 0, time.UTC) }
+	if c[0].Name != "web" || c[0].Restarts != 2 || c[0].LastReason != "OOMKilled" || c[0].LastExitCode != 137 ||
+		!c[0].LastStarted.Equal(at(0)) || !c[0].LastFinished.Equal(at(9)) || !c[0].RunningSince.Equal(at(10)) {
+		t.Errorf("container = %+v", c[0])
+	}
+}
+
+func TestNewestPodEventStillReadsTheNewest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"items":[{"reason":"New","message":"n","lastTimestamp":"2026-11-12T10:09:00Z"},{"reason":"Old","message":"o","lastTimestamp":"2026-11-12T10:01:00Z"}]}`)
+	}))
+	defer srv.Close()
+	got, err := kubeAt(t, srv).NewestPodEvent(context.Background(), "ns", "p")
+	if err != nil || got != "New: n" {
+		t.Fatalf("NewestPodEvent = %q, %v", got, err)
 	}
 }

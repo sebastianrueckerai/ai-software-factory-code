@@ -79,6 +79,9 @@ type fakeKube struct {
 	cronJobs    map[string][]CronJobState // namespace → its CronJobs and ScheduledBackups
 	deployments map[string]string         // ns/name → Deployment JSON
 	events      map[string]string         // ns/pod → its newest event
+	podEvents   map[string][]PodEvent     // ns/pod → its events, oldest first
+	nodeStates  map[string]NodeState      // node name → its state; a missing one is ErrNotFound
+	servicePods map[string][]ServicePod   // ns/selector → its pods
 	cronJobsErr map[string]error          // "<kind> <namespace>" → injected failure of its read
 	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
 	takeToken   sync.Once
@@ -414,6 +417,34 @@ func (k *fakeKube) NewestPodEvent(ctx context.Context, namespace, name string) (
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.events[namespace+"/"+name], nil
+}
+
+func (k *fakeKube) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.podEvents[namespace+"/"+pod]), nil
+}
+
+func (k *fakeKube) NodeState(ctx context.Context, name string) (NodeState, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	n, ok := k.nodeStates[name]
+	if !ok {
+		return NodeState{}, ErrNotFound
+	}
+	return n, nil
+}
+
+func (k *fakeKube) Nodes(ctx context.Context) ([]NodeState, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Collect(maps.Values(k.nodeStates)), nil
+}
+
+func (k *fakeKube) ServicePods(ctx context.Context, namespace, selector string) ([]ServicePod, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.servicePods[namespace+"/"+selector]), nil
 }
 
 // PodLog serves the scripted body; reading it to the end means the
