@@ -60,6 +60,12 @@ func (s *PGStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner stri
 	return err
 }
 
+func (s *PGStore) SetLiveSessionPod(ctx context.Context, taskID, owner, uid, node, boot string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE live_sessions SET pod_uid = $3, node = $4, boot_id = $5 WHERE task_id = $1 AND owner = $2`,
+		taskID, owner, uid, node, boot)
+	return err
+}
+
 func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	var l LiveSession
 	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur, pod_uid, node, boot_id

@@ -117,6 +117,7 @@ type fakePod struct {
 	term            chan struct{} // closed at the deletion: the worker's SIGTERM
 	conditions      []PodCondition
 	containers      []ContainerState // init containers first, as PodDiagnosis reads them
+	uid, node       string           // metadata.uid, spec.nodeName
 }
 
 func newFakeKube() *fakeKube {
@@ -395,7 +396,8 @@ func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (Po
 	if !ok {
 		return PodDiagnosis{}, ErrNotFound
 	}
-	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions, Containers: p.containers}, nil
+	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions, Containers: p.containers,
+		UID: p.uid, Node: p.node, Deleting: p.deleted}, nil
 }
 
 // PodLogTail serves the scripted body's last lines.
@@ -2238,7 +2240,8 @@ func TestRunSessionPodDeathIsNoPush(t *testing.T) {
 
 // The pod's own diagnosis, read before its deletion, tells an eviction
 // apart from any other death: the next session's findings name the cause
-// instead of the generic "pod exited without a result".
+// instead of the generic "pod exited without a result". The node's
+// pressure evicted it: the platform ended the session.
 func TestEvictionRecorded(t *testing.T) {
 	task := Task{ID: "t4e", Status: "running", Objective: "flaky", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
@@ -2250,7 +2253,7 @@ func TestEvictionRecorded(t *testing.T) {
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4e", Attempt: 1, Model: "m"}, nil,
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
-	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "evicted: The node was low on resource: ephemeral-storage." {
+	if err != nil || res.Outcome != OutcomePlatformKilled || res.Summary != "evicted: The node was low on resource: ephemeral-storage." {
 		t.Fatalf("result = (%+v, %v)", res, err)
 	}
 }
@@ -2465,7 +2468,7 @@ func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
 			stop := make(chan struct{})
 			close(stop)
-			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, stop)
+			_, err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, stop)
 			var f *startFailure
 			switch {
 			case tc.want == "" && !errors.Is(err, errWorkerStop):
@@ -2518,7 +2521,7 @@ func TestAwaitPodStartGivesAConfigErrorItsGrace(t *testing.T) {
 					pod.phase = "Running"
 				}
 			}
-			err := startRunner(kube, 600*time.Millisecond).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, nil)
+			_, err := startRunner(kube, 600*time.Millisecond).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, nil)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("awaitPodStart = %v after %v, want the pod started", err, time.Since(began))
@@ -2550,7 +2553,7 @@ func TestAwaitPodStartTimeoutSaysWhatThePodWaitsOn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			kube := newFakeKube()
 			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
-			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", 30*time.Millisecond, nil)
+			_, err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", 30*time.Millisecond, nil)
 			var p *podPending
 			if !errors.As(err, &p) || err.Error() != tc.want {
 				t.Fatalf("awaitPodStart = %v, want the pending pod %q", err, tc.want)

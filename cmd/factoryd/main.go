@@ -217,6 +217,10 @@ func main() {
 		// table the gateway's hold math prices a call with
 		Prices:       &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
 		ProjectsUser: projectsUser(),
+		// a session's pod's death reads the incident log and the nodes'
+		// kernel kill lines
+		Cluster: store,
+		Kernel:  signoz,
 	}, store, kube, forgejo, completion, objects, supervisorModel(gatewayURL, gatewayToken))
 	if err != nil {
 		log.Fatalf("runner: %v", err)

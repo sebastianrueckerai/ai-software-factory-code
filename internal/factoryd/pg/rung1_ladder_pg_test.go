@@ -581,10 +581,10 @@ func TestSessionNoteLeadsWithTheFindings(t *testing.T) {
 // and what to run instead.
 func TestRung1KilledSessionHandsOverTheScopedCommand(t *testing.T) {
 	g := newRungRig(t, "success")
-	killed := &SessionKill{Reason: "OOMKilled", ExitCode: 137, Container: "agent", Command: "go test -race ./..."}
+	killed := &DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Reason: "OOMKilled", ExitCode: 137, Container: "agent", LastCommand: "go test -race ./..."}
 	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "handover", "model": "same", "draw": nil,
 		"note": "run go test -race ./internal/slug/ only"})}
-	out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: tripCap, Head: "h2", Killed: killed}, tripAttempt{N: 1})
+	out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: tripCap, Head: "h2", Death: killed}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,7 +830,7 @@ func TestRung1PanicHandsTheCaseUp(t *testing.T) {
 // separators of 2: 2269 bytes, leaving 1731, of which the cut's mark takes 3.
 func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 	r := &Runner{}
-	f := CaseFacts{Head: "0123456789abcdef", Checks: "red", Killed: &SessionKill{Reason: "OOMKilled", Command: strings.Repeat("go test ", 200)}}
+	f := CaseFacts{Head: "0123456789abcdef", Checks: "red", Death: &DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Reason: "OOMKilled", LastCommand: strings.Repeat("go test ", 200)}}
 	for i := range 20 {
 		text := fmt.Sprintf("finding %02d %s", i, strings.Repeat("x", 500))
 		id := FindingID(text)
@@ -844,7 +844,7 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 		f.FailedTests = append(f.FailedTests, FailedTest{Test: fmt.Sprintf("TestNumber%03d", i), Package: "example.com/long/package/path", Kind: "failed"})
 	}
 	log := ChecksLog(f, ChecksLogCut)
-	kill := textutil.Truncate("The sandbox killed the last session for its memory while it ran: "+f.Killed.Command, KillCut)
+	kill := textutil.Truncate("The sandbox killed the last session for its memory while it ran: "+f.Death.LastCommand, KillCut)
 	for name, in := range map[string]ActInput{
 		"a rung's note": {Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: strings.Repeat("n", 9000)}},
 		"the human's":   {Rung: 3, Res: Resolution{Action: ActContinue, Note: strings.Repeat("h", 9000)}},
@@ -1394,8 +1394,8 @@ func TestFactorydsAdditionsToANoteAreMasked(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: tripCap, Killed: &SessionKill{Reason: "OOMKilled", ExitCode: 137,
-		Command: "curl " + url + " -H '" + bearer + "'"}}, tripAttempt{N: 1})
+	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: tripCap, Death: &DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Reason: "OOMKilled", ExitCode: 137,
+		LastCommand: "curl " + url + " -H '" + bearer + "'"}}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

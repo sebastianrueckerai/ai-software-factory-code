@@ -24,6 +24,7 @@ type timelineLine struct {
 	Role        string                  `json:"role"`
 	Attempt     int                     `json:"attempt"`
 	Outcome     string                  `json:"outcome"`
+	Cause       string                  `json:"cause"`
 	Started     string                  `json:"started"`
 	Commit      string                  `json:"commit"`
 	State       string                  `json:"state"`
@@ -54,9 +55,9 @@ type timelineLine struct {
 // digestSession is one session the timeline records: its start, its end,
 // its push, and its role, "" for a card's session.
 type digestSession struct {
-	id, model, outcome, commit, role string
-	attempt, line                    int
-	start, end                       time.Time
+	id, model, outcome, cause, commit, role string
+	attempt, line                           int
+	start, end                              time.Time
 }
 
 // timelineSteps are the steps of the card's timeline tl: its sessions,
@@ -112,7 +113,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			continue
 		case "session_end":
 			s := session(l, i+1)
-			s.end, s.outcome = l.Time, l.Outcome
+			s.end, s.outcome, s.cause = l.Time, l.Outcome, l.Cause
 			continue
 		case "pushed":
 			if s := byID[l.Session]; s != nil {
@@ -254,6 +255,9 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 	}
 	if s.outcome == string(OutcomePushed) && s.commit != "" {
 		outcome += " " + ShortSHA(s.commit)
+	}
+	if s.cause != "" {
+		outcome += ": " + s.cause
 	}
 	actor := fmt.Sprintf("%d %s", s.attempt, aliasOf(s.model))
 	if s.role != "" {

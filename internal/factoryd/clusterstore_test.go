@@ -209,6 +209,36 @@ func TestLiveSessionKeepsItsPod(t *testing.T) {
 	}
 }
 
+// The pod's place is written for the owner holding the row alone, and
+// leaves the rest of the row, a raised deadline among it, as it was.
+func TestLiveSessionPodForItsOwner(t *testing.T) {
+	s, ctx := clusterStore(t), t.Context()
+	task, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 5, clk(9, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: clk(10, 0), Deadline: clk(11, 0), Owner: "a"}
+	if err := s.PutLiveSession(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLiveSessionDeadline(ctx, task.ID, "a", clk(11, 30), 30*time.Minute, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLiveSessionPod(ctx, task.ID, "b", "uid-b", "n-b", "boot-b"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.LiveSession(ctx, task.ID); got.PodUID != "" || got.Node != "" || got.BootID != "" {
+		t.Fatalf("after another owner's write: %+v, want no place", got)
+	}
+	if err := s.SetLiveSessionPod(ctx, task.ID, "a", "uid-1", "n1", "boot-1"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LiveSession(ctx, task.ID)
+	if err != nil || !ok || got.PodUID != "uid-1" || got.Node != "n1" || got.BootID != "boot-1" || !got.Deadline.Equal(clk(11, 30)) || got.Owner != "a" {
+		t.Fatalf("live session %+v, %v, %v; want the place beside the raised deadline", got, ok, err)
+	}
+}
+
 // The fake and Postgres agree: equal times come back in key order, and a
 // nil Detail reads back as an empty map.
 func TestClusterStoreFakeMatchesPostgres(t *testing.T) {

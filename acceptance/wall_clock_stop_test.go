@@ -261,6 +261,10 @@ func (k *stopKube) PodLogTail(context.Context, string, string, int) (string, err
 
 func (k *stopKube) NewestPodEvent(context.Context, string, string) (string, error) { return "", nil }
 
+func (k *stopKube) PodEvents(context.Context, string, string) ([]factoryd.PodEvent, error) {
+	return nil, nil
+}
+
 // stopEndpoint is the worker pod's endpoint server: /brief answers, /wip
 // ships one WIP commit of the worker's shape on the session's start as a
 // real bundle with the commit in the Wip-Commit header — or, when fail is

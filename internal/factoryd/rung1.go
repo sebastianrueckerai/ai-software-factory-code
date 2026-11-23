@@ -94,8 +94,10 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 		textutil.EUR(f.BudgetEUR), textutil.EUR(f.SpentEUR), textutil.EUR(f.LeftEUR), textutil.EUR(f.CeilingEUR), drawText(f.CardDrawLeft), drawText(f.PoolLeft),
 		textutil.EUR(max(0, f.MonthLeftEUR)), minutesWord(est.Time), textutil.EUR(est.EUR), need)
 	line("%s", r.Scrub.String(digest))
-	if f.Killed != nil {
-		line("The sandbox killed the last session for its memory (%s, exit code %d) while it ran: %s", cut(f.Killed.Reason), f.Killed.ExitCode, cut(f.Killed.Command))
+	if d := f.Death; d != nil && d.Rule == RuleMemoryLimit {
+		line("The sandbox killed the last session for its memory (%s, exit code %d) while it ran: %s", cut(d.Reason), d.ExitCode, cut(d.LastCommand))
+	} else if d != nil && d.Class != DeathUnknown {
+		line("%s", lastSessionEnded(*d, cut))
 	}
 	if len(f.Findings) > 0 {
 		line("Findings on the head:")
@@ -276,7 +278,7 @@ var sessionActions = []string{ActResume, ActContinue, ActHandover, ActExtend}
 
 // The parts of a session's note that code writes are bounded: at most
 // leadFindings findings of leadFindingCut characters lead it, the checks
-// log ends at checksLogCut and the kill line at KillCut. The note of the
+// log ends at checksLogCut and the death line at KillCut. The note of the
 // answer, from whichever rung or the human, keeps the room that is left
 // inside the run's cut of an answer at MaxAnswer (and is cut at the
 // handover cap), so the code-written parts are never cut.
@@ -296,9 +298,9 @@ func (r *Runner) handoverCap() int {
 
 // sessionParts are the parts of a session's note that code writes: those
 // before the answer's note (a rung's kept findings, the first as the
-// session's one job) and those after it (the red checks' log and a memory
-// kill). No model writes them. Both are empty for an action that starts no
-// session.
+// session's one job) and those after it (the red checks' log and how the
+// last session's pod ended). No model writes them. Both are empty for an
+// action that starts no session.
 func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string) {
 	if !slices.Contains(sessionActions, in.Res.Action) {
 		return nil, nil
@@ -325,10 +327,21 @@ func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string)
 	if f.Checks == "red" && len(f.FailedTests) > 0 {
 		after = append(after, r.scrub(ChecksLog(f, ChecksLogCut)))
 	}
-	if f.Killed != nil {
-		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), KillCut))
+	if d := f.Death; d != nil && d.Rule == RuleMemoryLimit {
+		after = append(after, textutil.Truncate(r.scrub("The sandbox killed the last session for its memory while it ran: "+d.LastCommand), KillCut))
+	} else if d != nil && d.Class != DeathUnknown {
+		after = append(after, textutil.Truncate(lastSessionEnded(*d, r.scrub), KillCut))
 	}
 	return before, after
+}
+
+// lastSessionEnded names how the last session ended, and the command it
+// ran when one is known, passed through text.
+func lastSessionEnded(d DeathRecord, text func(string) string) string {
+	if d.LastCommand == "" {
+		return "The last session ended: " + d.Short() + "."
+	}
+	return "The last session ended: " + d.Short() + " while it ran: " + text(d.LastCommand)
 }
 
 // sessionNote is the note a session started by in.Res reads: the parts

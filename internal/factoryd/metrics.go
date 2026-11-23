@@ -212,20 +212,26 @@ type StepFact interface {
 }
 
 // SessionEndFact is one session's end on a card, the session_end step:
-// outcome is a SessionOutcome word, the panel's cause.
+// outcome is a SessionOutcome word, the panel's cause. Cause is how the
+// session's pod ended (DeathRecord.Short), "" when no death was read.
 type SessionEndFact struct {
 	Session string // with Attempt: the identity
 	Attempt int
 	Parent  string
 	Model   string
 	Outcome string
+	Cause   string
 	Summary string
 	Started time.Time
 }
 
 func (f SessionEndFact) detail() map[string]any {
-	return map[string]any{"session": f.Session, "parent": f.Parent, "model": f.Model, "attempt": f.Attempt,
+	d := map[string]any{"session": f.Session, "parent": f.Parent, "model": f.Model, "attempt": f.Attempt,
 		"outcome": f.Outcome, "summary": f.Summary, "started": rfc3339(f.Started)}
+	if f.Cause != "" {
+		d["cause"] = f.Cause
+	}
+	return d
 }
 
 func (f SessionEndFact) identity() map[string]any {
@@ -234,8 +240,8 @@ func (f SessionEndFact) identity() map[string]any {
 
 // EventSessionEnd is one session's terminal end on a card (roadmap 336),
 // the row the divide-and-conquer panels read. Detail {"session",
-// "attempt", "outcome", "started", "ended"} — no summary, which the
-// timeline line alone keeps. Identity: the session and the attempt, so
+// "attempt", "outcome", "started", "ended"}, and "cause" when the death
+// was read — no summary, which the timeline line alone keeps. Identity: the session and the attempt, so
 // a session a stopped factoryd detached from and its reattached end are
 // one fact.
 const EventSessionEnd = "session_end"
@@ -243,10 +249,13 @@ const EventSessionEnd = "session_end"
 // Event is the end's row of task's card in repository's issue, ended
 // when the session completed.
 func (f SessionEndFact) Event(task, repository string, issue int64, ended time.Time) Event {
+	detail := map[string]any{"session": f.Session, "attempt": f.Attempt, "outcome": f.Outcome,
+		"started": rfc3339(f.Started), "ended": rfc3339(ended)}
+	if f.Cause != "" {
+		detail["cause"] = f.Cause
+	}
 	return Event{Repository: repository, TaskID: task, IssueNumber: issue, Kind: EventSessionEnd,
-		Actor: FactoryDecider, Via: ViaFactoryd, At: ended,
-		Detail: map[string]any{"session": f.Session, "attempt": f.Attempt, "outcome": f.Outcome,
-			"started": rfc3339(f.Started), "ended": rfc3339(ended)},
+		Actor: FactoryDecider, Via: ViaFactoryd, At: ended, Detail: detail,
 		IdentityKey: IdentityKey(EventSessionEnd, f.Session, fmt.Sprintf("%d", f.Attempt))}
 }
 

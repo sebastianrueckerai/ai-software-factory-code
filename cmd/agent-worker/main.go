@@ -476,6 +476,7 @@ func sessionOutcome(res harness.Result, stopped bool, commit string, pushErr err
 func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv) (string, error), emit func(harness.Event)) harness.Result {
 	failed, branch := !res.Success && !stopped, e.branch
 	e.startWip = e.startWip && res.Success && !stopped
+	res.Stopped = stopped
 	commit, err := push(e)
 	over := ""
 	if errors.As(err, new(startOverBound)) {
@@ -488,7 +489,7 @@ func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv)
 		if failed {
 			summary = res.Summary + "; " + summary
 		}
-		return harness.Result{Success: false, Summary: summary}
+		return harness.Result{Success: false, Summary: summary, Stopped: stopped}
 	case commit != "":
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushed, Detail: map[string]any{"branch": branch, "commit": commit}})
 	}

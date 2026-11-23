@@ -1168,7 +1168,7 @@ func (r *Runner) runnerPod(ctx context.Context, t Task, spec map[string]any, rea
 		return fmt.Errorf("create pod: %w", err)
 	}
 	defer r.trackPod(t.ID, ns, podName)()
-	if err := r.awaitPodStart(ctx, ns, podName, podStartWait, nil); err != nil {
+	if _, err := r.awaitPodStart(ctx, ns, podName, podStartWait, nil); err != nil {
 		return err
 	}
 	return read(ns, podName)

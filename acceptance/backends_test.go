@@ -740,6 +740,10 @@ func (s *acceptanceStore) SetLiveSessionDeadline(context.Context, string, string
 	return nil
 }
 
+func (s *acceptanceStore) SetLiveSessionPod(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) LiveSession(context.Context, string) (factoryd.LiveSession, bool, error) {
 	return factoryd.LiveSession{}, false, nil
 }

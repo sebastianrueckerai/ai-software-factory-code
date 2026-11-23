@@ -106,6 +106,11 @@ type RunnerConfig struct {
 	// all. nil = every attempt is funded; the per-call hold still guards
 	// the money.
 	Prices Pricer
+	// Cluster holds the platform's incidents and the pods' death records,
+	// Kernel reads the nodes' kernel kill lines: the death of a session's
+	// pod reads both. nil skips its reads.
+	Cluster ClusterStore
+	Kernel  KernelSource
 }
 
 // Pricer is an alias's worst-case price, the figure the gateway's hold
@@ -179,6 +184,7 @@ type Runner struct {
 	// its poll with the checks timeout
 	checksMargin time.Duration
 	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
+	deathWait    time.Duration // deathWait; a test shortens it
 	tick         time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
 	// container may wait with a configuration error (configErrorGrace);
@@ -511,7 +517,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		Checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
-		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
+		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap, deathWait: deathWait,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
@@ -716,34 +722,13 @@ type sessionOutcome struct {
 	overHold *OverHoldCall   // the session's newest call booked beyond its hold
 	reads    []string        // the paths a report session read
 	checkIn  *CheckInOutcome // the check-in that ran at the session's start
-	killed   *SessionKill    // the sandbox killed the worker for its memory
+	death    *DeathRecord    // how the pod ended: read when it ended without a result or on a stop factoryd did not send
 	// superseded: another attempt holds the session's row, so this one's
 	// cleanup left the pod, the namespace and the tokens alone
 	superseded bool
 	// overBound names where finished work an end push the line bound
 	// refused was shipped, for the next session
 	overBound string
-}
-
-// SessionKill is a session the sandbox killed for its memory: the kill as
-// the kubelet reported it and the last command the session ran, the one it
-// was most likely killed in.
-type SessionKill struct {
-	Reason    string `json:"reason"`
-	ExitCode  int32  `json:"exit_code"`
-	Container string `json:"container"`
-	Command   string `json:"command,omitempty"`
-}
-
-// killOf is the memory kill d reports, nil for a pod that ended another way.
-// command is the last command the session ran.
-func killOf(d PodDiagnosis, command string) *SessionKill {
-	for _, c := range d.Containers {
-		if c.State == "terminated" && c.Reason == "OOMKilled" {
-			return &SessionKill{Reason: c.Reason, ExitCode: c.ExitCode, Container: c.Name, Command: command}
-		}
-	}
-	return nil
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -846,6 +831,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, err
 		}
 	}
+	// the session's start and its pod's place, which the pod's death reads
+	started, uid, node, boot := row.StartedAt, "", "", ""
+	if live != nil {
+		started, uid, node, boot = live.StartedAt, live.PodUID, live.Node, live.BootID
+	}
 	defer r.trackPod(t.ID, ns, podName)()
 	// detached: factoryd is stopping and the pod runs on for the next
 	// factoryd's retry of the activity; every other end deletes the pod
@@ -884,7 +874,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// The pod must leave Pending before its log endpoint is useful; a first
 	// image pull can take minutes, but never past the session deadline.
 	wait := min(10*time.Minute, time.Until(deadline))
-	if err := r.awaitPodStart(ctx, ns, podName, wait, workerStop); err != nil {
+	pod, err := r.awaitPodStart(ctx, ns, podName, wait, workerStop)
+	if err != nil {
 		if errors.Is(err, errWorkerStop) {
 			detached = true
 			return out, err
@@ -894,6 +885,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			errors.As(err, &out.pending)
 		}
 		return out, nil
+	}
+	// the pod's UID and node are known once it is scheduled
+	if live == nil {
+		row.PodUID, row.Node = pod.UID, pod.Node
+		if pod.Node != "" {
+			if n, err := r.kube.NodeState(ctx, pod.Node); err != nil {
+				log.Printf("task %s: session %s: read the boot of node %s: %v", t.ID, s.id, pod.Node, err)
+			} else {
+				row.BootID = n.BootID
+			}
+		}
+		if err := r.store.SetLiveSessionPod(ctx, t.ID, s.owner, row.PodUID, row.Node, row.BootID); err != nil {
+			log.Printf("task %s: session %s: record the pod's place: %s", t.ID, s.id, r.scrub(err.Error()))
+		}
+		uid, node, boot = row.PodUID, row.Node, row.BootID
 	}
 	progress(0)
 
@@ -1093,18 +1099,30 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
 	lines := followed.lines
+	// readDeath reads how the pod ended into out.death; the last push is
+	// the session's own, else its interim one, else the branch's at its
+	// start
+	readDeath := func() {
+		last := cmp.Or(out.commit, out.wip)
+		if last == "" && s.startRef != s.base {
+			last = s.startRef
+		}
+		death := r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
+			stoppedByFactory: podStopped.Load() != 0, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
+		out.death = &death
+		log.Printf("task %s: session %s: the pod ended: %s (%s, %s)", t.ID, s.id, death.Short(), death.Class, death.Rule)
+	}
 	// ended says why the log ended without a result, plain the generic
 	// words: how the pod ended when its diagnosis says, else the log's
 	// own error
 	ended := func(plain string) string {
+		how := ""
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
-			last := r.scrub(digest.lastCommand())
-			if out.killed = killOf(d, last); out.killed != nil {
-				log.Printf("task %s: session %s: the sandbox killed %s for its memory in %q", t.ID, s.id, out.killed.Container, last)
-			}
-			if how := exitedHow(plain, d); how != "" {
-				return how
-			}
+			how = exitedHow(plain, d)
+		}
+		readDeath()
+		if how != "" {
+			return how
 		}
 		if err := followed.err(); err != nil {
 			return err.Error()
@@ -1493,6 +1511,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			ev, done := read(line)
 			if done {
+				// a stop factoryd did not send is the cluster's SIGTERM
+				if out.result.Stopped && out.trip == nil {
+					readDeath()
+				}
 				return out, retry
 			}
 			if ev == nil {
@@ -2308,14 +2330,14 @@ func (r *Runner) abandon(recorder *SessionRecorder, trip *Trip) *Trip {
 	return trip
 }
 
-// awaitPodStart waits for the pod to leave Pending. A container waiting
-// on a cause no wait removes ends it with a *startFailure: at once, or,
-// for a configuration error, once the same container has waited with it
-// for r.configGrace, since the kubelet's view of a secret written just
-// before the pod can lag. factoryd stopping ends it with errWorkerStop
-// (the retry creates the pod anew); a timeout is a *podPending, which says
-// what the pod waits on.
-func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) error {
+// awaitPodStart waits for the pod to leave Pending and returns the pod as
+// it read it then. A container waiting on a cause no wait removes ends it
+// with a *startFailure: at once, or, for a configuration error, once the
+// same container has waited with it for r.configGrace, since the kubelet's
+// view of a secret written just before the pod can lag. factoryd stopping
+// ends it with errWorkerStop (the retry creates the pod anew); a timeout is
+// a *podPending, which says what the pod waits on.
+func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) (PodDiagnosis, error) {
 	deadline := time.Now().Add(timeout)
 	// configSince is when each container's configuration error began
 	configSince := map[string]time.Time{}
@@ -2323,10 +2345,10 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 	for now := time.Now(); now.Before(deadline); now = time.Now() {
 		d, err := r.kube.PodDiagnosis(ctx, ns, podName)
 		if err == nil && d.Phase != "" && d.Phase != "Pending" {
-			return nil
+			return d, nil
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
+			return PodDiagnosis{}, err
 		}
 		if err == nil {
 			last = d
@@ -2345,18 +2367,18 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 				delete(configSince, c.Name)
 			}
 			if step != "" {
-				return &startFailure{step: step, text: "start failed: " + step + ": " + c.waiting()}
+				return PodDiagnosis{}, &startFailure{step: step, text: "start failed: " + step + ": " + c.waiting()}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return PodDiagnosis{}, ctx.Err()
 		case <-workerStop:
-			return errWorkerStop
+			return PodDiagnosis{}, errWorkerStop
 		case <-time.After(min(r.startPoll, time.Until(deadline))):
 		}
 	}
-	return &podPending{pod: podName, after: timeout, on: waitsOn(last)}
+	return PodDiagnosis{}, &podPending{pod: podName, after: timeout, on: waitsOn(last)}
 }
 
 // podPending is a pod still Pending when its start's wait ran out: on is

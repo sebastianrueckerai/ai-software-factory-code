@@ -1220,6 +1220,17 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			// pod runs, so it is no dead pod either
 			return SessionResult{}, named("pod status", fmt.Errorf("pod %s is in phase %q", l.Pod, phase))
 		default:
+			if errors.Is(perr, ErrNotFound) && l.Activity == s.activity {
+				// the pod this activity ran went while factoryd was away
+				last := ""
+				if s.startRef != s.base {
+					last = s.startRef
+				}
+				death := r.deathOf(ctx, deathInput{ns: l.Namespace, pod: l.Pod, uid: l.PodUID, node: l.Node, boot: l.BootID,
+					started: l.StartedAt, ended: time.Now(), afterRestart: true, lastPush: last})
+				r.putDeath(ctx, t.ID, l.SessionID, death)
+				s.findings = slices.Concat(s.findings, death.Lines)
+			}
 			if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
 				return SessionResult{}, named("live session", err)
 			}
@@ -1376,8 +1387,15 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		res.Outcome, res.Reason = OutcomeEscalate, overBoundAgain(t, res, out.overBound)
 	}
 	events := r.sessionTranscript(ctx, t.ID, s.id)
-	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
-		"outcome": res.Outcome, "summary": res.Summary, "started": began})
+	end := map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
+		"outcome": res.Outcome, "summary": res.Summary, "started": began}
+	cause := ""
+	if res.Death != nil {
+		r.putDeath(ctx, t.ID, s.id, *res.Death)
+		cause = res.Death.Short()
+		end["cause"] = cause
+	}
+	r.record(ctx, t.ID, "session_end", end)
 	if res.Outcome != OutcomeNotStarted && !res.StartFailed {
 		// the end's fact row beside its timeline line (roadmap 336): no
 		// summary, which the line alone keeps; a session the worker never
@@ -1385,8 +1403,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		// is the session's error, not a log line: the retry runs a new
 		// session whose own end is the fact the identity keeps single.
 		ended := time.Now()
-		end := SessionEndFact{Session: s.id, Attempt: in.Attempt, Outcome: string(res.Outcome), Started: startedAt}
-		if err := r.timeline.RecordFactRow(ctx, end.Event(t.ID, t.Repository, t.IssueNumber, ended)); err != nil {
+		fact := SessionEndFact{Session: s.id, Attempt: in.Attempt, Outcome: string(res.Outcome), Cause: cause, Started: startedAt}
+		if err := r.timeline.RecordFactRow(ctx, fact.Event(t.ID, t.Repository, t.IssueNumber, ended)); err != nil {
 			return SessionResult{}, named("session end fact", err)
 		}
 		// where the session's time went, from its transcript; a transcript
@@ -1579,8 +1597,12 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if out.overBound != "" {
 			res.Findings = slices.Insert(res.Findings, 0, out.overBound)
 		}
+		// the cluster ended the session: no end of its own, a pushed one aside
+		if d := out.death; d != nil && d.Class == DeathPlatform && (res.Outcome == OutcomeNoPush || out.trip != nil && res.Outcome != OutcomePushed) {
+			res.Outcome = OutcomePlatformKilled
+		}
 	}()
-	res = SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn, Killed: out.killed}
+	res = SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn, Death: out.death}
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session

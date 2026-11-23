@@ -70,8 +70,7 @@ func (w *IncidentSweep) Run(ctx context.Context) error {
 		kills, err := w.Kernel.KernelLines(ctx, now.Add(-KernelWindow), now)
 		var rows []PlatformIncident
 		for _, k := range kills {
-			p := PlatformIncident{Key: fmt.Sprintf("kmsg/%s/%d/%s", k.Node, k.Seq, k.At.UTC().Format(time.RFC3339Nano)),
-				At: k.At, Kind: IncidentGuardKill, Subject: k.PodUID, Node: k.Node, PodUID: k.PodUID}
+			p := PlatformIncident{Key: kmsgKey(k), At: k.At, Kind: IncidentGuardKill, Subject: k.PodUID, Node: k.Node, PodUID: k.PodUID}
 			if k.Source == "kernel" {
 				p.Kind, p.Detail = IncidentKernelOOM, map[string]any{"constraint": k.Constraint}
 			}

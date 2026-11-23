@@ -334,6 +334,9 @@ const (
 	// card's replan (Replan carries the text for the planner); its work is
 	// pushed and kept.
 	OutcomeReplan SessionOutcome = "replan"
+	// OutcomePlatformKilled: the cluster ended the session (Death names
+	// how): no session's own fault.
+	OutcomePlatformKilled SessionOutcome = "platform_killed"
 )
 
 // StepProviderRefused is the timeline step of a task waiting on the model
@@ -471,8 +474,9 @@ type SessionResult struct {
 	Need string `json:",omitempty"`
 	// Replan is a replan session's text for the planner (replanText).
 	Replan string `json:",omitempty"`
-	// Killed is the memory kill that ended the session, nil for none.
-	Killed *SessionKill `json:",omitempty"`
+	// Death is how the session's pod ended when it ended without a push or
+	// on a stop factoryd did not send, nil for none.
+	Death *DeathRecord `json:"death,omitempty"`
 }
 
 type PullRequest struct {
@@ -745,10 +749,9 @@ const (
 	// is counted and its activity is scheduled. A run from before counts
 	// the check-in's time and gives the session no more.
 	versionCheckinClock workflow.Version = 1
-	// versionSessionKill (change id "session-kill"): a session the sandbox
-	// killed for its memory leaves its kill and last command on the card's
-	// next stops, as a fact of their cases. Read where a session's result
-	// is taken. A run from before carries none.
+	// versionSessionKill (change id "session-kill"): a session's death
+	// record rides the card's next stops, as a fact of their cases. Read
+	// where a session's result is taken. A run from before carries none.
 	versionSessionKill workflow.Version = 1
 	// versionAuditDraw (change id "audit-draw"): the audit's gap verdict
 	// at a cap — the hold-out settlement's findings, which name no writer —
@@ -1081,8 +1084,8 @@ type taskRun struct {
 	// checks ran
 	checkedHead  string
 	checkinClock workflow.Version // a session's check-in is no agent time (versionCheckinClock)
-	sessionKill  workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
-	killed       *SessionKill     // the last session's memory kill (versionSessionKill)
+	sessionKill  workflow.Version // a death record rides the next stops as a fact (versionSessionKill)
+	death        *DeathRecord     // the last session's death record (versionSessionKill)
 	floorModel   *string          // the model the next session opens on, whose floor the run reads and a trip carries (versionTripModel)
 	// lastCheckinStop is the last check-in stop's mark, what a repeat
 	// compares against; zero keeps a run from before
@@ -2010,7 +2013,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		reason = res.Summary
 		if t.sessionKill >= versionSessionKill {
-			t.killed = res.Killed
+			t.death = res.Death
 		}
 		if res.CheckIn != nil {
 			t.recordCheckin(res)
@@ -4130,7 +4133,7 @@ type queuedCase struct {
 func (t *taskRun) ask(reason, question string, choices []string) error {
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
-	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Killed: t.killed}
+	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Death: t.death}
 	if t.floorModel != nil && workflow.GetVersion(t.ctx, "trip-model", workflow.DefaultVersion, versionTripModel) >= versionTripModel {
 		in.Model = *t.floorModel
 	}
