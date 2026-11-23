@@ -141,7 +141,7 @@ var (
 	firstCI      = ciDeath("ci-job-42", nov(23, 14, 2), RuleGuardKill, "sf-2")
 	firstGate    = gateDeath("t-acme", "uid-g1", nov(23, 13, 30), RuleNodeRebooted, "sf-1")
 	firstSession = sessionDeath("t-other", "s1", nov(23, 13, 10), RuleNodeOOM, "sf-1")
-	firstLines   = "- 23 Nov 14:02 UTC, CI job ci-job-42: the node's memory guard killed the pod on sf-2\n" +
+	firstLines   = "- 23 Nov 14:02 UTC, a CI job: the node's memory guard killed the pod on sf-2\n" +
 		"- 23 Nov 13:30 UTC, a gate of card #12: the node restarted on sf-1\n" +
 		"- 23 Nov 13:10 UTC, card sf/other#7: the node ran out of memory on sf-1"
 	firstHappened = "The platform ended the factory's work 3 times between 23 Nov 13:10 UTC and 23 Nov 14:02 UTC."
@@ -202,9 +202,9 @@ func TestPlatformCardFilesAtThree(t *testing.T) {
 		t.Fatal(err)
 	}
 	cards = platformCards(t, store)
-	want := platformHead(3) + "- 23 Nov 14:02 UTC, CI job ci-job-3: the node ran out of memory\n" +
-		"- 23 Nov 14:01 UTC, CI job ci-job-2: the node ran out of memory on sf-3\n" +
-		"- 23 Nov 14:00 UTC, CI job ci-job-1: the node ran out of memory on sf-3" + platformTail
+	want := platformHead(3) + "- 23 Nov 14:02 UTC, a CI job: the node ran out of memory\n" +
+		"- 23 Nov 14:01 UTC, a CI job: the node ran out of memory on sf-3\n" +
+		"- 23 Nov 14:00 UTC, a CI job: the node ran out of memory on sf-3" + platformTail
 	if len(cards) != 1 || cards[0].Repository != "sf/ai-software-factory-infra" || len(fj.repos) != 1 || fj.repos[0] != "sf/ai-software-factory-infra" ||
 		cards[0].Objective != platformTitle+"\n\n"+want {
 		t.Fatalf("three CI deaths filed %+v on %v, want one card on sf/ai-software-factory-infra with the face\n%s", cards, fj.repos, want)
@@ -256,10 +256,10 @@ func TestPlatformCardUpdatesInPlace(t *testing.T) {
 	}
 	var lines []string
 	for i := 7; i >= 0; i-- {
-		lines = append(lines, fmt.Sprintf("- 23 Nov 15:%02d UTC, CI job ci-job-%d: the node's memory guard killed the pod on sf-2", 11+i, 50+i))
+		lines = append(lines, fmt.Sprintf("- 23 Nov 15:%02d UTC, a CI job: the node's memory guard killed the pod on sf-2", 11+i))
 	}
 	lines = append(lines, "- 23 Nov 15:05 UTC, card sf/other#7: Kubernetes stopped the pod on sf-3",
-		"- 23 Nov 14:02 UTC, CI job ci-job-42: the node's memory guard killed the pod on sf-2", "- and 2 more")
+		"- 23 Nov 14:02 UTC, a CI job: the node's memory guard killed the pod on sf-2", "- and 2 more")
 	info = platformHead(12) + strings.Join(lines, "\n") + platformTail
 	if card, _, _ := store.Task(ctx, cards[0].ID); len(fj.issues) != 1 || card.Objective != platformTitle+"\n\n"+info {
 		t.Fatalf("twelve deaths: %d issues, the face\n%s\nwant\n%s", len(fj.issues), card.Objective, platformTitle+"\n\n"+info)
@@ -285,8 +285,8 @@ func TestPlatformCardKeepsItsDeathsWhileOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	cards := platformCards(t, store)
-	want := platformTitle + "\n\n" + platformHead(4) + "- 22 Nov 10:00 UTC, CI job ci-job-70: the node ran out of memory on sf-3\n" +
-		"- 20 Nov 14:02 UTC, CI job ci-job-42: the node's memory guard killed the pod on sf-2\n" +
+	want := platformTitle + "\n\n" + platformHead(4) + "- 22 Nov 10:00 UTC, a CI job: the node ran out of memory on sf-3\n" +
+		"- 20 Nov 14:02 UTC, a CI job: the node's memory guard killed the pod on sf-2\n" +
 		"- 20 Nov 13:30 UTC, a gate of card #12: the node restarted on sf-1\n" +
 		"- 20 Nov 13:10 UTC, card sf/other#7: the node ran out of memory on sf-1" + platformTail
 	if len(fj.issues) != 1 || len(cards) != 1 || cards[0].Objective != want {
@@ -342,8 +342,8 @@ func TestPlatformCardAfterACloseCountsNewDeathsOnly(t *testing.T) {
 	}
 	cards := platformCards(t, store)
 	want := platformTitle + "\n\n" + platformHead(3) +
-		"- 23 Nov 15:50 UTC, CI job ci-job-62: the node restarted on sf-2\n" +
-		"- 23 Nov 15:40 UTC, CI job ci-job-61: the node's memory guard killed the pod on sf-2\n" +
+		"- 23 Nov 15:50 UTC, a CI job: the node restarted on sf-2\n" +
+		"- 23 Nov 15:40 UTC, a CI job: the node's memory guard killed the pod on sf-2\n" +
 		"- 23 Nov 15:30 UTC, card #12: the node ran out of memory on sf-1" + platformTail
 	if len(fj.issues) != 2 || len(cards) != 2 || cards[0].ID == first.ID || cards[0].Status != "waiting-human" || cards[0].Repository != "sf/acme" ||
 		cards[0].Objective != want {
@@ -356,9 +356,9 @@ func TestPlatformCardAfterACloseCountsNewDeathsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	want = platformTitle + "\n\n" + platformHead(4) +
-		"- 24 Nov 16:00 UTC, CI job ci-job-63: the node's memory guard killed the pod on sf-1\n" +
-		"- 23 Nov 15:50 UTC, CI job ci-job-62: the node restarted on sf-2\n" +
-		"- 23 Nov 15:40 UTC, CI job ci-job-61: the node's memory guard killed the pod on sf-2\n" +
+		"- 24 Nov 16:00 UTC, a CI job: the node's memory guard killed the pod on sf-1\n" +
+		"- 23 Nov 15:50 UTC, a CI job: the node restarted on sf-2\n" +
+		"- 23 Nov 15:40 UTC, a CI job: the node's memory guard killed the pod on sf-2\n" +
 		"- 23 Nov 15:30 UTC, card #12: the node ran out of memory on sf-1" + platformTail
 	if second, _, _ := store.Task(ctx, cards[0].ID); len(fj.issues) != 2 || second.Objective != want {
 		t.Fatalf("a day later: %d issues, the second card under\n%s\nwant\n%s", len(fj.issues), second.Objective, want)

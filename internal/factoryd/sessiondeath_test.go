@@ -404,7 +404,7 @@ func TestTheKillWaitEnds(t *testing.T) {
 				ctx, cancel = tc.ctx()
 			}
 			defer cancel()
-			d := deathReader{kube: kube, kernel: tc.kernel, wait: tc.wait, poll: 100 * time.Millisecond}
+			d := deathReader{kube: kube, kernel: tc.kernel, wait: tc.wait, poll: 100 * time.Millisecond, margin: deathMargin}
 			if tc.recorded {
 				cluster := newFakeClusterStore()
 				d.cluster = cluster

@@ -740,7 +740,7 @@ func platformDeathsQuestion(b *builder) factoryd.HumanQuestion {
 	}
 	return factoryd.PlatformDeathsQuestion([]factoryd.PodDeath{
 		death("session", TaskID(2004), "", 40*time.Minute, factoryd.RuleGuardKill, "sf-2"),
-		death("ci", "", "ci-job-3391", 2*time.Hour, factoryd.RuleGuardKill, "sf-2"),
+		death("ci", "", "710a900f-246d-4c30-b7c5-12ab7d3c732a", 2*time.Hour, factoryd.RuleGuardKill, "sf-2"),
 		death("gate", TaskID(2091), "", 5*time.Hour, factoryd.RuleNodeRebooted, "sf-1"),
 		death("session", "t-0a1b2c3d4e5f", "", 9*time.Hour, factoryd.RuleNodeOOM, "sf-2"),
 	}, hit, Repository)

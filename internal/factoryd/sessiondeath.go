@@ -22,6 +22,9 @@ type deathReader struct {
 	wait    time.Duration
 	// poll is how often the wait asks again; zero is killPoll
 	poll time.Duration
+	// margin is the time the reads leave before their context's deadline:
+	// deathMargin for the rest of a session's or a gate's end
+	margin time.Duration
 }
 
 // deathInput names the pod and what factoryd knows of it: its UID, node and
@@ -43,7 +46,7 @@ const (
 	deathWait = 90 * time.Second
 	killPoll  = 15 * time.Second
 	// deathMargin is the time a read leaves before its context's deadline
-	// for the session's end.
+	// for the rest of the end it is part of.
 	deathMargin   = 30 * time.Second
 	eventMessageB = 200
 	// restartKill is how close to a restart a kill of its pod names its
@@ -56,7 +59,7 @@ const (
 
 // deathOf reads the death of a session's pod.
 func (r *Runner) deathOf(ctx context.Context, in deathInput) DeathRecord {
-	return deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, wait: r.deathWait}.read(ctx, in)
+	return deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, wait: r.deathWait, margin: deathMargin}.read(ctx, in)
 }
 
 // putDeath stores a session's death record; a failed write is logged, the
@@ -77,7 +80,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	start, poll := time.Now(), cmp.Or(d.poll, killPoll)
 	waitEnd, firstEnd := start.Add(d.wait), start.Add(max(d.wait, poll))
 	if dl, ok := ctx.Deadline(); ok {
-		waitEnd, firstEnd = earliest(waitEnd, dl.Add(-deathMargin)), earliest(firstEnd, dl.Add(-deathMargin))
+		waitEnd, firstEnd = earliest(waitEnd, dl.Add(-d.margin)), earliest(firstEnd, dl.Add(-d.margin))
 	}
 	f := DeathFacts{StoppedByFactory: in.stoppedByFactory, AfterRestart: in.afterRestart, BootAtStart: in.boot,
 		Started: in.started, Ended: in.ended, LastCommand: in.lastCommand}

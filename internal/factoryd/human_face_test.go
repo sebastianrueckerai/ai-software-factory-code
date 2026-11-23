@@ -277,7 +277,7 @@ func TestPlatformCardFaceIsPlain(t *testing.T) {
 		t.Errorf("the door refuses the card's brief: %q", refusals)
 	}
 	for _, want := range []string{"- 23 Nov 14:02 UTC, card #2004: the node's memory guard killed the pod on sf-1\n",
-		"- 23 Nov 13:55 UTC, CI job ci-job-41: the node ran out of memory on sf-2\n",
+		"- 23 Nov 13:55 UTC, a CI job: the node ran out of memory on sf-2\n",
 		"- 23 Nov 13:48 UTC, a gate of card #2004: the node ran low on memory on sf-3\n",
 		"- 23 Nov 13:41 UTC, card sf/infra#14: the node restarted on sf-1\n",
 		"- 23 Nov 13:34 UTC, card #2004: the node stopped answering\n", "- and 2 more\n"} {

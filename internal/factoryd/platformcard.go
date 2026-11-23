@@ -207,7 +207,7 @@ func platformDeathsInfo(deaths []PodDeath, hit map[string]Task, repo string) str
 // card is the card it hit, a card of another repository named with its
 // repository.
 func platformDeathLine(d PodDeath, card Task, repo string) string {
-	who := "CI job " + d.Runner
+	who := "a CI job"
 	if d.Kind != "ci" {
 		switch {
 		case card.IssueNumber == 0:

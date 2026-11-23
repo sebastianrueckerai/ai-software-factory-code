@@ -1192,11 +1192,11 @@ func (r *Runner) runnerPod(ctx context.Context, t Task, spec map[string]any, rea
 	if started.IsZero() {
 		started = created
 	}
-	death := deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel}.read(ctx,
+	death := deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, margin: deathMargin}.read(ctx,
 		deathInput{ns: ns, pod: podName, uid: pod.UID, node: pod.Node, started: started, ended: time.Now()})
 	if r.cfg.Cluster != nil {
 		if err := r.cfg.Cluster.PutPodDeath(ctx, PodDeath{Kind: "gate", TaskID: t.ID, Record: death}); err != nil {
-			log.Printf("task %s: store the death of gate pod %s: %v", t.ID, podName, err)
+			log.Printf("task %s: store the death of gate pod %s: %s", t.ID, podName, r.Scrub.String(err.Error()))
 		}
 	}
 	if death.Class == DeathPlatform {

@@ -185,6 +185,8 @@ type Runner struct {
 	checksMargin time.Duration
 	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
 	deathWait    time.Duration // deathWait; a test shortens it
+	ciDeathWait  time.Duration // ciRecordWait; a test shortens it
+	ciDeathPoll  time.Duration // ciRecordPoll; a test shortens it
 	tick         time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
 	// container may wait with a configuration error (configErrorGrace);
@@ -517,7 +519,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		Checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
-		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap, deathWait: deathWait,
+		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap, deathWait: deathWait, ciDeathWait: ciRecordWait, ciDeathPoll: ciRecordPoll,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }

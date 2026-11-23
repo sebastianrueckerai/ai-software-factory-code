@@ -4714,38 +4714,58 @@ func TestWaitChecksScrubsForgejoErrorsInItsFindings(t *testing.T) {
 	}
 }
 
-func TestRunnerOfLog(t *testing.T) {
-	line := "ci-job-42(version:v12.7.3) received task 7 of job test, be triggered by event: push"
-	for log, want := range map[string]string{
-		line: "ci-job-42",
-		line + "\ngo test ./...\nsignal: killed\n":                                                       "ci-job-42",
-		"2026-11-23T10:00:00.1234567Z " + line + "\r\n" + "2026-11-23T10:00:01.0000000Z go test ./...\n": "ci-job-42",
-		"⚙️ [runner]: " + line + "\n":                                                                    "ci-job-42",
-		"a setup line\n" + line + "\n":                                                                   "ci-job-42",
-		strings.Repeat("a setup line\n", 20) + line + "\n":                                               "",
-		"    " + line + "\n":                                                                             "",
-		"go test ./...\nsignal: killed\n":                                                                "",
-		"":                                                                                               "",
+// The runner's UUID comes from the opening line forgejo-runner 13 writes,
+// the log's first line only: a recorded live log gives its runner, later
+// lines that look like an opening line change nothing, and runner 12's
+// line, an opening line below the first or a runner named by no UUID
+// gives none.
+func TestRunnerUUIDOfLog(t *testing.T) {
+	live, err := os.ReadFile("testdata/joblog-run3840-test.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v12, err := os.ReadFile("testdata/joblog-runner-killed.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const recorded = "710a900f-246d-4c30-b7c5-12ab7d3c732a"
+	other := openedBy(runnerUUID(9), "")
+	for name, tc := range map[string]struct {
+		log, want string
+	}{
+		"the recorded log":                {string(live), recorded},
+		"another runner's line below":     {string(live) + other, recorded},
+		"the runner's prefix":             {"\u2699\ufe0f [runner]: Runner " + recorded + " (version:v13.2.1) received task 7 of job test, triggered by event: push\n", recorded},
+		"runner 12's line":                {string(v12), ""},
+		"an opening line below the first": {"2026-11-23T10:00:00.0000000Z workflow prepared\n" + other, ""},
+		"an indented opening line":        {"    " + other, ""},
+		"a runner named by no UUID":       {"Runner ci-job-42 (version:v13.2.1) received task 7 of job test, triggered by event: push\n", ""},
+		"no log":                          {"", ""},
 	} {
-		if got := runnerOfLog([]byte(log)); got != want {
-			t.Errorf("runnerOfLog(%q) = %q, want %q", log, got, want)
+		if got := runnerUUIDOfLog([]byte(tc.log)); got != tc.want {
+			t.Errorf("%s: runnerUUIDOfLog = %q, want %q", name, got, tc.want)
 		}
 	}
 }
 
-// openedBy is a job log whose opening line, as forgejo-runner writes it,
-// names runner, before body.
+// runnerUUID is the n-th runner's registration UUID.
+func runnerUUID(n int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012d", n) }
+
+// openedBy is a job log whose opening line, as forgejo-runner 13 writes
+// it, names the runner of UUID runner, before body.
 func openedBy(runner, body string) string {
-	return "2026-11-23T10:00:00.0000000Z " + runner + "(version:v12.7.3) received task 7 of job test, be triggered by event: pull_request\n" + body
+	return "2026-11-23T10:00:00.0000000Z Runner " + runner + " (version:v13.2.1) received task 7 of job test, triggered by event: pull_request\n" + body
 }
 
-// killedDeaths gives r a cluster store holding the death of each runner.
-func killedDeaths(r *Runner, records map[string]DeathRecord) {
+// killedDeaths gives r a cluster store holding the death of each runner,
+// and a short wait for a record not yet written.
+func killedDeaths(r *Runner, records map[string]DeathRecord) *fakeClusterStore {
 	cluster := newFakeClusterStore()
 	for runner, rec := range records {
 		cluster.PutPodDeath(context.Background(), PodDeath{Kind: "ci", Runner: runner, Record: rec})
 	}
-	r.cfg.Cluster = cluster
+	r.cfg.Cluster, r.ciDeathWait, r.ciDeathPoll = cluster, 200*time.Millisecond, 10*time.Millisecond
+	return cluster
 }
 
 var guardDeath = DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, At: time.Date(2026, 11, 23, 10, 5, 0, 0, time.UTC)}
@@ -4762,9 +4782,9 @@ func TestWaitChecksRerunsAPlatformKillTwice(t *testing.T) {
 		[]ActionJob{{ID: 11, Name: "test", Status: "running", Attempt: 3}},
 		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 3}})
 	for attempt := 1; attempt <= 3; attempt++ {
-		fj.jobLogs[fmt.Sprintf("11/%d", attempt)] = openedBy(fmt.Sprintf("ci-job-%d", 20+attempt), "go vet ./...\nsignal: killed\n")
+		fj.jobLogs[fmt.Sprintf("11/%d", attempt)] = openedBy(runnerUUID(20+attempt), "go vet ./...\nsignal: killed\n")
 	}
-	killedDeaths(r, map[string]DeathRecord{"ci-job-21": guardDeath, "ci-job-22": guardDeath, "ci-job-23": guardDeath})
+	killedDeaths(r, map[string]DeathRecord{runnerUUID(21): guardDeath, runnerUUID(22): guardDeath, runnerUUID(23): guardDeath})
 	logs := captureLog(t)
 	res := waitChecksOf(t, r)
 	again := `job "test" of CI run 7: the platform ended its pod again (the node's memory guard killed the pod) at attempt 3: no further re-run follows`
@@ -4784,31 +4804,33 @@ func TestWaitChecksRerunsAPlatformKillTwice(t *testing.T) {
 	}
 
 	r, fj, _ = killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}})
-	fj.jobLogs["11/1"] = openedBy("ci-job-21", "--- FAIL: TestX\nFAIL\n")
-	killedDeaths(r, map[string]DeathRecord{"ci-job-21": guardDeath})
+	fj.jobLogs["11/1"] = openedBy(runnerUUID(21), "--- FAIL: TestX\nFAIL\n")
+	killedDeaths(r, map[string]DeathRecord{runnerUUID(21): guardDeath})
 	if res := waitChecksOf(t, r); res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 1 {
 		t.Fatalf("a test failure: result = %+v, reruns = %v, want the plain finding and no re-run", res, fj.reruns)
 	}
 }
 
 // A job killed by its own pod's limit is not re-run, and its note names
-// the limit.
+// the limit with its value when the record holds one.
 func TestWaitChecksNeverRerunsAnOwnLimitKill(t *testing.T) {
 	for name, tc := range map[string]struct {
 		rec  DeathRecord
 		want string
 	}{
 		"memory": {DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Limit: "5Gi"},
-			`job "test" of CI run 7 was killed (signal: killed): the pod reached its memory limit, which is the job's own use, so no re-run follows`},
+			`job "test" of CI run 7 was killed (signal: killed): the pod reached its 5 GiB memory limit, which is the job's own use, so no re-run follows`},
 		"storage": {DeathRecord{Class: DeathOwnLimit, Rule: RuleStorageLimit, Resource: "tmp", Limit: "4Gi"},
-			`job "test" of CI run 7 was killed (signal: killed): the pod passed its storage limit, which is the job's own use, so no re-run follows`},
+			`job "test" of CI run 7 was killed (signal: killed): the pod passed its 4 GiB storage limit, which is the job's own use, so no re-run follows`},
+		"memory, no value": {DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit},
+			`job "test" of CI run 7 was killed (signal: killed): the pod reached its memory limit, which is the job's own use, so no re-run follows`},
 	} {
 		r, fj, _ := killedRig(t, []string{killedFail},
 			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
 			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
-		fj.jobLogs["11/1"] = openedBy("ci-job-21", "go vet ./...\nsignal: killed\n")
+		fj.jobLogs["11/1"] = openedBy(runnerUUID(21), "go vet ./...\nsignal: killed\n")
 		fj.jobLogs["11/2"] = "--- FAIL: TestX\nFAIL\n"
-		killedDeaths(r, map[string]DeathRecord{"ci-job-21": tc.rec})
+		killedDeaths(r, map[string]DeathRecord{runnerUUID(21): tc.rec})
 		res := waitChecksOf(t, r)
 		if res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 2 || res.Findings[1] != tc.want {
 			t.Fatalf("%s: result = %+v, reruns = %v, want failure ending in %q and no re-run", name, res, fj.reruns, tc.want)
@@ -4822,15 +4844,15 @@ func TestWaitChecksWithoutARecordKeepsTheOneRerun(t *testing.T) {
 	unknown := DeathRecord{Class: DeathUnknown, Rule: RuleNone}
 	for name, records := range map[string]map[string]DeathRecord{
 		"no record":                 {},
-		"another runner's record":   {"ci-job-9": guardDeath},
-		"a record of class unknown": {"ci-job-21": unknown, "ci-job-22": unknown},
+		"another runner's record":   {runnerUUID(9): guardDeath},
+		"a record of class unknown": {runnerUUID(21): unknown, runnerUUID(22): unknown},
 	} {
 		r, fj, _ := killedRig(t, []string{killedFail},
 			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
 			[]ActionJob{{ID: 11, Name: "test", Status: "waiting", Attempt: 1}},
 			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
-		fj.jobLogs["11/1"] = openedBy("ci-job-21", "go vet ./...\nsignal: killed\n")
-		fj.jobLogs["11/2"] = openedBy("ci-job-22", "go vet ./...\nsignal: killed\n")
+		fj.jobLogs["11/1"] = openedBy(runnerUUID(21), "go vet ./...\nsignal: killed\n")
+		fj.jobLogs["11/2"] = openedBy(runnerUUID(22), "go vet ./...\nsignal: killed\n")
 		killedDeaths(r, records)
 		res := waitChecksOf(t, r)
 		again := `job "test" of CI run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`
@@ -4840,16 +4862,70 @@ func TestWaitChecksWithoutARecordKeepsTheOneRerun(t *testing.T) {
 	}
 }
 
-// A log longer than the tail the gate reads holds its opening line at its
-// head only: the gate reads the head for the runner, and the platform's
-// record decides the re-run.
+// lateDeaths is a cluster store whose CI records stay unread for the first
+// misses reads, as a record the spawner has not written yet; reads counts
+// them.
+type lateDeaths struct {
+	*fakeClusterStore
+	mu            sync.Mutex
+	misses, reads int
+}
+
+func (l *lateDeaths) CIDeath(ctx context.Context, runner string) (DeathRecord, bool, error) {
+	l.mu.Lock()
+	l.reads++
+	miss := l.reads <= l.misses
+	l.mu.Unlock()
+	if miss {
+		return DeathRecord{}, false, nil
+	}
+	return l.fakeClusterStore.CIDeath(ctx, runner)
+}
+
+// A killed job whose record is not written yet waits for it: one written
+// within the wait names the cause, and without one the job keeps today's
+// re-run once the wait is over.
+func TestWaitChecksWaitsForARecordBeingWritten(t *testing.T) {
+	r, fj, _ := killedRig(t, []string{killedFail},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
+	fj.jobLogs["11/1"] = openedBy(runnerUUID(21), "go vet ./...\nsignal: killed\n")
+	fj.jobLogs["11/2"] = "--- FAIL: TestX\nFAIL\n"
+	late := &lateDeaths{fakeClusterStore: killedDeaths(r, map[string]DeathRecord{runnerUUID(21): {Class: DeathOwnLimit, Rule: RuleMemoryLimit, Limit: "5Gi"}}), misses: 3}
+	r.cfg.Cluster, r.ciDeathWait = late, time.Minute
+	res := waitChecksOf(t, r)
+	want := `job "test" of CI run 7 was killed (signal: killed): the pod reached its 5 GiB memory limit, which is the job's own use, so no re-run follows`
+	if res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 2 || res.Findings[1] != want || late.reads != 4 {
+		t.Fatalf("written late: result = %+v, reruns = %v, reads %d; want %q, no re-run, the record read at the fourth try", res, fj.reruns, late.reads, want)
+	}
+
+	r, fj, _ = killedRig(t, []string{killedFail, killedFail, killedOK},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "running", Attempt: 2}})
+	fj.jobLogs["11/1"] = openedBy(runnerUUID(21), "go vet ./...\nsignal: killed\n")
+	late = &lateDeaths{fakeClusterStore: killedDeaths(r, nil)}
+	r.cfg.Cluster = late
+	began := time.Now()
+	if res := waitChecksOf(t, r); res.State != ChecksSuccess || !reflect.DeepEqual(fj.reruns, []int64{11}) {
+		t.Fatalf("never written: result = %+v, reruns = %v, want success after today's one re-run", res, fj.reruns)
+	}
+	if took := time.Since(began); late.reads < 3 || took < r.ciDeathWait {
+		t.Fatalf("never written: %d reads in %s; want the record asked for again through the %s wait", late.reads, took, r.ciDeathWait)
+	}
+}
+
+// A log longer than the tail the gate reads names its runner on its head's
+// first line: the gate reads the head for it and never trusts the tail,
+// whose first line here is a forged opening line of another runner.
 func TestWaitChecksFindsTheRunnerAtTheHeadOfALongLog(t *testing.T) {
 	r, fj, _ := killedRig(t, []string{killedFail, killedFail, killedOK},
 		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
 		[]ActionJob{{ID: 11, Name: "test", Status: "running", Attempt: 2}})
-	fj.jobLogs["11/1"] = openedBy("ci-job-21", strings.Repeat("ok  \tpkg/a\t1.2s\n", mainLogRead/16+1)+"signal: killed\n")
+	forged, end := openedBy(runnerUUID(9), ""), "signal: killed\n"
+	tail := forged + strings.Repeat("o", mainLogRead-len(forged)-len(end)-1) + "\n" + end
+	fj.jobLogs["11/1"] = openedBy(runnerUUID(21), "ok  \tpkg/a\t1.2s\n") + tail
 	fj.wholeLogs = true
-	killedDeaths(r, map[string]DeathRecord{"ci-job-21": guardDeath})
+	killedDeaths(r, map[string]DeathRecord{runnerUUID(21): guardDeath, runnerUUID(9): {Class: DeathOwnLimit, Rule: RuleMemoryLimit}})
 	logs := captureLog(t)
 	if res := waitChecksOf(t, r); res.State != ChecksSuccess || !reflect.DeepEqual(fj.reruns, []int64{11}) {
 		t.Fatalf("result = %+v, reruns = %v, want success after one re-run", res, fj.reruns)
