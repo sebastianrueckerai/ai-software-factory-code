@@ -255,6 +255,8 @@ var (
 	CaseNoAnswer              = factoryd.CaseNoAnswer
 	CasePodNeverStarted       = factoryd.CasePodNeverStarted
 	CasePlatformFault         = factoryd.CasePlatformFault
+	CasePlatformDeaths        = factoryd.CasePlatformDeaths
+	SourcePlatformDeaths      = factoryd.SourcePlatformDeaths
 	PlatformEndedReason       = factoryd.PlatformEndedReason
 	CaseProjectCap            = factoryd.CaseProjectCap
 	CaseProviderRefused       = factoryd.CaseProviderRefused

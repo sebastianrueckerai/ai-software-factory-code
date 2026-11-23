@@ -717,6 +717,33 @@ var humanSources = []humanSource{
 		q := factoryd.HoldQuestion(Project, since, b.now, groups, []factoryd.Task{fix}, plans)
 		return b.escalated(group, name, n, factoryd.SourceProductionHeld, "the production hold", q, factoryd.HoldFacts(plans, since), 35*time.Minute)
 	}, factoryd.BriefFacts{Name: Project}},
+	{factoryd.SourcePlatformDeaths, func(b *builder, group, name string, n int64) Fixture {
+		q := platformDeathsQuestion(b)
+		fx := b.filedHuman(group, name, n, factoryd.SourcePlatformDeaths, "", q, 35*time.Minute)
+		fx.Task.Objective = factoryd.IssueObjective(q.Ask, q.Info)
+		return fx
+	}, factoryd.BriefFacts{Name: "4"}},
+}
+
+// platformDeathsQuestion is the platform card's ask over four deaths of the
+// last hours: a session of #2004, a CI job, a gate pod of #2091 and a
+// session of a card on the infra repository.
+func platformDeathsQuestion(b *builder) factoryd.HumanQuestion {
+	death := func(kind, task, runner string, ago time.Duration, rule factoryd.DeathRule, node string) factoryd.PodDeath {
+		return factoryd.PodDeath{Kind: kind, TaskID: task, Runner: runner,
+			Record: factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: rule, At: b.now.Add(-ago), Node: node}}
+	}
+	hit := map[string]factoryd.Task{
+		TaskID(2004):     {ID: TaskID(2004), Repository: Repository, IssueNumber: 2004},
+		TaskID(2091):     {ID: TaskID(2091), Repository: Repository, IssueNumber: 2091},
+		"t-0a1b2c3d4e5f": {ID: "t-0a1b2c3d4e5f", Repository: "sf/infra", IssueNumber: 14},
+	}
+	return factoryd.PlatformDeathsQuestion([]factoryd.PodDeath{
+		death("session", TaskID(2004), "", 40*time.Minute, factoryd.RuleGuardKill, "sf-2"),
+		death("ci", "", "ci-job-3391", 2*time.Hour, factoryd.RuleGuardKill, "sf-2"),
+		death("gate", TaskID(2091), "", 5*time.Hour, factoryd.RuleNodeRebooted, "sf-1"),
+		death("session", "t-0a1b2c3d4e5f", "", 9*time.Hour, factoryd.RuleNodeOOM, "sf-2"),
+	}, hit, Repository)
 }
 
 // humanSourceOf is the human source named name.
@@ -937,6 +964,8 @@ func (b *builder) caseKinds() {
 			b.out = append(b.out, humanSourceOf(factoryd.SourceMonthCap).file(b, GroupCase, name, b.next()))
 		case factoryd.CaseProviderFreeze:
 			b.out = append(b.out, humanSourceOf(factoryd.SourceFreezeCard).file(b, GroupCase, name, b.next()))
+		case factoryd.CasePlatformDeaths:
+			b.out = append(b.out, humanSourceOf(factoryd.SourcePlatformDeaths).file(b, GroupCase, name, b.next()))
 		case factoryd.CaseRedMain:
 			b.out = append(b.out, humanSourceOf(factoryd.SourceStillRed).file(b, GroupCase, name, b.next()))
 		case factoryd.CaseRollHeld:
@@ -1661,6 +1690,7 @@ func (b *builder) cards() {
 		{"still red", factoryd.SourceStillRed}, {"config rejected", factoryd.SourceConfig}, {"month cap", factoryd.SourceMonthCap},
 		{"provider freeze", factoryd.SourceFreezeCard},
 		{"judgment budget", factoryd.SourceChatBudget}, {"production held", factoryd.SourceProductionHeld},
+		{"platform deaths", factoryd.SourcePlatformDeaths},
 	} {
 		b.out = append(b.out, humanSourceOf(s.source).file(b, GroupCard, s.name, b.next()))
 	}

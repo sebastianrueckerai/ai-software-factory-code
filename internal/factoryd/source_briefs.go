@@ -149,6 +149,11 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 		return BriefText{Title: freezeCardTitle(f.Name),
 			Why: "Every model call of the class is refused until the provider's limit resets, so its cards wait."}
 	},
+	// Name is the count of the deaths
+	SourcePlatformDeaths: func(f BriefFacts) BriefText {
+		return BriefText{Title: "The platform ended " + f.Name + " sessions in 24 hours. Check the nodes.",
+			Why: "The platform keeps ending the factory's work, and a fix of the nodes needs their admin key, which no agent holds."}
+	},
 	SourceConfig: func(f BriefFacts) BriefText {
 		return BriefText{Title: "Fix the rejected configuration in " + f.Name + " and push",
 			Why: "The factory refused the newest configuration, so the version before it stays in force."}

@@ -728,7 +728,8 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 }
 
 func TestCaseKindOfNamesTheBoardCardsBySource(t *testing.T) {
-	for source, want := range map[string]CaseKind{SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain} {
+	for source, want := range map[string]CaseKind{SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
+		SourcePlatformDeaths: CasePlatformDeaths} {
 		if kind, facts := CaseKindOf(source, "the ask"); kind != want || facts != nil {
 			t.Errorf("caseKindOf(%q) = %s, %v; want %s", source, kind, facts, want)
 		}

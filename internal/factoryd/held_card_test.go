@@ -84,12 +84,12 @@ func TestFactorydsHumanCardWaitsForItsFace(t *testing.T) {
 	}
 }
 
-// The chat's escalation, the month cap's card, the judgment budget's card
-// and the provider freeze's card ask a human at their filing; every other
-// source's card waits for its face.
+// The chat's escalation, the month cap's card, the judgment budget's card,
+// the provider freeze's card and the platform deaths' card ask a human at
+// their filing; every other source's card waits for its face.
 func TestOnlyTheChatAndTheCapsAskAtOnce(t *testing.T) {
 	for source, want := range map[string]string{SourceChat: "waiting-human", SourceMonthCap: "waiting-human", SourceChatBudget: "waiting-human", SourceFreezeCard: "waiting-human",
-		SourceChainStall: "waiting-agent", SourceStillRed: "waiting-agent", SourceRoutine: "waiting-agent", SourcePlan: "waiting-agent", "": "waiting-agent"} {
+		SourcePlatformDeaths: "waiting-human", SourceChainStall: "waiting-agent", SourceStillRed: "waiting-agent", SourceRoutine: "waiting-agent", SourcePlan: "waiting-agent", "": "waiting-agent"} {
 		if got := HumanCardStatus(source); got != want {
 			t.Errorf("HumanCardStatus(%q) = %s, want %s", source, got, want)
 		}

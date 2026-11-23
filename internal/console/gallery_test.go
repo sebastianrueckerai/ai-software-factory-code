@@ -549,7 +549,7 @@ var censusCardKinds = []string{
 	"template update", "schema copy", "GitHub sync", "image removal",
 	"human issue", "reproduction-rule card", "workflow-files card", "card moved to a human", "factory pull request on a project without agents",
 	"chat escalation", "alert (human)", "chain stall", "chain repair (human)", "roll refused", "roll failed", "rerun", "still red",
-	"config rejected", "month cap", "provider freeze", "judgment budget", "production held", "routine for a human",
+	"config rejected", "month cap", "provider freeze", "judgment budget", "production held", "routine for a human", "platform deaths",
 }
 
 // humanCardSources are the card sources that file a human card alone,
@@ -558,6 +558,7 @@ var censusCardKinds = []string{
 var humanCardSources = []string{
 	factoryd.SourceRollRefused, factoryd.SourceRollFailed, factoryd.SourceRerun, factoryd.SourceStillRed, factoryd.SourceChainStall,
 	factoryd.SourceChat, factoryd.SourceChatBudget, factoryd.SourceMonthCap, factoryd.SourceFreezeCard, factoryd.SourceConfig, factoryd.SourceProductionHeld,
+	factoryd.SourcePlatformDeaths,
 }
 
 // galleryColumns are the board's columns as a source entry's kind names

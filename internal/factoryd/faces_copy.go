@@ -524,6 +524,7 @@ func init() {
 		CaseHumanCard:        humanFace,
 		CaseFactoryMonthCap:  humanFace,
 		CaseProviderFreeze:   humanFace,
+		CasePlatformDeaths:   humanFace,
 		CaseJudgmentBudget:   humanFace,
 		CaseRedMain:          humanFace,
 		CaseRollHeld:         humanFace,
