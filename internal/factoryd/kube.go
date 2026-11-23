@@ -135,6 +135,10 @@ type PodDiagnosis struct {
 	Message    string           `json:"message,omitempty"`
 	Conditions []PodCondition   `json:"conditions"`
 	Containers []ContainerState `json:"containers,omitempty"`
+	UID        string           `json:"uid,omitempty"`
+	Node       string           `json:"node,omitempty"`
+	StartedAt  time.Time        `json:"started_at,omitzero"`
+	Deleting   bool             `json:"deleting,omitempty"`
 }
 
 type PodCondition struct {
@@ -142,6 +146,8 @@ type PodCondition struct {
 	Status  string `json:"status"`
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Since is the condition's last transition.
+	Since time.Time `json:"since,omitzero"`
 }
 
 // ContainerState is one container's state: waiting, running or
@@ -153,6 +159,8 @@ type ContainerState struct {
 	Message  string `json:"message,omitempty"`
 	ExitCode int32  `json:"exit_code,omitempty"`
 	Restarts int    `json:"restarts"`
+	// MemoryLimit is the container's memory limit as a quantity ("4Gi").
+	MemoryLimit string `json:"memory_limit,omitempty"`
 }
 
 // waiting says what the container waits with: the kubelet's reason and
