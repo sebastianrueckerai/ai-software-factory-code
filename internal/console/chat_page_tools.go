@@ -513,3 +513,37 @@ func (c *Console) deploymentHealthText(ctx context.Context, p factoryd.Project, 
 	}
 	return text, nil
 }
+
+// clusterFactsText is what the cluster did to a session of the card in, by
+// the session's number, or the platform's incidents of a window; a refusal
+// keeps its sentence.
+func (t *turn) clusterFactsText(in toolInput) (string, error) {
+	text, err := t.clusterFacts(in)
+	var no *factoryd.FactsRefusal
+	switch {
+	case err == nil:
+		return text, nil
+	case errors.As(err, &no):
+		return "", refuse(http.StatusBadRequest, no.Msg)
+	case errors.As(err, new(*refusal)):
+		return "", err
+	}
+	log.Printf("console: cluster facts: %v", err)
+	return "", refuse(http.StatusInternalServerError, "cannot read what the cluster did")
+}
+
+func (t *turn) clusterFacts(in toolInput) (string, error) {
+	since, until, err := factoryd.ParseFactsTimes(strings.TrimSpace(in.Since), strings.TrimSpace(in.Until))
+	if err != nil {
+		return "", err
+	}
+	var taskID, session string
+	if in.TaskID != "" {
+		k, _, all, err := t.sessions(in)
+		if err != nil {
+			return "", err
+		}
+		taskID, session = k.ID, sessionAt(all, in.N).ID
+	}
+	return t.c.cfg.ClusterFacts(t.r.Context(), taskID, session, since, until)
+}

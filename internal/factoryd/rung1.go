@@ -365,7 +365,7 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 
 const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
 
-const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head), grep (git grep at head or main for a fixed string as a whole word)."
+const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head), grep (git grep at head or main for a fixed string as a whole word), cluster_facts (what the cluster did to a session of the card, the newest by default, or the platform's incidents of a window)."
 
 // rungPrompt is rung 1's system prompt: the check-in on a case, its
 // tools, and the guide's forms of its grounds and its reason to hand up.
@@ -468,6 +468,12 @@ func (p *CaseTools) read(ctx context.Context, name string, args map[string]any) 
 			}
 			return ""
 		})
+	case "cluster_facts":
+		var newest string
+		if _, err := p.newestRecord(ctx); err == nil {
+			newest = p.session
+		}
+		return cardClusterFacts(ctx, p.r.cfg.Cluster, p.t.ID, newest, args, p.r.Clock())
 	case "gates":
 		events, err := p.r.store.TaskEvents(ctx, p.t.ID, 300)
 		if err != nil {

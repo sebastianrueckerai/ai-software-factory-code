@@ -228,7 +228,11 @@ type Config struct {
 	// (factoryd.DeploymentHealthText); its refusals are
 	// *factoryd.HealthRefusal.
 	DeploymentHealth func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error)
-	Projects         Projects
+	// ClusterFacts reads what the cluster did to a session of card taskID,
+	// or, with no session, the incidents between since and until
+	// (factoryd.ClusterFactsText); its refusals are *factoryd.FactsRefusal.
+	ClusterFacts func(ctx context.Context, taskID, sessionID string, since, until time.Time) (string, error)
+	Projects     Projects
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).
 	Events Events
@@ -711,6 +715,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no Writes")
 	case cfg.DeploymentHealth == nil:
 		return nil, errors.New("console: no DeploymentHealth")
+	case cfg.ClusterFacts == nil:
+		return nil, errors.New("console: no ClusterFacts")
 	case cfg.AnswerPlan == nil:
 		return nil, errors.New("console: no AnswerPlan")
 	case cfg.AnswerPlanQuestions == nil:

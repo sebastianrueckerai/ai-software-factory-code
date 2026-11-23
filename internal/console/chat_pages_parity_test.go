@@ -418,3 +418,26 @@ func TestDeploymentHealthIsRefusedToAProjectWithoutNamespaces(t *testing.T) {
 	equal(t, "the answer's role", got["role"], "tool")
 	equal(t, "the answer", got["content"], "Refused: project demo lists no namespaces: it runs nothing in the cluster for deployment_health to read")
 }
+
+// cluster_facts reads a card's session by the number the session tool
+// takes, and refuses what the factory kept no record of.
+func TestChatClusterFactsReadsACardsSession(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.deaths = map[[2]string]factoryd.DeathRecord{{"t-r", "s-1"}: {Class: factoryd.DeathPlatform, Rule: factoryd.RuleGuardKill,
+		At: time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC), Node: "n1", KillSource: "guard"}}
+	equal(t, "the reads", reads(t, r, g, "cluster_facts", `{"task_id":"t-r","n":1}`, "cluster_facts", `{"task_id":"t-r"}`,
+		"cluster_facts", `{"task_id":"t-r","n":2}`, "cluster_facts", `{"since":"2026-10-22T10:00:00Z","until":"2026-10-22T09:00:00Z"}`,
+		"cluster_facts", `{"since":"yesterday","until":"today"}`), []string{
+		"class: platform\nrule: guard_kill\nat: 2026-10-11T09:40:00Z\nnode: n1\nkill: memory guard",
+		"class: platform\nrule: guard_kill\nat: 2026-10-11T09:40:00Z\nnode: n1\nkill: memory guard",
+		"Refused: Card #11 has no session 2. It has had 1 session.",
+		"Refused: until comes before since: ask with since before until.",
+		"Refused: since must be RFC 3339, like 2026-11-20T14:00:00Z: ask again with that form.",
+	})
+}
+
+func TestChatClusterFactsRefusesAnotherProjectsCard(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ls", Kind: "agent", Status: "queued", Repository: "sf/other", IssueNumber: 5}})
+	equal(t, "the reads", reads(t, r, g, "cluster_facts", `{"task_id":"t-ls"}`), []string{"Refused: There is no card t-ls in this project."})
+}

@@ -2154,6 +2154,13 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		}
 		out, cut := cutToolOutput(string(b))
 		return out, cut, nil
+	case "cluster_facts":
+		out, err := cardClusterFacts(ctx, p.r.cfg.Cluster, p.taskID, p.ask.ParentSession, args, p.r.Clock())
+		if err != nil {
+			return "", false, err
+		}
+		out, cut := cutToolOutput(out)
+		return out, cut, nil
 	}
 	return p.post(ctx, name, args)
 }

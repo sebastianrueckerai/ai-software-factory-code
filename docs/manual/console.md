@@ -327,7 +327,12 @@ decimals: a task's model calls cost fractions of a cent.
   line each, steps in full, a search of the transcripts and, with no step
   matching, of the sessions' ends; transcripts over 8 MiB are only
   searched), `ci` (a commit's combined CI status with each job's, main's
-  head unless a ref or sha names another, through the human's token) and
+  head unless a ref or sha names another, through the human's token),
+  `cluster_facts` (what the cluster did to a card's session, by the number
+  `session` takes: the death record kept at its end with its class, rule,
+  kill, service restarts and the pod's events; or, with `since` and `until`
+  as RFC 3339, the platform's incidents of a window of at most 24 hours
+  inside the 30 days the log keeps, cut at 12 KiB) and
   `project_images` (the project's pins in force with their tools, egress,
   short digest and key, its open tool cards, and its cards in
   `waiting-image` with the image each waits for), and
