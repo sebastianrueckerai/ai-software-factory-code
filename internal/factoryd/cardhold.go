@@ -12,7 +12,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// CardHold is a human's hold on a card that has not started: it gets no
+// CardHold is a human's hold on a card: it gets no
 // work slot until a human releases it, or until its release card, any
 // card of its repository, ends done or merged. A release card that ends
 // failed or closed releases nothing, and the board warns of it. The
@@ -26,17 +26,28 @@ type CardHold struct {
 }
 
 // Held reports whether t's hold holds it: one stands and the card has not
-// started.
+// ended.
 func (t Task) Held() bool {
-	return t.Hold != nil && (t.Status == "queued" || t.Status == "waiting-deps")
+	return t.Hold != nil && !Final(t.Status)
 }
 
 // Holdable reports whether t may take a hold, as SetCardHold judges it
-// but for its dependencies: a bound agent card queued and never admitted
-// or resumed, or in waiting-deps.
+// but for its dependencies: a bound agent card queued, in waiting-deps or
+// running. A queued card that was admitted and never ran is not, and a
+// plan's own planning run takes none.
 func (t Task) Holdable() bool {
-	return t.Kind == "agent" && !t.Unbound() &&
-		(t.Status == "queued" && t.AdmittedAt == nil && t.ResumedAt == nil || t.Status == "waiting-deps")
+	if t.Kind != "agent" || t.Unbound() {
+		return false
+	}
+	switch t.Status {
+	case "waiting-deps":
+		return true
+	case "queued":
+		return t.AdmittedAt == nil && t.ResumedAt == nil || t.ResumedAt != nil && t.Track != policy.TrackPlan
+	case "running":
+		return t.Track != policy.TrackPlan
+	}
+	return false
 }
 
 // errHeld is SetAdmitted's refusal of a card a hold took after admit read

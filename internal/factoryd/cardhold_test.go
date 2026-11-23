@@ -222,7 +222,7 @@ func TestAHoldWithNoReleaseCardEndsOnlyByAHumansRelease(t *testing.T) {
 
 // A hold lands on a card that has not started, and only there: queued and
 // never admitted, or in waiting-deps on a dependency that has not ended.
-func TestSetCardHoldTakesOnlyACardThatHasNotStarted(t *testing.T) {
+func TestSetCardHoldTakesAStartedCardButNotAnAdmittedOne(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	store := newFakeStore()
@@ -251,8 +251,8 @@ func TestSetCardHoldTakesOnlyACardThatHasNotStarted(t *testing.T) {
 			took = append(took, id)
 		}
 	}
-	if !slices.Equal(took, []string{"t-q", "t-noissue", "t-wd"}) {
-		t.Fatalf("held = %v, want the never-admitted queued cards, a half-filed one among them, and the one waiting on a live dependency", took)
+	if !slices.Equal(took, []string{"t-q", "t-res", "t-run", "t-noissue", "t-wd"}) {
+		t.Fatalf("held = %v, want the queued cards but the admitted one, the running card, a half-filed one among them, and the one waiting on a live dependency", took)
 	}
 }
 
@@ -730,5 +730,71 @@ func TestAPlanWhoseOnlyOpenCardIsHeldStaysOpen(t *testing.T) {
 				t.Fatalf("the board = %+v, %v; want card-2 with its hold line", board, err)
 			}
 		})
+	}
+}
+
+func TestHoldableTakesStartedCards(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct {
+		name string
+		task Task
+		want bool
+	}{
+		{"running", Task{Status: "running"}, true},
+		{"queued and resumed", Task{Status: "queued", ResumedAt: &now}, true},
+		{"queued, never admitted", Task{Status: "queued"}, true},
+		{"queued, admitted and never run", Task{Status: "queued", AdmittedAt: &now}, false},
+		{"waiting-deps", Task{Status: "waiting-deps"}, true},
+		{"in-review", Task{Status: "in-review"}, false},
+		{"closing", Task{Status: "closing"}, false},
+		{"merged", Task{Status: "merged"}, false},
+		{"waiting-human", Task{Status: "waiting-human"}, false},
+		{"waiting-poster", Task{Status: "waiting-poster"}, false},
+		{"waiting-image", Task{Status: "waiting-image"}, false},
+		{"a plan's planning run", Task{Status: "running", Track: policy.TrackPlan}, false},
+		{"a plan's resumed wait", Task{Status: "queued", ResumedAt: &now, Track: policy.TrackPlan}, false},
+		{"an unbound running card", Task{Status: "running", Source: SourceRoll}, false},
+	} {
+		c.task.Kind, c.task.IssueNumber = "agent", 7
+		if c.task.Track == "" {
+			c.task.Track = policy.TrackDirect
+		}
+		if got := c.task.Holdable(); got != c.want {
+			t.Errorf("%s: Holdable = %t, want %t", c.name, got, c.want)
+		}
+	}
+}
+
+func TestHeldReadsEveryStatusThatIsNotFinal(t *testing.T) {
+	for status, want := range map[string]bool{"running": true, "in-review": true, "waiting-human": true, "closing": true, "done": false, "failed": false, "closed": false} {
+		if got := (Task{Status: status, Hold: &CardHold{Reason: "x"}}).Held(); got != want {
+			t.Errorf("%s: Held = %t, want %t", status, got, want)
+		}
+	}
+	if (Task{Status: "running"}).Held() {
+		t.Error("a card with no hold is held")
+	}
+}
+
+func TestNoRungStopsAHeldRunningCard(t *testing.T) {
+	ctx := context.Background()
+	r, _, _, _, _ := newRetryRig(t)
+	k := Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, IssueNumber: 9, Hold: &CardHold{Reason: "wait for the split", By: "sebastian"}}
+	hold, err := r.holdFact(ctx, k)
+	if err != nil || hold != "card #9 is on hold: wait for the split" {
+		t.Fatalf("holdFact = %q, %v; want the hold's line", hold, err)
+	}
+	f := CaseFacts{Hold: hold}
+	for rung := 0; rung <= 2; rung++ {
+		for _, action := range []string{ActResume, ActContinue, ActClose, ActReplan} {
+			if got := holdRefusal(f, rung, action, nil); !strings.HasPrefix(got, hold+". Only a human releases a held card") {
+				t.Errorf("rung %d's %s = %q, want the hold's refusal", rung, action, got)
+			}
+		}
+	}
+	for _, action := range []string{ActResume, ActContinue, ActClose, ActReplan} {
+		if got := holdRefusal(f, 3, action, nil); got != "" {
+			t.Errorf("rung 3's %s = %q, want none", action, got)
+		}
 	}
 }

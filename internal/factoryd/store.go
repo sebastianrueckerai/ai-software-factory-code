@@ -2593,13 +2593,15 @@ func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
 	return errHeld
 }
 
-// SetCardHold puts hold h on card id while it has not started: a bound
-// agent card queued and never admitted or resumed, or in waiting-deps on
-// a dependency that has not ended. A hold it holds already is replaced.
+// SetCardHold puts hold h on card id: a bound agent card queued and never
+// admitted, queued after a run, or running, none of them a plan's own
+// planning run, or in waiting-deps on a dependency that has not ended. A
+// hold it holds already is replaced.
 // False: the card is in no such state.
 func (s *PGStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET hold_at = $2, hold_by = $3, hold_reason = $4, hold_release = NULLIF($5, '')
 		WHERE id = $1 AND `+boundCards+` AND (status = 'queued' AND admitted_at IS NULL AND resumed_at IS NULL
+		OR status IN ('queued', 'running') AND (status = 'running' OR resumed_at IS NOT NULL) AND track <> 'plan'
 		OR status = 'waiting-deps' AND EXISTS (SELECT 1 FROM task_deps d JOIN tasks x ON x.id = d.depends_on
 			WHERE d.task_id = $1 AND x.status NOT IN ('done', 'failed', 'closed')))`, id, h.At, h.By, h.Reason, h.Release) // #nosec G202 -- boundCards is built from constants
 	if err != nil {
@@ -2614,7 +2616,7 @@ func (s *PGStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool,
 // False: no such hold holds it.
 func (s *PGStore) EndCardHold(ctx context.Context, id, release string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL
-		WHERE id = $1 AND hold_at IS NOT NULL AND status IN ('queued', 'waiting-deps') AND ($2 = '' OR hold_release = $2)`, id, release)
+		WHERE id = $1 AND hold_at IS NOT NULL AND status <> ALL($3) AND ($2 = '' OR hold_release = $2)`, id, release, FinalStatuses)
 	if err != nil {
 		return false, err
 	}
@@ -2623,15 +2625,16 @@ func (s *PGStore) EndCardHold(ctx context.Context, id, release string) (bool, er
 }
 
 func (s *PGStore) HeldOn(ctx context.Context, release string) ([]Task, error) {
-	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE hold_release = $1 AND hold_at IS NOT NULL AND status IN ('queued', 'waiting-deps') ORDER BY id`, release)
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE hold_release = $1 AND hold_at IS NOT NULL AND status <> ALL($2) ORDER BY id`, release, FinalStatuses)
 }
 
 // SetResumeWait is the store's: a parked card, or one already waiting to
-// resume, goes queued with its reason, its first wait's time kept. A queued
+// resume, or a running one a hold stops, goes queued with its reason, its
+// first wait's time kept. A queued
 // card that never resumed (admitted, its workflow not yet running) takes none.
 func (s *PGStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) error {
 	_, err := s.changeStatus(ctx, `status = 'queued', resumed_at = COALESCE(resumed_at, $3::timestamptz), queue_reason = $2, queue_since = COALESCE(resumed_at, $3::timestamptz)`,
-		`id = $1 AND (status IN ('waiting-deps', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image') OR status = 'queued' AND resumed_at IS NOT NULL)`, id, reason, now)
+		`id = $1 AND (status IN ('waiting-deps', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image') OR status = 'queued' AND resumed_at IS NOT NULL OR status = 'running' AND hold_at IS NOT NULL)`, id, reason, now)
 	return err
 }
 

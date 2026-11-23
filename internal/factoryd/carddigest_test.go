@@ -1885,3 +1885,29 @@ func TestDigestFlagsARefusedCheckin(t *testing.T) {
 		t.Fatalf("flags = %+v, want none once a check-in ran after the refused one", d.Flags)
 	}
 }
+
+// A held card owns no wait: a running card whose run is quiet past its
+// bound, and a card parked queued three hours, are not the monitor's to
+// flag.
+func TestTheMonitorSkipsAHeldRunningOrParkedCard(t *testing.T) {
+	since := digestAt(60)
+	hold := &CardHold{Reason: "after the split", By: "sebastian", At: digestAt(0)}
+	for _, c := range []struct {
+		name   string
+		change func(*Task)
+		at     int
+	}{
+		{"running", func(c *Task) { c.Hold = hold }, 8 * 60},
+		{"parked", func(c *Task) {
+			c.Status, c.QueueReason, c.QueueSince, c.Hold = "queued", "on hold: after the split", &since, hold
+		}, 4 * 60},
+	} {
+		g := newDigestRig(c.change)
+		g.line(t, 20, "session_start", map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1})
+		g.at(c.at)
+		d := g.digest(t)
+		if w, ok := d.ownedWait(); ok || w != (ownedWait{}) {
+			t.Errorf("%s: ownedWait = %+v, %t; want none", c.name, w, ok)
+		}
+	}
+}

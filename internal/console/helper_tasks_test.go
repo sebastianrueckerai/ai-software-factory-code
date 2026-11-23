@@ -256,7 +256,7 @@ func TestAHelpersPageOffersOnlyItsParentsEnd(t *testing.T) {
 	if !strings.Contains(opened, `action="/tasks/t-size/resolve"`) {
 		t.Fatalf("the sizing's flag offers no answer of its own:\n%s", opened)
 	}
-	kept := []string{factoryd.AnswerAccent, factoryd.AnswerEditBrief, factoryd.AnswerSteer, factoryd.AnswerThread, factoryd.ActClose}
+	kept := []string{factoryd.AnswerAccent, factoryd.AnswerEditBrief, factoryd.AnswerSteer, factoryd.AnswerThread, factoryd.AnswerHold, factoryd.ActClose}
 	ended := false
 	for _, m := range regexp.MustCompile(`action="/tasks/t-c/resolve"[^>]*data-answer="([^"]+)"`).FindAllStringSubmatch(opened, -1) {
 		if !slices.Contains(kept, m[1]) {

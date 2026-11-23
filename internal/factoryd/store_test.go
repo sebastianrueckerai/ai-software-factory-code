@@ -1297,9 +1297,8 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetCardHold mirrors Postgres: a bound agent card queued and never
-// admitted or resumed, or in waiting-deps on a dependency that has not
-// ended, takes the hold.
+// SetCardHold mirrors Postgres: a holdable card, one in waiting-deps only
+// on a dependency that has not ended, takes the hold.
 func (s *fakeStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool, error) {
 	t, ok := s.tasks[id]
 	live := slices.ContainsFunc(s.deps[id], func(d string) bool { return !Final(s.tasks[d].Status) })
@@ -1359,7 +1358,7 @@ func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now ti
 		return nil
 	}
 	parked := slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
-	if !parked && !(t.Status == "queued" && t.ResumedAt != nil) {
+	if !parked && !(t.Status == "queued" && t.ResumedAt != nil) && !(t.Status == "running" && t.Hold != nil) {
 		return nil
 	}
 	if t.ResumedAt == nil {

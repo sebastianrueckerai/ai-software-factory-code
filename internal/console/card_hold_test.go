@@ -110,7 +110,8 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-other", Kind: "agent", Status: "queued", Repository: "sf/other", IssueNumber: 3}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-adm", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 35, AdmittedAt: &now}})
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-adm", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 35, AdmittedAt: &now}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-rev", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 36}})
 	r.tasks.mu.Unlock()
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
@@ -129,8 +130,8 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 		code                int
 		want                string
 	}{
-		{"t-r", "", "x", http.StatusConflict,
-			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."},
+		{"t-rev", "", "x", http.StatusConflict,
+			"Card #36 passes the gates after its session, not a card that has not started: its gates run, and there is nothing to do until they end."},
 		{"t-adm", "", "x", http.StatusConflict, "Card #35 took its turn and starts now, not a card that has not started: close it, or steer it once it runs."},
 		{"t-k2", "", "  ", http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
 		{"t-k2", "", strings.Repeat("ü", 301), http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
@@ -180,17 +181,17 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardHeld, repo: "sf/code", taskID: "t-k1"},
 		wantRow{kind: factoryd.EventCardHoldEnded, repo: "sf/code", taskID: "t-k1", detail: map[string]any{"reason": "needs the lone card"}})
 
-	// a closing card's hold holds nothing, so Release refuses it
+	// a closed card's hold holds nothing, so Release refuses it
 	r.tasks.mu.Lock()
 	for i := range r.tasks.tasks {
 		if r.tasks.tasks[i].ID == "t-d2" {
-			r.tasks.tasks[i].Status, r.tasks.tasks[i].Hold = "closing", &factoryd.CardHold{Reason: "after the review", By: "sebastian"}
+			r.tasks.tasks[i].Status, r.tasks.tasks[i].Hold = "closed", &factoryd.CardHold{Reason: "after the review", By: "sebastian"}
 		}
 	}
 	r.tasks.mu.Unlock()
 	if _, err := r.c.doReleaseHold(t.Context(), a, "t-d2"); !errors.As(err, &no) ||
 		no.msg != "Card #34 is not on hold, so there is nothing to release: `hold_card` puts a card that has not started on hold." {
-		t.Errorf("the release of a closing card = %v, want the refusal", err)
+		t.Errorf("the release of a closed card = %v, want the refusal", err)
 	}
 	// the reason counts characters, as the form's maxlength does
 	long := strings.Repeat("ü", 300)
