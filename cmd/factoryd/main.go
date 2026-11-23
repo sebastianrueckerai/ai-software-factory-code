@@ -463,6 +463,8 @@ func main() {
 	passes.Run(ctx, "signoz", time.Minute, 2*time.Minute, func(ctx context.Context) error {
 		return alertIntake.SweepSigNoz(ctx, time.Now())
 	})
+	sweep := &factoryd.IncidentSweep{Store: store, Kube: kube, Kernel: signoz}
+	passes.Run(ctx, "platform_incidents", time.Minute, 2*time.Minute, sweep.Run)
 	passes.Run(ctx, "cleared_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCleared)
 	passes.Run(ctx, "completed_job_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCompletedJobs)
 	// a rollout not settled at its window's cap raises its own alert

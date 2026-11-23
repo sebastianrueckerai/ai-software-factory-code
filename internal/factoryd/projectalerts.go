@@ -261,45 +261,128 @@ func (s *SigNoz) client() *http.Client {
 	return &http.Client{Timeout: 15 * time.Second}
 }
 
-func (s *SigNoz) FiringAlerts(ctx context.Context) ([]FiringAlert, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// do sends one bearer request with s.mu held by the caller; a 401 logs in
+// again once. It returns the status and at most 4 MiB of the body.
+func (s *SigNoz) do(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
 	for attempt := 0; ; attempt++ {
 		if s.token == "" {
 			if err := s.login(ctx); err != nil {
-				return nil, err
+				return 0, nil, err
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/api/v1/alerts", nil) // #nosec G704 -- SigNoz's in-cluster address from the environment
+		var rd io.Reader
+		if payload != nil {
+			rd = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, s.BaseURL+path, rd) // #nosec G704 -- SigNoz's in-cluster address from the environment
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+s.token)
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		res, err := s.client().Do(req) // #nosec G704 -- SigNoz's in-cluster address from the environment
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 		res.Body.Close() // #nosec G104 -- read fully above
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		if res.StatusCode == http.StatusUnauthorized && attempt == 0 {
 			s.token = ""
 			continue
 		}
-		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("GET /api/v1/alerts: status %d", res.StatusCode)
-		}
-		var out struct {
-			Status string        `json:"status"`
-			Data   []FiringAlert `json:"data"`
-		}
-		if err := json.Unmarshal(body, &out); err != nil || out.Status != "success" {
-			return nil, errors.Join(fmt.Errorf("GET /api/v1/alerts: status %q", out.Status), err)
-		}
-		return out.Data, nil
+		return res.StatusCode, body, nil
 	}
+}
+
+func (s *SigNoz) FiringAlerts(ctx context.Context) ([]FiringAlert, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	code, body, err := s.do(ctx, http.MethodGet, "/api/v1/alerts", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("GET /api/v1/alerts: status %d", code)
+	}
+	var out struct {
+		Status string        `json:"status"`
+		Data   []FiringAlert `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.Status != "success" {
+		return nil, errors.Join(fmt.Errorf("GET /api/v1/alerts: status %q", out.Status), err)
+	}
+	return out.Data, nil
+}
+
+// KernelLines reads the kill lines of the nodes' kernel logs in [from, to]
+// from SigNoz, where the nodes' Talos send them as service talos-kmsg.
+func (s *SigNoz) KernelLines(ctx context.Context, from, to time.Time) ([]KernelKill, error) {
+	query := map[string]any{
+		"schemaVersion": "v1",
+		"start":         from.UnixMilli(),
+		"end":           to.UnixMilli(),
+		"requestType":   "raw",
+		"compositeQuery": map[string]any{"queries": []any{map[string]any{
+			"type": "builder_query",
+			"spec": map[string]any{
+				"name":   "A",
+				"signal": "logs",
+				"filter": map[string]any{"expression": KernelFilter},
+				"order": []any{
+					map[string]any{"key": map[string]any{"name": "timestamp"}, "direction": "asc"},
+					map[string]any{"key": map[string]any{"name": "id"}, "direction": "asc"},
+				},
+				"limit": 1000,
+			},
+		}}},
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	code, body, err := s.do(ctx, http.MethodPost, "/api/v5/query_range", mustJSON(query))
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("POST /api/v5/query_range: status %d", code)
+	}
+	var out struct {
+		Data struct {
+			Data struct {
+				Results []struct {
+					NextCursor string `json:"nextCursor"`
+					Rows       []struct {
+						Timestamp time.Time `json:"timestamp"`
+						Data      struct {
+							Body             string             `json:"body"`
+							AttributesNumber map[string]float64 `json:"attributes_number"`
+							ResourcesString  map[string]string  `json:"resources_string"`
+						} `json:"data"`
+					} `json:"rows"`
+				} `json:"results"`
+			} `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("POST /api/v5/query_range: %w", err)
+	}
+	var kills []KernelKill
+	for _, r := range out.Data.Data.Results {
+		if r.NextCursor != "" {
+			log.Printf("kernel lines %s to %s: more rows than the limit, next cursor %q", from.Format(time.RFC3339), to.Format(time.RFC3339), r.NextCursor) // #nosec G706 -- %q escapes every control character
+		}
+		for _, row := range r.Rows {
+			k, ok := ParseKernelLine(strings.TrimSpace(row.Data.Body), row.Data.ResourcesString["k8s.node.name"], int64(row.Data.AttributesNumber["seq"]), row.Timestamp)
+			if ok {
+				kills = append(kills, k)
+			}
+		}
+	}
+	return kills, nil
 }
 
 func (s *SigNoz) login(ctx context.Context) error {
