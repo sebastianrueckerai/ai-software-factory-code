@@ -2361,7 +2361,7 @@ func TestEvictionRecorded(t *testing.T) {
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4e", Attempt: 1, Model: "m"}, nil,
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
-	if err != nil || res.Outcome != OutcomePlatformKilled || res.Summary != "evicted: The node was low on resource: ephemeral-storage." {
+	if err != nil || res.Outcome != OutcomePlatformKilled || res.Summary != "evicted" {
 		t.Fatalf("result = (%+v, %v)", res, err)
 	}
 }
@@ -2744,7 +2744,7 @@ func TestRunSessionNamesHowThePodEndedWithoutAResult(t *testing.T) {
 			want: "pod exited without a result: container worker terminated with OOMKilled (exit code 137)"},
 		{name: "clone error", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Error", ExitCode: 1, Message: "agent-worker: prctl PR_SET_DUMPABLE: operation not permitted"},
 			{Name: "worker", State: "waiting", Reason: "PodInitializing"}},
-			want: "pod exited without a result: container clone terminated with Error (exit code 1): agent-worker: prctl PR_SET_DUMPABLE: operation not permitted"},
+			want: "pod exited without a result: container clone terminated with Error (exit code 1)"},
 		{name: "worker exited 0", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "terminated", Reason: "Completed"}},
 			want: "pod exited without a result"},
 	} {

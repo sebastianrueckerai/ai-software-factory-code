@@ -272,7 +272,7 @@ func TestTmpEvictionIsOwnLimit(t *testing.T) {
 	const msg = `Usage of EmptyDir volume "tmp" exceeds the limit "4Gi". `
 	g := newDeathRig(t, "t5t", func(p *fakePod) { p.reason, p.message = "Evicted", msg })
 	res := g.run(t, modelCall)
-	if res.Outcome != OutcomeNoPush || res.Summary != "evicted: "+msg || res.Death == nil ||
+	if res.Outcome != OutcomeNoPush || res.Summary != "evicted" || res.Death == nil ||
 		res.Death.Class != DeathOwnLimit || res.Death.Rule != RuleStorageLimit || res.Death.Resource != "tmp" || res.Death.Limit != "4Gi" {
 		t.Fatalf("result = %+v, death %+v; want no_push on the tmp volume's 4Gi", res, res.Death)
 	}
@@ -283,9 +283,51 @@ func TestNodePressureEvictionIsPlatform(t *testing.T) {
 	const msg = "The node was low on resource: ephemeral-storage. Threshold quantity: 10Gi, available: 9Gi."
 	g := newDeathRig(t, "t5n", func(p *fakePod) { p.reason, p.message = "Evicted", msg })
 	res := g.run(t, modelCall)
-	if res.Outcome != OutcomePlatformKilled || res.Summary != "evicted: "+msg || res.Death == nil ||
+	if res.Outcome != OutcomePlatformKilled || res.Summary != "evicted" || res.Death == nil ||
 		res.Death.Rule != RuleNodePressure || res.Death.Resource != "ephemeral-storage" {
 		t.Fatalf("result = %+v, death %+v; want platform_killed on the node's ephemeral storage", res, res.Death)
+	}
+}
+
+// A container's termination message is the tail of its log, whatever the
+// worker printed: no end names it. The next session's findings and the
+// summary a platform end carries as the free path's stop reason keep the
+// container's parsed end alone, and an eviction keeps no kubelet text.
+func TestATerminationMessageReachesNoPrompt(t *testing.T) {
+	const leak = `{"type":"event","detail":{"output":"TOKEN=ghp_secretvalue"}}`
+	for name, tc := range map[string]struct {
+		pod     func(p *fakePod)
+		guard   bool
+		outcome SessionOutcome
+		summary string
+	}{
+		"own memory limit": {pod: func(p *fakePod) {
+			p.containers = []ContainerState{{Name: "worker", State: "terminated", Reason: "OOMKilled", ExitCode: 137, Message: leak}}
+		}, outcome: OutcomeNoPush, summary: "pod exited without a result: container worker terminated with OOMKilled (exit code 137)"},
+		"guard kill": {pod: func(p *fakePod) {
+			p.containers = []ContainerState{{Name: "worker", State: "terminated", Reason: "Error", ExitCode: 137, Message: leak}}
+		}, guard: true, outcome: OutcomePlatformKilled, summary: "pod exited without a result: container worker terminated with Error (exit code 137)"},
+		"eviction": {pod: func(p *fakePod) {
+			p.reason, p.message = "Evicted", "The node was low on resource: memory. "+leak
+		}, outcome: OutcomePlatformKilled, summary: "evicted"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t5m", tc.pod)
+			if tc.guard {
+				at := time.Now().Add(time.Second)
+				g.kernel.kills = func(int) []KernelKill {
+					return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: at, Seq: 9}}
+				}
+			}
+			res := g.run(t, modelCall)
+			if res.Outcome != tc.outcome || res.Summary != tc.summary {
+				t.Fatalf("result = %q %q, want %q %q", res.Outcome, res.Summary, tc.outcome, tc.summary)
+			}
+			told := strings.Join(slices.Concat([]string{res.Summary}, res.Findings, res.Death.Lines), "\n")
+			if strings.Contains(told, "ghp_") || strings.Contains(told, "TOKEN") {
+				t.Fatalf("summary, findings and lines = %q, want no word of the container's message", told)
+			}
+		})
 	}
 }
 

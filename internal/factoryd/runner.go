@@ -2468,17 +2468,15 @@ func waitsOn(d PodDiagnosis) string {
 // exitedHow says how a pod ended without a result, plain the generic
 // words: its eviction, or plain and the first container that ended in
 // failure, init containers first; "" when its diagnosis says no more.
+// No message is quoted: a container's is the tail of its log, and the
+// death record's class line names an eviction's resource and limit.
 func exitedHow(plain string, d PodDiagnosis) string {
 	if d.Reason == "Evicted" {
-		return "evicted: " + d.Message
+		return "evicted"
 	}
 	for _, c := range d.Containers {
 		if c.State == "terminated" && (c.ExitCode != 0 || c.Reason != "Completed") {
-			s := fmt.Sprintf("%s: container %s terminated with %s (exit code %d)", plain, c.Name, c.Reason, c.ExitCode)
-			if c.Message != "" {
-				s += ": " + c.Message
-			}
-			return s
+			return fmt.Sprintf("%s: container %s terminated with %s (exit code %d)", plain, c.Name, c.Reason, c.ExitCode)
 		}
 	}
 	return ""
