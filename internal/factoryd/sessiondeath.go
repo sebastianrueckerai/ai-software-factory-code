@@ -46,6 +46,9 @@ const (
 	// restartKill is how close to a restart a kill of its pod names its
 	// cause.
 	restartKill = time.Minute
+	// notReadyWindow is how long before its end a node going NotReady
+	// counts as what ended the session.
+	notReadyWindow = 15 * time.Minute
 )
 
 // deathOf reads the death of a session's pod.
@@ -106,8 +109,14 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 			log.Printf("death of pod %s/%s: read the incidents of its life: %v", in.ns, in.pod, err)
 		}
 	}
+	// a flip of the node counts in the session's last minutes only: an
+	// early one the session outlived does not outrank its own later end
+	flips := in.ended.Add(-notReadyWindow)
+	if flips.Before(in.started) {
+		flips = in.started
+	}
 	f.NodeNotReadyDuring = f.Pod.Node != "" && slices.ContainsFunc(life, func(p PlatformIncident) bool {
-		return p.Kind == IncidentNodeNotReady && (p.Subject == f.Pod.Node || p.Node == f.Pod.Node)
+		return p.Kind == IncidentNodeNotReady && (p.Subject == f.Pod.Node || p.Node == f.Pod.Node) && !p.At.Before(flips) && !p.At.After(in.ended)
 	})
 	seen := map[string]bool{}
 	add := func(key string, k KernelKill) {
@@ -165,6 +174,11 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 			case <-time.After(min(poll, time.Until(waitEnd))):
 			}
 			readStored()
+			// the wait's end has come: no kernel read has time left
+			if !time.Now().Before(waitEnd) {
+				r = Classify(f)
+				break
+			}
 			ok := readKernel(waitEnd)
 			if r = Classify(f); !ok || r.Rule != RuleNone {
 				break

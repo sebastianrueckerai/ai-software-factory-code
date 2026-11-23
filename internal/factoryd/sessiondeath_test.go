@@ -1,9 +1,12 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,12 +27,13 @@ import (
 // lines, fail its error, and block makes the call wait for its context's
 // end. It keeps the pod UID each call named.
 type scriptedKernel struct {
-	mu    sync.Mutex
-	calls int
-	uids  []string
-	kills func(call int) []KernelKill
-	fail  func(call int) error
-	block func(call int) bool
+	mu      sync.Mutex
+	calls   int
+	expired int // calls whose context had ended when they came
+	uids    []string
+	kills   func(call int) []KernelKill
+	fail    func(call int) error
+	block   func(call int) bool
 }
 
 func (k *scriptedKernel) KernelLines(ctx context.Context, _, _ time.Time, podUID string) ([]KernelKill, error) {
@@ -37,6 +41,9 @@ func (k *scriptedKernel) KernelLines(ctx context.Context, _, _ time.Time, podUID
 	k.calls++
 	call := k.calls
 	k.uids = append(k.uids, podUID)
+	if ctx.Err() != nil {
+		k.expired++
+	}
 	k.mu.Unlock()
 	if k.block != nil && k.block(call) {
 		<-ctx.Done()
@@ -344,7 +351,8 @@ func deadPod() (*fakeKube, deathInput) {
 // at once or partway, ends at the bound however slow a read is, and does
 // not start for a stop factoryd sent or a context whose deadline leaves no
 // room. A reader that does not wait still reads once. Every read names the
-// pod's UID.
+// pod's UID, and a wait that ends quiet asks no read whose time is up, so
+// it logs no kernel error.
 func TestTheKillWaitEnds(t *testing.T) {
 	kube, in := deadPod()
 	failed := errors.New("signoz: login refused")
@@ -410,9 +418,15 @@ func TestTheKillWaitEnds(t *testing.T) {
 			}
 			in := in
 			in.stoppedByFactory = tc.stopped
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			defer log.SetOutput(os.Stderr)
 			began := time.Now()
 			r := d.read(ctx, in)
 			took, calls := time.Since(began), tc.kernel.called()
+			if name == "quiet" && (tc.kernel.expired != 0 || strings.Contains(logged.String(), "read the kernel lines")) {
+				t.Fatalf("%d reads came after their time was up; log:\n%s", tc.kernel.expired, logged.String())
+			}
 			if r.Rule != tc.rule || tc.calls == 0 && calls < 3 || tc.calls != 0 && calls != tc.calls || took < tc.atLeast || took > tc.atMost {
 				t.Fatalf("%s after %s and %d calls; want %s in [%s, %s] after %d calls (0: three or more)", r.Rule, took, calls, tc.rule, tc.atLeast, tc.atMost, tc.calls)
 			}
@@ -570,28 +584,34 @@ func TestReattachToAPodFactorydWasStopping(t *testing.T) {
 	}
 }
 
-// A node that went NotReady during the session is the platform's, though
-// it answers again at the end: the incident log holds the flip. A flip of
-// another node, or one before the session, is not.
+// A node that went NotReady at the session's end is the platform's, though
+// it answers again: the incident log holds the flip, and it outranks the
+// pod's own memory kill. A flip earlier than the end's last 15 minutes, of
+// another node, or before the session leaves the kill the cause.
 func TestANodeNotReadyDuringTheSessionIsPlatform(t *testing.T) {
 	ctx := context.Background()
 	kube, in := deadPod()
-	kube.pods["ns/worker-s1"].containers[0].ExitCode = 1
+	in.started = in.ended.Add(-2 * time.Hour)
+	memcg := &scriptedKernel{kills: func(int) []KernelKill {
+		return []KernelKill{{Source: "kernel", Node: "sf-1", PodUID: deathUID, Constraint: "CONSTRAINT_MEMCG", At: in.ended.Add(-time.Minute), Seq: 3}}
+	}}
 	for name, tc := range map[string]struct {
-		node string
-		at   time.Time
-		want DeathRule
+		node  string
+		at    time.Time
+		class DeathClass
+		rule  DeathRule
 	}{
-		"its node in its life": {"sf-1", in.started.Add(5 * time.Minute), RuleNodeNotReady},
-		"another node":         {"sf-2", in.started.Add(5 * time.Minute), RuleNone},
-		"its node before":      {"sf-1", in.started.Add(-time.Hour), RuleNone},
+		"its node 5 minutes before the end":  {"sf-1", in.ended.Add(-5 * time.Minute), DeathPlatform, RuleNodeNotReady},
+		"its node 40 minutes before the end": {"sf-1", in.ended.Add(-40 * time.Minute), DeathOwnLimit, RuleMemoryLimit},
+		"another node at the end":            {"sf-2", in.ended.Add(-5 * time.Minute), DeathOwnLimit, RuleMemoryLimit},
+		"its node before the session":        {"sf-1", in.started.Add(-time.Hour), DeathOwnLimit, RuleMemoryLimit},
 	} {
 		cluster := newFakeClusterStore()
 		if _, err := cluster.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "notready/" + tc.node, At: tc.at, Kind: IncidentNodeNotReady, Subject: tc.node, Node: tc.node}}); err != nil {
 			t.Fatal(err)
 		}
-		if r := (deathReader{kube: kube, cluster: cluster}).read(ctx, in); r.Rule != tc.want {
-			t.Errorf("%s: %s, want %s", name, r.Rule, tc.want)
+		if r := (deathReader{kube: kube, cluster: cluster, kernel: memcg}).read(ctx, in); r.Class != tc.class || r.Rule != tc.rule {
+			t.Errorf("%s: %s %s, want %s %s", name, r.Class, r.Rule, tc.class, tc.rule)
 		}
 	}
 }
