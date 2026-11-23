@@ -193,6 +193,7 @@ func TestPGStoreHoldsARunningCard(t *testing.T) {
 		{ID: "t-run", Status: "running", IssueNumber: 1},
 		{ID: "t-rev", Status: "in-review", IssueNumber: 2},
 		{ID: "t-rel", Status: "running", IssueNumber: 3},
+		{ID: "t-clo", Status: "closing", IssueNumber: 4},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind, tk.Track, tk.Source = 1, "sf/r", "agent", policy.TrackDirect, "webhook"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -220,6 +221,22 @@ func TestPGStoreHoldsARunningCard(t *testing.T) {
 	}
 	if n := holdColumnsSet(t, s, "t-run"); n != 0 {
 		t.Fatalf("%d hold columns still set", n)
+	}
+
+	// a hold stored before a card reached review or closing stands there, and a release ends it
+	if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET hold_at = $1, hold_by = 'sebastian', hold_reason = 'x', hold_release = 't-rel' WHERE id IN ('t-rev', 't-clo')`, at); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := s.HeldOn(ctx, "t-rel"); err != nil || len(on) != 2 || on[0].ID != "t-clo" || on[1].ID != "t-rev" {
+		t.Fatalf("HeldOn = %+v, %v; want the closing and the in-review card", on, err)
+	}
+	for _, id := range []string{"t-rev", "t-clo"} {
+		if ok, err := s.EndCardHold(ctx, id, ""); err != nil || !ok {
+			t.Fatalf("EndCardHold(%s) = %v, %v; want true", id, ok, err)
+		}
+		if n := holdColumnsSet(t, s, id); n != 0 {
+			t.Fatalf("%s: %d hold columns still set", id, n)
+		}
 	}
 }
 

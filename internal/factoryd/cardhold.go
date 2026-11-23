@@ -12,12 +12,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// CardHold is a human's hold on a card: it gets no
-// work slot until a human releases it, or until its release card, any
-// card of its repository, ends done or merged. A release card that ends
-// failed or closed releases nothing, and the board warns of it. The
-// release card follows its work into a retry or a successor, as a
-// dependency edge does (takeOverEdges).
+// CardHold is a human's hold on a card: it gets no work slot until a
+// human releases it, or until its release card, any card of its
+// repository, ends done or merged. A release card that ends failed or
+// closed releases nothing, and the board warns of it. The release card
+// follows its work into a retry or a successor, as a dependency edge does
+// (takeOverEdges).
 type CardHold struct {
 	Reason  string
 	Release string // the release card's task id, "" for none
