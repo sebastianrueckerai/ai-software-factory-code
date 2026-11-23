@@ -57,7 +57,7 @@ func TestSessionFactsTextHoldsTheFields(t *testing.T) {
 			{Reason: "Evicted", Type: "Warning", Message: "low memory", At: at.Add(time.Second)}},
 		Lines: []string{"the platform ended this session", "no fault of yours"}})
 	r := ClusterFactsReader{Store: s, Kube: factsKube{node: NodeState{Name: "n1", BootID: "boot-9", Ready: true, Since: at.Add(-48 * time.Hour)}}}
-	got, err := r.SessionText(t.Context(), "t1", "s1")
+	got, err := r.SessionText(t.Context(), "t1", "s1", cfNow)
 	want := "class: platform\n" +
 		"rule: guard_kill\n" +
 		"at: 2026-11-20T10:05:00Z\n" +
@@ -70,9 +70,7 @@ func TestSessionFactsTextHoldsTheFields(t *testing.T) {
 		"limit: 2Gi\n" +
 		"kill: memory guard\n" +
 		"last command: go test ./...\n" +
-		"node ready: true\n" +
-		"node ready since: 2026-11-18T10:05:00Z\n" +
-		"node boot id: boot-9\n" +
+		"node now: ready true, since 2026-11-18T10:05:00Z, boot boot-9\n" +
 		"service restarts in the session's life:\n" +
 		"- litellm 2026-11-20T10:04:00Z to 2026-11-20T10:05:00Z UTC, guard\n" +
 		"events of the pod:\n" +
@@ -97,7 +95,7 @@ func TestSessionFactsTextOfAnOldRecordStartsTwoHoursBack(t *testing.T) {
 		{Key: "out", At: at.Add(-121 * time.Minute), Kind: IncidentNodeBoot, Subject: "n1b", Node: "n1"},
 	})
 	putSessionDeath(t, s, "t1", "s1", DeathRecord{Class: DeathUnknown, Rule: RuleNone, At: at, Node: "n1"})
-	got, err := ClusterFactsReader{Store: s}.SessionText(t.Context(), "t1", "s1")
+	got, err := ClusterFactsReader{Store: s}.SessionText(t.Context(), "t1", "s1", cfNow)
 	want := "class: unknown\nrule: none\nat: 2026-11-20T10:05:00Z\nnode: n1\nincidents on its node:\n- 2026-11-20T08:06:00Z node_boot n1 on n1"
 	if err != nil || got != want {
 		t.Fatalf("got (%v)\n%s\nwant\n%s", err, got, want)
@@ -107,7 +105,7 @@ func TestSessionFactsTextOfAnOldRecordStartsTwoHoursBack(t *testing.T) {
 func TestSessionFactsTextNamesAKernelKill(t *testing.T) {
 	s := newFakeClusterStore()
 	putSessionDeath(t, s, "t1", "s1", DeathRecord{Class: DeathPlatform, Rule: RuleNodeOOM, At: cfNow, KillSource: "kernel"})
-	got, err := ClusterFactsReader{Store: s}.SessionText(t.Context(), "t1", "s1")
+	got, err := ClusterFactsReader{Store: s}.SessionText(t.Context(), "t1", "s1", cfNow)
 	if err != nil || !strings.Contains(got, "\nkill: kernel") {
 		t.Fatalf("got (%v)\n%s", err, got)
 	}
@@ -121,7 +119,7 @@ func TestSessionFactsTextCutsAtTwelveKiB(t *testing.T) {
 		lines[i] = line
 	}
 	putSessionDeath(t, s, "t1", "s1", DeathRecord{Class: DeathUnknown, Rule: RuleNone, At: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC), Lines: lines})
-	got, err := ClusterFactsReader{Store: s}.SessionText(t.Context(), "t1", "s1")
+	got, err := ClusterFactsReader{Store: s}.SessionText(t.Context(), "t1", "s1", cfNow)
 	head := "class: unknown\nrule: none\nat: 2026-11-20T10:00:00Z\nlines given to the next session:\n"
 	total := len(head) + 200*100 - 1
 	fit := (clusterFactsMax - len(head)) / 100
@@ -173,7 +171,7 @@ func TestIncidentsTextRefusals(t *testing.T) {
 			t.Errorf("%s: refused: %v", name, err)
 		}
 	}
-	_, err := r.SessionText(t.Context(), "t1", "s9")
+	_, err := r.SessionText(t.Context(), "t1", "s9", cfNow)
 	var no *FactsRefusal
 	if !errors.As(err, &no) || no.Status != 404 || no.Msg != "session s9 has no death record: it ended with a push or before the factory recorded deaths. Read card_step for its end." {
 		t.Errorf("no record: %v", err)
@@ -186,7 +184,7 @@ func TestIncidentsTextRefusals(t *testing.T) {
 
 func TestClusterFactsWithoutAStoreRefuses(t *testing.T) {
 	for name, call := range map[string]func(ClusterFactsReader) error{
-		"session": func(r ClusterFactsReader) error { _, err := r.SessionText(t.Context(), "t1", "s1"); return err },
+		"session": func(r ClusterFactsReader) error { _, err := r.SessionText(t.Context(), "t1", "s1", cfNow); return err },
 		"window": func(r ClusterFactsReader) error {
 			_, err := r.IncidentsText(t.Context(), cfNow.Add(-time.Hour), cfNow, cfNow)
 			return err
@@ -233,25 +231,23 @@ func TestSessionFactsTextOfARunningSessionReadsThePod(t *testing.T) {
 		{Key: "before", At: started.Add(-time.Minute), Kind: IncidentGuardKill, Subject: "pod/z", Node: "n1"},
 	})
 	r := ClusterFactsReader{Store: s,
-		Live: factsLive{"t1": {TaskID: "t1", SessionID: "s1", Namespace: "ns", Pod: "p", StartedAt: started}},
+		Live: factsLive{"t1": {TaskID: "t1", SessionID: "s1", Namespace: "ns", Pod: "p", Node: "n1", StartedAt: started}},
 		Kube: factsKube{pod: PodDiagnosis{Phase: "Running", Node: "n1", Containers: []ContainerState{
 			{Name: "agent", State: "running", Restarts: 0}, {Name: "sidecar", State: "waiting", Reason: "CrashLoopBackOff", Restarts: 3}}},
 			node: NodeState{Name: "n1", BootID: "b1", Ready: true, Since: started.Add(-time.Hour)}}}
-	got, err := r.SessionText(t.Context(), "t1", "s1")
+	got, err := r.SessionText(t.Context(), "t1", "s1", cfNow)
 	want := "session s1 is running\n" +
 		"pod phase: Running\n" +
 		"node: n1\n" +
 		"container agent: running, restarts 0\n" +
 		"container sidecar: waiting CrashLoopBackOff, restarts 3\n" +
-		"node ready: true\n" +
-		"node ready since: 2026-11-23T10:40:00Z\n" +
-		"node boot id: b1\n" +
+		"node now: ready true, since 2026-11-23T10:40:00Z, boot b1\n" +
 		"incidents on its node since 2026-11-23T11:40:00Z:\n" +
 		"- 2026-11-23T11:45:00Z guard_kill pod/x on n1 source=guard"
 	if err != nil || got != want {
 		t.Fatalf("got (%v)\n%s\nwant\n%s", err, got, want)
 	}
-	if _, err := r.SessionText(t.Context(), "t1", "s2"); err == nil || !strings.HasPrefix(err.Error(), "session s2 has no death record") {
+	if _, err := r.SessionText(t.Context(), "t1", "s2", cfNow); err == nil || !strings.HasPrefix(err.Error(), "session s2 has no death record") {
 		t.Fatalf("a session neither recorded nor live: %v", err)
 	}
 }
@@ -334,5 +330,29 @@ func TestRungOneKeepsTheNewestSessionWhenItsRecordFailsToRead(t *testing.T) {
 	out, _, err := (&CaseTools{r: g.r, t: Task{ID: "t1410"}}).Tool(t.Context(), "cluster_facts", nil)
 	if !strings.HasPrefix(out, "class: own_limit") || err != nil {
 		t.Fatalf("got (%q, %v), want the newest session's facts", out, err)
+	}
+}
+
+func TestSessionFactsTextOfARunningSessionNamesItsNodeWhateverTheReads(t *testing.T) {
+	started := cfNow.Add(-20 * time.Minute)
+	live := factsLive{"t1": {TaskID: "t1", SessionID: "s1", Namespace: "ns", Pod: "p", Node: "n1", StartedAt: started}}
+	ready := NodeState{Name: "n1", BootID: "b1", Ready: true, Since: started.Add(-time.Hour)}
+	nodeLine := "node now: ready true, since 2026-11-23T10:40:00Z, boot b1\n"
+	for name, c := range map[string]struct {
+		kube PodReader
+		want string
+	}{
+		"pod gone": {factsKube{podErr: ErrNotFound, node: ready},
+			"session s1 is running\npod phase: the pod is gone\nnode: n1\n" + nodeLine},
+		"pod unreadable": {factsKube{podErr: errors.New("api down"), node: ready},
+			"session s1 is running\npod phase: not readable now\nnode: n1\n" + nodeLine},
+		"node gone": {factsKube{pod: PodDiagnosis{Phase: "Running", Node: "n1"}, nodeErr: ErrNotFound},
+			"session s1 is running\npod phase: Running\nnode: n1\nnode now: gone\n"},
+		"no kube": {nil, "session s1 is running\nnode: n1\n"},
+	} {
+		got, err := ClusterFactsReader{Store: newFakeClusterStore(), Live: live, Kube: c.kube}.SessionText(t.Context(), "t1", "s1", cfNow)
+		if err != nil || got+"\n" != c.want {
+			t.Errorf("%s: got (%v)\n%q\nwant\n%q", name, err, got, c.want)
+		}
 	}
 }

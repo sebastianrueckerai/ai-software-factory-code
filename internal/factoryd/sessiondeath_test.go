@@ -476,6 +476,9 @@ func TestTheIncidentLogNamesKillsAndRestarts(t *testing.T) {
 	}
 	kernel := &scriptedKernel{kills: func(int) []KernelKill { return []KernelKill{kill} }}
 	r := deathReader{kube: kube, cluster: cluster, kernel: kernel}.read(ctx, in)
+	if !r.Started.Equal(in.started) {
+		t.Fatalf("started = %v, want the session's start %v", r.Started, in.started)
+	}
 	if r.Rule != RuleGuardKill {
 		t.Fatalf("rule = %s, want guard_kill", r.Rule)
 	}

@@ -331,8 +331,8 @@ decimals: a task's model calls cost fractions of a cent.
   `cluster_facts` (what the cluster did to a card's session, by the number
   `session` takes: the death record kept at its end with its class, rule,
   kill, service restarts, the pod's events as time, type, reason and count
-  without their text, its node's state and the incidents on that node in the
-  session's life; for the card's running session, a live read of its pod,
+  without their text, its node's state now and the incidents on that node in the
+  session's life (a prover's last command is left out); for the card's running session, a live read of its pod,
   containers, node and the node's incidents since it started; or, with
   `since` and `until` as RFC 3339, the platform's incidents of a window of
   at most 24 hours inside the 30 days the log keeps; cut at 12 KiB. A

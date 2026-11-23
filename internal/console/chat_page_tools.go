@@ -545,12 +545,18 @@ func (t *turn) clusterFacts(in toolInput) (string, error) {
 		return "", err
 	}
 	var taskID, session string
+	var prover bool
 	if in.TaskID != "" {
 		k, _, all, err := t.sessions(in)
 		if err != nil {
 			return "", err
 		}
-		taskID, session = k.ID, sessionAt(all, in.N).ID
+		taskID, session, prover = k.ID, sessionAt(all, in.N).ID, k.Source == factoryd.SourceProver
 	}
-	return t.c.cfg.ClusterFacts(t.r.Context(), taskID, session, since, until)
+	text, err := t.c.cfg.ClusterFacts(t.r.Context(), taskID, session, since, until)
+	if prover {
+		// a prover's last command can name its blind proofs, which its transcript read refuses
+		text = strings.Join(slices.DeleteFunc(strings.Split(text, "\n"), func(l string) bool { return strings.HasPrefix(l, "last command: ") }), "\n")
+	}
+	return text, err
 }

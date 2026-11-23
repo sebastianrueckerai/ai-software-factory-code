@@ -460,3 +460,29 @@ func TestChatClusterFactsRefusalStatuses(t *testing.T) {
 		}
 	}
 }
+
+// A running session of the card reads live in the chat, through the
+// session's number.
+func TestChatClusterFactsReadsARunningSession(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.lives = map[string]factoryd.LiveSession{"t-r": {TaskID: "t-r", SessionID: "s-1", StartedAt: time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)}}
+	equal(t, "the read", reads(t, r, g, "cluster_facts", `{"task_id":"t-r","n":1}`), []string{"session s-1 is running"})
+}
+
+// A prover's session holds the plan's blind proofs: the chat's read leaves
+// out the last command, as the chat refuses its transcript.
+func TestChatClusterFactsOmitsAProversLastCommand(t *testing.T) {
+	r, g := newSessionsRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-prove", Kind: "agent", Status: "running",
+		Source: factoryd.SourceProver, Parent: "t-plan", Track: policy.TrackDirect, Repository: "sf/code"}})
+	r.tasks.mu.Unlock()
+	r.objects["sessions/t-prove/timeline.jsonl"] = []byte(sessionsTimeline)
+	rec := factoryd.DeathRecord{Class: factoryd.DeathUnknown, Rule: factoryd.RuleNone, At: time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC),
+		LastCommand: "go test ./proofs/key_log"}
+	r.deaths = map[[2]string]factoryd.DeathRecord{{"t-prove", "s1"}: rec, {"t-r", "s1"}: rec}
+	got := reads(t, r, g, "cluster_facts", `{"task_id":"t-prove","n":1}`, "cluster_facts", `{"task_id":"t-r","n":1}`)
+	equal(t, "the reads", got, []string{
+		"class: unknown\nrule: none\nat: 2026-10-11T10:00:00Z",
+		"class: unknown\nrule: none\nat: 2026-10-11T10:00:00Z\nlast command: go test ./proofs/key_log"})
+}

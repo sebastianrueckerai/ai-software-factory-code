@@ -112,18 +112,18 @@ func (r ClusterFactsReader) nodeFacts(ctx context.Context, b *strings.Builder, n
 	n, err := r.Kube.NodeState(ctx, node)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		b.WriteString("node ready: the node is gone\n")
+		b.WriteString("node now: gone\n")
 	case err != nil:
-		b.WriteString("node ready: not readable now\n")
+		b.WriteString("node now: not readable\n")
 	default:
-		fmt.Fprintf(b, "node ready: %t\nnode ready since: %s\nnode boot id: %s\n", n.Ready, factsStamp(n.Since), n.BootID)
+		fmt.Fprintf(b, "node now: ready %t, since %s, boot %s\n", n.Ready, factsStamp(n.Since), n.BootID)
 	}
 }
 
 // SessionText is what the cluster did to session sessionID of card taskID:
 // the record kept at its end, or, for the card's running session, the pod
 // and its node as they are now.
-func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID string) (string, error) {
+func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID string, now time.Time) (string, error) {
 	if r.Store == nil {
 		return "", factsRefuse(http.StatusConflict, "the factory keeps no cluster facts here")
 	}
@@ -132,7 +132,7 @@ func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID s
 		return "", err
 	}
 	if !ok {
-		return r.liveText(ctx, taskID, sessionID)
+		return r.liveText(ctx, taskID, sessionID, now)
 	}
 	var b strings.Builder
 	line := func(name, value string) {
@@ -202,7 +202,7 @@ func (r ClusterFactsReader) SessionText(ctx context.Context, taskID, sessionID s
 
 // liveText reads the card's running session: a session that is neither
 // recorded nor running has no facts to give.
-func (r ClusterFactsReader) liveText(ctx context.Context, taskID, sessionID string) (string, error) {
+func (r ClusterFactsReader) liveText(ctx context.Context, taskID, sessionID string, now time.Time) (string, error) {
 	var live LiveSession
 	var ok bool
 	var err error
@@ -218,30 +218,34 @@ func (r ClusterFactsReader) liveText(ctx context.Context, taskID, sessionID stri
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s is running\n", sessionID)
 	node := live.Node
+	var pod *PodDiagnosis
 	if r.Kube != nil {
-		pod, err := r.Kube.PodDiagnosis(ctx, live.Namespace, live.Pod)
+		d, err := r.Kube.PodDiagnosis(ctx, live.Namespace, live.Pod)
 		switch {
 		case errors.Is(err, ErrNotFound):
 			b.WriteString("pod phase: the pod is gone\n")
 		case err != nil:
 			b.WriteString("pod phase: not readable now\n")
 		default:
-			fmt.Fprintf(&b, "pod phase: %s\n", pod.Phase)
-			node = cmp.Or(pod.Node, node)
-			if pod.Reason != "" {
-				fmt.Fprintf(&b, "pod reason: %s\n", pod.Reason)
+			pod = &d
+			fmt.Fprintf(&b, "pod phase: %s\n", d.Phase)
+			node = cmp.Or(d.Node, node)
+			if d.Reason != "" {
+				fmt.Fprintf(&b, "pod reason: %s\n", d.Reason)
 			}
-			if node != "" {
-				fmt.Fprintf(&b, "node: %s\n", node)
-			}
-			for _, c := range pod.Containers {
-				fmt.Fprintf(&b, "container %s: %s, restarts %d\n", c.Name, strings.TrimSpace(c.State+" "+c.Reason), c.Restarts)
-			}
+		}
+	}
+	if node != "" {
+		fmt.Fprintf(&b, "node: %s\n", node)
+	}
+	if pod != nil {
+		for _, c := range pod.Containers {
+			fmt.Fprintf(&b, "container %s: %s, restarts %d\n", c.Name, strings.TrimSpace(c.State+" "+c.Reason), c.Restarts)
 		}
 	}
 	r.nodeFacts(ctx, &b, node)
 	if node != "" {
-		if err := r.nodeIncidents(ctx, &b, "incidents on its node since "+factsStamp(live.StartedAt)+":", node, live.StartedAt, time.Now()); err != nil {
+		if err := r.nodeIncidents(ctx, &b, "incidents on its node since "+factsStamp(live.StartedAt)+":", node, live.StartedAt, now); err != nil {
 			return "", err
 		}
 	}
@@ -292,7 +296,7 @@ func (r ClusterFactsReader) Text(ctx context.Context, taskID, sessionID string, 
 		if !since.IsZero() || !until.IsZero() {
 			return "", factsRefuse(http.StatusBadRequest, "ask for a session or for a window, not both.")
 		}
-		return r.SessionText(ctx, taskID, sessionID)
+		return r.SessionText(ctx, taskID, sessionID, now)
 	}
 	return r.IncidentsText(ctx, since, until, now)
 }
