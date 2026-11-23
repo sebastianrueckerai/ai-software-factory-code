@@ -234,7 +234,8 @@ func TestClusterStoreFakeMatchesPostgres(t *testing.T) {
 		if want := []string{"a", "a-c", "ab", "b", "gate"}; err != nil || !slices.Equal(order, want) {
 			t.Fatalf("deaths %v, %v; want byte order of the keys %v", order, err, want)
 		}
-		if _, err := cs.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "k", At: when, Kind: IncidentNodeBoot, Subject: "n1"}}); err != nil {
+		bootAt := time.Now().UTC().Truncate(time.Second)
+		if _, err := cs.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "k", At: bootAt, Kind: IncidentNodeBoot, Subject: "n1"}}); err != nil {
 			t.Fatal(err)
 		}
 		old := time.Now().Add(-31 * 24 * time.Hour)
@@ -252,7 +253,7 @@ func TestClusterStoreFakeMatchesPostgres(t *testing.T) {
 		if err != nil || len(left) != 1 || left[0].Key != "b2" {
 			t.Fatalf("after prune %+v, %v; want only the newest boot b2", left, err)
 		}
-		inc, err := cs.PlatformIncidents(ctx, when, when, 0)
+		inc, err := cs.PlatformIncidents(ctx, bootAt, bootAt, 0)
 		if err != nil || len(inc) != 1 || inc[0].Detail == nil || len(inc[0].Detail) != 0 {
 			t.Fatalf("incidents %+v, %v; want an empty, non-nil Detail", inc, err)
 		}

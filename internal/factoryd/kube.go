@@ -852,7 +852,9 @@ func (k *InClusterKube) Nodes(ctx context.Context) ([]NodeState, error) {
 // container's restarts and last termination.
 type ServicePod struct {
 	Namespace, Name, UID, Node, Phase string
-	Containers                        []ServiceContainer
+	// Owner is the kind of the pod's controller, empty for none.
+	Owner      string
+	Containers []ServiceContainer
 }
 
 type ServiceContainer struct {
@@ -873,6 +875,10 @@ func (k *InClusterKube) ServicePods(ctx context.Context, namespace, selector str
 				Namespace string `json:"namespace"`
 				Name      string `json:"name"`
 				UID       string `json:"uid"`
+				Owners    []struct {
+					Kind       string `json:"kind"`
+					Controller bool   `json:"controller"`
+				} `json:"ownerReferences"`
 			} `json:"metadata"`
 			Spec struct {
 				NodeName string `json:"nodeName"`
@@ -906,6 +912,11 @@ func (k *InClusterKube) ServicePods(ctx context.Context, namespace, selector str
 	out := make([]ServicePod, 0, len(l.Items))
 	for _, p := range l.Items {
 		sp := ServicePod{Namespace: cmp.Or(p.Metadata.Namespace, namespace), Name: p.Metadata.Name, UID: p.Metadata.UID, Node: p.Spec.NodeName, Phase: p.Status.Phase}
+		for _, o := range p.Metadata.Owners {
+			if o.Controller {
+				sp.Owner = o.Kind
+			}
+		}
 		for _, c := range p.Status.ContainerStatuses {
 			sc := ServiceContainer{Name: c.Name, Restarts: c.RestartCount}
 			if r := c.State.Running; r != nil {

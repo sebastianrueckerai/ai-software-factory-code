@@ -1072,7 +1072,7 @@ func TestServicePodsReadTheLastTermination(t *testing.T) {
 			return
 		}
 		q = r.URL.Query()
-		io.WriteString(w, `{"items":[{"metadata":{"namespace":"proj","name":"web-1","uid":"u9"},"spec":{"nodeName":"sf-3"},`+
+		io.WriteString(w, `{"items":[{"metadata":{"namespace":"proj","name":"web-1","uid":"u9","ownerReferences":[{"kind":"Foo","controller":false},{"kind":"Job","controller":true}]},"spec":{"nodeName":"sf-3"},`+
 			`"status":{"phase":"Running","containerStatuses":[{"name":"web","restartCount":2,`+
 			`"state":{"running":{"startedAt":"2026-11-20T10:10:00Z"}},`+
 			`"lastState":{"terminated":{"reason":"OOMKilled","exitCode":137,"startedAt":"2026-11-20T10:00:00Z","finishedAt":"2026-11-20T10:09:00Z"}}}]}}]}`)
@@ -1083,7 +1083,7 @@ func TestServicePodsReadTheLastTermination(t *testing.T) {
 		t.Fatalf("ServicePods = %+v, %v, query %v", ps, err, q)
 	}
 	p := ps[0]
-	if p.Namespace != "proj" || p.Name != "web-1" || p.UID != "u9" || p.Node != "sf-3" || p.Phase != "Running" || len(p.Containers) != 1 {
+	if p.Namespace != "proj" || p.Name != "web-1" || p.UID != "u9" || p.Node != "sf-3" || p.Phase != "Running" || p.Owner != "Job" || len(p.Containers) != 1 {
 		t.Fatalf("pod = %+v", p)
 	}
 	c := p.Containers

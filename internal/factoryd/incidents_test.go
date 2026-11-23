@@ -132,6 +132,9 @@ func sweepFixture(now time.Time) (*IncidentSweep, *fakeClusterStore, *fakeKernel
 		{Namespace: "factory", Name: "migrate-1", UID: "uid-m", Node: "sf-1", Phase: "Failed",
 			Containers: []ServiceContainer{{Name: "migrate", LastReason: "Error", LastExitCode: 1, LastFinished: now.Add(-30 * time.Minute)}}},
 	}}
+	kube.servicePods["factory/app=factoryd"] = append(kube.servicePods["factory/app=factoryd"],
+		ServicePod{Namespace: "factory", Name: "migrate-2", UID: "uid-j", Node: "sf-1", Phase: "Running", Owner: "Job",
+			Containers: []ServiceContainer{{Name: "migrate", LastReason: "Error", LastExitCode: 1, LastFinished: now.Add(-20 * time.Minute)}}})
 	kube.nodeStates = map[string]NodeState{
 		"sf-1": {Name: "sf-1", BootID: "b1", Ready: true},
 		"sf-2": {Name: "sf-2", BootID: "b2", Ready: false, Since: now.Add(-10 * time.Minute)},

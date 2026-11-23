@@ -83,7 +83,7 @@ func (w *IncidentSweep) Run(ctx context.Context) error {
 		pods, err := w.Kube.ServicePods(ctx, svc.Namespace, svc.Selector)
 		var rows []PlatformIncident
 		for _, pod := range pods {
-			if pod.Phase != "Running" {
+			if pod.Phase != "Running" || pod.Owner == "Job" {
 				continue
 			}
 			for _, c := range pod.Containers {
