@@ -2218,13 +2218,12 @@ func (c metricSessionCard) evidenced(firstStart sql.NullTime) bool {
 // (task.sha), so an abandoned head's reading cannot stand in for the
 // merged head's; the starts and the ends-without-starts are the card's
 // lifetime rows, unbounded below. A session the platform ended is the
-// cluster's, not the card's: neither its start nor its end counts.
+// cluster's, not the card's: its end does not count, and it writes no
+// start row, because the workflow skips sessionAnswered for it.
 func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time.Time) ([]metricSessionCard, error) {
 	rows, err := db.QueryContext(ctx, `SELECT m.at, g.size,
 		(SELECT count(DISTINCT st.detail->>'session')::float8 FROM events st
-			WHERE st.task_id = m.task_id AND st.kind = 'session_started' AND st.detail->>'session' <> ''
-				AND NOT EXISTS (SELECT 1 FROM events en WHERE en.task_id = st.task_id AND en.kind = 'session_end'
-					AND en.detail->>'session' = st.detail->>'session' AND en.detail->>'outcome' = 'platform_killed')) AS starts,
+			WHERE st.task_id = m.task_id AND st.kind = 'session_started' AND st.detail->>'session' <> '') AS starts,
 		(SELECT count(DISTINCT en.detail->>'session')::float8 FROM events en
 			WHERE en.task_id = m.task_id AND en.kind = 'session_end' AND en.detail->>'outcome' NOT IN ('not_started', 'platform_killed')
 				AND NOT EXISTS (SELECT 1 FROM events st WHERE st.task_id = en.task_id

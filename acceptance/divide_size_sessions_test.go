@@ -140,11 +140,9 @@ func TestDivideConquerSessions(t *testing.T) {
 	end("sd", string(factoryd.OutcomePushed), "s2", 3, 62, accDay(14))
 	// a never-started attempt ends inside the window: no session's end
 	end("sx", string(factoryd.OutcomeNotStarted), "s2", 4, 62, accDay(7))
-	// sessions the platform ended inside the window, one with its start row
-	// and one without: no session of the card's, no end of its own and no
-	// hole in its starts
-	start("sz", "s2", 4, 62, accDay(6))
-	end("sz", string(factoryd.OutcomePlatformKilled), "s2", 4, 62, accDay(7))
+	// a session the platform ended inside the window, which writes no start
+	// row: no session of the card's, no end of its own and no hole in its
+	// starts
 	end("sy", string(factoryd.OutcomePlatformKilled), "s2", 4, 62, accDay(7))
 	// m1: medium, two starts
 	merged("m1", "medium", 63, accDay(9))
