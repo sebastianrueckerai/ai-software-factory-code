@@ -25,13 +25,15 @@ type deathReader struct {
 }
 
 // deathInput names the pod and what factoryd knows of it: its UID, node and
-// the node's boot when it started, empty when unknown, and its life.
+// the node's boot when it started, empty when unknown, and its life. live
+// is a read of a pod that may still run, which the end's evidence alone
+// classes: a node that went NotReady and answers again ended nothing.
 type deathInput struct {
-	ns, pod                        string
-	uid, node, boot                string
-	started, ended                 time.Time
-	stoppedByFactory, afterRestart bool
-	lastCommand, lastPush          string
+	ns, pod                              string
+	uid, node, boot                      string
+	started, ended                       time.Time
+	stoppedByFactory, afterRestart, live bool
+	lastCommand, lastPush                string
 }
 
 const (
@@ -115,7 +117,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	if flips.Before(in.started) {
 		flips = in.started
 	}
-	f.NodeNotReadyDuring = f.Pod.Node != "" && slices.ContainsFunc(life, func(p PlatformIncident) bool {
+	f.NodeNotReadyDuring = !in.live && f.Pod.Node != "" && slices.ContainsFunc(life, func(p PlatformIncident) bool {
 		return p.Kind == IncidentNodeNotReady && (p.Subject == f.Pod.Node || p.Node == f.Pod.Node) && !p.At.Before(flips) && !p.At.After(in.ended)
 	})
 	seen := map[string]bool{}

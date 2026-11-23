@@ -807,8 +807,12 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 		}},
 	factoryd.CasePlatformFault: {"Board export: compress the nightly snapshot", "Gzip each nightly snapshot before it is written, and read both forms back.",
 		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
-			f.Death = &factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: factoryd.RuleGuardKill, Node: "sf-2", LastCommand: "go test ./export/..."}
-			return factoryd.TripInput{Reason: factoryd.PlatformEndedReason(3, *f.Death), Death: f.Death}
+			at := func(h, m int) time.Time { return time.Date(2026, 11, 21, h, m, 0, 0, time.UTC) }
+			deaths := []factoryd.DeathRecord{{Class: factoryd.DeathPlatform, Rule: factoryd.RuleNodeNotReady, Node: "sf-2", At: at(13, 40)},
+				{Class: factoryd.DeathPlatform, Rule: factoryd.RuleNodeRebooted, Node: "sf-2", At: at(13, 52)},
+				{Class: factoryd.DeathPlatform, Rule: factoryd.RuleGuardKill, Node: "sf-2", At: at(14, 2), LastCommand: "go test ./export/..."}}
+			f.Death = &deaths[2]
+			return factoryd.TripInput{Reason: factoryd.PlatformEndedReason(deaths), Death: f.Death}
 		}},
 	factoryd.CaseNoAnswer: {"Alerts: group a flapping rule's alerts", "Group the alerts of one rule that fires and clears within ten minutes.",
 		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {

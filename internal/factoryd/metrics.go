@@ -2217,11 +2217,14 @@ func (c metricSessionCard) evidenced(firstStart sql.NullTime) bool {
 // card's final gate_head fact at the head the task actually built on
 // (task.sha), so an abandoned head's reading cannot stand in for the
 // merged head's; the starts and the ends-without-starts are the card's
-// lifetime rows, unbounded below.
+// lifetime rows, unbounded below. A session the platform ended is the
+// cluster's, not the card's: neither its start nor its end counts.
 func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time.Time) ([]metricSessionCard, error) {
 	rows, err := db.QueryContext(ctx, `SELECT m.at, g.size,
 		(SELECT count(DISTINCT st.detail->>'session')::float8 FROM events st
-			WHERE st.task_id = m.task_id AND st.kind = 'session_started' AND st.detail->>'session' <> '') AS starts,
+			WHERE st.task_id = m.task_id AND st.kind = 'session_started' AND st.detail->>'session' <> ''
+				AND NOT EXISTS (SELECT 1 FROM events en WHERE en.task_id = st.task_id AND en.kind = 'session_end'
+					AND en.detail->>'session' = st.detail->>'session' AND en.detail->>'outcome' = 'platform_killed')) AS starts,
 		(SELECT count(DISTINCT en.detail->>'session')::float8 FROM events en
 			WHERE en.task_id = m.task_id AND en.kind = 'session_end' AND en.detail->>'outcome' NOT IN ('not_started', 'platform_killed')
 				AND NOT EXISTS (SELECT 1 FROM events st WHERE st.task_id = en.task_id
@@ -2257,7 +2260,8 @@ func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time
 // session outcomes the runner records; a not_started end is no
 // session's — a pod that never became one — and a platform_killed end
 // is the cluster's, not the card's, so however their rows landed, they
-// inflate no distribution. An end whose start row is missing stays
+// count in this panel no more than in the sessions panel
+// (metricSessionPull). Any other end whose start row is missing stays
 // the fact it is: the ends panel keeps it, the sessions panel's
 // coverage names the hole.
 func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {

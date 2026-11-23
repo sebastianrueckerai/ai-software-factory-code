@@ -1100,15 +1100,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
 	lines := followed.lines
-	// deathNow reads how the pod ended, or is ending; the last push is the
-	// session's own, else its interim one, else the branch's at its start
-	deathNow := func() DeathRecord {
+	// deathNow reads how the pod ended, or is ending when live; the last
+	// push is the session's own, else its interim one, else the branch's at
+	// its start
+	deathNow := func(live bool) DeathRecord {
 		last := cmp.Or(out.commit, out.wip)
 		if last == "" && s.startRef != s.base {
 			last = s.startRef
 		}
 		return r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
-			stoppedByFactory: stoppedBefore || podStopped.Load() != 0, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
+			stoppedByFactory: stoppedBefore || podStopped.Load() != 0, live: live, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
 	}
 	keepDeath := func(death DeathRecord) {
 		out.death = &death
@@ -1122,7 +1123,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
 			how = exitedHow(plain, d)
 		}
-		keepDeath(deathNow())
+		keepDeath(deathNow(false))
 		if how != "" {
 			return how
 		}
@@ -1282,7 +1283,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			// a session the platform ended makes no progress: it ends at
 			// once, with no check-in, and without the stop's wait for a log
 			// a lost node may never close
-			if death := deathNow(); death.Class == DeathPlatform {
+			if death := deathNow(true); death.Class == DeathPlatform {
 				if !halt(trip) {
 					return true, errSuperseded
 				}
@@ -1542,7 +1543,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if done {
 				// a stop factoryd did not send is the cluster's SIGTERM
 				if out.result.Stopped && out.trip == nil {
-					keepDeath(deathNow())
+					keepDeath(deathNow(false))
 				}
 				return out, retry
 			}

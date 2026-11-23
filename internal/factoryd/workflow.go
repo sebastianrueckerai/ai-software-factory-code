@@ -1113,7 +1113,7 @@ type taskRun struct {
 	gateRuns          map[string]int   // the long gates' runs so far, by activity
 	agentTimeBase     time.Duration    // the class's agent time, which the size scales (sizeAgentTime)
 	pendingPods       int              // sessions in a row whose pod never started
-	platformDeaths    int              // sessions in a row the platform ended
+	platformDeaths    []DeathRecord    // the deaths of the sessions in a row the platform ended
 	pr                PullRequest
 	approvalRequested time.Time      // the current approval request's time
 	answers           []string       // the human's answers, newest first
@@ -1939,7 +1939,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.pendingPods = 0
 		platformKilled := err == nil && !decided && res.Outcome == OutcomePlatformKilled
 		if !platformKilled {
-			t.platformDeaths = 0
+			t.platformDeaths = nil
 		}
 		if t.wipStart >= versionWipStart && err == nil && !decided && res.Commit != "" {
 			switch res.Outcome {
@@ -1960,11 +1960,17 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if platformKilled {
 			// the platform ended the session: no attempt, no agent time, no
-			// step to the stronger model; the next starts at once, told
-			// what ended this one
+			// step to the stronger model; the next starts at once on the
+			// session's model, told what ended this one. A check-in that ran
+			// in it is recorded, though the platform's end wins.
+			t.providerAnswered(&refusals, nil)
+			if res.Model != "" {
+				model = res.Model
+			}
 			if t.sessionKill >= versionSessionKill {
 				t.death = res.Death
 			}
+			t.takeCheckin(res)
 			if ask := t.platformDied(res.Death); ask != "" {
 				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
@@ -2039,15 +2045,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.sessionKill >= versionSessionKill {
 			t.death = res.Death
 		}
-		if res.CheckIn != nil {
-			t.recordCheckin(res)
-			if len(res.CheckIn.Verdicts) > 0 {
-				t.checkinVerdicts = append(t.checkinVerdicts, res.CheckIn.Verdicts)
-				if len(t.reviews) > 0 {
-					t.reviews[len(t.reviews)-1].Verdicts = res.CheckIn.Verdicts
-				}
-			}
-		}
+		t.takeCheckin(res)
 		// a session that ends without a push hands on the findings it was
 		// given with its own lines: the next one may be the first to act on
 		// them, and an earlier session's lines are stale. One that never
@@ -2059,6 +2057,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			if !checkinPending && !midNote {
 				// the check-in read these; its judgment replaces them
 				own = slices.Concat(own, t.handoverLines(res))
+			}
+			if res.Death != nil {
+				// the pod's end came after any check-in: its lines always pass
+				own = slices.Concat(own, res.Death.Lines)
 			}
 			if res.CheckIn == nil {
 				// the check-in did not run: the round ended dead, and its
@@ -2291,17 +2293,26 @@ const (
 	platformEnded     = "The platform ended the card's last sessions: "
 )
 
-// PlatformEndedReason is the ask of a card whose last n sessions the
-// platform ended, the last as last says.
-func PlatformEndedReason(n int, last DeathRecord) string {
-	return fmt.Sprintf(platformEnded+"%d in a row. The last: %s.", n, last.Short())
+// PlatformEndedReason is the ask of a card whose last sessions the platform
+// ended, deaths their records in order: when, on which node and how each
+// ended.
+func PlatformEndedReason(deaths []DeathRecord) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, platformEnded+"%d in a row.", len(deaths))
+	for _, d := range deaths {
+		on := ""
+		if d.Node != "" {
+			on = " on " + d.Node
+		}
+		fmt.Fprintf(&b, " At %s UTC%s, %s.", clock(d.At), on, d.Short())
+	}
+	return b.String()
 }
 
 // handoverLines are what the next session is told beside a session's stop
 // lines when that ended without a push: the commit its branch holds and
-// whether the gates judged it, the agent's last message, and the limit of
-// its own pod it reached. The check-in agent's handover note replaces
-// them.
+// whether the gates judged it, and the agent's last message. The check-in
+// agent's handover note replaces them.
 func (t *taskRun) handoverLines(res SessionResult) []string {
 	var lines []string
 	if res.Commit != "" {
@@ -2313,9 +2324,6 @@ func (t *taskRun) handoverLines(res SessionResult) []string {
 	}
 	if res.LastMessage != "" {
 		lines = append(lines, lastMessageLine+res.LastMessage)
-	}
-	if res.Death != nil && res.Death.Class == DeathOwnLimit {
-		lines = append(lines, res.Death.Lines...)
 	}
 	return lines
 }
@@ -2433,6 +2441,21 @@ func (t *taskRun) deadAsk(stop string, gates *GateResults) *CheckInAsk {
 	return &CheckInAsk{Moment: CheckInDead, ParentSession: t.deadFrom, Stop: stop, Gates: gates}
 }
 
+// takeCheckin records the check-in a session ran, if any, and keeps its
+// verdicts for the rounds after.
+func (t *taskRun) takeCheckin(res SessionResult) {
+	if res.CheckIn == nil {
+		return
+	}
+	t.recordCheckin(res)
+	if len(res.CheckIn.Verdicts) > 0 {
+		t.checkinVerdicts = append(t.checkinVerdicts, res.CheckIn.Verdicts)
+		if len(t.reviews) > 0 {
+			t.reviews[len(t.reviews)-1].Verdicts = res.CheckIn.Verdicts
+		}
+	}
+}
+
 // recordCheckin keeps a check-in on the timeline beside the review it
 // judged, and its handover note as its own step: a new run rebuilds the
 // reviews' verdicts from the checkin steps (Reconcile).
@@ -2495,21 +2518,22 @@ func (t *taskRun) notStarted(why string) (ask string) {
 	return PodNeverStartedReason(podWaits, why)
 }
 
-// platformDied counts a session the platform ended, death its record: at
-// the platformDeathsAsk-th in a row ask is what to ask a human, and the
-// count starts again.
+// platformDied keeps the record of a session the platform ended: at the
+// platformDeathsAsk-th in a row ask is what to ask a human, naming each,
+// and the row starts again.
 func (t *taskRun) platformDied(death *DeathRecord) (ask string) {
-	var last DeathRecord
+	var d DeathRecord
 	if death != nil {
-		last = *death
+		d = *death
 	}
-	t.platformDeaths++
-	workflow.GetLogger(t.ctx).Info("the platform ended a session; the next starts at once", "task", t.taskID, "in_a_row", t.platformDeaths, "how", last.Short())
-	if t.platformDeaths < platformDeathsAsk {
+	t.platformDeaths = append(t.platformDeaths, d)
+	workflow.GetLogger(t.ctx).Info("the platform ended a session; the next starts at once", "task", t.taskID, "in_a_row", len(t.platformDeaths), "how", d.Short())
+	if len(t.platformDeaths) < platformDeathsAsk {
 		return ""
 	}
-	t.platformDeaths = 0
-	return PlatformEndedReason(platformDeathsAsk, last)
+	ask = PlatformEndedReason(t.platformDeaths)
+	t.platformDeaths = nil
+	return ask
 }
 
 // PodNeverStartedReason is the ask of a card whose pod never started in n

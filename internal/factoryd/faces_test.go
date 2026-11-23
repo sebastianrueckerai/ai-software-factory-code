@@ -1092,4 +1092,7 @@ func TestDeathLinesReadPlainly(t *testing.T) {
 			t.Errorf("%q: %v", r.Short(), faults)
 		}
 	}
+	if ask := factoryd.PlatformEndedReason(records[:3]); len(facefixtures.HumanFaults(ask)) > 0 {
+		t.Errorf("%q: %v", ask, facefixtures.HumanFaults(ask))
+	}
 }

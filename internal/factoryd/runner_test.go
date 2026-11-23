@@ -1850,10 +1850,19 @@ func TestRunSessionLiveCheckinOpensWithThePolicysCalls(t *testing.T) {
 	}
 }
 
-// stalledOn is a live session on node sf-1 of state node whose log hangs,
-// so the no_progress detector trips after a second.
-func stalledOn(t *testing.T, node NodeState, answers ...CheckinResponse) (*Runner, *scriptedChat, *placeSpy) {
-	runner, _, kube, _, chat, store, _ := liveRig(t, answers...)
+// stalled is a live session on node sf-1 whose log hangs, so the
+// no_progress detector trips after a second; asks are the worker's /wip
+// asks so far, the interim push's.
+type stalled struct {
+	runner *Runner
+	kube   *fakeKube
+	worker *fakeWorkerEndpoint
+	chat   *scriptedChat
+	spy    *placeSpy
+}
+
+func stalledOn(t *testing.T, node NodeState, answers ...CheckinResponse) stalled {
+	runner, _, kube, worker, chat, store, _ := liveRig(t, answers...)
 	kube.nodeStates = map[string]NodeState{"sf-1": node}
 	kube.onCreatePod = func() {
 		p := kube.podOrder[len(kube.podOrder)-1]
@@ -1862,44 +1871,77 @@ func stalledOn(t *testing.T, node NodeState, answers ...CheckinResponse) (*Runne
 	spy := &placeSpy{Store: store}
 	runner.store, runner.tick = spy, 100*time.Millisecond
 	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 1})
-	return runner, chat, spy
+	return stalled{runner, kube, worker, chat, spy}
+}
+
+// stallInput starts at a commit of the branch, so an interim push asks the
+// pod for its work.
+var stallInput = SessionInput{TaskID: "t2", Attempt: 1, Model: "m", StartRef: strings.Repeat("a", 40)}
+
+func (g stalled) asks() int {
+	g.worker.mu.Lock()
+	defer g.worker.mu.Unlock()
+	return len(slices.DeleteFunc(slices.Clone(g.worker.texts), func(s string) bool { return !strings.HasPrefix(s, "POST /wip") }))
 }
 
 // A session that stops making progress on a node gone NotReady is the
 // platform's death: it ends at once as platform_killed on the trip, with
-// no check-in call and no wait of the stop's minute of grace for a log the
-// lost node never closes, its stop written to its row for its owner.
+// no check-in call, no interim push and no wait of the stop's minute of
+// grace for a log the lost node never closes; its stop is written to its
+// row for its owner, and its pod is deleted.
 func TestNoProgressOnALostNodeEndsWithoutACheckin(t *testing.T) {
-	runner, chat, spy := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: false}, CheckinResponse{Text: `{"decision":"continue"}`})
-	runner.stopWait = time.Minute
+	g := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: false}, CheckinResponse{Text: `{"decision":"continue"}`})
+	g.runner.stopWait = time.Minute
 	began := time.Now()
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, hangLogs)
+	res, err := runSession(t, nil, g.runner, stallInput, nil, hangLogs)
 	if err != nil || res.Outcome != OutcomePlatformKilled || res.Trip != string(TripNoProgress) || res.Death == nil || res.Death.Rule != RuleNodeNotReady {
 		t.Fatalf("result = (%+v, %v), death %+v; want platform_killed on the no_progress trip, by the node gone NotReady", res, err, res.Death)
 	}
-	if chat.calls != 0 {
-		t.Fatalf("check-in calls = %d, want none", chat.calls)
+	if g.chat.calls != 0 || g.asks() != 0 {
+		t.Fatalf("check-in calls %d, interim push asks %d; want none of either", g.chat.calls, g.asks())
 	}
 	if took := time.Since(began); took > 30*time.Second {
 		t.Fatalf("the session took %s, want its end without the stop's grace", took)
 	}
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	if !slices.Equal(spy.stops, []string{"own"}) {
-		t.Fatalf("stops written %q, want the stop on the session's row, for its owner", spy.stops)
+	g.kube.mu.Lock()
+	deleted := slices.Clone(g.kube.deletedPods)
+	g.kube.mu.Unlock()
+	if len(deleted) != 1 || !strings.HasPrefix(deleted[0], "factory-agents-t2/") {
+		t.Fatalf("deleted pods %q, want the session's pod once", deleted)
+	}
+	g.spy.mu.Lock()
+	defer g.spy.mu.Unlock()
+	if !slices.Equal(g.spy.stops, []string{"own"}) {
+		t.Fatalf("stops written %q, want the stop on the session's row, for its owner", g.spy.stops)
 	}
 }
 
-// On a node that stays Ready the stall is the session's own: the check-in
-// judges it as before, and the end keeps no death of the trip's read.
+// On a node that stays Ready the stall is the session's own: the interim
+// push runs and the check-in judges it as before, and the end keeps no
+// death of the trip's read. So does a node that went NotReady during the
+// session and is Ready again: on a live pod only the end's evidence counts.
 func TestNoProgressOnAHealthyNodeStillAsksTheCheckin(t *testing.T) {
-	runner, chat, _ := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: true}, CheckinResponse{Text: `{"decision":"handover","handover":"stop here"}`})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, hangLogs)
-	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripNoProgress) || res.Death != nil {
-		t.Fatalf("result = (%+v, %v), death %+v; want the check-in's handover on the no_progress trip, no death", res, err, res.Death)
-	}
-	if chat.calls != 1 {
-		t.Fatalf("check-in calls = %d, want the trip's one", chat.calls)
+	for name, flipped := range map[string]bool{"Ready throughout": false, "Ready again": true} {
+		t.Run(name, func(t *testing.T) {
+			g := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: true}, CheckinResponse{Text: `{"decision":"handover","handover":"stop here"}`})
+			if flipped {
+				cluster := newFakeClusterStore()
+				g.runner.cfg.Cluster = cluster
+				// the node goes NotReady and back after the session's start
+				time.AfterFunc(300*time.Millisecond, func() {
+					now := time.Now()
+					back := now.Add(100 * time.Millisecond)
+					cluster.AddPlatformIncidents(context.Background(), []PlatformIncident{{Key: "notready/sf-1", At: now, Until: &back, Kind: IncidentNodeNotReady, Subject: "sf-1", Node: "sf-1"}})
+				})
+			}
+			res, err := runSession(t, nil, g.runner, stallInput, nil, hangLogs)
+			if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripNoProgress) || res.Death != nil {
+				t.Fatalf("result = (%+v, %v), death %+v; want the check-in's handover on the no_progress trip, no death", res, err, res.Death)
+			}
+			if g.chat.calls != 1 || g.asks() == 0 {
+				t.Fatalf("check-in calls %d, interim push asks %d; want the trip's one check-in after its push", g.chat.calls, g.asks())
+			}
+		})
 	}
 }
 

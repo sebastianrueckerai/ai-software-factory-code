@@ -487,7 +487,7 @@ func init() {
 		CaseProviderRefused: modelStop("The model provider refused the card's last starts.",
 			"The provider turned down the first call of several starts in a row."),
 		CasePlatformFault: modelStop("The platform ended the card's last sessions.",
-			"The machines the card's sessions ran on ended several in a row, not the card's own work."),
+			"The machines the card ran on ended several sessions in a row, not the card's own work."),
 		CaseNoAnswer: modelStop("The model gave no answer to the card's last starts.",
 			"Several starts in a row ended without an answer from the model."),
 		CaseContentFilter: modelStop("The provider's content filter refused the session.",
@@ -878,18 +878,21 @@ func inARow(shape string) func(Facts) string {
 	}
 }
 
-// platformRow reads the count and the last end of PlatformEndedReason.
-var platformRow = regexp.MustCompile(`(\d+) in a row\. The last: (.+)\.$`)
+// platformRow reads the count of PlatformEndedReason.
+var platformRow = regexp.MustCompile(`^` + regexp.QuoteMeta(platformEnded) + `(\d+) in a row\.`)
 
 // platformLine names the sessions in a row the platform ended and how it
-// ended the last.
+// ended the last, the death the case's facts carry.
 func platformLine(f Facts) string {
 	m := platformRow.FindStringSubmatch(factString(f.Case, "reason"))
 	if m == nil {
 		return ""
 	}
 	n, _ := strconv.Atoi(m[1])
-	return fmt.Sprintf("The platform ended %s in a row; in the last one, %s.", plural(n, "session"), m[2])
+	if f.Death == nil {
+		return fmt.Sprintf("The platform ended %s in a row.", plural(n, "session"))
+	}
+	return fmt.Sprintf("The platform ended %s in a row; in the last one, %s.", plural(n, "session"), f.Death.Short())
 }
 
 // imageTool reads the tool card an image wait waits for and its tool.

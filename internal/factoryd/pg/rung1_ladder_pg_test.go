@@ -386,8 +386,8 @@ func TestRung1SkipsHumanCardsAndMergeApprovals(t *testing.T) {
 // rung 1 takes pods that never started.
 func TestPlatformFaultSkipsTheCheckin(t *testing.T) {
 	for reason, kind := range map[string]CaseKind{
-		PlatformEndedReason(3, DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill}): CasePlatformFault,
-		podNeverStarted + "3 sessions in a row waited for it":                          CasePodNeverStarted,
+		PlatformEndedReason(slices.Repeat([]DeathRecord{{Class: DeathPlatform, Rule: RuleGuardKill}}, 3)): CasePlatformFault,
+		podNeverStarted + "3 sessions in a row waited for it":                                             CasePodNeverStarted,
 	} {
 		g := newRungRig(t, "success")
 		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: reason}, tripAttempt{N: 1})
