@@ -742,24 +742,22 @@ func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, 
 	return string(b), err
 }
 
-// NewestPodEvent is the pod's newest event as "Reason: message", "" when it
+// NewestPodEvent is the pod's newest event as "Reason: message", its message
+// whole; among events of the newest time the first listed. "" when the pod
 // has none.
 func (k *InClusterKube) NewestPodEvent(ctx context.Context, namespace, name string) (string, error) {
 	evs, err := k.PodEvents(ctx, namespace, name)
 	if err != nil || len(evs) == 0 {
 		return "", err
 	}
-	last := evs[len(evs)-1]
-	return last.Reason + ": " + last.Message, nil
+	newest := evs[len(evs)-1].At
+	e := evs[slices.IndexFunc(evs, func(e PodEvent) bool { return e.At.Equal(newest) })]
+	return e.Reason + ": " + e.Message, nil
 }
 
-const (
-	podEventsKept    = 20
-	podEventMessageB = 200
-)
+const podEventsKept = 20
 
-// PodEvents is the pod's newest events, oldest first, each message cut to
-// podEventMessageB bytes. An event's time is its series' last observation,
+// PodEvents is the pod's newest events, oldest first, messages whole. An event's time is its series' last observation,
 // else its last, event or first timestamp.
 func (k *InClusterKube) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
 	q := url.Values{"fieldSelector": {"involvedObject.kind=Pod,involvedObject.name=" + pod}}
@@ -790,11 +788,7 @@ func (k *InClusterKube) PodEvents(ctx context.Context, namespace, pod string) ([
 			}
 			count = cmp.Or(e.Series.Count, count)
 		}
-		msg := e.Message
-		if len(msg) > podEventMessageB {
-			msg = strings.ToValidUTF8(msg[:podEventMessageB], "")
-		}
-		out = append(out, PodEvent{Reason: e.Reason, Type: e.Type, Message: msg, At: at, Count: count})
+		out = append(out, PodEvent{Reason: e.Reason, Type: e.Type, Message: e.Message, At: at, Count: count})
 	}
 	slices.SortStableFunc(out, func(a, b PodEvent) int { return a.At.Compare(b.At) })
 	return out[max(0, len(out)-podEventsKept):], nil

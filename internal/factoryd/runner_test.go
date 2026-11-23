@@ -438,7 +438,7 @@ func (k *fakeKube) NodeState(ctx context.Context, name string) (NodeState, error
 func (k *fakeKube) Nodes(ctx context.Context) ([]NodeState, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	return slices.Collect(maps.Values(k.nodeStates)), nil
+	return slices.SortedFunc(maps.Values(k.nodeStates), func(a, b NodeState) int { return strings.Compare(a.Name, b.Name) }), nil
 }
 
 func (k *fakeKube) ServicePods(ctx context.Context, namespace, selector string) ([]ServicePod, error) {

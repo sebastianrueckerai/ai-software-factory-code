@@ -1041,8 +1041,8 @@ func TestPodEventsOldestFirst(t *testing.T) {
 	if evs[0].Reason != "First" || evs[1].Reason != "Mid" || evs[2].Reason != "Late" {
 		t.Errorf("order = %s %s %s", evs[0].Reason, evs[1].Reason, evs[2].Reason)
 	}
-	if len(evs[2].Message) != 200 || evs[2].Type != "Warning" || evs[2].Count != 3 || evs[1].Count != 4 {
-		t.Errorf("late = %d bytes, %+v, mid count %d", len(evs[2].Message), evs[2], evs[1].Count)
+	if evs[2].Message != long || evs[2].Type != "Warning" || evs[2].Count != 3 || evs[1].Count != 4 {
+		t.Errorf("late = %+v, mid count %d", evs[2], evs[1].Count)
 	}
 	if !evs[1].At.Equal(time.Date(2026, 11, 12, 10, 6, 0, 0, time.UTC)) {
 		t.Errorf("mid at = %v, want the series' last observed time", evs[1].At)
@@ -1102,5 +1102,19 @@ func TestNewestPodEventStillReadsTheNewest(t *testing.T) {
 	got, err := kubeAt(t, srv).NewestPodEvent(context.Background(), "ns", "p")
 	if err != nil || got != "New: n" {
 		t.Fatalf("NewestPodEvent = %q, %v", got, err)
+	}
+}
+
+func TestNewestPodEventTakesTheFirstOfATieWhole(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"items":[{"reason":"Old","message":"o","lastTimestamp":"2026-11-12T10:01:00Z"},`+
+			`{"reason":"A","message":"`+long+`","lastTimestamp":"2026-11-12T10:09:00Z"},`+
+			`{"reason":"B","message":"b","lastTimestamp":"2026-11-12T10:09:00Z"}]}`)
+	}))
+	defer srv.Close()
+	got, err := kubeAt(t, srv).NewestPodEvent(context.Background(), "ns", "p")
+	if err != nil || got != "A: "+long {
+		t.Fatalf("NewestPodEvent = %q, %v; want the first of the tie, whole", got, err)
 	}
 }
