@@ -507,7 +507,8 @@ type Console struct {
 	// stops holds each chat thread's running turn that a member may stop
 	// (the chat-stop plan): the turn's cancel and who stopped it.
 	stops *stopGate
-	// clock is the status line's and the costs' time, which a test pins
+	// clock is the status line's, the costs' and the cards' clocks' time, which
+	// a test pins
 	clock func() time.Time
 	// refreshMu serializes token refreshes across requests: two concurrent
 	// requests presenting the same refresh token would both try to use it,
