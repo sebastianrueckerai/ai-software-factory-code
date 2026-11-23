@@ -223,7 +223,11 @@ since only a commit fixes the door.
 The platform deaths' card (source `platform_deaths`) is factoryd's own,
 filed by a pass each minute when the platform ends 3 sessions, CI jobs or
 gate pods within 24 hours, across every card, by their death records
-(class `platform`). Its title is always the same, so a filing whose card
+(class `platform`). A start of the whole cluster, every node booting
+within 10 minutes of the others by the incident log's boots, as after
+factory-off and factory-on, explains the node restarts and the pods gone
+after factoryd's restart in the lives it spans: those deaths stay free
+for their cards and count no more toward this one. Its title is always the same, so a filing whose card
 row failed takes on its open issue at the next pass, on whichever of the
 deaths' repositories or the configuration repository holds it. Otherwise
 it files on the repository of the newest death that hit a card, or on the
