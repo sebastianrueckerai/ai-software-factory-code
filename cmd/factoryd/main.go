@@ -254,22 +254,6 @@ func main() {
 		log.Fatalf("build vms: %v", err)
 	}
 	ciCollector.Deleted = buildVMs.Deleted
-	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
-		FactoryNamespace: kube.Namespace(),
-		Repos:            factoryd.CIReposOf(forgejo, store),
-		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
-		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
-		GitBaseURL:       gitBase,
-		RegistryHost:     registryHost,
-		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
-		JobTimeout:       ciJobTimeout,
-		Queue:            ciQueue,
-		Cluster:          store,
-		Kernel:           signoz,
-	}, forgejo, kube, buildVMs)
-	if err != nil {
-		log.Fatalf("ci spawner: %v", err)
-	}
 
 	temporal, err := client.Dial(client.Options{
 		HostPort:  daemonURL("TEMPORAL_ADDRESS"),
@@ -310,6 +294,23 @@ func main() {
 	docsToken := secrets["FORGEJO_DOCS_TOKEN"]
 	scrub := redact.New(bootSecrets...)
 	runner.Scrub = scrub
+	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
+		FactoryNamespace: kube.Namespace(),
+		Repos:            factoryd.CIReposOf(forgejo, store),
+		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
+		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
+		GitBaseURL:       gitBase,
+		RegistryHost:     registryHost,
+		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
+		JobTimeout:       ciJobTimeout,
+		Queue:            ciQueue,
+		Cluster:          store,
+		Kernel:           signoz,
+		Scrub:            scrub,
+	}, forgejo, kube, buildVMs)
+	if err != nil {
+		log.Fatalf("ci spawner: %v", err)
+	}
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,

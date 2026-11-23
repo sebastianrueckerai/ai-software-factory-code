@@ -19,6 +19,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // scriptedKernel answers each call, counted from 1: kills names its
@@ -630,6 +631,39 @@ func (g deathRig) detach(t *testing.T, body string) LiveSession {
 		t.Fatalf("live row = %+v, want the pod's place", first)
 	}
 	return first
+}
+
+// failingCluster is a cluster store whose every read and write fails with
+// err.
+type failingCluster struct {
+	*fakeClusterStore
+	err error
+}
+
+func (c failingCluster) PlatformIncidents(context.Context, time.Time, time.Time, int) ([]PlatformIncident, error) {
+	return nil, c.err
+}
+
+func (c failingCluster) PodIncidents(context.Context, string) ([]PlatformIncident, error) {
+	return nil, c.err
+}
+
+func (c failingCluster) PutPodDeath(context.Context, PodDeath) error { return c.err }
+
+// A store error can quote a secret the factory holds: the death's reads log
+// it through the runner's scrubber, as the record's write does.
+func TestTheDeathReadLogsItsStoreErrorsScrubbed(t *testing.T) {
+	const secret = "pg-password-4f9e2a7c"
+	g := newDeathRig(t, "t5x", func(p *fakePod) {
+		p.containers = []ContainerState{{Name: "worker", State: "terminated", Reason: "Error", ExitCode: 1}}
+	})
+	g.r.Scrub = redact.New(secret)
+	g.r.cfg.Cluster = failingCluster{fakeClusterStore: g.cluster, err: errors.New("connect as factoryd with " + secret + ": refused")}
+	logged := captureLog(t)
+	g.run(t, modelCall)
+	if out := logged.String(); strings.Contains(out, secret) || !strings.Contains(out, "read the incidents of its life") {
+		t.Fatalf("log:\n%s\nwant the store's errors without the secret", out)
+	}
 }
 
 // A factoryd that detached while the pod was still Pending left the row

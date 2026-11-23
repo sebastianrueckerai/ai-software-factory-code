@@ -1192,7 +1192,7 @@ func (r *Runner) runnerPod(ctx context.Context, t Task, spec map[string]any, rea
 	if started.IsZero() {
 		started = created
 	}
-	death := deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, margin: deathMargin}.read(ctx,
+	death := deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, margin: deathMargin, scrub: r.Scrub}.read(ctx,
 		deathInput{ns: ns, pod: podName, uid: pod.UID, node: pod.Node, started: started, ended: time.Now()})
 	// Lines speak to a session's successor; a gate pod has none
 	death.Lines = nil

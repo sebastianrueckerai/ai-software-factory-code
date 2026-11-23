@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -49,6 +50,8 @@ type CIConfig struct {
 	// Cluster records none.
 	Cluster ClusterStore
 	Kernel  KernelSource
+	// Scrub scrubs the errors the death records' reads and writes log.
+	Scrub *redact.Scrubber
 }
 
 func (c *CIConfig) setDefaults() {
@@ -202,7 +205,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, deaths: deathReader{kube: kube, cluster: cfg.Cluster, kernel: cfg.Kernel, margin: ciDeathMargin}, deathBound: ciDeathBound, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, pullFails: map[int64]pullFail{}, pullSeen: map[string]time.Time{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, deaths: deathReader{kube: kube, cluster: cfg.Cluster, kernel: cfg.Kernel, margin: ciDeathMargin, scrub: cfg.Scrub}, deathBound: ciDeathBound, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, pullFails: map[int64]pullFail{}, pullSeen: map[string]time.Time{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -953,7 +956,7 @@ func (s *CISpawner) recordDeath(ctx context.Context, ns, phase string, gone bool
 	// Lines speak to a session's successor; a runner pod has none
 	death.Started, death.Lines = pod.StartedAt, nil
 	if err := s.deaths.cluster.PutPodDeath(ctx, PodDeath{Kind: "ci", Runner: runner, Record: death}); err != nil {
-		log.Printf("ci spawner: %s: store the death of runner %s: %v", ns, runner, err)
+		log.Printf("ci spawner: %s: store the death of runner %s: %s", ns, runner, s.deaths.scrub.String(err.Error()))
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"log"
 	"slices"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // deathReader reads how a pod ended: the pod, its node, its kills in the
@@ -23,6 +25,8 @@ type deathReader struct {
 	// margin is the time the reads leave before their context's deadline:
 	// deathMargin for the rest of a session's or a gate's end
 	margin time.Duration
+	// scrub scrubs what the reads log
+	scrub *redact.Scrubber
 }
 
 // deathInput names the pod and what factoryd knows of it: its UID, node and
@@ -58,7 +62,7 @@ const (
 
 // deathOf reads the death of a session's pod.
 func (r *Runner) deathOf(ctx context.Context, in deathInput) DeathRecord {
-	return deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, wait: r.deathWait, margin: deathMargin}.read(ctx, in)
+	return deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, wait: r.deathWait, margin: deathMargin, scrub: r.Scrub}.read(ctx, in)
 }
 
 // putDeath stores a session's death record; a failed write is logged, the
@@ -70,6 +74,12 @@ func (r *Runner) putDeath(ctx context.Context, taskID, sessionID string, rec Dea
 	if err := r.cfg.Cluster.PutPodDeath(ctx, PodDeath{Kind: "session", TaskID: taskID, SessionID: sessionID, Record: rec}); err != nil {
 		log.Printf("task %s: store the death of session %s: %s", taskID, sessionID, r.Scrub.String(err.Error()))
 	}
+}
+
+// logf logs a line of the reads through the scrubber: a store's or a
+// source's error can quote a secret.
+func (d deathReader) logf(format string, a ...any) {
+	log.Print(d.scrub.String(fmt.Sprintf(format, a...)))
 }
 
 func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
@@ -88,7 +98,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	case errors.Is(err, ErrNotFound):
 		f.PodGone = true
 	case err != nil:
-		log.Printf("death of pod %s/%s: read the pod: %v", in.ns, in.pod, err)
+		d.logf("death of pod %s/%s: read the pod: %v", in.ns, in.pod, err)
 	}
 	f.Pod = pod
 	if in.uid != "" {
@@ -105,13 +115,13 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		case errors.Is(err, ErrNotFound):
 			f.NodeGone = true
 		default:
-			log.Printf("death of pod %s/%s: read node %s: %v", in.ns, in.pod, f.Pod.Node, err)
+			d.logf("death of pod %s/%s: read node %s: %v", in.ns, in.pod, f.Pod.Node, err)
 		}
 	}
 	var life []PlatformIncident
 	if d.cluster != nil {
 		if life, err = d.cluster.PlatformIncidents(ctx, in.started, in.ended, 0); err != nil {
-			log.Printf("death of pod %s/%s: read the incidents of its life: %v", in.ns, in.pod, err)
+			d.logf("death of pod %s/%s: read the incidents of its life: %v", in.ns, in.pod, err)
 		}
 	}
 	// a flip of the node counts in the session's last minutes only: an
@@ -137,7 +147,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		}
 		incidents, err := d.cluster.PodIncidents(ctx, f.Pod.UID)
 		if err != nil {
-			log.Printf("death of pod %s/%s: read its incidents: %v", in.ns, in.pod, err)
+			d.logf("death of pod %s/%s: read its incidents: %v", in.ns, in.pod, err)
 		}
 		for _, p := range incidents {
 			if k, ok := killOfIncident(p); ok {
@@ -155,7 +165,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		defer cancel()
 		lines, err := d.kernel.KernelLines(kctx, in.started.Add(-time.Minute), time.Now(), f.Pod.UID)
 		if err != nil {
-			log.Printf("death of pod %s/%s: read the kernel lines: %v", in.ns, in.pod, err)
+			d.logf("death of pod %s/%s: read the kernel lines: %v", in.ns, in.pod, err)
 			return false
 		}
 		for _, k := range lines {
@@ -192,7 +202,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	}
 	events, err := d.kube.PodEvents(ctx, in.ns, in.pod)
 	if err != nil {
-		log.Printf("death of pod %s/%s: read its events: %v", in.ns, in.pod, err)
+		d.logf("death of pod %s/%s: read its events: %v", in.ns, in.pod, err)
 	}
 	for _, e := range events {
 		e.Message = ""
@@ -226,7 +236,7 @@ func (d deathReader) restarts(ctx context.Context, in deathInput, life []Platfor
 		if p.PodUID != "" {
 			own, err := d.cluster.PodIncidents(ctx, p.PodUID)
 			if err != nil {
-				log.Printf("death of pod %s/%s: read the incidents of %s's pod: %v", in.ns, in.pod, p.Subject, err)
+				d.logf("death of pod %s/%s: read the incidents of %s's pod: %v", in.ns, in.pod, p.Subject, err)
 			}
 			for _, q := range own {
 				if k, ok := killOfIncident(q); ok && k.At.Sub(p.At).Abs() <= restartKill {

@@ -25,6 +25,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -466,6 +467,28 @@ func TestCISpawnerRecordsAPlatformEnd(t *testing.T) {
 				t.Fatalf("record = %+v, kernel asked for %q; want the pod's UID %s and its start %s", rec, kernel.uids, uid, started)
 			}
 		})
+	}
+}
+
+// A runner pod's death whose write fails logs the store's error through
+// the spawner's scrubber: it can quote a secret the factory holds.
+func TestCISpawnerLogsItsStoreErrorScrubbed(t *testing.T) {
+	const secret = "pg-password-4f9e2a7c"
+	kube := newFakeKube()
+	kube.nodeStates = map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1", Ready: true}}
+	hub := &ciHub{jobs: []CIJob{{ID: 15, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.poll(context.Background())
+	ns := "factory-agents-ci-15"
+	p := kube.pods[ns+"/"+ciPodName]
+	p.phase, p.uid, p.node, p.started = "Failed", "0b6f2f6e-7c1a-4a43-9a51-2f2d2b4e8c11", "sf-1", time.Now().Add(-time.Minute)
+	p.containers = []ContainerState{{Name: "runner", State: "terminated", Reason: "Error", ExitCode: 137}}
+	spawner.deaths.cluster = failingCluster{fakeClusterStore: newFakeClusterStore(), err: errors.New("connect as factoryd with " + secret + ": refused")}
+	spawner.deaths.scrub = redact.New(secret)
+	logged := captureLog(t)
+	spawner.reconcile(context.Background(), codeCIRepos)
+	if out := logged.String(); strings.Contains(out, secret) || !strings.Contains(out, "store the death of runner") {
+		t.Fatalf("log:\n%s\nwant the store's error without the secret", out)
 	}
 }
 
