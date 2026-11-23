@@ -33,16 +33,19 @@ type LiveSession struct {
 	// row an older factoryd wrote.
 	TimeAdded *time.Duration
 	BudgetEUR *float64
+	// PodUID, Node and BootID name the pod, the node it sits on and that
+	// node's boot at the session's start; empty where they were not read.
+	PodUID, Node, BootID string
 }
 
 func (s *PGStore) PutLiveSession(ctx context.Context, l LiveSession) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur, pod_uid, node, boot_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (task_id) DO UPDATE SET session_id = EXCLUDED.session_id, namespace = EXCLUDED.namespace, pod = EXCLUDED.pod,
 		message_token = EXCLUDED.message_token, started_at = EXCLUDED.started_at, deadline = EXCLUDED.deadline, lines = EXCLUDED.lines,
 		spent_at_start = EXCLUDED.spent_at_start, owner = EXCLUDED.owner, activity = EXCLUDED.activity, time_added_ns = EXCLUDED.time_added_ns,
-		budget_eur = EXCLUDED.budget_eur`,
-		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart, l.Owner, l.Activity, l.TimeAdded, l.BudgetEUR)
+		budget_eur = EXCLUDED.budget_eur, pod_uid = EXCLUDED.pod_uid, node = EXCLUDED.node, boot_id = EXCLUDED.boot_id`,
+		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart, l.Owner, l.Activity, l.TimeAdded, l.BudgetEUR, l.PodUID, l.Node, l.BootID)
 	return err
 }
 
@@ -59,8 +62,8 @@ func (s *PGStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner stri
 
 func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	var l LiveSession
-	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur
-		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart, &l.Owner, &l.Activity, &l.TimeAdded, &l.BudgetEUR)
+	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner, activity, time_added_ns, budget_eur, pod_uid, node, boot_id
+		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart, &l.Owner, &l.Activity, &l.TimeAdded, &l.BudgetEUR, &l.PodUID, &l.Node, &l.BootID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LiveSession{}, false, nil
 	}
