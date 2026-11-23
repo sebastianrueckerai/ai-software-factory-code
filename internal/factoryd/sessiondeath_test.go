@@ -587,7 +587,9 @@ func TestReattachToAPodFactorydWasStopping(t *testing.T) {
 // A node that went NotReady at the session's end is the platform's, though
 // it answers again: the incident log holds the flip, and it outranks the
 // pod's own memory kill. A flip earlier than the end's last 15 minutes, of
-// another node, or before the session leaves the kill the cause.
+// another node, or before the session leaves the kill the cause, and so
+// does any flip the node came back from when the read is of a live pod or
+// of one factoryd stopped: there the end's evidence alone counts.
 func TestANodeNotReadyDuringTheSessionIsPlatform(t *testing.T) {
 	ctx := context.Background()
 	kube, in := deadPod()
@@ -596,21 +598,26 @@ func TestANodeNotReadyDuringTheSessionIsPlatform(t *testing.T) {
 		return []KernelKill{{Source: "kernel", Node: "sf-1", PodUID: deathUID, Constraint: "CONSTRAINT_MEMCG", At: in.ended.Add(-time.Minute), Seq: 3}}
 	}}
 	for name, tc := range map[string]struct {
-		node  string
-		at    time.Time
-		class DeathClass
-		rule  DeathRule
+		node          string
+		at            time.Time
+		live, stopped bool
+		class         DeathClass
+		rule          DeathRule
 	}{
-		"its node 5 minutes before the end":  {"sf-1", in.ended.Add(-5 * time.Minute), DeathPlatform, RuleNodeNotReady},
-		"its node 40 minutes before the end": {"sf-1", in.ended.Add(-40 * time.Minute), DeathOwnLimit, RuleMemoryLimit},
-		"another node at the end":            {"sf-2", in.ended.Add(-5 * time.Minute), DeathOwnLimit, RuleMemoryLimit},
-		"its node before the session":        {"sf-1", in.started.Add(-time.Hour), DeathOwnLimit, RuleMemoryLimit},
+		"its node 5 minutes before the end":                    {"sf-1", in.ended.Add(-5 * time.Minute), false, false, DeathPlatform, RuleNodeNotReady},
+		"its node 40 minutes before the end":                   {"sf-1", in.ended.Add(-40 * time.Minute), false, false, DeathOwnLimit, RuleMemoryLimit},
+		"another node at the end":                              {"sf-2", in.ended.Add(-5 * time.Minute), false, false, DeathOwnLimit, RuleMemoryLimit},
+		"its node before the session":                          {"sf-1", in.started.Add(-time.Hour), false, false, DeathOwnLimit, RuleMemoryLimit},
+		"its node 5 minutes before a live read":                {"sf-1", in.ended.Add(-5 * time.Minute), true, false, DeathOwnLimit, RuleMemoryLimit},
+		"its node 5 minutes before the end of factoryd's stop": {"sf-1", in.ended.Add(-5 * time.Minute), false, true, DeathOwnLimit, RuleMemoryLimit},
 	} {
 		cluster := newFakeClusterStore()
 		if _, err := cluster.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "notready/" + tc.node, At: tc.at, Kind: IncidentNodeNotReady, Subject: tc.node, Node: tc.node}}); err != nil {
 			t.Fatal(err)
 		}
-		if r := (deathReader{kube: kube, cluster: cluster, kernel: memcg}).read(ctx, in); r.Class != tc.class || r.Rule != tc.rule {
+		read := in
+		read.live, read.stoppedByFactory = tc.live, tc.stopped
+		if r := (deathReader{kube: kube, cluster: cluster, kernel: memcg}).read(ctx, read); r.Class != tc.class || r.Rule != tc.rule {
 			t.Errorf("%s: %s %s, want %s %s", name, r.Class, r.Rule, tc.class, tc.rule)
 		}
 	}

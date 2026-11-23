@@ -3258,14 +3258,15 @@ func TestWorkflowThreePlatformDeathsOpenACase(t *testing.T) {
 	}
 }
 
-// A check-in that ran in a session the platform then ended is recorded with
-// its verdicts and its handover, though the platform's end wins: the next
-// session is told the death's line alone.
+// A check-in that ran during a session the platform then ended is recorded
+// with its verdicts and its handover, though the platform's end wins: the
+// next session gets no note of the check-in, which a session's own end
+// would hand on, and is told the death's line alone.
 func TestWorkflowPlatformDeathKeepsItsCheckin(t *testing.T) {
 	died := platformDeath("s1")
 	verdicts := map[string]CheckVerdict{"the test is red": {State: CheckConfirmed}}
 	died.CheckIn = &CheckInOutcome{Decision: CheckHandover, Handover: "finish the migration", Verdicts: verdicts,
-		Record: &CheckInRecord{Moment: CheckInDead, Session: "s1"}}
+		Record: &CheckInRecord{Moment: CheckInSession, Session: "s1"}}
 	h := newWorkflowHarness(t)
 	deadSessions(h, died, pushed("s2", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})

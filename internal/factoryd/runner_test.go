@@ -1917,13 +1917,24 @@ func TestNoProgressOnALostNodeEndsWithoutACheckin(t *testing.T) {
 }
 
 // On a node that stays Ready the stall is the session's own: the interim
-// push runs and the check-in judges it as before, and the end keeps no
-// death of the trip's read. So does a node that went NotReady during the
-// session and is Ready again: on a live pod only the end's evidence counts.
+// push runs and the check-in judges it as before, its handover stops the
+// pod, and the worker exits without a result, a death of no cluster cause
+// that keeps the handover. So does a node that went NotReady during the
+// session and is Ready again: the trip's read of the live pod and the
+// read after factoryd's own stop count the end's evidence alone.
 func TestNoProgressOnAHealthyNodeStillAsksTheCheckin(t *testing.T) {
 	for name, flipped := range map[string]bool{"Ready throughout": false, "Ready again": true} {
 		t.Run(name, func(t *testing.T) {
 			g := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: true}, CheckinResponse{Text: `{"decision":"handover","handover":"stop here"}`})
+			// the stopped worker ends on its SIGTERM, and the log's follower
+			// reads the exited pod once more, a second on
+			g.kube.keepDeleted, g.runner.stopWait = true, 5*time.Second
+			placed := g.kube.onCreatePod
+			g.kube.onCreatePod = func() {
+				placed()
+				g.kube.podOrder[len(g.kube.podOrder)-1].containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+					{Name: "worker", State: "terminated", Reason: "Error", ExitCode: 143}}
+			}
 			if flipped {
 				cluster := newFakeClusterStore()
 				g.runner.cfg.Cluster = cluster
@@ -1934,9 +1945,10 @@ func TestNoProgressOnAHealthyNodeStillAsksTheCheckin(t *testing.T) {
 					cluster.AddPlatformIncidents(context.Background(), []PlatformIncident{{Key: "notready/sf-1", At: now, Until: &back, Kind: IncidentNodeNotReady, Subject: "sf-1", Node: "sf-1"}})
 				})
 			}
-			res, err := runSession(t, nil, g.runner, stallInput, nil, hangLogs)
-			if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripNoProgress) || res.Death != nil {
-				t.Fatalf("result = (%+v, %v), death %+v; want the check-in's handover on the no_progress trip, no death", res, err, res.Death)
+			res, err := runSession(t, nil, g.runner, stallInput, nil, sigtermLogs)
+			if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripNoProgress) || res.CheckIn == nil || res.CheckIn.Handover != "stop here" ||
+				res.Death == nil || res.Death.Class != DeathUnknown {
+				t.Fatalf("result = (%+v, %v), death %+v; want the check-in's handover on the no_progress trip, of no cluster cause", res, err, res.Death)
 			}
 			if g.chat.calls != 1 || g.asks() == 0 {
 				t.Fatalf("check-in calls %d, interim push asks %d; want the trip's one check-in after its push", g.chat.calls, g.asks())
