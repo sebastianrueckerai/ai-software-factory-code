@@ -632,6 +632,30 @@ func (g deathRig) detach(t *testing.T, body string) LiveSession {
 	return first
 }
 
+// A factoryd that detached while the pod was still Pending left the row
+// without the pod's place: the reattach writes it once the pod runs, so a
+// later end can read the node's boot.
+func TestReattachRecordsThePlaceTheRowLacks(t *testing.T) {
+	g := newDeathRig(t, "t2", nil)
+	first := g.detach(t, modelCall+cutLogs+resultLine(false, "the model call failed")+"\n")
+	placeless := first
+	placeless.PodUID, placeless.Node, placeless.BootID = "", "", ""
+	g.store.liveSessions["t2"] = placeless
+	spy := &placeSpy{Store: g.store}
+	g.r.store = spy
+	res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if err != nil || res.SessionID != first.SessionID {
+		t.Fatalf("result = (%+v, %v), want the reattached session's end", res, err)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.rows) != 1 || spy.rows[0].PodUID != deathUID || spy.rows[0].Node != "sf-1" || spy.rows[0].BootID != "b-1" {
+		t.Fatalf("rows after the place's writes %+v, want one naming %s on sf-1 at boot b-1", spy.rows, deathUID)
+	}
+}
+
 // A factoryd that died inside its own stop leaves the pod deleting: the
 // next one reattaches, reads the worker's stopped result, and the stop the
 // row records is factoryd's own, so the deletion is no platform death.

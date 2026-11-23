@@ -889,20 +889,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		return out, nil
 	}
-	// the pod's UID and node are known once it is scheduled
-	if live == nil {
-		row.PodUID, row.Node = pod.UID, pod.Node
-		if pod.Node != "" {
-			if n, err := r.kube.NodeState(ctx, pod.Node); err != nil {
-				log.Printf("task %s: session %s: read the boot of node %s: %v", t.ID, s.id, pod.Node, err)
+	// the pod's UID and node are known once it is scheduled: a row a
+	// factoryd that detached from a Pending pod left names neither
+	if uid == "" {
+		uid, node = pod.UID, pod.Node
+		if node != "" {
+			if n, err := r.kube.NodeState(ctx, node); err != nil {
+				log.Printf("task %s: session %s: read the boot of node %s: %v", t.ID, s.id, node, err)
 			} else {
-				row.BootID = n.BootID
+				boot = n.BootID
 			}
 		}
-		if err := r.store.SetLiveSessionPod(ctx, t.ID, s.owner, row.PodUID, row.Node, row.BootID); err != nil {
+		if err := r.store.SetLiveSessionPod(ctx, t.ID, s.owner, uid, node, boot); err != nil {
 			log.Printf("task %s: session %s: record the pod's place: %s", t.ID, s.id, r.scrub(err.Error()))
 		}
-		uid, node, boot = row.PodUID, row.Node, row.BootID
+		row.PodUID, row.Node, row.BootID = uid, node, boot
 	}
 	progress(0)
 
