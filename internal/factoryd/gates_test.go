@@ -3106,6 +3106,50 @@ func TestGateReproductionThatCannotStartEscalates(t *testing.T) {
 	}
 }
 
+// A reproduction pod whose log ends before its report fails the gate with
+// the pod's end: the platform's when its death says so, today's words
+// otherwise; the death is stored as a gate's.
+func TestAPlatformEndedReproPodSaysSo(t *testing.T) {
+	const uid = "7a9e2c4b-1d3f-4e5a-b6c7-d8e9f0a1b2c3"
+	for name, tc := range map[string]struct {
+		kill bool
+		want string
+	}{
+		"the memory guard's kill": {true, "the platform ended the reproduction pod (the node's memory guard killed the pod) before it reported"},
+		"no platform death":       {false, "the reproduction pod exited without a report"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := gateTask
+			task.ReproCommand = "go test ./internal/x -run TestY"
+			kube := newFakeKube()
+			kube.onCreatePod = func() { kube.podOrder[len(kube.podOrder)-1].uid = uid }
+			r, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+			cluster := newFakeClusterStore()
+			kernel := &scriptedKernel{}
+			if tc.kill {
+				kernel.kills = func(int) []KernelKill {
+					return []KernelKill{{Node: "sf-1", PodUID: uid, Source: "guard", At: time.Now()}}
+				}
+			}
+			r.cfg.Cluster, r.cfg.Kernel = cluster, kernel
+			var err error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
+			}()
+			scriptReproPods(kube, "agent-worker: fetching")
+			<-done
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if d, ok := cluster.deaths["gate/"+uid]; !ok || d.Kind != "gate" || d.TaskID != "t1" || (d.Record.Class == DeathPlatform) != tc.kill {
+				t.Fatalf("stored deaths = %+v; want t1's gate death under gate/%s, platform only with the kill", cluster.deaths, uid)
+			}
+		})
+	}
+}
+
 // scriptReproPods answers the gate's two pods in order, each once it
 // exists: the run at the base, then the run at the head.
 func scriptReproPods(kube *fakeKube, bodies ...string) {

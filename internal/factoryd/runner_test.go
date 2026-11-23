@@ -118,6 +118,7 @@ type fakePod struct {
 	conditions      []PodCondition
 	containers      []ContainerState // init containers first, as PodDiagnosis reads them
 	uid, node       string           // metadata.uid, spec.nodeName
+	started         time.Time        // status.startTime
 }
 
 func newFakeKube() *fakeKube {
@@ -397,7 +398,7 @@ func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (Po
 		return PodDiagnosis{}, ErrNotFound
 	}
 	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions, Containers: p.containers,
-		UID: p.uid, Node: p.node, Deleting: p.deleted}, nil
+		UID: p.uid, Node: p.node, StartedAt: p.started, Deleting: p.deleted}, nil
 }
 
 // PodLogTail serves the scripted body's last lines.

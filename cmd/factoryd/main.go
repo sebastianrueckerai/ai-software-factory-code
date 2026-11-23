@@ -264,6 +264,8 @@ func main() {
 		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
 		JobTimeout:       ciJobTimeout,
 		Queue:            ciQueue,
+		Cluster:          store,
+		Kernel:           signoz,
 	}, forgejo, kube, buildVMs)
 	if err != nil {
 		log.Fatalf("ci spawner: %v", err)

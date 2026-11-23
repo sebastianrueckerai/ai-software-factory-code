@@ -94,7 +94,7 @@ type prForgejo struct {
 	runsBody   string            // GET /actions/runs answers 500 with this body when set
 	jobLists   [][]ActionJob     // GET /actions/runs/{id}/jobs, served in order, the last repeating
 	jobGets    int               // the jobs cursor
-	jobLogs    map[string]string // "job/attempt" -> GET /actions/jobs/{id}/logs, as a suffix Range reads it
+	jobLogs    map[string]string // "job/attempt" -> GET /actions/jobs/{id}/logs, its suffix when a Range asks one
 	rerunCode  int               // POST /actions/jobs/{id}/rerun answers this status; 200 when zero
 	rerunBody  string            // the rerun's answer body
 	wholeLogs  bool              // the log is read whole, with no Range
@@ -355,7 +355,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				w.WriteHeader(code)
 				return
 			}
-			io.WriteString(w, f.jobLogs[key])
+			body := f.jobLogs[key]
+			if n, err := strconv.Atoi(strings.TrimPrefix(r.Header.Get("Range"), "bytes=-")); err == nil && n < len(body) {
+				body = body[len(body)-n:]
+			}
+			io.WriteString(w, body)
 		case r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
 			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun"), 10, 64)
 			f.reruns = append(f.reruns, id)
@@ -4707,6 +4711,152 @@ func TestWaitChecksScrubsForgejoErrorsInItsFindings(t *testing.T) {
 		if res.State != ChecksFailure || !strings.Contains(text, "killed") || strings.Contains(text, "pass@") || strings.Contains(text, "abcdefghijklmnop") {
 			t.Fatalf("%s: findings = %q, want the kill named and both secrets masked", name, text)
 		}
+	}
+}
+
+func TestRunnerOfLog(t *testing.T) {
+	line := "ci-job-42(version:v12.7.3) received task 7 of job test, be triggered by event: push"
+	for log, want := range map[string]string{
+		line: "ci-job-42",
+		line + "\ngo test ./...\nsignal: killed\n":                                                       "ci-job-42",
+		"2026-11-23T10:00:00.1234567Z " + line + "\r\n" + "2026-11-23T10:00:01.0000000Z go test ./...\n": "ci-job-42",
+		"⚙️ [runner]: " + line + "\n":                                                                    "ci-job-42",
+		"a setup line\n" + line + "\n":                                                                   "ci-job-42",
+		strings.Repeat("a setup line\n", 20) + line + "\n":                                               "",
+		"    " + line + "\n":                                                                             "",
+		"go test ./...\nsignal: killed\n":                                                                "",
+		"":                                                                                               "",
+	} {
+		if got := runnerOfLog([]byte(log)); got != want {
+			t.Errorf("runnerOfLog(%q) = %q, want %q", log, got, want)
+		}
+	}
+}
+
+// openedBy is a job log whose opening line, as forgejo-runner writes it,
+// names runner, before body.
+func openedBy(runner, body string) string {
+	return "2026-11-23T10:00:00.0000000Z " + runner + "(version:v12.7.3) received task 7 of job test, be triggered by event: pull_request\n" + body
+}
+
+// killedDeaths gives r a cluster store holding the death of each runner.
+func killedDeaths(r *Runner, records map[string]DeathRecord) {
+	cluster := newFakeClusterStore()
+	for runner, rec := range records {
+		cluster.PutPodDeath(context.Background(), PodDeath{Kind: "ci", Runner: runner, Record: rec})
+	}
+	r.cfg.Cluster = cluster
+}
+
+var guardDeath = DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, At: time.Date(2026, 11, 23, 10, 5, 0, 0, time.UTC)}
+
+// A killed job whose pod the platform ended is re-run at attempts 1 and 2,
+// each with the platform's note; at attempt 3 it is red, its note saying
+// no further re-run follows. A red job with no kill marker is not re-run
+// though the platform ended its pod.
+func TestWaitChecksRerunsAPlatformKillTwice(t *testing.T) {
+	r, fj, objects := killedRig(t, []string{killedFail},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "waiting", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "running", Attempt: 3}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 3}})
+	for attempt := 1; attempt <= 3; attempt++ {
+		fj.jobLogs[fmt.Sprintf("11/%d", attempt)] = openedBy(fmt.Sprintf("ci-job-%d", 20+attempt), "go vet ./...\nsignal: killed\n")
+	}
+	killedDeaths(r, map[string]DeathRecord{"ci-job-21": guardDeath, "ci-job-22": guardDeath, "ci-job-23": guardDeath})
+	logs := captureLog(t)
+	res := waitChecksOf(t, r)
+	again := `job "test" of CI run 7: the platform ended its pod again (the node's memory guard killed the pod) at attempt 3: no further re-run follows`
+	if res.State != ChecksFailure || len(res.Findings) != 2 || res.Findings[1] != again {
+		t.Fatalf("result = %+v, want failure ending in %q", res, again)
+	}
+	if !reflect.DeepEqual(fj.reruns, []int64{11, 11}) {
+		t.Fatalf("rerun POSTs = %v, want [11 11]: attempts 1 and 2", fj.reruns)
+	}
+	note := `job "test" of CI run 7: the platform ended its pod (the node's memory guard killed the pod), so a re-run follows`
+	if n := strings.Count(logs.String(), note); n != 2 {
+		t.Fatalf("the platform's note logged %d times, want 2:\n%s", n, logs)
+	}
+	want := []any{map[string]any{"job": "test", "run": 7.0, "attempt": 2.0}, map[string]any{"job": "test", "run": 7.0, "attempt": 3.0}}
+	if got := checksDetail(t, objects)["reran"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("detail reran = %v, want %v", got, want)
+	}
+
+	r, fj, _ = killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}})
+	fj.jobLogs["11/1"] = openedBy("ci-job-21", "--- FAIL: TestX\nFAIL\n")
+	killedDeaths(r, map[string]DeathRecord{"ci-job-21": guardDeath})
+	if res := waitChecksOf(t, r); res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 1 {
+		t.Fatalf("a test failure: result = %+v, reruns = %v, want the plain finding and no re-run", res, fj.reruns)
+	}
+}
+
+// A job killed by its own pod's limit is not re-run, and its note names
+// the limit.
+func TestWaitChecksNeverRerunsAnOwnLimitKill(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rec  DeathRecord
+		want string
+	}{
+		"memory": {DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Limit: "5Gi"},
+			`job "test" of CI run 7 was killed (signal: killed): the pod reached its memory limit, which is the job's own use, so no re-run follows`},
+		"storage": {DeathRecord{Class: DeathOwnLimit, Rule: RuleStorageLimit, Resource: "tmp", Limit: "4Gi"},
+			`job "test" of CI run 7 was killed (signal: killed): the pod passed its storage limit, which is the job's own use, so no re-run follows`},
+	} {
+		r, fj, _ := killedRig(t, []string{killedFail},
+			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
+		fj.jobLogs["11/1"] = openedBy("ci-job-21", "go vet ./...\nsignal: killed\n")
+		fj.jobLogs["11/2"] = "--- FAIL: TestX\nFAIL\n"
+		killedDeaths(r, map[string]DeathRecord{"ci-job-21": tc.rec})
+		res := waitChecksOf(t, r)
+		if res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 2 || res.Findings[1] != tc.want {
+			t.Fatalf("%s: result = %+v, reruns = %v, want failure ending in %q and no re-run", name, res, fj.reruns, tc.want)
+		}
+	}
+}
+
+// A killed job whose runner has no record, or one of class unknown, keeps
+// the one re-run: killed again at attempt 2, it is red with today's note.
+func TestWaitChecksWithoutARecordKeepsTheOneRerun(t *testing.T) {
+	unknown := DeathRecord{Class: DeathUnknown, Rule: RuleNone}
+	for name, records := range map[string]map[string]DeathRecord{
+		"no record":                 {},
+		"another runner's record":   {"ci-job-9": guardDeath},
+		"a record of class unknown": {"ci-job-21": unknown, "ci-job-22": unknown},
+	} {
+		r, fj, _ := killedRig(t, []string{killedFail},
+			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+			[]ActionJob{{ID: 11, Name: "test", Status: "waiting", Attempt: 1}},
+			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
+		fj.jobLogs["11/1"] = openedBy("ci-job-21", "go vet ./...\nsignal: killed\n")
+		fj.jobLogs["11/2"] = openedBy("ci-job-22", "go vet ./...\nsignal: killed\n")
+		killedDeaths(r, records)
+		res := waitChecksOf(t, r)
+		again := `job "test" of CI run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`
+		if res.State != ChecksFailure || len(res.Findings) != 2 || res.Findings[1] != again || !reflect.DeepEqual(fj.reruns, []int64{11}) {
+			t.Fatalf("%s: result = %+v, reruns = %v, want failure ending in %q after exactly one re-run", name, res, fj.reruns, again)
+		}
+	}
+}
+
+// A log longer than the tail the gate reads holds its opening line at its
+// head only: the gate reads the head for the runner, and the platform's
+// record decides the re-run.
+func TestWaitChecksFindsTheRunnerAtTheHeadOfALongLog(t *testing.T) {
+	r, fj, _ := killedRig(t, []string{killedFail, killedFail, killedOK},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "running", Attempt: 2}})
+	fj.jobLogs["11/1"] = openedBy("ci-job-21", strings.Repeat("ok  \tpkg/a\t1.2s\n", mainLogRead/16+1)+"signal: killed\n")
+	fj.wholeLogs = true
+	killedDeaths(r, map[string]DeathRecord{"ci-job-21": guardDeath})
+	logs := captureLog(t)
+	if res := waitChecksOf(t, r); res.State != ChecksSuccess || !reflect.DeepEqual(fj.reruns, []int64{11}) {
+		t.Fatalf("result = %+v, reruns = %v, want success after one re-run", res, fj.reruns)
+	}
+	note := `job "test" of CI run 7: the platform ended its pod (the node's memory guard killed the pod), so a re-run follows`
+	if !strings.Contains(logs.String(), note) || !slices.Equal(fj.logGets, []string{"11/1", "11/1"}) {
+		t.Fatalf("log reads %v, log:\n%s\nwant the tail and the head read, and the platform's note", fj.logGets, logs)
 	}
 }
 

@@ -1,6 +1,8 @@
 package factoryd
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +32,33 @@ func killMarker(log []byte) string {
 }
 
 func killedBySignal(log []byte) bool { return killMarker(log) != "" }
+
+// ciPlatformReruns bounds the re-runs of a killed job whose pod the
+// platform ended: each attempt up to it is re-run.
+const ciPlatformReruns = 2
+
+// runnerOpening matches the line forgejo-runner opens a job's log with:
+// "<runner>(version:<v>) received task <n> of job <job>, ...".
+var runnerOpening = regexp.MustCompile(`^(?:` + regexp.QuoteMeta(runnerLogPrefix) + ` )?([^\s(]+)\(version:[^)]*\) received task `)
+
+// openingLines is how many of a job log's first lines may hold its
+// opening line; logHeadRead bounds the read of a log's head for them.
+const (
+	openingLines = 20
+	logHeadRead  = 8 << 10
+)
+
+// runnerOfLog is the runner a job log's opening line names, "" when its
+// first lines hold none.
+func runnerOfLog(log []byte) string {
+	lines := strings.SplitN(string(log), "\n", openingLines+1)
+	for _, line := range lines[:min(len(lines), openingLines)] {
+		if m := runnerOpening.FindStringSubmatch(stripLogTimestamp(strings.TrimRight(line, "\r"))); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
 
 // runnerDiedMarker is what a red job's note names when its log ends cut.
 const runnerDiedMarker = "the runner died: its log holds no closing line and no FAIL line"
@@ -65,7 +94,8 @@ type rerunNote struct {
 
 // killedChecks reads the runs of the failing checks of cs. A job killed at
 // its first attempt is re-run once (the attempt is the once-marker: a job
-// at attempt 2 or up is never re-run, whoever re-ran it first); unsettled
+// at attempt 2 or up is never re-run, whoever re-ran it first), one whose
+// pod the platform ended up to attempt ciPlatformReruns; unsettled
 // answers true while a re-run is queued or running, or one was just asked
 // for; a sibling job that merely runs holds nothing back. notes name, for the red verdict, each kill and the
 // re-run or the missing one, and a job that failed again at its re-run.
@@ -160,7 +190,10 @@ func (r *Runner) runJobs(ctx context.Context, token string, repo Repo, n int64) 
 }
 
 // killedJob judges one red job: it re-runs the job when its first attempt
-// was killed or its runner died (asked true), and answers the note the red verdict carries.
+// was killed or its runner died (asked true), and answers the note the red
+// verdict carries. The death of the pod that ran the attempt names the
+// kill's cause: the platform's is re-run up to attempt ciPlatformReruns,
+// the pod's own limit is not re-run.
 func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int64, j ActionJob, reran *[]rerunNote) (asked bool, note string) {
 	body, err := r.forgejo.ActionJobLog(ctx, token, repo.Owner, repo.Name, j.ID, j.Attempt, mainLogRead)
 	if err != nil {
@@ -171,6 +204,17 @@ func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int
 	if marker == "" && runnerDied(body) {
 		marker = runnerDiedMarker
 	}
+	if marker != "" {
+		switch death := r.jobDeath(ctx, token, repo, j, body); death.Class {
+		case DeathPlatform:
+			if j.Attempt > ciPlatformReruns {
+				return false, fmt.Sprintf("job %q of CI run %d: the platform ended its pod again (%s) at attempt %d: no further re-run follows", j.Name, run, death.Short(), j.Attempt)
+			}
+			return r.rerunJob(ctx, token, repo, run, j, marker, fmt.Sprintf("job %q of CI run %d: the platform ended its pod (%s), so a re-run follows", j.Name, run, death.Short()), reran)
+		case DeathOwnLimit:
+			return false, fmt.Sprintf("job %q of CI run %d was killed (%s): %s, which is the job's own use, so no re-run follows", j.Name, run, marker, death.Short())
+		}
+	}
 	ours := slices.ContainsFunc(*reran, func(n rerunNote) bool { return n.id == j.ID })
 	switch {
 	case j.Attempt > 1 && ours && marker != "":
@@ -179,17 +223,52 @@ func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int
 		return false, fmt.Sprintf("job %q of CI run %d failed again at attempt %d, its re-run: a test failure, not a kill", j.Name, run, j.Attempt)
 	case j.Attempt > 1 || marker == "":
 		return false, ""
-	case ours:
+	}
+	return r.rerunJob(ctx, token, repo, run, j, marker, "", reran)
+}
+
+// rerunJob asks Forgejo to re-run killed job j at its attempt and answers
+// note with the ask; one already asked waits until Forgejo lists it.
+func (r *Runner) rerunJob(ctx context.Context, token string, repo Repo, run int64, j ActionJob, marker, note string, reran *[]rerunNote) (asked bool, _ string) {
+	if slices.ContainsFunc(*reran, func(n rerunNote) bool { return n.id == j.ID && n.Attempt > j.Attempt }) {
 		return true, ""
 	}
-	err = r.forgejo.RerunActionJob(ctx, token, repo.Owner, repo.Name, j.ID)
+	err := r.forgejo.RerunActionJob(ctx, token, repo.Owner, repo.Name, j.ID)
 	switch {
 	case errors.Is(err, ErrNoRerun):
 		return false, fmt.Sprintf("job %q of CI run %d was killed (%s) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right", j.Name, run, marker)
 	case err != nil:
 		return false, fmt.Sprintf("job %q of CI run %d was killed (%s) and its re-run failed (%s)", j.Name, run, marker, oneLine(r.Scrub.String(err.Error())))
 	}
-	log.Printf("checks gate: job %s of run %d was killed (%s): re-run once", j.Name, run, marker)
+	log.Printf("checks gate: %s", cmp.Or(note, fmt.Sprintf("job %s of run %d was killed (%s): re-run once", j.Name, run, marker)))
 	*reran = append(*reran, rerunNote{Job: j.Name, Run: run, Attempt: j.Attempt + 1, id: j.ID})
-	return true, ""
+	return true, note
+}
+
+// jobDeath is the death record of the runner pod that ran j's attempt, by
+// the runner its log's opening line names: body is the log's tail, and a
+// tail cut from its head has the head read for the line. A zero record
+// when there is none.
+func (r *Runner) jobDeath(ctx context.Context, token string, repo Repo, j ActionJob, body []byte) DeathRecord {
+	if r.cfg.Cluster == nil {
+		return DeathRecord{}
+	}
+	runner := runnerOfLog(body)
+	if runner == "" && len(body) >= mainLogRead {
+		var head bytes.Buffer
+		err := r.forgejo.ScanActionJobLog(ctx, token, repo.Owner, repo.Name, j.ID, j.Attempt, logHeadRead, func(l string) { head.WriteString(l) })
+		if err != nil && !errors.Is(err, ErrLogCut) {
+			log.Printf("checks gate: head of the log of job %s: %v", j.Name, err)
+		}
+		runner = runnerOfLog(head.Bytes())
+	}
+	if runner == "" {
+		return DeathRecord{}
+	}
+	death, _, err := r.cfg.Cluster.CIDeath(ctx, runner)
+	if err != nil {
+		log.Printf("checks gate: death of runner %s: %v", runner, err)
+		return DeathRecord{}
+	}
+	return death
 }
