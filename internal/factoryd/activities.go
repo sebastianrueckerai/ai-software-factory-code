@@ -2041,9 +2041,11 @@ func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait
 
 // finishClosesIssue reports whether Finish closes the issue of card t as
 // it ends final: a closed card's, and a done card's off the plan track
-// unless it ends after its merge. A failed card's waits for its retry.
+// unless it ends after its merge. A failed card's waits for its retry, and
+// a card with no issue, a held human card that ended before its face, has
+// none to close.
 func finishClosesIssue(t Task, final string, afterMerge bool) bool {
-	return final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan
+	return t.IssueNumber != 0 && (final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan)
 }
 
 // mergedBefore reports whether a card's events hold its move to merged: a
@@ -3258,7 +3260,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 				return err
 			}
 		}
-		if finishClosesIssue(t, final, afterMerge) && t.IssueNumber != 0 {
+		if finishClosesIssue(t, final, afterMerge) {
 			closing := msg
 			switch {
 			case final == "done" && merged:
