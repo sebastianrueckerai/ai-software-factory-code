@@ -478,6 +478,14 @@ func (s *PGStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[str
 	return out, rows.Err()
 }
 
+// SessionsStartedSince counts the session_started rows of every card after
+// since.
+func (s *PGStore) SessionsStartedSince(ctx context.Context, since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE kind = $1 AND at > $2`, EventSessionStarted, since).Scan(&n)
+	return n, err
+}
+
 // eventRecorder is the Timeline's sink: the store that turns factoryd's own
 // events into rows beside their timeline lines. A nil recorder records
 // nothing, so a Timeline without one keeps writing only timeline lines.

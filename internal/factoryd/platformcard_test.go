@@ -556,3 +556,107 @@ func TestPlatformCardStoryOfOneMinute(t *testing.T) {
 		t.Errorf("the story %q, want the minute alone", q.Happened)
 	}
 }
+
+// quietRig is the rig with an open card filed at 14:10 on 23 November for
+// three CI deaths at 13:50, 13:58 and 14:02, and a Timeline that records
+// the card's withdrawal. Sessions started at 13:59 and at 14:02 itself fall
+// outside "after 14:02"; those at the given times fall inside.
+func quietRig(t *testing.T, started ...time.Time) (*PlatformCard, *platformStore, *alertForgejo, *time.Time) {
+	t.Helper()
+	now := nov(23, 14, 10)
+	w, store, fj := platformRig(t, &now)
+	w.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: store.fakeStore, Store: store.fakeStore}
+	putDeaths(t, store, ciDeath("ci-job-1", nov(23, 13, 50), RuleGuardKill, "sf-2"), ciDeath("ci-job-2", nov(23, 13, 58), RuleGuardKill, "sf-2"),
+		ciDeath("ci-job-3", nov(23, 14, 2), RuleGuardKill, "sf-2"))
+	if err := w.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range append([]time.Time{nov(23, 13, 59), nov(23, 14, 2)}, started...) {
+		if _, err := store.Record(context.Background(), Event{TaskID: "t-acme", Kind: EventSessionStarted, At: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return w, store, fj, &now
+}
+
+// sevenSessions start after 14:02 on 23 November.
+func sevenSessions() []time.Time {
+	var out []time.Time
+	for i := range 7 {
+		out = append(out, nov(23, 15, i))
+	}
+	return out
+}
+
+// Hand-derived: the card filed at 14:10 on 23 November for deaths at 13:50,
+// 13:58 and 14:02 closes once 24 hours have passed since the newest death,
+// 14:02, which is 14:02 on 24 November, and 3 sessions have started after
+// it. Of nine session starts, those at 13:59 and at 14:02 itself do not
+// count, so 7 do. At 14:01 on the 24th the day is not over; with 2 starts
+// after 14:02 the factory has not shown the platform answers.
+func TestPlatformCardClosesAfterAQuietDay(t *testing.T) {
+	ctx := context.Background()
+	const sentence = "No platform death since 23 November at 14:02 UTC, while 7 sessions started, so the card closes."
+	t.Run("a quiet day with 7 sessions", func(t *testing.T) {
+		w, store, fj, now := quietRig(t, sevenSessions()...)
+		card := platformCards(t, store)[0]
+		*now = nov(24, 15, 0)
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := platformCards(t, store)[0]; got.Status != "done" {
+			t.Fatalf("the card is %s, want done", got.Status)
+		}
+		if want := fmt.Sprintf("#%d %s", card.IssueNumber, sentence); !slices.Contains(fj.comments, want) {
+			t.Errorf("the issue's comments = %q, want %q", fj.comments, want)
+		}
+		requireWithdrawn(t, store.fakeStore, card.ID, "no platform death since 23 November at 14:02 UTC, while 7 sessions started, so the card closes",
+			Moments{{At: nov(23, 14, 2), Layout: LayoutWords}})
+	})
+	t.Run("14:01 on the next day", func(t *testing.T) {
+		w, store, _, now := quietRig(t, sevenSessions()...)
+		*now = nov(24, 14, 1)
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := platformCards(t, store)[0]; got.Status != "waiting-human" || len(withdrawnRows(store.fakeStore, got.ID)) != 0 {
+			t.Fatalf("the card is %s with %d withdrawals, want it waiting on the human with none", got.Status, len(withdrawnRows(store.fakeStore, got.ID)))
+		}
+	})
+	t.Run("2 sessions", func(t *testing.T) {
+		w, store, _, now := quietRig(t, sevenSessions()[:2]...)
+		*now = nov(24, 15, 0)
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := platformCards(t, store)[0]; got.Status != "waiting-human" || len(withdrawnRows(store.fakeStore, got.ID)) != 0 {
+			t.Fatalf("the card is %s with %d withdrawals, want it waiting on the human with none", got.Status, len(withdrawnRows(store.fakeStore, got.ID)))
+		}
+	})
+}
+
+// Hand-derived: the card before the open one closed itself after a quiet
+// day, so a burst that came back after it stays with the human: the open
+// card is still waiting after a quiet day with 7 sessions, and no row
+// withdraws its ask.
+func TestAPlatformCardAfterAQuietCloseStaysWithTheHuman(t *testing.T) {
+	ctx := context.Background()
+	w, store, _, now := quietRig(t, sevenSessions()...)
+	prev := Task{ID: "pd-prev", Kind: "human", Status: "done", Source: SourcePlatformDeaths, Repository: "sf/acme", IssueNumber: 5, CreatedAt: nov(22, 9, 0)}
+	if err := store.CreateTask(ctx, prev); err != nil {
+		t.Fatal(err)
+	}
+	body := "No platform death since 22 November at 10:00 UTC, while 5 sessions started, so the card closes."
+	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: prev.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	*now = nov(24, 15, 0)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range platformCards(t, store) {
+		if c.ID != prev.ID && (c.Status != "waiting-human" || len(withdrawnRows(store.fakeStore, c.ID)) != 0) {
+			t.Fatalf("the open card is %s with %d withdrawals, want it waiting on the human with none", c.Status, len(withdrawnRows(store.fakeStore, c.ID)))
+		}
+	}
+}

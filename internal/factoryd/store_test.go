@@ -2735,6 +2735,17 @@ func (s *fakeStore) ModelAnsweredSince(ctx context.Context, alias string, since 
 	return first, nil
 }
 
+// SessionsStartedSince counts the fake's session_started rows after since.
+func (s *fakeStore) SessionsStartedSince(ctx context.Context, since time.Time) (int, error) {
+	n := 0
+	for _, e := range s.events {
+		if e.Kind == EventSessionStarted && e.At.After(since) {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // fakeSpend is one gateway audit row of a task: its time and its call's
 // cost.
 type fakeSpend struct {

@@ -38,6 +38,13 @@ type PlatformCardStore interface {
 	// the moments said of it, on its newest ask, in one transaction.
 	FacePlatformCard(ctx context.Context, id, objective, info string, said Moments) error
 	Task(ctx context.Context, id string) (Task, bool, error)
+	// SessionsStartedSince counts the sessions of every card that started
+	// after since.
+	SessionsStartedSince(ctx context.Context, since time.Time) (int, error)
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
 }
 
 // PlatformCard files one card in the human's lane when the platform ends
@@ -47,7 +54,10 @@ type PlatformCardStore interface {
 // platformDeathsWindow before its filing: while it is open no second card
 // is filed, and a death at or before the end of the newest closed card
 // counts no more. No agent works the card, since a fix of the nodes needs
-// their admin key.
+// their admin key. The open card closes itself once no counted death fell
+// in the platformDeathsWindow since the newest one and platformDeathsFile
+// sessions started after it, unless the card before it closed the same
+// way: a burst that came back after a quiet close stays with the human.
 type PlatformCard struct {
 	Store   PlatformCardStore
 	Forgejo *Forgejo
@@ -67,13 +77,14 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 		return err
 	}
 	var open *Task
+	var endedCard *Task
 	var ended time.Time
 	for i, c := range cards {
 		switch {
 		case slices.Contains(humanCardWaits, c.Status):
 			open = cmp.Or(open, &cards[i])
 		case c.FinishedAt != nil && c.FinishedAt.After(ended):
-			ended = *c.FinishedAt
+			ended, endedCard = *c.FinishedAt, &cards[i]
 		}
 	}
 	since := w.Now().Add(-platformDeathsWindow)
@@ -90,6 +101,11 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 	}
 	if open == nil && len(deaths) < platformDeathsFile {
 		return nil
+	}
+	if open != nil {
+		if closed, err := w.closeWhenQuiet(ctx, *open, endedCard, deaths); closed || err != nil {
+			return err
+		}
 	}
 	// an open card names the cards of the deaths it shows; a filing
 	// searches every repository its deaths hit for its stranded issue
@@ -128,6 +144,54 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 	w.Timeline.recordEvent(ctx, got.ID, EventCardCreated, map[string]any{"by": cmp.Or(got.Author, w.Forgejo.BotUser), "issue": got.IssueNumber})
 	log.Printf("platform card: %s filed #%d for %d platform deaths", repo, got.IssueNumber, len(deaths))
 	return nil
+}
+
+// platformQuietLead opens the comment of a card that closed itself.
+const platformQuietLead = "No platform death since "
+
+// closeWhenQuiet closes the open card when its newest counted death, else
+// its filing, lies at least platformDeathsWindow back and
+// platformDeathsFile sessions started after it, unless the newest ended
+// card closed the same way. It reports whether it closed the card.
+func (w *PlatformCard) closeWhenQuiet(ctx context.Context, card Task, endedCard *Task, deaths []PodDeath) (bool, error) {
+	last := card.CreatedAt
+	if len(deaths) > 0 {
+		last = deaths[0].Record.At
+	}
+	if last.After(w.Now().Add(-platformDeathsWindow)) {
+		return false, nil
+	}
+	n, err := w.Store.SessionsStartedSince(ctx, last)
+	if err != nil || n < platformDeathsFile {
+		return false, err
+	}
+	if endedCard != nil {
+		events, err := w.Store.IntakeEvents(ctx, endedCard.ID)
+		if err != nil {
+			return false, err
+		}
+		for _, e := range slices.Backward(events) {
+			if e.Kind == IntakeFactoryClosed {
+				if strings.HasPrefix(e.Body, platformQuietLead) {
+					return false, nil
+				}
+				break
+			}
+		}
+	}
+	var said Moments
+	sentence := fmt.Sprintf("%s%s, while %s started, so the card closes.", platformQuietLead, said.Say(last, LayoutWords), textutil.Plural(n, "session", "sessions"))
+	if err := w.Timeline.WithdrawAsk(ctx, card, sentence, said); err != nil {
+		return false, err
+	}
+	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, card, sentence); err != nil {
+		return false, err
+	}
+	if err := w.Store.TransitionTask(ctx, card.ID, humanCardWaits, "done"); err != nil {
+		return false, err
+	}
+	log.Printf("platform card: %s closed issue #%d of task %s", sentence, card.IssueNumber, card.ID)
+	return true, nil
 }
 
 // coldStartSpread is how close together the boots of every node lie when

@@ -91,3 +91,30 @@ func TestPlatformCardFaceIsOneWritePG(t *testing.T) {
 		t.Fatalf("the chat's card stands under %q with %d asks that know %q, want it untouched", face, asks, info)
 	}
 }
+
+// Hand-derived: of four rows, the session_started ones at 10:00, 11:00 and
+// 12:00 on two cards, SessionsStartedSince 10:00 counts the two after it,
+// not the one at 10:00 itself nor the card_created row at 13:00.
+func TestSessionsStartedSincePG(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_sessions_started"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.DB().Close() })
+	base := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	for i, e := range []Event{
+		{Kind: factoryd.EventSessionStarted, TaskID: "a", At: base},
+		{Kind: factoryd.EventSessionStarted, TaskID: "b", At: base.Add(time.Hour)},
+		{Kind: factoryd.EventSessionStarted, TaskID: "a", At: base.Add(2 * time.Hour)},
+		{Kind: factoryd.EventCardCreated, TaskID: "a", At: base.Add(3 * time.Hour)},
+	} {
+		e.Repository, e.Actor, e.Via = "sf/acme", "factoryd", ViaFactoryd
+		if _, err := s.Record(ctx, e); err != nil {
+			t.Fatalf("row %d: %v", i, err)
+		}
+	}
+	if n, err := s.SessionsStartedSince(ctx, base); err != nil || n != 2 {
+		t.Fatalf("SessionsStartedSince = %d, %v; want 2", n, err)
+	}
+}
