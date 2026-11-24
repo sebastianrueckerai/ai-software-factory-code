@@ -966,6 +966,21 @@ func (s *PGStore) OpenCasesIn(ctx context.Context, repository string) ([]Case, e
 	return s.cases(ctx, `SELECT `+caseColumns+` FROM cases WHERE repository = $1 AND `+caseLive+` ORDER BY id`, repository)
 }
 
+// OpenCasesOfKinds are the open and at_human cases of kinds in every
+// repository, oldest first.
+func (s *PGStore) OpenCasesOfKinds(ctx context.Context, kinds ...CaseKind) ([]Case, error) {
+	return s.cases(ctx, `SELECT `+caseColumns+` FROM cases WHERE `+caseLive+` AND kind = ANY($1::text[]) ORDER BY id`, kindNames(kinds))
+}
+
+// kindNames are kinds as the text a query's array parameter takes.
+func kindNames(kinds []CaseKind) []string {
+	out := make([]string, len(kinds))
+	for i, k := range kinds {
+		out[i] = string(k)
+	}
+	return out
+}
+
 func (s *PGStore) cases(ctx context.Context, query string, args ...any) ([]Case, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

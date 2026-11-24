@@ -2943,6 +2943,61 @@ func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
 	}
 }
 
+// The sizing card of 2026-11-24: the month cap refuses its session at
+// 07:03, and the run waits on its case, which rung 2 holds while the card
+// runs, due at 07:38. A human resets the month's count at 07:30: Wake
+// signals the card though no face came, the check gateway.PolicyTTL later
+// finds the cap no longer binding, and the run withdraws its case and
+// starts its next session at 07:30:30, before the rung's due could hand
+// the case to the human and long before the hourly check at 08:03.
+func TestWorkflowCapResetEndsAWaitARungHolds(t *testing.T) {
+	ctx := context.Background()
+	refused := time.Date(2026, 11, 24, 7, 3, 0, 0, time.UTC)
+	reset, due := refused.Add(27*time.Minute), refused.Add(35*time.Minute)
+	h, run := capHarness(t, 0, monthCappedAt(refused, false), pushed("s2", "c1"))
+	h.env.SetStartTime(refused)
+	h.rungOne, run.funded = true, reset
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	store := newFakeStore()
+	if err := store.CreateTask(ctx, Task{ID: "t1", Status: "running", Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := store.OpenCase(ctx, Case{ID: 700, TaskID: "t1", Kind: CaseMonthCap, StateKey: "k", Problem: "p"})
+	if err != nil || c.ID != 701 {
+		t.Fatalf("OpenCase = %d, %v; want case 701", c.ID, err)
+	}
+	if _, err := store.StartRungStep(ctx, CaseStep{CaseID: 701, Rung: 2, Actor: FactoryDecider, DueAt: &due}); err != nil {
+		t.Fatal(err)
+	}
+	var sent []string
+	waits := &CapWaits{Store: store, Signal: func(_ context.Context, id string) error {
+		sent = append(sent, id)
+		h.env.SignalWorkflow(SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+		return nil
+	}}
+	h.env.RegisterDelayedCallback(func() {
+		if err := waits.Wake(ctx, "console: alice reset the month cap's count (reset 5)"); err != nil {
+			t.Errorf("Wake: %v", err)
+		}
+	}, reset.Sub(refused))
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if !slices.Equal(sent, []string{"t1"}) || len(h.escalated) != 1 || EscalationSource(h.escalated[0]) != "month_cap" {
+		t.Fatalf("signalled %v, escalations %q; want t1 woken on its one month cap wait", sent, h.escalated)
+	}
+	resumed := reset.Add(gateway.PolicyTTL)
+	if !sameTimes(run.checks, []time.Time{resumed}) || !sameTimes(run.began, []time.Time{refused, resumed}) || h.sessions[1].Attempt != 1 {
+		t.Fatalf("checks at %v, sessions began at %v (%+v); want one check and attempt 1 again at 07:30:30", run.checks, run.began, h.sessions)
+	}
+	if !slices.Equal(h.ended, []string{"701 the wait ended on its own: the cap no longer binds a session"}) {
+		t.Fatalf("ended cases = %q, want case 701 withdrawn as the wait ended on its own", h.ended)
+	}
+}
+
 // beforeProviderFreeze runs the workflow as a run from before
 // versionProviderFreeze: a refusal with a named reset walks today's
 // providerBackoff ladder.

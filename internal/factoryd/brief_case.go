@@ -230,15 +230,11 @@ var storyWriterKinds = []CaseKind{CaseCheckinHuman, CasePolicyClass, CaseOther}
 // case whose wake is still ahead is not among them: a freeze the writer
 // refused holds the retry at the case wake, and the case-wake pass wakes it then.
 func (s *PGStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
-	kinds := make([]string, len(storyWriterKinds))
-	for i, k := range storyWriterKinds {
-		kinds[i] = string(k)
-	}
 	return s.cases(ctx, `SELECT `+caseColumns+` FROM (SELECT *, row_number() OVER (PARTITION BY repository ORDER BY id) AS n
 		FROM cases WHERE status = $1 AND brief = '' AND (next_wake_at IS NULL OR next_wake_at <= now())
 		AND (brief_error = '' OR brief_error NOT LIKE $2)
 		AND kind = ANY($4::text[])) c
-		WHERE n <= $3 ORDER BY id`, CaseAtHuman, BriefTerminal+"%", perRepo, kinds)
+		WHERE n <= $3 ORDER BY id`, CaseAtHuman, BriefTerminal+"%", perRepo, kindNames(storyWriterKinds))
 }
 
 func (s *PGStore) SetCaseBrief(ctx context.Context, id int64, happened, left string) error {

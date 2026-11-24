@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -394,34 +396,31 @@ func fileHumanTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 // or a human resets a cap's count.
 type CapWaits struct {
 	Store interface {
-		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
-		AskAnchors(ctx context.Context, taskID string) ([]AskAnchor, error)
+		OpenCasesOfKinds(ctx context.Context, kinds ...CaseKind) ([]Case, error)
 	}
 	// Signal delivers the policy_loaded signal to a task's workflow.
 	Signal func(ctx context.Context, taskID string) error
 }
 
-// Wake signals every waiting-human card whose last ask is a cap wait, for
-// why, what it runs for, which its log line opens with. It signals them
-// all even when one fails, and returns the failures.
+// Wake signals every card a live cap wait's case belongs to, whichever
+// rung holds the case, once, for why, what it runs for, which its log line
+// opens with. It signals them all even when one fails, and returns the
+// failures.
 func (c *CapWaits) Wake(ctx context.Context, why string) error {
-	tasks, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
+	cases, err := c.Store.OpenCasesOfKinds(ctx, slices.Collect(maps.Values(capWaitKinds))...)
 	if err != nil {
-		return fmt.Errorf("list the waiting cards: %w", err)
+		return fmt.Errorf("list the cap waits: %w", err)
 	}
 	var errs []error
 	woken := 0
-	for _, t := range tasks {
-		asks, err := c.Store.AskAnchors(ctx, t.ID)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("task %s: asks: %w", t.ID, err))
+	seen := map[string]bool{}
+	for _, cs := range cases {
+		if seen[cs.TaskID] {
 			continue
 		}
-		if reason, _ := capWaitOf(asks); reason == "" {
-			continue
-		}
-		if err := c.Signal(ctx, t.ID); err != nil {
-			errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
+		seen[cs.TaskID] = true
+		if err := c.Signal(ctx, cs.TaskID); err != nil {
+			errs = append(errs, fmt.Errorf("task %s: %w", cs.TaskID, err))
 			continue
 		}
 		woken++

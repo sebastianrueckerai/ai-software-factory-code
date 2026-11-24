@@ -2444,6 +2444,17 @@ func (s *fakeStore) OpenCasesIn(ctx context.Context, repository string) ([]Case,
 	return out, nil
 }
 
+func (s *fakeStore) OpenCasesOfKinds(ctx context.Context, kinds ...CaseKind) ([]Case, error) {
+	var out []Case
+	for _, c := range s.cases {
+		if slices.Contains(kinds, c.Kind) && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b Case) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
 func (s *fakeStore) ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error) {
 	s.reconciled = append(s.reconciled, repository)
 	return CaseHealReport{}, nil

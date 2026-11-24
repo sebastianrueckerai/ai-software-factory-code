@@ -665,12 +665,8 @@ func (s *PGStore) NewestAskCase(ctx context.Context, taskID string) (Case, error
 // newestAskCase is task taskID's newest live case an answer on the card
 // ends, the zero Case for none: not one of ownAnswerKinds.
 func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (Case, error) {
-	kinds := make([]string, len(ownAnswerKinds))
-	for i, k := range ownAnswerKinds {
-		kinds[i] = string(k)
-	}
 	c, err := scanCase(q.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM cases WHERE task_id = $1 AND `+caseLive+` AND NOT kind = ANY($2::text[])
-		ORDER BY id DESC LIMIT 1`, taskID, kinds))
+		ORDER BY id DESC LIMIT 1`, taskID, kindNames(ownAnswerKinds)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Case{}, nil
 	}

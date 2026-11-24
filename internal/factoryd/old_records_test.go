@@ -2,40 +2,42 @@ package factoryd
 
 import (
 	"context"
-	"slices"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The month alarm's wake finds a cap wait in the ask case of a waiting card,
-// as it found it in the escalation row it replaced: the case's face reason is the cap's,
-// the ask row names the case, and the turn of the period comes from when the
-// case opened. A card whose newest ask is another stop's is no cap wait.
-func TestCapWaitsWakeReadsTheAskCases(t *testing.T) {
+// The run's state finds a cap wait in the ask case of a waiting card, as
+// it found it in the escalation row it replaced: the case's face reason is
+// the cap's, the ask row names the case, and the turn of the period comes
+// from when the case opened. A card whose newest ask is another stop's is
+// no cap wait.
+func TestCapWaitOfReadsTheAskCases(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	month := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
-	asked := func(id string, caseID int64, reason string, at time.Time) {
+	asked := func(id string, caseID int64, kind CaseKind, reason string, at time.Time) {
 		if err := store.CreateTask(ctx, Task{ID: id, Status: "waiting-human", Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
-		store.face(id, caseID, CaseMonthCap, 700+caseID, reason, at)
+		store.face(id, caseID, kind, 700+caseID, reason, at)
 	}
-	asked("m1", 1, month, time.Date(2026, 10, 31, 21, 0, 0, 0, time.UTC))
-	asked("a1", 2, "The agent asks: which one?", time.Date(2026, 10, 31, 21, 0, 0, 0, time.UTC))
-	var sent []string
-	w := &CapWaits{Store: store, Signal: func(_ context.Context, id string) error { sent = append(sent, id); return nil }}
-	if err := w.Wake(ctx, "config: version 8 loaded"); err != nil || !slices.Equal(sent, []string{"m1"}) {
-		t.Fatalf("Wake = %v, signalled %v; want m1 alone", err, sent)
-	}
+	asked("m1", 1, CaseMonthCap, month, time.Date(2026, 10, 31, 21, 0, 0, 0, time.UTC))
+	asked("a1", 2, CaseAgentEscalate, "The agent asks: which one?", time.Date(2026, 10, 31, 21, 0, 0, 0, time.UTC))
 	asks, err := store.AskAnchors(ctx, "m1")
 	if err != nil || len(asks) != 1 || asks[0].Body != month || asks[0].Comment != 701 {
 		t.Fatalf("m1's anchors = %+v, %v; want its cap wait at comment 701", asks, err)
 	}
 	if reason, until := capWaitOf(asks); reason != month || !until.Equal(novFirst) {
 		t.Fatalf("capWaitOf = %q until %v, want the month's reason until %v", reason, until, novFirst)
+	}
+	asks, err = store.AskAnchors(ctx, "a1")
+	if err != nil || len(asks) != 1 || asks[0].Comment != 702 {
+		t.Fatalf("a1's anchors = %+v, %v; want its ask at comment 702", asks, err)
+	}
+	if reason, until := capWaitOf(asks); reason != "" || !until.IsZero() {
+		t.Fatalf("capWaitOf a1 = %q until %v, want no cap wait", reason, until)
 	}
 }
 
