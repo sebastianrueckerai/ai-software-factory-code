@@ -924,7 +924,7 @@ func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 		if !slices.Equal(h.arrived, []string{"ffmpeg|ffmpeg"}) || len(h.sessions) != 2 || len(h.sessions[1].Answers) != 0 || len(h.left) != 0 {
 			t.Fatalf("arrived %q, sessions %+v, left %q", h.arrived, h.sessions, h.left)
 		}
-		if want := []string{"701 the wait ended on its own: the imager answered the park on image ffmpeg"}; !slices.Equal(h.ended, want) {
+		if want := []string{"701 the imager answered the park on image ffmpeg"}; !slices.Equal(h.ended, want) {
 			t.Fatalf("EndCase calls %q, want %q", h.ended, want)
 		}
 	})

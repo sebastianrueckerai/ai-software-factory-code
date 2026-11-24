@@ -130,6 +130,8 @@ type workflowHarness struct {
 	// rungOne: the trip is held by rung 1, which faces the human later: no comment comes back
 	rungOne bool
 	ended   []string
+	// endedSaid are the moments each EndCase call carried
+	endedSaid []Moments
 	// caseState answers CaseState, the store's face of a case, when set: none
 	// by default; stateReads are its calls' cases
 	caseState  func(caseID int64) CaseState
@@ -298,7 +300,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
 		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
 		ActivityLimitResume:     func(ctx context.Context, taskID, model string) (bool, error) { return false, nil },
-		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string) error { return nil },
+		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string, said Moments) error { return nil },
 		ActivityCaseState:       func(ctx context.Context, caseID int64) (CaseState, error) { return CaseState{}, nil },
 		ActivityRecordGrant:     func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
 		ActivityAuditDraw:       func(ctx context.Context, taskID string, d policy.Draw, key string) error { return nil },
@@ -386,9 +388,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			}
 			return CaseState{}, nil
 		})
-	h.env.OnActivity(ActivityEndCase, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, caseID int64, reason string) error {
+	h.env.OnActivity(ActivityEndCase, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, caseID int64, reason string, said Moments) error {
 			h.ended = append(h.ended, fmt.Sprintf("%d %s", caseID, reason))
+			h.endedSaid = append(h.endedSaid, said)
 			return nil
 		})
 	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(
@@ -2249,11 +2252,14 @@ func TestWorkflowProviderWaitEndsOnTheIssuesClose(t *testing.T) {
 // (began); when CapResume checked before an ask (asks), in a wait before
 // the period's turn (checks) and at it (turns), with each check's input
 // (inputs). A check finds the cap no longer binding from funded on (zero:
-// never), or as verdict says when set; each takes takes.
+// never), saying why with the moments said, or as verdict says when set;
+// each takes takes.
 type capRun struct {
 	began, asks, checks, turns []time.Time
 	inputs                     []CapCheck
 	funded                     time.Time
+	why                        string
+	said                       Moments
 	verdict                    func(now time.Time) CapResumed
 	takes                      time.Duration
 }
@@ -2279,7 +2285,10 @@ func (run *capRun) onChecks(h *workflowHarness) {
 		if run.verdict != nil {
 			return run.verdict(now)
 		}
-		return CapResumed{Resume: !run.funded.IsZero() && !now.Before(run.funded)}
+		if run.funded.IsZero() || now.Before(run.funded) {
+			return CapResumed{}
+		}
+		return CapResumed{Resume: true, Why: run.why, Moments: run.said}
 	}
 	h.env.OnActivity(ActivityCapResume, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in CapCheck) (CapResumed, error) {
@@ -2938,7 +2947,7 @@ func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
 	if !slices.Equal(h.escalated, []string{monthReason}) {
 		t.Fatalf("escalations = %q, want the cap's wait once", h.escalated)
 	}
-	if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap no longer binds a session (policy version 2)" {
+	if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap of 600.00 EUR in policy version 2 leaves room for a session" {
 		t.Fatalf("cap_resumed = %v", step)
 	}
 }
@@ -2959,6 +2968,7 @@ func TestWorkflowCapResetEndsAWaitARungHolds(t *testing.T) {
 	h, run := capHarness(t, 0, monthCappedAt(refused, false), pushed("s2", "c1"))
 	h.env.SetStartTime(refused)
 	h.rungOne, run.funded = true, reset
+	run.why, run.said = "the month cap's count was reset at 07:30 UTC by alice", Moments{{At: reset, Layout: LayoutClock}}
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
@@ -2995,8 +3005,8 @@ func TestWorkflowCapResetEndsAWaitARungHolds(t *testing.T) {
 	if !sameTimes(run.checks, []time.Time{resumed}) || !sameTimes(run.began, []time.Time{refused, resumed}) || h.sessions[1].Attempt != 1 {
 		t.Fatalf("checks at %v, sessions began at %v (%+v); want one check and attempt 1 again at 07:30:30", run.checks, run.began, h.sessions)
 	}
-	if !slices.Equal(h.ended, []string{"701 the wait ended on its own: the cap no longer binds a session"}) {
-		t.Fatalf("ended cases = %q, want case 701 withdrawn as the wait ended on its own", h.ended)
+	if !slices.Equal(h.ended, []string{"701 the month cap's count was reset at 07:30 UTC by alice"}) || !reflect.DeepEqual(h.endedSaid, []Moments{run.said}) {
+		t.Fatalf("ended cases = %q with %+v, want case 701 withdrawn as alice reset the count at 07:30 with that moment", h.ended, h.endedSaid)
 	}
 }
 

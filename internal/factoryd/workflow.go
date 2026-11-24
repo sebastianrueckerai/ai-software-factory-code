@@ -4223,13 +4223,14 @@ func (t *taskRun) awaitHumanAgain(question string, choices []string) (final, why
 
 // waitEnd ends a wait for a human on its own, with no answer: a cap's
 // own end (capWait) or an image's arrival (imageReady). name says what
-// ended it.
+// ended it, and said are the instants name names.
 type waitEnd interface {
 	start(t *taskRun)
 	add(sel workflow.Selector)
 	over() bool
 	stop()
 	name() string
+	said() Moments
 }
 
 // awaitHumanUntil is awaitHuman that also ends, with no answer, when end
@@ -4503,7 +4504,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			switch {
 			case len(heard) > 0:
 			case len(answer) == 0:
-				t.endCase("the wait ended on its own: " + end.name())
+				t.endCase(end.name(), end.said())
 			default:
 				t.leaveWait("reviewer " + t.changesBy + " requested changes")
 			}
@@ -4560,13 +4561,19 @@ func (t *taskRun) leaveWait(why string) {
 	t.inCaseWait = false
 	t.fileKept()
 	if why != "" && t.caseID != 0 && t.caseHeld() {
-		t.endCase(why)
+		t.endCase(why, nil)
 	}
 }
 
-// endCase withdraws the case the run waits on for reason (versionCases).
-func (t *taskRun) endCase(reason string) {
-	if err := workflow.ExecuteActivity(t.short, ActivityEndCase, t.caseID, reason).Get(t.ctx, nil); err != nil {
+// endCase withdraws the case the run waits on for reason, whose instants
+// said holds (versionCases). A reason that names no instant passes none,
+// so its input reads as the inputs recorded before reasons named any.
+func (t *taskRun) endCase(reason string, said Moments) {
+	args := []any{t.caseID, reason}
+	if len(said) > 0 {
+		args = append(args, said)
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityEndCase, args...).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("end the case", "task", t.taskID, "case", t.caseID, "error", err)
 	}
 }
@@ -4688,6 +4695,9 @@ type capWait struct {
 	disarm                  workflow.CancelFunc
 	checking, turned, woken bool
 	ended                   bool
+	// why and words are what the check that ended the wait said
+	why   string
+	words Moments
 }
 
 // start arms the wait's first check; a restored wait
@@ -4750,6 +4760,9 @@ func (d *capWait) resumed(f workflow.Future) bool {
 		workflow.GetLogger(d.ctx).Warn("cap check", "task", d.t.taskID, "cap", d.decision, "error", err)
 	}
 	d.settles = res.Settles
+	if res.Resume {
+		d.why, d.words = res.Why, res.Moments
+	}
 	return res.Resume
 }
 
@@ -4789,7 +4802,21 @@ func (d *capWait) add(sel workflow.Selector) {
 // over says the wait ended on its own.
 func (d *capWait) over() bool { return d != nil && d.ended }
 
-func (d *capWait) name() string { return "the cap no longer binds a session" }
+// name is what ended the wait, as its check said it: a turn whose check
+// failed names the turn, and a check recorded before checks said why
+// names the cap that no longer binds.
+func (d *capWait) name() string {
+	o := capOpenings[d.decision]
+	switch {
+	case d.why != "":
+		return d.why
+	case d.turned:
+		return "the UTC " + o.period + " turned"
+	}
+	return "the " + o.name + " no longer binds a session"
+}
+
+func (d *capWait) said() Moments { return d.words }
 
 // stop cancels the wait's timer and its running check.
 func (d *capWait) stop() {

@@ -196,7 +196,8 @@ func (m *Monitor) Retake(ctx context.Context) error {
 func (m *Monitor) retake(ctx context.Context, c Case) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.Runner.retake(ctx, c)
+	_, err := m.Runner.retake(ctx, c)
+	return err
 }
 
 // logged runs card on card taskID and logs what fails. It answers only the
@@ -272,7 +273,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 		var err error
 		if c.Status == CaseOpen {
 			// no face asked anyone: the case ends with no row
-			err = m.Runner.EndCase(ctx, c.ID, reason)
+			err = m.Runner.EndCase(ctx, c.ID, reason, nil)
 		} else {
 			// the issue's comment withdraws the question where the face
 			// asked it; the row names its case, which the events writer
@@ -312,7 +313,8 @@ func (m *Monitor) withdrawAtHuman(ctx context.Context, d CardDigest, c Case, rea
 	if err != nil {
 		return err
 	}
-	detail := map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": c.Problem}
+	detail := WithdrawnRow(c, reason, nil)
+	detail["problem"] = c.Problem
 	id, err := m.Runner.postWithdrawal(ctx, t, c, reason)
 	if err != nil {
 		return err

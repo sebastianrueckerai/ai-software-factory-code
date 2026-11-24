@@ -3413,7 +3413,7 @@ func TestCapResumeDayFloor(t *testing.T) {
 		t.Fatalf("CapResume at 0.70 EUR free = (%+v, %v), want the wait's end", res, err)
 	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
-	if step["cap"] != policy.RefusedDayCap || step["why"] != "the day cap no longer binds a session (policy version 7)" {
+	if step["cap"] != policy.RefusedDayCap || step["why"] != "the day cap of 40.00 EUR in policy version 7 leaves room for a session" {
 		t.Fatalf("cap_resumed = %v", step)
 	}
 }
@@ -3432,7 +3432,7 @@ func TestCapResumeMonthRaise(t *testing.T) {
 		t.Fatalf("raised to 600: %+v, want the wait's end", res)
 	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
-	if step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap no longer binds a session (policy version 8)" {
+	if step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap of 600.00 EUR in policy version 8 leaves room for a session" {
 		t.Fatalf("cap_resumed = %v", step)
 	}
 }
@@ -3478,7 +3478,7 @@ func TestCapResumeProjectCap(t *testing.T) {
 		t.Fatalf("the project's cap raised: %+v, want the wait's end", res)
 	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
-	if step["cap"] != policy.RefusedProjectCap || step["why"] != "the project's month cap no longer binds a session (policy version 7)" {
+	if step["cap"] != policy.RefusedProjectCap || step["why"] != "the project's month cap of 5.00 EUR in policy version 7 leaves room for a session" {
 		t.Fatalf("cap_resumed = %v", step)
 	}
 }
@@ -3554,16 +3554,17 @@ func TestCapResumeNamesTheResetOnTheWaitsChecks(t *testing.T) {
 		name, decision string
 		reset          policy.CapReset
 		why            string
+		said           Moments
 	}{
 		{"today's day reset", policy.RefusedDayCap, policy.CapReset{Cap: policy.CapDay, At: at(20, 14, 2), Login: "sebastian"},
-			"the day cap's count was reset at 14:02 UTC by sebastian"},
+			"the day cap's count was reset at 14:02 UTC by sebastian", Moments{{At: at(20, 14, 2), Layout: LayoutClock}}},
 		{"yesterday's day reset", policy.RefusedDayCap, policy.CapReset{Cap: policy.CapDay, At: at(19, 18, 0), Login: "sebastian"},
-			"the day cap no longer binds a session (policy version 7)"},
+			"the day cap of 40.00 EUR in policy version 7 leaves room for a session", nil},
 		{"a reset older than the version", policy.RefusedDayCap, policy.CapReset{Cap: policy.CapDay, At: at(20, 11, 0), Login: "sebastian"},
-			"the day cap no longer binds a session (policy version 7)"},
+			"the day cap of 40.00 EUR in policy version 7 leaves room for a session", nil},
 		{"the month's reset of 18 November", policy.RefusedMonthCap, policy.CapReset{Cap: policy.CapMonth, At: at(18, 9, 0), Login: "anna"},
-			"the month cap's count was reset at 18 Nov 09:00 UTC by anna"},
-		{"a failed read", policy.RefusedDayCap, policy.CapReset{}, "the day cap no longer binds a session (policy version 7)"},
+			"the month cap's count was reset at 18 Nov 09:00 UTC by anna", Moments{{At: at(18, 9, 0), Layout: LayoutDay}}},
+		{"a failed read", policy.RefusedDayCap, policy.CapReset{}, "the day cap of 40.00 EUR in policy version 7 leaves room for a session", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newCapRig(t)
@@ -3576,8 +3577,8 @@ func TestCapResumeNamesTheResetOnTheWaitsChecks(t *testing.T) {
 			if tc.reset.Cap == "" {
 				g.store.capResetErr = errors.New("the database is gone")
 			}
-			if res := g.check(t, CapCheck{Decision: tc.decision}); !res.Resume {
-				t.Fatalf("%+v, want the wait's end", res)
+			if res := g.check(t, CapCheck{Decision: tc.decision}); !res.Resume || res.Why != tc.why || !reflect.DeepEqual(res.Moments, tc.said) {
+				t.Fatalf("%+v, want the wait's end for %q with %+v", res, tc.why, tc.said)
 			}
 			if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["why"] != tc.why {
 				t.Fatalf("cap_resumed why = %v, want %q", step["why"], tc.why)

@@ -1372,11 +1372,11 @@ func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	}
 	why := "reviewer sebastian requested changes at " + url + " with " + bearer
 	g.forge.failComment = true
-	if err := g.r.EndCase(ctx, faced.ID, why); err == nil || caseByID(t, g.s, faced.ID).Status != CaseAtHuman {
+	if err := g.r.EndCase(ctx, faced.ID, why, nil); err == nil || caseByID(t, g.s, faced.ID).Status != CaseAtHuman {
 		t.Fatalf("an end whose note failed: %v, case %s; want the failure and the case at the human", err, caseByID(t, g.s, faced.ID).Status)
 	}
 	for range 2 {
-		if err := g.r.EndCase(ctx, faced.ID, why); err != nil {
+		if err := g.r.EndCase(ctx, faced.ID, why, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1410,7 +1410,7 @@ func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	g2.chat.onCall = func() { <-release }
 	g2.chat.answers = []CheckinResponse{g2.handUp(t)}
 	held := g2.trip(t, tripCap)
-	if err := g2.r.EndCase(ctx, held.CaseID, "the card went back to the planner"); err != nil {
+	if err := g2.r.EndCase(ctx, held.CaseID, "the card went back to the planner", nil); err != nil {
 		t.Fatal(err)
 	}
 	close(release)

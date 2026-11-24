@@ -1363,7 +1363,7 @@ func TestAWithdrawnQuestionBesideAFlagMovesItsCard(t *testing.T) {
 	g.store.cases = append(g.store.cases,
 		Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman, CommentID: 300, Facts: map[string]any{"reason": AgentAsks + "Which store keeps the snapshots?"}},
 		Case{ID: 8, TaskID: "t1", Kind: CaseMonitorFlag, Status: CaseAtHuman})
-	if err := g.r.EndCase(context.Background(), 7, "the run left the wait"); err != nil {
+	if err := g.r.EndCase(context.Background(), 7, "the run left the wait", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := g.store.tasks["t1"].Status; got != "in-review" {

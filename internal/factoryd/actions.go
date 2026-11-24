@@ -59,6 +59,8 @@ type Resolution struct {
 	Args   map[string]any `json:"args,omitempty"`
 	Room   *RoomAsk       `json:"room,omitempty"`
 	Note   string         `json:"note,omitempty"`
+	// Moments are the instants Note names.
+	Moments Moments `json:"moments,omitempty"`
 	// Verdicts are a rung's verdicts on the findings it judged, keyed by
 	// the finding's text.
 	Verdicts map[string]CheckVerdict `json:"verdicts,omitempty"`

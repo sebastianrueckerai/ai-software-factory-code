@@ -973,13 +973,26 @@ type CapCheck struct {
 }
 
 // CapResumed is a wait's verdict: Resume ends it, Settles is when the
-// version in force binds at the gateway, if not yet.
+// version in force binds at the gateway, if not yet. Why says what ended
+// it, and Moments are the instants Why names.
 type CapResumed struct {
 	Resume  bool
 	Settles time.Time `json:",omitzero"`
+	Why     string    `json:",omitempty"`
+	Moments Moments   `json:",omitempty"`
 }
 
-// CapResume reports whether a wait on a cap ends: at the period's turn, or
+// CapResume is capLift's verdict on a wait on a cap. An end is on the
+// timeline with its words.
+func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error) {
+	res, err := r.capLift(ctx, in)
+	if err == nil && res.Resume {
+		r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": res.Why})
+	}
+	return res, err
+}
+
+// capLift reports whether a wait on a cap ends: at the period's turn, or
 // once the cap no longer binds the session that runs next. The gateway may
 // enforce the previous policy version for PolicyTTL after a load, so no
 // wait ends before the version in force settles (Settles), nor on a
@@ -990,14 +1003,15 @@ type CapResumed struct {
 // outstanding hold netted as the gateway nets it; the cap still refusing,
 // or a model that cannot be priced, waits for the turn, and any other
 // refusal ends the wait, the attempt's own floor asking its question. An
-// end is on the timeline, naming the reset of the cap's count that lifted
-// it.
-func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error) {
+// end says why: the reset of the cap's count that lifted it, who made it
+// and when, the cap in force, or the turn.
+func (r *Runner) capLift(ctx context.Context, in CapCheck) (CapResumed, error) {
 	o, known := capOpenings[in.Decision]
 	if !known {
 		return CapResumed{}, terminalError("no cap is named %q", in.Decision)
 	}
 	why := "the UTC " + o.period + " turned"
+	var said Moments
 	if !in.Turned {
 		if r.cfg.Prices == nil {
 			return CapResumed{}, nil
@@ -1027,7 +1041,11 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 		if d, _ := CapDecision(refusal); refusal != "" && d == in.Decision {
 			return CapResumed{}, nil
 		}
-		why = fmt.Sprintf("the %s no longer binds a session (policy version %d)", o.name, v.ID)
+		eur, err := r.capEUR(ctx, v, in)
+		if err != nil {
+			return CapResumed{}, err
+		}
+		why = fmt.Sprintf("the %s of %s EUR in policy version %d leaves room for a session", o.name, textutil.EUR(eur), v.ID)
 		if refusal != "" {
 			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
 		} else if reset == nil {
@@ -1042,11 +1060,30 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			}
 		}
 		if reset != nil && refusal == "" {
-			why = fmt.Sprintf("the %s's count was reset at %s by %s", o.name, ResetStamp(reset.At, r.Clock()), reset.Login)
+			why = fmt.Sprintf("the %s's count was reset at %s by %s", o.name, said.Say(reset.At, resetLayout(reset.At, r.Clock())), reset.Login)
 		}
 	}
-	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})
-	return CapResumed{Resume: true}, nil
+	return CapResumed{Resume: true, Why: why, Moments: said}, nil
+}
+
+// capEUR is the cap of in's decision under v: the day's or the month's,
+// or the month cap of the project of in's task.
+func (r *Runner) capEUR(ctx context.Context, v policy.Version, in CapCheck) (float64, error) {
+	switch in.Decision {
+	case policy.RefusedDayCap:
+		return v.Document.Budget.DayEUR, nil
+	case policy.RefusedMonthCap:
+		return v.Document.Budget.MonthEUR, nil
+	}
+	t, ok, err := r.store.Task(ctx, in.TaskID)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, terminalError("no task row for %s", in.TaskID)
+	}
+	_, eur := v.ProjectCap(t.Repository)
+	return eur, nil
 }
 
 // newestReset is the newest reset of cap in its UTC period at the

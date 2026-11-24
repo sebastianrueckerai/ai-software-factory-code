@@ -2572,7 +2572,7 @@ func (r *Runner) ownFailedCard(ctx context.Context, t Task, failed Task) {
 		case failed.ID != "" && c.StateKey == failed.ID:
 			asked = true
 		default:
-			if err := r.EndCase(ctx, c.ID, "the plan no longer waits on that card"); err != nil {
+			if err := r.EndCase(ctx, c.ID, "the plan no longer waits on that card", nil); err != nil {
 				log.Printf("plan %s: end case %d: %v", t.ID, c.ID, err)
 			}
 		}

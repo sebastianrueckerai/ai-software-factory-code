@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // casesFromEvent writes, inside the transaction tx that inserted event e,
@@ -87,6 +89,22 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return err
 	}
 	return nil
+}
+
+// WithdrawnRow is the detail of the question_withdrawn row that records
+// the factory's close of case c at the human for reason: the case, its
+// face's question and, when the reason names a time, the moments said
+// holds for it.
+func WithdrawnRow(c Case, reason string, said Moments) map[string]any {
+	row := map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason}
+	face, _ := faceOf(c)
+	if q := textutil.Truncate(EscalationQuestion(face), 300); q != "" {
+		row["question"] = q
+	}
+	if m := said.In(reason); len(m) > 0 {
+		row["moments"] = m
+	}
+	return row
 }
 
 // askCase opens the case of question_asked event e, or appends a step to
