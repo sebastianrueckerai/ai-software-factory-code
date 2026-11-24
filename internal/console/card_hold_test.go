@@ -153,7 +153,7 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 		{"t-wh", "", "x", http.StatusConflict, "Card #39 waits for an answer and holds no work slot, so a hold frees nothing: answer it, or end it."},
 		{"t-wp", "", "x", http.StatusConflict, "Card #41 waits for an answer and holds no work slot, so a hold frees nothing: answer it, or end it."},
 		{"t-wi", "", "x", http.StatusConflict, "Card #42 waits for an answer and holds no work slot, so a hold frees nothing: answer it, or end it."},
-		{"t-adm", "", "x", http.StatusConflict, "Card #35 took its turn and starts now: close it, or steer it once it runs."},
+		{"t-adm", "", "x", http.StatusConflict, "Card #35 took its turn and starts now: close it, or hold it once it runs."},
 		{"t-k2", "", "  ", http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
 		{"t-k2", "", strings.Repeat("ü", 301), http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
 		{"t-k2", "30", "x", http.StatusConflict,
@@ -408,10 +408,16 @@ func (s *rereadFails) Task(ctx context.Context, id string) (factoryd.Task, bool,
 
 // A hold the store refuses is judged on the card read again; a read that
 // fails then refuses naming the card and the read, never a card #0, and
-// nothing is held.
+// nothing is held. A card in waiting-deps whose dependencies all ended
+// before the store's write reads holdable still: the refusal says the
+// hold came too late and that it fits once the card runs.
 func TestAHoldWhoseRereadFailsSaysSo(t *testing.T) {
 	r, _ := newWritesRig(t)
 	withPlan(r)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-wd", Kind: "agent", Status: "waiting-deps", Track: policy.TrackDirect,
+		Process: "spec", Repository: "sf/code", IssueNumber: 43}})
+	r.tasks.mu.Unlock()
 	_, s := r.loggedIn(t)
 	r.c.cfg.Tasks = &rereadFails{Tasks: r.c.cfg.Tasks, id: "t-k2"}
 	r.c.cfg.HoldCard = func(context.Context, string, string, string, string) (factoryd.HoldResult, error) {
@@ -425,6 +431,11 @@ func TestAHoldWhoseRereadFailsSaysSo(t *testing.T) {
 	}
 	if holdOf(r, "t-k2") != nil {
 		t.Fatalf("t-k2 is held: %+v", holdOf(r, "t-k2"))
+	}
+	_, err = r.c.doHoldCard(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-wd", "", "after the split")
+	want = "Card #43's dependencies have all ended, so it starts or asks the human now: a hold comes too late. Close it, or hold it once it runs."
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
+		t.Fatalf("the hold of a card whose dependencies ended = %v, want 409 %q", err, want)
 	}
 }
 

@@ -120,8 +120,10 @@ ask in a question of the revision that the human close it or press
 its key to be left out. The planner's record of the plan's cards shows
 each held card's hold.
 
-A held card owns no wait, so no queue or dependency flag opens a case on
-it. Rungs 0 to 2 neither start nor close it: the hold is a fact of its
+A held card parked in Queued or `waiting-deps` owns no wait, so no queue
+or dependency flag opens a case on it. A held card that still runs or is
+in review keeps every monitor flag, since it holds a slot and can hang.
+Rungs 0 to 2 neither start nor close a held card: the hold is a fact of its
 cases (`hold`, and `plan_hold` for a held card of the plan, read through
 the successors its cards were cut into), and the action table refuses
 their resume, continue, handover, successor, close and replan of the card

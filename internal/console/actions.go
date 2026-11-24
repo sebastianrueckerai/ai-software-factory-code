@@ -2812,7 +2812,7 @@ func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason s
 		if err := unholdable(fresh, c.capFactsOf(ctx, fresh)); err != nil {
 			return "", err
 		}
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's dependencies have all ended, so it starts or asks the human now: a hold comes too late. Close it, or steer it once it runs.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's dependencies have all ended, so it starts or asks the human now: a hold comes too late. Close it, or hold it once it runs.", t.IssueNumber))
 	}
 	detail := map[string]any{"reason": reason}
 	until := "until a human releases it."
@@ -2846,7 +2846,7 @@ func unholdable(t factoryd.Task, f capFacts) error {
 	case (t.Status == "queued" || t.Status == "running") && t.Track == policy.TrackPlan:
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is a plan's planning run: it takes no hold, so a hold keeps nothing. Close it, or leave it to plan.", t.IssueNumber))
 	case t.Status == "queued":
-		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took its turn and starts now: close it, or steer it once it runs.", t.IssueNumber))
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took its turn and starts now: close it, or hold it once it runs.", t.IssueNumber))
 	case t.Status == "in-review", t.Status == "closing", t.Status == "merged":
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is %s: its checks decide it now, and it ends or goes back to work without you. Hold it once it runs again, or end it.",
 			t.IssueNumber, strings.ReplaceAll(t.Status, "-", " ")))

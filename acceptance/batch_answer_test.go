@@ -461,7 +461,7 @@ func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (i
 	return s.tasks.CountAdmitted(ctx, repository)
 }
 
-func (s *accBatchStore) SetResumeWait(context.Context, string, string, time.Time) error {
+func (s *accBatchStore) SetResumeWait(context.Context, string, string, time.Time) (bool, error) {
 	panic("unused")
 }
 

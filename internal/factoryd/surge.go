@@ -65,7 +65,15 @@ func (r *Runner) AdmitResume(ctx context.Context, taskID string, since time.Time
 		return ResumeSlot{}, err
 	}
 	if line != "" {
-		return ResumeSlot{}, r.parkHeld(ctx, t, line, since)
+		parked, err := r.parkHeld(ctx, t, line, since)
+		if err != nil || parked {
+			return ResumeSlot{}, err
+		}
+		// a human released the card between the hold's read and the park:
+		// it goes on as a card that holds none
+		if t, _, err = r.task(ctx, taskID); err != nil {
+			return ResumeSlot{}, err
+		}
 	}
 	if !resumesIntoSlot(t) {
 		return ResumeSlot{Granted: true}, nil
@@ -82,18 +90,23 @@ func (r *Runner) AdmitResume(ctx context.Context, taskID string, since time.Time
 	return slot, nil
 }
 
-// parkHeld parks held card t queued under its hold's line. A card that held
-// a slot gives it up: the queue is pulled and its issue mirrored. A re-check
-// of a parked card wakes no one, or each wake would send it back here.
-func (r *Runner) parkHeld(ctx context.Context, t Task, line string, since time.Time) error {
-	if err := r.store.SetResumeWait(ctx, t.ID, line, since); err != nil {
-		return err
+// parkHeld parks held card t queued under its hold's line; false when the
+// card was in no state to park. A card that held a slot gives it up: the
+// queue is pulled. A card that moved to queued has its issue mirrored. A
+// re-check of a parked card wakes no one, or each wake would send it back
+// here.
+func (r *Runner) parkHeld(ctx context.Context, t Task, line string, since time.Time) (bool, error) {
+	parked, err := r.store.SetResumeWait(ctx, t.ID, line, since)
+	if err != nil || !parked {
+		return parked, err
 	}
 	if HoldsSlot(t) || t.Status == "running" {
 		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
+	}
+	if t.Status != "queued" {
 		mirrorTaskState(ctx, r.forgejo, t, "queued")
 	}
-	return nil
+	return true, nil
 }
 
 func (r *Runner) admitResume(ctx context.Context, t Task, since time.Time) (ResumeSlot, error) {
@@ -121,7 +134,7 @@ func (r *Runner) admitResume(ctx context.Context, t Task, since time.Time) (Resu
 		return ResumeSlot{Granted: true}, r.store.MarkStarted(ctx, t.ID)
 	}
 	reason := fmt.Sprintf(ResumedWaitReason+"%d of %d live, %d ahead", live, limit, ahead)
-	if err := r.store.SetResumeWait(ctx, t.ID, reason, since); err != nil {
+	if _, err := r.store.SetResumeWait(ctx, t.ID, reason, since); err != nil {
 		return ResumeSlot{}, err
 	}
 	return ResumeSlot{Ahead: ahead}, nil

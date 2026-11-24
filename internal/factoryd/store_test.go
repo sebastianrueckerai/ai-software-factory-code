@@ -1352,14 +1352,14 @@ func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now t
 
 // SetResumeWait mirrors Postgres: a parked card goes queued with its
 // resumption's first time kept.
-func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) error {
+func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) (bool, error) {
 	t, ok := s.tasks[id]
 	if !ok {
-		return nil
+		return false, nil
 	}
 	parked := slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
 	if !parked && !(t.Status == "queued" && t.ResumedAt != nil) && !(t.Status == "running" && t.Hold != nil) {
-		return nil
+		return false, nil
 	}
 	if t.ResumedAt == nil {
 		t.ResumedAt = &now
@@ -1367,7 +1367,7 @@ func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now ti
 	t.QueueSince = t.ResumedAt
 	t.Status, t.QueueReason = "queued", reason
 	s.tasks[id] = t
-	return nil
+	return true, nil
 }
 
 func (s *fakeStore) ResumeWaiters(ctx context.Context, repository string) ([]Task, error) {

@@ -1102,6 +1102,20 @@ func TestMoreOfPicksTheHoldsVariantByWhetherTheCardStarted(t *testing.T) {
 	if got, want := effects(fresh)[factoryd.AnswerRelease], "The card takes its turn to start again."; got != want {
 		t.Errorf("a held card that has not started: release says %q, want %q", got, want)
 	}
+	// a card held while it ran keeps its hold through review and a wait on
+	// a human, the poster or an image, and goes on from its saved work
+	for _, status := range []string{"running", "in-review", "closing", "waiting-human", "waiting-poster", "waiting-image"} {
+		ran := base
+		ran.Status, ran.Hold = status, hold
+		if got := effects(ran)[factoryd.AnswerRelease]; got != releaseStarted {
+			t.Errorf("a held card %s: release says %q, want %q", status, got, releaseStarted)
+		}
+	}
+	waiting := base
+	waiting.Status, waiting.Hold = "waiting-deps", hold
+	if got, want := effects(waiting)[factoryd.AnswerRelease], "The card takes its turn to start again."; got != want {
+		t.Errorf("a held card waiting on its dependencies: release says %q, want %q", got, want)
+	}
 	fresh.Hold = nil
 	if got, want := effects(fresh)[factoryd.AnswerHold], "The card does not start until you release it, or until the card you name is merged or done."; got != want {
 		t.Errorf("a card that has not started: hold says %q, want %q", got, want)

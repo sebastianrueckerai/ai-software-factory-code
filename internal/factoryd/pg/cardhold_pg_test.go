@@ -256,9 +256,9 @@ func TestPGStoreParksAHeldRunningCard(t *testing.T) {
 	if ok, err := s.SetCardHold(ctx, "t-held", CardHold{Reason: "x", By: "sebastian", At: t0}); err != nil || !ok {
 		t.Fatalf("SetCardHold = %v, %v", ok, err)
 	}
-	for _, id := range []string{"t-held", "t-free"} {
-		if err := s.SetResumeWait(ctx, id, "on hold: x", t0); err != nil {
-			t.Fatal(err)
+	for id, want := range map[string]bool{"t-held": true, "t-free": false} {
+		if moved, err := s.SetResumeWait(ctx, id, "on hold: x", t0); err != nil || moved != want {
+			t.Fatalf("SetResumeWait(%s) = %v, %v; want %v", id, moved, err, want)
 		}
 	}
 	k := readTask(t, s, "t-held")
@@ -284,8 +284,8 @@ func TestPGStoreEndClearsAHeldParkedCard(t *testing.T) {
 	if ok, err := s.SetCardHold(ctx, "t-p", CardHold{Reason: "x", Release: "", By: "sebastian", At: t0}); err != nil || !ok {
 		t.Fatalf("SetCardHold = %v, %v", ok, err)
 	}
-	if err := s.SetResumeWait(ctx, "t-p", "on hold: x", t0); err != nil {
-		t.Fatal(err)
+	if moved, err := s.SetResumeWait(ctx, "t-p", "on hold: x", t0); err != nil || !moved {
+		t.Fatalf("SetResumeWait = %v, %v; want the card parked", moved, err)
 	}
 	if err := s.EndClosed(ctx, "t-p", []string{"queued"}, "the human closed it"); err != nil {
 		t.Fatal(err)

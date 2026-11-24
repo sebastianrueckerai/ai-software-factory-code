@@ -76,7 +76,9 @@ type ownedWait struct {
 // card in gate merge-queue owns the wait only at the front of its queue:
 // one behind another, or held back by its plan, waits for a card that
 // owns the wait. A wait at the human, a step at rung 3 among them, has
-// no row, and neither has a card a human holds.
+// no row, and neither has a card a human holds while it is parked, queued
+// or in waiting-deps: a held card that runs or is in review holds a slot
+// and can hang.
 func (d CardDigest) ownedWait() (ownedWait, bool) {
 	h := d.Head
 	quiet := h.StatusSince
@@ -86,7 +88,7 @@ func (d CardDigest) ownedWait() (ownedWait, bool) {
 		}
 	}
 	switch {
-	case h.Hold != "":
+	case h.Hold != "" && (h.Status == "queued" || h.Status == "waiting-deps"):
 		return ownedWait{}, false
 	case h.Status == "queued" && h.QueueReason != "" && h.QueueSince != nil:
 		return ownedWait{"queued", 0, *h.QueueSince}, true

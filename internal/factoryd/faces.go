@@ -579,8 +579,10 @@ func MoreOf(t Task, f Facts) []Answer {
 	case !Final(t.Status):
 		keys = []string{ActReplan, ActExtend, AnswerSteer, ActClose}
 	}
+	// a card that has run: every status but queued before its first
+	// session and waiting-deps, which a card leaves before it
 	started := ""
-	if t.Status == "running" || t.ResumedAt != nil {
+	if t.Status == "queued" && t.ResumedAt != nil || slices.Contains([]string{"running", "in-review", "closing", "merged", "waiting-human", "waiting-poster", "waiting-image"}, t.Status) {
 		started = "/" + variantStarted
 	}
 	if t.Held() {

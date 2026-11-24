@@ -175,6 +175,9 @@ func unheld(ts []Task) []Task {
 
 // wakeResumed tells every card waiting queued to resume in repository that
 // a slot may be free; each asks AdmitResume again, which keeps their order.
+// A held card is woken only once its release card ended done or merged, so
+// that its AdmitResume ends the hold: a wake that changes nothing would
+// grow its run's history every heal pass.
 func wakeResumed(ctx context.Context, store Store, wf Workflows, repository string) {
 	if wf == nil {
 		return
@@ -185,6 +188,15 @@ func wakeResumed(ctx context.Context, store Store, wf Workflows, repository stri
 		return
 	}
 	for _, c := range waiters {
+		if c.Held() {
+			v, err := holdView(ctx, store, c)
+			if err != nil {
+				log.Printf("wake %s: the hold of %s: %s", repository, c.ID, maskedErr(err))
+			}
+			if err != nil || !v.Released {
+				continue
+			}
+		}
 		if err := wf.Signal(ctx, c.ID, SignalSlotFree, TaskSignal{}); err != nil {
 			log.Printf("wake %s: signal %s: %v", repository, c.ID, err)
 		}

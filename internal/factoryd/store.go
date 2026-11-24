@@ -377,7 +377,8 @@ type Store interface {
 	// SetResumeWait parks card id, back from a wait, queued behind the surge
 	// bound with reason, keeping the time its resumption first waited
 	// (ResumedAt, QueueSince). The card holds no slot; MarkStarted ends it.
-	SetResumeWait(ctx context.Context, id, reason string, now time.Time) error
+	// False: the card was in no state to park.
+	SetResumeWait(ctx context.Context, id, reason string, now time.Time) (bool, error)
 	// ResumeWaiters lists repository's cards waiting queued to resume, the
 	// oldest resumption first (resumed_at, then id).
 	ResumeWaiters(ctx context.Context, repository string) ([]Task, error)
@@ -2632,11 +2633,11 @@ func (s *PGStore) HeldOn(ctx context.Context, release string) ([]Task, error) {
 // SetResumeWait is the store's: a parked card, or one already waiting to
 // resume, or a running one a hold stops, goes queued with its reason, its
 // first wait's time kept. A queued card that never resumed (admitted, its
-// workflow not yet running) takes none.
-func (s *PGStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) error {
-	_, err := s.changeStatus(ctx, `status = 'queued', resumed_at = COALESCE(resumed_at, $3::timestamptz), queue_reason = $2, queue_since = COALESCE(resumed_at, $3::timestamptz)`,
+// workflow not yet running) takes none, nor does a running one no hold
+// holds.
+func (s *PGStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) (bool, error) {
+	return s.changeStatus(ctx, `status = 'queued', resumed_at = COALESCE(resumed_at, $3::timestamptz), queue_reason = $2, queue_since = COALESCE(resumed_at, $3::timestamptz)`,
 		`id = $1 AND (status IN ('waiting-deps', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image') OR status = 'queued' AND resumed_at IS NOT NULL OR status = 'running' AND hold_at IS NOT NULL)`, id, reason, now)
-	return err
 }
 
 // ResumeWaiters lists repository's bound cards waiting queued to resume,

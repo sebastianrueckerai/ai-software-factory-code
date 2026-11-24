@@ -249,11 +249,16 @@ func cardHoldWait(ctx context.Context, store Store, t Task) (string, error) {
 // Stopped, its live session took the ask to stop.
 type HoldResult struct{ Held, Stopped bool }
 
+// holdAskWait bounds how long a press waits for the live session to take
+// its ask: a session reads none while it pushes.
+const holdAskWait = 10 * time.Minute
+
 // HoldCard puts card id on hold for by, a human, for reason, until a
 // human releases it or release ("" for none) ends done or merged. A
-// running card's live session is asked to stop; one between sessions
-// is signalled (SignalHeld), so a wait that holds its slot ends. Held
-// false: the card is in no state to take a hold.
+// running card's live session is asked to stop, for up to holdAskWait
+// however the press's own request ends; one between sessions, or one that
+// took no ask by then, is signalled (SignalHeld), so a wait that holds its
+// slot ends. Held false: the card is in no state to take a hold.
 func (r *Runner) HoldCard(ctx context.Context, id, release, reason, by string) (HoldResult, error) {
 	t, ok, err := r.store.Task(ctx, id)
 	if err != nil || !ok {
@@ -266,10 +271,13 @@ func (r *Runner) HoldCard(ctx context.Context, id, release, reason, by string) (
 	if t.Status != "running" {
 		return HoldResult{Held: true}, nil
 	}
-	switch err := r.EscalateSession(ctx, id, holdAsk(h)); {
+	ctx = context.WithoutCancel(ctx)
+	ask, cancel := context.WithTimeout(ctx, holdAskWait)
+	defer cancel()
+	switch err := r.EscalateSession(ask, id, holdAsk(h)); {
 	case err == nil:
 		return HoldResult{Held: true, Stopped: true}, nil
-	case !errors.Is(err, ErrNoLiveSession):
+	case !errors.Is(err, ErrNoLiveSession) && !errors.Is(err, context.DeadlineExceeded):
 		return HoldResult{Held: true}, err
 	}
 	if r.cfg.Workflows != nil {
@@ -310,8 +318,8 @@ func (r *Runner) ReleaseCardHold(ctx context.Context, id string) (bool, error) {
 // heldFindings refuses revision next of the plan st judges when it drops
 // the key of a card a human holds, whoever asked for the replan: the
 // revision's restart would close the card, and only a human closes a held
-// card, on the opened card. A kept key holds the card, which never started, and
-// gives it the revision's entry for that key. Once the human closed it,
+// card, on the opened card. A kept key keeps the card, started or not, held,
+// and gives it the revision's entry for that key. Once the human closed it,
 // replanFindings asks for its key to be left out.
 func (r *Runner) heldFindings(ctx context.Context, st replanState, next Plan) ([]string, error) {
 	var found []string

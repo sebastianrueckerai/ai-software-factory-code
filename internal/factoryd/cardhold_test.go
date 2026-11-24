@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/mock"
@@ -579,9 +580,9 @@ func TestARestartIsRefusedOverAHeldSuccessor(t *testing.T) {
 	}
 }
 
-// heldPlanRig is fileRig with revision 1 filed and card redirects held,
-// the plan done.
-func heldPlanRig(t *testing.T) (*Runner, *fakeStore, Task, CardHold) {
+// heldPlanRig is fileRig with revision 1 filed and card redirects held
+// in status, the plan done.
+func heldPlanRig(t *testing.T, status string) (*Runner, *fakeStore, Task, CardHold) {
 	t.Helper()
 	ctx := context.Background()
 	r, store, _, _, _ := fileRig(t, testPlan())
@@ -591,6 +592,7 @@ func heldPlanRig(t *testing.T) (*Runner, *fakeStore, Task, CardHold) {
 		t.Fatalf("the children: %+v", ref)
 	}
 	cards := cardsByKey(t, store)
+	setStatus(store, cards["redirects"].ID, status)
 	hold := CardHold{Reason: "after the pg split", By: "sebastian"}
 	if ok, err := store.SetCardHold(ctx, cards["redirects"].ID, hold); err != nil || !ok {
 		t.Fatalf("SetCardHold = %v, %v", ok, err)
@@ -612,7 +614,7 @@ const dropsRedirects = "card redirects (#4) is on hold: after the pg split. Only
 // card keeps its hold under the entry the revision gives it.
 func TestARungsReplanKeepsAHeldCardsKey(t *testing.T) {
 	ctx := context.Background()
-	r, store, held, hold := heldPlanRig(t)
+	r, store, held, hold := heldPlanRig(t, "queued")
 	sibling := cardsByKey(t, store)["links-api"]
 	if _, err := r.Act(ctx, ActInput{TaskID: sibling.ID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan, Note: "links-api is too wide"}}); err != nil {
 		t.Fatalf("rung 2's replan of links-api: %v", err)
@@ -661,7 +663,7 @@ func TestARungsReplanKeepsAHeldCardsKey(t *testing.T) {
 // be left out; the revision that leaves it out files.
 func TestTheHumansReplanKeepsAHeldCardsKeyUntilTheyCloseIt(t *testing.T) {
 	ctx := context.Background()
-	r, store, held, _ := heldPlanRig(t)
+	r, store, held, _ := heldPlanRig(t, "queued")
 	if _, err := r.Replan(ctx, cardsByKey(t, store)["links-api"].ID, ReplanAsk{By: "sebastian", Comment: "links-api is too wide"}); err != nil {
 		t.Fatalf("the human's replan: %v", err)
 	}
@@ -691,6 +693,26 @@ func TestTheHumansReplanKeepsAHeldCardsKeyUntilTheyCloseIt(t *testing.T) {
 	}
 	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, dropped)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the revision that leaves the closed card out: %+v, %v", res, err)
+	}
+}
+
+// A hold stands on a card that runs: a revision that drops the key of a
+// held running card is refused as one that drops a queued held card's
+// key, and the card runs on, held.
+func TestARevisionThatDropsAHeldRunningCardsKeyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	r, store, held, hold := heldPlanRig(t, "running")
+	if _, err := r.Replan(ctx, cardsByKey(t, store)["links-api"].ID, ReplanAsk{By: "sebastian", Comment: "links-api is too wide"}); err != nil {
+		t.Fatalf("the human's replan: %v", err)
+	}
+	setStatus(store, "t-plan", "running")
+	dropped := testPlan()
+	dropped.Cards[2].Key, dropped.Cards[2].From = "redirects-2", "redirects"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, dropped)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
+		t.Fatalf("a revision that drops redirects: %+v, %v; want refused with %q", res, err, dropsRedirects)
+	}
+	if k := store.tasks[held.ID]; k.Status != "running" || !k.Held() || *k.Hold != hold {
+		t.Fatalf("redirects is %s with hold %+v, want running and held with %+v", k.Status, k.Hold, hold)
 	}
 }
 
@@ -873,36 +895,95 @@ func TestHoldCardBetweenSessionsSignalsHeld(t *testing.T) {
 	}
 }
 
-// A press whose ask the session does not read before the press's context
-// ends answers that error with the hold stored, and frees the session's
-// one hold ask: the next press asks again.
-func TestACancelledHoldPressFreesTheSessionsAsk(t *testing.T) {
-	store := newFakeStore()
-	store.tasks["t-run"] = Task{ID: "t-run", Kind: "agent", Repository: "demo/app", Track: policy.TrackDirect, Status: "running", IssueNumber: 2062}
-	wf := &fakeWorkflows{}
-	r := &Runner{store: store}
-	r.cfg.Workflows = wf
-	asks, end := r.liveSession("t-run", sessionWorker{session: "s1", holdStop: true})
-	defer end()
-	gone, cancel := context.WithCancel(t.Context())
-	cancel()
-	if got, err := r.HoldCard(gone, "t-run", "", "out of the way", "sebastian"); !errors.Is(err, context.Canceled) || got != (HoldResult{Held: true}) {
-		t.Fatalf("the cancelled press = %+v, %v; want held with context.Canceled", got, err)
+// A press outlives its request: a human who reloads the page while the
+// session pushes, reading no ask, does not take the stop back, and the
+// session takes the ask 5 minutes on. A session that reads no ask in 10
+// minutes is asked no more: the press frees the session's one hold ask,
+// so the next press asks again, and signals the card as one between
+// sessions. The session ends at 11 minutes, so a press with no bound
+// answers then.
+func TestAHoldPressOutlivesItsRequestForTenMinutes(t *testing.T) {
+	rig := func() (*Runner, *fakeWorkflows, <-chan AgentAsk, func()) {
+		store := newFakeStore()
+		store.tasks["t-run"] = Task{ID: "t-run", Kind: "agent", Repository: "demo/app", Track: policy.TrackDirect, Status: "running", IssueNumber: 2062}
+		wf := &fakeWorkflows{}
+		r := &Runner{store: store}
+		r.cfg.Workflows = wf
+		asks, end := r.liveSession("t-run", sessionWorker{session: "s1", holdStop: true})
+		return r, wf, asks, end
 	}
-	took := make(chan AgentAsk, 1)
-	go func() { took <- <-asks }()
-	if got, err := r.HoldCard(t.Context(), "t-run", "", "out of the way until the split lands", "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
-		t.Fatalf("the next press = %+v, %v; want held and stopped", got, err)
+	// read is the session's next ask, taken after wait; nothing once stop
+	// closes
+	read := func(asks <-chan AgentAsk, wait time.Duration, stop <-chan struct{}) <-chan AgentAsk {
+		took := make(chan AgentAsk, 1)
+		go func() {
+			select {
+			case <-time.After(wait):
+			case <-stop:
+				return
+			}
+			select {
+			case a := <-asks:
+				took <- a
+			case <-stop:
+			}
+		}()
+		return took
 	}
-	select {
-	case a := <-took:
-		if want := (AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way until the split lands"}); !reflect.DeepEqual(a, want) {
-			t.Fatalf("the session took %+v, want %+v", a, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("the next press sent no ask: the cancelled press kept the session's hold ask")
-	}
-	if len(wf.signals) != 0 {
-		t.Fatalf("signals = %q, want none: a session runs", wf.signals)
-	}
+	t.Run("a cancelled press", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r, wf, asks, end := rig()
+			stop := make(chan struct{})
+			defer close(stop)
+			defer end()
+			took := read(asks, 5*time.Minute, stop)
+			gone, cancel := context.WithCancel(t.Context())
+			cancel()
+			start := time.Now()
+			if got, err := r.HoldCard(gone, "t-run", "", "out of the way", "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
+				t.Fatalf("the cancelled press = %+v, %v; want held and stopped", got, err)
+			}
+			if waited := time.Since(start); waited != 5*time.Minute {
+				t.Fatalf("the press waited %v, want the session's 5 minutes", waited)
+			}
+			if a, want := <-took, (AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way"}); !reflect.DeepEqual(a, want) {
+				t.Fatalf("the session took %+v, want %+v", a, want)
+			}
+			if len(wf.signals) != 0 {
+				t.Fatalf("signals = %q, want none: the session stops", wf.signals)
+			}
+		})
+	})
+	t.Run("a session that reads no ask", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r, wf, asks, end := rig()
+			stop := make(chan struct{})
+			defer close(stop)
+			defer end()
+			go func() {
+				select {
+				case <-time.After(11 * time.Minute):
+					end()
+				case <-stop:
+				}
+			}()
+			start := time.Now()
+			if got, err := r.HoldCard(t.Context(), "t-run", "", "out of the way", "sebastian"); err != nil || got != (HoldResult{Held: true}) {
+				t.Fatalf("the press = %+v, %v; want held, not stopped", got, err)
+			}
+			if waited := time.Since(start); waited != 10*time.Minute {
+				t.Fatalf("the press waited %v, want 10 minutes", waited)
+			}
+			if want := []string{"t-run held sebastian #0: "}; !slices.Equal(wf.signals, want) {
+				t.Fatalf("signals = %q, want %q", wf.signals, want)
+			}
+			took := read(asks, 0, stop)
+			if got, err := r.HoldCard(t.Context(), "t-run", "", "out of the way until the split lands", "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
+				t.Fatalf("the next press = %+v, %v; want held and stopped", got, err)
+			}
+			if a, want := <-took, (AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way until the split lands"}); !reflect.DeepEqual(a, want) {
+				t.Fatalf("the session took %+v, want %+v", a, want)
+			}
+		})
+	})
 }

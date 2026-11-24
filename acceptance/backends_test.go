@@ -331,7 +331,7 @@ func (s *acceptanceStore) CountAdmitted(_ context.Context, repository string) (i
 	return n, nil
 }
 
-func (s *acceptanceStore) SetResumeWait(context.Context, string, string, time.Time) error {
+func (s *acceptanceStore) SetResumeWait(context.Context, string, string, time.Time) (bool, error) {
 	panic("unused")
 }
 

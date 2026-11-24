@@ -80,8 +80,8 @@ func TestAdmitResumeParksAHeldRunningCard(t *testing.T) {
 func TestAHeldWaiterBlocksNoFreshCard(t *testing.T) {
 	h := holdParkRig(t, "hold_park_fresh", 2, Task{ID: "a", Status: "running"}, Task{ID: "b", Status: "queued"})
 	h.hold(t, "a", "")
-	if err := h.s.SetResumeWait(h.ctx, "a", "on hold: out of the way", holdParkAt); err != nil {
-		t.Fatal(err)
+	if moved, err := h.s.SetResumeWait(h.ctx, "a", "on hold: out of the way", holdParkAt); err != nil || !moved {
+		t.Fatalf("SetResumeWait(a) = %v, %v; want the card parked", moved, err)
 	}
 	if err := h.b.Start(h.ctx, "b"); err != nil {
 		t.Fatal(err)
@@ -95,11 +95,11 @@ func TestAHeldWaiterBlocksNoFreshCard(t *testing.T) {
 func TestAHeldWaiterIsNotAhead(t *testing.T) {
 	h := holdParkRig(t, "hold_park_ahead", 1, Task{ID: "a", Status: "running"}, Task{ID: "c", Status: "waiting-human"})
 	h.hold(t, "a", "")
-	if err := h.s.SetResumeWait(h.ctx, "a", "on hold: out of the way", holdParkAt); err != nil {
-		t.Fatal(err)
+	if moved, err := h.s.SetResumeWait(h.ctx, "a", "on hold: out of the way", holdParkAt); err != nil || !moved {
+		t.Fatalf("SetResumeWait(a) = %v, %v; want the card parked", moved, err)
 	}
-	if err := h.s.SetResumeWait(h.ctx, "c", "resumed: x", holdParkAt.Add(time.Minute)); err != nil {
-		t.Fatal(err)
+	if moved, err := h.s.SetResumeWait(h.ctx, "c", "resumed: x", holdParkAt.Add(time.Minute)); err != nil || !moved {
+		t.Fatalf("SetResumeWait(c) = %v, %v; want the card parked", moved, err)
 	}
 	s, err := h.r.AdmitResume(h.ctx, "c", holdParkAt.Add(time.Minute))
 	if err != nil || !s.Granted {
@@ -110,8 +110,8 @@ func TestAHeldWaiterIsNotAhead(t *testing.T) {
 func TestTheReleaseCardEndsTheParkedHold(t *testing.T) {
 	h := holdParkRig(t, "hold_park_release", 1, Task{ID: "a", Status: "running"}, Task{ID: "r", Status: "running"})
 	h.hold(t, "a", "r")
-	if err := h.s.SetResumeWait(h.ctx, "a", "on hold: out of the way", holdParkAt); err != nil {
-		t.Fatal(err)
+	if moved, err := h.s.SetResumeWait(h.ctx, "a", "on hold: out of the way", holdParkAt); err != nil || !moved {
+		t.Fatalf("SetResumeWait(a) = %v, %v; want the card parked", moved, err)
 	}
 	if _, err := h.s.DB().ExecContext(h.ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 'r'`); err != nil {
 		t.Fatal(err)
