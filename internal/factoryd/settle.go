@@ -243,9 +243,9 @@ func caseEnds(ask Event, events []Event) func(Event) bool {
 	}
 }
 
-// ReasonLine is a settled ask's line, the decider line's pattern: word,
-// actor, time (the ruling of 2026-10-17).
-func ReasonLine(s PokeSettle) string {
+// ReasonLead is a settled ask's word and actor, the decider line's pattern
+// before its time: "answered by sebastian", "withdrawn".
+func ReasonLead(s PokeSettle) string {
 	word, by := s.Word, DeciderWords(s.By)
 	if s.By == FactoryDecider {
 		switch {
@@ -257,9 +257,23 @@ func ReasonLine(s PokeSettle) string {
 		}
 	}
 	if by != "" {
-		return word + " by " + by + " · " + s.At.UTC().Format("15:04")
+		return word + " by " + by
 	}
-	return word + " · " + s.At.UTC().Format("15:04")
+	return word
+}
+
+// ReasonLine is a settled ask's line, the decider line's pattern: word,
+// actor, time (the ruling of 2026-10-17).
+func ReasonLine(s PokeSettle) string { return SettleLine(ReasonLead(s), s.At) }
+
+// SettleLine is a settled row's reason with the time that settled it, as
+// every reader but a screen reads it: in UTC with no zone named,
+// "answered by sebastian · 15:04"; a reason with no time stands alone.
+func SettleLine(reason string, at time.Time) string {
+	if at.IsZero() {
+		return reason
+	}
+	return reason + " · " + at.UTC().Format("15:04")
 }
 
 // deciderLead is DeciderWords at the start of a sentence: a decider's

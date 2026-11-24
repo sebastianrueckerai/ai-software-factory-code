@@ -196,7 +196,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	o.Face.Why = c.linkRefs(ctx, v, k.Repository, k.Why)
 	// the opened card says how long a stale card has been quiet
 	if i := slices.IndexFunc(o.Face.Marks, func(m fine) bool { return m.Words == "stale" }); i >= 0 && k.StaleText != "" {
-		o.Face.Marks[i].Words += ", " + k.StaleText
+		o.Face.Marks[i].Words += escaped(", " + k.StaleText)
 	}
 	if k.PRURL != "" && k.Status != "merged" && !factoryd.Final(k.Status) {
 		o.PR, o.PRNumber = k.PRURL, k.PRNumber
@@ -299,7 +299,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		late := func(a factoryd.Answer) answerView {
 			return c.answerOf(ctx, v, k, k.ID, a.Key(), a, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return casePress(v, k, *row, a, key)
-			}, seen)
+			}, row.Face.Moments, seen)
 		}
 		asks, more := lateAnswers(v, k, *row, f)
 		for _, a := range asks {
@@ -356,7 +356,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		default:
 			o.More = append(o.More, c.answerOf(ctx, v, k, k.ID, a.Key(), a, facts, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return cardPress(v, k, a, key)
-			}, seen))
+			}, nil, seen))
 		}
 	}
 
@@ -372,12 +372,13 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		if bt.Kind != "human" {
 			o.AgentView = brief.AgentText()
 		}
-		// the life fold names the routine, so the body drops its stamp
+		// the life fold names the routine, so the body drops its stamp; the
+		// instants the card's objective names read in the reader's zone
 		body := brief.Text.Body
 		if i := strings.LastIndex(body, "\n"); o.Life.Routine != nil && strings.HasPrefix(body[i+1:], factoryd.RoutineProvenance) {
 			body = strings.TrimSpace(body[:max(i, 0)])
 		}
-		o.Brief.Body = c.linkMarkup(ctx, v, k.Repository, body)
+		o.Brief.Body = timed(c.linkMarkup(ctx, v, k.Repository, body), bt.Moments)
 		for _, it := range brief.Acceptance {
 			o.Brief.Acceptance = append(o.Brief.Acceptance, it.Text)
 		}
@@ -448,22 +449,26 @@ func (cs caseSet) holds(t factoryd.Task) bool { return len(cs.byCard[t.ID]) > 0 
 
 // askOf is the ask block of face on card k: the question and its why in
 // the factory's words with their terms marked into seen, and the story,
-// whose writer's words stand quoted. A planned line that only names the
+// whose writer's words stand quoted, each with the face's moments in the
+// reader's zone. A planned line that only names the
 // card's title, which the opened card's head shows, stays out. A question
 // that is the card's title and a why that is the card's own stand once, in
 // head, as the factory's words with their terms marked.
 func (c *Console) askOf(ctx context.Context, v *boardView, k card, head *faceView, face factoryd.Face, seen map[string]int) *askBlock {
 	a := &askBlock{}
 	bare := func(t string) string { return strings.TrimRight(strings.TrimSpace(t), ".?!") }
+	said := func(text string) template.HTML {
+		return timed(c.factoryText(ctx, v, k.Repository, text, seen), face.Moments)
+	}
 	if bare(face.Ask) == bare(k.Title) {
-		head.title(c.factoryText(ctx, v, k.Repository, k.Title, seen), k.Title)
+		head.title(said(k.Title), k.Title)
 	} else {
-		a.Question = c.factoryText(ctx, v, k.Repository, face.Ask, seen)
+		a.Question = said(face.Ask)
 	}
 	if bare(face.Why) == bare(k.Why) {
-		head.Why = c.factoryText(ctx, v, k.Repository, k.Why, seen)
+		head.Why = said(k.Why)
 	} else {
-		a.Why = c.factoryText(ctx, v, k.Repository, face.Why, seen)
+		a.Why = said(face.Why)
 	}
 	planned := face.Story.Planned
 	if factoryd.TitleLine(planned, k.Task) {
@@ -479,14 +484,14 @@ func (c *Console) askOf(ctx context.Context, v *boardView, k card, head *faceVie
 				if !view {
 					writer = "The agent"
 				}
-				a.Story = append(a.Story, storyLine{Lead: c.factoryText(ctx, v, k.Repository, writer+"'s own words stand whole in the fold below.", seen)})
+				a.Story = append(a.Story, storyLine{Lead: said(writer + "'s own words stand whole in the fold below.")})
 				a.Words = append(a.Words, ownWords{Title: writer + "'s own words", Hint: fmt.Sprintf("%d words", len(strings.Fields(words))), Text: words})
 				continue
 			}
-			a.Story = append(a.Story, storyLine{Lead: c.factoryText(ctx, v, k.Repository, lead, seen), Quote: words})
+			a.Story = append(a.Story, storyLine{Lead: said(lead), Quote: words})
 			continue
 		}
-		a.Story = append(a.Story, storyLine{Lead: c.factoryText(ctx, v, k.Repository, line, seen)})
+		a.Story = append(a.Story, storyLine{Lead: said(line)})
 	}
 	return a
 }
@@ -536,7 +541,7 @@ func (c *Console) answersOf(ctx context.Context, v *boardView, k card, ask strin
 			a = factoryd.Answer{}
 		}
 		a.Label, a.Effect = o.Label, o.Effect
-		view := c.answerOf(ctx, v, k, ask, o.Value, a, f, press, seen)
+		view := c.answerOf(ctx, v, k, ask, o.Value, a, f, press, face.Moments, seen)
 		view.Open = pressed != "" && pressed == o.Value && len(view.Fields) > 0
 		if face.Preselected != "" && o.Value == face.Preselected {
 			view.Suggested, view.By, view.Grounds = true, face.Source, clause(face.Recommendation)
@@ -549,15 +554,16 @@ func (c *Console) answersOf(ctx context.Context, v *boardView, k card, ask strin
 }
 
 // answerOf is answer a by key of card k on facts f as its button shows it: its
-// label, its effect line in the factory's words, and the fields its press
+// label, its effect line in the factory's words with the moments said of
+// its face in the reader's zone, and the fields its press
 // opens with their defaults, named as its press posts them and with ids
 // under scope. A room's fields open on the card's room facts, the facts
 // Act weighs its press on, with the readout of their defaults.
-func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key string, a factoryd.Answer, f factoryd.Facts, press presser, seen map[string]int) answerView {
+func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key string, a factoryd.Answer, f factoryd.Facts, press presser, said factoryd.Moments, seen map[string]int) answerView {
 	// a writer's words reach a label, an effect and a field: each shows
 	// masked, as the face's own texts do
 	clean := func(s string) string { return sanitize.Outbound(scrubText(s), v.policy.Document.LinkHosts) }
-	view := answerView{Action: clean(key), Label: clean(a.Label), Effect: c.factoryText(ctx, v, k.Repository, clean(a.Effect), seen)}
+	view := answerView{Action: clean(key), Label: clean(a.Label), Effect: timed(c.factoryText(ctx, v, k.Repository, clean(a.Effect), seen), said)}
 	if a.Action == factoryd.AnswerThread {
 		view.Thread = k.ID
 		return view
@@ -895,12 +901,12 @@ func (c *Console) mayPress(v *boardView, k card, a factoryd.Answer) bool {
 	return true
 }
 
-// evidenceOf is the evidence of an ask on card k: the face's info, the
-// findings its ask and story count, and the grounds of its suggestion.
+// evidenceOf is the evidence of an ask on card k: the face's info with its
+// moments in the reader's zone, the findings its ask and story count, and the grounds of its suggestion.
 func (c *Console) evidenceOf(ctx context.Context, v *boardView, k card, face factoryd.Face) []evidence {
 	var out []evidence
 	if face.Info != "" {
-		out = append(out, evidence{Label: "What the factory knows", Text: c.linkMarkup(ctx, v, k.Repository, face.Info)})
+		out = append(out, evidence{Label: "What the factory knows", Text: timed(c.linkMarkup(ctx, v, k.Repository, face.Info), face.Moments)})
 	}
 	if n := len(face.Findings); n > 0 {
 		var b strings.Builder

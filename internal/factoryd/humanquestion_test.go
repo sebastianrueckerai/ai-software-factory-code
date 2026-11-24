@@ -35,11 +35,23 @@ func TestTheRaiseRoundsAnUncoveredNeedUpToTheCent(t *testing.T) {
 
 // Each human card's question asks one line, fills its why and info, says
 // what the factory saw, and offers exactly its answers in order, in the
-// vocabulary's words.
+// vocabulary's words. It keeps each instant its texts name beside their
+// words in UTC, in the layout the words take: a summer alert's start, a
+// winter stall's and the hold's, and the reset of the month's count on an
+// earlier day.
 func TestHumanCardQuestions(t *testing.T) {
 	did, notNow, factory, noted := QuestionChoice{AnswerDone, "I did it"}, QuestionChoice{AnswerPark, "Not now"},
 		QuestionChoice{AnswerGo, "Have the factory do it"}, QuestionChoice{AnswerNoted, "Noted"}
 	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "disk full", "service": "db"}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
+	summer := time.Date(2026, 7, 1, 10, 30, 0, 0, time.UTC)
+	winter := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	reset := &policy.CapReset{At: time.Date(2026, 11, 2, 14, 5, 0, 0, time.UTC), Login: "sebastian", BeforeEUR: 50}
+	fired := Moments{{At: alert.StartsAt, Layout: "2 January at 15:04"}}
+	moments := map[string]Moments{"alert": fired, "flux alert": fired, "event alert": fired,
+		"summer alert":            {{At: summer, Layout: "2 January at 15:04"}},
+		"month cap after a reset": {{At: reset.At, Layout: "2 Jan 15:04"}},
+		"chain stall":             {{At: winter, Layout: "2006-01-02 15:04"}, {At: winter, Layout: "2 January at 15:04"}},
+		"production held":         {{At: winter, Layout: "2006-01-02 15:04"}}}
 	for name, tt := range map[string]struct {
 		q        HumanQuestion
 		ask      string
@@ -52,10 +64,15 @@ func TestHumanCardQuestions(t *testing.T) {
 			"Flux fires the alert “stuck” on prod", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"event alert": {AlertQuestion(SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "Job failed", "event": "true"}, StartsAt: alert.StartsAt}, "infra", "forgejo", "w", "b"),
 			"SigNoz fires the alert “Job failed” on forgejo", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
+		"summer alert": {AlertQuestion(SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "disk full", "service": "db"}, StartsAt: summer}, "shop", "prod", "w", "b"),
+			"SigNoz fires the alert “disk full” on db", []QuestionChoice{noted, notNow}, "It has fired since 1 July at 10:30 UTC."},
+		"month cap after a reset": {MonthCapCardQuestion(50, MonthSpend{Month: "2026-11", EUR: 50.01, AllEUR: 98.5, Reset: reset}, "https://git/policy#L7", time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)),
+			"This month's spending reached the factory's limit of 50.00 EUR", []QuestionChoice{noted, notNow},
+			"The factory spent 50.01 EUR of its 50.00 EUR limit since sebastian reset the month's count, 98.50 EUR in November."},
 		"roll refused": {RollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"Fix the signing of the images gateway, worker, then close this card", []QuestionChoice{did, notNow},
 			"Main's run is green at commit abc1234, and 2 images of it carry no signature by the factory's key."},
-		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "The factory re-ran it once."),
+		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, nil, "The factory re-ran it once."),
 			"Re-run the check ci / test on main after a lost runner", []QuestionChoice{did, notNow},
 			"CI run 1208 on main failed in ci / test, and each failed job lost its runner while it ran."},
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
@@ -99,11 +116,32 @@ func TestHumanCardQuestions(t *testing.T) {
 			if q.Happened != tt.happened {
 				t.Errorf("happened = %q, want %q", q.Happened, tt.happened)
 			}
+			if !reflect.DeepEqual(q.Moments, moments[name]) {
+				t.Errorf("moments = %+v, want %+v", q.Moments, moments[name])
+			}
+			for _, m := range q.Moments {
+				if !strings.Contains(q.Info+" "+q.Happened, m.Words()) {
+					t.Errorf("no text says %q", m.Words())
+				}
+			}
 		})
+	}
+	for _, tc := range []struct {
+		q    HumanQuestion
+		info string
+	}{
+		{StallQuestion("sf/code", "abc1234def", winter, []string{"ci / test"}, nil), "The chain of sf/code has been pending at commit abc1234 since 2026-11-01 08:00 UTC, past the stall bound."},
+		{HoldQuestion("code", winter, winter.Add(2*time.Hour), []Group{{Plan: "t-plan", Issue: 12, Repository: "sf/code"}}, nil, nil), "Production has waited since 2026-11-01 08:00 UTC."},
+		{MonthCapCardQuestion(50, MonthSpend{Month: "2026-11", EUR: 50.01, AllEUR: 98.5, Reset: reset}, "l", time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)),
+			"is 98.50 EUR; counted since 2 Nov 14:05 UTC, when sebastian reset the month's count: 50.01 EUR of the cap"},
+	} {
+		if !strings.Contains(tc.q.Info, tc.info) {
+			t.Errorf("info = %q, want it to hold %q", tc.q.Info, tc.info)
+		}
 	}
 	const lostWhy = "CI run 1208 on main, at commit abc1234, failed, but none of its steps did: each failed job lost its runner while it ran " +
 		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. The factory re-ran it once."
-	if info := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, "The factory re-ran it once.").Info; !strings.HasPrefix(info, lostWhy+"\n\n") {
+	if info := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, nil, "The factory re-ran it once.").Info; !strings.HasPrefix(info, lostWhy+"\n\n") {
 		t.Errorf("rerun info = %q, want it to open with %q", info, lostWhy)
 	}
 }
@@ -226,5 +264,20 @@ func TestOuterGuardCardNamesTheReset(t *testing.T) {
 	}
 	if refusals := CheckBrief(BriefText{Title: q.Ask, Why: q.Why}, BriefAsk, nil); len(refusals) > 0 {
 		t.Errorf("the door refuses the ask %q: %q", q.Ask, refusals)
+	}
+}
+
+// A card whose ask is refaced keeps the instants its text names beside
+// those of its new ask: the cleared alert's ask names when it fired from
+// and until, in words, and its text the alert's start as a stamp.
+func TestARefacedAskKeepsTheCardsMoments(t *testing.T) {
+	start := time.Date(2026, 11, 16, 5, 12, 0, 0, time.UTC)
+	until := start.Add(52 * time.Minute)
+	card := Task{ID: "t-a", Kind: "human", Objective: "SigNoz fires the alert 5xx\n\nFiring since 2026-11-16T05:12:00Z.",
+		Moments: Moments{{At: start, Layout: LayoutRFC3339}}}
+	_, set := Refaced(card, AlertClearedQuestion("SigNoz", "5xx", "factoryd", start, until))
+	want := Moments{{At: start, Layout: LayoutWords}, {At: until, Layout: LayoutWords}, {At: start, Layout: LayoutRFC3339}}
+	if !reflect.DeepEqual(set["moments"], want) {
+		t.Errorf("moments = %+v, want %+v", set["moments"], want)
 	}
 }

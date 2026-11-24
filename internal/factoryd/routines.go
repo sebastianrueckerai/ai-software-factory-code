@@ -48,9 +48,10 @@ type RoutineView struct {
 	Next time.Time
 	Soon bool
 	// NextWords is "Mon 06:00" within a week, else "Mon 20 Oct 06:00",
-	// "after 6 more merges" (past a pending skip's run too) or the
-	// event's words.
-	NextWords string
+	// Next in NextLayout in the policy's zone, "after 6 more merges" (past
+	// a pending skip's run too) or the event's words.
+	NextWords  string
+	NextLayout string
 	// MergesLeft are the merges before the next merge-counted run, 0
 	// for a routine whose next run is a time or an event.
 	MergesLeft int
@@ -408,10 +409,11 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 			// hourly pass is always under an hour away
 			after, more := rt.NextCron(next, loc)
 			view.Next, view.Soon = next, next.Sub(now) < time.Hour && (!more || after.Sub(next) >= 23*time.Hour)
-			view.NextWords = next.Format("Mon 15:04")
+			view.NextLayout = "Mon 15:04"
 			if next.Sub(now) >= 7*24*time.Hour {
-				view.NextWords = next.Format("Mon 2 Jan 15:04")
+				view.NextLayout = "Mon 2 Jan 15:04"
 			}
+			view.NextWords = next.Format(view.NextLayout)
 		} else if every := rt.MergesEvery(); every > 0 {
 			n := max(every-st.Merges, 1)
 			switch {

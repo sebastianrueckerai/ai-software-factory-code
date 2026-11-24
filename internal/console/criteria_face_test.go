@@ -198,8 +198,9 @@ func TestPlanApprovalRendersOnce(t *testing.T) {
 // true of its promise. The two a run of the factory can check say why no
 // test ran and offer exactly Run the tests now and Drop this promise; the
 // one no test exists for says so and offers the missing part; the human's
-// is the human's to judge. Once sebastian's run stopped, a page says when
-// and why, and offers the run again.
+// is the human's to judge. Once sebastian's run stopped, a page says when,
+// 14:02 UTC on 17 November read in Europe/Berlin, and why, and offers the
+// run again.
 func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 	r := newRig(t)
 	fx := slices.IndexFunc(facefixtures.All(), func(f facefixtures.Fixture) bool {
@@ -241,7 +242,7 @@ func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 		Detail: map[string]any{"task": facefixtures.TaskID(never.Task.IssueNumber + 1), "outcome": "cut", "by": "sebastian", "why": "its sandbox did not run"}})
 	r.events.mu.Unlock()
 	_, answers, words := askParts(t, cardPages(t, r, ck, never.Task.ID, labCodeProject.Name)[0])
-	if story := "The tests sebastian asked for at 2026-11-17 14:02 UTC stopped before they finished: its sandbox did not run. No test checked it."; !slices.Equal(answers, run) || !strings.Contains(words, story) {
+	if story := "The tests sebastian asked for at 2026-11-17 15:02 CET stopped before they finished: its sandbox did not run. No test checked it."; !slices.Equal(answers, run) || !strings.Contains(words, story) {
 		t.Errorf("after the cut the first page offers %q with %s, want %q and %q", answers, words, run, story)
 	}
 }

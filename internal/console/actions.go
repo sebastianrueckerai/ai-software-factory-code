@@ -89,6 +89,15 @@ func (e *refusal) Error() string { return e.msg }
 
 func refuse(status int, msg string) error { return &refusal{status, msg} }
 
+// timedRefusal is a refusal whose sentence names instants: a button's
+// flash shows them in the reader's zone (X-Times), the chat its words.
+type timedRefusal struct {
+	*refusal
+	said factoryd.Moments
+}
+
+func (e *timedRefusal) Unwrap() error { return e.refusal }
+
 // refuseAgent is the refusal of what an agent alone sends, a chat tool's
 // parameter that no human's form holds or a turn of an agent's: it names
 // the keys the agent types.
@@ -259,6 +268,12 @@ func (e *forgejoRefusal) Unwrap() error { return e.err }
 func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var no *refusal
 	var fj *forgejoRefusal
+	var said *timedRefusal
+	if errors.As(err, &said) {
+		if b, err := json.Marshal(screenTimes(said.said)); err == nil {
+			w.Header().Set("X-Times", string(b))
+		}
+	}
 	switch {
 	case errors.As(err, &fj):
 		c.forgejoFailed(w, r, fj.what, fj.err)
@@ -2007,7 +2022,7 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		if t.Kind == "human" {
 			next = fmt.Sprintf("Card #%d has no open ask, so a new answer goes on the issue or on a new card.", t.IssueNumber)
 		}
-		return refuse(http.StatusConflict, err.Error()+". "+next)
+		return &timedRefusal{&refusal{http.StatusConflict, err.Error() + ". " + next}, ended.Moments()}
 	case errors.As(err, &refused), errors.As(err, &noRetry):
 		return refuse(http.StatusConflict, err.Error())
 	case errors.As(err, &capped):

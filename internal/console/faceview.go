@@ -63,10 +63,9 @@ type faceView struct {
 // run (Soon under an hour away), and its last run, a held run's words
 // (Held) or the card it runs (Running).
 type routineFoot struct {
-	Key, Title          string
-	Schedule, Next      string
-	Soon, Held, Running bool
-	Last                template.HTML
+	Key, Title, Schedule string
+	Next, Last           template.HTML
+	Soon, Held, Running  bool
 }
 
 // text is what face f says, in words: a card in Needs you its band, its
@@ -74,7 +73,7 @@ type routineFoot struct {
 func (f faceView) text() string {
 	w := []string{f.Ref, htmlText(f.Place), htmlText(f.Title) + f.Stop, htmlText(f.Why)}
 	for _, m := range f.Marks {
-		w = append(w, m.Words)
+		w = append(w, htmlText(m.Words))
 	}
 	if f.Unchecked {
 		w = append(w, "brief not checked")
@@ -174,7 +173,7 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 				f.Since = "waits for you, " + f.Since
 			}
 			if row.Owner != nil {
-				f.Marks = append(f.Marks, fine{factoryd.HelperStep(row.Owner.Source) + " asks", "flag"})
+				f.Marks = append(f.Marks, fine{escaped(factoryd.HelperStep(row.Owner.Source) + " asks"), "flag"})
 			}
 			c.askFace(ctx, v, &f, k, *row)
 		} else {
@@ -199,7 +198,8 @@ func (f *faceView) title(html template.HTML, words string) {
 
 // askFace sets face f of card k from its ask row: the ask as its title,
 // the card's own title where the ask is the fallback that names no work,
-// its why line, and the answer row, whose one button sends the suggested
+// its why line, both with the face's moments in the reader's zone, and the
+// answer row, whose one button sends the suggested
 // answer as the opened card's would.
 func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card, row caseRow) {
 	face := row.Face
@@ -207,8 +207,8 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 	if lead == factoryd.WorkDoneAsk {
 		lead = cmp.Or(factoryd.CardTitle(k.Task), lead)
 	}
-	f.title(c.linkRefs(ctx, v, k.Repository, lead), lead)
-	f.Why = c.linkRefs(ctx, v, k.Repository, face.Why)
+	f.title(timed(c.linkRefs(ctx, v, k.Repository, lead), face.Moments), lead)
+	f.Why = timed(c.linkRefs(ctx, v, k.Repository, face.Why), face.Moments)
 	facts := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case}
 	late, _ := lateAnswers(v, k, row, facts)
 	a := &askView{Position: row.At, Of: row.Of, Others: len(face.Offers) + len(late)}
@@ -455,7 +455,7 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 		return
 	}
 	if k.Checks != "" && k.Status == "in-review" {
-		f.Marks = append(f.Marks, fine{k.Checks + " checks", ""})
+		f.Marks = append(f.Marks, fine{escaped(k.Checks + " checks"), ""})
 	}
 	if k.NearBudget {
 		f.Marks = append(f.Marks, fine{"⚠ near its budget", "flag"})

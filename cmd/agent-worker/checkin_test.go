@@ -259,6 +259,9 @@ func readyToStart(t *testing.T) *sessionGateway {
 	// the seeded repo is its own base; an ambient REPO_SHA from the
 	// harness names a commit it does not carry
 	t.Setenv("REPO_SHA", "")
+	// the harness exports the session's tools (TOOLS); without this the
+	// brief's sandbox facts name them and no longer match SandboxFacts(nil, nil)
+	t.Setenv("TOOLS", "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {

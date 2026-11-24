@@ -247,27 +247,48 @@ func TestAMessageFindsItsAskByItsWhy(t *testing.T) {
 // TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal: the factory's
 // close of a card or a plan withdraws the ask, while an ask the factory
 // answers, a rung-0 press or a plan question's confirmation, reads as
-// answered by the factory.
+// answered by the factory. The lead is the line without its time, which a
+// screen shows in the reader's zone.
 func TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal(t *testing.T) {
 	at := time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)
 	settle := func(kind, by string) PokeSettle {
 		return PokeSettle{Word: SettleWord(kind), By: by, At: at, Event: Event{Kind: kind, Actor: by}}
 	}
 	for _, c := range []struct {
-		s    PokeSettle
-		want string
+		s          PokeSettle
+		lead, want string
 	}{
-		{settle(EventCardClosed, FactoryDecider), "withdrawn · 09:30"},
-		{settle(EventPlanClosed, FactoryDecider), "withdrawn · 09:30"},
-		{settle(EventQuestionWithdrawn, FactoryDecider), "withdrawn · 09:30"},
-		{settle(EventQuestionAnswered, FactoryDecider), "answered by the factory · 09:30"},
-		{settle(EventPlanQuestionAnswered, FactoryDecider), "answered by the factory · 09:30"},
-		{settle(EventTaskEnded, FactoryDecider), "moved on · 09:30"},
-		{settle(EventCardClosed, "sebastian"), "answered by sebastian · 09:30"},
-		{settle(EventQuestionAnswered, ChatUser), "answered by the factory agent · 09:30"},
+		{settle(EventCardClosed, FactoryDecider), "withdrawn", "withdrawn · 09:30"},
+		{settle(EventPlanClosed, FactoryDecider), "withdrawn", "withdrawn · 09:30"},
+		{settle(EventQuestionWithdrawn, FactoryDecider), "withdrawn", "withdrawn · 09:30"},
+		{settle(EventQuestionAnswered, FactoryDecider), "answered by the factory", "answered by the factory · 09:30"},
+		{settle(EventPlanQuestionAnswered, FactoryDecider), "answered by the factory", "answered by the factory · 09:30"},
+		{settle(EventTaskEnded, FactoryDecider), "moved on", "moved on · 09:30"},
+		{settle(EventCardClosed, "sebastian"), "answered by sebastian", "answered by sebastian · 09:30"},
+		{settle(EventQuestionAnswered, ChatUser), "answered by the factory agent", "answered by the factory agent · 09:30"},
 	} {
+		if got := ReasonLead(c.s); got != c.lead {
+			t.Errorf("ReasonLead(%s by %s) = %q, want %q", c.s.Event.Kind, c.s.By, got, c.lead)
+		}
 		if got := ReasonLine(c.s); got != c.want {
 			t.Errorf("ReasonLine(%s by %s) = %q, want %q", c.s.Event.Kind, c.s.By, got, c.want)
+		}
+	}
+}
+
+// A settled row's line says its time in UTC with no zone named, in winter
+// and in summer alike; a reason with no time stands alone.
+func TestSettleLineSaysTheTimeInUTC(t *testing.T) {
+	for _, c := range []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Date(2026, 1, 15, 23, 30, 0, 0, time.FixedZone("CET", 3600)), "answered by sebastian · 22:30"},
+		{time.Date(2026, 7, 1, 0, 15, 0, 0, time.FixedZone("CEST", 2*3600)), "answered by sebastian · 22:15"},
+		{time.Time{}, "answered by sebastian"},
+	} {
+		if got := SettleLine("answered by sebastian", c.at); got != c.want {
+			t.Errorf("SettleLine at %s = %q, want %q", c.at, got, c.want)
 		}
 	}
 }

@@ -234,7 +234,8 @@ type Events interface {
 	// id. A card with no event gets no entry.
 	TaskEventsFor(ctx context.Context, ids []string, limit int) (map[string][]Event, error)
 	// NewestTaskEvents are the newest event of each of tasks, keyed by task
-	// id: the board's activity line. A task with no event gets no entry.
+	// id: what the board's cards read their failure and stale ring from. A
+	// task with no event gets no entry.
 	NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error)
 }
 

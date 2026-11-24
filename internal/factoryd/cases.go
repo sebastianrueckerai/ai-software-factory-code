@@ -736,11 +736,20 @@ func (e ErrCaseEnded) Error() string {
 	if c.Resolution == nil || c.ResolvedAt == nil {
 		return fmt.Sprintf("%s is %s", words, c.Status)
 	}
-	at := c.ResolvedAt.UTC().Format("15:04")
+	at := e.Moments()[0].Words()
 	if c.Status == CaseWithdrawn {
-		return fmt.Sprintf("%s was withdrawn at %s UTC: %s", words, at, c.Resolution.Reason)
+		return fmt.Sprintf("%s was withdrawn at %s: %s", words, at, c.Resolution.Reason)
 	}
-	return fmt.Sprintf("%s was resolved by %s with %s at %s UTC", words, c.Resolution.By, c.Resolution.Action, at)
+	return fmt.Sprintf("%s was resolved by %s with %s at %s", words, c.Resolution.By, c.Resolution.Action, at)
+}
+
+// Moments are the instants the refusal names: when the case ended, none
+// for a case with no resolution.
+func (e ErrCaseEnded) Moments() Moments {
+	if e.Case.Resolution == nil || e.Case.ResolvedAt == nil {
+		return nil
+	}
+	return Moments{{At: e.Case.ResolvedAt.UTC(), Layout: LayoutClock}}
 }
 
 // CaseDraw is what an answer on Rung draws beside its resolution: a raise

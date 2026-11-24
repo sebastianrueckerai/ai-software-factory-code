@@ -596,21 +596,28 @@ func TestFilingFailsWithoutItsEvent(t *testing.T) {
 // An import row adds the step "Imported from GitHub" after the
 // repository's: waiting before the load, running until registration's
 // migrate and during it with its start, then done with its time or failed
-// with the row's state.
+// with the row's state. The start and the time read in the reader's zone:
+// 14:00 UTC in October is 16:00 CEST, 09:00 UTC in December 10:00 CET.
 func TestStatusShowsGitHubImport(t *testing.T) {
+	october, december := time.Date(2026, 10, 11, 14, 0, 0, 0, time.UTC), time.Date(2026, 12, 1, 9, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
 		load                bool
 		state, want, detail string
+		at                  time.Time
 	}{
-		{false, "pending", stepWaiting, "After the merge."},
-		{true, "pending", stepRunning, "Registration copies github.com/acme/app into the repository within a minute of the load."},
-		{true, "copying since 2026-10-11 14:00 UTC", stepRunning, "github.com/acme/app, copying since 2026-10-11 14:00 UTC."},
+		{false, "pending", stepWaiting, "After the merge.", time.Time{}},
+		{true, "pending", stepRunning, "Registration copies github.com/acme/app into the repository within a minute of the load.", time.Time{}},
+		{true, "copying since 2026-10-11 14:00 UTC", stepRunning,
+			`github.com/acme/app, copying since <time datetime="2026-10-11T14:00:00Z" data-layout="2006-01-02 15:04 MST">2026-10-11 16:00 CEST</time>.`, october},
+		{true, "copying since 2026-12-01 09:00 UTC", stepRunning,
+			`github.com/acme/app, copying since <time datetime="2026-12-01T09:00:00Z" data-layout="2006-01-02 15:04 MST">2026-12-01 10:00 CET</time>.`, december},
 		{true, "failed: forgejo POST /api/v1/repos/migrate: status 500: boom", stepFailed,
-			"The copy of github.com/acme/app failed: forgejo POST /api/v1/repos/migrate: status 500: boom. The reconcile tries again at least hourly."},
-		{true, "imported 2026-10-11 14:00 UTC", stepDone, "github.com/acme/app, imported 2026-10-11 14:00 UTC."},
+			"The copy of github.com/acme/app failed: forgejo POST /api/v1/repos/migrate: status 500: boom. The reconcile tries again at least hourly.", october},
+		{true, "imported 2026-10-11 14:00 UTC", stepDone,
+			`github.com/acme/app, imported <time datetime="2026-10-11T14:00:00Z" data-layout="2006-01-02 15:04 MST">2026-10-11 16:00 CEST</time>.`, october},
 	} {
 		s := newStatusRig(t)
-		s.mirrors.rows["linkshort import"] = factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", State: c.state}
+		s.mirrors.rows["linkshort import"] = factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", State: c.state, LastUpdate: c.at}
 		if c.load {
 			s.force.load("linkshort")
 		}

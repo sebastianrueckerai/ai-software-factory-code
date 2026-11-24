@@ -339,10 +339,17 @@ func (t *turn) save(m factoryd.ChatMessage) (int64, bool) {
 // chatGetAnswer is GET /chat's JSON body: the conversation read, its
 // thread, its messages and the state of each proposal among them, and
 // the fund state while the chat's budget stops it.
+// chatRow is a chat row as the page reads it: the row, and the moments its
+// content names as the page's script shows them.
+type chatRow struct {
+	factoryd.ChatMessage
+	Times []screenTime `json:"times,omitempty"`
+}
+
 type chatGetAnswer struct {
 	Conversation int64                     `json:"conversation"`
 	Thread       factoryd.ChatConversation `json:"thread"`
-	Messages     []factoryd.ChatMessage    `json:"messages"`
+	Messages     []chatRow                 `json:"messages"`
 	Proposals    []factoryd.ProposalState  `json:"proposals,omitempty"`
 	Budget       *chatBudget               `json:"budget,omitempty"`
 	// Pool is the project's pool line (ProjectPool) the panel's Set the
@@ -446,7 +453,11 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	if th.Tokens, th.CostEUR, err = c.cfg.Chat.ThreadTotals(ctx, t.threadRef()); err != nil {
 		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
 	}
-	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
+	rows := make([]chatRow, len(msgs))
+	for i, m := range msgs {
+		rows[i] = chatRow{m, screenTimes(m.Moments)}
+	}
+	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: rows, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
 	if v, ok := c.inForce(ctx); ok {
 		pl := c.ProjectPool(ctx, v, t.p, time.Now())
 		answer.Pool = &chatPool{Present: pl.Present, CanAsk: c.isApprover(ctx, t.a.s.user, repo), Words: pl.Words}
@@ -622,7 +633,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 	}
 	for i, m := range msgs {
 		if fundRow(m) {
-			msgs[i].Settled, msgs[i].Reason = fundSettle(m, stop)
+			msgs[i].Settled, msgs[i].Reason, msgs[i].SettledAt = fundSettle(m, stop)
 			continue
 		}
 		if m.Kind == factoryd.MessageAsk {
@@ -648,7 +659,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 				pressed = msgs[i+1+j].At
 			}
 			if s := choiceSettle(m, pressed, events[m.TaskID], login); !s.Open {
-				msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
+				msgs[i].Settled, msgs[i].Reason, msgs[i].SettledAt = true, factoryd.ReasonLead(s), s.At
 			}
 			continue
 		}
@@ -659,7 +670,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 			continue
 		}
 		if s := factoryd.SettleOf(m, events[m.TaskID], statuses[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
-			msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
+			msgs[i].Settled, msgs[i].Reason, msgs[i].SettledAt = true, factoryd.ReasonLead(s), s.At
 		} else if n := threads[m.TaskID]; n != 0 {
 			msgs[i].Thread, msgs[i].ThreadOwner = n, whose[m.TaskID]
 		}

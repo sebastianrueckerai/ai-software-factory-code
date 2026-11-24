@@ -791,7 +791,7 @@ func TestAFieldsIDMovesWithItsDefault(t *testing.T) {
 	}
 	id := func(count string) string {
 		f := factoryd.Facts{Card: factoryd.Task{ID: "t-1", Why: count}}
-		return r.c.answerOf(ctx, v, card{Task: f.Card}, "t-1-5", factoryd.ActExtend, a, f, press, nil).Fields[0].ID
+		return r.c.answerOf(ctx, v, card{Task: f.Card}, "t-1-5", factoryd.ActExtend, a, f, press, nil, nil).Fields[0].ID
 	}
 	if first, again, moved := id("1"), id("1"), id("2"); first != again || first == moved {
 		t.Errorf("the field's ids are %q, %q at the same count and %q at another; want one id per count", first, again, moved)

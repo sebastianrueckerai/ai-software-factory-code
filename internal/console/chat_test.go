@@ -3678,7 +3678,7 @@ func TestChatAskTypedMessageLeavesThePress(t *testing.T) {
 	var ask *factoryd.ChatMessage
 	for i := range answer.Messages {
 		if answer.Messages[i].Kind == factoryd.MessageAsk {
-			ask = &answer.Messages[i]
+			ask = &answer.Messages[i].ChatMessage
 		}
 	}
 	if ask == nil || ask.Settled || ask.ID != id || len(ask.Choices) != 2 || ask.Proposal != token {

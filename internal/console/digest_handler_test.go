@@ -117,7 +117,7 @@ var sandbox = {URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: functio
     getElementById: function () { return null; }, querySelectorAll: function () { return []; }, querySelector: function () { return null; },
     removeEventListener: function () {}, createElement: function () { return el(); },
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); }}};
-require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8") + require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 (listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); });
 function fold(sec) {
   var line = el({textContent: "Loading…"});
@@ -177,7 +177,7 @@ var sandbox = {URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: functio
     removeEventListener: function (type, fn) { listeners[type] = (listeners[type] || []).filter(function (f) { return f !== fn; }); },
     createElement: function () { return el(); },
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); }}};
-require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8") + require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 (listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); });
 function settle(path, elt, target) {
   target = target || drawer;

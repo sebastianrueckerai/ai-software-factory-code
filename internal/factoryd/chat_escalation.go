@@ -93,11 +93,16 @@ func askQuestion(ask string) string {
 
 // Refaced is human card t once its live ask says q, with the facts that
 // ask's case takes: the card's title and why line are q's ask and why, as
-// HumanCardText files them, and its text stays as it was filed.
+// HumanCardText files them, and its text stays as it was filed, so the
+// ask's moments are q's and the card's own, which that text names.
 func Refaced(t Task, q HumanQuestion) (Task, map[string]any) {
 	_, body, _ := strings.Cut(t.Objective, "\n\n")
 	t.Objective, t.Why = IssueObjective(askTitle(q), body), q.Why
-	return t, map[string]any{"ask": q.Ask, "question": askQuestion(q.Ask), "why": q.Why, "happened": q.Happened}
+	said := slices.Clone(q.Moments)
+	for _, m := range t.Moments {
+		said.Say(m.At, m.Layout)
+	}
+	return t, map[string]any{"ask": q.Ask, "question": askQuestion(q.Ask), "why": q.Why, "happened": q.Happened, "moments": said}
 }
 
 // questionBody is a human card's text: the question's parts in order but
@@ -147,6 +152,9 @@ func (a HumanAsk) Event(t Task) Event {
 		if line != "" {
 			asked[key] = line
 		}
+	}
+	if len(a.Q.Moments) > 0 {
+		asked["moments"] = a.Q.Moments
 	}
 	if a.Q.Recommendation != "" {
 		asked["recommendation"], asked["recommended_by"] = a.Q.Recommendation, cmp.Or(a.Q.Source, "the factory")
@@ -218,6 +226,9 @@ type HumanQuestion struct {
 	Happened string `json:"happened,omitempty"`
 	Waits    string `json:"waits,omitempty"`
 	Check    string `json:"check,omitempty"`
+	// Moments are the instants its texts name, which a screen shows in
+	// the reader's zone.
+	Moments Moments `json:"moments,omitempty"`
 }
 
 // The caps an escalation names.

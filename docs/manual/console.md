@@ -11,8 +11,22 @@ the webhook and intake API on `:8080` stay in-cluster. Server-rendered
 decimals: a task's model calls cost fractions of a cent. Every time a
 screen shows is a `<time datetime>` of the instant in UTC whose text the
 server writes in Europe/Berlin (CET, CEST) and `static/time.js` writes
-again in the browser's own zone, on load and after every swap; the
-periods the caps and the ledger count still turn at 00:00 UTC.
+again in the browser's own zone, on load and after every swap. The
+periods the caps and the ledger count still turn at 00:00 UTC. A text
+that the agents, an issue or a messenger also read says its times in UTC
+words and keeps each instant beside its words (`moments`): an ask's row
+and its stored face, a card's objective (`tasks.moments`) and a chat row
+(`chat_messages.moments`). A screen shows those words as such a
+`<time>`: the server writes it in a page (`timed`), and the browser
+writes it in the chat and in a refused press's flash (`timed` in
+`time.js`, from a row's `times` or the refusal's `X-Times` header). The
+settle line of a chat row shows its time in the browser's zone, while
+the inbox tool and the messengers read it in UTC with no zone named. A
+routine's next run and its runs show in the browser's zone too. These
+keep their UTC words on a screen on purpose: a card's raw stop text, the
+text a card's agent gets, the timeline's raw JSON details, an agent
+tool's result in the chat, and a cluster job's cron words on the
+resources page, a period that recurs and no instant.
 
 - Login: Forgejo OAuth2 authorization code with PKCE (S256), confidential
   client `factory-console` (secret `console-oauth`: `client_id`,

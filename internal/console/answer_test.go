@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -534,7 +533,7 @@ func TestChatSettlesRows(t *testing.T) {
 		return out[i]
 	}
 	equal(t, "the unread inbox's split", []int64{list().NeedsYou, list().NewRows, list().Unread}, []int64{1, 3, 4})
-	read := func() []factoryd.ChatMessage {
+	read := func() []chatRow {
 		t.Helper()
 		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
 		if rec.Code != http.StatusOK {
@@ -546,13 +545,12 @@ func TestChatSettlesRows(t *testing.T) {
 		}
 		return answer.Messages
 	}
-	var reason = regexp.MustCompile(`^(answered by sebastian|moved on) · \d\d:\d\d$`)
 	msgs := read()
 	equal(t, "the settled asks and the open one", []bool{msgs[0].Settled, msgs[1].Settled, msgs[2].Settled, msgs[3].Settled},
 		[]bool{true, true, false, false})
 	for i, want := range []string{"answered by sebastian", "moved on", "", ""} {
-		if got := msgs[i].Reason; want == "" && got != "" || want != "" && (!reason.MatchString(got) || !strings.HasPrefix(got, want)) {
-			t.Errorf("row %d's reason = %q, want %q at HH:MM", i, got, want)
+		if got := msgs[i].Reason; got != want || (want != "") == msgs[i].SettledAt.IsZero() {
+			t.Errorf("row %d's reason = %q at %s, want %q at a time", i, got, msgs[i].SettledAt, want)
 		}
 	}
 	equal(t, "the inbox's split after the read", []int64{list().NeedsYou, list().NewRows, list().Unread}, []int64{1, 0, 0})

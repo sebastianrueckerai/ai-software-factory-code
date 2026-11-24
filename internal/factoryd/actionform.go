@@ -28,6 +28,9 @@ func AnswersByOffers(c Case) bool {
 // suggested one preselected with who suggests it and why.
 func FaceKeys(face AskFace) map[string]any {
 	keys := map[string]any{"ask": face.Ask, "why": face.Why, "story": face.Story, "offers": offersOfAnswers(face.Answers), "findings": face.Findings}
+	if len(face.Moments) > 0 {
+		keys["moments"] = face.Moments
+	}
 	if face.Suggested != "" {
 		pre := map[string]any{"action": face.Suggested}
 		if face.SuggestedArgs != nil {

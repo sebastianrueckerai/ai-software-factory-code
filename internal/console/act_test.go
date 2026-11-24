@@ -370,9 +370,16 @@ func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	r.actErr = factoryd.ErrCaseEnded{Case: factoryd.Case{ID: 1, Status: factoryd.CaseResolved, ResolvedAt: &at,
 		Resolution: &factoryd.CaseResolution{By: "sebastian", Action: "answer"}}}
-	if rec := press(r); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "has no open ask, so a new answer goes on the issue or on a new card") ||
+	rec := press(r)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "has no open ask, so a new answer goes on the issue or on a new card") ||
 		len(r.fg.patched) != 0 || len(r.fg.commentBodies(comments)) != 0 {
 		t.Fatalf("the close the webhook answered first = %d %q, patched %v; want the refusal and no work", rec.Code, rec.Body, r.fg.patched)
+	}
+	// the sentence keeps the case's end in UTC, and the flash reads it in
+	// the browser's zone
+	if !strings.Contains(rec.Body.String(), "with answer at 10:04 UTC.") ||
+		rec.Header().Get("X-Times") != `[{"words":"10:04 UTC","at":"2026-11-03T10:04:00Z","layout":"15:04 MST"}]` {
+		t.Fatalf("the refusal %q with X-Times %q, want 10:04 UTC beside its instant", rec.Body, rec.Header().Get("X-Times"))
 	}
 }
 

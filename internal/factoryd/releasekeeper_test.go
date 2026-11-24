@@ -205,6 +205,7 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		Choices:  holdChoices,
 		Happened: "Production of sf-demo-app has waited 6 hours for plan #12, which has 2 of 4 cards merged.",
 		Waits:    "Production of sf-demo-app stays held while plan #12 is open on main.",
+		Moments:  Moments{{At: time.Date(2026, 10, 29, 10, 0, 0, 0, time.UTC), Layout: LayoutStamp}},
 	}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("question\n%+v, want\n%+v", q, want)
@@ -351,6 +352,7 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 				Choices:  choices,
 				Happened: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main.",
 				Waits:    "Production of sf-demo-app stays held while " + c.reason + " are open on main.",
+				Moments:  Moments{{At: time.Date(2026, 10, 29, 9, 50, 0, 0, time.UTC), Layout: LayoutStamp}},
 			}
 			if !reflect.DeepEqual(q, want) {
 				t.Errorf("question\n%+v, want\n%+v", q, want)

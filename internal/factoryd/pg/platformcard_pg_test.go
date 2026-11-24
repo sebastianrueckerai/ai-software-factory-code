@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -66,14 +67,23 @@ func TestPlatformCardFaceIsOneWritePG(t *testing.T) {
 		}
 		return card.Objective, info, freezeAskRows(t, s, id)
 	}
-	if err := s.FacePlatformCard(ctx, "pd-new", "the second face", "what the second face says"); err != nil {
+	said := factoryd.Moments{{At: base.Add(2 * time.Hour), Layout: factoryd.LayoutDay}}
+	if err := s.FacePlatformCard(ctx, "pd-new", "the second face, at 23 Nov 12:00 UTC", "what the second face says, at 23 Nov 12:00 UTC", said); err != nil {
 		t.Fatal(err)
 	}
-	if face, info, asks := state("pd-new"); face != "the second face" || info != "what the second face says" || asks != 1 {
+	if face, info, asks := state("pd-new"); face != "the second face, at 23 Nov 12:00 UTC" || info != "what the second face says, at 23 Nov 12:00 UTC" || asks != 1 {
 		t.Fatalf("after FacePlatformCard the card stands under %q and its %d asks know %q; want the second face on both, and no second ask", face, asks, info)
 	}
+	// the face's instant stands beside it on the card and on its ask
+	var asked []byte
+	if err := s.DB().QueryRowContext(ctx, `SELECT detail->'moments' FROM events WHERE task_id = 'pd-new' AND kind = $1 ORDER BY id DESC LIMIT 1`, EventQuestionAsked).Scan(&asked); err != nil {
+		t.Fatal(err)
+	}
+	if card, _, _ := s.Task(ctx, "pd-new"); !reflect.DeepEqual(card.Moments, said) || string(asked) != `[{"at": "2026-11-23T12:00:00Z", "layout": "2 Jan 15:04"}]` {
+		t.Fatalf("the card's moments %+v and its ask's %s, want %+v on both", card.Moments, asked, said)
+	}
 	for _, id := range []string{"hu", "pd-gone"} {
-		if err := s.FacePlatformCard(ctx, id, "a face", "what it says"); !errors.Is(err, factoryd.ErrNotFound) {
+		if err := s.FacePlatformCard(ctx, id, "a face", "what it says", nil); !errors.Is(err, factoryd.ErrNotFound) {
 			t.Fatalf("FacePlatformCard on %s = %v, want ErrNotFound", id, err)
 		}
 	}

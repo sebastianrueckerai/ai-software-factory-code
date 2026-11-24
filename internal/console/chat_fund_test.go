@@ -223,8 +223,8 @@ func TestChatStopLiftsOnAFundOrAPolicyRaise(t *testing.T) {
 	}
 	funds := eventsOf(r, factoryd.EventChatFunded)
 	answer := chatRead(t, r, ck, chatPath)
-	if want := "funded by sebastian · " + funds[0].At.UTC().Format("15:04"); answer.Budget != nil || !answer.Messages[1].Settled || answer.Messages[1].Reason != want {
-		t.Fatalf("GET /chat after the fund: budget %+v, the stop %+v; want no fund and the stop settled %q", answer.Budget, answer.Messages[1], want)
+	if stop := answer.Messages[1]; answer.Budget != nil || !stop.Settled || stop.Reason != "funded by sebastian" || !stop.SettledAt.Equal(funds[0].At) {
+		t.Fatalf("GET /chat after the fund: budget %+v, the stop %+v; want no fund and the stop settled by the fund at %s", answer.Budget, answer.Messages[1], funds[0].At)
 	}
 	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, `>judgment budget spent</span>`) {
 		t.Fatal("the board keeps the stopped chat's cell after the fund")

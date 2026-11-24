@@ -1772,7 +1772,7 @@ func (s *fakeStore) FreezeCards(ctx context.Context, status string) ([]Task, err
 // EndFreezeCard ends the fake's waiting freeze card t as the store's
 // transaction does: all of it, or nothing and false when the row no longer
 // waits or a close record stands on the issue.
-func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment string) (bool, error) {
+func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment string, said Moments) (bool, error) {
 	c, ok := s.tasks[t.ID]
 	if !ok || c.Status != "waiting-human" || c.Source != SourceFreezeCard {
 		return false, nil
@@ -1787,7 +1787,7 @@ func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment str
 			Author: FactoryDecider, CommentID: t.IssueNumber, Body: comment, CreatedAt: s.clock()})
 	}
 	if face != "" {
-		c.Objective = face
+		c.Objective, c.Moments = face, said.In(face)
 		s.tasks[t.ID] = c
 	}
 	if err := s.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
@@ -1840,13 +1840,13 @@ func (s *fakeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment 
 
 // FaceFreezeCard writes face on the fake's freeze card and info on its
 // newest ask, as the store's transaction does.
-func (s *fakeStore) FaceFreezeCard(ctx context.Context, taskID, face, info string) error {
-	if s.tasks[taskID].Source != SourceFreezeCard {
+func (s *fakeStore) FaceFreezeCard(ctx context.Context, taskID, face, info string, said Moments) error {
+	c := s.tasks[taskID]
+	if c.Source != SourceFreezeCard {
 		return fmt.Errorf("freeze card %s: %w", taskID, ErrNotFound)
 	}
-	if err := s.SetObjective(ctx, taskID, face); err != nil {
-		return err
-	}
+	c.Objective, c.Moments = face, said.In(face)
+	s.tasks[taskID] = c
 	return s.SetAskInfo(ctx, taskID, SourceFreezeCard, info)
 }
 
@@ -1858,9 +1858,9 @@ func (s *fakeStore) AskFreezeCard(ctx context.Context, t Task, face string, ask 
 	if !ok || was.Source != SourceFreezeCard {
 		return fmt.Errorf("freeze card %s: %w", t.ID, ErrNotFound)
 	}
-	if err := s.SetObjective(ctx, t.ID, face); err != nil {
-		return err
-	}
+	c := was
+	c.Objective, c.Moments = face, ask.Q.Moments.In(face)
+	s.tasks[t.ID] = c
 	if _, err := s.Record(ctx, ask.Event(t)); err != nil {
 		s.tasks[t.ID] = was
 		return err

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -95,11 +96,11 @@ func (s *freezeStore) SetObjective(ctx context.Context, id, objective string) er
 	return s.fakeStore.SetObjective(ctx, id, objective)
 }
 
-func (s *freezeStore) EndFreezeCard(ctx context.Context, t Task, face, comment string) (bool, error) {
+func (s *freezeStore) EndFreezeCard(ctx context.Context, t Task, face, comment string, said Moments) (bool, error) {
 	if err := s.write("EndFreezeCard"); err != nil {
 		return false, err
 	}
-	return s.fakeStore.EndFreezeCard(ctx, t, face, comment)
+	return s.fakeStore.EndFreezeCard(ctx, t, face, comment, said)
 }
 
 func (s *freezeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string, ask HumanAsk) (string, error) {
@@ -109,14 +110,14 @@ func (s *freezeStore) ReopenFreezeCard(ctx context.Context, t Task, face, commen
 	return s.fakeStore.ReopenFreezeCard(ctx, t, face, comment, ask)
 }
 
-func (s *freezeStore) FaceFreezeCard(ctx context.Context, taskID, face, info string) error {
+func (s *freezeStore) FaceFreezeCard(ctx context.Context, taskID, face, info string, said Moments) error {
 	if s.failFace {
 		return errors.New("the store is away")
 	}
 	if err := s.write("FaceFreezeCard"); err != nil {
 		return err
 	}
-	return s.fakeStore.FaceFreezeCard(ctx, taskID, face, info)
+	return s.fakeStore.FaceFreezeCard(ctx, taskID, face, info, said)
 }
 
 func (s *freezeStore) AskFreezeCard(ctx context.Context, t Task, face string, ask HumanAsk) error {
@@ -1033,12 +1034,12 @@ type failOnce struct {
 	failed bool
 }
 
-func (s *failOnce) FaceFreezeCard(ctx context.Context, id, face, info string) error {
+func (s *failOnce) FaceFreezeCard(ctx context.Context, id, face, info string, said Moments) error {
 	if id == s.id && !s.failed {
 		s.failed = true
 		return errors.New("the store is down")
 	}
-	return s.freezeStore.FaceFreezeCard(ctx, id, face, info)
+	return s.freezeStore.FaceFreezeCard(ctx, id, face, info, said)
 }
 
 // The class_resumed row of 13:30 reaches the watcher at 13:31, and sf/other's
@@ -1715,9 +1716,14 @@ func TestFreezeCardPressAfterAResumeKeepsItsEpisode(t *testing.T) {
 	if err := w.CloseOnRetry(ctx, "sf/acme", "big", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
-	want := freezePressedBody("big", "sebastian", now, reset)
-	if c := freezeCardOn(t, store, 1); c.Status != "done" || c.Objective != want {
-		t.Fatalf("the pressed card stands %s:\n%s\nwant the press's face:\n%s", c.Status, c.Objective, want)
+	want := freezePressedBody("big", "sebastian", now, reset, new(Moments))
+	// the press at 12:10 and the reset at 17:00, as the face names them
+	said := Moments{{At: base.Add(10 * time.Minute), Layout: LayoutRFC3339}, {At: base.Add(5 * time.Hour), Layout: LayoutRFC3339}}
+	if c := freezeCardOn(t, store, 1); c.Status != "done" || c.Objective != want || !reflect.DeepEqual(c.Moments, said) {
+		t.Fatalf("the pressed card stands %s:\n%s\n%+v\nwant the press's face and its two instants:\n%s", c.Status, c.Objective, c.Moments, want)
+	}
+	if !strings.Contains(want, "closed this card at 2026-11-21T12:10:00Z: sebastian") || !strings.Contains(want, "resets at 2026-11-21T17:00:00Z (the reset") {
+		t.Fatalf("the press's face %q, want its stamps in UTC", want)
 	}
 	w = freezeWatcher(store, forgejo, &now)
 	now = base.Add(12 * time.Minute)

@@ -1445,7 +1445,7 @@ func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, re
 	if _, err := call(ctx, http.MethodDelete, "/api/v1/repos/"+repo.String(), nil, http.StatusNoContent); err != nil {
 		return "", fmt.Errorf("delete the empty repository a cut or refused copy of github.com/%s left: %w", m.Remote, err)
 	}
-	log.Printf("project %s: repository %s: deleted, empty since %s: the copy of github.com/%s was cut or refused, it copies again", name, repo, res.Created.UTC().Format(minuteUTC), m.Remote)
+	log.Printf("project %s: repository %s: deleted, empty since %s: the copy of github.com/%s was cut or refused, it copies again", name, repo, Moment{At: res.Created, Layout: LayoutStamp}.Words(), m.Remote)
 	return "", r.copy(ctx, a, name, repo, m)
 }
 
@@ -1494,10 +1494,8 @@ func (r *Registrar) sourceEmpty(ctx context.Context, m Mirror) (bool, error) {
 // errCopying is registration's wait for a project's copy from GitHub.
 var errCopying = errors.New("copying")
 
-const minuteUTC = "2006-01-02 15:04 UTC"
-
 func copyingSince(m Mirror) error {
-	return fmt.Errorf("%w github.com/%s since %s", errCopying, m.Remote, m.LastUpdate.UTC().Format(minuteUTC))
+	return fmt.Errorf("%w github.com/%s since %s", errCopying, m.Remote, Moment{At: m.LastUpdate, Layout: LayoutStamp}.Words())
 }
 
 // copy writes name's import row m copying since now and starts its
@@ -1510,7 +1508,7 @@ func copyingSince(m Mirror) error {
 // leftover over 20 minutes old and copies again.
 func (r *Registrar) copy(ctx context.Context, a AdminAuth, name string, repo Repo, m Mirror) error {
 	m.LastUpdate = time.Now()
-	m.State = "copying since " + m.LastUpdate.UTC().Format(minuteUTC)
+	m.State = "copying since " + Moment{At: m.LastUpdate, Layout: LayoutStamp}.Words()
 	if err := r.Mirrors.SetMirrorState(ctx, name, MirrorImport, m.State, "", m.LastUpdate); err != nil {
 		return err
 	}
@@ -1566,7 +1564,7 @@ func (r *Registrar) copied(ctx context.Context, name string, m Mirror, err error
 func (r *Registrar) imported(ctx context.Context, name string, m Mirror) (Change, error) {
 	now := time.Now()
 	return Change("imported from " + m.Remote), errors.Join(r.Mirrors.SetMirrorToken(ctx, name, MirrorImport, ""),
-		r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "imported "+now.UTC().Format(minuteUTC), "", now))
+		r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "imported "+Moment{At: now, Layout: LayoutStamp}.Words(), "", now))
 }
 
 // adminAuth reads the site admin's login from OpenBao; the caller holds it

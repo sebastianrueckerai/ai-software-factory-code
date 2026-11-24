@@ -34,9 +34,9 @@ type PlatformCardStore interface {
 	// PlatformCards lists the platform cards, every repository's in any
 	// status, newest first.
 	PlatformCards(ctx context.Context) ([]Task, error)
-	// FacePlatformCard writes objective on platform card id and info on
-	// its newest ask, in one transaction.
-	FacePlatformCard(ctx context.Context, id, objective, info string) error
+	// FacePlatformCard writes objective on platform card id and info, with
+	// the moments said of it, on its newest ask, in one transaction.
+	FacePlatformCard(ctx context.Context, id, objective, info string, said Moments) error
 	Task(ctx context.Context, id string) (Task, bool, error)
 }
 
@@ -107,9 +107,10 @@ func (w *PlatformCard) Check(ctx context.Context) error {
 		}
 	}
 	if open != nil {
-		info := platformDeathsInfo(deaths, hit, open.Repository)
+		var said Moments
+		info := platformDeathsInfo(deaths, hit, open.Repository, &said)
 		if face := IssueObjective(platformCardTitle, info); face != open.Objective {
-			return w.Store.FacePlatformCard(ctx, open.ID, face, info)
+			return w.Store.FacePlatformCard(ctx, open.ID, face, info, said)
 		}
 		return nil
 	}
@@ -253,27 +254,27 @@ func (w *PlatformCard) fileRepo(ctx context.Context, deaths []PodDeath, hit map[
 // id. Its story names the deaths' span, which later deaths leave true.
 func PlatformDeathsQuestion(deaths []PodDeath, hit map[string]Task, repo string) HumanQuestion {
 	b := SourceBriefs[SourcePlatformDeaths](BriefFacts{})
-	q := HumanQuestion{Ask: b.Title, Why: b.Why, Info: platformDeathsInfo(deaths, hit, repo), Choices: choices(ActClose+"/"+variantNoted, KeyPark)}
+	q := HumanQuestion{Ask: b.Title, Why: b.Why, Choices: choices(ActClose+"/"+variantNoted, KeyPark)}
+	q.Info = platformDeathsInfo(deaths, hit, repo, &q.Moments)
 	if len(deaths) > 0 {
-		span := "at " + dayStamp(deaths[0].Record.At)
-		if oldest := dayStamp(deaths[len(deaths)-1].Record.At); oldest != dayStamp(deaths[0].Record.At) {
-			span = "between " + oldest + " and " + dayStamp(deaths[0].Record.At)
+		newest, oldest := deaths[0].Record.At, deaths[len(deaths)-1].Record.At
+		span := "at " + q.Moments.Say(newest, LayoutDay)
+		if (Moment{At: oldest, Layout: LayoutDay}).Words() != (Moment{At: newest, Layout: LayoutDay}).Words() {
+			span = "between " + q.Moments.Say(oldest, LayoutDay) + " and " + q.Moments.Say(newest, LayoutDay)
 		}
 		q.Happened = "The platform ended the factory's work " + textutil.Plural(len(deaths), "time", "times") + " " + span + "."
 	}
 	return q
 }
 
-// dayStamp is at in UTC with its day, "23 Nov 14:02 UTC".
-func dayStamp(at time.Time) string { return at.UTC().Format("2 Jan 15:04") + " UTC" }
-
 // platformDeathsInfo is the platform card's face on repository repo: the
-// count of deaths and the newest platformDeathsShown, one a line.
-func platformDeathsInfo(deaths []PodDeath, hit map[string]Task, repo string) string {
+// count of deaths and the newest platformDeathsShown, one a line, the
+// instants it names kept in said.
+func platformDeathsInfo(deaths []PodDeath, hit map[string]Task, repo string, said *Moments) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "The platform ended the factory's work %s, newest first:\n\n", textutil.Plural(len(deaths), "time", "times"))
 	for _, d := range deaths[:min(len(deaths), platformDeathsShown)] {
-		b.WriteString("- " + platformDeathLine(d, hit[d.TaskID], repo) + "\n")
+		b.WriteString("- " + platformDeathLine(d, hit[d.TaskID], repo, said) + "\n")
 	}
 	if more := len(deaths) - platformDeathsShown; more > 0 {
 		fmt.Fprintf(&b, "- and %d more\n", more)
@@ -283,10 +284,10 @@ func platformDeathsInfo(deaths []PodDeath, hit map[string]Task, repo string) str
 	return b.String()
 }
 
-// platformDeathLine is death d as the card on repository repo lists it;
-// card is the card it hit, a card of another repository named with its
-// repository.
-func platformDeathLine(d PodDeath, card Task, repo string) string {
+// platformDeathLine is death d as the card on repository repo lists it,
+// its time kept in said; card is the card it hit, a card of another
+// repository named with its repository.
+func platformDeathLine(d PodDeath, card Task, repo string, said *Moments) string {
 	who := "a CI job"
 	if d.Kind != "ci" {
 		switch {
@@ -301,7 +302,7 @@ func platformDeathLine(d PodDeath, card Task, repo string) string {
 			who = "a gate of " + who
 		}
 	}
-	return dayStamp(d.Record.At) + ", " + who + ": " + platformCause(d.Record)
+	return said.Say(d.Record.At, LayoutDay) + ", " + who + ": " + platformCause(d.Record)
 }
 
 // platformCause is what ended the pod, on its node when the record names
@@ -320,19 +321,19 @@ func (s *PGStore) PlatformCards(ctx context.Context) ([]Task, error) {
 }
 
 // FacePlatformCard writes objective on platform card id and info on the
-// card's newest ask of its own, in one transaction. A card that is no
-// platform card is ErrNotFound.
-func (s *PGStore) FacePlatformCard(ctx context.Context, id, objective, info string) error {
+// card's newest ask of its own, with the moments said of info, in one
+// transaction. A card that is no platform card is ErrNotFound.
+func (s *PGStore) FacePlatformCard(ctx context.Context, id, objective, info string, said Moments) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, sourceFaceSQL, id, objective, SourcePlatformDeaths)
+	res, err := tx.ExecContext(ctx, sourceFaceSQL, id, objective, SourcePlatformDeaths, momentsJSON(said.In(objective)))
 	if err := oneRow(res, err, "platform card "+id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, askInfoSQL, id, info, EventQuestionAsked, SourcePlatformDeaths); err != nil {
+	if _, err := tx.ExecContext(ctx, askInfoSQL, id, info, EventQuestionAsked, SourcePlatformDeaths, momentsJSON(said)); err != nil {
 		return err
 	}
 	return tx.Commit()

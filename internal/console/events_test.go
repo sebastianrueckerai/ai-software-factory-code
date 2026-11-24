@@ -987,8 +987,8 @@ func TestStreamEndsAtTheServersShutdown(t *testing.T) {
 // for byte, under the board's filter: the escalated card in its column and
 // in the escalations, queued cards, a done plan with its rollup, a plan's
 // cards with Retry and their plan's issue, the blocked, waiting and merge
-// queue lines, a human task, an accent, an unchecked brief and an
-// activity line.
+// queue lines, a human task, an accent, an unchecked brief and a card
+// with an event.
 func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	withLinkshort(r)
@@ -1463,7 +1463,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
   htmx: {ajax: function (verb, url) { requests.push(verb + " " + url); return new Promise(function (ok) { pending.push(ok); }); }, swap: function () {}, process: function () {}},
   getSelection: function () { return {isCollapsed: true}; },
   window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }}};
-require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8") + require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 function fire(type, e) { (listeners[type] || []).forEach(function (fn) { fn(e || {}); }); }
 function settle() {
   pending.splice(0).forEach(function (ok) { ok(); });
@@ -1671,7 +1671,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
     createElement: function () { return el(); },
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
-require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8") + require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 listeners.DOMContentLoaded.forEach(function (fn) { fn(); });
 function settle() {
   pending.splice(0).forEach(function (ok) { ok(); });

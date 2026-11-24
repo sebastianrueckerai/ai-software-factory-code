@@ -30,7 +30,7 @@ func ghostIn(t *testing.T, section, name string) string {
 // #781 done two days after it was filed.
 func soonBump() factoryd.RoutineView {
 	v := weeklyBump()
-	v.Next, v.Soon, v.NextWords = time.Now().Add(20*time.Minute+30*time.Second), true, "Mon 06:00"
+	v.Next, v.Soon, v.NextWords, v.NextLayout = time.Now().Add(20*time.Minute+30*time.Second), true, "Mon 06:00", "Mon 15:04"
 	filed := time.Now().Add(-7 * 24 * time.Hour)
 	v.Last = factoryd.RoutineRun{Project: v.Project, Routine: v.Routine.Name, Run: 14, Started: filed, Ended: filed.Add(50 * time.Hour),
 		Trigger: "cron", TaskID: "t-781", Issue: 781, Outcome: "done"}
@@ -78,7 +78,7 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 		`<article class="card face ghost"`,
 		`<button type="button" class="open" data-routine="ai-software-factory-code/weekly-bump"><span class="visually-hidden">Open the routine Weekly bump</span></button>`,
 		`<p class="para"><span class="glyph" aria-hidden="true">↻</span> <strong class="title">Weekly bump</strong>.</p>`,
-		`<p class="foot"><span class="it">every Monday 06:00</span> <span class="it soon">Mon 06:00 · in 20 min · human card</span> ` +
+		`<p class="foot"><span class="it">every Monday 06:00</span> <span class="it soon">` + string(moment(bump.Next, "Mon 15:04 MST")) + ` · in 20 min · human card</span> ` +
 			`<span class="it">last run <a class="ref-link" href="#card=t-781">#781</a> <span class="ref-of">(needs you)</span></span></p>`,
 	} {
 		if !strings.Contains(bumpG, want) {
@@ -315,7 +315,7 @@ func TestHeldGhostSpeaks(t *testing.T) {
 		t.Fatal("the strip does not say held")
 	}
 	// the held run's words stand in for its last line, under the next run
-	if !strings.Contains(g, `<span class="it soon">Mon 06:00 · in 20 min · human card</span> <span class="it held">held: <a class="ref-link"`) ||
+	if !strings.Contains(g, `<span class="it soon">`+string(moment(bump.Next, "Mon 15:04 MST"))+` · in 20 min · human card</span> <span class="it held">held: <a class="ref-link"`) ||
 		strings.Contains(g, "last held") {
 		t.Fatalf("the held ghost does not name its next run, or repeats the held run as its last:\n%s", g)
 	}
@@ -380,7 +380,7 @@ func TestGhostShowsAPendingSkip(t *testing.T) {
 	r.routines.onSkip = func(_, _ string, skip bool) { r.routines.views[0].State.SkipNext = skip }
 	ck, s := r.loggedIn(t)
 	g := ghostIn(t, col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued"), "weekly-bump")
-	if !strings.Contains(g, `<span class="it">skipped once · next Mon 20 Oct 06:00 · in `) {
+	if !strings.Contains(g, `<span class="it">skipped once · next <time datetime="2026-10-20T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Tue 20 Oct 08:00 CEST</time> · in `) {
 		t.Fatalf("the skipped ghost does not say so:\n%s", g)
 	}
 	acts := func() string {

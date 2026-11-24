@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"html/template"
 	"log"
 	"net/http"
 	"strconv"
@@ -24,7 +25,7 @@ type roomView struct {
 	Count           fieldView
 	Each, EachID    string
 	Swap            bool
-	Why             string
+	Why             template.HTML
 	Readout         factoryd.Readout
 	Tick            tickView
 	Touched         hidden
@@ -53,18 +54,19 @@ func readoutOf(f factoryd.CaseFacts, get func(field string) string, at string, n
 	if touched {
 		v.Touched.Value = "yes"
 	}
+	var why string
 	args, _, err := factoryd.ArgsOf(answer, get)
 	if err != nil {
-		v.Why = err.Error()
+		why = err.Error()
 	} else {
 		if n, _ := args["sessions"].(int); !touched {
 			v.Tick.Checked = factoryd.RoomFor(f, n, true).EUR > 0
 			args["money"] = v.Tick.Checked
 		}
-		v.Why = factoryd.HumanRefusal(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: args})
+		why = factoryd.HumanRefusal(f, factoryd.Resolution{Action: factoryd.ActExtend, Args: args})
 	}
-	if v.Why != "" {
-		v.Why = strings.ToUpper(v.Why[:1]) + v.Why[1:] + "."
+	if why != "" {
+		v.Why = timed(escaped(strings.ToUpper(why[:1])+why[1:]+"."), f.Said())
 		return v
 	}
 	n, _ := args["sessions"].(int)

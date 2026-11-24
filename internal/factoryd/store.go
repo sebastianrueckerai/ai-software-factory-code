@@ -40,8 +40,11 @@ type Task struct {
 	CeilingEUR           float64 // the most this card may be funded to, 0 for the policy's
 	Status               string
 	Objective            string
-	Repository           string
-	SHA                  string
+	// Moments are the instants Objective names, beside their UTC words
+	// (Moment): a screen shows them in the reader's zone.
+	Moments    Moments
+	Repository string
+	SHA        string
 	// Kind is "agent" (an agent run, the default) or "human" (Stage 7's
 	// person's card: no agent run).
 	Kind string
@@ -1268,20 +1271,20 @@ func InsertTask(ctx context.Context, db interface {
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
 		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, ceiling_eur,
-		                    why, summary, brief_unchecked, chat_filed, tool_image, plan_revision)
+		                    why, summary, brief_unchecked, chat_filed, tool_image, plan_revision, moments)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
          CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, NULLIF($35::numeric, 0),
-         $36, $37, $38, $39, NULLIF($40, ''), $41)
+         $36, $37, $38, $39, NULLIF($40, ''), $41, $42::jsonb)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem,
 		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.CeilingEUR,
-		t.Why, t.Summary, t.BriefUnchecked, t.ChatFiled, t.ToolImage, t.PlanRevision)
+		t.Why, t.Summary, t.BriefUnchecked, t.ChatFiled, t.ToolImage, t.PlanRevision, momentsJSON(t.Moments))
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
 	}
@@ -1476,7 +1479,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 	why, summary, brief_unchecked, chat_filed, COALESCE(tool_image, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
 	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason,
-	hold_at, hold_by, hold_reason, COALESCE(hold_release, '')`
+	hold_at, hold_by, hold_reason, COALESCE(hold_release, ''), moments`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1484,7 +1487,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 // ends empty strings, and fromJSON's columns must unmarshal.
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
-	var caps, ships, egress []byte
+	var caps, ships, egress, moments []byte
 	var hold CardHold
 	var holdAt *time.Time
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
@@ -1494,8 +1497,13 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.Why, &t.Summary, &t.BriefUnchecked, &t.ChatFiled, &t.ToolImage, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
 		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason,
-		&holdAt, &hold.By, &hold.Reason, &hold.Release); err != nil {
+		&holdAt, &hold.By, &hold.Reason, &hold.Release, &moments); err != nil {
 		return Task{}, err
+	}
+	if len(moments) > 0 {
+		if err := json.Unmarshal(moments, &t.Moments); err != nil {
+			return Task{}, fmt.Errorf("moments: %w", err)
+		}
 	}
 	if holdAt != nil {
 		hold.At = *holdAt
@@ -1655,8 +1663,11 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 }
 
 // askInfoSQL rewrites the info ($2) of card $1's newest ask of kind $3
-// from source $4. An info that is the stored one writes nothing.
-const askInfoSQL = `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
+// from source $4, the moments it names ($5) joining the row's. An info
+// that is the stored one writes nothing.
+const askInfoSQL = `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text)) ||
+		CASE WHEN $5::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('moments',
+			(SELECT jsonb_agg(DISTINCT m) FROM jsonb_array_elements(COALESCE(detail->'moments', '[]'::jsonb) || $5::jsonb) m)) END
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
 			AND detail->>'info' IS DISTINCT FROM $2::text`
 
@@ -1664,7 +1675,7 @@ const askInfoSQL = `UPDATE events SET detail = jsonb_set(detail, '{info}', to_js
 // its own question_asked row, which the opened card reads, and
 // not a proposal's row beside it.
 func (s *PGStore) SetAskInfo(ctx context.Context, taskID, source, info string) error {
-	_, err := s.db.ExecContext(ctx, askInfoSQL, taskID, info, EventQuestionAsked, source)
+	_, err := s.db.ExecContext(ctx, askInfoSQL, taskID, info, EventQuestionAsked, source, nil)
 	return err
 }
 

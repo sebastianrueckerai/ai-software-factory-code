@@ -298,12 +298,14 @@ func (b *builder) asked(group, name string, t factoryd.Task, ask factoryd.HumanA
 }
 
 // human is the human card of issue n factoryd files for source with ask,
-// its text HumanCardText's naming by: the card of EscalateToHuman, whose
-// by asks, and of fileHumanTask, whose source does.
+// its text HumanCardText's naming by, with the ask's moments it names: the
+// card of EscalateToHuman, whose by asks, and of fileHumanTask, whose
+// source does.
 func (b *builder) human(group, name string, n int64, source, by string, ask factoryd.HumanAsk, age time.Duration) Fixture {
 	br := factoryd.HumanCardText(ask.Q, by, ask.Via == factoryd.ViaChat)
+	objective := factoryd.IssueObjective(br.Title, br.Body)
 	t := factoryd.Task{ID: TaskID(n), Kind: "human", Status: "waiting-human", Repository: Repository, IssueNumber: n, Source: source,
-		Objective: factoryd.IssueObjective(br.Title, br.Body), Why: br.Why, Author: "factory-agent", RiskClass: "standard", CreatedAt: b.now.Add(-age)}
+		Objective: objective, Moments: ask.Q.Moments.In(objective), Why: br.Why, Author: "factory-agent", RiskClass: "standard", CreatedAt: b.now.Add(-age)}
 	return b.asked(group, name, t, ask, age)
 }
 
@@ -549,12 +551,16 @@ var agentSources = []agentSource{
 		return b.briefed(n, status, factoryd.SourceRoll, 3*time.Hour, factoryd.RollBrief(rollSummary(), rollChanges))
 	}, factoryd.BriefFacts{Name: "factoryd, gateway"}},
 	{factoryd.SourceMainFix, func(b *builder, n int64, status string) factoryd.Task {
-		return b.briefed(n, status, factoryd.SourceMainFix, 3*time.Hour,
-			factoryd.MainFixCard(3380, mainRedSHA, "test", "https://git.example/sf/code/actions/runs/3380", b.now.Add(-50*time.Minute)))
+		br, said := factoryd.MainFixCard(3380, mainRedSHA, "test", "https://git.example/sf/code/actions/runs/3380", b.now.Add(-50*time.Minute))
+		t := b.briefed(n, status, factoryd.SourceMainFix, 3*time.Hour, br)
+		t.Moments = said
+		return t
 	}, factoryd.BriefFacts{Name: "test"}},
 	{factoryd.SourceRevert, func(b *builder, n int64, status string) factoryd.Task {
-		return b.briefed(n, status, factoryd.SourceRevert, 3*time.Hour,
-			factoryd.RevertCard(factoryd.QueuePause{SHA: mainRedSHA, RunID: 3380, FixTask: TaskID(2089), Since: b.now.Add(-5 * time.Hour)}))
+		br, said := factoryd.RevertCard(factoryd.QueuePause{SHA: mainRedSHA, RunID: 3380, FixTask: TaskID(2089), Since: b.now.Add(-5 * time.Hour)})
+		t := b.briefed(n, status, factoryd.SourceRevert, 3*time.Hour, br)
+		t.Moments = said
+		return t
 	}, factoryd.BriefFacts{}},
 	{factoryd.SourceGroupRevert, func(b *builder, n int64, status string) factoryd.Task {
 		plan := factoryd.Task{IssueNumber: 1990, PlanName: "board export"}
@@ -568,7 +574,7 @@ var agentSources = []agentSource{
 	}, factoryd.BriefFacts{Name: Repository}},
 	{factoryd.SourceAlert, func(b *builder, n int64, status string) factoryd.Task {
 		t := b.briefed(n, status, factoryd.SourceAlert, 3*time.Hour, factoryd.AlertIssue(fiveXX, Project, "factory", nil))
-		t.Author, t.AlertFingerprint = "factory-agent", fiveXX.Fingerprint
+		t.Author, t.AlertFingerprint, t.Moments = "factory-agent", fiveXX.Fingerprint, factoryd.Moments{factoryd.AlertStart(fiveXX)}
 		return t
 	}, factoryd.BriefFacts{Name: "5xx rate above 5 %", Of: "factoryd"}},
 	{factoryd.SourceGitHubSync, func(b *builder, n int64, status string) factoryd.Task {
@@ -668,8 +674,8 @@ var humanSources = []humanSource{
 			{Title: title, Issue: 2090}})
 	}), factoryd.BriefFacts{Name: "3"}},
 	{factoryd.SourceRerun, escalates(factoryd.SourceRerun, "factoryd", func(*builder) factoryd.HumanQuestion {
-		return factoryd.RerunQuestion(3380, mainRedSHA, "test", []string{factoryd.LostRunnerLine("test, https://git.example/sf/code/actions/runs/3380/jobs/0", "", 0, time.Time{})},
-			factoryd.RerunWhy(nil, nil, same))
+		return factoryd.RerunQuestion(3380, mainRedSHA, "test", []string{factoryd.LostRunnerLine("test, https://git.example/sf/code/actions/runs/3380/jobs/0", "", 0, time.Time{}, new(factoryd.Moments))},
+			nil, factoryd.RerunWhy(nil, nil, same))
 	}), factoryd.BriefFacts{Name: "test"}},
 	{factoryd.SourceStillRed, escalates(factoryd.SourceStillRed, "factoryd", func(*builder) factoryd.HumanQuestion {
 		return factoryd.StillRedQuestion(3384, mainRedSHA, factoryd.StillRedRemedy(false, 2090), "https://git.example/sf/code/actions/runs/3384")
@@ -1698,18 +1704,19 @@ func (b *builder) cards() {
 	reset, since := b.now.Add(5*time.Hour).UTC().Format(time.RFC3339), b.now.Add(-35*time.Minute)
 	for _, end := range []struct {
 		name string
-		face func(n int64) string
+		face func(n int64) (string, factoryd.Moments)
 	}{
-		{"provider freeze a retry press closed", func(int64) string {
+		{"provider freeze a retry press closed", func(int64) (string, factoryd.Moments) {
 			return factoryd.FreezePressedFace("coder", "sebastian", b.now.Add(-10*time.Minute), reset)
 		}},
-		{"provider freeze its watcher gave up", func(n int64) string {
+		{"provider freeze its watcher gave up", func(n int64) (string, factoryd.Moments) {
 			return factoryd.FreezeRefusedFace("coder", n, reset, since)
 		}},
 	} {
 		n := b.next()
+		face, said := end.face(n)
 		b.out = append(b.out, Fixture{Group: GroupCard, Kind: end.name, Task: factoryd.Task{ID: TaskID(n), Kind: "human", Status: "done", Repository: Repository,
-			IssueNumber: n, Source: factoryd.SourceFreezeCard, Objective: end.face(n), Author: "factory-agent", RiskClass: "standard",
+			IssueNumber: n, Source: factoryd.SourceFreezeCard, Objective: face, Moments: said, Author: "factory-agent", RiskClass: "standard",
 			CreatedAt: since, FinishedAt: b.ago(10 * time.Minute)}})
 	}
 	digest := policy.Routine{Name: "needs-you-digest", Title: "Answer every card that waited in Needs you over a day", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 8 * * 1"}}}

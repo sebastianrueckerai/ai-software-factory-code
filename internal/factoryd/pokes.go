@@ -406,6 +406,7 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		}
 		m.Decider = level + " level · " + verb + " by the agent"
 	}
+	m.Moments = momentsOf(e.Detail).In(m.Content)
 	return m, true
 }
 

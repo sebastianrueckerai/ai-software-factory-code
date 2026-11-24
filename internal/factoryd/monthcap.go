@@ -125,7 +125,7 @@ func CapWaitReason(decision, by, state string, until time.Time) string {
 	}
 	o := capOpenings[decision]
 	return fmt.Sprintf("%s once a session fits under the cap, at the latest when the UTC %s turns at %s. "+
-		"Reset %s in the console's status panel, or raise %s in %s, to resume it sooner, or close the card.\n%s: %s", o.resumes, o.period, stamp(until), count, cap, file, by, state)
+		"Reset %s in the console's status panel, or raise %s in %s, to resume it sooner, or close the card.\n%s: %s", o.resumes, o.period, Moment{At: until, Layout: LayoutRFC3339}.Words(), count, cap, file, by, state)
 }
 
 // capWaitDecision is the decision whose resumes opening reason starts

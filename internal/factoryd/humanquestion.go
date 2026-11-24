@@ -19,16 +19,20 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 		held = "The stall holds " + issueRefs(cards) + ": merged, they wait for a green chain to cover them."
 	}
 	b := SourceBriefs[SourceChainStall](BriefFacts{Name: repository})
+	var said Moments
+	pendingSince := fmt.Sprintf("The chain of %s has been pending at commit %s since %s, past the stall bound. It waits on %s.",
+		repository, ShortSHA(sha), said.Say(since, LayoutStamp), textutil.AndList(pending))
+	happened := fmt.Sprintf("The chain at commit %s has been pending since %s, waiting on %s.", ShortSHA(sha), said.Say(since, LayoutWords), plural(len(pending), "check"))
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s has been pending at commit %s since %s UTC, past the stall bound. It waits on %s.",
-			repository, ShortSHA(sha), since.UTC().Format("2006-01-02 15:04"), textutil.AndList(pending)) +
+		Info: pendingSince +
 			"\n\n" + held + "\n\n“" + LabelOf(AnswerRerunAgain) + "” runs the pending run and keeps this card. “" + LabelOf(AnswerCheckAgain) +
 			"” closes it and lets the watch run on. A head still pending a stall bound later asks again. “" + LabelOf(ActClose+"/"+variantDismiss) +
 			"” resolves the stall alert and asks nothing more until the head changes. A head that concludes, green or red, closes this card by itself.",
 		Choices:  choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
-		Happened: fmt.Sprintf("The chain at commit %s has been pending since %s, waiting on %s.", ShortSHA(sha), TimeWords(since), plural(len(pending), "check")),
+		Happened: happened,
+		Moments:  said,
 	}
 }
 
@@ -101,17 +105,20 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 		Why:     whyLine + ".",
 		Info:    body,
 		Choices: choices(ActClose+"/"+variantNoted, KeyPark),
+		// the body's firing line names the start (AlertIssue)
+		Moments: Moments{AlertStart(a)}.In(body),
 	}
-	q.Happened = firedLine(a)
+	q.Happened = firedLine(a, &q.Moments)
 	return q
 }
 
-// firedLine is the story line of alert a that fires, "" without its start.
-func firedLine(a SigNozAlert) string {
+// firedLine is the story line of alert a that fires, its start kept in
+// said; "" without its start.
+func firedLine(a SigNozAlert, said *Moments) string {
 	if a.StartsAt.IsZero() {
 		return ""
 	}
-	line := "It has fired since " + TimeWords(a.StartsAt)
+	line := "It has fired since " + said.Say(a.StartsAt, LayoutWords)
 	if v := oneLine(a.Annotations["value"]); v != "" {
 		line += ", at " + v
 	}
@@ -126,7 +133,7 @@ func AlertClearedQuestion(source, name, of string, from, until time.Time) HumanQ
 	q := HumanQuestion{Ask: source + " cleared the alert \u201c" + oneLine(name) + "\u201d on " + of,
 		Why: "The fault behind it may still be there, though the alert no longer fires."}
 	if !from.IsZero() {
-		q.Happened = "It fired from " + TimeWords(from) + " until " + TimeWords(until) + "."
+		q.Happened = "It fired from " + q.Moments.Say(from, LayoutWords) + " until " + q.Moments.Say(until, LayoutWords) + "."
 	}
 	return q
 }
@@ -152,9 +159,9 @@ func RollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 
 // RerunQuestion is the card of a red main whose push run index of commit
 // sha failed only in jobs that lost their runner: failed names the jobs,
-// lost holds their records, why says why factoryd's own re-run did not
-// end it.
-func RerunQuestion(index int64, sha, failed string, lost []string, why string) HumanQuestion {
+// lost holds their records, which name the instants said, why says why
+// factoryd's own re-run did not end it.
+func RerunQuestion(index int64, sha, failed string, lost []string, said Moments, why string) HumanQuestion {
 	b := SourceBriefs[SourceRerun](BriefFacts{Name: failed})
 	return HumanQuestion{
 		Ask: b.Title,
@@ -168,6 +175,7 @@ func RerunQuestion(index int64, sha, failed string, lost []string, why string) H
 		Happened: fmt.Sprintf("CI run %d on main failed in %s, and each failed job lost its runner while it ran.", index, failed),
 		Waits:    queuePaused,
 		Check:    mainRunChecked,
+		Moments:  said,
 	}
 }
 
@@ -213,9 +221,10 @@ func ConfigRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 // fired under the cap and link is the file that sets it.
 func MonthCapCardQuestion(limit float64, m MonthSpend, link string, now time.Time) HumanQuestion {
 	whole, count, capEUR := textutil.EUR(m.whole()), textutil.EUR(m.EUR), textutil.EUR(limit)
+	var said Moments
 	since := ""
 	if m.Reset != nil {
-		since = fmt.Sprintf("counted since %s, when %s reset the month's count", ResetStamp(m.Reset.At, now), m.Reset.Login)
+		since = fmt.Sprintf("counted since %s, when %s reset the month's count", said.Say(m.Reset.At, resetLayout(m.Reset.At, now)), m.Reset.Login)
 	}
 	if outerGuardRefused(m.Refusal, m.EUR, limit) {
 		of := whole + " EUR"
@@ -240,6 +249,7 @@ func MonthCapCardQuestion(limit float64, m MonthSpend, link string, now time.Tim
 			Choices:  choices(ActClose+"/"+variantNoted, KeyPark),
 			Happened: happened,
 			Waits:    "Model calls fail until the guard's limit is raised.",
+			Moments:  said,
 		}
 	}
 	spend := fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %s EUR of the cap of %s EUR (`budget.month_eur`). ", m.Month, whole, capEUR)
@@ -263,6 +273,7 @@ func MonthCapCardQuestion(limit float64, m MonthSpend, link string, now time.Tim
 		Choices:  choices(ActClose+"/"+variantNoted, KeyPark),
 		Happened: happened,
 		Waits:    "Every model call waits until a human resets the month's count in the console's status panel, the limit is raised by a commit, or the month ends.",
+		Moments:  said,
 	}
 }
 
@@ -296,9 +307,6 @@ func IssueQuestion(title, body, poster string, agents bool) HumanQuestion {
 		Choices: humanWorkChoices(agents),
 	}
 }
-
-// TimeWords is t as a face says it: "16 November at 05:12 UTC".
-func TimeWords(t time.Time) string { return t.UTC().Format("2 January at 15:04 UTC") }
 
 // monthWords is month, 2006-01, as its name; "this month" when it is no
 // month.

@@ -58,8 +58,8 @@ var routineTabs = []drawerTab{{"overview", "Overview"}, {"runs", "Runs"}, {"conf
 // runs some 700 times a month.
 const routineRunsShown = 100
 
-// runDue is a run's due time as the drawer shows it.
-const runDue = "Mon 2 Jan 15:04"
+// runDue is a run's due time as the drawer shows it, in the reader's zone.
+const runDue = "Mon 2 Jan 15:04 MST"
 
 // routineDrawerData is a routine's drawer on one tab (C16), its opened
 // card (C46). Sub is the head's line and Rows the top block; Answers are
@@ -72,7 +72,7 @@ type routineDrawerData struct {
 	View     factoryd.RoutineView
 	Tab      string
 	Tabs     []drawerTab
-	Sub      string
+	Sub      template.HTML
 	Rows     []topRow
 	Answers  []answerView
 	Brief    string
@@ -86,17 +86,24 @@ type routineDrawerData struct {
 // topRow is a row of a drawer's top block: its term, its value with the
 // value's class, the card the value links (its task id, "" for none), and
 // the quieter words after it.
-type topRow struct{ Term, Value, Class, Card, Why string }
+type topRow struct {
+	Term  string
+	Value template.HTML
+	Class string
+	Card  string
+	Why   template.HTML
+}
 
 // routineRun is a run as the routine's drawer lists it, in the Time
 // section's shape (C10): when it was due, its card, its outcome in its
 // hue, how long it took or "open", the card's cost once it ended, and
 // its note.
 type routineRun struct {
-	Due, Outcome, Class, Duration, Note, TaskID string
-	Issue                                       int64
-	EUR                                         float64
-	Costs                                       bool
+	Due                                    template.HTML
+	Outcome, Class, Duration, Note, TaskID string
+	Issue                                  int64
+	EUR                                    float64
+	Costs                                  bool
 }
 
 // filedNothing are the outcomes of a run that filed nothing, whose row
@@ -176,10 +183,10 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 
 	when, in, kind := nextWords(rv, time.Now())
 	next := topRow{Term: "Next", Value: when}
-	d.Sub = "routine · " + rt.Words() + " · " + kind
+	d.Sub = escaped("routine · " + rt.Words() + " · " + kind)
 	switch {
 	case in != "":
-		d.Sub, next.Value = d.Sub+" · next "+when+", in "+in, when+" · in "+in
+		d.Sub, next.Value = d.Sub+" · next "+when+escaped(", in "+in), when+escaped(" · in "+in)
 	case when != "":
 		d.Sub += " · next " + when
 	default: // an event's: the schedule's words name it
@@ -191,25 +198,25 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 			next.Value = "skipped once"
 		}
 	}
-	schedule := topRow{Term: "Schedule", Value: rt.Words()}
+	schedule := topRow{Term: "Schedule", Value: escaped(rt.Words())}
 	if slices.ContainsFunc(rt.Schedule, func(t policy.Trigger) bool { return t.Cron != "" }) {
-		schedule.Why = loc.String()
+		schedule.Why = escaped(loc.String())
 	}
-	last := topRow{Term: "Last", Value: runWords(rv.Last), Card: rv.Last.TaskID}
+	last := topRow{Term: "Last", Value: escaped(runWords(rv.Last)), Card: rv.Last.TaskID}
 	switch {
 	case rv.Last.Run == 0:
 		last.Value, last.Class = "no run yet", "muted"
 	case rv.Held:
-		last.Value, last.Class, last.Card = rv.Last.Note, "warn", rv.Open.ID
+		last.Value, last.Class, last.Card = escaped(rv.Last.Note), "warn", rv.Open.ID
 	}
 	if rv.Last.Run > 0 {
-		last.Why = rv.Last.Due.In(loc).Format(runDue)
+		last.Why = moment(rv.Last.Due, runDue)
 	}
 	d.Rows = []topRow{schedule, next, last,
-		{Term: "While open", Value: rt.WhileOpenRule(), Why: whileOpenWords[rt.WhileOpenRule()]},
-		{Term: "Tells", Value: rt.TellRule(), Why: tellWords[rt.TellRule()]}}
+		{Term: "While open", Value: escaped(rt.WhileOpenRule()), Why: escaped(whileOpenWords[rt.WhileOpenRule()])},
+		{Term: "Tells", Value: escaped(rt.TellRule()), Why: escaped(tellWords[rt.TellRule()])}}
 	if rt.Missed != "" {
-		d.Rows = append(d.Rows, topRow{Term: "Missed", Value: rt.Missed, Why: missedWords[rt.Missed]})
+		d.Rows = append(d.Rows, topRow{Term: "Missed", Value: escaped(rt.Missed), Why: escaped(missedWords[rt.Missed])})
 	}
 
 	brief, _ := v.Tree.Brief(rt.Brief)
@@ -228,7 +235,7 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 			d.Problems = append(d.Problems, "The routine's runs could not be read: "+errText(err)+". Open the routine again, or read its runs on Forgejo.")
 		}
 		for _, run := range runs {
-			d.Runs = append(d.Runs, routineRunOf(run, loc))
+			d.Runs = append(d.Runs, routineRunOf(run))
 		}
 		if tab == "runs" && len(runs) == routineRunsShown {
 			d.Older = rv.State.Runs - len(runs)
@@ -266,10 +273,10 @@ func routineAnswers(rv factoryd.RoutineView, f boardFilter, csrf, tab string) []
 	return append(out, answer(factoryd.AnswerRunNow, "run"))
 }
 
-// routineRunOf is run as its drawer row, its due time read in loc.
-func routineRunOf(run factoryd.RoutineRun, loc *time.Location) routineRun {
+// routineRunOf is run as its drawer row, its due time its moment.
+func routineRunOf(run factoryd.RoutineRun) routineRun {
 	o := cmp.Or(run.Outcome, "running")
-	row := routineRun{Due: run.Due.In(loc).Format(runDue), Outcome: o, Class: cmp.Or(outcomeClasses[o], "st-closed"), Note: run.Note,
+	row := routineRun{Due: moment(run.Due, runDue), Outcome: o, Class: cmp.Or(outcomeClasses[o], "st-closed"), Note: run.Note,
 		TaskID: run.TaskID, Issue: run.Issue, EUR: run.CostEUR, Costs: run.TaskID != "" && !run.Ended.IsZero()}
 	switch {
 	case slices.Contains(filedNothing, o):

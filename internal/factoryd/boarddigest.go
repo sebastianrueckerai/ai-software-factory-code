@@ -89,10 +89,15 @@ func CapResetWords(r policy.CapReset, now time.Time) string {
 // ResetStamp is the time in UTC of a reset pressed at at, dated when that
 // was on another UTC day than now's.
 func ResetStamp(at, now time.Time) string {
+	return Moment{At: at, Layout: resetLayout(at, now)}.Words()
+}
+
+// resetLayout is the layout of ResetStamp.
+func resetLayout(at, now time.Time) string {
 	if at.UTC().Format(time.DateOnly) != now.UTC().Format(time.DateOnly) {
-		return at.UTC().Format("2 Jan 15:04") + " UTC"
+		return LayoutDay
 	}
-	return at.UTC().Format("15:04") + " UTC"
+	return LayoutClock
 }
 
 // BoardDigest builds repository's board digest at the runner's clock: one

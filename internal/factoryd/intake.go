@@ -1332,8 +1332,12 @@ func FileTask(ctx context.Context, store interface {
 // left it open on purpose, so the retry, which has a new task id, finds it.
 // A card of t's id that stands already refuses the filing by name, and the
 // issue filed or taken on for it is closed with a comment naming that card.
+// The card takes the ask's moments its objective names.
 func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
 	t.Kind, t.Status = "human", HumanCardStatus(t.Source)
+	for _, m := range ask.Q.Moments {
+		t.Moments.Say(m.At, m.Layout)
+	}
 	if t.Status == "waiting-agent" {
 		if err := admitFiling(ctx, forgejo, repo, &t, b); err != nil {
 			return Task{}, IssueRef{}, err
@@ -1442,7 +1446,8 @@ func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, b BriefText, 
 
 // admitFiling passes brief b of card t on repo through the filing door, on
 // the writer's try ctx carries; a card filed without an objective takes
-// the brief's title and text.
+// the brief's title and text. The card keeps the moments its objective
+// names.
 func admitFiling(ctx context.Context, forgejo *Forgejo, repo Repo, t *Task, b BriefText) error {
 	try, writer := writerTry(ctx)
 	var refs RefResolver
@@ -1454,6 +1459,7 @@ func admitFiling(ctx context.Context, forgejo *Forgejo, repo Repo, t *Task, b Br
 		return err
 	}
 	t.Objective = cmp.Or(t.Objective, IssueObjective(b.Title, b.Body))
+	t.Moments = t.Moments.In(t.Objective)
 	return nil
 }
 

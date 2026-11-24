@@ -973,7 +973,7 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		// first model call (roadmap 181, Stage 18 item 3.12)
 		AlertFingerprint: a.Fingerprint,
 		// factoryd files as the bot; the brief marks the text as telemetry
-		Author: in.Forgejo.BotUser}
+		Author: in.Forgejo.BotUser, Moments: Moments{AlertStart(a)}}
 	if why := AlertHumanWhy(p, a); why != "" {
 		q := AlertQuestion(a, p.Name, ns, why, body)
 		q.Ask, q.Why = sanitize.Outbound(q.Ask, in.hostsFor(p)), sanitize.Outbound(q.Why, in.hostsFor(p))
@@ -1103,6 +1103,9 @@ func alertParts(a SigNozAlert) (name, on, source string) {
 	return name, on, source
 }
 
+// AlertStart is when alert a started firing, as its issue's body names it.
+func AlertStart(a SigNozAlert) Moment { return Moment{At: a.StartsAt.UTC(), Layout: LayoutRFC3339} }
+
 // AlertIssue is the brief of the bug issue of alert a in namespace ns of
 // project: the alert's brief (alertBrief) and a body with the firing time,
 // the SigNoz link, the value and annotations and the labels, the values
@@ -1111,7 +1114,7 @@ func alertParts(a SigNozAlert) (name, on, source string) {
 func AlertIssue(a SigNozAlert, project, ns string, hosts []string) BriefText {
 	name, on, source := alertParts(a)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, stamp(a.StartsAt))
+	fmt.Fprintf(&b, "%s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, AlertStart(a).Words())
 	if safeLink(a.GeneratorURL) {
 		b.WriteString(" SigNoz: " + a.GeneratorURL)
 	}

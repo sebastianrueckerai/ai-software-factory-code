@@ -678,7 +678,7 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 		{ID: "t-fr", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, IssueNumber: 10,
 			Objective: freezeCardTitle("plain") + "\n\n" + fmt.Sprintf(freezeResumedFace, "plain", "2026-11-21T12:00:00Z", "1h 00m", "2026-11-21T12:05:00Z", "2026-11-21T11:00:00Z", "2026-11-21T16:00:00Z")},
 		{ID: "t-fd", Kind: "human", Status: "done", Source: SourceFreezeCard, IssueNumber: 11,
-			Objective: freezePressedBody("coder", "sebastian", clock.Add(-time.Hour), "2026-11-21T11:30:00Z")},
+			Objective: freezePressedBody("coder", "sebastian", clock.Add(-time.Hour), "2026-11-21T11:30:00Z", new(Moments))},
 	} {
 		c.Track, c.Repository = policy.TrackDirect, "linkshort/linkshort"
 		if err := store.CreateTask(ctx, c); err != nil {

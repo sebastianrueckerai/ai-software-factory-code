@@ -101,8 +101,7 @@ func TestStatusPanelListsNoCards(t *testing.T) {
 	}
 }
 
-// A queued card with an event keeps its face bare: the activity line
-// speaks only on a card in progress or waiting.
+// A queued card with an event keeps its face bare.
 func TestAQueuedCardDoesNotSpeak(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.tasks.set("", factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "sf/code", Objective: "queued", CreatedAt: time.Now()})

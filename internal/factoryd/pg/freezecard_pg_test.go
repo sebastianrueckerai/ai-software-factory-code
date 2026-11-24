@@ -430,7 +430,7 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 
 	// the guards: nothing is written
 	for id, comment := range map[string]string{"fz-done": "factoryd: closed", "hu-a": "factoryd: closed"} {
-		moved, err := s.EndFreezeCard(ctx, cards[id], "the pressed face", comment)
+		moved, err := s.EndFreezeCard(ctx, cards[id], "the pressed face", comment, nil)
 		card, events, _ := freezeCardState(t, s, id)
 		if err != nil || moved || card.Status != cards[id].Status || card.Objective != "the holding face" || len(events) != 0 {
 			t.Fatalf("EndFreezeCard on %s = %v, %v; the card stands %s under %q with %+v; want nothing written", id, moved, err, card.Status, card.Objective, events)
@@ -452,7 +452,7 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 	if id, err := s.InsertIntakeEvent(ctx, human); err != nil || id == 0 {
 		t.Fatalf("the human's close record = %d, %v", id, err)
 	}
-	moved, err := s.EndFreezeCard(ctx, cards["fz-human"], "the pressed face", "factoryd: the press")
+	moved, err := s.EndFreezeCard(ctx, cards["fz-human"], "the pressed face", "factoryd: the press", nil)
 	if card, events, _ := freezeCardState(t, s, "fz-human"); err != nil || moved || card.Status != "waiting-human" || card.Objective != "the holding face" ||
 		len(events) != 1 || events[0].Body != "sebastian closed this card." {
 		t.Fatalf("EndFreezeCard over a human's close in flight = %v, %v; the card stands %s under %q with %+v; want it left to that close", moved, err, card.Status, card.Objective, events)
@@ -461,7 +461,7 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 	// a close with no comment and no face: the row alone, whatever close
 	// is in flight
 	for _, id := range []string{"fz-gone", "fz-human"} {
-		moved, err := s.EndFreezeCard(ctx, cards[id], "", "")
+		moved, err := s.EndFreezeCard(ctx, cards[id], "", "", nil)
 		card, events, _ := freezeCardState(t, s, id)
 		if err != nil || !moved || card.Status != "done" || card.Objective != "the holding face" || card.FinishedAt == nil ||
 			slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Body != "sebastian closed this card." }) {
@@ -470,13 +470,13 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 	}
 
 	// the press's close, the re-arm's reopen and the next close
-	moved, err = s.EndFreezeCard(ctx, cards["fz-a"], "the pressed face", "factoryd: the press")
+	moved, err = s.EndFreezeCard(ctx, cards["fz-a"], "the pressed face", "factoryd: the press", nil)
 	card, events, half := freezeCardState(t, s, "fz-a")
 	if err != nil || !moved || card.Status != "done" || card.Objective != "the pressed face" || card.FinishedAt == nil ||
 		len(events) != 1 || events[0].Kind != IntakeFactoryClosed || events[0].CommentID != 1 || events[0].Body != "factoryd: the press" || events[0].Author != "factoryd" || len(half) != 1 {
 		t.Fatalf("EndFreezeCard = %v, %v; the card stands %s under %q with %+v, unconfirmed %+v; want it done under the pressed face with its close recorded, unconfirmed", moved, err, card.Status, card.Objective, events, half)
 	}
-	if moved, err := s.EndFreezeCard(ctx, cards["fz-a"], "another face", "factoryd: again"); err != nil || moved {
+	if moved, err := s.EndFreezeCard(ctx, cards["fz-a"], "another face", "factoryd: again", nil); err != nil || moved {
 		t.Fatalf("a second EndFreezeCard = %v, %v; want false", moved, err)
 	}
 	// a reopen whose ask the store refuses writes nothing
@@ -503,7 +503,7 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 	if open, err := s.OpenCasesOf(ctx, "fz-a"); err != nil || len(open) != 1 || open[0].Status != CaseAtHuman || freezeAskRows(t, s, "fz-a") != 1 {
 		t.Fatalf("after ReopenFreezeCard the card's live cases are %+v, %v, with %d asks; want one case at the human and one ask", open, err, freezeAskRows(t, s, "fz-a"))
 	}
-	moved, err = s.EndFreezeCard(ctx, cards["fz-a"], "", "factoryd: the freeze ended")
+	moved, err = s.EndFreezeCard(ctx, cards["fz-a"], "", "factoryd: the freeze ended", nil)
 	card, events, half = freezeCardState(t, s, "fz-a")
 	if err != nil || !moved || card.Status != "done" || card.Objective != "the holding face again" || len(owed()) != 0 ||
 		len(events) != 2 || events[1].Kind != IntakeFactoryClosed || events[1].CommentID != 1 || events[1].Body != "factoryd: the freeze ended" ||
@@ -592,14 +592,14 @@ func TestFreezeCardFaceAndAskAreOneWritePG(t *testing.T) {
 	if face, info, asks := state("fz"); err != nil || face != "the second face" || info != "what the second face says" || asks != 1 || len(open) != 1 || open[0].Status != CaseAtHuman {
 		t.Fatalf("after AskFreezeCard the card stands under %q, its %d asks know %q, its live cases are %+v, %v; want the second face, one ask that knows it and one case at the human", face, asks, info, open, err)
 	}
-	if err := s.FaceFreezeCard(ctx, "fz", "the third face", "what the third face says"); err != nil {
+	if err := s.FaceFreezeCard(ctx, "fz", "the third face", "what the third face says", nil); err != nil {
 		t.Fatal(err)
 	}
 	if face, info, asks := state("fz"); face != "the third face" || info != "what the third face says" || asks != 1 {
 		t.Fatalf("after FaceFreezeCard the card stands under %q and its %d asks know %q; want the third face on both, and no second ask", face, asks, info)
 	}
 
-	if err := s.FaceFreezeCard(ctx, "hu", "the second face", "what it says"); !errors.Is(err, factoryd.ErrNotFound) {
+	if err := s.FaceFreezeCard(ctx, "hu", "the second face", "what it says", nil); !errors.Is(err, factoryd.ErrNotFound) {
 		t.Fatalf("FaceFreezeCard on a card of another source = %v, want ErrNotFound", err)
 	}
 	if err := s.AskFreezeCard(ctx, hu, "the second face", freezeAskOf("what it says")); !errors.Is(err, factoryd.ErrNotFound) {

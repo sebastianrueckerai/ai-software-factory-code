@@ -48,7 +48,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
-	pg, err := gateway.OpenStore(ctx, cfg.DatabaseURL)
+	pg, err := openStoreWait(ctx, cfg.DatabaseURL, storeWait, storeRetry)
 	if err != nil {
 		log.Fatalf("open task store: %v", err)
 	}
@@ -145,7 +145,40 @@ func main() {
 const (
 	callDrain  = 270 * time.Second
 	callSettle = 10 * time.Second
+
+	// The store wait covers the longest fault the boot has survived: a
+	// node flap kept the database unreachable for about a minute, and a
+	// fatal on that first error crash-looped the pod until it came back.
+	storeWait  = 3 * time.Minute
+	storeRetry = 5 * time.Second
 )
+
+// openStoreWait opens the task store, retrying every retry until the wait
+// has passed: a failover or a node flap makes Postgres unreachable for a
+// while, and a boot that fatalled on that first error turned the transient
+// fault into a crash loop. A SIGTERM (a roll) ends the wait at once.
+func openStoreWait(ctx context.Context, url string, wait, retry time.Duration) (*gateway.PGStore, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		pg, err := gateway.OpenStore(ctx, url)
+		if err == nil {
+			return pg, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !time.Now().After(deadline) {
+			log.Printf("open task store: %v: retrying in %s", err, retry)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retry):
+			}
+			continue
+		}
+		return nil, err
+	}
+}
 
 // drainCalls ends server on a roll: new calls go to the next pod, the calls
 // in flight run on for up to drain, and any still running past it are

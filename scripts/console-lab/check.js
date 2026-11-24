@@ -8,7 +8,9 @@
 // card's press moving the card at once and taking one press, the inbox
 // taking presses through /answer and no words, the chat above the board
 // at 390 px, no horizontal scroll at 1440, 960 or 390,
-// typing in the chat, nor on the pages of tables at 390.
+// typing in the chat, nor on the pages of tables at 390, and no time a
+// screen shows in UTC outside the places that keep it on purpose
+// (localWalk).
 // Exit 1 and one line per failure.
 const crypto = require("crypto");
 const fs = require("fs");
@@ -606,6 +608,144 @@ async function criteriaHuman(browser, fails) {
     fails.push("criteria human: after the drop the card reads " + JSON.stringify(waived) + ", want " + JSON.stringify({ rows, merge: [false] }));
   }
   await p.ctx.close();
+}
+
+// utcPlaces are where a screen shows on purpose the words a non-screen
+// reader gets, UTC and all, each with its reason; the local-time walk
+// reads past them.
+const utcPlaces = [
+  ['.drawer [data-sec="brief"] pre.exact', "a card's raw stop text, kept for copying"],
+  ['.drawer [data-sec="view"] pre.exact', "the text a card's agent gets, verbatim"],
+  ['.drawer [data-sec="sessions"] pre.exact', "what each session of a card got, verbatim"],
+  [".drawer td > code", "the timeline's raw JSON details"],
+  ["details.tool", "an agent tool's call and result in the chat, verbatim"],
+  ['table[aria-label="The cluster\'s scheduled jobs by namespace"] td:nth-child(4)', "a cluster job's cron in words: a period that recurs, not an instant"],
+];
+
+// localWalk reads every lab scene in America/New_York as a human there
+// sees it: the board and its status panel, each card's drawer on each tab
+// and ask, each routine's drawer, each chat thread and the inbox, and the
+// pages, every fold open; then the gallery. A clock time in UTC (15:04
+// UTC, 15:04Z, an RFC 3339 stamp) or a settle line's bare time outside
+// utcPlaces fails, once per text, with where it stands. Its pages work in
+// parallel.
+async function localWalk(browser, fails) {
+  const utc = /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?UTC\b|Z\b)/, bare = /·\s\d{1,2}:\d{2}$/;
+  const found = new Map();
+  const pool = 6;
+  const page = async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, timezoneId: "America/New_York" });
+    await ctx.addCookies([{ name, value, domain: new URL(base).hostname, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }]);
+    await ctx.addInitScript(() => { localStorage.setItem("theme", "dark"); localStorage.setItem("chat-fold:sebastian", "0"); });
+    const p = await ctx.newPage();
+    const inflight = new Set();
+    p.on("request", (r) => { if (!r.url().includes("/events/stream")) inflight.add(r); });
+    p.on("requestfinished", (r) => inflight.delete(r));
+    p.on("requestfailed", (r) => inflight.delete(r));
+    // idle: no request but the stream's for 250 ms, at most 10 s
+    p.idle = async () => {
+      const start = Date.now();
+      let quiet = Date.now();
+      while (Date.now() - quiet < 250 && Date.now() - start < 10000) {
+        if (inflight.size) quiet = Date.now();
+        await p.waitForTimeout(25);
+      }
+    };
+    p.ctx = ctx;
+    return p;
+  };
+  // read opens every fold in root twice over (a fold's read may bring
+  // folds of its own) and notes each line of root's visible text that
+  // names UTC, its times as the browser writes them set aside
+  const read = async (p, root, where) => {
+    for (let i = 0; i < 2; i++) {
+      await p.evaluate((r) => document.querySelectorAll(r + " details:not([open])").forEach((d) => { d.open = true; }), root);
+      await p.idle();
+    }
+    const text = await p.evaluate(([r, skip]) => {
+      document.querySelectorAll(r + " time[data-layout]").forEach((t) => { t.textContent = "⌚"; });
+      // the console's CSP refuses a style element; the CSSOM may set one
+      const kept = Array.from(document.querySelectorAll(skip)).map((e) => [e, e.style.display]);
+      kept.forEach(([e]) => e.style.setProperty("display", "none", "important"));
+      const el = document.querySelector(r);
+      const out = el ? el.innerText : "";
+      kept.forEach(([e, d]) => { e.style.display = d; });
+      return out;
+    }, [root, utcPlaces.map((x) => x[0]).join(", ")]);
+    for (const line of text.split("\n")) {
+      const l = line.trim();
+      if ((utc.test(l) || bare.test(l)) && !found.has(l)) found.set(l, where);
+    }
+  };
+  // tabs reads the open drawer on each of its tabs, and an opened card's
+  // later asks
+  const tabs = async (p, where) => {
+    const n = await p.locator("#drawer nav.tabs [role=tab]").count();
+    for (let i = 0; i < Math.max(n, 1); i++) {
+      let tab = "";
+      if (n) {
+        await p.locator("#drawer nav.tabs [role=tab]").nth(i).click();
+        await p.idle();
+        tab = await p.locator("#drawer nav.tabs [role=tab]").nth(i).innerText();
+      }
+      await read(p, "#drawer", where + " " + tab);
+      for (let k = 0; k < 8 && (await p.locator("#drawer .o-pages a.next").count()); k++) {
+        await p.locator("#drawer .o-pages a.next").click();
+        await p.idle();
+        await read(p, "#drawer", where + " " + tab + " ask " + (k + 2));
+      }
+    }
+  };
+  for (const s of await (await fetch(base + "/lab/scenarios")).json()) {
+    await seed(s);
+    const ps = await Promise.all(Array.from({ length: pool }, page));
+    try {
+      const p = ps[0];
+      await p.goto(base + "/", { waitUntil: "load" });
+      await p.idle();
+      await read(p, "body", s + " board");
+      const threads = await p.locator("#thread-rows .trow").count();
+      for (let i = 0; i < threads; i++) {
+        await p.evaluate((n) => document.querySelectorAll("#thread-rows .trow")[n].click(), i);
+        await p.idle();
+        await read(p, "#chat", s + " chat thread " + (i + 1));
+      }
+      const doors = await p.evaluate(() => [...new Set(Array.from(document.querySelectorAll("[data-card]")).map((c) => "#card=" + c.dataset.card)
+        .concat(Array.from(document.querySelectorAll("[data-ghost]")).map((g) => "#routine=" + g.dataset.ghost + ":overview")))]);
+      const pages = ["/costs", "/resources", "/settings", "/settings/new", "/policy", "/notifications", "/tasks/new", metricsPath];
+      await p.goto(base + "/settings", { waitUntil: "load" });
+      for (const href of await p.evaluate(() => Array.from(document.querySelectorAll('a[href^="/projects/"][href$="/status"]')).map((a) => a.getAttribute("href")))) {
+        if (!pages.includes(href)) pages.push(href);
+      }
+      const work = doors.map((d) => ["door", d]).concat(pages.map((u) => ["page", u]));
+      await Promise.all(ps.map(async (q, w) => {
+        for (let i = w; i < work.length; i += pool) {
+          const [kind, at] = work[i];
+          if (kind === "page") {
+            await q.goto(base + at, { waitUntil: "load" });
+            await q.idle();
+            await read(q, "body", s + " " + at);
+            continue;
+          }
+          if (q.url() !== base + "/" && !q.url().startsWith(base + "/#")) await q.goto(base + "/", { waitUntil: "load" });
+          await q.evaluate((h) => { location.hash = h; }, at);
+          await q.idle();
+          await tabs(q, s + " " + at);
+        }
+      }));
+    } finally {
+      for (const q of ps) await q.ctx.close();
+    }
+  }
+  const g = await page();
+  try {
+    await g.goto(base + "/lab/gallery", { waitUntil: "load" });
+    await g.idle();
+    await read(g, "body", "the gallery");
+  } finally {
+    await g.ctx.close();
+  }
+  for (const [line, where] of found) fails.push("local time: " + where + " shows UTC: " + line);
 }
 
 async function text(page) {
@@ -2255,6 +2395,27 @@ async function text(page) {
     if (wide.length) fails.push("local time: in Asia/Kolkata at 390 a Spend row runs wider than the panel: " + wide.map((r) => r.label).join(" | "));
     await kol.ctx.close();
   }
+  // a card's ask names its times in the browser's zone too: #611 waits at
+  // the month cap, and its Not now on the opened card says the cap resets
+  // when the UTC month turns, 19:00 EST the day before in America/New_York
+  // (20:00 EDT in summer), with no UTC words left in the ask
+  await seed("cases");
+  {
+    const ny = await open(browser, { width: 1440, height: 900 }, false, "America/New_York");
+    await ny.page.goto(base + "/#card=" + labID(611), { waitUntil: "load" });
+    await ny.page.waitForTimeout(900);
+    await ny.page.locator("#drawer").getByRole("tab", { name: "Overview", exact: true }).click();
+    await ny.page.waitForTimeout(900);
+    const ask = await ny.page.evaluate(() => {
+      const block = document.querySelector("#drawer .o-ask");
+      if (!block) return null;
+      return { text: block.innerText, turns: Array.from(block.querySelectorAll('time[data-layout="2 January at 15:04 MST"]')).map((t) => [t.dateTime, t.textContent]) };
+    });
+    const turn = ask && ask.turns.find(([at]) => /-01T00:00:00Z$/.test(at));
+    if (!turn || !/^\d+ \w+ at (19:00 EST|20:00 EDT)$/.test(turn[1])) fails.push("local time: in America/New_York the month cap's turn on #611's ask reads " + JSON.stringify(ask && ask.turns));
+    if (!ask || /\bUTC\b/.test(ask.text)) fails.push("local time: #611's ask still names UTC: " + JSON.stringify(ask && ask.text));
+    await ny.ctx.close();
+  }
   // a narrow desk at 960: the strip's cells wrap where they do not fit, the
   // board's head fits its row, the documents' head wraps in its panel
   for (const sc of ["busy", "fire"]) {
@@ -2584,6 +2745,7 @@ async function text(page) {
   await cp.ctx.close();
   await criteriaWaive(browser, fails);
   await criteriaHuman(browser, fails);
+  await localWalk(browser, fails);
   await browser.close();
   if (fails.length) { console.log(fails.join("\n")); process.exit(1); }
   console.log("ok: every control present, the mechanics work");

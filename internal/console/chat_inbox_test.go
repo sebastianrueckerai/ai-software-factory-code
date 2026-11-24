@@ -125,10 +125,10 @@ func TestChatInboxAskStandsPastAPoke(t *testing.T) {
 	}
 	pokeID := inboxRows(t, chat, "sebastian", poke("#11 merged.", "t-r"))[0]
 	path := chatPath + "?conversation=" + strconv.FormatInt(inbox, 10)
-	ask := func() factoryd.ChatMessage {
+	ask := func() chatRow {
 		t.Helper()
 		msgs := chatRead(t, r, ck, path).Messages
-		i := slices.IndexFunc(msgs, func(m factoryd.ChatMessage) bool { return m.Kind == factoryd.MessageAsk })
+		i := slices.IndexFunc(msgs, func(m chatRow) bool { return m.Kind == factoryd.MessageAsk })
 		if i < 0 {
 			t.Fatalf("the inbox holds no ask: %+v", msgs)
 		}
@@ -235,7 +235,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			}
 		}
 		msgs = chatRead(t, r, ck, path).Messages
-		equal(t, c.name+": the poke after", []any{msgs[1].Settled, msgs[1].Reason}, []any{true, c.reason})
+		equal(t, c.name+": the poke after", []any{msgs[1].Settled, factoryd.SettleLine(msgs[1].Reason, msgs[1].SettledAt)}, []any{true, c.reason})
 		equal(t, c.name+": the badge after", badge(), []int64{0, 0, 0})
 	}
 }

@@ -360,6 +360,11 @@ func TestAlertIntakeFilesABugIssueThatStartsATask(t *testing.T) {
 		task.Author != "factory-agent" || task.AuthorWriter || task.Standing() != harness.StandingTelemetry || task.Objective != strings.Replace(want, head, "", 1) {
 		t.Fatalf("task %+v", task)
 	}
+	// the card keeps the alert's start beside its firing line, which a
+	// screen shows in the reader's zone
+	if want := (Moments{{At: time.Date(2026, 9, 28, 20, 1, 29, 0, time.UTC), Layout: LayoutRFC3339}}); !reflect.DeepEqual(task.Moments, want) {
+		t.Fatalf("the card's moments %+v, want %+v", task.Moments, want)
+	}
 	if !slices.Equal(r.flows.started, []string{task.ID}) {
 		t.Fatalf("started %v, want [%s]", r.flows.started, task.ID)
 	}
