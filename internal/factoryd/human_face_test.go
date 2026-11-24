@@ -4,8 +4,10 @@ import (
 	"context"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -13,7 +15,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
-// humanKinds are the 18 human card kinds of the census, by their fixtures,
+// humanKinds are the 19 human card kinds of the census, by their fixtures,
 // with the answers each face offers, from the plan's answer table: a work
 // card's "I did it" and its way out where one can happen, and a template
 // kind's own answers, which say what the factory saw. done is the effect
@@ -45,6 +47,7 @@ var humanKinds = []struct {
 	{"config rejected", []string{"I did it", "Not now"}, true,
 		"Closes the card. The factory checks each new commit of factory/, and a valid one takes effect within 30 seconds.", stays + " The configuration before it stays in force."},
 	{"month cap", []string{"Noted", "Not now"}, true, "", stays + " Every model call waits until a human resets the month's count in the console's status panel, the limit is raised by a commit, or the month ends."},
+	{"platform deaths", []string{"Noted", "Not now"}, true, "", stays},
 	{"judgment budget", []string{"Add money to the chat", "Not now", "Noted"}, true, "", stays + " Every stopped card comes to you until the budget is raised or the month ends."},
 	{"production held", []string{"Not now", "Deploy now", "Send back to the planner", "Take the plan off main"}, true, "",
 		stays + " Production of code stays held while plan “empty commit fires gate” (#1947) is open on main."},
@@ -139,7 +142,7 @@ func TestAuthorWaitAsksTheAuthor(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). Every card
-// that waits on a human holds a case from its filing: each of the 18 human
+// that waits on a human holds a case from its filing: each of the 19 human
 // kinds as its filer files it, a human card whose question offers no
 // answers of its own, and a card whose agent asked the issue's author. A
 // card that asks at once is in Needs you with its case at the human;
@@ -219,6 +222,67 @@ func TestEveryNeedsYouCardHoldsACase(t *testing.T) {
 		}
 		if face := factoryd.CaseFace(desk.Cases[i], got, desk.Asks[desk.Cases[i].ID]); len(face.Offers) < 2 || len(face.Offers) > 4 {
 			t.Errorf("%s: the case's face offers %+v, want 2 to 4 answers", c.name, face.Offers)
+		}
+	}
+}
+
+// The platform card's ask, why line, story and face show no machine
+// artefact and none of the ladder's words, and its ask passes the filing
+// door, over every kind of death: a session's and a gate pod's of a card on
+// the card's repository and on another, a CI job's, one with no node, and
+// more than the face lists.
+func TestPlatformCardFaceIsPlain(t *testing.T) {
+	cards := map[string]factoryd.Task{
+		"t-own":   {ID: "t-own", Repository: facefixtures.Repository, IssueNumber: 2004},
+		"t-other": {ID: "t-other", Repository: "sf/infra", IssueNumber: 14},
+	}
+	end := time.Date(2026, 11, 23, 14, 2, 0, 0, time.UTC)
+	rules := []factoryd.DeathRule{factoryd.RuleGuardKill, factoryd.RuleNodeOOM, factoryd.RuleNodePressure, factoryd.RuleNodeRebooted,
+		factoryd.RuleNodeNotReady, factoryd.RuleDisruption, factoryd.RuleGoneAfterRestart, factoryd.RuleDeleted}
+	var deaths []factoryd.PodDeath
+	for i := range 12 {
+		rec := factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: rules[i%len(rules)], At: end.Add(-time.Duration(i) * 7 * time.Minute),
+			Node: "sf-" + strconv.Itoa(i%3+1), Resource: "memory"}
+		if i == 4 {
+			rec.Node = ""
+		}
+		d := factoryd.PodDeath{Kind: "session", TaskID: "t-own", SessionID: "s" + strconv.Itoa(i), Record: rec}
+		switch i % 4 {
+		case 1:
+			d.Kind, d.TaskID, d.SessionID, d.Runner = "ci", "", "", "ci-job-"+strconv.Itoa(40+i)
+		case 2:
+			d.Kind, d.SessionID, d.Record.PodUID = "gate", "", "uid-"+strconv.Itoa(i)
+		case 3:
+			d.TaskID = "t-other"
+		}
+		deaths = append(deaths, d)
+	}
+	q := factoryd.PlatformDeathsQuestion(deaths, cards, facefixtures.Repository)
+	if want := "The platform keeps ending the factory's work. Check the nodes."; q.Ask != want {
+		t.Errorf("the ask %q, want %q", q.Ask, want)
+	}
+	if want := "The platform ended the factory's work 12 times between 23 Nov 12:45 UTC and 23 Nov 14:02 UTC."; q.Happened != want {
+		t.Errorf("the story %q, want %q", q.Happened, want)
+	}
+	ladder := regexp.MustCompile(`(?i)\b(rungs?|cases?|pools?)\b`)
+	for part, text := range map[string]string{"ask": q.Ask, "why": q.Why, "happened": q.Happened, "face": q.Info} {
+		if faults := slices.Concat(facefixtures.HumanFaults(text), facefixtures.TextFaults(text)); len(faults) > 0 {
+			t.Errorf("the %s %q: %q", part, text, faults)
+		}
+		if w := ladder.FindString(text); w != "" {
+			t.Errorf("the %s %q says %q", part, text, w)
+		}
+	}
+	if refusals := factoryd.CheckBrief(factoryd.BriefText{Title: q.Ask, Why: q.Why, Body: q.Info}, factoryd.BriefAsk, everyRef{}); len(refusals) > 0 {
+		t.Errorf("the door refuses the card's brief: %q", refusals)
+	}
+	for _, want := range []string{"- 23 Nov 14:02 UTC, card #2004: the node's memory guard killed the pod on sf-1\n",
+		"- 23 Nov 13:55 UTC, a CI job: the node ran out of memory on sf-2\n",
+		"- 23 Nov 13:48 UTC, a gate of card #2004: the node ran low on memory on sf-3\n",
+		"- 23 Nov 13:41 UTC, card sf/infra#14: the node restarted on sf-1\n",
+		"- 23 Nov 13:34 UTC, card #2004: the node stopped answering\n", "- and 2 more\n"} {
+		if !strings.Contains(q.Info, want) {
+			t.Errorf("the face lacks %q:\n%s", want, q.Info)
 		}
 	}
 }

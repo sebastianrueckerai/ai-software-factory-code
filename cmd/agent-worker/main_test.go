@@ -2008,6 +2008,30 @@ func TestDeliverPushesEverySessionsWork(t *testing.T) {
 	}
 }
 
+// A worker that got its SIGTERM says so in its result, whatever its push
+// did, so factoryd can tell a stop it did not send; no other end does.
+func TestDeliverMarksAStop(t *testing.T) {
+	emit := func(harness.Event) {}
+	pushed := func(workerEnv) (string, error) { return "c-wip", nil }
+	refused := func(workerEnv) (string, error) { return "", fmt.Errorf("refusing to push") }
+	env := workerEnv{branch: "factory/t1"}
+	for name, tc := range map[string]struct {
+		res     harness.Result
+		stopped bool
+		push    func(workerEnv) (string, error)
+		want    bool
+	}{
+		"stopped, pushed":       {harness.Result{Summary: "opencode exited: signal: terminated"}, true, pushed, true},
+		"stopped, push refused": {harness.Result{}, true, refused, true},
+		"finished":              {harness.Result{Success: true, Summary: "done"}, false, pushed, false},
+		"failed":                {harness.Result{Summary: "model refused"}, false, pushed, false},
+	} {
+		if got := deliver(tc.res, tc.stopped, env, tc.push, emit); got.Stopped != tc.want {
+			t.Errorf("%s: %+v, want Stopped %t", name, got, tc.want)
+		}
+	}
+}
+
 // A session that starts on an interim head and changes nothing lands the
 // finished commit on it only when it ended well. A stopped or failed one
 // lands nothing: the branch keeps the interim head, which the next session

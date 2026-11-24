@@ -475,6 +475,7 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 	// the rest of the seams New requires: a rig that drives one wires its own
 	// over these; those that wire theirs later replace them
 	cfg.DeploymentHealth = func(context.Context, factoryd.Project, string, string) (string, error) { return "", nil }
+	cfg.ClusterFacts = func(context.Context, string, string, time.Time, time.Time, bool) (string, error) { return "", nil }
 	if cfg.AnswerPlan == nil {
 		cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error { return nil }
 	}

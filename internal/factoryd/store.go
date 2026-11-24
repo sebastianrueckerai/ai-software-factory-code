@@ -584,10 +584,15 @@ type Store interface {
 	// keeps how much of the pod's log the loop consumed,
 	// SetLiveSessionDeadline, for the owner holding the row, the deadline a
 	// raise moved, the agent time added it counts and the budget the
-	// session took, and the session's end deletes it.
+	// session took, SetLiveSessionPod, for the owner too, the pod's UID,
+	// its node and the node's boot once it runs, SetLiveSessionStopping,
+	// for the owner, when factoryd sent its stop, and the session's end
+	// deletes it.
 	PutLiveSession(ctx context.Context, l LiveSession) error
 	SetLiveSessionLines(ctx context.Context, taskID string, lines int) error
 	SetLiveSessionDeadline(ctx context.Context, taskID, owner string, deadline time.Time, added time.Duration, budget float64) error
+	SetLiveSessionPod(ctx context.Context, taskID, owner, uid, node, boot string) error
+	SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error
 	LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error)
 	DeleteLiveSession(ctx context.Context, taskID string) error
 	// ReleaseLiveSession deletes the row only while owner holds it and

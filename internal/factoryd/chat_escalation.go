@@ -43,8 +43,9 @@ func EscalateToHumanWith(ctx context.Context, store humanCardStore, forgejo *For
 // askAtOnce are the sources whose human card asks a human at its filing:
 // the chat's escalate, whose agent worked the problem and chose to ask, the
 // month cap's and the judgment budget's cards, whose cap refuses the rungs'
-// own calls, and the provider freeze's card, whose limit may hold them.
-var askAtOnce = []string{SourceChat, SourceMonthCap, SourceChatBudget, SourceFreezeCard}
+// own calls, the provider freeze's card, whose limit may hold them, and the
+// platform deaths' card, whose fix needs the nodes' admin key.
+var askAtOnce = []string{SourceChat, SourceMonthCap, SourceChatBudget, SourceFreezeCard, SourcePlatformDeaths}
 
 // humanCardWaits are the statuses a human card waits in before it ends:
 // for its case's face, and on a human.

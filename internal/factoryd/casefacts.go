@@ -196,8 +196,8 @@ type CaseFacts struct {
 	Flag    string `json:"flag,omitempty"`
 	Wait    string `json:"wait,omitempty"`
 	RunGone bool   `json:"run_gone,omitempty"`
-	// Killed is the memory kill that ended the session before the stop.
-	Killed *SessionKill `json:"killed,omitempty"`
+	// Death is the death record of the session before the stop.
+	Death *DeathRecord `json:"death,omitempty"`
 	// PosterGrant: the issue author's answer to an information request
 	// still buys the session it starts (grantPoster).
 	PosterGrant bool `json:"poster_grant,omitempty"`
@@ -331,8 +331,8 @@ func (f *CaseFacts) atCase(c Case) {
 	}
 	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)
-	if f.Killed == nil && c.Facts["killed"] != nil {
-		f.Killed = factsOf(c).Killed
+	if f.Death == nil && c.Facts["death"] != nil {
+		f.Death = factsOf(c).Death
 	}
 	if c.Kind == CaseGateStop {
 		f.Gate, _ = c.Facts["gate"].(string)

@@ -707,6 +707,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"provider", providerRefused + "glm-5", CaseProviderRefused, nil},
 		{"queue", leftQueue, CaseGateStop, nil},
 		{"capacity", podNeverStarted + "3 tries", CasePodNeverStarted, nil},
+		{"platform", PlatformEndedReason(slices.Repeat([]DeathRecord{{Rule: RuleGuardKill}}, 3)), CasePlatformFault, nil},
 		{"no_answer", noModelAnswer + "3 sessions", CaseNoAnswer, nil},
 		{"content_filter", ContentFilterRefusal + "the prompt", CaseContentFilter, nil},
 		{"image", ImageWaited + "sf/img:1", CaseImageWait, nil},
@@ -727,7 +728,8 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 }
 
 func TestCaseKindOfNamesTheBoardCardsBySource(t *testing.T) {
-	for source, want := range map[string]CaseKind{SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain} {
+	for source, want := range map[string]CaseKind{SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
+		SourcePlatformDeaths: CasePlatformDeaths} {
 		if kind, facts := CaseKindOf(source, "the ask"); kind != want || facts != nil {
 			t.Errorf("caseKindOf(%q) = %s, %v; want %s", source, kind, facts, want)
 		}

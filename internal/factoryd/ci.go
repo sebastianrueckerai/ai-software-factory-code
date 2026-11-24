@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -44,6 +45,13 @@ type CIConfig struct {
 	// MaxConcurrent caps the live CI namespaces; jobs beyond it stay
 	// waiting in Forgejo for a later tick. 0 = 8.
 	MaxConcurrent int
+	// Cluster stores a runner pod's death record, which reads the
+	// incident log and the nodes' kernel kill lines of Kernel; nil
+	// Cluster records none.
+	Cluster ClusterStore
+	Kernel  KernelSource
+	// Scrub scrubs the errors the death records' reads and writes log.
+	Scrub *redact.Scrubber
 }
 
 func (c *CIConfig) setDefaults() {
@@ -164,6 +172,10 @@ type CISpawner struct {
 	smokeDone, smokeMissed map[int64]string
 	// sweeps run in each reconcile pass, after the CI namespaces'
 	sweeps []func(ctx context.Context)
+	// deaths reads how a runner pod ended, within deathBound
+	// (ciDeathBound); it never waits for a kill line
+	deaths     deathReader
+	deathBound time.Duration
 }
 
 // SweepEachPass has the reconcile pass call sweep as well; set before Run.
@@ -193,7 +205,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, pullFails: map[int64]pullFail{}, pullSeen: map[string]time.Time{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, deaths: deathReader{kube: kube, cluster: cfg.Cluster, kernel: cfg.Kernel, margin: ciDeathMargin, scrub: cfg.Scrub}, deathBound: ciDeathBound, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, pullFails: map[int64]pullFail{}, pullSeen: map[string]time.Time{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -852,6 +864,9 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 			live++
 			continue
 		}
+		if !pull {
+			s.recordDeath(ctx, ns.Name, phase, err != nil)
+		}
 		if err == nil {
 			if id, perr := strconv.ParseInt(strings.TrimPrefix(ns.Name, s.cfg.NamespacePrefix), 10, 64); perr == nil {
 				if pull {
@@ -888,6 +903,74 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 		sweep(ctx)
 	}
 	return live
+}
+
+// ciDeathBound bounds the read of one ended runner pod's death, so a slow
+// source holds its teardown no longer; the kernel's lines leave the last
+// ciDeathMargin of it to the pod's other reads.
+const (
+	ciDeathBound  = 10 * time.Second
+	ciDeathMargin = 2 * time.Second
+)
+
+// recordDeath stores the death of the runner pod of ns, which ended in
+// phase or is gone, under its runner's registration UUID, which its job's
+// log names: a pod that ended Succeeded has one only when the nodes'
+// kernel logs hold a kill of it, a gone one only when its events show it
+// existed.
+func (s *CISpawner) recordDeath(ctx context.Context, ns, phase string, gone bool) {
+	if s.deaths.cluster == nil {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, s.deathBound)
+	defer cancel()
+	data, err := s.kube.GetSecretData(rctx, ns, ciSecretName)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		log.Printf("ci spawner: %s: read the runner registration for its death: %v", ns, err)
+	}
+	runner := data["uuid"]
+	if runner == "" {
+		return
+	}
+	var pod PodDiagnosis
+	if gone {
+		events, err := s.kube.PodEvents(rctx, ns, ciPodName)
+		if err != nil {
+			log.Printf("ci spawner: %s: read the gone runner pod's events: %v", ns, err)
+		}
+		if len(events) == 0 {
+			return
+		}
+	} else if pod, err = s.kube.PodDiagnosis(rctx, ns, ciPodName); err != nil {
+		log.Printf("ci spawner: %s: read the ended runner pod: %v", ns, err)
+	}
+	if phase == "Succeeded" && !s.killedIn(rctx, ns, pod) {
+		return
+	}
+	// a pod gone unread has no known start: its life is read as its end
+	started := pod.StartedAt
+	if started.IsZero() {
+		started = s.now()
+	}
+	death := s.deaths.read(rctx, deathInput{ns: ns, pod: ciPodName, uid: pod.UID, node: pod.Node, started: started, ended: s.now()})
+	// Lines speak to a session's successor; a runner pod has none
+	death.Started, death.Lines = pod.StartedAt, nil
+	if err := s.deaths.cluster.PutPodDeath(ctx, PodDeath{Kind: "ci", Runner: runner, Record: death}); err != nil {
+		log.Printf("ci spawner: %s: store the death of runner %s: %s", ns, runner, s.deaths.scrub.String(err.Error()))
+	}
+}
+
+// killedIn says whether the nodes' kernel logs hold a kill of pod in its
+// life.
+func (s *CISpawner) killedIn(ctx context.Context, ns string, pod PodDiagnosis) bool {
+	if s.deaths.kernel == nil || pod.UID == "" || pod.StartedAt.IsZero() {
+		return false
+	}
+	kills, err := s.deaths.kernel.KernelLines(ctx, pod.StartedAt, s.now(), pod.UID)
+	if err != nil {
+		log.Printf("ci spawner: %s: read the kernel lines of the ended runner pod: %v", ns, err)
+	}
+	return slices.ContainsFunc(kills, func(k KernelKill) bool { return k.PodUID == pod.UID })
 }
 
 // ciPullWait is how long a runner pod may fail to pull its image before

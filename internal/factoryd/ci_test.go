@@ -25,6 +25,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -376,6 +377,161 @@ func TestCISpawnerReconcileTearsDownFailedPod(t *testing.T) {
 	}
 	if len(hub.deleted) != 1 {
 		t.Fatalf("deleted registrations = %v, want the runner removed", hub.deleted)
+	}
+}
+
+// nsWatch is a cluster store that notes, at each death it stores, whether
+// namespace ns still exists.
+type nsWatch struct {
+	*fakeClusterStore
+	kube  *fakeKube
+	ns    string
+	alive []bool
+}
+
+func (w *nsWatch) PutPodDeath(ctx context.Context, d PodDeath) error {
+	w.kube.mu.Lock()
+	_, ok := w.kube.namespaces[w.ns]
+	w.kube.mu.Unlock()
+	w.alive = append(w.alive, ok)
+	return w.fakeClusterStore.PutPodDeath(ctx, d)
+}
+
+// A runner pod's end is a death record under its runner's registration
+// UUID, stored before its namespace goes: a pod that ended Failed, one
+// that ended Succeeded while the kernel's lines name a kill of its UID,
+// and one deleted outside the factory, whose events show it existed. A
+// pod that ended Succeeded with no kill gets none, and nor does one the
+// namespace never held.
+func TestCISpawnerRecordsAPlatformEnd(t *testing.T) {
+	const uid = "0b6f2f6e-7c1a-4a43-9a51-2f2d2b4e8c11"
+	started := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Second)
+	for name, tc := range map[string]struct {
+		phase string // "" leaves no pod
+		kill  bool
+		rule  DeathRule // "" stores no record
+	}{
+		"failed with a guard kill":    {"Failed", true, RuleGuardKill},
+		"succeeded with a guard kill": {"Succeeded", true, RuleGuardKill},
+		"deleted":                     {"", false, RuleDeleted},
+		"never created":               {"", false, ""},
+		"succeeded":                   {"Succeeded", false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			kube.nodeStates = map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1", Ready: true}}
+			hub := &ciHub{jobs: []CIJob{{ID: 15, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+			spawner := newTestCISpawner(t, kube, hub)
+			spawner.poll(context.Background())
+			ns := "factory-agents-ci-15"
+			runner := kube.secrets[ns+"/"+ciSecretName]["uuid"]
+			watch := &nsWatch{fakeClusterStore: newFakeClusterStore(), kube: kube, ns: ns}
+			kernel := &scriptedKernel{}
+			if tc.kill {
+				kernel.kills = func(int) []KernelKill {
+					return []KernelKill{{Node: "sf-1", PodUID: uid, Source: "guard", At: time.Now().Add(-time.Minute)}}
+				}
+			}
+			spawner.deaths.cluster, spawner.deaths.kernel = watch, kernel
+			switch {
+			case tc.phase != "":
+				p := kube.pods[ns+"/"+ciPodName]
+				p.phase, p.uid, p.node, p.started = tc.phase, uid, "sf-1", started
+				p.containers = []ContainerState{{Name: "runner", State: "terminated", Reason: "Error", ExitCode: 137}}
+			case tc.rule != "":
+				delete(kube.pods, ns+"/"+ciPodName)
+				kube.podEvents = map[string][]PodEvent{ns + "/" + ciPodName: {{Reason: "Started", Type: "Normal", At: started}}}
+			default:
+				delete(kube.pods, ns+"/"+ciPodName)
+			}
+
+			spawner.reconcile(context.Background(), codeCIRepos)
+
+			if _, ok := kube.namespaces[ns]; ok {
+				t.Fatal("the ended runner's namespace survived reconcile")
+			}
+			rec, ok, _ := watch.CIDeath(context.Background(), runner)
+			if tc.rule == "" {
+				if len(watch.deaths) != 0 || len(watch.alive) != 0 {
+					t.Fatalf("stored %+v; want no record", watch.deaths)
+				}
+				return
+			}
+			if runner == "" || !ok || rec.Class != DeathPlatform || rec.Rule != tc.rule || watch.deaths["ci/"+runner].Kind != "ci" || rec.Lines != nil {
+				t.Fatalf("record of runner %q = %+v, %v; want a ci record of class platform, rule %s, under the runner's UUID, with no lines for a next session", runner, rec, ok, tc.rule)
+			}
+			if !slices.Equal(watch.alive, []bool{true}) {
+				t.Fatalf("namespace alive at each store = %v, want [true]: the record comes before the teardown", watch.alive)
+			}
+			if tc.phase != "" && (rec.PodUID != uid || !rec.Started.Equal(started) || len(kernel.uids) == 0 || slices.ContainsFunc(kernel.uids, func(u string) bool { return u != uid })) {
+				t.Fatalf("record = %+v, kernel asked for %q; want the pod's UID %s and its start %s", rec, kernel.uids, uid, started)
+			}
+		})
+	}
+}
+
+// A runner pod's death whose write fails logs the store's error through
+// the spawner's scrubber: it can quote a secret the factory holds.
+func TestCISpawnerLogsItsStoreErrorScrubbed(t *testing.T) {
+	const secret = "pg-password-4f9e2a7c"
+	kube := newFakeKube()
+	kube.nodeStates = map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1", Ready: true}}
+	hub := &ciHub{jobs: []CIJob{{ID: 15, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.poll(context.Background())
+	ns := "factory-agents-ci-15"
+	p := kube.pods[ns+"/"+ciPodName]
+	p.phase, p.uid, p.node, p.started = "Failed", "0b6f2f6e-7c1a-4a43-9a51-2f2d2b4e8c11", "sf-1", time.Now().Add(-time.Minute)
+	p.containers = []ContainerState{{Name: "runner", State: "terminated", Reason: "Error", ExitCode: 137}}
+	spawner.deaths.cluster = failingCluster{fakeClusterStore: newFakeClusterStore(), err: errors.New("connect as factoryd with " + secret + ": refused")}
+	spawner.deaths.scrub = redact.New(secret)
+	logged := captureLog(t)
+	spawner.reconcile(context.Background(), codeCIRepos)
+	if out := logged.String(); strings.Contains(out, secret) || !strings.Contains(out, "store the death of runner") {
+		t.Fatalf("log:\n%s\nwant the store's error without the secret", out)
+	}
+}
+
+// ctxEvents is a kube whose events read fails once its context ended, as
+// the API server's does.
+type ctxEvents struct{ *fakeKube }
+
+func (k ctxEvents) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return k.fakeKube.PodEvents(ctx, namespace, pod)
+}
+
+// A kernel source that never answers holds no teardown: its read of an
+// ended pod ends ciDeathMargin before the pod's bound, the pod's events are
+// still read in that margin, and the record keeps what the pod shows.
+func TestCISpawnerBoundsTheDeathRead(t *testing.T) {
+	kube := newFakeKube()
+	kube.nodeStates = map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1", Ready: true}}
+	hub := &ciHub{jobs: []CIJob{{ID: 15, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.poll(context.Background())
+	ns := "factory-agents-ci-15"
+	cluster := newFakeClusterStore()
+	spawner.kube, spawner.deaths.kube = ctxEvents{kube}, ctxEvents{kube}
+	spawner.deaths.cluster, spawner.deaths.kernel = cluster, &scriptedKernel{block: func(int) bool { return true }}
+	spawner.deathBound = 2500 * time.Millisecond
+	p := kube.pods[ns+"/"+ciPodName]
+	p.phase, p.uid, p.node, p.started = "Failed", "0b6f2f6e-7c1a-4a43-9a51-2f2d2b4e8c11", "sf-1", time.Now().Add(-time.Minute)
+	p.containers = []ContainerState{{Name: "runner", State: "terminated", Reason: "Error", ExitCode: 137}}
+	kube.podEvents = map[string][]PodEvent{ns + "/" + ciPodName: {{Reason: "Killing", Type: "Normal"}}}
+
+	began := time.Now()
+	spawner.reconcile(context.Background(), codeCIRepos)
+	took := time.Since(began)
+
+	rec, ok, _ := cluster.CIDeath(context.Background(), kube.secrets[ns+"/"+ciSecretName]["uuid"])
+	if _, alive := kube.namespaces[ns]; alive || !ok || rec.Class != DeathUnknown || rec.ExitCode != 137 || len(rec.Events) != 1 {
+		t.Fatalf("namespace alive %v, record %+v, %v; want the teardown and the pod's own facts stored with its event", alive, rec, ok)
+	}
+	if want := spawner.deathBound - ciDeathMargin; took < want-200*time.Millisecond || took > want+time.Second {
+		t.Fatalf("the death read took %s, want about %s: the bound less the margin", took, want)
 	}
 }
 

@@ -716,6 +716,12 @@ func (s *accBatchStore) SetLiveSessionLines(ctx context.Context, taskID string, 
 func (s *accBatchStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner string, deadline time.Time, added time.Duration, budget float64) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetLiveSessionPod(ctx context.Context, taskID, owner, uid, node, boot string) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
+	panic("unused")
+}
 func (s *accBatchStore) LiveSession(ctx context.Context, taskID string) (factoryd.LiveSession, bool, error) {
 	return factoryd.LiveSession{}, false, nil
 }

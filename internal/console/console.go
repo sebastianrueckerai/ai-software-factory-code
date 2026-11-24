@@ -228,7 +228,12 @@ type Config struct {
 	// (factoryd.DeploymentHealthText); its refusals are
 	// *factoryd.HealthRefusal.
 	DeploymentHealth func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error)
-	Projects         Projects
+	// ClusterFacts reads what the cluster did to a session of card taskID,
+	// or, with no session, the incidents between since and until
+	// (factoryd.ClusterFactsReader.Text), leaving out the session's last command
+	// and its lines for the next session when hideCommand; its refusals are *factoryd.FactsRefusal.
+	ClusterFacts func(ctx context.Context, taskID, sessionID string, since, until time.Time, hideCommand bool) (string, error)
+	Projects     Projects
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).
 	Events Events
@@ -502,7 +507,8 @@ type Console struct {
 	// stops holds each chat thread's running turn that a member may stop
 	// (the chat-stop plan): the turn's cancel and who stopped it.
 	stops *stopGate
-	// clock is the status line's and the costs' time, which a test pins
+	// clock is the status line's, the costs' and the cards' clocks' time, which
+	// a test pins
 	clock func() time.Time
 	// refreshMu serializes token refreshes across requests: two concurrent
 	// requests presenting the same refresh token would both try to use it,
@@ -711,6 +717,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no Writes")
 	case cfg.DeploymentHealth == nil:
 		return nil, errors.New("console: no DeploymentHealth")
+	case cfg.ClusterFacts == nil:
+		return nil, errors.New("console: no ClusterFacts")
 	case cfg.AnswerPlan == nil:
 		return nil, errors.New("console: no AnswerPlan")
 	case cfg.AnswerPlanQuestions == nil:

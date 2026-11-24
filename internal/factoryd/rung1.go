@@ -94,8 +94,10 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 		textutil.EUR(f.BudgetEUR), textutil.EUR(f.SpentEUR), textutil.EUR(f.LeftEUR), textutil.EUR(f.CeilingEUR), drawText(f.CardDrawLeft), drawText(f.PoolLeft),
 		textutil.EUR(max(0, f.MonthLeftEUR)), minutesWord(est.Time), textutil.EUR(est.EUR), need)
 	line("%s", r.Scrub.String(digest))
-	if f.Killed != nil {
-		line("The sandbox killed the last session for its memory (%s, exit code %d) while it ran: %s", cut(f.Killed.Reason), f.Killed.ExitCode, cut(f.Killed.Command))
+	if d := f.Death; d != nil && d.Rule == RuleMemoryLimit {
+		line("The sandbox killed the last session for its memory (%s, exit code %d) while it ran: %s", cut(d.Reason), d.ExitCode, cut(d.LastCommand))
+	} else if d != nil && d.Class != DeathUnknown {
+		line("%s", lastSessionEnded(*d, cut))
 	}
 	if len(f.Findings) > 0 {
 		line("Findings on the head:")
@@ -276,7 +278,7 @@ var sessionActions = []string{ActResume, ActContinue, ActHandover, ActExtend}
 
 // The parts of a session's note that code writes are bounded: at most
 // leadFindings findings of leadFindingCut characters lead it, the checks
-// log ends at checksLogCut and the kill line at KillCut. The note of the
+// log ends at checksLogCut and the death line at KillCut. The note of the
 // answer, from whichever rung or the human, keeps the room that is left
 // inside the run's cut of an answer at MaxAnswer (and is cut at the
 // handover cap), so the code-written parts are never cut.
@@ -296,9 +298,9 @@ func (r *Runner) handoverCap() int {
 
 // sessionParts are the parts of a session's note that code writes: those
 // before the answer's note (a rung's kept findings, the first as the
-// session's one job) and those after it (the red checks' log and a memory
-// kill). No model writes them. Both are empty for an action that starts no
-// session.
+// session's one job) and those after it (the red checks' log and how the
+// last session's pod ended). No model writes them. Both are empty for an
+// action that starts no session.
 func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string) {
 	if !slices.Contains(sessionActions, in.Res.Action) {
 		return nil, nil
@@ -325,10 +327,21 @@ func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string)
 	if f.Checks == "red" && len(f.FailedTests) > 0 {
 		after = append(after, r.scrub(ChecksLog(f, ChecksLogCut)))
 	}
-	if f.Killed != nil {
-		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), KillCut))
+	if d := f.Death; d != nil && d.Rule == RuleMemoryLimit {
+		after = append(after, textutil.Truncate(r.scrub("The sandbox killed the last session for its memory while it ran: "+d.LastCommand), KillCut))
+	} else if d != nil && d.Class != DeathUnknown {
+		after = append(after, textutil.Truncate(lastSessionEnded(*d, r.scrub), KillCut))
 	}
 	return before, after
+}
+
+// lastSessionEnded names how the last session ended, and the command it
+// ran when one is known, passed through text.
+func lastSessionEnded(d DeathRecord, text func(string) string) string {
+	if d.LastCommand == "" {
+		return "The last session ended: " + d.Short() + "."
+	}
+	return "The last session ended: " + d.Short() + " while it ran: " + text(d.LastCommand)
 }
 
 // sessionNote is the note a session started by in.Res reads: the parts
@@ -352,7 +365,7 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 
 const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
 
-const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head), grep (git grep at head or main for a fixed string as a whole word)."
+const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head), grep (git grep at head or main for a fixed string as a whole word), cluster_facts (what the cluster did to a session of the card, the newest by default, or the platform's incidents of a window)."
 
 // rungPrompt is rung 1's system prompt: the check-in on a case, its
 // tools, and the guide's forms of its grounds and its reason to hand up.
@@ -455,6 +468,9 @@ func (p *CaseTools) read(ctx context.Context, name string, args map[string]any) 
 			}
 			return ""
 		})
+	case "cluster_facts":
+		_, _ = p.newestRecord(ctx) // the newest session's ID stands whether or not its record read
+		return cardClusterFacts(ctx, p.r.clusterFacts(), p.t.ID, p.session, args, p.r.Clock())
 	case "gates":
 		events, err := p.r.store.TaskEvents(ctx, p.t.ID, 300)
 		if err != nil {

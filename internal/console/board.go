@@ -762,7 +762,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
 		got.count, got.attempt, got.retrying, got.provider = newestChecksCount(steps, pushedHead(steps)), attemptOf(steps), retrying(steps), onProvider(steps)
-		got.freeze, got.frozen = freezeOf(steps, time.Now())
+		got.freeze, got.frozen = freezeOf(steps, c.clock())
 		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
@@ -1370,7 +1370,7 @@ func (c *Console) card(t factoryd.Task) card {
 	if t.PRNumber > 0 {
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, t.PRNumber)
 	}
-	end := time.Now()
+	end := c.clock()
 	if t.FinishedAt != nil {
 		end = *t.FinishedAt
 	}

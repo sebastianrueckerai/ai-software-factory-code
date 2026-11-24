@@ -117,6 +117,10 @@ var (
 	CaseRollHeld              = factoryd.CaseRollHeld
 	CaseSessionCap            = factoryd.CaseSessionCap
 	CaseWithdrawn             = factoryd.CaseWithdrawn
+	DeathOwnLimit             = factoryd.DeathOwnLimit
+	DeathPlatform             = factoryd.DeathPlatform
+	RuleGuardKill             = factoryd.RuleGuardKill
+	RuleMemoryLimit           = factoryd.RuleMemoryLimit
 	ChatUser                  = factoryd.ChatUser
 	DepEndedReason            = factoryd.DepEndedReason
 	CheckTimeCap              = factoryd.CheckTimeCap
@@ -251,6 +255,10 @@ var (
 	CaseKindOf                = factoryd.CaseKindOf
 	CaseNoAnswer              = factoryd.CaseNoAnswer
 	CasePodNeverStarted       = factoryd.CasePodNeverStarted
+	CasePlatformFault         = factoryd.CasePlatformFault
+	CasePlatformDeaths        = factoryd.CasePlatformDeaths
+	SourcePlatformDeaths      = factoryd.SourcePlatformDeaths
+	PlatformEndedReason       = factoryd.PlatformEndedReason
 	CaseProjectCap            = factoryd.CaseProjectCap
 	CaseProviderRefused       = factoryd.CaseProviderRefused
 	CaseScreeningSuspect      = factoryd.CaseScreeningSuspect
@@ -302,6 +310,7 @@ var (
 
 type (
 	Facts            = factoryd.Facts
+	DeathRecord      = factoryd.DeathRecord
 	AgentAsk         = factoryd.AgentAsk
 	ActInput         = factoryd.ActInput
 	ActResult        = factoryd.ActResult
@@ -363,7 +372,6 @@ type (
 	RunnerConfig          = factoryd.RunnerConfig
 	RunningRun            = factoryd.RunningRun
 	Session               = factoryd.Session
-	SessionKill           = factoryd.SessionKill
 	Store                 = factoryd.Store
 	SupervisorConfig      = factoryd.SupervisorConfig
 	Task                  = factoryd.Task

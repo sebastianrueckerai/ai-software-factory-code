@@ -255,11 +255,11 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 	}
 }
 
-// A provider that refuses, and pods that never start, ask only when the
-// card has room: they spend no agent time, take no number and no money, so
-// a card whose time is spent, whose sessions are used up or whose budget
-// funds no session asks that stop before either. With room the reply
-// starts the next session.
+// A provider that refuses, pods that never start and sessions the platform
+// ended ask only when the card has room: they spend no agent time and take
+// no number, so a card whose time is spent, whose sessions are used up or
+// whose budget funds no session asks that stop before any of them. With
+// room the reply starts the next session.
 func TestReplyAtProviderAndPodStops(t *testing.T) {
 	builders := map[string]func(t *testing.T, spent bool) (*workflowHarness, string){
 		"provider refused": func(t *testing.T, spent bool) (*workflowHarness, string) {
@@ -268,6 +268,11 @@ func TestReplyAtProviderAndPodStops(t *testing.T) {
 		},
 		"pod never started": func(t *testing.T, spent bool) (*workflowHarness, string) {
 			return podWaitHarness(t, 3, pushed("s4", "c1")), podNeverStarted
+		},
+		"platform ended": func(t *testing.T, spent bool) (*workflowHarness, string) {
+			h := newWorkflowHarness(t)
+			deadSessions(h, platformDeath("s1"), platformDeath("s2"), platformDeath("s3"), pushed("s4", "c1"))
+			return h, platformEnded
 		},
 	}
 	for name, build := range builders {

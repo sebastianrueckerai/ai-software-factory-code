@@ -63,6 +63,12 @@ const (
 	// CaseProviderFreeze is the ask of the card a provider's limit on a
 	// model class files
 	CaseProviderFreeze CaseKind = "provider_freeze"
+	// CasePlatformFault is a card whose sessions the platform ended
+	// platformDeathsAsk times in a row
+	CasePlatformFault CaseKind = "platform_fault"
+	// CasePlatformDeaths is the ask of the human card filed when the
+	// platform ends work on any card again and again
+	CasePlatformDeaths CaseKind = "platform_deaths"
 )
 
 // caseKindRow is what the ladder does with a case of one kind.
@@ -102,6 +108,8 @@ const (
 	authorAnswers    = "the agent asks its issue's author, whose answer alone the card's wait takes"
 	humanClosedPlan  = "a human closed the plan's card, and only a human says whether its open promises are dropped"
 	limitHoldsRungs  = "the provider's limit holds a model class, the rungs' own calls among its waiters, so no rung is sure to run"
+	platformNoRung1  = "the check-in cannot judge the platform"
+	nodesNeedAdmin   = "a fix of the nodes needs their admin key, which no agent holds"
 )
 
 // headRows are rung 0's rows for a stop at the card's head.
@@ -159,6 +167,9 @@ var caseKinds = []caseKindRow{
 	{Kind: CasePlanHeld, Words: "held plan", NoRung1: humanClosedPlan, Rung2: rung2Nothing, Rung2Why: humanClosedPlan, Exception: humanClosedPlan},
 	{Kind: CaseProviderFreeze, Words: "provider freeze", NoRung1: limitHoldsRungs, Rung2: rung2Nothing, Rung2Why: limitHoldsRungs,
 		Choices: true, Exception: limitHoldsRungs},
+	{Kind: CasePlatformFault, Words: "sessions the platform ended", NoRung1: platformNoRung1, Rung2: rung2Decides},
+	{Kind: CasePlatformDeaths, Words: "platform deaths", NoRung1: nodesNeedAdmin, Rung2: rung2Nothing, Rung2Why: nodesNeedAdmin,
+		Choices: true, Exception: nodesNeedAdmin},
 }
 
 // kindRow is kind k's row of the kind table, the zero row for a kind it

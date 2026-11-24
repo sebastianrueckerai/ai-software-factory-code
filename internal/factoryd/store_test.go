@@ -3039,6 +3039,26 @@ func (s *fakeStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner st
 	return nil
 }
 
+func (s *fakeStore) SetLiveSessionPod(ctx context.Context, taskID, owner, uid, node, boot string) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if l, ok := s.liveSessions[taskID]; ok && l.Owner == owner {
+		l.PodUID, l.Node, l.BootID = uid, node, boot
+		s.liveSessions[taskID] = l
+	}
+	return nil
+}
+
+func (s *fakeStore) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if l, ok := s.liveSessions[taskID]; ok && l.Owner == owner {
+		l.StoppingAt = &at
+		s.liveSessions[taskID] = l
+	}
+	return nil
+}
+
 func (s *fakeStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()

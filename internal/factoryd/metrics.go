@@ -212,20 +212,26 @@ type StepFact interface {
 }
 
 // SessionEndFact is one session's end on a card, the session_end step:
-// outcome is a SessionOutcome word, the panel's cause.
+// outcome is a SessionOutcome word, the panel's cause. Cause is how the
+// session's pod ended (DeathRecord.Short), "" when no death was read.
 type SessionEndFact struct {
 	Session string // with Attempt: the identity
 	Attempt int
 	Parent  string
 	Model   string
 	Outcome string
+	Cause   string
 	Summary string
 	Started time.Time
 }
 
 func (f SessionEndFact) detail() map[string]any {
-	return map[string]any{"session": f.Session, "parent": f.Parent, "model": f.Model, "attempt": f.Attempt,
+	d := map[string]any{"session": f.Session, "parent": f.Parent, "model": f.Model, "attempt": f.Attempt,
 		"outcome": f.Outcome, "summary": f.Summary, "started": rfc3339(f.Started)}
+	if f.Cause != "" {
+		d["cause"] = f.Cause
+	}
+	return d
 }
 
 func (f SessionEndFact) identity() map[string]any {
@@ -234,8 +240,8 @@ func (f SessionEndFact) identity() map[string]any {
 
 // EventSessionEnd is one session's terminal end on a card (roadmap 336),
 // the row the divide-and-conquer panels read. Detail {"session",
-// "attempt", "outcome", "started", "ended"} — no summary, which the
-// timeline line alone keeps. Identity: the session and the attempt, so
+// "attempt", "outcome", "started", "ended"}, and "cause" when the death
+// was read — no summary, which the timeline line alone keeps. Identity: the session and the attempt, so
 // a session a stopped factoryd detached from and its reattached end are
 // one fact.
 const EventSessionEnd = "session_end"
@@ -243,10 +249,13 @@ const EventSessionEnd = "session_end"
 // Event is the end's row of task's card in repository's issue, ended
 // when the session completed.
 func (f SessionEndFact) Event(task, repository string, issue int64, ended time.Time) Event {
+	detail := map[string]any{"session": f.Session, "attempt": f.Attempt, "outcome": f.Outcome,
+		"started": rfc3339(f.Started), "ended": rfc3339(ended)}
+	if f.Cause != "" {
+		detail["cause"] = f.Cause
+	}
 	return Event{Repository: repository, TaskID: task, IssueNumber: issue, Kind: EventSessionEnd,
-		Actor: FactoryDecider, Via: ViaFactoryd, At: ended,
-		Detail: map[string]any{"session": f.Session, "attempt": f.Attempt, "outcome": f.Outcome,
-			"started": rfc3339(f.Started), "ended": rfc3339(ended)},
+		Actor: FactoryDecider, Via: ViaFactoryd, At: ended, Detail: detail,
 		IdentityKey: IdentityKey(EventSessionEnd, f.Session, fmt.Sprintf("%d", f.Attempt))}
 }
 
@@ -2208,13 +2217,15 @@ func (c metricSessionCard) evidenced(firstStart sql.NullTime) bool {
 // card's final gate_head fact at the head the task actually built on
 // (task.sha), so an abandoned head's reading cannot stand in for the
 // merged head's; the starts and the ends-without-starts are the card's
-// lifetime rows, unbounded below.
+// lifetime rows, unbounded below. A session the platform ended is the
+// cluster's, not the card's: its end does not count, and it writes no
+// start row, because the workflow skips sessionAnswered for it.
 func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time.Time) ([]metricSessionCard, error) {
 	rows, err := db.QueryContext(ctx, `SELECT m.at, g.size,
 		(SELECT count(DISTINCT st.detail->>'session')::float8 FROM events st
 			WHERE st.task_id = m.task_id AND st.kind = 'session_started' AND st.detail->>'session' <> '') AS starts,
 		(SELECT count(DISTINCT en.detail->>'session')::float8 FROM events en
-			WHERE en.task_id = m.task_id AND en.kind = 'session_end' AND en.detail->>'outcome' <> 'not_started'
+			WHERE en.task_id = m.task_id AND en.kind = 'session_end' AND en.detail->>'outcome' NOT IN ('not_started', 'platform_killed')
 				AND NOT EXISTS (SELECT 1 FROM events st WHERE st.task_id = en.task_id
 					AND st.kind = 'session_started' AND st.detail->>'session' = en.detail->>'session')) AS ends_no_start
 		FROM (SELECT DISTINCT ON (e.task_id) e.task_id, e.at
@@ -2246,14 +2257,16 @@ func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time
 // metricDivideSessionEnds — panel 3: the window's session ends by
 // cause, ordered by count descending then name. The causes are the
 // session outcomes the runner records; a not_started end is no
-// session's — a pod that never became one — so however its row landed,
-// it inflates no distribution. An end whose start row is missing stays
+// session's — a pod that never became one — and a platform_killed end
+// is the cluster's, not the card's, so however their rows landed, they
+// count in this panel no more than in the sessions panel
+// (metricSessionPull). Any other end whose start row is missing stays
 // the fact it is: the ends panel keeps it, the sessions panel's
 // coverage names the hole.
 func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
 	rows, err := db.QueryContext(ctx, `SELECT e.detail->>'outcome', count(*)::float8
 		FROM events e JOIN tasks t ON t.id = e.task_id
-		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.detail->>'outcome' <> 'not_started'
+		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.detail->>'outcome' NOT IN ('not_started', 'platform_killed')
 			AND e.at >= $2 AND e.at < $3
 		GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To)
 	if err != nil {

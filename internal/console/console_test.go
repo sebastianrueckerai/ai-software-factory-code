@@ -1311,6 +1311,10 @@ type rig struct {
 	events     *fakeEvents
 	chat       *fakeChat
 	chatTokens *fakeChatTokens
+	// deaths are the session death records by task id and session id
+	deaths map[[2]string]factoryd.DeathRecord
+	// lives are the running sessions by task id
+	lives map[string]factoryd.LiveSession
 	// cardSteps are card_step's answers by task id, step 1 first, and
 	// boardDigests the board digests by repository; openCases are the
 	// open cases by task id, endedCases the cases that ended, and
@@ -1615,6 +1619,9 @@ func newRig(t *testing.T) *rig {
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
 			return factoryd.DeploymentHealthText(ctx, healthStub{}, p, deployment, namespace, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
+		},
+		ClusterFacts: func(ctx context.Context, taskID, sessionID string, since, until time.Time, hideCommand bool) (string, error) {
+			return factoryd.ClusterFactsReader{Store: rigCluster{r: r}, Live: rigLive{r}}.Text(ctx, taskID, sessionID, since, until, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC), hideCommand)
 		},
 		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, ChatTokens: r.chatTokens, Mirrors: r.mirrors, Routines: r.routines,
 		CardDigest: func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
@@ -2204,6 +2211,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"Writers":                  func(c *Config) { c.Writers = nil },
 		"Writes":                   func(c *Config) { c.Writes = nil },
 		"DeploymentHealth":         func(c *Config) { c.DeploymentHealth = nil },
+		"ClusterFacts":             func(c *Config) { c.ClusterFacts = nil },
 		"AnswerPlan":               func(c *Config) { c.AnswerPlan = nil },
 		"AnswerPlanQuestions":      func(c *Config) { c.AnswerPlanQuestions = nil },
 		"DecideHoldout":            func(c *Config) { c.DecideHoldout = nil },
@@ -4322,4 +4330,28 @@ func TestThePulsesBoardTextShowsARedMergeRequestWithNoSession(t *testing.T) {
 	if len(r.fg.calls) != 0 {
 		t.Errorf("the pulse's read asked Forgejo as a member: %v", r.fg.calls)
 	}
+}
+
+// rigCluster is the cluster store of the rig: the death records of
+// rig.deaths and no incident.
+type rigCluster struct {
+	factoryd.ClusterStore
+	r *rig
+}
+
+func (c rigCluster) SessionDeath(_ context.Context, taskID, sessionID string) (factoryd.DeathRecord, bool, error) {
+	d, ok := c.r.deaths[[2]string{taskID, sessionID}]
+	return d, ok, nil
+}
+
+func (rigCluster) PlatformIncidents(context.Context, time.Time, time.Time, int) ([]factoryd.PlatformIncident, error) {
+	return nil, nil
+}
+
+// rigLive is the running sessions of rig.lives.
+type rigLive struct{ r *rig }
+
+func (l rigLive) LiveSession(_ context.Context, taskID string) (factoryd.LiveSession, bool, error) {
+	s, ok := l.r.lives[taskID]
+	return s, ok, nil
 }

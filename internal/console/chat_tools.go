@@ -86,6 +86,8 @@ type toolInput struct {
 	State       string   `json:"state,omitempty"`
 	Deployment  string   `json:"deployment,omitempty"`
 	Namespace   string   `json:"namespace,omitempty"`
+	Since       string   `json:"since,omitempty"`
+	Until       string   `json:"until,omitempty"`
 	ID          int64    `json:"id,omitempty"`
 	Verdict     string   `json:"verdict,omitempty"`
 	DependsOn   string   `json:"depends_on,omitempty"`
@@ -1551,6 +1553,13 @@ func init() {
 			about:    "A Deployment in the project's namespaces only: its pods, restarts, terminations and events, no logs.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
 				s, err := t.c.deploymentHealthText(t.r.Context(), t.p, in.Deployment, in.Namespace)
+				return s, nil, err
+			}},
+		{name: "cluster_facts", title: "Read what the cluster did",
+			params: map[string]any{"task_id": taskParam, "n": sessionN, "since": str("the window's start, RFC 3339"), "until": str("the window's end, RFC 3339, at most 24 hours after since")},
+			about:  "What the cluster did to a card's session (task_id, n), or the platform's incidents of a window.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.clusterFactsText(in)
 				return s, nil, err
 			}},
 		{name: "resources", title: "Read the resources",

@@ -1749,6 +1749,54 @@ func TestGateCriteriaKeepsTheRunsOfAPodThatEndedEarly(t *testing.T) {
 	}
 }
 
+// A proofs pod the platform ended before it reported says so on each entry
+// it did not reach, and its death is stored as a gate's under its UID.
+// Without a platform death the entry keeps proofsEndedEarly.
+func TestAPlatformEndedProofsPodSaysSo(t *testing.T) {
+	const uid = "5d0c1f7e-3b2a-4c11-8e9f-0a1b2c3d4e5f"
+	for name, tc := range map[string]struct {
+		kill  bool
+		why   string
+		class DeathClass
+	}{
+		"the memory guard's kill": {true, "the platform ended the proofs pod (the node's memory guard killed the pod) before it reported this entry", DeathPlatform},
+		"no platform death":       {false, proofsEndedEarly, DeathUnknown},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			kube.onCreatePod = func() { kube.podOrder[len(kube.podOrder)-1].uid = uid }
+			objects := &fakeObjectStore{}
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+			cluster := newFakeClusterStore()
+			kernel := &scriptedKernel{}
+			if tc.kill {
+				kernel.kills = func(int) []KernelKill {
+					return []KernelKill{{Node: "sf-1", PodUID: uid, Source: "guard", At: time.Now()}}
+				}
+			}
+			r.cfg.Cluster, r.cfg.Kernel = cluster, kernel
+			proofsWorker(t, r)
+			plan, rows := openedGuards(hub, "green_login", "state_guard", "db_guard")
+			seedBlindPlan(t, store, plan, rows)
+			body := proofLines(harness.ProofRun{ID: "green_login", Report: junitGz(t, wrap(`<testcase name="TestLogin"></testcase>`))})
+			results, errs := runCriteriaWithPods(t, r, kube, body[:strings.LastIndex(body, "\n")])
+			if errs[0] != nil {
+				t.Fatalf("the gate failed: %v", errs[0])
+			}
+			want := []string{
+				"criterion state_guard: TestState in ./internal/state: " + tc.why,
+				"criterion db_guard: TestDB in ./internal/store: " + tc.why,
+			}
+			if !slices.Equal(results[0].Findings, want) {
+				t.Fatalf("findings = %q, want %q", results[0].Findings, want)
+			}
+			if d, ok := cluster.deaths["gate/"+uid]; !ok || d.Kind != "gate" || d.TaskID != "t1" || d.Record.Class != tc.class || d.Record.Lines != nil {
+				t.Fatalf("stored deaths = %+v; want a gate death of t1, class %s, under gate/%s, with no lines for a next session", cluster.deaths, tc.class, uid)
+			}
+		})
+	}
+}
+
 // hungDelete is a kube whose namespace delete hangs until its context
 // ends, as an API server that takes the call and never answers.
 type hungDelete struct{ *fakeKube }

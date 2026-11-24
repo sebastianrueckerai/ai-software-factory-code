@@ -207,12 +207,14 @@ agent, may take one of the card's choices, though it may end the card
 condition gone, and never park it out of sight. A card rung 2 decides
 ends with no issue. Otherwise its face files the issue (a card that has
 one gets a comment), moves the card to `waiting-human` and pokes. The
-chat's escalation, the month cap's card, the judgment budget's card and
-the provider freeze's card ask a human at once: the escalation's filing is
-rung 2's step, and the cases of the two caps and of the freeze
-(`factory_month_cap`, `judgment_budget`, `provider_freeze`) are the kind
-table's exceptions, since no rung can run while a cap stands, and a
-provider's limit can hold the rungs' own model calls. The table names two
+chat's escalation, the month cap's card, the judgment budget's card, the
+provider freeze's card and the platform deaths' card ask a human at once:
+the escalation's filing is rung 2's step, and the cases of the two caps,
+of the freeze and of the platform deaths (`factory_month_cap`,
+`judgment_budget`, `provider_freeze`, `platform_deaths`) are the kind
+table's exceptions, since no rung can run while a cap stands, a
+provider's limit can hold the rungs' own model calls, and a fix of the
+nodes needs their admin key, which no agent holds. The table names two
 more exceptions: an agent's request to its issue's author
 (`agent_request_info`), whose answer alone the card's wait takes, and the
 ask of a plan whose card a human closed with promises open (`plan_held`),
@@ -223,6 +225,26 @@ not judged, and refuses any other, naming the case, its kind and that it
 climbs first. The monitor flags a case at the human that the door
 would refuse (`faced_unjudged`), and that flag's case is the human's,
 since only a commit fixes the door.
+
+The platform deaths' card (source `platform_deaths`) is factoryd's own,
+filed by a pass each minute when the platform ends 3 sessions, CI jobs or
+gate pods within 24 hours, across every card, by their death records
+(class `platform`). A start of the whole cluster, every node booting
+within 10 minutes of the others by the incident log's boots, as after
+factory-off and factory-on, explains the node restarts and the pods gone
+after factoryd's restart in the lives it spans: those deaths stay free
+for their cards and count no more toward this one. Its title is always the same, so a filing whose card
+row failed takes on its open issue at the next pass, on whichever of the
+deaths' repositories or the configuration repository holds it. Otherwise
+it files on the repository of the newest death that hit a card, or on the
+configuration repository when none did; a repository whose search fails
+is passed over. Its face counts the deaths and
+lists the newest 10, each with its day and time, the card or CI job it
+hit, its cause and its node. One card is open at a time: its face holds
+every death since 24 hours before its filing, a new death rewrites it
+wherever the card stands, and a death at or before the end of the last
+closed card counts no more. Its answers are Noted, which ends it, and Not
+now; no agent works it.
 
 ## Task workflow
 

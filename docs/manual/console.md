@@ -327,7 +327,19 @@ decimals: a task's model calls cost fractions of a cent.
   line each, steps in full, a search of the transcripts and, with no step
   matching, of the sessions' ends; transcripts over 8 MiB are only
   searched), `ci` (a commit's combined CI status with each job's, main's
-  head unless a ref or sha names another, through the human's token) and
+  head unless a ref or sha names another, through the human's token),
+  `cluster_facts` (what the cluster did to a card's session, by the number
+  `session` takes: the death record kept at its end with its class, rule,
+  kill, service restarts, the pod's events as time, type, reason and count
+  without their text, its node's state now and the incidents on that node in the
+  session's life (a prover's last command is left out); for the card's running session, a live read of its pod,
+  containers, node and the node's incidents since it started; or, with
+  `since` and `until` as RFC 3339 and for the writers of the factory's own
+  code alone, as `alerts`, the platform's incidents of a window of at most
+  24 hours inside the 30 days the log keeps; cut at 12 KiB. A refusal
+  carries 400 for a bad ask, 403 for a window asked without the factory's
+  access, naming the session form, 404 for a session with no record and
+  409 when the factory keeps no cluster facts) and
   `project_images` (the project's pins in force with their tools, egress,
   short digest and key, its open tool cards, and its cards in
   `waiting-image` with the image each waits for), and
