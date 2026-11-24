@@ -1074,6 +1074,52 @@ func TestAStopTheFactorydBeforeSentGoesFree(t *testing.T) {
 	}
 }
 
+// An earlier factoryd sent a held card's session its stop and died; its
+// pod is gone at the reattach. The end goes free with its class line,
+// which the fresh session is given. The hold stops that session as it
+// registers: it ends held, decided, and its result hands the free line to
+// no one, so the session after the release never reads it.
+func TestAHeldCardsFreeEndAfterARestartStopsAtTheFreshSession(t *testing.T) {
+	const line = "Your previous session did not fail on its own. The node's memory guard killed its pod on sf-1 at "
+	g := newDeathRig(t, "t2", nil)
+	g.kube.keepDeleted = true
+	first := g.detach(t, modelCall+cutLogs)
+	card := g.store.tasks["t2"]
+	card.Kind, card.Hold = "agent", &CardHold{Reason: "out of the way", By: "sebastian", At: time.Now()}
+	g.store.tasks["t2"] = card
+	if err := g.store.SetLiveSessionStopping(context.Background(), "t2", first.Owner, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	g.kernel.kills = func(int) []KernelKill {
+		return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: at, Seq: 5}}
+	}
+	g.kube.mu.Lock()
+	delete(g.kube.pods, first.Namespace+"/"+first.Pod)
+	g.kube.mu.Unlock()
+	res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", HoldStop: true}, []string{modelCall + sigtermLogs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := g.stored(t, "t2", first.SessionID)
+	if rec.Class != DeathPlatform || rec.Rule != RuleGuardKill || rec.Decided || len(rec.Lines) != 1 || !strings.HasPrefix(rec.Lines[0], line) ||
+		!strings.HasSuffix(rec.Lines[0], " That session does not count against the card.") {
+		t.Fatalf("stored = %+v, want the guard kill, free, with its class line", rec)
+	}
+	findings, _ := timelineStep(t, g.objects, "t2", "session_start")["findings"].([]any)
+	if res.SessionID == first.SessionID || !slices.Contains(findings, any(rec.Lines[0])) {
+		t.Fatalf("the fresh session %s's findings %q, want the class line", res.SessionID, findings)
+	}
+	if res.Outcome != OutcomeHeld || res.Trip != string(TripHold) || res.Death == nil || !res.Death.Decided || len(res.Death.Lines) != 0 {
+		t.Fatalf("result = %+v, death %+v; want the fresh session held, decided, with no line", res, res.Death)
+	}
+	if told := strings.Join(slices.Concat(res.Findings, []string{res.Summary, res.LastMessage}), "\n"); strings.Contains(told, "does not count") {
+		t.Fatalf("the held result hands on %q, want nothing of the free end", told)
+	}
+}
+
 // A factoryd that died inside its own stop leaves the pod deleting: the
 // next one reattaches and reads the worker's stopped result. The stop the
 // row records is factoryd's own, so the worker reported its end: the
