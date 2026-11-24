@@ -113,7 +113,7 @@ func (w *writeSeams) wire(cfg *console.Config) {
 		defer w.mu.Unlock()
 		return factoryd.ImageAsk{Card: w.imageCard, Target: "default", Filed: true}, nil
 	}
-	cfg.Escalate = func(_ context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
+	cfg.Escalate = func(_ context.Context, repository string, q factoryd.HumanQuestion, by, _ string) (int64, error) {
 		w.log("escalate %s %q by %s", repository, q.Ask, by)
 		return 70, nil
 	}

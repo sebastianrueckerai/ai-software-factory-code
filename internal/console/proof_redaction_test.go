@@ -16,7 +16,7 @@ func TestProofRefusalMasksTheTokenBeforeTheMessage(t *testing.T) {
 	const token = "ghp_AbCdEf0123456789AbCdEf0123456789AbCdEf01"
 	r, _ := batchAnswerRig(t)
 	_, s := r.loggedIn(t)
-	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string, string) (int64, error) {
 		return 0, errors.New("forgejo rejected the card: the bearer token " + token + " expired")
 	}
 	var events []string

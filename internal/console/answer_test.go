@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The answer row (roadmap 239, C14): a choice of an escalation row answers
@@ -134,18 +135,19 @@ func TestChatEscalate(t *testing.T) {
 	_, s := r.loggedIn(t)
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	_, err := trn.escalate("Which store?", "", "", "", "", nil)
+	_, err := trn.escalate(toolInput{Ask: "Which store?"})
 	equal(t, "without the factory's escalation", err.Error(), "this factory files no escalation from the chat")
 	var filed []factoryd.HumanQuestion
-	var repo string
-	r.c.cfg.Escalate = func(_ context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
-		repo, _ = repository, by
+	var repo, about string
+	r.c.cfg.Escalate = func(_ context.Context, repository string, q factoryd.HumanQuestion, by, card string) (int64, error) {
+		repo, about, _ = repository, card, by
 		filed = append(filed, q)
 		return 42, nil
 	}
-	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", " Postgres ", []string{" Postgres ", "SQLite"})
+	got, err := trn.escalate(toolInput{Ask: " Which store? ", Why: " Postgres runs out of connections at the measured peak. ", Info: " The counts and the plan section both say so. ",
+		Recommendation: " Postgres, plan section 3 ", Choice: " Postgres ", Choices: []string{" Postgres ", "SQLite"}, Act: " psql -c 'SHOW max_connections' ", TaskID: "t-r"})
 	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's humans with its choices.", error(nil)})
-	equal(t, "what it filed", []any{repo, filed}, []any{"sf/code", []factoryd.HumanQuestion{{
+	equal(t, "what it filed", []any{repo, about, filed}, []any{"sf/code", "t-r", []factoryd.HumanQuestion{{
 		Ask:            "Which store?",
 		Why:            "Postgres runs out of connections at the measured peak.",
 		Info:           "The counts and the plan section both say so.",
@@ -153,27 +155,32 @@ func TestChatEscalate(t *testing.T) {
 		Recommended:    "say:Postgres",
 		Source:         "the project agent",
 		Choices:        []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}},
+		Act:            "psql -c 'SHOW max_connections'",
 	}}})
 	two := []string{"a", "b"}
 	for _, in := range []struct {
 		name, ask, why, info, recommendation, choice string
 		choices                                      []string
 		want                                         string
+		act, card                                    string
 	}{
-		{"no ask", "", "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title"},
-		{"256 characters", strings.Repeat("x", 256), "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title"},
-		{"no info", "Which?", "why", "", "rec", "", two, "info: what a human should know to answer well, 1 to 2000 characters"},
-		{"no recommendation", "Which?", "why", "info", "", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
-		{"no choices", "Which?", "why", "info", "rec", "", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"one choice", "Which?", "why", "info", "rec", "", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"six choices", "Which?", "why", "info", "rec", "", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"empty choice", "Which?", "why", "info", "rec", "", []string{"a", ""}, `choices: "": The answer is empty.`},
-		{"61 characters", "Which?", "why", "info", "rec", "", []string{"a", strings.Repeat("b", 61)}, `choices: "` + strings.Repeat("b", 61) + `": The answer has 61 characters, at most 60.`},
-		{"twice", "Which?", "why", "info", "rec", "", []string{"a", " a"}, "choices: each answer once"},
-		{"twice by case and end punctuation", "Which?", "why", "info", "rec", "", []string{"Close it", "close IT."}, "choices: each answer once"},
-		{"a choice of none of them", "Which?", "why", "info", "rec", "c", two, "`choice`: the one of `choices` you would pick, as written there. \"c\" is none of them."},
+		{"no ask", "", "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title", "", ""},
+		{"256 characters", strings.Repeat("x", 256), "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title", "", ""},
+		{"no info", "Which?", "why", "", "rec", "", two, "info: what a human should know to answer well, 1 to 2000 characters", "", ""},
+		{"no recommendation", "Which?", "why", "info", "", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters", "", ""},
+		{"no choices", "Which?", "why", "info", "rec", "", nil, "choices: 2 to 5 answers of 1 to 60 characters", "", ""},
+		{"one choice", "Which?", "why", "info", "rec", "", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters", "", ""},
+		{"six choices", "Which?", "why", "info", "rec", "", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters", "", ""},
+		{"empty choice", "Which?", "why", "info", "rec", "", []string{"a", ""}, `choices: "": The answer is empty.`, "", ""},
+		{"61 characters", "Which?", "why", "info", "rec", "", []string{"a", strings.Repeat("b", 61)}, `choices: "` + strings.Repeat("b", 61) + `": The answer has 61 characters, at most 60.`, "", ""},
+		{"twice", "Which?", "why", "info", "rec", "", []string{"a", " a"}, "choices: each answer once", "", ""},
+		{"twice by case and end punctuation", "Which?", "why", "info", "rec", "", []string{"Close it", "close IT."}, "choices: each answer once", "", ""},
+		{"a choice of none of them", "Which?", "why", "info", "rec", "c", two, "`choice`: the one of `choices` you would pick, as written there. \"c\" is none of them.", "", ""},
+		{"2001 characters of act", "Which?", "why", "info", "rec", "", two, "act: the exact command or press a human does outside the factory, at most 2000 characters", strings.Repeat("x", 2001), ""},
+		{"a card of no project's", "Which?", "why", "info", "rec", "", two, "There is no card t-nope in this project.", "", "t-nope"},
 	} {
-		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choice, in.choices); err == nil || err.Error() != in.want {
+		if _, err := trn.escalate(toolInput{Ask: in.ask, Why: in.why, Info: in.info, Recommendation: in.recommendation, Choice: in.choice, Choices: in.choices,
+			Act: in.act, TaskID: in.card}); err == nil || err.Error() != in.want {
 			t.Errorf("%s: escalate = %v, want %q", in.name, err, in.want)
 		}
 	}
@@ -185,14 +192,52 @@ func TestChatEscalate(t *testing.T) {
 func TestChatEscalateRefusalNamesTheError(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
-	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string, string) (int64, error) {
 		return 0, errors.New("forgejo rejected the card: Needs you is closed for sf/code")
 	}
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", "Postgres", []string{"Postgres", "SQLite"})
+	_, err := trn.escalate(toolInput{Ask: "Which store?", Why: "the ledger is short", Info: "the pool is dry", Recommendation: "Postgres", Choice: "Postgres", Choices: []string{"Postgres", "SQLite"}})
 	refusedAs(t, err, http.StatusBadGateway, "The escalation could not be filed: forgejo rejected the card: Needs you is closed for sf/code. "+
 		"Try again, or post the question on the card's issue.")
+}
+
+// A wake about a card files no escalation that names no card: the refusal
+// names the card the wake's first line names, and the ask that names it
+// files with it, so a later stop of that card or its plan waits on the ask.
+func TestChatEscalateInAWakeNamesItsCard(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	var about []string
+	r.c.cfg.Escalate = func(_ context.Context, _ string, _ factoryd.HumanQuestion, _, card string) (int64, error) {
+		about = append(about, card)
+		return 42, nil
+	}
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ask = `"ask":"Fill the store?","why":"The build reads its files from the store.","info":"The store answers 404 for four files.",` +
+		`"recommendation":"Run the copy at the pull request's head","choices":["Filled","Not now"]`
+	g.replies = [][]string{{call(1, "escalate", "{"+ask+"}")}, {call(2, "escalate", `{"task_id":"t-r",`+ask+"}")}, {say("Asked.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.WakeTimer,
+		"Timer: Re-check #11 on head bd1171a. Run the check it stood for."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []string
+	for _, m := range rows {
+		for _, c := range m.ToolCalls {
+			results = append(results, c.Result)
+		}
+	}
+	equal(t, "the two calls", results, []string{
+		"Refused: `task_id`: this turn is about #11. Name the card or plan the ask is about, so a later stop of that card or its plan waits on this ask and asks no second time.",
+		"Filed the escalation as #42 in Needs you; the inbox carries it to the project's humans with its choices. It cannot be undone."})
+	equal(t, "the cards the filings are about", about, []string{"t-r"})
 }
 
 // In a wake on a case escalate is refused naming the case: the case reaches
@@ -202,7 +247,7 @@ func TestChatEscalateInACaseWakeNamesTheCase(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
 	filed := 0
-	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string, string) (int64, error) {
 		filed++
 		return 42, nil
 	}
@@ -210,7 +255,7 @@ func TestChatEscalateInACaseWakeNamesTheCase(t *testing.T) {
 	trn := r.chatTurnOf(t, s, &events)
 	trn.a.wake, trn.a.birth = true, factoryd.EventCaseClimbed
 	r.c.books.add(trn.key(), []int64{61})
-	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", "", []string{"Postgres", "SQLite"})
+	_, err := trn.escalate(toolInput{Ask: "Which store?", Why: "the ledger is short", Info: "the pool is dry", Recommendation: "Postgres", Choices: []string{"Postgres", "SQLite"}})
 	refusedAs(t, err, http.StatusConflict, "You hold case 61: hand it up with `attach_analysis`, its `case_id` and your recommendation, and it reaches the human with your analysis; a second card would ask twice.")
 	equal(t, "filings", filed, 0)
 }

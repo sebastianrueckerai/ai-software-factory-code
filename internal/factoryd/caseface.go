@@ -12,16 +12,17 @@ import (
 // agent's view, the suggestion with the one who made it and its grounds,
 // the answers, the suggested one named in Preselected with the args its
 // proposal names, and the findings the ask and the story count. Money is
-// the money line an approval adds. Moments are the instants its texts
-// name, each in its UTC words.
+// the money line an approval adds. Act is the exact command or press a
+// human does outside the factory, "" for none. Moments are the instants
+// its texts name, each in its UTC words.
 type Face struct {
-	Ask, Money, Why, Info, Recommendation, Source string
-	Story                                         Story
-	Offers                                        []AskOffer
-	Preselected                                   string
-	PreselectedArgs                               map[string]any
-	Findings                                      []string
-	Moments                                       Moments
+	Ask, Money, Why, Info, Recommendation, Source, Act string
+	Story                                              Story
+	Offers                                             []AskOffer
+	Preselected                                        string
+	PreselectedArgs                                    map[string]any
+	Findings                                           []string
+	Moments                                            Moments
 }
 
 // A Moment is an instant a text names: the text says it in its Words, in
@@ -120,6 +121,7 @@ func CaseFace(c Case, t Task, ask CaseAsk) Face {
 	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: offersOfAnswers(af.Answers), Preselected: af.Suggested, PreselectedArgs: af.SuggestedArgs,
 		Source: af.SuggestedBy, Recommendation: af.Grounds, Findings: af.Findings, Moments: af.Moments}
 	face.Info, _ = ask.Detail["info"].(string)
+	face.Act, _ = ask.Detail["act"].(string)
 	if ask.Analysis != "" {
 		face.Info = strings.TrimSpace(face.Info + "\n\n" + Quoted(ask.Analysis))
 	}
@@ -284,6 +286,7 @@ func questionOfAsk(detail map[string]any) *HumanQuestion {
 	q.Happened, _ = detail["happened"].(string)
 	q.Waits, _ = detail["waits"].(string)
 	q.Check, _ = detail["check"].(string)
+	q.Act, _ = detail["act"].(string)
 	q.Moments = momentsOf(detail)
 	return q
 }

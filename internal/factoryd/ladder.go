@@ -185,6 +185,12 @@ var rung0 = []resolver{
 	{Name: "rerun_criteria_gate", Hold: func(ctx context.Context, r *Runner, c Case) (bool, error) {
 		return r.rerunCriteriaGate(ctx, c)
 	}},
+	// a stop that would ask a human what the chat's open ask about the
+	// card or its plan asks already: the card waits on that ask, and goes
+	// on with its answer
+	{Name: "wait_on_ask", Hold: func(ctx context.Context, r *Runner, c Case) (bool, error) {
+		return r.waitOnAsk(ctx, c)
+	}},
 }
 
 // expireCardSteps ends card taskID's in-progress steps past their due as

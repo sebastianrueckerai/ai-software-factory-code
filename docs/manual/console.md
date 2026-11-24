@@ -159,9 +159,17 @@ resources page, a period that recurs and no instant.
 - The plan card: a pending approval of kind `plan` is the record of a
   revision's open questions. Each question and the confirmation opens a
   case at rung 0, which climbs to rung 2, rung 1 skipped. At full auto
-  rung 2 answers a question, and confirms a revision that takes nothing
-  off main once every hold-out of its round is decided; else it hands the
-  case up with its analysis and its recommended answer. The plan card
+  rung 2 answers a question, keeps or drops each extra promise (hold-out)
+  of the revision's round, whose claim, inputs and expected result its
+  wake's statement lists, and confirms a revision that takes nothing off
+  main once every one is decided; else it hands the case up with its
+  analysis and its recommended answer. It keeps or drops one with
+  `answer` (`revision`, `holdout`, `decision` keep or drop, its reason
+  as `text`) through the door a human's Keep it or Drop it uses, which
+  refuses it below full auto; the `holdout_decided` row records its
+  reason, and nothing is posted on the issue, which the building agents
+  read. Below full auto a human keeps or drops each on its page, whose
+  ask quotes the claim. The plan card
   reaches Needs you and the card's drawer only once a case of its
   revision is at the human; until then the plan sits in In progress and
   the chat's answer to a climbing question refuses, naming the case and

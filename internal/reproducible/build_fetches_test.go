@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 )
 
 var (
@@ -238,7 +240,7 @@ func TestOutsideFetchesAreNamedWithTheirFileAndURL(t *testing.T) {
 	}
 	quiet := outsideFetches("Dockerfile", logicalLines(strings.Join([]string{
 		storeARG,
-		"FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:311f7a192fd9a92b165a86b32fa3aae9005b11849bfb1db2d4fd784559ee464f AS base",
+		"FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:" + strings.Repeat("d", 64) + " AS base",
 		"FROM base",
 		`RUN wget -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz"`,
 		`RUN echo "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" > /etc/apt/sources.list`,
@@ -271,10 +273,10 @@ func TestTheBuildVMDeniesEveryUpstreamFileHost(t *testing.T) {
 		t.Fatal("buildvm.go: the deny list names no host")
 	}
 	upstream := map[string]bool{}
-	for _, l := range readUpstreamFiles(t) {
-		u, err := url.Parse(l.url)
+	for _, l := range pins.Files() {
+		u, err := url.Parse(l.URL)
 		if err != nil {
-			t.Fatalf("upstream-files.txt: %s: %v", l.url, err)
+			t.Fatalf("upstream-files.txt: %s: %v", l.URL, err)
 		}
 		upstream[u.Host] = true
 	}

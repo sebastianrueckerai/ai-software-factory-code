@@ -21,11 +21,11 @@ env:
   # commit touching them (roadmap 250), so a commit that touches none
   # keeps the image's digest. They mirror each Dockerfile's COPY lines and
   # the runner's warm-step mounts.
-  GATEWAY_INPUTS: Dockerfile .dockerignore go.mod go.sum cmd internal
-  SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json
+  GATEWAY_INPUTS: Dockerfile .dockerignore go.mod go.sum cmd internal pins.go upstream-files.txt upstream-images.txt factory/images.yaml
+  SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json pins.go upstream-files.txt upstream-images.txt factory/images.yaml
   # the sandbox's base stage copies nothing from the context
   SANDBOX_BASE_INPUTS: Dockerfile.sandbox
-  RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance scripts proofs
+  RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance scripts proofs pins.go upstream-files.txt upstream-images.txt factory/images.yaml
 # One main run at a time: a newer push waits out the running one instead of
 # cancelling it (Forgejo's default), so no half-tested run is wasted; the
 # roller still judges the newest green build.

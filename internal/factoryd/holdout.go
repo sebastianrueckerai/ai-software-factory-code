@@ -76,6 +76,12 @@ type PlanProof struct {
 	Flag      string `json:"flag"`
 }
 
+// The answer tool's decisions on one extra promise.
+const (
+	DecisionKeep = "keep"
+	DecisionDrop = "drop"
+)
+
 // ErrHoldoutsOpen refuses a confirmation answer while its round's
 // proposals wait for the human's okay or drop.
 var ErrHoldoutsOpen = errors.New("the round's hold-outs wait for your okay or drop")

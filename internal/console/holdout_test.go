@@ -82,7 +82,8 @@ func planPages(t *testing.T, r *rig, ck *http.Cookie) []string {
 
 // Each extra promise of the round waits on a page of its own, before the
 // confirmation: the small card opens on the first of 3 pages and asks to
-// keep it; on the opened card each page tells what an extra promise is,
+// keep it by its claim; on the opened card each page asks for its own
+// claim, tells what an extra promise is,
 // names its claim whole and what keeping it costs, and offers Keep it and
 // Drop it, which post the row's own index with no field to fill. The
 // confirmation's page comes last and offers Ask for changes and Not now,
@@ -95,7 +96,7 @@ func TestEachExtraPromiseAsksOnItsOwnPage(t *testing.T) {
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
 	ck, _ := r.loggedIn(t)
 	small := needsOf(t, r, ck, "/?project=linkshort")
-	for _, want := range []string{`data-case="500.1"`, `<strong class="title">Keep this extra promise for plan “Link shortener”?</strong>`,
+	for _, want := range []string{`data-case="500.1"`, `<strong class="title">Keep the extra promise “The door stays shut until a key that fits turns the lock” for plan “Link shortener”?</strong>`,
 		`<span class="why">The plan&#39;s cards start only once each extra promise is kept or dropped.</span>`, `<span class="pos" aria-live="polite">1 of 3</span>`,
 		`hx-get="/projects/linkshort/cards/t-plan/cases/500.2?project=linkshort"`} {
 		if !strings.Contains(small, want) {
@@ -109,13 +110,17 @@ func TestEachExtraPromiseAsksOnItsOwnPage(t *testing.T) {
 	if len(pages) != 3 {
 		t.Fatalf("the card holds %d pages, want 3", len(pages))
 	}
-	for i, claim := range []string{"The door stays shut until a key that fits turns the lock.", "Every key turn lands in the log."} {
+	for i, c := range []struct{ ask, claim string }{
+		{`<p class="o-question">Keep the extra <span class="term">promise</span> “The door stays shut until a key that fits turns the lock” for plan “Link shortener”?</p>`,
+			"The door stays shut until a key that fits turns the lock."},
+		{`<p class="o-question">Keep the extra <span class="term">promise</span> “Every key turn lands in the log” for plan “Link shortener”?</p>`, "Every key turn lands in the log."},
+	} {
 		page := pages[i]
 		for _, want := range []string{
 			fmt.Sprintf("Your call · %d of 3", i+1),
-			`<p class="o-question">Keep this extra <span class="term">promise</span> for plan “Link shortener”?</p>`,
+			c.ask,
 			"<li>An extra promise is one the plan&#39;s own list missed, and a test the agent never sees checks it.</li>",
-			"<li>The extra promise: " + claim + "</li>",
+			"<li>The extra promise: " + c.claim + "</li>",
 			"<li>Keeping it adds one more test, which the plan&#39;s last card must pass.</li>",
 		} {
 			if !strings.Contains(page, want) {

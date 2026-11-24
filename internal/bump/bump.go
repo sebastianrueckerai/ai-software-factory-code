@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 )
 
 // Files are the repository's files a bump reads and writes: the two lists,
@@ -104,18 +106,14 @@ func (p *pass) failed(format string, a ...any) {
 // lead's first, then the with lines after the line they follow.
 func (p *pass) imageList() {
 	const list = "upstream-images.txt"
-	var lines []ImageLine
+	lines, err := pins.ParseImages(p.files[list])
+	if err != nil {
+		for _, e := range strings.Split(err.Error(), "\n") {
+			p.failed("%s: %s", list, e)
+		}
+	}
 	names := map[string]int{}
-	for _, raw := range strings.Split(p.files[list], "\n") {
-		if !pinLine(raw) {
-			continue
-		}
-		l, err := ParseImageLine(raw)
-		if err != nil {
-			p.failed("%s: %v", list, err)
-			continue
-		}
-		lines = append(lines, l)
+	for _, l := range lines {
 		if name, _, _, ok := splitImage(l.Ref); ok && !strings.HasPrefix(l.Ref, "https://") {
 			names[name]++
 		}
@@ -123,7 +121,7 @@ func (p *pass) imageList() {
 	leads := map[string]string{}
 	for _, follow := range []bool{false, true} {
 		for _, l := range lines {
-			if (l.Rule == RuleWith) != follow || l.Rule == RuleHold {
+			if (l.Rule == pins.RuleWith) != follow || l.Rule == pins.RuleHold {
 				continue
 			}
 			now, err := p.imageLine(l, leads, names)
@@ -140,7 +138,7 @@ func (p *pass) imageList() {
 }
 
 // imageLine is the line's reference moved to the newest of its line.
-func (p *pass) imageLine(l ImageLine, leads map[string]string, names map[string]int) (string, error) {
+func (p *pass) imageLine(l pins.Image, leads map[string]string, names map[string]int) (string, error) {
 	if strings.HasPrefix(l.Ref, "https://") {
 		u, sum, _ := strings.Cut(l.Ref, "@sha256:")
 		d, err := p.download(u, sum, "")
@@ -158,7 +156,7 @@ func (p *pass) imageLine(l ImageLine, leads map[string]string, names map[string]
 	}
 	pick := tag
 	switch l.Rule {
-	case RuleWith:
+	case pins.RuleWith:
 		lead, ok := leads[l.Lead]
 		if !ok {
 			return "", fmt.Errorf("with %s: no line of that name leads it (one, not held, in the list)", l.Lead)
@@ -175,7 +173,7 @@ func (p *pass) imageLine(l ImageLine, leads map[string]string, names map[string]
 			return "", err
 		}
 		var newer string
-		pick, newer = Newest(tag, tags, false, l.Rule == RulePatch)
+		pick, newer = Newest(tag, tags, false, l.Rule == pins.RulePatch)
 		if newer != "" {
 			p.report.Newer = append(p.report.Newer, name+" "+newer)
 		}
@@ -237,46 +235,44 @@ func (p *pass) download(u, sum, name string) (download, error) {
 // fileList moves the lines of upstream-files.txt.
 func (p *pass) fileList() {
 	const list = "upstream-files.txt"
-	lines := strings.Split(p.files[list], "\n")
-	for i, raw := range lines {
-		if !pinLine(raw) {
-			continue
+	lines, err := pins.ParseFiles(p.files[list])
+	if err != nil {
+		for _, e := range strings.Split(err.Error(), "\n") {
+			p.failed("%s: %s", list, e)
 		}
-		l, err := parseFileLine(raw)
-		if err != nil {
-			p.failed("%s: %v", list, err)
-			continue
-		}
+	}
+	moved := map[string]string{}
+	for _, l := range lines {
 		var d download
-		if l.url == "https://vuln.go.dev/vulndb.zip" {
-			d = download{oldURL: l.url, newURL: l.url, oldSum: l.sum, oldVersion: l.version}
+		if l.URL == "https://vuln.go.dev/vulndb.zip" {
+			d = download{oldURL: l.URL, newURL: l.URL, oldSum: l.SHA256, oldVersion: l.Version}
 			d.newVersion, d.newSum, err = vulnDB(p.ctx, p.w)
 		} else {
-			d, err = p.download(l.url, l.sum, l.pkg)
+			d, err = p.download(l.URL, l.SHA256, l.Package)
 		}
 		if err != nil {
-			p.failed("%s %s: %v", l.pkg, l.version, err)
+			p.failed("%s %s: %v", l.Package, l.Version, err)
 			continue
 		}
 		now := l
 		if d.oldVersion != d.newVersion {
-			now.version = strings.ReplaceAll(l.version, d.oldVersion, d.newVersion)
-			now.file = strings.ReplaceAll(l.file, d.oldVersion, d.newVersion)
+			now.Version = strings.ReplaceAll(l.Version, d.oldVersion, d.newVersion)
+			now.Name = strings.ReplaceAll(l.Name, d.oldVersion, d.newVersion)
 		}
-		now.url, now.sum = d.newURL, d.newSum
+		now.URL, now.SHA256 = d.newURL, d.newSum
 		if now == l {
 			continue
 		}
-		d.pkg, d.oldVersion, d.newVersion = l.pkg, l.version, now.version
+		d.pkg, d.oldVersion, d.newVersion = l.Package, l.Version, now.Version
 		p.downloads = append(p.downloads, d)
-		lines[i] = now.String()
-		if now.version != l.version {
-			p.moved("%s %s → %s", l.pkg, l.version, now.version)
+		moved[l.String()] = now.String()
+		if now.Version != l.Version {
+			p.moved("%s %s → %s", l.Package, l.Version, now.Version)
 		} else {
-			p.moved("%s %s: a new sha256", l.pkg, l.version)
+			p.moved("%s %s: a new sha256", l.Package, l.Version)
 		}
 	}
-	p.files[list] = strings.Join(lines, "\n")
+	p.files[list] = rewriteLines(p.files[list], moved)
 }
 
 var (

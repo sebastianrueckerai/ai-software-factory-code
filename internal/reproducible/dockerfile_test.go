@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -348,7 +349,8 @@ func TestRunnerWarmCacheHoldsNoTestResultsAndNoSource(t *testing.T) {
 		}
 		mounted = append(mounted, m[1])
 	}
-	want := append([]string{"go.mod", "go.sum"}, goTrees(t)...)
+	build, tests := rootPackage(t)
+	want := slices.Concat([]string{"go.mod", "go.sum"}, goTrees(t), build, tests)
 	sort.Strings(mounted)
 	sort.Strings(want)
 	if !reflect.DeepEqual(mounted, want) {
@@ -490,22 +492,31 @@ func TestRunnerWarmBuildReadsTheSourceAtTheCommitsClock(t *testing.T) {
 	}
 }
 
-// One Go builds what ships and what CI and a local run test with: the
-// golang base of every Dockerfile names the same exact version, each pinned
-// by digest, and go.mod's toolchain line names it too. Hand-derived from
-// the four files: go1.26.11, alpine for the gateway's and the sandbox's
-// build stages (the sandbox's twice: its npm-cache fetch stage shares the
-// store's copy), Debian for the runner's toolchain stage.
-func TestDockerfilesBuildWithOneGo(t *testing.T) {
+// goToolchain is the version go.mod's one toolchain line names, without
+// its go prefix.
+func goToolchain(t *testing.T) string {
+	t.Helper()
 	mod, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := regexp.MustCompile(`(?m)^toolchain go(\S+)$`).FindAllStringSubmatch(string(mod), -1); len(m) != 1 || m[0][1] != "1.26.11" {
-		t.Errorf("go.mod: toolchain lines %v, want one at go1.26.11", m)
+	m := regexp.MustCompile(`(?m)^toolchain go(\S+)$`).FindAllStringSubmatch(string(mod), -1)
+	if len(m) != 1 {
+		t.Fatalf("go.mod: toolchain lines %v, want one", m)
 	}
-	from := regexp.MustCompile(`(?m)^FROM \$\{UPSTREAM\}docker\.io/library/golang:([0-9.]+)(-alpine)?@sha256:[0-9a-f]{64}\b`)
-	want := map[string][]string{"Dockerfile": {"1.26.11"}, "Dockerfile.sandbox": {"1.26.11", "1.26.11"}, "Dockerfile.runner": {"1.26.11"}}
+	return m[0][1]
+}
+
+// One Go builds what ships and what CI and a local run test with: the
+// golang base of every Dockerfile names go.mod's toolchain version, each
+// pinned by digest. Hand-derived from the four files: alpine for the
+// gateway's and the sandbox's build stages (the sandbox's twice: its
+// npm-cache fetch stage shares the store's copy), Debian for the runner's
+// toolchain stage.
+func TestDockerfilesBuildWithOneGo(t *testing.T) {
+	v := goToolchain(t)
+	from := regexp.MustCompile(`(?m)^FROM \$\{UPSTREAM\}docker\.io/library/golang:([0-9.]+(?:-alpine)?)@sha256:[0-9a-f]{64}\b`)
+	want := map[string][]string{"Dockerfile": {v + "-alpine"}, "Dockerfile.sandbox": {v + "-alpine", v + "-alpine"}, "Dockerfile.runner": {v}}
 	for file, versions := range want {
 		b, err := os.ReadFile(filepath.Join("..", "..", file))
 		if err != nil {
@@ -518,6 +529,84 @@ func TestDockerfilesBuildWithOneGo(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, versions) {
 			t.Errorf("%s: golang bases %v, want %v pinned by digest", file, got, versions)
+		}
+	}
+}
+
+var goEmbed = regexp.MustCompile(`(?m)^\s*//go:embed (.+)$`)
+
+// rootPackage is the root package's Go files and the files they embed
+// (pins.go and the lists), and apart from them its test files.
+func rootPackage(t *testing.T) (build, tests []string) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("..", "..", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		name := filepath.Base(f)
+		if strings.HasSuffix(name, "_test.go") {
+			tests = append(tests, name)
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		build = append(build, name)
+		for _, m := range goEmbed.FindAllStringSubmatch(string(raw), -1) {
+			build = append(build, strings.Fields(m[1])...)
+		}
+	}
+	if len(build) == 0 {
+		t.Fatal("the repository's root holds no Go file: the lists' package moved")
+	}
+	return build, tests
+}
+
+// The image builds compile the root package, which embeds the lists: each
+// Dockerfile stage that runs go build copies its files from the context,
+// and ci.yml's inputs of the image, its epoch, name them.
+func TestImageBuildsCopyTheRootPackage(t *testing.T) {
+	build, _ := rootPackage(t)
+	ci, err := os.ReadFile(filepath.Join("..", "..", ".forgejo", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for file, inputs := range map[string]string{"Dockerfile": "GATEWAY_INPUTS", "Dockerfile.sandbox": "SANDBOX_INPUTS"} {
+		builds := 0
+		for _, s := range parseDockerfile(t, filepath.Join("..", "..", file)) {
+			if !strings.Contains(strings.Join(s.runs, "\n"), "go build") {
+				continue
+			}
+			builds++
+			var copied []string
+			for _, line := range s.lines {
+				f := strings.Fields(line)
+				if strings.ToUpper(f[0]) != "COPY" || strings.HasPrefix(f[1], "--from=") {
+					continue
+				}
+				for _, src := range f[1 : len(f)-1] {
+					copied = append(copied, strings.TrimSuffix(src, "/"))
+				}
+			}
+			for _, b := range build {
+				if !slices.Contains(copied, b) {
+					t.Errorf("%s stage %s: go build without %s copied: the root package embeds it", file, s.name, b)
+				}
+			}
+		}
+		if builds == 0 {
+			t.Errorf("%s: no stage runs go build", file)
+		}
+		line := regexp.MustCompile(`(?m)^\s*` + inputs + `: (.*)$`).FindSubmatch(ci)
+		if line == nil {
+			t.Fatalf("ci.yml: no %s", inputs)
+		}
+		for _, b := range build {
+			if !slices.Contains(strings.Fields(string(line[1])), b) {
+				t.Errorf("ci.yml %s lacks %s, which %s copies", inputs, b, file)
+			}
 		}
 	}
 }

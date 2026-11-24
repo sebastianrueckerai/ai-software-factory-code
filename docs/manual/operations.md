@@ -75,7 +75,13 @@ images and Cilium's from the store too, by digest or by that tag, and
  `go-modules` tarball of its `go.sum` and runs with `GOPROXY=off
  GOFLAGS=-mod=mod`, and the sandbox image's `npm ci` runs `--offline`
  against the store's `npm-cache` tarball of the plugin lockfile, so no
- build reaches an upstream; a missing or wrong store copy fails it. A
+ build reaches an upstream; a missing or wrong store copy fails it. Go
+ code that needs a pin reads it from the lists and `factory/images.yaml`,
+ which the root package `pins` (`pins.go`) compiles in: the build VM's
+ buildkit line, the factory image's Go and Node (`FactoryStack`) and the
+ harness version the agent map names. The tests compare the places that
+ name one pin with each other and hold no version, so a bump changes no
+ `.go` file. A
  pull request's image build pulls from the store too:
 `pr.yml` writes the job token as buildctl's login, and the build runner's
 egress policy admits the edge gateway (entity `ingress`, 443), where
@@ -170,8 +176,9 @@ Image builds run outside the cluster instead
   its `if`) gets a throwaway server of type `CI_BUILD_VM_TYPE` (default
   `cx33`; debian-12,
   fsn1) in the Hetzner CI project, which holds nothing else. Its
-  cloud-init installs the checksum-pinned buildkitd v0.33.0 release (with
-  the release's own runc) and serves it on tcp 1234 behind mTLS. No SSH
+  cloud-init installs the checksum-pinned buildkitd release of
+  `upstream-files.txt`'s buildkit line (with the release's own runc) and
+  serves it on tcp 1234 behind mTLS. No SSH
   key, no credential: the VM holds only its own server key. The user_data
   (the server key and the CA certificate) stays readable from inside the
   VM through Hetzner's metadata service, so a Dockerfile's `RUN` step can

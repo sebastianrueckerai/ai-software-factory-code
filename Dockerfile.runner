@@ -160,8 +160,9 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # scripts/upstream-files uploads: GOPROXY=off leaves no fallback, so a
 # missing or wrong store copy fails the build and go.sum stays the
 # content pin, and GOFLAGS=-mod=mod keeps the download a read of the
-# cache, not a rewrite of go.mod. The module and its package trees are
-# bind-mounted, so a change outside them (k8s/, docs) keeps this layer:
+# cache, not a rewrite of go.mod. The module, its package trees and the
+# root package with the lists it compiles in are bind-mounted, so a
+# change outside them (k8s/, docs) keeps this layer:
 # ci.yml's RUNNER_INPUTS name the same paths. Go keys its index of each
 # package by the files' mtimes, and a checkout dates them by its own
 # clock: the build reads a copy dated at the commit's time and removes
@@ -186,6 +187,8 @@ RUN --mount=type=bind,source=go.mod,target=/tmp/src/go.mod --mount=type=bind,sou
       --mount=type=bind,source=cmd,target=/tmp/src/cmd --mount=type=bind,source=internal,target=/tmp/src/internal \
       --mount=type=bind,source=acceptance,target=/tmp/src/acceptance --mount=type=bind,source=scripts,target=/tmp/src/scripts \
       --mount=type=bind,source=proofs,target=/tmp/src/proofs \
+      --mount=type=bind,source=pins.go,target=/tmp/src/pins.go --mount=type=bind,source=upstream-files.txt,target=/tmp/src/upstream-files.txt \
+      --mount=type=bind,source=upstream-images.txt,target=/tmp/src/upstream-images.txt --mount=type=bind,source=factory/images.yaml,target=/tmp/src/factory/images.yaml \
       export GOPROXY=off GOFLAGS=-mod=mod \
       && cp -r /tmp/src /tmp/warm && find /tmp/warm -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} + \
       && cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \

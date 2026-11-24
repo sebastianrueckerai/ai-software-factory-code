@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/bump"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
@@ -595,29 +596,28 @@ func upstreamEgressSpec(storeHost string) map[string]any {
 
 // unadmittedLines are the findings for the lines of the lists whose host the
 // pod's egress does not admit: an image line's registry, docker.io's being
-// registry-1.docker.io, and an https line's URL host.
+// registry-1.docker.io, and an https line's URL host. A line of neither
+// list's shape is the copy scripts' to refuse.
 func unadmittedLines(files map[string][]byte) []string {
 	var out []string
-	for _, list := range []string{upstreamImagesPath, upstreamFilesPath} {
-		for _, l := range strings.Split(string(files[list]), "\n") {
-			f := strings.Fields(l)
-			if len(f) == 0 || strings.HasPrefix(f[0], "#") {
-				continue
-			}
-			ref := f[0]
-			if list == upstreamFilesPath && len(f) > 3 {
-				ref = f[3]
-			}
-			var host string
-			if u, err := url.Parse(ref); err == nil && u.Scheme == "https" {
-				host = u.Hostname()
-			} else if host, _, _ = strings.Cut(ref, "/"); host == "docker.io" {
-				host = "registry-1.docker.io"
-			}
-			if !upstreamAdmits(host) {
-				out = append(out, fmt.Sprintf("%s: %s names %s, outside the copy's egress: a commit adds the host to upstreamFQDNs in internal/factoryd/upstream_pod.go", list, ref, host))
-			}
+	check := func(list, ref string) {
+		var host string
+		if u, err := url.Parse(ref); err == nil && u.Scheme == "https" {
+			host = u.Hostname()
+		} else if host, _, _ = strings.Cut(ref, "/"); host == "docker.io" {
+			host = "registry-1.docker.io"
 		}
+		if !upstreamAdmits(host) {
+			out = append(out, fmt.Sprintf("%s: %s names %s, outside the copy's egress: a commit adds the host to upstreamFQDNs in internal/factoryd/upstream_pod.go", list, ref, host))
+		}
+	}
+	images, _ := pins.ParseImages(string(files[upstreamImagesPath]))
+	for _, l := range images {
+		check(upstreamImagesPath, l.Ref)
+	}
+	downloads, _ := pins.ParseFiles(string(files[upstreamFilesPath]))
+	for _, l := range downloads {
+		check(upstreamFilesPath, l.URL)
 	}
 	return out
 }

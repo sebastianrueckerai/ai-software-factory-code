@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
@@ -38,8 +39,6 @@ const (
 	// is unknown when the certificate is minted, so clients pass it as
 	// --tlsservername.
 	buildVMServerName = "buildkitd"
-	buildkitVersion   = "v0.35.1"
-	buildkitSHA256    = "b248c2b91698aafef11818fe8b681dc5e341581f7d5676709ff45ca1f29b0408"
 
 	// buildTLSSecret holds the CA and client pair in the job's namespace,
 	// mounted at buildTLSDir under buildctl's --tlsdir file names.
@@ -175,17 +174,18 @@ func pemBlock(typ string, der []byte) []byte {
 
 // buildVMUserData is the VM's cloud-init script: the CA (to verify
 // clients), the server pair, the checksum-pinned buildkitd tarball from
-// the factory's store (its upstream-files.txt line, roadmap 203, step 2,
-// so the VM reaches no upstream) with its own runc, the VM's own rules
-// denying the file upstreams (buildVMUpstreamHosts — a rule that fails
-// to install fails this script, not opens the VM), and a systemd unit
-// serving mTLS on buildVMPort. It carries no secret beyond the VM's own
-// server key.
+// the factory's store (upstream-files.txt's buildkit line, roadmap 203,
+// step 2, so the VM reaches no upstream) with its own runc, the VM's own
+// rules denying the file upstreams (buildVMUpstreamHosts — a rule that
+// fails to install fails this script, not opens the VM), and a systemd
+// unit serving mTLS on buildVMPort. It carries no secret beyond the VM's
+// own server key.
 func buildVMUserData(p buildPKI) (string, error) {
 	var b bytes.Buffer
+	buildkit := pins.FileOf("buildkit")
 	err := userDataTmpl.Execute(&b, map[string]any{
 		"CA": strings.TrimSpace(string(p.CACert)), "Cert": strings.TrimSpace(string(p.ServerCert)),
-		"Key": strings.TrimSpace(string(p.ServerKey)), "Version": buildkitVersion, "SHA256": buildkitSHA256,
+		"Key": strings.TrimSpace(string(p.ServerKey)), "URL": buildkit.StoreURL(), "SHA256": buildkit.SHA256,
 		"Port": buildVMPort, "Deny": strings.Join(buildVMUpstreamHosts, " "), "DenyDNS": dnsDenyNames(),
 	})
 	return b.String(), err
@@ -206,7 +206,7 @@ EOF
 EOF
 )
 cd /root
-curl -fsSL --retry 5 -o buildkit.tar.gz https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/{{.Version}}/buildkit-{{.Version}}.linux-amd64.tar.gz
+curl -fsSL --retry 5 -o buildkit.tar.gz {{.URL}}
 echo "{{.SHA256}}  buildkit.tar.gz" | sha256sum -c -
 tar -C /usr/local -xzf buildkit.tar.gz bin/buildkitd bin/buildctl bin/buildkit-runc
 ln -sf /usr/local/bin/buildkit-runc /usr/local/bin/runc

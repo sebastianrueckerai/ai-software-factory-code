@@ -571,14 +571,7 @@ func CardName(t Task, issue int64) string {
 	if t.IssueNumber != 0 {
 		issue = t.IssueNumber
 	}
-	title := CardTitle(t)
-	if r := []rune(title); len(r) > nameTitleMax {
-		cut := string(r[:nameTitleMax])
-		if i := strings.LastIndex(cut, " "); i > 0 {
-			cut = cut[:i]
-		}
-		title = strings.TrimRight(cut, " ,;:.") + "…"
-	}
+	title := wordCut(CardTitle(t), nameTitleMax)
 	switch {
 	case issue != 0 && title != "":
 		return fmt.Sprintf("#%d (%s)", issue, title)

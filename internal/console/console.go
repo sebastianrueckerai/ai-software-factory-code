@@ -435,10 +435,10 @@ type Config struct {
 	Notes Notes
 	// Escalate files the chat agent's escalation on repository as a
 	// human-lane card in Needs you, its question's five parts and its
-	// choices on the inbox's poke, and answers its issue (factoryd's
-	// EscalateToHuman); nil: the escalate tool says the factory files
-	// none.
-	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by string) (int64, error)
+	// choices on the inbox's poke, about card about ("" for none), and
+	// answers its issue (factoryd's EscalateToHumanWith); nil: the
+	// escalate tool says the factory files none.
+	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by, about string) (int64, error)
 	// AttachAnalysis records what the chat agent found about card taskID's
 	// open ask on the card, e its analysis_attached row with the findings
 	// added (factoryd.PGStore.AttachAnalysis); nil: the

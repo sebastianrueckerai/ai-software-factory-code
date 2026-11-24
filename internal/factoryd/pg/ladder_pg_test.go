@@ -1225,6 +1225,9 @@ func TestRungTwoStatementOffersTheAsksOwnChoices(t *testing.T) {
 // Rung 2's statement for a plan's confirmation offers the confirmation where
 // the guard passes it: at full auto on a revision that takes nothing off
 // main, and names the human's press on one that takes merged work off main.
+// With an extra promise open it lists the promise, its inputs and what it
+// expects, offers to keep or drop it, and offers the confirmation once it
+// is settled.
 func TestRungTwoStatementOffersTheConfirmationWhereTheGuardPasses(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
@@ -1243,7 +1246,8 @@ func TestRungTwoStatementOffersTheConfirmationWhereTheGuardPasses(t *testing.T) 
 			}
 		}
 		if i == 2 {
-			if ok, err := g.s.PutPlanProofs(ctx, "t1", rev, []PlanProof{{Idx: 1, ID: "door_state", Origin: ProofOriginHoldout, Claim: "c", Inputs: "i", Expected: "e", State: ProofProposed}}); err != nil || !ok {
+			if ok, err := g.s.PutPlanProofs(ctx, "t1", rev, []PlanProof{{Idx: 1, ID: "door_state", Origin: ProofOriginHoldout, Claim: "The door stays shut until a key that fits turns the lock.",
+				Inputs: "POST /doors/1/open with key 9", Expected: "403 and the door row still shut", State: ProofProposed}}); err != nil || !ok {
 				t.Fatalf("hold-out: %v %v", ok, err)
 			}
 		}
@@ -1251,7 +1255,9 @@ func TestRungTwoStatementOffersTheConfirmationWhereTheGuardPasses(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if i == 2 && (strings.Contains(text, "You may confirm") || !strings.Contains(text, "Hold-out candidates of this revision are undecided")) {
+		if i == 2 && (strings.Contains(text, "You may confirm") || !strings.Contains(text, "- holdout 1: The door stays shut until a key that fits turns the lock.\n  inputs: POST /doors/1/open with key 9\n  expected: 403 and the door row still shut\n") ||
+			!strings.Contains(text, "Keep or drop each with the answer tool (revision 3, holdout its number, decision keep or drop, your reason as text).") ||
+			!strings.Contains(text, "Once each is kept or dropped, you may confirm this plan with the answer tool (revision 3, question 1, decision confirm)")) {
 			t.Errorf("revision %d with a hold-out undecided: statement %q", rev, text)
 		}
 		if i == 0 && !strings.Contains(text, "You may confirm this plan with the answer tool (revision 1, question 1, decision confirm)") ||

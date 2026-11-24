@@ -152,7 +152,7 @@ func TestEveryFilingDoorChecksTheBrief(t *testing.T) {
 		{"chat escalate", factoryd.BriefAsk, func(t *testing.T, b factoryd.BriefText) (string, string, string) {
 			r, g := newWritesRig(t)
 			var filed []factoryd.HumanQuestion
-			r.c.cfg.Escalate = func(ctx context.Context, _ string, q factoryd.HumanQuestion, _ string) (int64, error) {
+			r.c.cfg.Escalate = func(ctx context.Context, _ string, q factoryd.HumanQuestion, _, _ string) (int64, error) {
 				if _, refused, _ := factoryd.AdmitBrief(factoryd.BriefText{Title: q.Ask, Why: q.Why}, factoryd.BriefAsk, anyRef{}, factoryd.BriefTry(ctx)); refused != nil {
 					return 0, &factoryd.BriefRefusal{Lines: refused}
 				}

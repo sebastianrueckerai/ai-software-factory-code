@@ -902,7 +902,8 @@ func (c *Console) mayPress(v *boardView, k card, a factoryd.Answer) bool {
 }
 
 // evidenceOf is the evidence of an ask on card k: the face's info with its
-// moments in the reader's zone, the findings its ask and story count, and the grounds of its suggestion.
+// moments in the reader's zone, the findings its ask and story count, the
+// grounds of its suggestion, and its act exact as written.
 func (c *Console) evidenceOf(ctx context.Context, v *boardView, k card, face factoryd.Face) []evidence {
 	var out []evidence
 	if face.Info != "" {
@@ -917,6 +918,9 @@ func (c *Console) evidenceOf(ctx context.Context, v *boardView, k card, face fac
 	}
 	if face.Recommendation != "" && face.Source != "" && clause(face.Recommendation) != face.Recommendation {
 		out = append(out, evidence{Label: "Why " + face.Source + " suggests it", Quote: face.Recommendation})
+	}
+	if face.Act != "" {
+		out = append(out, evidence{Label: "What you do outside the factory", Raw: face.Act})
 	}
 	return out
 }

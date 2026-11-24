@@ -353,13 +353,16 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 }
 
 // escalate is the escalate tool: the question and its five parts (the
-// question format) filed as a human-lane card in Needs you, which the
-// inbox's poke carries to the project's humans. The ask is the card's
-// title and why its why line, which the filing door checks on the turn's
-// try. Each choice sits in the "say:" value namespace, so no label the
-// agent writes equals a factory control value. A wake on a case refuses
-// it: the case reaches the human by its hand-up.
-func (t *turn) escalate(ask, why, info, recommendation, choice string, choices []string) (string, error) {
+// question format), and the act when the call names one, filed as a
+// human-lane card in Needs you, which the inbox's poke carries to the
+// project's humans, about the card or plan its task_id names. The ask is
+// the card's title and why its why line, which the filing door checks on
+// the turn's try. Each choice sits in the "say:" value namespace, so no
+// label the agent writes equals a factory control value. A wake on a case
+// refuses it: the case reaches the human by its hand-up. A turn about a
+// card (turnCards) names the card the ask is about.
+func (t *turn) escalate(in toolInput) (string, error) {
+	ask, why, info, recommendation, choice, choices := in.Ask, in.Why, in.Info, in.Recommendation, in.Choice, in.Choices
 	if cases := t.c.books.cases(t.key()); t.a.caseWake() && len(cases) > 0 {
 		ids := make([]string, len(cases))
 		for i, id := range cases {
@@ -368,7 +371,7 @@ func (t *turn) escalate(ask, why, info, recommendation, choice string, choices [
 		return "", refuse(http.StatusConflict, fmt.Sprintf("You hold case %s: hand it up with `attach_analysis`, its `case_id` and your recommendation, and it reaches the human with your analysis; a second card would ask twice.",
 			textutil.AndList(ids)))
 	}
-	ask, why, info = strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info)
+	ask, why, info, act := strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info), strings.TrimSpace(in.Act)
 	recommendation, choice = strings.TrimSpace(recommendation), strings.TrimSpace(choice)
 	for i := range choices {
 		choices[i] = strings.TrimSpace(choices[i])
@@ -388,6 +391,8 @@ func (t *turn) escalate(ask, why, info, recommendation, choice string, choices [
 		return "", refuse(http.StatusBadRequest, "choices: each answer once")
 	case choice != "" && !slices.Contains(choices, choice):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("`choice`: the one of `choices` you would pick, as written there. %q is none of them.", choice))
+	case len(act) > 2000:
+		return "", refuse(http.StatusBadRequest, "act: the exact command or press a human does outside the factory, at most 2000 characters")
 	}
 	for _, c := range choices {
 		if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {
@@ -397,14 +402,28 @@ func (t *turn) escalate(ask, why, info, recommendation, choice string, choices [
 	if err := groundsRefusal(recommendation); err != nil {
 		return "", err
 	}
-	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the project agent"}
+	var about string
+	switch cards, err := t.turnCards(); {
+	case err != nil:
+		return "", err
+	case in.TaskID != "":
+		card, err := t.card(in)
+		if err != nil {
+			return "", err
+		}
+		about = card.ID
+	case len(cards) > 0:
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("`task_id`: this turn is about %s. Name the card or plan the ask is about, so a later stop of that card or its plan waits on this ask and asks no second time.",
+			textutil.AndList(cards)))
+	}
+	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the project agent", Act: act}
 	for _, c := range choices {
 		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: "say:" + c, Label: c})
 	}
 	if choice != "" {
 		q.Recommended = "say:" + choice
 	}
-	n, err := t.c.cfg.Escalate(factoryd.WithBriefTry(t.r.Context(), t.briefTry("escalate")), t.p.Repository, q, t.a.s.user)
+	n, err := t.c.cfg.Escalate(factoryd.WithBriefTry(t.r.Context(), t.briefTry("escalate")), t.p.Repository, q, t.a.s.user, about)
 	var no *factoryd.BriefRefusal
 	if errors.As(err, &no) {
 		err = refuseBrief(no.Lines)
@@ -417,6 +436,21 @@ func (t *turn) escalate(ask, why, info, recommendation, choice string, choices [
 		return "", refuse(http.StatusBadGateway, "The escalation could not be filed: "+errText(err)+". Try again, or post the question on the card's issue.")
 	}
 	return fmt.Sprintf("Filed the escalation as #%d in Needs you; the inbox carries it to the project's humans with its choices.", n), nil
+}
+
+// turnCards are the cards the turn is about: those its wake names, and
+// the card whose thread it answers in.
+func (t *turn) turnCards() ([]string, error) {
+	cards := slices.Clone(t.wakeCards)
+	th, ok, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		log.Printf("console: thread %d of %s on %s: %v", t.conv, t.owner, t.p.Repository, err)
+		return nil, refuse(http.StatusInternalServerError, "cannot read the thread")
+	}
+	if ok && th.TaskID != "" && !slices.Contains(cards, th.TaskID) {
+		cards = append(cards, th.TaskID)
+	}
+	return cards, nil
 }
 
 // repeats reports whether two of choices read as one answer to the matcher.
