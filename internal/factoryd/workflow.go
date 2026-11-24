@@ -700,7 +700,7 @@ func (t *taskRun) isReport() bool {
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
 		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved, SignalCaseFaced,
-		SignalHeld} {
+		SignalHeld, SignalProviderRetry, SignalStaleNudge} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -2536,18 +2536,18 @@ func (t *taskRun) dropRetryPresses() {
 	}
 }
 
-// waitOnLimit holds the card to a named limit's reset (versionProviderFreeze)
-// in awaitCapWait's shape: the provider_refused event carries the reset as
-// BackoffS, the seconds from the event to the reset, so the digest reads
-// the card's retry due; a Temporal timer to the reset races the policy
-// load wake, which ends the hold early only when the version in force
-// moved the class's model off it (LimitResume), and a later wake that did
-// not keeps the timer to the reset; the retry switch's wake
-// (SignalProviderRetry) ends the hold at once, and so does an answer on
-// the card — a human comment, which the next session carries as its note
-// (takeHoldComments) — a human's hold of the card (SignalHeld), which the
-// loop's top parks, and the signals that decide the task, which the loop
-// takes after the hold. At the reset the next session starts,
+// waitOnLimit freezes the card to a named limit's reset
+// (versionProviderFreeze) in awaitCapWait's shape: the provider_refused
+// event carries the reset as BackoffS, the seconds from the event to the
+// reset, so the digest reads the card's retry due; a Temporal timer to the
+// reset races the policy load wake, which ends the freeze early only when
+// the version in force moved the class's model off it (LimitResume), and a
+// later wake that did not keeps the timer to the reset; the retry switch's
+// wake (SignalProviderRetry) ends the freeze at once, and so do an answer
+// on the card — a human comment, which the next session carries as its
+// note (takeHoldComments) — the human's hold of the card (SignalHeld),
+// which the loop's top parks, and the signals that decide the task, which
+// the loop takes after the freeze. At the reset the next session starts,
 // and its first call is the probe.
 func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 	w.Backoff = w.Until.Sub(workflow.Now(t.ctx))
@@ -2596,12 +2596,12 @@ func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 	}
 }
 
-// takeHoldComments takes the human comments a provider-limit hold woke on,
-// in awaitAnswer's shape, and reports whether one is the hold's answer,
+// takeHoldComments takes the human comments a provider freeze woke on, in
+// awaitAnswer's shape, and reports whether one is the freeze's answer,
 // which ends it: a comment that answers a question the card asked files
 // under it (fileAnswer); a comment the last ask stands over answers
 // nothing here until it is newer (counted); a newer one — any, when no
-// ask stands — is the hold's answer, tagged with the provider's words,
+// ask stands — is the freeze's answer, tagged with the provider's words,
 // which the next session carries.
 func (t *taskRun) takeHoldComments(words string) (heard bool) {
 	var sig TaskSignal

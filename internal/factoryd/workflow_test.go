@@ -5347,30 +5347,58 @@ func TestAHeldStopInTheLastSessionAsksNoRoom(t *testing.T) {
 }
 
 // A hold released while its session stops, before the park, leaves the
-// card nothing to wait for: its slot is granted at once, with no wake, and
-// the next session starts from the held session's push.
+// card nothing to wait for: the slot's ask reads no hold and is granted
+// at once, with no wake, and the next session starts from the held
+// session's push. The same stop with the hold still standing parks the
+// card, and no session starts.
 func TestAReleaseDuringTheStopStartsTheNextSession(t *testing.T) {
-	h := newWorkflowHarness(t)
-	order := h.activityOrder()
-	p := newSlotProbe(h)
-	h.onSessions(heldSession("s1", "abc123"), pushed("s2", "c2"))
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	for name, released := range map[string]bool{"released": true, "still held": false} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			order := h.activityOrder()
+			held := false
+			var asks []bool
+			h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(
+				func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+					asks = append(asks, held)
+					return ResumeSlot{Granted: !held}, nil
+				})
+			h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionInput) (SessionResult, error) {
+					h.sessions = append(h.sessions, in)
+					if len(h.sessions) > 1 {
+						return pushed("s2", "c2"), nil
+					}
+					// the press stops the session, and the release may come
+					// before the stop ends
+					held = !released
+					return heldSession("s1", "abc123"), nil
+				})
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, h.finals)
-	}
-	if len(h.sessions) != 2 || h.sessions[1].StartRef != "abc123" {
-		t.Fatalf("sessions = %+v, want the second from abc123", h.sessions)
-	}
-	if len(p.at) != 2 || !p.at[1].Equal(p.at[0]) {
-		t.Fatalf("slot asks at %v, want the second at once", p.at)
-	}
-	gap := betweenSessions(t, *order)
-	for _, a := range verifyActivities {
-		if slices.Contains(gap, a) {
-			t.Fatalf("between the sessions %v, want no %s", gap, a)
-		}
+			if final := h.run(t); final != "closed" {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			if !released {
+				if len(h.sessions) != 1 || !slices.Equal(asks, []bool{false, true}) {
+					t.Fatalf("%d sessions, slot asks on a held card %v; want one session and the park", len(h.sessions), asks)
+				}
+				return
+			}
+			if len(h.sessions) != 2 || h.sessions[1].StartRef != "abc123" || !slices.Equal(asks, []bool{false, false}) {
+				t.Fatalf("sessions %+v, slot asks on a held card %v; want the second from abc123 after an ask with no hold", h.sessions, asks)
+			}
+			gap := betweenSessions(t, *order)
+			for _, a := range verifyActivities {
+				if slices.Contains(gap, a) {
+					t.Fatalf("between the sessions %v, want no %s", gap, a)
+				}
+			}
+			if i := slices.Index(gap, ActivityAdmitResume); i < 0 || slices.Contains(gap[i+1:], ActivityAdmitResume) {
+				t.Fatalf("between the sessions %v, want one slot ask", gap)
+			}
+		})
 	}
 }
 
@@ -5489,12 +5517,16 @@ func TestAPressLeftUnreadEndsNoLaterFreeze(t *testing.T) {
 
 // A run from before the hold's stop sets no HoldStop on its sessions, so a
 // press leaves its session running. A SignalHeld ends none of its waits:
-// the freeze holds to its reset, and the run drops the signal at its end.
+// the freeze holds to its reset, and the run drops the signal at its end,
+// as it drops a retry press and a stale nudge that came while it waited
+// for the merge.
 func TestAnOldRunSetsNoHoldStop(t *testing.T) {
 	h, began, _ := providerLimitHarness(t, scripted(limitRefused(oct(14, 11, 0), "rate limit exceeded"), pushed("s2", "c1"))...)
 	h.env.OnGetVersion("hold-stop", workflow.DefaultVersion, versionHoldStop).Return(workflow.DefaultVersion)
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(10*time.Minute, SignalHeld, TaskSignal{Author: "sebastian"})
+	h.signalAfter(150*time.Minute, SignalProviderRetry, TaskSignal{Author: "sebastian"})
+	h.signalAfter(150*time.Minute, SignalStaleNudge, TaskSignal{Author: "factoryd"})
 	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" {
@@ -5507,29 +5539,55 @@ func TestAnOldRunSetsNoHoldStop(t *testing.T) {
 		t.Fatalf("sessions began at %v, want the second at the 11:00 reset", *began)
 	}
 	if strings.Contains(h.logs.String(), "unhandled signals") {
-		t.Fatalf("log:\n%s\nwant the press dropped", h.logs.String())
+		t.Fatalf("log:\n%s\nwant every pending signal dropped", h.logs.String())
 	}
 }
 
 // A held stop that got no model answer is a human's stop, not the model's
 // silence: it counts toward no ask for sessions in a row with no answer. s1
 // and s3 get none around the held s2, which makes 2 in a row, not 3, and
-// s4 runs with no ask.
+// s4 runs with no ask. The held stop took no number, so its refund is
+// agent time alone, and only when less than a session's worth is left:
+// after 8 + 9 = 17 of 20 minutes, the 5-minute slice of a card with no
+// counted session less the 3 left, 2; with no time spent, nothing. Every
+// session runs as attempt 1 of 3.
 func TestAHeldStopCountsTowardNoUnansweredAsk(t *testing.T) {
-	h := newWorkflowHarness(t)
-	p := newSlotProbe(h, 3)
 	silent := func(session string) SessionResult {
 		return SessionResult{Outcome: OutcomeNoPush, SessionID: session, Summary: "no model answer"}
 	}
-	h.onSessions(silent("s1"), heldSession("s2", ""), silent("s3"), pushed("s4", "c4"))
-	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID == "s4", nil })
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	p.wake(time.Hour)
-	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	for name, tc := range map[string]struct {
+		s1, s2 time.Duration
+		refund TaskUsage // the usage the refund records
+	}{
+		"short of time": {8 * time.Minute, 9 * time.Minute, TaskUsage{AgentTime: 17 * time.Minute, ExtraTime: 2 * time.Minute, LastUncounted: true}},
+		"time to spare": {0, 0, TaskUsage{LastUncounted: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			p := newSlotProbe(h, 3)
+			h.onTimedSessions(timedSession{tc.s1, silent("s1")}, timedSession{tc.s2, heldSession("s2", "")},
+				timedSession{0, silent("s3")}, timedSession{0, pushed("s4", "c4")})
+			h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID == "s4", nil })
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			p.wake(time.Hour)
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
-	h.run(t)
-	if len(h.sessions) != 4 || len(h.trips) != 0 {
-		t.Fatalf("%d sessions, asks %q; want 4 and no ask", len(h.sessions), h.escalated)
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v, asks %q", final, h.finals, h.escalated)
+			}
+			if len(h.sessions) != 4 || len(h.trips) != 0 {
+				t.Fatalf("%d sessions, asks %q; want 4 and no ask", len(h.sessions), h.escalated)
+			}
+			for i, in := range h.sessions {
+				if in.Attempt != 1 || in.Sessions != 3 {
+					t.Fatalf("session %d = attempt %d of %d, want 1 of 3", i+1, in.Attempt, in.Sessions)
+				}
+			}
+			if len(h.usage) < 3 || h.usage[2] != tc.refund {
+				t.Fatalf("usage = %+v, want the refund %+v after the held session's record", h.usage, tc.refund)
+			}
+			p.mustWaitFor(t, 4)
+		})
 	}
 }
