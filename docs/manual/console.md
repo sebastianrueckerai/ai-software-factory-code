@@ -23,7 +23,9 @@ decimals: a task's model calls cost fractions of a cent.
   page and its event stream, or two tabs, reaching `/login` at once keep
   one state; a callback whose state the cookie does not hold (expired, or
   another login's) exchanges nothing and starts again at `/login`, which
-  a live session answers with the board. Only the trust gate's writers
+  a live session answers with the board. Both answer with
+  `Cache-Control: no-store`, so a tab restored from the browser's cache
+  asks again. Only the trust gate's writers
   of the code repository get in, checked at login and on every request
   (list cached a minute, fetched by one request while the others wait, the
   last list served up to 5 minutes while Forgejo fails); others get 403.
@@ -89,11 +91,15 @@ decimals: a task's model calls cost fractions of a cent.
   panel's Spend section holds each cap's row, a trace line under a row
   whose count a reset restarted (who, when, the count before and the
   period's whole), LiteLLM's backstop as its own row and the escalation
-  pool's words. Reset under a row restarts that cap's count, never the
-  cap: the day's and the factory month's for a writer of the factory's
-  code (`POST /caps/{day|month}/reset`), a project's month cap for its
+  pool's words. Each row's label says when its count resets by itself,
+  "(resets 1 December at 00:00 UTC)": the day's and the month's at the
+  turn of their UTC period, the backstop's at LiteLLM's `budget_reset_at`,
+  none when LiteLLM names none. Reset, left of a row's gauge on its line,
+  restarts that cap's count, never the cap: the day's, the factory
+  month's and the premium's for a writer of the factory's code
+  (`POST /caps/{day|month|premium}/reset`), a project's month cap for its
   approver (`POST /projects/{name}/cap/reset`, a 409 for a project with no
-  month cap of its own). Its confirm opens inline,
+  month cap of its own). Its confirm opens under the row,
   says what may still be spent before the period turns, and posts only
   from its own press, with the newest reset of the cap the panel showed:
   once another human or another tab reset the count since, the press is
@@ -304,7 +310,10 @@ decimals: a task's model calls cost fractions of a cent.
   and its card says that the factory agent did not answer. Its tools (`policy.ChatTools`) are the reads `system` (the
   factory's manual, rendered from the code at call time; its states,
   gates and section on sandbox images come from `internal/manual`, which
-  the workers' `manual` tool reads too), `board`,
+  the workers' `manual` tool reads too), `board`, `find_cards` (the
+  board's find box over the project's cards, open and finished of every
+  age: words, `#N`, a task id and key:value facts, up to 25 cards on the
+  board read's line, then how many more matched),
   `card` (the card in full, led by its life: where it stands, one line
   per step with its number, repeated steps in a row folded into one, and
   the flags the steps show, or `digest unreadable: <why>` when its life

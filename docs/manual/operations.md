@@ -41,7 +41,7 @@ sandbox images carry them, main CI installs them) in a temporary
 directory, listening only on a unix socket there, sets both variables to
 its `postgres` database, runs the command and removes it all again.
 Each package behind `FACTORYD_TEST_DATABASE_URL` migrates its own database
-`factory_test_<package>`, dropped and created empty at its first test
+`factory_test_<package>_<hash>`, dropped and created empty at its first test
 (`internal/schema/schematest`), so the packages run in parallel; that
 URL's user must be allowed to create databases. The API-server tests
 run only with `FACTORYD_APISERVER` (host:port of a throwaway k3s),

@@ -134,6 +134,12 @@ async function main() {
           await p.page.locator("#status-panel details.rst form").first().scrollIntoViewIfNeeded();
           await p.idle();
         }, false);
+        // the premium cap's Reset beside its gauge, its confirm open
+        if (s === "busy" && theme === "dark") await shot("reset-premium-1440.png", desk, "/", async (p) => {
+          await p.page.locator("#status-line > summary > .cell.state").click();
+          await p.page.locator("#status-panel details.rst > summary").nth(2).click();
+          await p.idle();
+        }, false);
         if (drawer) {
           const tab = (title) => async (p) => {
             await p.page.locator("#drawer").getByRole("tab", { name: title, exact: true }).click();

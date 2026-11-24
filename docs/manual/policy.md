@@ -140,8 +140,9 @@ The text classes are `small`, `big` and `premium`: `premium` is a
 pay-per-token model
 whose spend is real money, so `premium_month_eur` caps it apart. A premium call that cap cannot fit with its
 whole output runs on `big`, its audit row saying so, and a premium call the provider fails LiteLLM's router sends to `big`; every key
-minted for a list holding `premium` also holds `big`. The console's status strip shows the premium spend this
-month against the cap while the cap is set.
+minted for a list holding `premium` also holds `big`. While the cap is set, the console's status panel shows the
+premium count this month against it, which a writer of the factory's code resets there, and the strip names the
+cap once it is hit.
 The gateway never reads the files, only the version in force in
 Postgres. `day_eur: 0` stops all spend; `month_eur: 0` does too, but
 only in a commit that also lowers every project's `budget.month_eur` to 0
@@ -194,7 +195,7 @@ tool-cap and envelope matrices one row per block.
 | budget.month_eur | all tasks together per UTC calendar month; the same key in a project's file, projects/<project>.yaml, caps that project's tasks together | 0 stops all spend. A negative one is refused as the day's | the gateway refuses with decision refused_month_cap, the reason ending "; the month cap budget.month_eur in policy.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit". The card reads "the month cap cannot fund a call: Reset the month's count in the console's status panel, or raise the month cap in policy.yaml by a commit, and answer, or wait for the next UTC month and answer." The project cap, that same key, refuses with decision refused_project_cap, the reason ending "; the project cap budget.month_eur in projects/<project>.yaml is spent, and only a human resets its count in the console's status panel or raises it by a commit"; the card reads "the project's month cap is reached" and its ask "The project's month cap is reached" |
 | budget.session_floor_cheap_eur | the least free budget a session on the cheap rung needs to start | 0 and absent read the same: no floor beyond the session's opening calls. These are the caps a missing key reads as zero | the card reads "the remaining budget cannot fund a call: Raise the budget and answer, or close the card." with the state "The card spent %s EUR of its %s EUR budget, %s EUR is held for the review and the audit, which need %s EUR"; the board's ask names the amount to add |
 | budget.session_floor_frontier_eur | the least free budget a session on the frontier rung (above the ladder's start) needs to start | 0 and absent read the same: no floor beyond the session's opening calls. This is one of the caps a missing key reads as zero | the same card as the cheap rung's floor, the frontier floor weighed |
-| budget.premium_month_eur | the calls on Premium together per UTC calendar month, inside the caps above | 0 and absent read the same: Premium has no cap of its own | "free headroom %s EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens); the premium cap budget.premium_month_eur in policy.yaml cannot pay for it", decision refused_premium_cap. The gateway serves the call on Big instead |
+| budget.premium_month_eur | the calls on Premium together per UTC calendar month, inside the caps above | 0 and absent read the same: Premium has no cap of its own | "free headroom %s EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens); the premium cap budget.premium_month_eur in policy.yaml cannot pay for it", decision refused_premium_cap. The gateway serves the call on Big instead, and a human resets the month's premium count in the console's status panel |
 | escalation.pool.sessions | the sessions all escalation rungs together may grant in a project per UTC month | 0 and absent read the same: the part takes policy.yaml's figure, there 30 sessions | "the escalation pool leaves room for %s this month" |
 | escalation.pool.agent_time | the agent time all escalation rungs together may extend in a project per UTC month | 0 and absent read the same: the part takes policy.yaml's figure, there 30h | "the escalation pool leaves room for %s this month" |
 | escalation.pool.eur | the money all escalation rungs together may grant in a project per UTC month | 0 and absent read the same: the part takes policy.yaml's figure, there 60 EUR | "the escalation pool leaves room for %s this month" |
@@ -256,7 +257,9 @@ project: its file's `budget.month_eur` minus the month's ledger rows of
 the tasks of its repository and their outstanding holds; premium, for a
 premium call under `premium_month_eur`: the cap minus the month's ledger
 rows and outstanding holds on `premium`; standing lines
-count for none), the output limit (`max_tokens` or `max_completion_tokens`,
+count for none, and the day's, the month's, a project's and the premium's
+ledger rows count from the newest reset of that cap in its UTC period, a
+human's press in the console's status panel), the output limit (`max_tokens` or `max_completion_tokens`,
 at most the alias's, the alias's when the caller set none) is
 clamped to what that pays for, and a `holds` row takes the worst case.
 Fewer than 1024 output tokens (a floor any model needs room to fill,

@@ -1850,6 +1850,7 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
 	month := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
 	day := "parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR."
+	premium := "model review refused by the gateway (refused_premium_cap): free headroom 0.00 EUR"
 	invalid := "model review answer invalid (no summary): {}"
 	unpaid := "model review not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. Read the diff, then Approve the merge or Deny it."
 	for _, c := range []struct {
@@ -1867,6 +1868,9 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 			base + ". The model review did not run: " + day,
 			[]string{"The model review did not run: parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR. " +
 				"The gateway refuses every further call (refused_day_cap) until a human resets the day's count in the console's status panel, the day cap is raised by a commit, or the UTC day ends."}},
+		{"premium cap", Review{Note: premium}, nil,
+			base + ". The model review did not run: " + premium,
+			[]string{"The model review did not run: " + premium + ". The gateway refuses every further premium call (refused_premium_cap) until a human resets the month's premium count in the console's status panel, the premium cap is raised by a commit, or the month ends."}},
 		{"no money refusal", Review{Note: invalid}, []string{"schema migration"},
 			base + ". The model review did not run: " + invalid,
 			[]string{"The model review did not run: " + invalid + ".", "schema migration"}},

@@ -28,7 +28,7 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 			"” closes it and lets the watch run on. A head still pending a stall bound later asks again. “" + LabelOf(ActClose+"/"+variantDismiss) +
 			"” resolves the stall alert and asks nothing more until the head changes. A head that concludes, green or red, closes this card by itself.",
 		Choices:  choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
-		Happened: fmt.Sprintf("The chain at commit %s has been pending since %s, waiting on %s.", ShortSHA(sha), timeWords(since), plural(len(pending), "check")),
+		Happened: fmt.Sprintf("The chain at commit %s has been pending since %s, waiting on %s.", ShortSHA(sha), TimeWords(since), plural(len(pending), "check")),
 	}
 }
 
@@ -111,7 +111,7 @@ func firedLine(a SigNozAlert) string {
 	if a.StartsAt.IsZero() {
 		return ""
 	}
-	line := "It has fired since " + timeWords(a.StartsAt)
+	line := "It has fired since " + TimeWords(a.StartsAt)
 	if v := oneLine(a.Annotations["value"]); v != "" {
 		line += ", at " + v
 	}
@@ -126,7 +126,7 @@ func AlertClearedQuestion(source, name, of string, from, until time.Time) HumanQ
 	q := HumanQuestion{Ask: source + " cleared the alert \u201c" + oneLine(name) + "\u201d on " + of,
 		Why: "The fault behind it may still be there, though the alert no longer fires."}
 	if !from.IsZero() {
-		q.Happened = "It fired from " + timeWords(from) + " until " + timeWords(until) + "."
+		q.Happened = "It fired from " + TimeWords(from) + " until " + TimeWords(until) + "."
 	}
 	return q
 }
@@ -297,8 +297,8 @@ func IssueQuestion(title, body, poster string, agents bool) HumanQuestion {
 	}
 }
 
-// timeWords is t as a face says it: "16 November at 05:12 UTC".
-func timeWords(t time.Time) string { return t.UTC().Format("2 January at 15:04 UTC") }
+// TimeWords is t as a face says it: "16 November at 05:12 UTC".
+func TimeWords(t time.Time) string { return t.UTC().Format("2 January at 15:04 UTC") }
 
 // monthWords is month, 2006-01, as its name; "this month" when it is no
 // month.

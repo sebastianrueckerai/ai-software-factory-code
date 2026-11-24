@@ -2064,7 +2064,7 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		want         []string
 	}{
 		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
-		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
+		{"controller", "ai-software-factory-code", []string{"system", "board", "find_cards", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "cluster_facts", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
@@ -2072,7 +2072,7 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
-		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
+		{"bob", "demo", []string{"system", "board", "find_cards", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "cluster_facts", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_accent", "close", "edit", "give_room",
 			"set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
@@ -2118,11 +2118,74 @@ func TestChatNamesACardByItsIssue(t *testing.T) {
 		`tool {"arguments":{"n":20,"task_id":"#5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
 		`tool {"arguments":{"n":20,"task_id":"5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
 		`tool {"arguments":{"n":20,"task_id":"#3"},"duration_ms":0,"name":"card_history","result":"No events."}`,
-		`tool {"arguments":{"task_id":"#99"},"duration_ms":0,"name":"card","result":"Refused: Project ai-software-factory-code has no card #99: the board read lists its cards."}`,
+		`tool {"arguments":{"task_id":"#99"},"duration_ms":0,"name":"card","result":"Refused: Project ai-software-factory-code has no card #99: find the card you mean by the words of its title."}`,
 		`proposal {"arguments":{"task_id":"t-m"},"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\"","expires":"EXPIRES","id":"TOKEN","tool":"close"}`,
 		`proposal {"arguments":{"task_id":"t-m","depends_on":"t-r"},"description":"Set a dependency, #5 t-m \"Fix the cache. It drops entries.\", ` +
 			`depends on #11 t-r \"Speed up the board.\"","expires":"EXPIRES","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
+}
+
+// A card is named by a console link too, the whole URL or its fragment,
+// with the drawer's section after the id or none: the reads answer the
+// card it names, a proposal stores its task id, a hold takes it as its
+// release card, and a link to another project's card is refused as no
+// card of this one, whatever host the link names.
+func TestChatNamesACardByItsConsoleLink(t *testing.T) {
+	r, _, g := newChatRig(t)
+	withPlan(r)
+	ck, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-x", Kind: "agent", Status: "queued", Repository: "sf/other",
+		IssueNumber: 4, Objective: "Warm the cache."}})
+	r.tasks.mu.Unlock()
+	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-m",
+		IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton})
+	link := "https://console.aisoftwarefactory.world/#card="
+	g.replies = [][]string{{call(1, "card_history", `{"task_id":"`+link+`t-m"}`, "card_history", `{"task_id":"#card=t-m:receipt"}`,
+		"card", `{"task_id":"https://elsewhere.example/#card=t-x"}`,
+		"hold_card", `{"task_id":"`+link+`t-k1","release_card":"#card=t-d","reason":"it needs the lone card"}`,
+		"close", `{"task_id":" `+link+`t-m "}`, "set_dependency", `{"task_id":"#card=t-m","depends_on":"`+link+`t-r"}`)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hold " + link + "t-k1 until " + link + "t-d lands"}})
+	moved := "2026-10-11 09:30 #5 t-m card_retried by sebastian via button"
+	held := "#31 is on hold until #33 is merged or done, or a human releases it."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"n":20,"task_id":"` + link + `t-m"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
+		`tool {"arguments":{"n":20,"task_id":"#card=t-m:receipt"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
+		`tool {"arguments":{"task_id":"https://elsewhere.example/#card=t-x"},"duration_ms":0,"name":"card","result":"Refused: There is no card t-x in this project."}`,
+		`tool {"arguments":{"task_id":"` + link + `t-k1","release_card":"#card=t-d","reason":"it needs the lone card"},"duration_ms":0,"name":"hold_card","result":"` + held + `"}`,
+		`applied {"result":"` + held + `","tool":"hold_card"}`,
+		`proposal {"arguments":{"task_id":"t-m"},"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\"","expires":"EXPIRES","id":"TOKEN","tool":"close"}`,
+		`proposal {"arguments":{"task_id":"t-m","depends_on":"t-r"},"description":"Set a dependency, #5 t-m \"Fix the cache. It drops entries.\", ` +
+			`depends on #11 t-r \"Speed up the board.\"","expires":"EXPIRES","id":"TOKEN","tool":"set_dependency"}`,
+		`done {}`})
+	equal(t, "the hold", *holdOf(r, "t-k1"), factoryd.CardHold{Reason: "it needs the lone card", Release: "t-d", By: "sebastian"})
+}
+
+// A typed action names its cards in its arguments as a tool names its
+// own: the answer's args and attach_analysis's recommended args take the
+// task id for an issue number or a console link in task_id and
+// depends_on, leave every other argument as it was, and refuse an issue
+// with no card. The recommended args are the call's own copy.
+func TestChatNamesTheActionsCards(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	asked := map[string]any{"task_id": "#5", "depends_on": "https://console.aisoftwarefactory.world/#card=t-r", "why": "#11 first"}
+	in := toolInput{TaskID: "13", Args: json.RawMessage(`{"task_id":"#card=t-m","depends_on":11,"title":"#5"}`),
+		Recommended: &recommended{Action: factoryd.ActSetDependency, Args: asked}}
+	if err := trn.byTaskID(&in); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the answer's args", string(in.Args), `{"depends_on":"t-r","task_id":"t-m","title":"#5"}`)
+	equal(t, "the recommended args", in.Recommended.Args, map[string]any{"task_id": "t-m", "depends_on": "t-r", "why": "#11 first"})
+	equal(t, "the args the call holds", asked["task_id"], any("#5"))
+	in = toolInput{TaskID: "13", Args: json.RawMessage(`{"depends_on":"#99"}`)}
+	err := trn.byTaskID(&in)
+	var no *refusal
+	if !errors.As(err, &no) || no.msg != "Project ai-software-factory-code has no card #99: find the card you mean by the words of its title." {
+		t.Fatalf("an issue with no card = %v", err)
+	}
 }
 
 // An issue the intake made no card for is answered with the refusal, not
@@ -2289,6 +2352,61 @@ func TestBoardWordsBoundsEveryList(t *testing.T) {
 		if strings.Contains(got, not) {
 			t.Errorf("the board's text holds %q past its bound:\n%s", not, got)
 		}
+	}
+}
+
+// find_cards finds the chat project's cards of every age as the board's
+// find box matches them: a word of the face in any case, a task id, a
+// key:value fact, every term matching. A card that finished a month ago,
+// which the board read no longer lists, is found; a card of another
+// project is not. No match names the terms a find takes, and so does the
+// refusal of an empty find.
+func TestChatFindCardsSearchesTheWholeHistory(t *testing.T) {
+	r, _, g := newChatRig(t)
+	finished := time.Now().Add(-30 * 24 * time.Hour)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 3,
+			Objective: "Drop the stale cache.", FinishedAt: &finished}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-x", Kind: "agent", Status: "queued", Repository: "sf/other", IssueNumber: 4,
+			Objective: "Warm the cache."}})
+	r.tasks.mu.Unlock()
+	syntax := "A find matches a card when every term matches it. A term is a word of the card's face (its title, #N, its task id, pr #N) " +
+		"or a fact as key:value (status:failed, stage:verifying, is:failed|blocked|stale|provider|near|retrying, plan:558, by:<login>, model:small, pr:612)."
+	queued := `#5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR`
+	old := `#3 t-old "Drop the stale cache." done (is done)`
+	equal(t, "the finds", reads(t, r, g, "find_cards", `{"query":"cache"}`, "find_cards", `{"query":"CACHE status:done"}`,
+		"find_cards", `{"query":"t-old"}`, "find_cards", `{"query":"replica cache"}`, "find_cards", `{"query":" "}`), []string{
+		"Cards matching \"cache\" (2):\n  " + queued + "\n  " + old,
+		"Cards matching \"CACHE status:done\" (1):\n  " + old,
+		"Cards matching \"t-old\" (1):\n  " + old,
+		"No card of project ai-software-factory-code, open or finished, matches \"replica cache\". " + syntax + " Drop a term or change one.",
+		"Refused: The find needs a query. " + syntax,
+	})
+	if board := reads(t, r, g, "board", `{}`)[0]; strings.Contains(board, "t-old") {
+		t.Fatalf("the board read lists the card that finished a month ago:\n%s", board)
+	}
+}
+
+// A find lists at most 25 cards, as a list of the board read does, then
+// how many more matched and how to narrow it; each card is the board
+// read's line of it, its hold included.
+func TestFoundWordsBoundsTheCards(t *testing.T) {
+	var cards []card
+	for i := 1; i <= 27; i++ {
+		cards = append(cards, card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", i), IssueNumber: int64(i), Status: "queued", Objective: "Fix."}})
+	}
+	cards[0].HoldLine = "on hold until #9 is merged or done"
+	got := foundWords("demo", "fix", cards)
+	queued := "queued (waits for a free work slot, in filing order)"
+	if want := "Cards matching \"fix\" (27):\n  #1 t-1 \"Fix.\" " + queued + ", on hold until #9 is merged or done\n  #2 t-2 \"Fix.\" " + queued + "\n"; !strings.HasPrefix(got, want) {
+		t.Errorf("the find does not start with %q:\n%s", want, got)
+	}
+	if want := "\n  #25 t-25 \"Fix.\" " + queued + "\n  and 2 more: add a term to narrow the find."; !strings.HasSuffix(got, want) {
+		t.Errorf("the find does not end with %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "#26") {
+		t.Errorf("the find lists a card past its bound:\n%s", got)
 	}
 }
 

@@ -907,6 +907,10 @@ type boardFilter struct {
 	Shown map[string]int
 	Col   string
 	After factoryd.Cursor
+	// Ever reads the finished cards of every age, not only those of the
+	// last finishedSince: find_cards finds among them. No query or form
+	// carries it.
+	Ever bool
 	// Routines is the routines control's choice (C16): "" shows every
 	// routine's ghost, within those whose next run is at most Within
 	// Unit away, none none. Within (1 to 999) and Unit (days or hours)
@@ -1116,14 +1120,20 @@ type statusLine struct {
 	// included, counted since DayReset when a human reset the day's count,
 	// and DayCapEUR the policy's day cap. DayReset and MonthReset are the
 	// resets in force as the strip and the panel say them, nil for none.
-	TodayEUR, DayCapEUR  float64
-	DayReset, MonthReset *resetLine
+	TodayEUR, DayCapEUR                float64
+	DayReset, MonthReset, PremiumReset *resetLine
 	// DayHit and PremiumHit: the cap is hit (policy.CapHit); the month's
 	// is Spend.Hit.
 	DayHit, PremiumHit bool
-	// DayPress and MonthPress are the Reset of the day's and the month's
-	// cap, nil for a viewer who may not reset it.
-	DayPress, MonthPress *capPress
+	// DayPress, MonthPress and PremiumPress are the Reset of the day's,
+	// the month's and the premium's cap, nil for a viewer who may not
+	// reset it.
+	DayPress, MonthPress, PremiumPress *capPress
+	// DayTurn, MonthTurn, PremiumTurn and BackstopTurn are when each
+	// count resets by itself, as a cap's ask says it (factoryd.TimeWords):
+	// its period's turn, and LiteLLM's own reset of its spend, "" when
+	// LiteLLM names none.
+	DayTurn, MonthTurn, PremiumTurn, BackstopTurn string
 	// Backstop is LiteLLM's own budget, nil when unread; BackstopHit says
 	// its spend reached its max.
 	Backstop    *factoryd.Backstop
@@ -2308,6 +2318,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 // gets its whole count and the form of its next page.
 func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter, repository string) ([]factoryd.BoardTask, error) {
 	q := factoryd.FinishedQuery{Repository: repository, Statuses: factoryd.FinalStatuses, Since: time.Now().Add(-finishedSince), Oldest: f.Done.Order == "oldest"}
+	if f.Ever {
+		q.Since = time.Time{}
+	}
 	if f.whole() {
 		all, _, err := c.cfg.Tasks.FinishedTasks(ctx, q)
 		return all, err
@@ -2396,8 +2409,14 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	}
 	s.TodayEUR, s.DayHit = e.Day, policy.CapHit(e.Day, s.DayCapEUR, e.DayHit)
 	s.DayReset, s.MonthReset = resetLineOf(e.DayReset, e.DayAll, "today", now), resetLineOf(s.Spend.Reset, s.Spend.AllEUR, "this month", now)
+	turn := func(decision string) string { return factoryd.TimeWords(factoryd.CapTurn(decision, now)) }
+	s.DayTurn, s.MonthTurn = turn(policy.RefusedDayCap), turn(policy.RefusedMonthCap)
+	if !s.FactoryCap {
+		s.MonthTurn = turn(policy.RefusedProjectCap)
+	}
 	if s.PremiumCapEUR > 0 {
 		s.PremiumEUR, s.PremiumHit = e.Premium, policy.CapHit(e.Premium, s.PremiumCapEUR, e.PremiumHit)
+		s.PremiumReset, s.PremiumTurn = resetLineOf(e.PremiumReset, e.PremiumAll, "premium this month", now), turn(policy.RefusedPremiumCap)
 	}
 	s.Approver = v.approves(p.Repository)
 	if c.cfg.Backstop != nil {
@@ -2409,6 +2428,9 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			d.Problems = append(d.Problems, "LiteLLM's backstop could not be read")
 		} else {
 			s.Backstop, s.BackstopHit = &b, b.SpendUSD >= b.MaxUSD
+			if !b.ResetAt.IsZero() {
+				s.BackstopTurn = factoryd.TimeWords(b.ResetAt)
+			}
 		}
 	}
 	if c.cfg.Caps != nil {
@@ -2421,6 +2443,9 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		}
 		if d.Factory && s.DayCapEUR > 0 {
 			s.DayPress = press("/caps/day/reset", "Reset today's count", policy.CapDay, s.DayCapEUR, s.DayHit, e.DayReset)
+		}
+		if d.Factory && s.PremiumCapEUR > 0 {
+			s.PremiumPress = press("/caps/premium/reset", "Reset this month's premium count", policy.CapPremium, s.PremiumCapEUR, s.PremiumHit, e.PremiumReset)
 		}
 		switch {
 		case s.CapEUR <= 0:
@@ -2664,18 +2689,20 @@ func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool, now t
 // and what stays, and LiteLLM's backstop, b, when it leaves less.
 func resetWords(cap string, capEUR float64, now time.Time, b *factoryd.Backstop) string {
 	eur := textutil.EUR(capEUR)
-	decision, count, before, stays := policy.RefusedMonthCap, "This month's count", "", "The month cap stays "+eur+" EUR; the day cap still holds."
+	decision, count, on, before, stays := policy.RefusedMonthCap, "This month's count", "", "", "The month cap stays "+eur+" EUR; the day cap still holds."
 	switch cap {
 	case policy.CapDay:
 		decision, count, before, stays = policy.RefusedDayCap, "Today's count", "00:00 UTC", "The day cap stays "+eur+" EUR; the month cap still holds."
 	case policy.CapProject:
-		count, stays = "The project's month count", "The project's month cap stays "+eur+" EUR; the factory's caps still hold."
+		decision, count, stays = policy.RefusedProjectCap, "The project's month count", "The project's month cap stays "+eur+" EUR; the factory's caps still hold."
+	case policy.CapPremium:
+		decision, count, on, stays = policy.RefusedPremiumCap, "This month's premium count", " on premium", "The premium cap stays "+eur+" EUR; the day cap and the month cap still hold."
 	}
 	turn := factoryd.CapTurn(decision, now)
 	if before == "" {
 		before = turn.Format("2 January") + " 00:00 UTC"
 	}
-	w := fmt.Sprintf("%s starts again from 0.00 EUR. Up to %s EUR more may be spent before %s, in %s. %s", count, eur, before, minutes(turn.Sub(now)), stays)
+	w := fmt.Sprintf("%s starts again from 0.00 EUR. Up to %s EUR more may be spent%s before %s, in %s. %s", count, eur, on, before, minutes(turn.Sub(now)), stays)
 	if b != nil && b.MaxUSD-b.SpendUSD < capEUR {
 		w += fmt.Sprintf(" LiteLLM's backstop leaves %s USD this month.", textutil.EUR(max(b.MaxUSD-b.SpendUSD, 0)))
 	}

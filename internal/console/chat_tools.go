@@ -253,7 +253,7 @@ func fallback(v any, p map[string]any) map[string]any {
 }
 
 var (
-	taskParam   = str("the card's task id or issue number")
+	taskParam   = str("the card's task id, issue number or console link")
 	routineName = str("the routine's name: lowercase letters, digits and dashes")
 	nParam      = fallback(20, map[string]any{"type": "integer", "description": "how many", "minimum": 1, "maximum": 100})
 	textParam   = str("the text")
@@ -350,28 +350,97 @@ func (tool chatTool) normalized(args string) string {
 	return string(b)
 }
 
-// byTaskID names in's cards by their task ids: a card named by its issue
-// number, "#5" or 5, is the chat project's card of that issue.
+// byTaskID names in's cards by their task ids, those a typed action's
+// args and recommended args name too: a card named by a console link is
+// the card it names, and one named by its issue number, "#5" or 5, is the
+// chat project's card of that issue.
 func (t *turn) byTaskID(in *toolInput) error {
-	for _, id := range []*string{&in.TaskID, &in.DependsOn, &in.Card} {
-		n, err := strconv.ParseInt(strings.TrimPrefix(*id, "#"), 10, 64)
-		if err != nil || n <= 0 {
-			continue
+	for _, id := range []*string{&in.TaskID, &in.DependsOn, &in.Card, &in.ReleaseCard} {
+		if err := t.cardID(id); err != nil {
+			return err
 		}
-		k, ok, err := t.c.cfg.Tasks.TaskByIssue(t.r.Context(), t.p.Repository, n)
-		switch {
-		case err != nil:
-			log.Printf("console: card #%d of %s: %v", n, t.p.Name, err)
-			return refuse(http.StatusInternalServerError, "cannot read the task")
-		case !ok:
-			if why, err := t.c.cfg.Tasks.IntakeRefusals(t.r.Context(), t.p.Repository, n); err == nil && len(why) > 0 {
-				return refuse(http.StatusConflict, fmt.Sprintf("Issue #%d has no card. %s", n, why[len(why)-1].Reason))
-			}
-			return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no card #%d: the board read lists its cards.", t.p.Name, n))
+	}
+	if r := in.Recommended; r != nil {
+		own := *r
+		own.Args = maps.Clone(r.Args)
+		if _, err := t.argCards(own.Args); err != nil {
+			return err
 		}
-		*id = k.ID
+		in.Recommended = &own
+	}
+	var args map[string]any
+	if json.Unmarshal(in.Args, &args) == nil {
+		changed, err := t.argCards(args)
+		if err != nil {
+			return err
+		}
+		if changed {
+			in.Args, _ = json.Marshal(args)
+		}
 	}
 	return nil
+}
+
+// argCards names the cards of a typed action's args, its task_id and
+// depends_on, by their task ids, and says whether one changed.
+func (t *turn) argCards(args map[string]any) (bool, error) {
+	changed := false
+	for _, key := range []string{"task_id", "depends_on"} {
+		var id string
+		switch v := args[key].(type) {
+		case string:
+			id = v
+		case float64:
+			id = strconv.FormatFloat(v, 'f', -1, 64)
+		default:
+			continue
+		}
+		if err := t.cardID(&id); err != nil {
+			return false, err
+		}
+		if id != args[key] {
+			args[key], changed = id, true
+		}
+	}
+	return changed, nil
+}
+
+// cardID names card id by its task id as byTaskID does.
+func (t *turn) cardID(id *string) error {
+	*id = linkedCard(*id)
+	n, err := strconv.ParseInt(strings.TrimPrefix(*id, "#"), 10, 64)
+	if err != nil || n <= 0 {
+		return nil
+	}
+	k, ok, err := t.c.cfg.Tasks.TaskByIssue(t.r.Context(), t.p.Repository, n)
+	switch {
+	case err != nil:
+		log.Printf("console: card #%d of %s: %v", n, t.p.Name, err)
+		return refuse(http.StatusInternalServerError, "cannot read the task")
+	case !ok:
+		if why, err := t.c.cfg.Tasks.IntakeRefusals(t.r.Context(), t.p.Repository, n); err == nil && len(why) > 0 {
+			return refuse(http.StatusConflict, fmt.Sprintf("Issue #%d has no card. %s", n, why[len(why)-1].Reason))
+		}
+		return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no card #%d: find the card you mean by the words of its title.", t.p.Name, n))
+	}
+	*id = k.ID
+	return nil
+}
+
+// linkedCard is the task id console link s names, the card=<id> of its
+// fragment without the drawer's :<section>: "https://…/#card=t-1:receipt"
+// and "#card=t-1" name t-1. Any other s is itself. The host decides
+// nothing: cardIn keeps a card of another project out.
+func linkedCard(s string) string {
+	u, err := url.Parse(strings.TrimSpace(s))
+	if err != nil {
+		return s
+	}
+	id, ok := strings.CutPrefix(u.Fragment, "card=")
+	if id, _, _ = strings.Cut(id, ":"); !ok || id == "" {
+		return s
+	}
+	return id
 }
 
 // carryAsk matches a brief that asks the sandbox to obtain an existing
@@ -846,9 +915,74 @@ func cardLine(t factoryd.Task) string {
 	return s
 }
 
+// boardLine is card k on one line as the agent's board read lists it.
+func boardLine(k card) string {
+	s := cardLine(k.Task)
+	if k.Provider {
+		s += ", " + providerWords
+	}
+	if h := k.Helper; h != nil {
+		s += fmt.Sprintf(", its %s %s is %s", h.Source, h.ID, h.Status)
+	}
+	if k.HoldLine != "" {
+		s += ", " + k.HoldLine
+	}
+	return s
+}
+
 // boardListed bounds each list of the board the agent reads: a column's
 // cards, the approval requests and the notes.
 const boardListed = 25
+
+// findTerms is what a find of the cards takes, as the board's find box
+// does.
+const findTerms = "A find matches a card when every term matches it. A term is a word of the card's face (its title, #N, its task id, pr #N) " +
+	"or a fact as key:value (status:failed, stage:verifying, is:failed|blocked|stale|provider|near|retrying, plan:558, by:<login>, model:small, pr:612)."
+
+// foundText is the find q over project p's cards, open and finished of
+// every age, as the board's find box matches them, for the agent. a is
+// the chat's actor, as boardText's is.
+func (c *Console) foundText(r *http.Request, p factoryd.Project, a actor, q string) (string, error) {
+	if strings.TrimSpace(q) == "" {
+		return "", refuse(http.StatusBadRequest, "The find needs a query. "+findTerms)
+	}
+	d, err := c.boardOf(r, boardFilter{Project: p.Name, Q: q, Ever: true}, a)
+	if errors.Is(err, errNoProject) {
+		return "Project " + p.Name + " takes no agent cards: it has no board.", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var cards []card
+	for _, col := range d.Columns {
+		for _, n := range col.Needs {
+			if n.Approval == nil {
+				cards = append(cards, n.Card)
+			}
+		}
+		cards = append(cards, col.Cards...)
+	}
+	return foundWords(p.Name, q, cards), nil
+}
+
+// foundWords is find q's cards of project for the agent: up to
+// boardListed of them, each as the board read lists it, then how many
+// more matched.
+func foundWords(project, q string, cards []card) string {
+	if len(cards) == 0 {
+		return fmt.Sprintf("No card of project %s, open or finished, matches %q. %s Drop a term or change one.", project, q, findTerms)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Cards matching %q (%d):", q, len(cards))
+	shown := min(len(cards), boardListed)
+	for _, k := range cards[:shown] {
+		b.WriteString("\n  " + boardLine(k))
+	}
+	if len(cards) > shown {
+		fmt.Fprintf(&b, "\n  and %d more: add a term to narrow the find.", len(cards)-shown)
+	}
+	return b.String()
+}
 
 // boardText is project p's board as the session's human sees it, for the
 // agent: each column with its cards and the approval requests waiting. a
@@ -884,16 +1018,7 @@ func boardWords(d boardData) string {
 		fmt.Fprintf(&b, "%s (%d):", title, whole)
 		lines := make([]string, len(cards))
 		for i, k := range cards {
-			lines[i] = cardLine(k.Task)
-			if k.Provider {
-				lines[i] += ", " + providerWords
-			}
-			if h := k.Helper; h != nil {
-				lines[i] += fmt.Sprintf(", its %s %s is %s", h.Source, h.ID, h.Status)
-			}
-			if k.HoldLine != "" {
-				lines[i] += ", " + k.HoldLine
-			}
+			lines[i] = boardLine(k)
 		}
 		listed("\n  ", lines, whole)
 		b.WriteString("\n")
@@ -1376,7 +1501,7 @@ func boardViewParams() map[string]any {
 		"routines": enum("the routines: all, within or none", "all", "within", "none"),
 		"within":   map[string]any{"type": "integer", "description": "the period's length, 1 to 999", "minimum": 1, "maximum": 999},
 		"unit":     enum("the period's unit: days or hours", "days", "hours"),
-		"card":     str("the card to open in the drawer"),
+		"card":     str("the card to open: task id, issue number or console link"),
 		"tab":      enum("the card's tab: "+orWords(tabNames...), tabNames...),
 		"theme":    enum("the theme: dark or light", "dark", "light"),
 	}
@@ -1405,6 +1530,13 @@ func init() {
 			about: "The project's board: each column's cards and the approval requests in Needs you.",
 			run: func(t *turn, _ toolInput) (string, *inverse, error) {
 				s, err := t.c.boardText(t.r, t.p, t.a)
+				return s, nil, err
+			}},
+		{name: "find_cards", title: "Find cards", required: []string{"query"},
+			params: map[string]any{"query": str("words, #N, a task id or key:value facts")},
+			about:  "The project's cards of every age that match a find, as on the board: words, #N, key:value facts.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.c.foundText(t.r, t.p, t.a, in.Query)
 				return s, nil, err
 			}},
 		{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -1666,7 +1798,7 @@ func init() {
 					"model":      map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
 					"action":     map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
 					"task_id":    map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
-					"depends_on": map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
+					"depends_on": map[string]any{"type": "string", "description": "the card a dependency edge names: task id, issue number or console link"},
 					"title":      str(writingguide.TitleLine),
 					"why":        str(writingguide.WhyLine),
 					"summary":    str(writingguide.SummaryLine),
@@ -1906,7 +2038,7 @@ func init() {
 				return note, nil, err
 			}},
 		{name: "set_dependency", title: "Set a dependency", write: true,
-			params: map[string]any{"task_id": taskParam, "depends_on": str("the card it waits for, by task id or issue number"),
+			params: map[string]any{"task_id": taskParam, "depends_on": str("the card it waits for: task id, issue number or console link"),
 				"remove": map[string]any{"type": "boolean", "description": "removes the dependency"}},
 			required: []string{"task_id", "depends_on"},
 			about:    "Make an unstarted card wait for another until that one is done.",
@@ -2174,7 +2306,7 @@ func init() {
 		{name: "set_timer", title: "Set a timer",
 			params: map[string]any{"minutes": map[string]any{"type": "integer", "description": "the minutes from now, 1 to 1440", "minimum": 1, "maximum": 1440},
 				"note":    str("the note the wake carries, 1 to 200 characters"),
-				"task_id": str("the card this timer dies with, its task id or issue number")},
+				"task_id": str("the card it dies with: task id, issue number or console link")},
 			required: []string{"minutes", "note"},
 			about:    "Set a one-shot timer that wakes this thread with its note.",
 			run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.setTimer(in); return s, nil, err }},

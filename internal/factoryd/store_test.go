@@ -5464,6 +5464,28 @@ func TestMonthSpendFollowsReset(t *testing.T) {
 	}
 }
 
+// The shipped schema takes a premium reset, which ends the premium count
+// alone: 20 EUR booked on Premium and 5 on another alias make a reset 20
+// EUR before, and it is the premium cap's newest reset of the month. The
+// press is the real clock's.
+func TestPremiumResetPassesTheSchema(t *testing.T) {
+	s, ctx := monthStore(t), context.Background()
+	now := time.Now().UTC()
+	for ref, eur := range map[string]float64{policy.Premium: 20, "x": 5} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur, created_at) VALUES ('p', $1, 'model', $2, $3, $4)`,
+			now.Format(policy.DateLayout), ref, eur, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := s.ResetCap(ctx, policy.CapPremium, "", "sebastian", 0)
+	if err != nil || r.Cap != policy.CapPremium || r.BeforeEUR != 20 {
+		t.Fatalf("reset = (%+v, %v), want the premium's, 20 EUR before", r, err)
+	}
+	if n, err := s.NewestCapReset(ctx, policy.CapPremium, "", r.At); err != nil || n == nil || *n != r {
+		t.Fatalf("the newest premium reset = (%+v, %v), want %+v", n, err, r)
+	}
+}
+
 // A session got a model answer when the gateway booked one of its agent's
 // calls allowed: a supervisor's call, a refused call and an earlier session's
 // do not count.

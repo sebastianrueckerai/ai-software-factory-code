@@ -1241,6 +1241,7 @@ func (l *fakeLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced,
 	}
 	whole(&e.DayAll, e.Day, e.DayReset)
 	whole(&e.MonthAll, e.Month, e.MonthReset)
+	whole(&e.PremiumAll, e.Premium, e.PremiumReset)
 	return e, nil
 }
 
@@ -2070,6 +2071,21 @@ func TestLoginExchangesCodeInClusterWithVerifierAndSecret(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if strings.Contains(body, "access-1") || strings.Contains(body, "refresh-1") {
 		t.Fatal("a token reached the page")
+	}
+}
+
+// A browser keeps no answer of the login: a tab restored from its cache
+// would show a callback's answer of days ago, or carry a spent state, in
+// place of asking again.
+func TestLoginAnswersAreNeverStored(t *testing.T) {
+	r := newRig(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
+	_, cb := r.login(t)
+	stale := r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state=other", nil))
+	for name, a := range map[string]*httptest.ResponseRecorder{"/login": rec, "the callback": cb, "a stale callback": stale} {
+		if got := a.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control %q, want no-store", name, got)
+		}
 	}
 }
 

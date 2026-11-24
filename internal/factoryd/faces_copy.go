@@ -403,7 +403,7 @@ func waitEffect(f Facts) string {
 		return "The plan stays open until someone closes it."
 	}
 	if asked, err := time.Parse(time.RFC3339, factString(f.Case, "asked_at")); err == nil && f.Case.Kind == CaseAgentRequestInfo {
-		return "The card keeps waiting for the author's answer until " + timeWords(asked.Add(infoWait)) +
+		return "The card keeps waiting for the author's answer until " + TimeWords(asked.Add(infoWait)) +
 			", then its issue closes as not reproducible."
 	}
 	return ""
@@ -428,7 +428,7 @@ func capReset(f Facts) string {
 		// the question opened before its cap bound: the cap is today's
 		at = time.Now()
 	}
-	return timeWords(CapTurn(decision, at))
+	return TimeWords(CapTurn(decision, at))
 }
 
 // CaseFaces are the faces of every case kind.

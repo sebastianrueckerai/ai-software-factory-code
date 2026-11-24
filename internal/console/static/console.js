@@ -1,11 +1,13 @@
 // busy: a form in el is being filled in (a field focused, text typed, a
-// choice changed) or a fold in it is open, so a swap of el
-// would wipe or close it. The card drawer sits outside the board, so an
+// choice changed), a fold in it is open or text in it is selected, so a
+// swap of el would wipe, close or drop it. The card drawer sits outside the board, so an
 // open drawer does not hold the board's swaps: the ages keep ticking. The
 // find's box holds none, focused or holding text: its text applies as you
 // type, and its form outlives every swap of the board (hx-preserve).
 function busy(el) {
   if (el.querySelector("details[open]")) return true;
+  var s = getSelection();
+  if (s && !s.isCollapsed && s.containsNode(el, true)) return true;
   var a = document.activeElement;
   if (a && a.id !== "q" && el.contains(a) && a.matches("input, textarea, select")) return true;
   var fields = el.querySelectorAll("input, textarea");
@@ -244,6 +246,9 @@ document.addEventListener("change", function (e) {
   });
   document.addEventListener("toggle", retry, true);
   document.addEventListener("drawerclosed", retry);
+  document.addEventListener("selectionchange", function () {
+    if (getSelection().isCollapsed) retry();
+  });
   document.addEventListener("htmx:beforeRequest", function (e) {
     if (reads(e.detail)) finding = true;
   });
@@ -500,8 +505,8 @@ document.addEventListener("change", function (e) {
 })();
 
 // The whole card opens the drawer (item 226): a click anywhere on the
-// face that is not a link, a button or a field; the title's link is the
-// same door for the keyboard. A selection is left alone. A ghost opens
+// face that is not a link, a button or a field; the link over the face is
+// the same door for the keyboard. A selection is left alone. A ghost opens
 // its routine's drawer the same way, and so does a card's routine (C16).
 document.addEventListener("click", function (e) {
   var routine = e.target.closest("[data-routine], [data-open-routine]");
@@ -516,7 +521,7 @@ document.addEventListener("click", function (e) {
     return;
   }
   var card = e.target.closest("#board [data-card]");
-  // a card without the title's link belongs to a reader, who has no drawer
+  // a card without the open link belongs to a reader, who has no drawer
   if (!card || !card.querySelector("a.open") || String(getSelection && getSelection())) return;
   location.hash = "#card=" + card.dataset.card;
 });

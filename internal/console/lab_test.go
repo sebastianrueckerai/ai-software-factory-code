@@ -394,6 +394,12 @@ type labScene struct {
 	alerts    []factoryd.Alert
 	resources []cloudres.Resource
 	drawer    string
+
+	// premiumCap is budget.premium_month_eur, 0 for none, premium the
+	// premium count and premiumReset its reset in force, nil for none
+	premiumCap, premium float64
+	premiumReset        *policy.CapReset
+
 	// autonomy is the project's autonomy level for the scene (roadmap
 	// 239); empty: manual.
 	autonomy string
@@ -799,6 +805,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.ledger.mu.Lock()
 	r.ledger.files = map[string]policy.ProjectConfig{project.Name: *config}
 	r.ledger.monthCaps = map[string]float64{project.Name: cmp.Or(s.monthCap, 120)}
+	r.ledger.premiumCap, r.ledger.premium = s.premiumCap, s.premium
 	r.ledger.mu.Unlock()
 	r.repoWriters[repository] = []string{login}
 	r.forgetWriters()
@@ -925,9 +932,12 @@ func (r *rig) seedScene(s labScene) string {
 		r.ledger.costs = labCosts(now, s.spend, s.tasks)
 	}
 	r.ledger.enforced.Day, r.ledger.enforced.DayHit, r.ledger.enforced.DayReset = 0, s.dayHit, s.dayReset
+	r.ledger.enforced.PremiumReset = s.premiumReset
 	caps := &fakeCaps{}
-	if s.dayReset != nil {
-		caps.resets = []policy.CapReset{*s.dayReset}
+	for _, reset := range []*policy.CapReset{s.dayReset, s.premiumReset} {
+		if reset != nil {
+			caps.resets = append(caps.resets, *reset)
+		}
 	}
 	r.c.cfg.Caps, r.c.cfg.Backstop = caps, nil
 	if b := s.backstop; b != nil {
@@ -1132,13 +1142,22 @@ func pushedTimeline(start time.Time, alias, failed string) []map[string]any {
 	}
 }
 
+// labMonthTurn is when LiteLLM resets the backstop's spend under its
+// budget_duration of 1mo: the next UTC month's start after now.
+func labMonthTurn(now time.Time) time.Time {
+	y, m, _ := now.UTC().Date()
+	return time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
+}
+
 func busyScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
 	s := labScene{drawer: labID(606), github: "1 open pull request", spend: 61.40, chatSpend: 3.85, today: 17,
-		dayReset: &policy.CapReset{ID: 1, Cap: policy.CapDay, At: now.UTC().Truncate(24 * time.Hour).Add(14*time.Hour + 2*time.Minute), Login: "sebastian", BeforeEUR: 19.62},
-		backstop: &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875},
-		objects:  map[string]string{}, questions: map[string][]factoryd.PlanQuestion{}}
+		dayReset:   &policy.CapReset{ID: 1, Cap: policy.CapDay, At: now.UTC().Truncate(24 * time.Hour).Add(14*time.Hour + 2*time.Minute), Login: "sebastian", BeforeEUR: 19.62},
+		backstop:   &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875, ResetAt: labMonthTurn(now)},
+		premiumCap: 50, premium: 12.40,
+		premiumReset: &policy.CapReset{ID: 2, Cap: policy.CapPremium, At: now.UTC().Truncate(24 * time.Hour).Add(9*time.Hour + 15*time.Minute), Login: "sebastian", BeforeEUR: 50},
+		objects:      map[string]string{}, questions: map[string][]factoryd.PlanQuestion{}}
 
 	merge := labCard(now, 607, "in-review", "direct", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
 		"The proposals live in the console's memory, so a restart between a proposal and its Do it loses it. Store them in a table "+
@@ -1688,7 +1707,7 @@ func historyScene(now time.Time) labScene {
 func fireScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
-	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, today: 20, dayHit: true, backstop: &factoryd.Backstop{SpendUSD: 1875, MaxUSD: 1875},
+	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, today: 20, dayHit: true, backstop: &factoryd.Backstop{SpendUSD: 1875, MaxUSD: 1875, ResetAt: labMonthTurn(now)},
 		objects: map[string]string{}}
 
 	stale := labCard(now, 619, "running", "direct", 90*time.Minute, "Load test: the event stream under 200 followers",

@@ -65,8 +65,10 @@ func (c *Console) pendingLogin(r *http.Request) (state, verifier string, ok bool
 // the verifier travel in a signed host-only cookie, so an anonymous visit
 // keeps nothing on the server; the state also goes in the query. A pending
 // login is reused, so a page and its event stream, or two tabs, that reach
-// /login at once do not overwrite each other's state.
+// /login at once do not overwrite each other's state. No answer of the
+// login is stored: a tab the browser restores from its cache asks again.
 func (c *Console) login(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	s, err := c.session(r)
 	if err != nil {
 		log.Printf("console: the session read: %v", err)
@@ -102,6 +104,7 @@ func (c *Console) login(w http.ResponseWriter, r *http.Request) {
 // login, exchanges nothing and starts again at /login, which a session
 // already made answers with the board; the cookie stays for its own login.
 func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	q := r.URL.Query()
 	state, verifier, ok := c.pendingLogin(r)
 	if !ok || q.Get("state") == "" || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {

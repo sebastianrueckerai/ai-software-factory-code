@@ -14,11 +14,11 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// factoryCapReset is the status panel's Reset of the day's or the
-// month's cap: a human's press, in no chat or MCP tool.
+// factoryCapReset is the status panel's Reset of the day's, the month's
+// or the premium's cap: a human's press, in no chat or MCP tool.
 func (c *Console) factoryCapReset(w http.ResponseWriter, r *http.Request) {
 	cap := r.PathValue("cap")
-	if cap != policy.CapDay && cap != policy.CapMonth {
+	if cap != policy.CapDay && cap != policy.CapMonth && cap != policy.CapPremium {
 		http.NotFound(w, r)
 		return
 	}
@@ -57,7 +57,8 @@ func (c *Console) stalePanel(w http.ResponseWriter, r *http.Request, line string
 }
 
 // capCounts name each cap's count as its press does.
-var capCounts = map[string]string{policy.CapDay: "today's count", policy.CapMonth: "this month's count", policy.CapProject: "the project's month count"}
+var capCounts = map[string]string{policy.CapDay: "today's count", policy.CapMonth: "this month's count", policy.CapProject: "the project's month count",
+	policy.CapPremium: "this month's premium count"}
 
 // resetCap restarts cap's count for the session's human and wakes the
 // cards that wait on a cap, when the form's seen is the newest reset of

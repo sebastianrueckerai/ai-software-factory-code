@@ -18,6 +18,7 @@ import (
 // cap only once it is hit.
 func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 	r, ck := screenRig(t)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC) }
 	r.ledger.premiumCap, r.ledger.premium = 50, 12.5
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, r.readSession(t, ck)))
@@ -29,7 +30,7 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 		t.Errorf("premium %.2f of %.2f, want 12.50 of 50", d.Status.PremiumEUR, d.Status.PremiumCapEUR)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`aria-label="premium this month">25 percent</meter>`, `<span class="lbl">premium this month</span>`} {
+	for _, want := range []string{`aria-label="premium this month">25 percent</meter>`, `<span class="lbl">premium this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
@@ -131,7 +132,8 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 // run before the cap's period turns and what stays: at 14:02 UTC on 20
 // November the day turns in 9 h 58 min and the month in 10 d 9 h 58 min.
 // LiteLLM's backstop, 1875.00 - 1238.59 = 636.41 USD left, joins the
-// sentence only under a cap above what it leaves.
+// sentence only under a cap above what it leaves. The premium's names the
+// class its money is spent on.
 func TestResetConfirmWords(t *testing.T) {
 	now := time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
 	backstop := &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875}
@@ -147,6 +149,7 @@ func TestResetConfirmWords(t *testing.T) {
 		{policy.CapMonth, 800, nil, "This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds."},
 		{policy.CapMonth, 800, backstop, "This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds. LiteLLM's backstop leaves 636.41 USD this month."},
 		{policy.CapProject, 30, backstop, "The project's month count starts again from 0.00 EUR. Up to 30.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The project's month cap stays 30.00 EUR; the factory's caps still hold."},
+		{policy.CapPremium, 50, backstop, "This month's premium count starts again from 0.00 EUR. Up to 50.00 EUR more may be spent on premium before 1 December 00:00 UTC, in 10 d 9 h. The premium cap stays 50.00 EUR; the day cap and the month cap still hold."},
 	} {
 		if got := resetWords(tc.cap, tc.eur, now, tc.backstop); got != tc.want {
 			t.Errorf("resetWords(%s, %.2f, backstop %v) =\n%s\nwant\n%s", tc.cap, tc.eur, tc.backstop != nil, got, tc.want)

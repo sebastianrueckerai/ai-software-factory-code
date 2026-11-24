@@ -239,12 +239,12 @@ footer#live:empty { display: none; }
    into its why line, then one mono foot line of the state with its one
    time, the place, the number and what it waits for, each item's
    separator trailing it so a wrapped line never opens on one. A press
-   anywhere on the card opens it: the open link lies over the whole card
-   and every control of the card over that. */
+   anywhere on the card opens it (console.js), and a drag selects its
+   text: the open link lies over the whole card for the keyboard's focus
+   ring and lets every pointer through. */
 .card.face { padding: 8px 10px 9px; }
-.card.face > .open { position: absolute; inset: 0; z-index: 0; }
+.card.face > .open { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .card.face > .open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.card.face :is(a:not(.open), button:not(.open), form, .carousel) { position: relative; z-index: 1; }
 .card.face:has(> .open) { cursor: pointer; }
 .para { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .para .title { color: var(--text); font-weight: 600; }
@@ -617,12 +617,20 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .cell.routine + .cell.gh { margin-left: 0; }
 /* the status in detail: two quiet columns split by a hairline */
 .sp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); border-top: 1px solid var(--line); cursor: default; }
-.sp > section { min-width: 0; padding: 10px 16px 12px; border-left: 1px solid var(--line); }
+.sp > section { min-width: 0; padding: 10px 16px 12px; border-left: 1px solid var(--line); container-type: inline-size; container-name: sp; }
 .sp > section:first-child { border-left: 0; }
 .sp h3 { margin: 0 0 6px; color: var(--text-faint); font-size: 12.5px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
 .sp-g { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin-bottom: 8px; color: var(--text-muted); font-size: 12.5px; }
 .sp-g .lbl { color: var(--text-faint); }
-.sp-g .fig { justify-self: end; font: 12px var(--font-mono); }
+/* when the row's count resets by itself, quiet beside its label, or under
+   it on its own line where label, moment and figure do not fit one */
+.sp-g .turn { font-size: 11.5px; white-space: nowrap; }
+.sp-g .fig { justify-self: end; font: 12px var(--font-mono); white-space: nowrap; }
+@container sp (max-width: 500px) {
+  .sp-g .lbl { grid-area: 1 / 1 / 2 / -1; }
+  .sp-g .fig { grid-area: 1 / 2; }
+  .sp-g .turn { display: block; }
+}
 .sp-g .gauge { grid-column: 1 / -1; width: 100%; height: 4px; }
 .sp-g.warn .gauge { --fill: var(--need); }
 .sp-g.over .gauge { --fill: var(--st-failed); }
@@ -631,10 +639,12 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .sp-note.warn { color: var(--need-text); }
 /* a quiet line under a Spend row: a reset's trace, the pool's words */
 .trace { margin: -4px 0 8px; color: var(--text-muted); font: 11.5px/1.5 var(--font-mono); }
-/* a cap's Reset: a quiet 24 px press under its row, red on a hit row; its
-   confirm opens inline under it and names the money on its press */
-.rst { margin: -4px 0 10px; }
-.rst > summary { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border: 1px solid var(--btn-line); border-radius: 3px; color: var(--text); font-size: 12px; font-weight: 500; list-style: none; cursor: pointer; }
+/* a cap's Reset: a quiet 56 x 24 px press at the start of its row's gauge
+   line, the gauge beside it, red on a hit row; its confirm opens under
+   both and names the money on its press */
+.sp-g > .rst { grid-row: 2; grid-column: 1 / -1; }
+.sp-g:has(> .rst) > .gauge { grid-row: 2; align-self: start; width: auto; margin: 10px 0 0 64px; }
+.rst > summary { display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 24px; border: 1px solid var(--btn-line); border-radius: 3px; color: var(--text); font-size: 12px; font-weight: 500; list-style: none; cursor: pointer; }
 .rst > summary::-webkit-details-marker { display: none; }
 .rst > summary:hover, .rst[open] > summary { background: var(--bg-hover); }
 .rst.hit > summary { color: var(--st-failed); border-color: var(--st-failed); }
@@ -957,6 +967,7 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .cell.spend > a { flex: 1; }
   .cell.spend .gauge { flex: 1; width: auto; }
   .rst > summary, .rst button { height: 44px; }
+  .sp-g:has(> .rst) > .gauge { margin-top: 20px; }
   .sp { grid-template-columns: 1fr; }
   .sp > section { border-left: 0; border-top: 1px solid var(--line); }
   .sp > section:first-child { border-top: 0; }

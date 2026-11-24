@@ -1632,7 +1632,7 @@ async function text(page) {
       const routine779 = (await p.page.locator('#board [data-card="' + labID(779) + '"] .foot .place').allInnerTexts()).map((t) => t.trim());
       if (routine779.join() !== "↻ dependency-update") fails.push("routines: #779's place in Done reads " + JSON.stringify(routine779) + ", want ↻ dependency-update");
       const d = p.page.locator("#drawer");
-      await p.page.locator('#board [data-routine="ai-software-factory-code/weekly-bump"]').click();
+      await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"] .title').click();
       await p.page.waitForTimeout(600);
       if (!(await d.isVisible())) fails.push("routines: a click on the ghost does not open the drawer");
       else {
@@ -2138,7 +2138,10 @@ async function text(page) {
   // day, its reset's ↺, and the month;
   // the panel's Reset opens its confirm, which names the money and stays
   // open through the board's refreshes, and Cancel closes it; on the
-  // phone the press is 44 px high
+  // phone the press is 44 px high. The day's, the project month's and
+  // the premium's Reset each stand on their gauge's line, left of the gauge,
+  // and the premium's confirm names its count; every row's label says
+  // when its count resets by itself, and no row runs wider than the panel
   await seed("busy");
   for (const vp of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     const label = "reset at " + vp.width;
@@ -2173,6 +2176,26 @@ async function text(page) {
     await rst.locator("button[data-cancel]").click();
     await rp.page.waitForTimeout(200);
     if (await form.isVisible()) fails.push(label + ": Cancel leaves the confirm open");
+    const presses = await rp.page.locator("#status-panel details.rst > summary").evaluateAll((ss) => ss.map((x) => x.getAttribute("aria-label")).join(" | "));
+    if (presses !== "Reset today's count | Reset the project's month count | Reset this month's premium count") fails.push(label + ": the panel's Resets are " + presses + ", want the day's, the project's month's and the premium's");
+    const rows = await rp.page.evaluate(() => Array.from(document.querySelectorAll("#status-panel .sp-g")).map((g) => {
+      const s = g.querySelector(":scope > .rst > summary"), m = g.querySelector(":scope > .gauge").getBoundingClientRect(), p = s && s.getBoundingClientRect();
+      return { label: g.querySelector(".lbl").textContent.trim(), turn: /^\(resets \d+ \w+ at \d\d:\d\d UTC\)$/.test((g.querySelector(".lbl .turn") || {}).textContent || ""),
+        apart: !!s && !(p.right <= m.left && m.left - p.right <= 12 && m.top >= p.top && m.bottom <= p.bottom), fits: g.scrollWidth <= g.clientWidth + 1 };
+    }));
+    const apart = rows.filter((r) => r.apart);
+    if (apart.length) fails.push(label + ": a Reset stands off its gauge's line: " + apart.map((r) => r.label).join(" | "));
+    const unturned = rows.filter((r) => !r.turn);
+    if (unturned.length) fails.push(label + ": a row's label lacks when its count resets: " + unturned.map((r) => r.label).join(" | "));
+    const wide = rows.filter((r) => !r.fits);
+    if (wide.length) fails.push(label + ": a row runs wider than the panel: " + wide.map((r) => r.label).join(" | "));
+    const premium = rp.page.locator("#status-panel details.rst").nth(2);
+    if (await premium.count()) {
+      await premium.locator("summary").click();
+      await rp.page.waitForTimeout(200);
+      if (!/^This month's premium count starts again from 0\.00 EUR\./.test(await premium.locator("form p").innerText())) fails.push(label + ": the premium's confirm does not name the premium count");
+      await premium.locator("button[data-cancel]").click();
+    }
     await rp.ctx.close();
   }
   // a narrow desk at 960: the strip's cells wrap where they do not fit, the

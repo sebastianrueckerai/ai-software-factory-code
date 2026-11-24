@@ -28,7 +28,7 @@ import (
 const (
 	mayUndo    = " The human may undo it."
 	noUndo     = " It cannot be undone."
-	taskMissed = "Refused: Project " + accProjectName + " has no card #99: the board read lists its cards."
+	taskMissed = "Refused: Project " + accProjectName + " has no card #99: find the card you mean by the words of its title."
 )
 
 // writeCase is one write tool's call.
@@ -494,7 +494,7 @@ var (
 		"routine_skip", "notes_write", "escalate", "attach_analysis"}
 	// readTools are the tools that change nothing; with writeTools they
 	// are every tool the policy names.
-	readTools = []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
+	readTools = []string{"system", "board", "find_cards", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
 		"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
 		"alerts", "deployment_health", "cluster_facts", "resources", "settings", "policy", "project_images", "read_doc", "show_doc", "routines",
 		"notes_read", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card",
