@@ -1,55 +1,18 @@
 package reproducible
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 )
-
-var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-// upstreamFileLine is one line of upstream-files.txt: a file's package
-// name, version, file name, URL and sha256.
-type upstreamFileLine struct {
-	pkg, version, name, url, sha string
-}
-
-func readUpstreamFiles(t *testing.T) []upstreamFileLine {
-	t.Helper()
-	f, err := os.Open(filepath.Join("..", "..", "upstream-files.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	var lines []upstreamFileLine
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		text := sc.Text()
-		fields := strings.Fields(text)
-		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
-			continue
-		}
-		if len(fields) != 5 || !strings.HasPrefix(fields[3], "https://") || !hex64.MatchString(fields[4]) {
-			t.Errorf("upstream-files.txt: %q: want <package> <version> <file> <https URL> <64 hex of the file's sha256>", text)
-			continue
-		}
-		l := upstreamFileLine{pkg: fields[0], version: fields[1], name: fields[2], url: fields[3], sha: fields[4]}
-		if strings.ContainsAny(l.pkg, "/") || strings.ContainsAny(l.version, "/") || strings.ContainsAny(l.name, "/") || l.name != l.url[strings.LastIndex(l.url, "/")+1:] {
-			t.Errorf("upstream-files.txt: %q: the store takes generic/<package>/<version>/<file>, the file its URL's name", text)
-		}
-		lines = append(lines, l)
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return lines
-}
 
 var (
 	addLine  = regexp.MustCompile(`^ADD\s+(?:--\S+\s+)*(https://\S+)\s+\S+$`)
@@ -115,14 +78,10 @@ func addDownloads(t *testing.T, path string) map[string]string {
 	return downloads
 }
 
-// genericStoreURL is the store's copy of a line of upstream-files.txt:
-// https://git.aisoftwarefactory.world/api/packages/upstream/generic/<package>/<version>/<file>.
-const genericStoreURL = "https://git.aisoftwarefactory.world/api/packages/upstream/generic/"
-
 // storePath is the download's <package>/<version>/<file> in the store,
 // or "" when the URL reads anywhere but the store's generic packages.
 func storePath(url string) string {
-	rest, ok := strings.CutPrefix(url, genericStoreURL)
+	rest, ok := strings.CutPrefix(url, pins.StoreGeneric)
 	if !ok || strings.Contains(rest, "?") {
 		return ""
 	}
@@ -133,42 +92,17 @@ func storePath(url string) string {
 	return rest
 }
 
-var (
-	buildVMVersion = regexp.MustCompile(`buildkitVersion\s*=\s*"([^"]+)"`)
-	buildVMSHA256  = regexp.MustCompile(`buildkitSHA256\s*=\s*"([0-9a-f]{64})"`)
-	buildVMTarURL  = regexp.MustCompile(`https://git\.aisoftwarefactory\.world/api/packages/upstream/generic/buildkit/\{\{\.Version\}\}/[^\s'"]+`)
-)
-
-// buildVMsTarball is the buildkit tarball the build VM's cloud-init
-// curls (internal/factoryd/buildvm.go), pinned by
-// buildkitSHA256: its store path and sha256 as upstream-files.txt names
-// them.
-func buildVMsTarball(t *testing.T) (path, sha string) {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "factoryd", "buildvm.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	v := buildVMVersion.FindStringSubmatch(string(raw))
-	s := buildVMSHA256.FindStringSubmatch(string(raw))
-	u := buildVMTarURL.FindString(string(raw))
-	if v == nil || s == nil || u == "" {
-		t.Fatal("buildvm.go: no buildkit version, sha256 and store tarball URL of the VM's user data")
-	}
-	return storePath(strings.ReplaceAll(u, "{{.Version}}", v[1])), s[1]
-}
-
-// Every file the builds download with ADD and the build VM's buildkit
-// tarball are the store's copy of a line of upstream-files.txt at the
-// same sha256 (roadmap 203, step 2): scripts/upstream-files fills the
-// store from the list, so a download no line names has no store copy to
-// read, and a sha256 that differs pins bytes the line does not name.
-// Hand-derived from the two Dockerfiles and buildvm.go as they stand:
-// ten lines, the runner image's eight downloads (its buildkit tarball
-// also the build VM's) and the sandbox's two, opencode and gotestsum;
-// node and the PGDG key serve both images.
+// Every file the builds download with ADD is the store's copy of a line of
+// upstream-files.txt at the same sha256 (roadmap 203, step 2):
+// scripts/upstream-files fills the store from the list, so a download no
+// line names has no store copy to read, and a sha256 that differs pins
+// bytes the line does not name. The build VM reads the list's buildkit
+// line itself (internal/factoryd/buildvm.go), the runner image's download.
+// Hand-derived from the two Dockerfiles as they stand: ten lines, the
+// runner image's eight downloads and the sandbox's two, opencode and
+// gotestsum; node and the PGDG key serve both images.
 func TestUpstreamFilesNameEveryDownload(t *testing.T) {
-	listed := readUpstreamFiles(t)
+	listed := pins.Files()
 	if len(listed) == 0 {
 		t.Fatal("upstream-files.txt lists no file")
 	}
@@ -182,30 +116,25 @@ func TestUpstreamFilesNameEveryDownload(t *testing.T) {
 			want[p] = sha
 		}
 	}
-	path, sha := buildVMsTarball(t)
-	if path == "" {
-		t.Fatal("buildvm.go: the VM's buildkit tarball reads outside the store's generic packages")
-	}
-	if prev, ok := want[path]; ok && prev != sha {
-		t.Fatalf("the build VM's %s is pinned at two sha256", path)
-	}
-	want[path] = sha
 	if len(want) != 10 {
-		t.Errorf("the builds download %d files, want the ten of the two Dockerfiles and the build VM", len(want))
+		t.Errorf("the builds download %d files, want the ten of the two Dockerfiles", len(want))
+	}
+	if bk := pins.FileOf("buildkit"); want[bk.StorePath()] != bk.SHA256 || bk.SHA256 == "" {
+		t.Errorf("upstream-files.txt: the build VM's buildkit line %q is no download of Dockerfile.runner", bk)
 	}
 	seen := map[string]bool{}
 	for _, l := range listed {
-		p := l.pkg + "/" + l.version + "/" + l.name
+		p := l.StorePath()
 		sha, ok := want[p]
 		if !ok {
-			t.Errorf("upstream-files.txt: %s names no ADD download of the Dockerfiles nor the build VM's tarball", l.url)
+			t.Errorf("upstream-files.txt: %s names no ADD download of the Dockerfiles", l.URL)
 			continue
 		}
 		if seen[p] {
-			t.Errorf("upstream-files.txt: %s twice", l.url)
+			t.Errorf("upstream-files.txt: %s twice", l.URL)
 		}
-		if l.sha != sha {
-			t.Errorf("upstream-files.txt: %s pins sha256 %s, its download pins %s", l.url, l.sha, sha)
+		if l.SHA256 != sha {
+			t.Errorf("upstream-files.txt: %s pins sha256 %s, its download pins %s", l.URL, l.SHA256, sha)
 		}
 		seen[p] = true
 	}
@@ -213,6 +142,61 @@ func TestUpstreamFilesNameEveryDownload(t *testing.T) {
 		if !seen[p] {
 			t.Errorf("upstream-files.txt: no line names the store's %s", p)
 		}
+	}
+}
+
+// The lists' parser takes the lines of each list's shapes, skips blanks
+// and comments, and names every other line with the shape it wants; a
+// line's store copy and its text follow its fields. Hand-derived fixtures.
+func TestPinsParseTheLists(t *testing.T) {
+	sum := strings.Repeat("a", 64)
+	files, err := pins.ParseFiles("# a comment\n\n" +
+		"tool v1 tool.tar.gz https://example.org/dl/v1/tool.tar.gz " + sum + "\n" +
+		"short v1 tool.tar.gz https://example.org/tool.tar.gz\n" +
+		"plain v1 tool.tar.gz http://example.org/tool.tar.gz " + sum + "\n" +
+		"bad v1 tool.tar.gz https://example.org/tool.tar.gz abc\n" +
+		"other v1 other.tar.gz https://example.org/tool.tar.gz " + sum + "\n" +
+		"a/b v1 tool.tar.gz https://example.org/tool.tar.gz " + sum)
+	want := []pins.File{{Package: "tool", Version: "v1", Name: "tool.tar.gz", URL: "https://example.org/dl/v1/tool.tar.gz", SHA256: sum}}
+	if !slices.Equal(files, want) {
+		t.Errorf("files %+v, want %+v", files, want)
+	}
+	shape := "want <package> <version> <file> <https URL> <64 hex of the file's sha256>"
+	store := "the store takes generic/<package>/<version>/<file>, the file its URL's name"
+	if got, wantErr := fmt.Sprint(err), `"short v1 tool.tar.gz https://example.org/tool.tar.gz": `+shape+"\n"+
+		`"plain v1 tool.tar.gz http://example.org/tool.tar.gz `+sum+`": `+shape+"\n"+
+		`"bad v1 tool.tar.gz https://example.org/tool.tar.gz abc": `+shape+"\n"+
+		`"other v1 other.tar.gz https://example.org/tool.tar.gz `+sum+`": `+store+"\n"+
+		`"a/b v1 tool.tar.gz https://example.org/tool.tar.gz `+sum+`": `+store; got != wantErr {
+		t.Errorf("files error\n%s\nwant\n%s", got, wantErr)
+	}
+	if got := files[0].StoreURL(); got != "https://git.aisoftwarefactory.world/api/packages/upstream/generic/tool/v1/tool.tar.gz" {
+		t.Errorf("StoreURL = %s", got)
+	}
+	if got := files[0].String(); got != "tool v1 tool.tar.gz https://example.org/dl/v1/tool.tar.gz "+sum {
+		t.Errorf("String = %s", got)
+	}
+	digest := "@sha256:" + sum
+	images, err := pins.ParseImages("# images\n" +
+		"example.org/a:1" + digest + "\n" +
+		"example.org/b:2" + digest + " bootstrap\n" +
+		"https://example.org/c-1.tgz" + digest + " helm\n" +
+		"https://example.org/d.bin" + digest + " onto example.org/a:1\n" +
+		"example.org/e:3" + digest + " later\n" +
+		"https://example.org/f.bin" + digest + " onto\n")
+	wantImages := []pins.Image{
+		{Ref: "example.org/a:1" + digest},
+		{Ref: "example.org/b:2" + digest, Kind: "bootstrap"},
+		{Ref: "https://example.org/c-1.tgz" + digest, Kind: "helm"},
+		{Ref: "https://example.org/d.bin" + digest, Kind: "onto", Onto: "example.org/a:1"},
+	}
+	if !slices.Equal(images, wantImages) {
+		t.Errorf("images %+v, want %+v", images, wantImages)
+	}
+	kinds := "want a reference, then nothing, bootstrap, helm or onto <name>:<tag>"
+	if got, wantErr := fmt.Sprint(err), `"example.org/e:3`+digest+` later": `+kinds+"\n"+
+		`"https://example.org/f.bin`+digest+` onto": `+kinds; got != wantErr {
+		t.Errorf("images error\n%s\nwant\n%s", got, wantErr)
 	}
 }
 

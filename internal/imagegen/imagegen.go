@@ -12,13 +12,12 @@ import (
 	"slices"
 	"strings"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // Version is bumped when Render's output changes for the same inputs.
 const Version = "2"
-
-const storeBase = "https://git.aisoftwarefactory.world/api/packages/upstream/generic/"
 
 var baseRefRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9._-]+)+@sha256:[0-9a-f]{64}$`)
 
@@ -39,8 +38,11 @@ func BuildKey(spec policy.ImageSpec, baseDigest string) string {
 }
 
 // StoreURL is where the store holds a copy of an upstream line.
-func StoreURL(u policy.UpstreamLine) string {
-	return storeBase + u.Name + "/" + u.SHA256 + "/" + u.File()
+func StoreURL(u policy.UpstreamLine) string { return copyLine(u).StoreURL() }
+
+// copyLine is u as a line of the store copy list, its sha256 the version.
+func copyLine(u policy.UpstreamLine) pins.File {
+	return pins.File{Package: u.Name, Version: u.SHA256, Name: u.File(), URL: u.URL, SHA256: u.SHA256}
 }
 
 // stageRoots are the image's directories an upstream line may fill, as
@@ -86,7 +88,7 @@ func Render(spec policy.ImageSpec, baseRef string) (dockerfile []byte, copies []
 				staged[root] = true
 			}
 		}
-		fmt.Fprintf(&c, "%s %s %s %s %s\n", u.Name, u.SHA256, u.File(), u.URL, u.SHA256)
+		c.WriteString(copyLine(u).String() + "\n")
 	}
 	fmt.Fprintf(&d, "FROM %s\nUSER root\n", baseRef)
 	if len(spec.Apt) > 0 {

@@ -11,10 +11,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 )
 
-// forgejoImage is the Forgejo image the chart pins, by the same digest.
-const forgejoImage = "code.forgejo.org/forgejo/forgejo:17.0.2-rootless@sha256:020d7e5ed6228f147c9681a9c4a3bff485a07c59108e4731a2e94672f0f2202a"
+// forgejoImage is the Forgejo image the chart pins, by the same digest:
+// upstream-images.txt's line.
+func forgejoImage(t *testing.T) string {
+	t.Helper()
+	for _, l := range pins.Images() {
+		if strings.HasPrefix(l.Ref, "code.forgejo.org/forgejo/forgejo:") {
+			return l.Ref
+		}
+	}
+	t.Fatal("upstream-images.txt names no code.forgejo.org/forgejo/forgejo image")
+	return ""
+}
 
 // containerRuntime is docker or podman, whichever answers; it skips the
 // test when neither does (main CI's dind cannot pull and port-map images).
@@ -28,27 +40,29 @@ func containerRuntime(t *testing.T) string {
 			return rt
 		}
 	}
-	t.Skip("no container runtime answers (docker or podman): the Forgejo 17.0.1 container cannot start")
+	t.Skip("no container runtime answers (docker or podman): the Forgejo container cannot start")
 	return ""
 }
 
-// startForgejo runs a disposable Forgejo 17.0.1 container with a site
+// startForgejo runs a disposable Forgejo container with a site
 // admin and returns its base URL and the admin's login; it skips when no
 // container runtime answers.
 func startForgejo(t *testing.T) (string, AdminAuth) {
 	t.Helper()
-	runtime := containerRuntime(t)
+	runtime, image := containerRuntime(t), forgejoImage(t)
 	out, err := exec.Command(runtime, "run", "-d", "--rm", "-p", "127.0.0.1::3000",
 		"-e", "FORGEJO__security__INSTALL_LOCK=true", "-e", "FORGEJO__database__DB_TYPE=sqlite3",
 		"-e", "FORGEJO__actions__ENABLED=true",
 		// Production's ROOT_URL is https (k8s/platform/forgejo/helmrelease.yaml),
 		// which makes Forgejo mark its session cookie Secure by default; an http
 		// ROOT_URL here would hide that and let JobLog's httpsJar go untested.
-		"-e", "FORGEJO__server__ROOT_URL=https://git.example.org/", forgejoImage).CombinedOutput()
+		"-e", "FORGEJO__server__ROOT_URL=https://git.example.org/", image).CombinedOutput()
 	if err != nil {
-		t.Fatalf("%s run %s: %v\n%s", runtime, forgejoImage, err, out)
+		t.Fatalf("%s run %s: %v\n%s", runtime, image, err, out)
 	}
+	// the id is the last line: a first run prints the image's pull before it
 	id := strings.TrimSpace(string(out))
+	id = id[strings.LastIndex(id, "\n")+1:]
 	t.Cleanup(func() { exec.Command(runtime, "stop", id).Run() }) // #nosec G104 -- --rm removes it; a failed stop leaves a container, not a wrong result
 	deadline := time.Now().Add(60 * time.Second)
 	var base, version string
@@ -77,8 +91,9 @@ func startForgejo(t *testing.T) (string, AdminAuth) {
 		}
 		time.Sleep(time.Second)
 	}
-	if want := "17.0.1"; version != want && !strings.HasPrefix(version, want+"+") {
-		t.Fatalf("the harness Forgejo reports version %q, want %s", version, want)
+	name, _, _ := strings.Cut(image, "@")
+	if want, _, _ := strings.Cut(name[strings.LastIndex(name, ":")+1:], "-"); version != want && !strings.HasPrefix(version, want+"+") {
+		t.Fatalf("the harness Forgejo reports version %q, its image %s names %s", version, image, want)
 	}
 	a := AdminAuth{User: "t99admin", Password: "t99-admin-" + fmt.Sprint(time.Now().UnixNano())}
 	out, err = exec.Command(runtime, "exec", "-u", "git", id, "forgejo", "admin", "user", "create", "--admin",

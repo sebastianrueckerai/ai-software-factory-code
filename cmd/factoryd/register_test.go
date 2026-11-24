@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -453,17 +454,13 @@ func TestFactorydMaySuspendItsKustomization(t *testing.T) {
 // their token endpoints and blob hosts, nor the CDN patterns, in the DNS
 // rule or the 443 rule.
 func TestFactorydEgressAdmitsNoUpstreamRegistry(t *testing.T) {
-	list, err := os.ReadFile("../../upstream-images.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
 	hosts := map[string]bool{"registry-1.docker.io": true, "auth.docker.io": true, "production.cloudfront.docker.com": true, "production.cloudflare.docker.com": true,
 		"docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com": true,
 		"pkg-containers.githubusercontent.com":                                         true, "cdn.registry.k8s.io": true, "cdn.factory.talos.dev": true,
 		"cdn01.quay.io": true, "cdn02.quay.io": true, "europe-west3-docker.pkg.dev": true, "us-west1-docker.pkg.dev": true}
-	for _, l := range strings.Split(string(list), "\n") {
-		if f := strings.Fields(l); len(f) > 0 && !strings.HasPrefix(f[0], "#") && !strings.HasPrefix(f[0], "https://") {
-			host, _, _ := strings.Cut(f[0], "/")
+	for _, l := range pins.Images() {
+		if !strings.HasPrefix(l.Ref, "https://") {
+			host, _, _ := strings.Cut(l.Ref, "/")
 			hosts[host] = true
 		}
 	}

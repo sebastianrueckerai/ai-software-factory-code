@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // The subagents' page is config-level: no first call of ours exists to
@@ -25,7 +27,7 @@ func TestConfigPageRendersTheAgentBlock(t *testing.T) {
 		"opencode-internal task and explore delegation · runs:",
 		"`deadbeef`",
 		"`policyhash`",
-		"opencode 1.19.6",
+		"`" + factoryd.AgentDocOpencodeVersion + "`",
 		"`buildOpencodeConfig`",
 		"blob/deadbeef/internal/fixture/a.go#L",
 		"\"factory/small\"",

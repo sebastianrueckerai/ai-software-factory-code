@@ -1,7 +1,6 @@
 package reproducible
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -13,20 +12,11 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 )
 
 const store = "git.aisoftwarefactory.world/upstream/"
-
-// upstreamLine is one line of upstream-images.txt: an image or OCI chart
-// (ref name:tag@sha256:<digest>, kind "" or bootstrap), or a file (ref
-// https URL@sha256:<sha256>, kind helm, or onto and the base image's
-// name:tag).
-type upstreamLine struct {
-	ref       string
-	bootstrap bool
-	kind      string
-	base      string
-}
 
 // upstreamRef is a line's reference: a name Forgejo's registry takes
 // (its imageNamePattern) under a registry host, a tag, a digest.
@@ -34,63 +24,28 @@ var fileRef = regexp.MustCompile(`^https://[^\s@]+/[^/\s@]+@sha256:[0-9a-f]{64}$
 
 var upstreamRef = regexp.MustCompile(`^([a-z0-9]+([._-][a-z0-9]+)*\.[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)+):([A-Za-z0-9_][A-Za-z0-9._-]{0,114})@sha256:[0-9a-f]{64}$`)
 
-func readUpstreamImages(t *testing.T) []upstreamLine {
-	t.Helper()
-	f, err := os.Open(filepath.Join("..", "..", "upstream-images.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	var lines []upstreamLine
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
-			continue
-		}
-		l := upstreamLine{ref: fields[0]}
-		if len(fields) > 1 {
-			l.kind = fields[1]
-		}
-		switch {
-		case len(fields) == 2 && l.kind == "bootstrap":
-			l.bootstrap = true
-		case len(fields) == 2 && l.kind == "helm":
-		case len(fields) == 3 && l.kind == "onto":
-			l.base = fields[2]
-		case len(fields) != 1:
-			t.Errorf("upstream-images.txt: %q: want a reference, then nothing, bootstrap, helm or onto <name>:<tag>", sc.Text())
-		}
-		lines = append(lines, l)
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return lines
-}
-
 // Every line pins one image by its digest, under its registry's full name
 // (docker.io/library/debian, not debian): the copy's name is that name in
 // the store, and a short name would hide which upstream it is. The copy's
 // tag adds 13 characters to the line's, within the 128 a tag may have.
 func TestUpstreamImagesPinEachImageByDigest(t *testing.T) {
-	lines := readUpstreamImages(t)
+	lines := pins.Images()
 	if len(lines) == 0 {
 		t.Fatal("upstream-images.txt lists no image")
 	}
 	seen := map[string]bool{}
 	for i, l := range lines {
-		if l.kind == "onto" && !slices.ContainsFunc(lines[:i], func(b upstreamLine) bool { return strings.HasPrefix(b.ref, l.base+"@") && !b.bootstrap }) {
-			t.Errorf("upstream-images.txt: %s goes onto %s, which no image line before it names", l.ref, l.base)
+		if l.Kind == "onto" && !slices.ContainsFunc(lines[:i], func(b pins.Image) bool { return strings.HasPrefix(b.Ref, l.Onto+"@") && b.Kind != "bootstrap" }) {
+			t.Errorf("upstream-images.txt: %s goes onto %s, which no image line before it names", l.Ref, l.Onto)
 		}
-		if strings.HasPrefix(l.ref, "https://") {
-			if !fileRef.MatchString(l.ref) || (l.kind != "helm" && l.kind != "onto") {
-				t.Errorf("upstream-images.txt: %q %s is not an https URL@sha256:<64 hex> of a file and what the store makes of it", l.ref, l.kind)
+		if strings.HasPrefix(l.Ref, "https://") {
+			if !fileRef.MatchString(l.Ref) || (l.Kind != "helm" && l.Kind != "onto") {
+				t.Errorf("upstream-images.txt: %q %s is not an https URL@sha256:<64 hex> of a file and what the store makes of it", l.Ref, l.Kind)
 			}
-		} else if !upstreamRef.MatchString(l.ref) || (l.kind != "" && !l.bootstrap) {
-			t.Errorf("upstream-images.txt: %q %s is not registry/path:tag@sha256:<64 hex>", l.ref, l.kind)
+		} else if !upstreamRef.MatchString(l.Ref) || (l.Kind != "" && l.Kind != "bootstrap") {
+			t.Errorf("upstream-images.txt: %q %s is not registry/path:tag@sha256:<64 hex>", l.Ref, l.Kind)
 		}
-		image, _, _ := strings.Cut(l.ref, "@")
+		image, _, _ := strings.Cut(l.Ref, "@")
 		if seen[image] {
 			t.Errorf("upstream-images.txt: %s twice: one digest per tag", image)
 		}
@@ -107,27 +62,28 @@ var fromLine = regexp.MustCompile(`^FROM\s+(\S+)`)
 // alone. Hand-derived from the three Dockerfiles and ci.yml as they stand.
 func TestOutsideImagesComeFromTheStore(t *testing.T) {
 	listed := map[string]bool{}
-	for _, l := range readUpstreamImages(t) {
-		if !l.bootstrap {
-			listed[l.ref] = true
+	for _, l := range pins.Images() {
+		if l.Kind != "bootstrap" {
+			listed[l.Ref] = true
 		}
 	}
+	golang := "docker.io/library/golang:" + goToolchain(t)
 	want := map[string][]string{
 		"Dockerfile": {
-			"docker.io/library/golang:1.26.11-alpine",
+			golang + "-alpine",
 			"docker.io/library/debian:bookworm-slim",
 		},
 		"Dockerfile.sandbox": {
-			"docker.io/library/golang:1.26.11-alpine",
+			golang + "-alpine",
 			// twice: the build stage and the stage that fetches the
 			// store's npm cache, the node base image having no
 			// downloader (roadmap 203, step 2)
-			"docker.io/library/golang:1.26.11-alpine",
+			golang + "-alpine",
 			"docker.io/library/node:22-bookworm-slim",
 			"docker.io/library/debian:bookworm-slim",
 		},
 		"Dockerfile.runner": {
-			"docker.io/library/golang:1.26.11",
+			golang,
 			"docker.io/library/debian:bookworm-slim",
 		},
 	}
