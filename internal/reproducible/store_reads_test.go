@@ -1,6 +1,10 @@
 package reproducible
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -137,4 +141,117 @@ func TestSandboxNpmInstallsOfflineFromTheStoresCache(t *testing.T) {
 	if !copied {
 		t.Errorf("Dockerfile.sandbox: no COPY --from=%s installs on the store's cache", fetcher)
 	}
+}
+
+// .forgejo/store-holds.sh asks the store, without a login, for each input
+// the Dockerfiles it is given read, and for no other: a line of
+// upstream-images.txt whose digest a Dockerfile names, a line of
+// upstream-files.txt whose sha256 it names, and the go-modules and
+// npm-cache tarballs of go.sum and the plugin lockfile when it fetches
+// them. While one is missing it waits for the copy before the checks, and
+// past its bound it names each one still missing. A stub curl stands in
+// for the store and a stub sleep for the wait, whose first call puts what
+// the store lacked.
+func TestStoreHoldsNamesWhatTheChangedDockerfilesReadAndTheStoreLacks(t *testing.T) {
+	golang, quay, helm := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("e", 64)
+	node, gosec := strings.Repeat("c", 64), strings.Repeat("d", 64)
+	gosum := fmt.Sprintf("%x", sha256.Sum256([]byte("go.sum bytes\n")))
+	files := map[string]string{
+		"Dockerfile.x": "FROM ${UPSTREAM}docker.io/library/golang:1.26.11@sha256:" + golang + " AS build\n" +
+			"ADD --checksum=sha256:" + node + " https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz\n" +
+			"RUN sum=$(sha256sum go.sum | awk '{print $1}') && wget -O /tmp/go-modules.tar.gz \"https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz\"\n",
+		"upstream-images.txt": "# images\ndocker.io/library/golang:1.26.11@sha256:" + golang + "\n" +
+			"quay.io/x/y:1@sha256:" + quay + " bootstrap\nhttps://github.com/a/b-1.tgz@sha256:" + helm + " helm\n",
+		"upstream-files.txt": "# files\nnode v24.22.3 node-v24.22.3-linux-x64.tar.xz https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz " + node + "\n" +
+			"gosec v2.30.0 gosec.tar.gz https://github.com/securego/gosec/releases/download/v2.30.0/gosec.tar.gz " + gosec + "\n",
+		"go.sum":                            "go.sum bytes\n",
+		"opencode-plugin/package-lock.json": "lock bytes\n",
+	}
+	paths := map[string]string{
+		"golang": "v2/upstream/docker.io/library/golang/manifests/sha256:" + golang,
+		"node":   "api/packages/upstream/generic/node/v24.22.3/node-v24.22.3-linux-x64.tar.xz",
+		"gomods": "api/packages/upstream/generic/go-modules/" + gosum + "/go-modules.tar.gz",
+	}
+	state := strings.NewReplacer("/", "_", ":", "_")
+	script, err := filepath.Abs(filepath.Join("..", "..", ".forgejo", "store-holds.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(t *testing.T, held []string, wait string) (out, calls string, err error) {
+		t.Helper()
+		dir := t.TempDir()
+		for name, body := range files {
+			if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		bin, store := t.TempDir(), t.TempDir()
+		for _, h := range held {
+			if err := os.WriteFile(filepath.Join(store, state.Replace(paths[h])), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stubs := map[string]string{
+			"curl": "#!/bin/sh\necho \"curl $*\" >> " + bin + "/calls\nfor a; do url=$a; done\n" +
+				"case \"$url\" in\n*/v2/token\\?*) echo '{\"token\":\"tok\"}' ;;\n" +
+				"*) [ -f \"" + store + "/$(printf %s \"${url#*://*/}\" | tr '/:' '__')\" ] || exit 22 ;;\nesac\n",
+			"sleep": "#!/bin/sh\necho \"sleep $*\" >> " + bin + "/calls\ntouch " + filepath.Join(store, state.Replace(paths["node"])) + "\n",
+		}
+		for name, body := range stubs {
+			if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.Command("bash", script, "Dockerfile.x")
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "STORE=http://store.test/", "STORE_WAIT="+wait)
+		raw, err := cmd.CombinedOutput()
+		c, _ := os.ReadFile(filepath.Join(bin, "calls"))
+		return string(raw), string(c), err
+	}
+	t.Run("held", func(t *testing.T) {
+		out, calls, err := run(t, []string{"golang", "node", "gomods"}, "0")
+		if err != nil {
+			t.Fatalf("store-holds: %v: %s", err, out)
+		}
+		for _, want := range []string{"http://store.test/" + paths["golang"], "-H Authorization: Bearer tok",
+			"http://store.test/v2/token?scope=repository:upstream/docker.io/library/golang:pull",
+			"http://store.test/" + paths["node"], "http://store.test/" + paths["gomods"]} {
+			if !strings.Contains(calls, want) {
+				t.Errorf("the store was not asked %s:\n%s", want, calls)
+			}
+		}
+		for _, unread := range []string{quay, helm, "gosec", "npm-cache", "sleep", "store.test//"} {
+			if strings.Contains(calls, unread) {
+				t.Errorf("the check asked for %s, which no Dockerfile reads:\n%s", unread, calls)
+			}
+		}
+	})
+	t.Run("lacking past the wait", func(t *testing.T) {
+		out, calls, err := run(t, nil, "0")
+		if err == nil {
+			t.Fatalf("store-holds passed on an empty store: %s", out)
+		}
+		for _, want := range []string{
+			"the store lacks docker.io/library/golang 1.26.11 sha256:" + golang + ": the copy before the checks did not make it\n",
+			"the store lacks node v24.22.3 node-v24.22.3-linux-x64.tar.xz: the copy before the checks did not make it\n",
+			"the store lacks go-modules " + gosum + " go-modules.tar.gz: the copy before the checks did not make it\n",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output lacks %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(calls, "sleep") {
+			t.Errorf("a wait of 0 slept:\n%s", calls)
+		}
+	})
+	t.Run("copied while it waits", func(t *testing.T) {
+		out, calls, err := run(t, []string{"golang", "gomods"}, "60")
+		if err != nil || strings.Count(calls, "sleep ") != 1 || !strings.Contains(out, "waiting for the copy before the checks") {
+			t.Errorf("err %v, calls:\n%s\noutput:\n%s\nwant one wait, then a pass", err, calls, out)
+		}
+	})
 }

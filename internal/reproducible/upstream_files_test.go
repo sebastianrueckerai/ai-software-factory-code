@@ -249,9 +249,10 @@ func TestBuildsNameNoUpstreamFileURL(t *testing.T) {
 // against its line's sha256 and PUT, and a mismatch fails the copy
 // naming the file. go.sum's modules and the opencode lockfile's npm
 // packages ride as one tarball each, versioned by their lockfile's
-// sha256. A stateful stub curl stands in for the store (a PUT is a
-// later GET's answer), stub go and npm for the caches: the second run
-// uploads nothing.
+// sha256, and no code of a dependency runs to fill them: go runs on its
+// local toolchain with -mod=mod, npm ci with --ignore-scripts. A stateful
+// stub curl stands in for the store (a PUT is a later GET's answer), stub
+// go and npm for the caches: the second run uploads nothing.
 func TestUpstreamFilesUploadWhatTheStoreLacks(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) {
@@ -287,7 +288,7 @@ func TestUpstreamFilesUploadWhatTheStoreLacks(t *testing.T) {
 		"https://example.org/rot.bin) printf 'rot bytes' > \"$out\" ;;\n" +
 		"*) exit 22 ;;\n" +
 		"esac\n"
-	goStub := "#!/bin/sh\necho \"go $*\" >> " + dir + "/calls\n" +
+	goStub := "#!/bin/sh\necho \"go $* GOTOOLCHAIN=$GOTOOLCHAIN GOFLAGS=$GOFLAGS\" >> " + dir + "/calls\n" +
 		"case \"$1 $2\" in\n" +
 		"\"env GOMODCACHE\") echo " + dir + "/modcache ;;\n" +
 		"\"mod download\") ;;\n" +
@@ -336,9 +337,9 @@ func TestUpstreamFilesUploadWhatTheStoreLacks(t *testing.T) {
 		generic + "/go-modules/" + gosum + "/go-modules.tar.gz",
 		generic + "/npm-cache/" + locksum + "/npm-cache.tar.gz",
 		"-X PUT --upload-file ",
-		"go mod download",
-		"go env GOMODCACHE",
-		"npm ci --cache ",
+		"go mod download GOTOOLCHAIN=local GOFLAGS=-mod=mod\n",
+		"go env GOMODCACHE GOTOOLCHAIN=local GOFLAGS=-mod=mod\n",
+		"npm ci --ignore-scripts --cache ",
 		"https://example.org/new.tar.gz",
 	} {
 		if !strings.Contains(first, want) {

@@ -244,8 +244,8 @@ type Runner struct {
 	// Imager verifies a project image before a pod runs it
 	// (verifyProjectImage); set before the worker starts.
 	Imager *Imager
-	// Upstream copies a branch's new upstream image lines into the store
-	// before its checks; nil copies nothing
+	// Upstream copies what a branch's head adds to the build inputs into
+	// the store before its checks; nil copies nothing
 	Upstream *UpstreamPod
 	// Scrub scrubs every session record. NewRunner's knows no secret
 	// value; factoryd sets the one built from its boot secrets before the

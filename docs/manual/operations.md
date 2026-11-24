@@ -52,7 +52,8 @@ infra `k8s/platform/local-path` with its `factory-cache` class). The
 revocation test runs only with the `FACTORYD_LIVE_*` variables set
 against the live cluster. CI (`.forgejo/workflows/ci.yml`) runs on push
 to protected `main` only, on the privileged dind runner: it copies the
-outside images into the store, tests, then
+outside images and files into the store (a pull request's copy put them
+there already; after a re-seed this fills the empty store), tests, then
 builds the factory image, the sandbox image and the CI runner image
 into the Forgejo registry. Every image the factory uses and does not
 build is a line of `upstream-images.txt`, pinned by its linux/amd64
@@ -78,17 +79,35 @@ images and Cilium's from the store too, by digest or by that tag, and
  pull request's image build pulls from the store too:
 `pr.yml` writes the job token as buildctl's login, and the build runner's
 egress policy admits the edge gateway (entity `ingress`, 443), where
-buildctl fetches the VM's registry tokens. Debian
+buildctl fetches the VM's registry tokens. The store gets a pull
+request's new inputs before its checks: for each head a card pushes whose
+lists, `go.mod`, `go.sum` or plugin package files differ from its base's,
+factoryd runs a one-shot pod (`internal/factoryd/upstream_pod.go`) that
+runs main's `scripts/upstream-copy` and `scripts/upstream-files`, as main
+holds them, over the head's files in the CI runner image at the digest
+factoryd pins. The pod runs no file of the head and no code of a
+dependency (`go mod download` on the local toolchain, `npm ci
+--ignore-scripts`); it holds a package token of org `upstream` minted for
+the run and revoked after it, and reaches only the upstreams of a fixed
+list in code and the store through the edge gateway. Each line it cannot
+copy is a finding on the card with what the script printed, such as
+`its URL does not serve the pinned sha256 <sum>`, and a line whose host
+the list lacks is a finding that names the host. `pr.yml`'s `changes`
+job then runs `.forgejo/store-holds.sh` before image-build's VM is made:
+it waits while the copy of an open pull request's new head runs, at most
+30 minutes, and fails naming each input the changed Dockerfiles read and
+the store lacks: `the store lacks <package> <version> <file>: the copy
+before the checks did not make it`. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
 PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
 moves on its own: the code project's routine `weekly-bump` files a
-human card on this repository every Monday 06:00, "Update the fixed
+card for an agent on this repository every Monday 06:00, "Update the fixed
 versions of outside software every week", and holds while one is open (its project file and
 brief `routines/weekly-bump.md` in the configuration,
 `internal/factoryd/routine_run.go`), naming the list,
 the snapshot, the PostgreSQL versions, the Go patch and the downloaded
-tools; a human's, since no agent sandbox reaches a registry or a
-release page. Each build imports and exports (`mode=max`)
+tools; the copy before the checks fills the store with what it moves.
+Each build imports and exports (`mode=max`)
 its image's layer cache in the in-cluster build cache,
 `build-cache.forgejo.svc.cluster.local:5000/cache/<image>:main` (infra
 `k8s/platform/build-cache`), which the pull-request builds

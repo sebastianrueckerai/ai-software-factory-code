@@ -2119,14 +2119,22 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	return PullRequest{Number: ref.Number, URL: ref.URL}, nil
 }
 
-// upstreamImagesPath is the list of upstream images the factory's store
-// holds copies of.
-const upstreamImagesPath = "upstream-images.txt"
+// upstreamImagesPath and upstreamFilesPath are the lists of the outside
+// images and files the factory's store holds copies of.
+const (
+	upstreamImagesPath = "upstream-images.txt"
+	upstreamFilesPath  = "upstream-files.txt"
+)
 
-// CopyUpstreamImages copies the image lines the task's branch head adds to
-// upstream-images.txt, against its base's, into the store before the
-// pull request's checks read it; its findings are the lines it could not
-// copy. Without a copier it does nothing.
+// CopyUpstreamImages copies into the store what the task's branch head adds
+// to the factory's build inputs, before the pull request's checks read the
+// store: every kind of line of both lists and the Go module and npm
+// tarballs. The copy pod runs main's two scripts over the head's files; its
+// findings are the lines it could not copy. A head without
+// upstream-images.txt, or whose files equal its base's, copies nothing, and
+// one that lacks another of the files gets a finding naming it. Without a
+// copier it does nothing. Its name stays from when it copied the image lines
+// alone: running workflows replay it by that name.
 func (r *Runner) CopyUpstreamImages(ctx context.Context, taskID, commit string) ([]string, error) {
 	if r.Upstream == nil {
 		return nil, nil
@@ -2151,18 +2159,40 @@ func (r *Runner) CopyUpstreamImages(ctx context.Context, taskID, commit string) 
 			return nil, err
 		}
 	}
-	head, err := r.forgejo.FileAt(ctx, holder.Owner, holder.Name, commit, upstreamImagesPath)
-	if errors.Is(err, ErrNotFound) {
+	files := map[string][]byte{}
+	var lacks []string
+	changed := false
+	for _, p := range upstreamHeadFiles {
+		head, err := r.forgejo.FileAt(ctx, holder.Owner, holder.Name, commit, p)
+		if errors.Is(err, ErrNotFound) {
+			if p == upstreamImagesPath {
+				return nil, nil
+			}
+			lacks = append(lacks, p)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		was, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, base, p)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+		changed = changed || !bytes.Equal(was, head)
+		files[p] = head
+	}
+	if len(lacks) > 0 {
+		return []string{"the head holds no " + strings.Join(lacks, ", ") + ", which the copy reads: nothing was copied"}, nil
+	}
+	if !changed {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
+	for _, p := range upstreamScripts {
+		if files[p], err = r.forgejo.FileAt(ctx, repo.Owner, repo.Name, prBase, p); err != nil {
+			return nil, fmt.Errorf("main's %s: %w", p, err)
+		}
 	}
-	was, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, base, upstreamImagesPath)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-	return r.Upstream.Copy(ctx, string(was), string(head))
+	return r.Upstream.Copy(ctx, files)
 }
 
 // refuseWorkflowDirChange returns a terminal error when any workflow

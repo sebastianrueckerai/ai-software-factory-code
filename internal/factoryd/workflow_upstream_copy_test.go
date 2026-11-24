@@ -24,8 +24,8 @@ func (h *workflowHarness) onCopy(findings []string, err error) *[]string {
 	return &heads
 }
 
-// A branch's image lines are copied before its pull request opens; a line
-// the upstream cannot serve is the card's finding and the run goes on.
+// A branch's new inputs are copied before its pull request opens; a line
+// the copy cannot make is the card's finding and the run goes on.
 func TestWorkflowCopiesUpstreamImagesBeforeOpeningThePullRequest(t *testing.T) {
 	h := newWorkflowHarness(t)
 	order := h.activityOrder()
@@ -95,7 +95,7 @@ func TestWorkflowFailsTheAttemptWhenTheCopyErrors(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{pushed("s1", "c1")})
 	h.onCopy(nil, fmt.Errorf("store refused"))
 	h.run(t)
-	if len(h.finals) != 1 || h.finals[0][0] != "failed" || !strings.Contains(h.finals[0][1], "copy upstream images:") {
+	if len(h.finals) != 1 || h.finals[0][0] != "failed" || !strings.Contains(h.finals[0][1], "copy the upstream inputs:") {
 		t.Fatalf("finals = %v, want failed with the copy's reason", h.finals)
 	}
 	if slices.Contains(steps, "pr c1 after 0 cards") {

@@ -103,7 +103,7 @@ type prForgejo struct {
 	logGets    []string          // "job/attempt" of every job log read
 	reruns     []int64           // POST /actions/jobs/{id}/rerun, by job id
 	sessionLog string            // the session-cookie job log (login, job page, /logs) JobLog reads
-	raw        map[string]string // "owner/repo@ref" → upstream-images.txt there; others answer 404
+	raw        map[string]string // "owner/repo@ref:path" → the file there; others answer 404
 }
 
 func (f *prForgejo) srv(t *testing.T) *httptest.Server {
@@ -116,9 +116,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			"/api/v1/repos/factory-agent/repo"), "/api/v1/repos/demo-app/demo-app"), "/api/v1/repos/factory-agent/demo-app"), "/api/v1/repos/factory-projects/repo"), "/api/v1/repos/sf/code"),
 			"/api/v1/repos/factory-agent/linkshort")
 		switch {
-		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/upstream-images.txt"):
-			key := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/raw/upstream-images.txt"), "/api/v1/repos/") + "@" + r.URL.Query().Get("ref")
-			body, ok := f.raw[key]
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/"):
+			repo, file, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/"), "/raw/")
+			body, ok := f.raw[repo+"@"+r.URL.Query().Get("ref")+":"+file]
 			if !ok {
 				http.NotFound(w, r)
 				return

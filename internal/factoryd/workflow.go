@@ -793,11 +793,11 @@ const (
 	versionCaseQueue workflow.Version = 1
 	// versionUpstreamCopy (change id "upstream-copy"): before the pull
 	// request of a verified head opens, or its stages wait when a factory
-	// pull request is open already, the image lines the head adds to
-	// upstream-images.txt are copied into the store, so the pull request's
-	// image build finds them there; a line the upstream cannot serve goes
-	// to the card as a finding and the run goes on. A run from before
-	// copies nothing.
+	// pull request is open already, what the head adds to the build inputs
+	// (CopyUpstreamImages) is copied into the store, so the pull request's
+	// image build finds it there; a line the copy cannot make goes to the
+	// card as a finding and the run goes on. A run from before copies
+	// nothing.
 	versionUpstreamCopy workflow.Version = 1
 	// versionCheckinJudgment (change id "checkin-judgment"): the check-in
 	// moments of a session pay from the project's chat task, the judgment
@@ -1121,7 +1121,7 @@ type taskRun struct {
 	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
 	heldHeads         []string         // the heads the gates restarted on since the count of holds started, in order (versionAutoMovedHead)
 	pastGates         bool             // this pass's gates passed, so a head a re-run of the checks finds is decided by movedPast
-	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
+	upstreamCopy      workflow.Version // what a verified head adds to the build inputs is copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	checkinDecision   workflow.Version // the moments' answers come on the rungs' action names (versionCheckinDecision)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
@@ -3115,7 +3115,7 @@ func (t *taskRun) verify(commit string) (v verdict) {
 	defer func() { v.head = t.head }()
 	if t.orphanPR {
 		if err := t.copyUpstream(commit); err != nil {
-			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
+			return verdict{final: "failed", reason: "copy the upstream inputs: " + errMessage(err)}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
@@ -3123,7 +3123,7 @@ func (t *taskRun) verify(commit string) (v verdict) {
 		return t.stages(commit)
 	}
 	if err := t.copyUpstream(commit); err != nil {
-		return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
+		return verdict{final: "failed", reason: "copy the upstream inputs: " + errMessage(err)}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
 		if t.wipStart >= versionWipStart && isWipHead(err) {
@@ -4032,9 +4032,9 @@ func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptio
 	}
 }
 
-// copyUpstream copies the image lines commit adds to upstream-images.txt
-// into the store (versionUpstreamCopy); what the upstream cannot serve is
-// the card's finding, and the run goes on.
+// copyUpstream copies what commit adds to the build inputs into the store
+// (versionUpstreamCopy); a line the copy cannot make is the card's finding,
+// and the run goes on.
 func (t *taskRun) copyUpstream(commit string) error {
 	if t.upstreamCopy < versionUpstreamCopy || slices.Contains(t.copiedHeads, commit) {
 		return nil
