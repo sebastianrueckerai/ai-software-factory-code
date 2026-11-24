@@ -52,7 +52,7 @@ func (w *Web) head(ctx context.Context, u string, accept ...string) (http.Header
 	if err != nil {
 		return nil, err
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	return res.Header, nil
 }
 
@@ -93,7 +93,7 @@ func (w *Web) do(ctx context.Context, method, u string, accept []string) (*http.
 			return nil, fmt.Errorf("%s %s: %w", method, u, err)
 		}
 		if res.StatusCode == http.StatusTooManyRequests && try < 6 {
-			res.Body.Close()
+			_ = res.Body.Close()
 			// ghcr.io limits bursts of its tag pages for a moment
 			select {
 			case <-ctx.Done():
@@ -105,7 +105,7 @@ func (w *Web) do(ctx context.Context, method, u string, accept []string) (*http.
 		if res.StatusCode == http.StatusUnauthorized && !loggedIn {
 			loggedIn = true
 			challenge := res.Header.Get("Www-Authenticate")
-			res.Body.Close()
+			_ = res.Body.Close()
 			if err := w.login(ctx, key, challenge); err != nil {
 				return nil, fmt.Errorf("%s %s: %w", method, u, err)
 			}
@@ -113,7 +113,7 @@ func (w *Web) do(ctx context.Context, method, u string, accept []string) (*http.
 		}
 		if res.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 200))
-			res.Body.Close()
+			_ = res.Body.Close()
 			return nil, fmt.Errorf("%s %s: %s %s", method, u, res.Status, strings.TrimSpace(string(b)))
 		}
 		return res, nil
