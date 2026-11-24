@@ -1860,9 +1860,11 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 // who reset it, when, the count it ended and the period's whole: 0.40 EUR
 // since sebastian's reset at 14:02 UTC after 19.62 make 20.02 today; under
 // the factory's month cap 12 since a reset after 48 make 60; under the
-// project's own cap, 10 booked after its reset and 30 before make 40.
-// The board reads one pinned clock, 16:00 UTC on the reset's day. Each
-// cap's Reset names the reset it shows, the one a press saw.
+// project's own cap, 10 booked after its reset and 30 before make 40;
+// under the premium cap of 50, its count of 50 since a reset after 44
+// makes 94 and hits the cap, whose strip cell names the reset. The board
+// reads one pinned clock, 16:00 UTC on the reset's day. Each cap's Reset
+// names the reset it shows, the one a press saw.
 func TestStripShowsReset(t *testing.T) {
 	r, ck := screenRig(t)
 	now, at := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC), time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
@@ -1879,11 +1881,14 @@ func TestStripShowsReset(t *testing.T) {
 		}
 	}
 	r.ledger.enforced = policy.Enforced{Day: 0.40, DayReset: &policy.CapReset{ID: 3, Cap: policy.CapDay, At: at, Login: "sebastian", BeforeEUR: 19.62},
-		Month: 12, MonthReset: &policy.CapReset{ID: 4, Cap: policy.CapMonth, At: at, Login: "sebastian", BeforeEUR: 48}}
+		Month: 12, MonthReset: &policy.CapReset{ID: 4, Cap: policy.CapMonth, At: at, Login: "sebastian", BeforeEUR: 48},
+		PremiumReset: &policy.CapReset{ID: 6, Cap: policy.CapPremium, At: at, Login: "sebastian", BeforeEUR: 44}}
+	r.ledger.premiumCap, r.ledger.premium = 50, 50
 	strip, spend := statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
 	for _, want := range []string{
 		`; sebastian reset its count at 14:02 UTC, 19.62 EUR before"><span><span class="of">↺ today</span> <b class="n">0.40</b>`,
 		`; sebastian reset its count at 14:02 UTC, 48.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">12.00</b>`,
+		`<span class="cell hit" title="spend on the premium model this UTC month, 50.00 of 50.00 EUR, against its cap; past it, premium calls run on big; sebastian reset its count at 14:02 UTC, 44.00 EUR before">premium cap hit</span>`,
 	} {
 		if !strings.Contains(strip, want) {
 			t.Errorf("the strip lacks %s:\n%s", want, strip)
@@ -1894,6 +1899,9 @@ func TestStripShowsReset(t *testing.T) {
 		`<p class="trace">counted since 14:02 UTC, when sebastian reset today · 19.62 EUR before · 20.02 EUR in all today</p>`,
 		`<span class="fig">12.00 of 50.00 EUR</span>`,
 		`<p class="trace">counted since 14:02 UTC, when sebastian reset this month · 48.00 EUR before · 60.00 EUR in all this month</p>`,
+		`<span class="fig">50.00 of 50.00 EUR</span>`,
+		`<p class="trace">counted since 14:02 UTC, when sebastian reset premium this month · 44.00 EUR before · 94.00 EUR in all premium this month</p>`,
+		`<p class="sp-note">the premium cap is spent: premium calls run on big until it is raised, the month turns or a reset</p>`,
 	} {
 		if !strings.Contains(spend, want) {
 			t.Errorf("the panel lacks %s:\n%s", want, spend)
@@ -1901,6 +1909,7 @@ func TestStripShowsReset(t *testing.T) {
 	}
 	seen(spend, "/caps/day/reset", "3")
 	seen(spend, "/caps/month/reset", "4")
+	seen(spend, "/caps/premium/reset", "6")
 
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code"}}
 	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 60}
@@ -1915,15 +1924,18 @@ func TestStripShowsReset(t *testing.T) {
 	}
 	seen(spend, "/caps/day/reset", "3")
 	seen(spend, "/projects/ai-software-factory-code/cap/reset", "5")
+	seen(spend, "/caps/premium/reset", "6")
 }
 
-// Reset stands under a cap's row for who may reset it: a writer of the
-// factory's code the day's and the factory month's, an approver of a
-// project its own month cap's; an approver who writes no factory code
-// none under the factory's month cap, and a reader none at all.
+// Reset stands on a cap's row for who may reset it: a writer of the
+// factory's code the day's, the factory month's and the premium's, an
+// approver of a project its own month cap's; an approver who writes no
+// factory code none under the factory's month cap, and a reader none at
+// all.
 func TestResetButtonsByRight(t *testing.T) {
 	r, _, _ := capRig(t)
-	const day, month, project = `action="/caps/day/reset"`, `action="/caps/month/reset"`, `action="/projects/demo/cap/reset"`
+	r.ledger.premiumCap = 40
+	const day, month, project, premium = `action="/caps/day/reset"`, `action="/caps/month/reset"`, `action="/projects/demo/cap/reset"`, `action="/caps/premium/reset"`
 	// spendOf is user's Spend section of the board at query; each press's
 	// form there carries the session's CSRF field first, then the newest
 	// reset it saw, none
@@ -1935,7 +1947,7 @@ func TestResetButtonsByRight(t *testing.T) {
 			t.Fatalf("%s's board%s = %d", user, query, rec.Code)
 		}
 		_, spend := statusOf(t, rec.Body.String())
-		for _, a := range []string{day, month, project} {
+		for _, a := range []string{day, month, project, premium} {
 			path := strings.TrimSuffix(strings.TrimPrefix(a, `action="`), `"`)
 			if form := a + ` hx-post="` + path + `"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="seen" value="0">`; strings.Contains(spend, a) && !strings.Contains(spend, form) {
 				t.Errorf("%s's press %s lacks the CSRF field or the seen reset 0:\n%s", user, path, spend)
@@ -1945,7 +1957,7 @@ func TestResetButtonsByRight(t *testing.T) {
 	}
 	presses := func(spend string) []string {
 		var out []string
-		for _, a := range []string{day, month, project} {
+		for _, a := range []string{day, month, project, premium} {
 			if strings.Contains(spend, a) {
 				out = append(out, a)
 			}
@@ -1953,10 +1965,12 @@ func TestResetButtonsByRight(t *testing.T) {
 		return out
 	}
 	spend := spendOf("alice", "")
-	equal(t, "alice's presses on the factory's board", presses(spend), []string{day, month})
+	equal(t, "alice's presses on the factory's board", presses(spend), []string{day, month, premium})
 	for _, want := range []string{`<details class="rst"><summary aria-label="Reset today's count">Reset</summary><form method="post" action="/caps/day/reset" hx-post="/caps/day/reset">`,
 		`<button type="submit" class="primary">Reset: up to 20.00 EUR more</button><button type="button" data-cancel>Cancel</button>`,
-		`<button type="submit" class="primary">Reset: up to 50.00 EUR more</button>`, `<p>This month's count starts again from 0.00 EUR.`} {
+		`<button type="submit" class="primary">Reset: up to 50.00 EUR more</button>`, `<p>This month's count starts again from 0.00 EUR.`,
+		`<details class="rst"><summary aria-label="Reset this month's premium count">Reset</summary><form method="post" action="/caps/premium/reset" hx-post="/caps/premium/reset">`,
+		`<button type="submit" class="primary">Reset: up to 40.00 EUR more</button>`, `<p>This month's premium count starts again from 0.00 EUR.`} {
 		if !strings.Contains(spend, want) {
 			t.Errorf("alice's panel lacks %s:\n%s", want, spend)
 		}
@@ -1968,7 +1982,7 @@ func TestResetButtonsByRight(t *testing.T) {
 	if want := `<summary aria-label="Reset the project's month count">Reset</summary><form method="post" action="/projects/demo/cap/reset" hx-post="/projects/demo/cap/reset">`; !strings.Contains(spend, want) {
 		t.Errorf("bob's panel lacks %s:\n%s", want, spend)
 	}
-	equal(t, "alice's presses under demo's cap, which she does not approve", presses(spendOf("alice", "?project=demo")), []string{day})
+	equal(t, "alice's presses under demo's cap, which she does not approve", presses(spendOf("alice", "?project=demo")), []string{day, premium})
 	plain := r.c.cfg.HTTP
 	r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
 	equal(t, "bob's presses on the factory's board he reads", presses(spendOf("bob", "?project=ai-software-factory-code")), []string(nil))

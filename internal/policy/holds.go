@@ -546,16 +546,17 @@ func (f Free) stop(decision, reason string) string {
 }
 
 // The caps a human resets: the day's (budget.day_eur), the month's
-// (budget.month_eur) and a project's (budget.month_eur in its file).
+// (budget.month_eur), a project's (budget.month_eur in its file) and the
+// premium's (budget.premium_month_eur).
 const (
 	CapDay     = "day"
 	CapMonth   = "month"
 	CapProject = "project"
+	CapPremium = "premium"
 )
 
 // periodStartSQL is the start of cap's UTC period of at, a timestamptz
-// expression: the day's counts the day, the month's and a project's the
-// calendar month.
+// expression: the day's counts the day, the others the calendar month.
 func periodStartSQL(cap, at string) string {
 	unit := "month"
 	if cap == CapDay {
@@ -655,10 +656,21 @@ func projectHeldSQL(repository string) string {
 // alias, factoryd's purpose/alias.
 const premiumRef = `kind = 'model' AND regexp_replace(ref, '^.*/', '') = '` + Premium + `'`
 
-// PremiumMonthSpentSQL is the spend on Premium over the ledger in the UTC
-// calendar month of at, a timestamptz expression.
+// premiumHeldSQL is every outstanding hold on Premium.
+const premiumHeldSQL = `COALESCE((SELECT sum(eur) FROM holds WHERE ` + premiumRef + `), 0)`
+
+// premiumMonthAllSQL is the month's whole spend on Premium over the
+// ledger: every row on it of the UTC month of at, a timestamptz
+// expression, a reset or not.
+func premiumMonthAllSQL(at string) string {
+	return ledgerSumSQL(monthRowsSQL(at) + ` AND ` + premiumRef)
+}
+
+// PremiumMonthSpentSQL is the premium cap's count over the ledger: the
+// month's rows on Premium of at, a timestamptz expression, in the count
+// (CountedSQL).
 func PremiumMonthSpentSQL(at string) string {
-	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND ` + premiumRef + `), 0)`
+	return ledgerSumSQL(monthRowsSQL(at) + ` AND ` + premiumRef + ` AND ` + CountedSQL(CapPremium, "''", at, rowFinishedSQL))
 }
 
 // now is the clock of the day's and the month's headroom.
@@ -697,7 +709,8 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 // repository, read only under a cap (+Inf otherwise). Every outstanding
 // hold counts against the day and the month. A call under a premium cap
 // (r.PremiumEUR) also reads the premium month headroom: the cap less the
-// month's spend and the outstanding holds on Premium. The task's headroom
+// month's spend on Premium since its count's newest reset and the
+// outstanding holds on Premium. The task's headroom
 // holds r's gate reserve out (ReserveEUR): a session's call fits budget -
 // spent - reserve, factoryd's and a reservation's the full budget -
 // spent, and the Free carries the reserve and the spent EUR a money stop
@@ -722,7 +735,7 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 	if r.PremiumEUR > 0 {
 		var premium float64
 		if err := q.QueryRowContext(ctx,
-			`SELECT ($1 - `+PremiumMonthSpentSQL("$2::timestamptz")+` - COALESCE((SELECT sum(eur) FROM holds WHERE `+premiumRef+`), 0))::float8`,
+			`SELECT ($1 - `+PremiumMonthSpentSQL("$2::timestamptz")+` - `+premiumHeldSQL+`)::float8`,
 			r.PremiumEUR, at).Scan(&premium); err != nil {
 			return TaskFree{}, Free{}, err
 		}

@@ -1241,6 +1241,7 @@ func (l *fakeLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced,
 	}
 	whole(&e.DayAll, e.Day, e.DayReset)
 	whole(&e.MonthAll, e.Month, e.MonthReset)
+	whole(&e.PremiumAll, e.Premium, e.PremiumReset)
 	return e, nil
 }
 

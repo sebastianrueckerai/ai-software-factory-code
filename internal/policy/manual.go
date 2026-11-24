@@ -140,7 +140,7 @@ var spendRailRows = []spendRow{
 	{"budget.premium_month_eur",
 		"the calls on Premium together per UTC calendar month, inside the caps above",
 		"0 and absent read the same: Premium has no cap of its own",
-		"\"free headroom %s EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens); the premium cap budget.premium_month_eur in policy.yaml cannot pay for it\", decision refused_premium_cap. The gateway serves the call on Big instead"},
+		"\"free headroom %s EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens); the premium cap budget.premium_month_eur in policy.yaml cannot pay for it\", decision refused_premium_cap. The gateway serves the call on Big instead, and a human resets the month's premium count in the console's status panel"},
 	{"escalation.pool.sessions",
 		"the sessions all escalation rungs together may grant in a project per UTC month",
 		"0 and absent read the same: the part takes policy.yaml's figure, there 30 sessions",

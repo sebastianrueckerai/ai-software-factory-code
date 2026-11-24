@@ -102,6 +102,29 @@ func TestCapResetMonth(t *testing.T) {
 	equal(t, "the resets", caps.calls, []capCall{{"month", "", "alice", 0}})
 }
 
+// The premium cap's Reset restarts this month's premium count, and a
+// second press on the same view names the first.
+func TestCapResetPremium(t *testing.T) {
+	r, caps, wakes := capRig(t)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC) }
+	caps.at = time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
+	ck, s := memberLogin(t, r, "alice")
+	press := func() *httptest.ResponseRecorder {
+		req := post("/caps/premium/reset", url.Values{"csrf": {s.csrf}, "seen": {"0"}})
+		req.Header.Set("HX-Request", "true")
+		return r.do(req, ck)
+	}
+	if rec := press(); !pressRefreshes(rec) {
+		t.Fatalf("reset = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
+	}
+	equal(t, "the resets", caps.calls, []capCall{{"premium", "", "alice", 0}})
+	equal(t, "the wakes", *wakes, []string{"console: alice reset the premium cap's count (reset 1)"})
+	const line = "alice reset this month's premium count at 14:02 UTC; the panel now shows it. Press Reset again to reset it once more.\n"
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != line {
+		t.Fatalf("a second press on the same view = %d %q, want 409 %q", rec.Code, rec.Body, line)
+	}
+}
+
 // A project's Reset restarts its own month cap's count; a project with no
 // month cap of its own has none to reset: a 409 says so, refreshes the
 // board, and nothing is written or woken.
@@ -142,7 +165,8 @@ func TestCapResetAccess(t *testing.T) {
 		{"no csrf on a project", post("/projects/demo/cap/reset", url.Values{}), bk, http.StatusForbidden},
 		{"no factory writer", post("/caps/month/reset", url.Values{"csrf": {bs.csrf}}), bk, http.StatusForbidden},
 		{"another project's approver", post("/projects/demo/cap/reset", url.Values{"csrf": {as.csrf}}), ak, http.StatusForbidden},
-		{"another cap", post("/caps/premium/reset", url.Values{"csrf": {as.csrf}}), ak, http.StatusNotFound},
+		{"no factory writer on the premium cap", post("/caps/premium/reset", url.Values{"csrf": {bs.csrf}}), bk, http.StatusForbidden},
+		{"another cap", post("/caps/chat/reset", url.Values{"csrf": {as.csrf}}), ak, http.StatusNotFound},
 		{"the project's cap as a factory cap", post("/caps/project/reset", url.Values{"csrf": {as.csrf}}), ak, http.StatusNotFound},
 	} {
 		if rec := r.do(tc.req, tc.cookie); rec.Code != tc.want {

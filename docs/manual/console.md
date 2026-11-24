@@ -90,10 +90,10 @@ decimals: a task's model calls cost fractions of a cent.
   whose count a reset restarted (who, when, the count before and the
   period's whole), LiteLLM's backstop as its own row and the escalation
   pool's words. Reset under a row restarts that cap's count, never the
-  cap: the day's and the factory month's for a writer of the factory's
-  code (`POST /caps/{day|month}/reset`), a project's month cap for its
-  approver (`POST /projects/{name}/cap/reset`, a 409 for a project with no
-  month cap of its own). Its confirm opens inline,
+  cap: the day's, the factory month's and the premium's for a writer of
+  the factory's code (`POST /caps/{day|month|premium}/reset`), a
+  project's month cap for its approver (`POST /projects/{name}/cap/reset`,
+  a 409 for a project with no month cap of its own). Its confirm opens inline,
   says what may still be spent before the period turns, and posts only
   from its own press, with the newest reset of the cap the panel showed:
   once another human or another tab reset the count since, the press is

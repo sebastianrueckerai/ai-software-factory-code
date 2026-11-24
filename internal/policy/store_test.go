@@ -48,13 +48,15 @@ func testDB(t *testing.T) *sql.DB {
 		hold_eur numeric, kind text NOT NULL DEFAULT 'agent', author text NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
-	// the gateway's cap resets, as its migration creates them
-	resets, err := os.ReadFile("../schema/migrations/gateway/20261120130000_cap_resets.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, string(resets)); err != nil {
-		t.Fatal(err)
+	// the gateway's cap resets, as its migrations create them
+	for _, name := range []string{"20261120130000_cap_resets.sql", "20261124120000_cap_resets_premium.sql"} {
+		resets, err := os.ReadFile("../schema/migrations/gateway/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, string(resets)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := db.ExecContext(ctx, `TRUNCATE policy_activations, policy_versions, ledger, holds, tasks, audit, cap_resets CASCADE`); err != nil {
 		t.Fatal(err)
@@ -1144,12 +1146,15 @@ func clock(t *testing.T, at string) time.Time {
 	return tm
 }
 
-// book writes a ledger row of eur for task, booked at at (UTC) on its UTC
+// book writes a model row of eur for task, booked at at (UTC) on its UTC
 // day.
-func book(t *testing.T, db *sql.DB, task, at, eur string) {
+func book(t *testing.T, db *sql.DB, task, at, eur string) { bookOn(t, db, task, "x", at, eur) }
+
+// bookOn is book of a call on ref.
+func bookOn(t *testing.T, db *sql.DB, task, ref, at, eur string) {
 	t.Helper()
 	if _, err := db.Exec(`INSERT INTO ledger (task_id, day, kind, ref, eur, created_at)
-		VALUES ($1, ($2::timestamptz AT TIME ZONE 'UTC')::date, 'model', 'x', $3::numeric, $2::timestamptz)`, task, at+"+00", eur); err != nil {
+		VALUES ($1, ($2::timestamptz AT TIME ZONE 'UTC')::date, 'model', $3, $4::numeric, $2::timestamptz)`, task, at+"+00", ref, eur); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1255,9 +1260,46 @@ func TestResetKeepsHolds(t *testing.T) {
 	}
 }
 
+// A premium reset restarts the premium count alone, which the gateway's
+// premium headroom reads too. Hand-derived: an agent's 30.00 at 09:00 and
+// factoryd's review 12.00 at 13:00 on Premium, 5.00 on another alias at
+// 10:00 and a premium hold of 2.00: the 14:02 press ends a count of 44.00.
+// The 3.00 on Premium at 14:10 and the hold are the count after it, 5.00,
+// of the month's 47.00 on Premium; the month counts all 50.00 and the
+// hold, 52.00, and has no reset. A premium cap of 50 leaves 45.00, a
+// month cap of 1000 leaves 948.00.
+func TestResetRestartsThePremiumCount(t *testing.T) {
+	db := testDB(t)
+	runningTasks(t, db, map[string]string{"t": ""})
+	bookOn(t, db, "t", Premium, "2026-11-20 09:00", "30.00")
+	book(t, db, "t", "2026-11-20 10:00", "5.00")
+	bookOn(t, db, "t", PurposeReview+"/"+Premium, "2026-11-20 13:00", "12.00")
+	if _, err := db.Exec(`INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t', 'model', $1, 2, now() + interval '1 hour')`, Premium); err != nil {
+		t.Fatal(err)
+	}
+	press := clock(t, "2026-11-20 14:02")
+	r := resetCap(t, db, CapPremium, "")
+	if r.Cap != CapPremium || r.Repository != "" || !r.At.Equal(press) || !near(r.BeforeEUR, 44) {
+		t.Fatalf("reset = %+v, want the premium's at 14:02, 44.00 EUR before", r)
+	}
+	bookOn(t, db, "t", Premium, "2026-11-20 14:10", "3.00")
+	clock(t, "2026-11-20 14:30")
+	e := enforcedNow(t, db)
+	if !near(e.Premium, 5) || !near(e.PremiumAll, 47) || !near(e.Month, 52) || !near(e.MonthAll, 52) {
+		t.Fatalf("enforced = %+v, want premium 5.00 of 47.00, month 52.00 of 52.00", e)
+	}
+	if e.PremiumReset == nil || !sameReset(*e.PremiumReset, r) || e.MonthReset != nil || e.DayReset != nil {
+		t.Fatalf("resets = premium %+v, month %+v, day %+v; want the premium's press %+v alone", e.PremiumReset, e.MonthReset, e.DayReset, r)
+	}
+	f := readFree(t, db, HoldRequest{TaskID: "t", DayEUR: 100, MonthEUR: 1000, ProjectEUR: inf, PremiumEUR: 50})
+	if f.Premium == nil || !near(*f.Premium, 45) || !near(f.Month, 948) {
+		t.Fatalf("free = %+v, premium %v; want premium 45.00, month 948.00", f, f.Premium)
+	}
+}
+
 // A reset of an earlier period moves no count of the current one.
 // Hand-derived at 2026-11-20 14:02: the day reset of 2026-11-19 23:00 and
-// the month reset of 2026-10-31 18:00 are of earlier periods; today's 1.50
+// the month and premium resets of 2026-10-31 18:00 are of earlier periods; today's 1.50
 // is the day, and with 2.00 of 2026-11-19 and 4.00 of 2026-11-03 the
 // month is 7.50; 8.00 of 2026-10-31 is October's. The day refusal of
 // 2026-11-19 23:30, after yesterday's reset, does not hit today.
@@ -1266,6 +1308,7 @@ func TestResetOfAnEarlierPeriod(t *testing.T) {
 	runningTasks(t, db, map[string]string{"t": ""})
 	clock(t, "2026-10-31 18:00")
 	resetCap(t, db, CapMonth, "")
+	resetCap(t, db, CapPremium, "")
 	clock(t, "2026-11-19 23:00")
 	resetCap(t, db, CapDay, "")
 	book(t, db, "t", "2026-10-31 20:00", "8.00")
@@ -1277,7 +1320,7 @@ func TestResetOfAnEarlierPeriod(t *testing.T) {
 	}
 	clock(t, "2026-11-20 14:02")
 	e := enforcedNow(t, db)
-	if !near(e.Day, 1.5) || !near(e.DayAll, 1.5) || !near(e.Month, 7.5) || !near(e.MonthAll, 7.5) || e.DayReset != nil || e.MonthReset != nil || e.DayHit {
+	if !near(e.Day, 1.5) || !near(e.DayAll, 1.5) || !near(e.Month, 7.5) || !near(e.MonthAll, 7.5) || e.DayReset != nil || e.MonthReset != nil || e.PremiumReset != nil || e.DayHit {
 		t.Fatalf("enforced = %+v, want day 1.50, month 7.50, no reset of this period, no hit today", e)
 	}
 }
@@ -1306,9 +1349,10 @@ func TestNewestResetCounts(t *testing.T) {
 }
 
 // A cap is hit by a refusal since its count started: a reset clears the
-// day's hit, the month's stays. Hand-derived: refusals at 11:00 and a day
-// reset at 12:00 leave the month hit alone; the day's refusal at 12:30
-// hits the day again.
+// day's and the premium's hit, the month's stays. Hand-derived: refusals
+// at 11:00 and the day's and the premium's resets at 12:00 leave the
+// month hit alone; the day's and the premium's refusals at 12:30 hit them
+// again.
 func TestResetMovesTheHit(t *testing.T) {
 	db := testDB(t)
 	refuse := func(decision, at string) {
@@ -1319,15 +1363,18 @@ func TestResetMovesTheHit(t *testing.T) {
 	}
 	refuse(RefusedDayCap, "2026-11-20 11:00")
 	refuse(RefusedMonthCap, "2026-11-20 11:00")
+	refuse(RefusedPremiumCap, "2026-11-20 11:00")
 	clock(t, "2026-11-20 12:00")
 	resetCap(t, db, CapDay, "")
-	if e := enforcedNow(t, db); e.DayHit || !e.MonthHit {
-		t.Fatalf("after the day reset: %+v, want the month hit alone", e)
+	resetCap(t, db, CapPremium, "")
+	if e := enforcedNow(t, db); e.DayHit || !e.MonthHit || e.PremiumHit {
+		t.Fatalf("after the day's and the premium's resets: %+v, want the month hit alone", e)
 	}
 	refuse(RefusedDayCap, "2026-11-20 12:30")
+	refuse(RefusedPremiumCap, "2026-11-20 12:30")
 	clock(t, "2026-11-20 14:02")
-	if e := enforcedNow(t, db); !e.DayHit || !e.MonthHit {
-		t.Fatalf("a day refusal after the reset: %+v, want both hit", e)
+	if e := enforcedNow(t, db); !e.DayHit || !e.MonthHit || !e.PremiumHit {
+		t.Fatalf("refusals after the resets: %+v, want all three hit", e)
 	}
 }
 
@@ -1358,13 +1405,13 @@ func TestProjectResetScope(t *testing.T) {
 	}
 }
 
-// Only the day's, the month's and a project's cap reset, a project's with
-// its repository and the others without one; a refused reset writes no
-// row.
+// Only the day's, the month's, the premium's and a project's cap reset, a
+// project's with its repository and the others without one; a refused
+// reset writes no row.
 func TestResetCapRefuses(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	for _, tc := range []struct{ cap, repository string }{{"premium", ""}, {CapProject, ""}, {CapDay, "a"}, {CapMonth, "a"}} {
+	for _, tc := range []struct{ cap, repository string }{{"chat", ""}, {CapProject, ""}, {CapDay, "a"}, {CapMonth, "a"}, {CapPremium, "a"}} {
 		if r, err := ResetCap(ctx, db, tc.cap, tc.repository, "sebastian", 0); err == nil {
 			t.Errorf("reset %s %q = %+v, want it refused", tc.cap, tc.repository, r)
 		}
@@ -1398,7 +1445,7 @@ func TestResetRefusesAPressOnAnOlderCount(t *testing.T) {
 	if _, err := ResetCap(ctx, db, CapDay, "", "alice", 0); !errors.As(err, &stale) || !sameReset(stale.Newest, first) || rows(CapDay) != 1 {
 		t.Fatalf("a second press on the same view = %v, %d day rows; want refused with %+v and one row", err, rows(CapDay), first)
 	}
-	for _, other := range []struct{ cap, repository string }{{CapMonth, ""}, {CapProject, "a"}, {CapProject, "b"}} {
+	for _, other := range []struct{ cap, repository string }{{CapMonth, ""}, {CapPremium, ""}, {CapProject, "a"}, {CapProject, "b"}} {
 		if _, err := ResetCap(ctx, db, other.cap, other.repository, "alice", 0); err != nil {
 			t.Fatalf("the first press on %s %q = %v, want it to pass", other.cap, other.repository, err)
 		}
@@ -1430,16 +1477,18 @@ func TestCapResets(t *testing.T) {
 
 // NewestCapReset is the newest reset of the cap, and of a project's
 // repository, in the cap's UTC period: yesterday's day reset and last
-// month's month reset are none, the newer of two counts, and another
-// repository's stays out.
+// month's month and premium resets are none, the newer of two counts, and
+// another repository's stays out. A cap without a reset is an error.
 func TestNewestCapReset(t *testing.T) {
 	db, ctx := testDB(t), context.Background()
 	clock(t, "2026-10-31 18:00")
 	resetCap(t, db, CapMonth, "")
+	resetCap(t, db, CapPremium, "")
 	clock(t, "2026-11-19 23:00")
 	resetCap(t, db, CapDay, "")
 	clock(t, "2026-11-20 09:00")
 	resetCap(t, db, CapProject, "a")
+	premium := resetCap(t, db, CapPremium, "")
 	clock(t, "2026-11-20 14:02")
 	newer := resetCap(t, db, CapProject, "a")
 	other := resetCap(t, db, CapProject, "b")
@@ -1448,15 +1497,15 @@ func TestNewestCapReset(t *testing.T) {
 		cap, repository string
 		want            *CapReset
 	}{
-		{CapDay, "", nil}, {CapMonth, "", nil}, {CapProject, "a", &newer}, {CapProject, "b", &other}, {CapProject, "c", nil},
+		{CapDay, "", nil}, {CapMonth, "", nil}, {CapPremium, "", &premium}, {CapProject, "a", &newer}, {CapProject, "b", &other}, {CapProject, "c", nil},
 	} {
 		got, err := NewestCapReset(ctx, db, tc.cap, tc.repository, at)
 		if err != nil || (got == nil) != (tc.want == nil) || got != nil && !sameReset(*got, *tc.want) {
 			t.Errorf("%s %q = (%+v, %v), want %+v", tc.cap, tc.repository, got, err, tc.want)
 		}
 	}
-	if _, err := NewestCapReset(ctx, db, "premium", "", at); err == nil {
-		t.Error("the premium cap's newest reset is no error")
+	if _, err := NewestCapReset(ctx, db, "chat", "", at); err == nil {
+		t.Error("the chat's newest reset is no error")
 	}
 }
 

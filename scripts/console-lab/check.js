@@ -2138,7 +2138,9 @@ async function text(page) {
   // day, its reset's ↺, and the month;
   // the panel's Reset opens its confirm, which names the money and stays
   // open through the board's refreshes, and Cancel closes it; on the
-  // phone the press is 44 px high
+  // phone the press is 44 px high. The panel holds the day's, the
+  // project month's and the premium's Reset, and the premium's confirm
+  // names its count
   await seed("busy");
   for (const vp of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     const label = "reset at " + vp.width;
@@ -2173,6 +2175,15 @@ async function text(page) {
     await rst.locator("button[data-cancel]").click();
     await rp.page.waitForTimeout(200);
     if (await form.isVisible()) fails.push(label + ": Cancel leaves the confirm open");
+    const presses = await rp.page.locator("#status-panel details.rst > summary").evaluateAll((ss) => ss.map((x) => x.getAttribute("aria-label")).join(" | "));
+    if (presses !== "Reset today's count | Reset the project's month count | Reset this month's premium count") fails.push(label + ": the panel's Resets are " + presses + ", want the day's, the project's month's and the premium's");
+    const premium = rp.page.locator("#status-panel details.rst").nth(2);
+    if (await premium.count()) {
+      await premium.locator("summary").click();
+      await rp.page.waitForTimeout(200);
+      if (!/^This month's premium count starts again from 0\.00 EUR\./.test(await premium.locator("form p").innerText())) fails.push(label + ": the premium's confirm does not name the premium count");
+      await premium.locator("button[data-cancel]").click();
+    }
     await rp.ctx.close();
   }
   // a narrow desk at 960: the strip's cells wrap where they do not fit, the
