@@ -2074,6 +2074,21 @@ func TestLoginExchangesCodeInClusterWithVerifierAndSecret(t *testing.T) {
 	}
 }
 
+// A browser keeps no answer of the login: a tab restored from its cache
+// would show a callback's answer of days ago, or carry a spent state, in
+// place of asking again.
+func TestLoginAnswersAreNeverStored(t *testing.T) {
+	r := newRig(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
+	_, cb := r.login(t)
+	stale := r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state=other", nil))
+	for name, a := range map[string]*httptest.ResponseRecorder{"/login": rec, "the callback": cb, "a stale callback": stale} {
+		if got := a.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control %q, want no-store", name, got)
+		}
+	}
+}
+
 // A callback whose state the login cookie does not hold exchanges nothing
 // and starts the login again, keeping the cookie: it may be the pending
 // login of another tab.

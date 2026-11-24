@@ -23,7 +23,9 @@ decimals: a task's model calls cost fractions of a cent.
   page and its event stream, or two tabs, reaching `/login` at once keep
   one state; a callback whose state the cookie does not hold (expired, or
   another login's) exchanges nothing and starts again at `/login`, which
-  a live session answers with the board. Only the trust gate's writers
+  a live session answers with the board. Both answer with
+  `Cache-Control: no-store`, so a tab restored from the browser's cache
+  asks again. Only the trust gate's writers
   of the code repository get in, checked at login and on every request
   (list cached a minute, fetched by one request while the others wait, the
   last list served up to 5 minutes while Forgejo fails); others get 403.
