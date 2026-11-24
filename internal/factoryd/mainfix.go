@@ -497,7 +497,11 @@ func (r *Roller) endFixCard(ctx context.Context, pause QueuePause, green string)
 	case err != nil || !ok:
 		return err
 	case humanPauseCard(t) && slices.Contains(humanCardWaits, t.Status):
-		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue.")
+		msg := green + ": the merge queue's pause has ended. Closing this issue."
+		if err := r.Timeline.WithdrawAsk(ctx, t, msg, nil); err != nil {
+			return err
+		}
+		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, msg)
 	case t.Source != SourceMainFix || t.Status != "failed" && !stoppable(t):
 		return nil
 	}

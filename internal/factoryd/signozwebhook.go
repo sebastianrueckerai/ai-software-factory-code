@@ -625,6 +625,14 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	case touched:
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
+	var said Moments
+	words := at
+	if cleared, err := time.Parse(time.RFC3339, at); err == nil {
+		words = said.Say(cleared, resetLayout(cleared, time.Now()))
+	}
+	if err := in.Timeline.WithdrawAsk(ctx, t, "The alert cleared at "+words+".", said); err != nil {
+		return err
+	}
 	return in.endCard(ctx, row, t, "the alert cleared at "+at, "The alert cleared at "+at+". Nobody touched the card, so it closes.")
 }
 

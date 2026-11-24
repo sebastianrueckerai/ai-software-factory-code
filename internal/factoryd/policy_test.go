@@ -959,3 +959,27 @@ func TestCheckChange(t *testing.T) {
 		t.Errorf("a named brief deleted: %v, want %s", err, want)
 	}
 }
+
+// Hand-derived: the next valid commit, cacacacacaca as version 13, resolves
+// the rejection of c9c9c9c9c9c9c9c9. The card's live ask is withdrawn first,
+// with the close comment's first sentence as a clause.
+func TestConfigAlarmWithdrawsTheAskWhenTheNextCommitLoads(t *testing.T) {
+	forgejo, _ := infraForgejo(t, nil)
+	store := newFakeStore()
+	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory",
+		Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}}
+	ctx := context.Background()
+	if err := alarm.Raise(ctx, "c9c9c9c9c9c9c9c9", errors.New("policy.yaml: version: want 1"), policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}, true); err != nil {
+		t.Fatal(err)
+	}
+	var task Task
+	for _, task = range store.tasks {
+	}
+	if _, _, err := store.OpenCase(ctx, Case{TaskID: task.ID, Repository: task.Repository, Kind: CaseOther, StateKey: "k", Problem: "The configuration was rejected."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := alarm.Resolve(ctx, policy.Version{ID: 13, Commit: "cacacacacaca"}); err != nil {
+		t.Fatal(err)
+	}
+	requireWithdrawn(t, store, task.ID, "the factory loaded commit cacacac as version 13, so this rejection is resolved", nil)
+}

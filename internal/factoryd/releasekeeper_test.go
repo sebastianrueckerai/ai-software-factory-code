@@ -1051,3 +1051,47 @@ func TestHoldPlansNameTheSuccessorACardWasCutInto(t *testing.T) {
 		t.Fatalf("hold plans %+v, want t-plan waiting on %v", plans, want)
 	}
 }
+
+// Hand-derived: the plan of the hold closed, so the pass at 18:00 ends the
+// hold and closes ask #77. It first withdraws the ask's live case with the
+// end note's first sentence as a clause.
+func TestReleaseKeeperWithdrawsTheAskWhenNoPlanHoldsProduction(t *testing.T) {
+	k, _, store, _ := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+	if _, _, err := store.OpenCase(context.Background(), Case{TaskID: "t-ask", Repository: demoRepo, Kind: CaseOther, StateKey: "k", Problem: "Production is held."}); err != nil {
+		t.Fatal(err)
+	}
+	keeperPass(t, k)
+	requireWithdrawn(t, store, "t-ask", "no plan is open on main any more, so production goes ahead", nil)
+}
+
+// A Deploy now that overtakes a filed ask ends its case as a cause gone,
+// with the note's first sentence as the reason.
+func TestReleaseKeeperWithdrawsAnAskADeployNowOvertook(t *testing.T) {
+	f := &chainForgejo{}
+	k, store, clock := newKeeper(t, f)
+	k.Store = &deployNowAfterAsk{store}
+	*clock = keeperAt(16, 0)
+	keeperPass(t, k)
+	asks := holdAsks(store)
+	if len(asks) != 1 {
+		t.Fatalf("asks %d, want 1", len(asks))
+	}
+	requireWithdrawn(t, store, asks[0].TaskID, "deploy now sent main at commit 9d9d9d9 to production while this ask was filed", nil)
+}
+
+// A human's Deploy now answers the ask itself: the keeper writes no
+// withdrawal row for it.
+func TestReleaseKeeperDeployNowWritesNoWithdrawal(t *testing.T) {
+	k, _, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+	delete(store.closed, "t-plan")
+	if _, _, err := store.OpenCase(context.Background(), Case{TaskID: "t-ask", Repository: demoRepo, Kind: CaseOther, StateKey: "k", Problem: "Production is held."}); err != nil {
+		t.Fatal(err)
+	}
+	*clock = keeperAt(12, 0)
+	if _, err := k.DeployNow(context.Background(), demoRepo, "sebastian", ViaButton, "member"); err != nil {
+		t.Fatal(err)
+	}
+	if rows := withdrawnRows(store, "t-ask"); len(rows) != 0 {
+		t.Fatalf("Deploy now wrote %+v, want no withdrawal row", rows)
+	}
+}

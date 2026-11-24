@@ -1695,3 +1695,40 @@ func TestMainStateLeavesAGroupPauseAlone(t *testing.T) {
 		})
 	}
 }
+
+// The re-run card of a pause asks, and the re-run's green ends the pause:
+// the card's live ask ends first, withdrawn with the green run's words as
+// its reason, and the card's close records the same words once.
+func TestRollerWithdrawsThePauseCardsAskWhenMainTurnsGreen(t *testing.T) {
+	f, roller, store, _ := lostMain(t)
+	roller.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
+	job := "/" + codeRepo + "/actions/runs/1208/jobs/0"
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.runs = []map[string]any{run1208("running"), pushRun(57, commitC1, "success")}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.runs = []map[string]any{run1208("failure"), pushRun(57, commitC1, "success")}
+	f.jobs[58][0]["status"] = "failure"
+	for range 2 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	card := store.tasks[store.pauses[codeRepo].FixTask]
+	if card.Source != SourceRerun {
+		t.Fatalf("card %+v, want the re-run card of the pause (job %s)", card, job)
+	}
+	if _, _, err := store.OpenCase(ctx, Case{TaskID: card.ID, Repository: codeRepo, Kind: CaseOther, StateKey: "k", Problem: "Main is red."}); err != nil {
+		t.Fatal(err)
+	}
+	f.runs = []map[string]any{run1208("success"), pushRun(57, commitC1, "success")}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	green := "CI run 1208 on main, at commit " + ShortSHA(commitC2) + ", is green (https://git.example/" + codeRepo + "/actions/runs/1208)"
+	requireWithdrawn(t, store, card.ID, green+": the merge queue's pause has ended", nil)
+}

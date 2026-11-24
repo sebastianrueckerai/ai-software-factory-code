@@ -2332,6 +2332,9 @@ func TestAJobFailedCardClosesWhenItsCronJobRunsAgain(t *testing.T) {
 	if got := factoryCloses(r.store, ids["fp-done"]); !slices.Equal(got, note) || len(r.fj.issues) != 0 || len(r.fj.comments) != 0 || len(r.fj.closed) != 0 {
 		t.Fatalf("factory closes %q, issues %d, comments %q, closed %v; want %q recorded and no forge call, the cards held", got, len(r.fj.issues), r.fj.comments, r.fj.closed, note)
 	}
+	if rows := withdrawnRows(r.store, ids["fp-done"]); len(rows) != 0 {
+		t.Fatalf("a completed Job's close wrote %+v, want no withdrawal row", rows)
+	}
 	if jobs.lists["demo-staging"] != 1 {
 		t.Fatalf("lists of demo-staging's Jobs = %d, want 1 for the pass", jobs.lists["demo-staging"])
 	}
@@ -2429,5 +2432,39 @@ func TestAJobFailedCardClosesOverTheClusterReader(t *testing.T) {
 	want := map[string]string{"fp-alpha": "closed", "fp-beta": "waiting-agent", "fp-gamma": "waiting-agent"}
 	if !reflect.DeepEqual(status, want) {
 		t.Fatalf("task states %v, want %v", status, want)
+	}
+}
+
+// Hand-derived: the held card of a cleared alert holds a live ask; the clear
+// closes it, and first withdraws the ask for "the alert cleared at <words>".
+// A clear on the day of the pass is said as a clock time, one of another day
+// with its date, each with its moment in the row.
+func TestAClearedAlertWithdrawsItsAsk(t *testing.T) {
+	today := time.Now().UTC().Truncate(24 * time.Hour).Add(7*time.Hour + 30*time.Minute)
+	old := time.Date(2026, 9, 28, 20, 40, 29, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		at     time.Time
+		reason string
+		layout string
+	}{
+		{"today", today, "the alert cleared at 07:30 UTC", LayoutClock},
+		{"another day", old, "the alert cleared at 28 Sep 20:40 UTC", LayoutDay},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := heldClearedRig(t)
+			r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, tc.at.Format(time.RFC3339)))
+			id := r.store.alertRows()[0].TaskID
+			if c, _ := r.store.NewestAskCase(context.Background(), id); c.ID == 0 {
+				t.Fatalf("card %s holds no live ask before the clear", id)
+			}
+			if err := r.in.CloseCleared(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.store.tasks[id].Status; got != "closed" {
+				t.Fatalf("card is %s, want closed", got)
+			}
+			requireWithdrawn(t, r.store, id, tc.reason, Moments{{At: tc.at, Layout: tc.layout}})
+		})
 	}
 }

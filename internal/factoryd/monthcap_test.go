@@ -778,3 +778,119 @@ func TestMonthAlarmAtTheCapAsksToRaiseIt(t *testing.T) {
 		t.Fatalf("issues = %q", fj.issues)
 	}
 }
+
+// withdrawnRows are the question_withdrawn rows of card id.
+func withdrawnRows(store *fakeStore, id string) []Event {
+	var out []Event
+	for _, e := range store.events {
+		if e.Kind == EventQuestionWithdrawn && e.TaskID == id {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// requireWithdrawn fails unless card id's one question_withdrawn row, by
+// the factory, carries reason and the moments said, and the live ask it
+// names ended withdrawn with that reason.
+func requireWithdrawn(t *testing.T, store *fakeStore, id, reason string, said Moments) {
+	t.Helper()
+	rows := withdrawnRows(store, id)
+	if len(rows) != 1 {
+		t.Fatalf("card %s has %d question_withdrawn rows, want 1: %+v", id, len(rows), rows)
+	}
+	row := rows[0]
+	if row.Actor != FactoryDecider || row.Via != ViaFactoryd || row.Detail["reason"] != reason {
+		t.Fatalf("withdrawn row = %+v, want the factory's with reason %q", row, reason)
+	}
+	got := MomentsOf(row.Detail)
+	if len(got) != len(said) {
+		t.Fatalf("row moments = %+v, want %+v", got, said)
+	}
+	for i := range said {
+		if !got[i].At.Equal(said[i].At) || got[i].Layout != said[i].Layout {
+			t.Fatalf("row moments = %+v, want %+v", got, said)
+		}
+	}
+	caseID, _ := toInt(row.Detail["case_id"])
+	c, err := store.CaseByID(context.Background(), int64(caseID))
+	if err != nil || c.TaskID != id || c.Status != CaseWithdrawn || c.Resolution == nil || c.Resolution.Reason != reason {
+		t.Fatalf("the row's case = %+v (%v), want card %s's, withdrawn with %q", c, err, id, reason)
+	}
+}
+
+// Hand-derived: a cap of 544 is reached at 544 spent. A raise to 600, a
+// reset at today's 07:30:32 UTC and the turn of the month each close the
+// card, and each first withdraws its live ask with the comment's first
+// sentence as a clause; only the reset names a time.
+func TestMonthAlarmWithdrawsTheAskWithTheCloseReason(t *testing.T) {
+	ctx := context.Background()
+	resetAt := time.Now().UTC().Truncate(24 * time.Hour).Add(7*time.Hour + 30*time.Minute + 32*time.Second)
+	for _, tc := range []struct {
+		name   string
+		after  MonthSpend
+		next   func() policy.Version
+		reason string
+		said   Moments
+	}{
+		{"a raise", MonthSpend{Month: "2026-10", EUR: 543.90}, versionAt(5, 600, time.Now().Add(-time.Minute)),
+			"the month cap is 600.00 EUR in policy version 5, so the cap card closes", nil},
+		{"a reset", MonthSpend{Month: "2026-10", EUR: 0.40, AllEUR: 544.40, Reset: &policy.CapReset{ID: 7, Cap: policy.CapMonth, At: resetAt, Login: "sebastian", BeforeEUR: 544}}, nil,
+			"sebastian reset the month's count at 07:30 UTC, so the cap card closes", Moments{{At: resetAt, Layout: LayoutClock}}},
+		{"the month's turn", MonthSpend{Month: "2026-11", EUR: 1}, nil,
+			"the UTC month 2026-10 ended, so the cap card closes", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			alarm, _ := monthAlarm(t, store, 544)
+			alarm.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
+			store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544}
+			if err := alarm.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			card := taskOf(t, store, "2026-10/100/544")
+			if tc.next != nil {
+				alarm.Current = tc.next
+			}
+			store.monthSpend = tc.after
+			if err := alarm.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := taskOf(t, store, "2026-10/100/544"); got.Status != "done" {
+				t.Fatalf("card = %s, want done", got.Status)
+			}
+			requireWithdrawn(t, store, card.ID, tc.reason, tc.said)
+		})
+	}
+}
+
+// Hand-derived: September's card (cap 50) closes when October starts. The
+// close of its issue fails after the withdrawal's row: the next pass finds
+// the case ended, writes no second row and closes the card.
+func TestACapCardWhoseCloseFailedWritesOneRow(t *testing.T) {
+	ctx := context.Background()
+	captureLog(t)
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 50)
+	alarm.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 50}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card := taskOf(t, store, "2026-09/100/50")
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 1}
+	fj.failClose = 1
+	if err := alarm.Check(ctx); err == nil {
+		t.Fatal("a failed close returned no error")
+	}
+	if got := taskOf(t, store, "2026-09/100/50"); got.Status != "waiting-human" {
+		t.Fatalf("after the failed close the card = %s, want waiting-human", got.Status)
+	}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskOf(t, store, "2026-09/100/50"); got.Status != "done" {
+		t.Fatalf("after the next pass the card = %s, want done", got.Status)
+	}
+	requireWithdrawn(t, store, card.ID, "the UTC month 2026-09 ended, so the cap card closes", nil)
+}

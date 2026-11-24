@@ -200,3 +200,42 @@ func TestSuggestFund(t *testing.T) {
 		}
 	}
 }
+
+// Hand-derived: the card of a chat task at 50 EUR closes on a raise to 60
+// and on the turn of the month. Each close first withdraws the card's live
+// ask with the comment's first sentence as a clause.
+func TestChatBudgetCardWithdrawsItsAskWithTheCloseReason(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		raise  float64
+		now    time.Time
+		reason string
+	}{
+		{"a raise", 60, time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC), "the judgment budget is 60.00 EUR for 2026-11: the card closes"},
+		{"the month's turn", 50, time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), "the UTC month 2026-11 ended: the card closes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			forgejo, _ := newAlertForgejo(t)
+			cards := &ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}}
+			chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50, SpentEUR: 49.96}
+			if err := store.CreateTask(ctx, chat); err != nil {
+				t.Fatal(err)
+			}
+			if err := cards.File(ctx, Project{Name: "linkshort", Repository: "sf/linkshort"}, chat); err != nil {
+				t.Fatal(err)
+			}
+			open, _ := store.ListTasksByStatus(ctx, "waiting-human")
+			chat.BudgetEUR = tc.raise
+			store.tasks[chat.ID] = chat
+			if err := cards.Check(ctx, tc.now); err != nil {
+				t.Fatal(err)
+			}
+			if got, _, _ := store.Task(ctx, open[0].ID); got.Status != "done" {
+				t.Fatalf("the card is %s, want done", got.Status)
+			}
+			requireWithdrawn(t, store, open[0].ID, tc.reason, nil)
+		})
+	}
+}

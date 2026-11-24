@@ -8,7 +8,10 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The events (stage11-design.md section 2): the fixed list a later triggers
@@ -195,6 +198,40 @@ func (tl *Timeline) WriteRow(ctx context.Context, taskID, event, actor, via stri
 		return fmt.Errorf("event %s: the row: %w", event, err)
 	}
 	return nil
+}
+
+// WithdrawAsk closes the live ask of card t for the reason sentence gives
+// (the factory's own card, whose cause is gone), as the one row the events
+// writer ends the case by; said holds the moments the reason names. A card
+// with no live ask, or a Timeline with no store, writes none: a second pass
+// after a failed close finds the case ended and writes no second row.
+func (tl *Timeline) WithdrawAsk(ctx context.Context, t Task, sentence string, said Moments) error {
+	if tl == nil || tl.Events == nil || tl.Store == nil {
+		return nil
+	}
+	c, err := tl.Store.NewestAskCase(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("withdraw the ask of card %s: %w", t.ID, err)
+	}
+	if c.ID == 0 {
+		return nil
+	}
+	return tl.WriteRow(ctx, t.ID, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, WithdrawnRow(c, clause(closeBodyReason(sentence)), said))
+}
+
+// clause is sentence as a reason runs on after "because": its first letter
+// in lower case, unless an initialism such as "CI" starts it, and no full
+// stop at its end.
+func clause(sentence string) string {
+	sentence = strings.TrimSuffix(strings.TrimSpace(sentence), ".")
+	if sentence == "" {
+		return ""
+	}
+	r, n := utf8.DecodeRuneInString(sentence)
+	if next, _ := utf8.DecodeRuneInString(sentence[n:]); unicode.IsUpper(next) {
+		return sentence
+	}
+	return string(unicode.ToLower(r)) + sentence[n:]
 }
 
 // RecordProjectRow writes e as a project's own events row, which no task

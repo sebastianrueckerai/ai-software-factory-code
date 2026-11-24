@@ -1671,6 +1671,16 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 			}
 		}
 	}
+	if e.Kind == EventQuestionWithdrawn {
+		// the events writer ends the case the row names, else the card's newest ask
+		reason, _ := e.Detail["reason"].(string)
+		id, _ := toInt(e.Detail["case_id"])
+		if c, err := s.CaseByID(ctx, int64(id)); id != 0 && err == nil && c.TaskID == e.TaskID {
+			_ = s.WithdrawCase(ctx, c.ID, reason)
+		} else if c, _ := s.NewestAskCase(ctx, e.TaskID); id == 0 && c.ID != 0 {
+			_ = s.WithdrawCase(ctx, c.ID, reason)
+		}
+	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
 		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
 		// the close ends the plan's held ask, as endHoldCase does

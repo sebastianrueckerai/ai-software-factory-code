@@ -933,6 +933,9 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 			}
 		}
 		msg := fmt.Sprintf("The factory loaded commit %s as version %d, so this rejection is resolved.", ShortSHA(v.Commit), v.ID)
+		if err := a.Timeline.WithdrawAsk(ctx, t, msg, nil); err != nil {
+			return err
+		}
 		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
 			return err
 		}

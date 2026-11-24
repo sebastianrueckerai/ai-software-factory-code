@@ -1486,6 +1486,9 @@ func (w *FreezeCard) close(ctx context.Context, st *freezeClass) error {
 		return err
 	}
 	msg := fmt.Sprintf("The freeze of the %s"+freezeEndedSaid+"%s, and the card closes.", st.class, freezeHeld(st.frozenAt, st.resumedAt))
+	if err := w.Timeline.WithdrawAsk(ctx, t, msg, nil); err != nil {
+		return err
+	}
 	moved, err := w.end(ctx, t, "", msg, nil)
 	if moved {
 		log.Printf("freeze card: %s (#%d)", msg, t.IssueNumber)

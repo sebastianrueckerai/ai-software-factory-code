@@ -167,6 +167,10 @@ func (c *ChatBudgetCards) Check(ctx context.Context, now time.Time) error {
 		default:
 			continue
 		}
+		if err := c.Timeline.WithdrawAsk(ctx, t, msg, nil); err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		if err := closeIssueAsFactory(ctx, c.Store, c.Forgejo, t, msg); err != nil {
 			errs = append(errs, err)
 			continue

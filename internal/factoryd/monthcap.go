@@ -320,14 +320,19 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 		spent, _ := row.Detail["spent_eur"].(float64)
 		refusal, _ := row.Detail["refusal"].(string)
 		var msg string
+		var said Moments
 		switch {
 		case month < m.Month:
 			msg = fmt.Sprintf("The UTC month %s ended, so the cap card closes.", month)
 		case month == m.Month && limit > capEUR:
 			msg = fmt.Sprintf("The month cap is %s EUR in policy version %d, so the cap card closes.", textutil.EUR(limit), v.ID)
 		case month == m.Month && m.Reset != nil && !strings.HasSuffix(row.Fingerprint, resetMark(m.Reset)) && !outerGuardRefused(refusal, spent, capEUR):
-			msg = fmt.Sprintf("%s reset the month's count at %s, so the cap card closes.", m.Reset.Login, ResetStamp(m.Reset.At, now))
+			msg = fmt.Sprintf("%s reset the month's count at %s, so the cap card closes.", m.Reset.Login, said.Say(m.Reset.At, resetLayout(m.Reset.At, now)))
 		default:
+			continue
+		}
+		if err := a.Timeline.WithdrawAsk(ctx, t, msg, said); err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {

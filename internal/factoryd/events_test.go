@@ -157,3 +157,16 @@ func TestEventsRecorded(t *testing.T) {
 		}
 	})
 }
+
+func TestClause(t *testing.T) {
+	for in, want := range map[string]string{
+		"The month cap is 900.00 EUR, so the card closes.": "the month cap is 900.00 EUR, so the card closes",
+		"CI run 1208 is green":                             "CI run 1208 is green",
+		"A":                                                "a",
+		"":                                                 "",
+	} {
+		if got := clause(in); got != want {
+			t.Errorf("clause(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

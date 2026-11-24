@@ -4162,3 +4162,75 @@ func TestFreezeCardFaultsOfALapseAndItsReArmRightBeforeThePress(t *testing.T) {
 		h.pass()
 	}, "#1 done pressed R1 | open  | 1 comments, 1 ends, 1 wakes", lostPress("#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes"))
 }
+
+// Hand-derived: big froze at 12:00 on 21 November with its reset 30 hours
+// on, and the card asked at 25 hours. The class resumed at 13:05 on the 22nd
+// (held 25 hours 5 minutes) and the card closes itself five minutes later:
+// it first withdraws its ask with the comment's first sentence as a clause.
+func TestFreezeCardWithdrawsItsAskWhenItsFreezeEnds(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, _ := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	w.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: store.fakeStore, Store: store.fakeStore}
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: "sf/acme", At: base, Kind: "class_frozen", Class: "big",
+		Reset: base.Add(30 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	for _, at := range []time.Duration{0, 25 * time.Hour} {
+		now = base.Add(at)
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	card := freezeCardOn(t, store, 1)
+	if asks := freezeAsks(t, store)[card.ID]; asks != 1 {
+		t.Fatalf("the card asked %d times, want 1", asks)
+	}
+	now = base.Add(25*time.Hour + 5*time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: now, Kind: "class_resumed", Class: "big", Reset: base.Add(30 * time.Hour).Format(time.RFC3339)})
+	for _, at := range []time.Duration{0, 6 * time.Minute} {
+		now = base.Add(25*time.Hour + 5*time.Minute + at)
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := freezeCardOn(t, store, 1); got.Status != "done" {
+		t.Fatalf("the card is %s, want done", got.Status)
+	}
+	requireWithdrawn(t, store.fakeStore, card.ID, "the freeze of the big class ended: the freeze held 25h 05m, and the card closes", nil)
+}
+
+// A press of Retry now, and a card given up on its refused issue, are the
+// freeze card's own answers: neither writes a withdrawal row.
+func TestFreezeCardRetryAndGiveUpWriteNoWithdrawal(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	w.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: store.fakeStore, Store: store.fakeStore}
+	store.rows = append(store.rows,
+		FreezeEvent{ID: 1, Repository: "sf/acme", At: base, Kind: "class_frozen", Class: "big", Reset: base.Add(30 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"},
+		FreezeEvent{ID: 2, Repository: "sf/acme", At: base, Kind: "class_frozen", Class: "small", Reset: base.Add(30 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fj.deleted = map[int64]bool{2: true}
+	now = base.Add(25 * time.Hour)
+	for range 2 {
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.CloseOnRetry(ctx, "sf/acme", "big", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	for n := int64(1); n <= 2; n++ {
+		c := freezeCardOn(t, store, n)
+		if c.Status != "done" || len(withdrawnRows(store.fakeStore, c.ID)) != 0 {
+			t.Fatalf("#%d is %s with %d withdrawal rows, want it done with none", n, c.Status, len(withdrawnRows(store.fakeStore, c.ID)))
+		}
+	}
+}

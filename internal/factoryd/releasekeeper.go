@@ -144,7 +144,11 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 	case len(groups) > 0:
 		err = k.hold(ctx, row, groups, now)
 	case !row.HeldSince.IsZero():
-		if err := k.closeAsk(ctx, repository, "No plan is open on main any more, so production goes ahead. Closing this issue."); forgejoTerminal(err) {
+		const gone = "No plan is open on main any more, so production goes ahead. Closing this issue."
+		if err := k.withdrawAsk(ctx, repository, gone); err != nil {
+			return err
+		}
+		if err := k.closeAsk(ctx, repository, gone); forgejoTerminal(err) {
 			log.Printf("release keeper: %s: Forgejo refused the ask's close for good: %v; the hold ends without it", repository, err)
 		} else if err != nil {
 			return err
@@ -259,7 +263,11 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 	if fresh.DeployNow != "" {
 		sent = "main at commit " + ShortSHA(fresh.DeployNow)
 	}
-	return k.closeAsk(ctx, repository, "Deploy now sent "+sent+" to production while this ask was filed. Closing this issue.")
+	overtaken := "Deploy now sent " + sent + " to production while this ask was filed. Closing this issue."
+	if err := k.withdrawAsk(ctx, repository, overtaken); err != nil {
+		return err
+	}
+	return k.closeAsk(ctx, repository, overtaken)
 }
 
 // refreshFacts writes the hold as it stands now on the facts of the standing
@@ -575,6 +583,17 @@ func (k *ReleaseKeeper) pushRuns(ctx context.Context, repository string) (Projec
 	runs, err := k.Forgejo.ActionRuns(ctx, k.Forgejo.Access(p).Actions, repo.Owner, repo.Name,
 		url.Values{"event": {"push"}, "limit": {strconv.Itoa(runsPage)}})
 	return p, runs, err
+}
+
+// withdrawAsk ends the live case of repository's standing ask for the
+// reason comment gives, before closeAsk closes its issue: a cause that is
+// gone, not a human's Deploy now.
+func (k *ReleaseKeeper) withdrawAsk(ctx context.Context, repository, comment string) error {
+	card, ok, err := k.Store.ChainCard(ctx, repository, SourceProductionHeld)
+	if err != nil || !ok || Final(card.Status) {
+		return err
+	}
+	return k.Timeline.WithdrawAsk(ctx, card, comment, nil)
 }
 
 // closeAsk closes repository's standing ask with comment, where one stands.
