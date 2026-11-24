@@ -29,7 +29,7 @@ infra repository README.
 `make test` runs `scripts/pg-test.sh go test -race -p 1 ./...`, the line
 CI runs: it starts a throwaway Postgres for the store tests
 (`FACTORYD_TEST_DATABASE_URL`, `GATEWAY_TEST_DATABASE_URL`) and each
-package migrates its own `factory_test_<package>` database. The
+package migrates its own `factory_test_<package>_<hash>` database. The
 API-server and live-cluster tests need further variables, and the
 pinned-inputs machinery (the image store, `upstream-images.txt`, the
 snapshot dates) sits behind all of it:
