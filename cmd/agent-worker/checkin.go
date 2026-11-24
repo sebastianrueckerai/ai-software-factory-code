@@ -420,6 +420,13 @@ func (c *checkinServe) grep(pattern, ref, path string) (string, bool, error) {
 	default:
 		return "", false, fmt.Errorf("ref %q: want head or main", ref)
 	}
+	sha, _, err := c.git("rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		return "", false, fmt.Errorf("%s names no commit in the workspace's clone", ref)
+	}
+	// the first line names the commit, so no answer passes one commit's
+	// lines off as another's
+	at := fmt.Sprintf("at %s %s:\n", ref, strings.TrimSpace(sha)[:7])
 	args := []string{"grep", "-n", "-w", "-F", "-I", "-e", pattern, ref}
 	if path != "" {
 		args = append(args, "--", path)
@@ -428,9 +435,15 @@ func (c *checkinServe) grep(pattern, ref, path string) (string, bool, error) {
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && ee.ExitCode() == 1 {
 		// git grep's no-match exit is an answer, said as one
-		return fmt.Sprintf("no line matches the fixed string %q as a whole word at %s", pattern, ref), false, nil
+		return at + fmt.Sprintf("no line matches the fixed string %q as a whole word", pattern), false, nil
 	}
-	return out, cut, err
+	if err != nil {
+		return out, cut, err
+	}
+	if out = at + out; len(out) > checkinOutputCap {
+		out, cut = out[:checkinOutputCap], true
+	}
+	return out, cut, nil
 }
 
 func (c *checkinServe) gitLog(args string) (string, bool, error) {

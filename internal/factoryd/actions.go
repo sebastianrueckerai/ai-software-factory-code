@@ -564,6 +564,24 @@ func factsUnread(what, unknown, action string, rung int) string {
 	return why
 }
 
+// checksRunRefusal refuses a rung below the human the replan of the card
+// itself while the checks on the head of its open pull request run, or
+// could not be read: the replan closes the pull request before they judge
+// its work.
+func checksRunRefusal(f CaseFacts, rung int, action string, args map[string]any) string {
+	if action != ActReplan || rung >= 3 || argString(args, "task_id") != "" || !f.PROpen {
+		return ""
+	}
+	switch {
+	case slices.Contains(f.Partial, "checks"):
+		return factsUnread("the checks on the head", "they still run", action, rung)
+	case f.Checks == "pending":
+		return fmt.Sprintf("the checks on %s are pending: a replan would close pull request #%d before they judge its work, so %s takes no `replan` until they settle. "+
+			"Once they settle red on a test outside the diff, `rerun_checks` runs them again", ShortSHA(f.Head), f.PR, who(rung))
+	}
+	return ""
+}
+
 // conflictFit is what a merge conflict needs, by the stop's kind: a
 // session that merges main, with the answers a stop on sessions, agent
 // time or money holds, an extend at the other stops an extend answers, the
@@ -857,6 +875,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		return why
 	}
 	if why := a.Applies(f, r); why != "" {
+		return why
+	}
+	if why := checksRunRefusal(f, rung, a.Name, r.Args); why != "" {
 		return why
 	}
 	if why := endedRefusal(f.Final, planWait, a.Name); onCase && why != "" {

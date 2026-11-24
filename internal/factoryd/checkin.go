@@ -544,7 +544,7 @@ func checkinSystemFor(ask *CheckInAsk) string {
 
 // checkinToolsLine is the statement's tool line: the evidence tools the
 // check-in's calls post beside the answer tool, one line.
-const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), cluster_facts (what the cluster did to a session of the card, or the platform's incidents of a window)."
+const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref, under a first line naming the ref's commit), git_log (the workspace's history), cluster_facts (what the cluster did to a session of the card, or the platform's incidents of a window)."
 
 // momentDecisions is one moment's closed decision vocabulary, derived the
 // way the rungs' decisionEnum is: the names of the actions the moment
@@ -659,7 +659,7 @@ var checkinTools = []CheckinTool{
 	{Name: "gates", Description: "the gates' full results for the round", Parameters: toolSchema(nil)},
 	{Name: "read_file", Description: "read a file of the repository by its path, as grep prints it",
 		Parameters: toolSchema(map[string]any{"path": toolArg("the file's path in the repository, or absolute under /workspace")}, "path")},
-	{Name: "grep", Description: "git grep the repository at a ref for a fixed string as a whole word, no regex",
+	{Name: "grep", Description: "git grep the repository at a ref for a fixed string as a whole word, no regex, under a first line naming the commit of each ref it searched",
 		Parameters: toolSchema(map[string]any{"pattern": toolArg("the fixed string"), "ref": toolArg("head or main"), "path": toolArg("a path prefix")}, "pattern")},
 	{Name: "git_log", Description: "the workspace's history; only -n, --oneline and -- <path> are allowed",
 		Parameters: toolSchema(map[string]any{"args": toolArg("the arguments as one string")}, "args")},

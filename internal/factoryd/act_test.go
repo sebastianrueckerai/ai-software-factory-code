@@ -217,6 +217,41 @@ func TestActReplansAndARefusedReplanLeavesTheCaseOpen(t *testing.T) {
 	}
 }
 
+// The check-in's replan of a direct card whose pull request #9 has its
+// checks on head c7 still running is refused, naming the head, the pull
+// request a replan would close and what fits, and nothing moves. With the
+// checks settled, green or red, the replan goes through as before: the
+// to_plan signal, and the case resolved.
+func TestTheCheckinsReplanWaitsForTheHeadsChecks(t *testing.T) {
+	ctx := context.Background()
+	for state, refused := range map[string]bool{"pending": true, "success": false, "failure": false} {
+		r, store, fj := directReplanRig(t, "in-review")
+		k := store.tasks["t1"]
+		k.PRNumber = 9
+		store.tasks["t1"] = k
+		fj.statusesBySHA = map[string][]string{"c7": {statusBody(state, [4]string{state, "pr / test", "", ""})}}
+		store.cases = []Case{{ID: 4, TaskID: "t1", Repository: "sf/repo", Kind: CaseMonitorFlag, StateKey: "grant_bought_nothing|session 4", Status: CaseOpen,
+			Facts: map[string]any{"head": "c7", "flag": "grant_bought_nothing"}}}
+		if _, err := store.AppendCaseStep(ctx, CaseStep{CaseID: 4, Rung: 1, Actor: CheckinDecider}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := r.Act(ctx, ActInput{TaskID: "t1", CaseID: 4, By: CheckinDecider, Via: ViaFactoryd, Rung: 1, Res: Resolution{Action: ActReplan, Note: "the test fix never landed"}})
+		if !refused {
+			if err != nil || !reflect.DeepEqual(reopens(r), []reopenCall{{taskID: "t1", signal: SignalToPlan, sig: TaskSignal{Author: CheckinDecider, Body: "the test fix never landed"}}}) ||
+				store.cases[0].Status != CaseResolved {
+				t.Errorf("checks %s: Act = %v, reopens %+v, case %s; want the replan's to_plan signal and the case resolved", state, err, reopens(r), store.cases[0].Status)
+			}
+			continue
+		}
+		const want = "the checks on c7 are pending: a replan would close pull request #9 before they judge its work, so the check-in takes no `replan` until they settle. " +
+			"Once they settle red on a test outside the diff, `rerun_checks` runs them again, and the check-in may take `settle` and `withdraw`"
+		var no ErrActRefused
+		if !errors.As(err, &no) || err.Error() != want || len(reopens(r)) != 0 || store.cases[0].Status != CaseOpen {
+			t.Errorf("checks pending: Act = %v, reopens %+v, case %s; want the refusal %q, no signal and the case open", err, reopens(r), store.cases[0].Status, want)
+		}
+	}
+}
+
 // "I cannot do this" on a plan's card for a human returns it to the plan's
 // planner with the human's words: the plan's replan step carries them and
 // stops the card, and the case resolves. A card in no plan, or a press with

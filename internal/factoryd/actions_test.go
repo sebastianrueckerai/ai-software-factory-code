@@ -702,6 +702,47 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	}
 }
 
+// While the checks on the head of an open pull request run, the check-in
+// and the factory agent take no replan of the card and are not offered one;
+// a human may, and the replan of a failed dependency's work, which closes
+// no pull request of this card, goes on. Checks that could not be read
+// refuse it as unknown. Settled checks, green or red, refuse nothing.
+func TestAReplanWaitsForTheHeadsChecks(t *testing.T) {
+	replan, _ := ActionByName(ActReplan)
+	f := CaseFacts{Kind: CaseMonitorFlag, Head: "1a2b3c4d5e", PR: 9, PROpen: true, Checks: "pending"}
+	const pending = "the checks on 1a2b3c4 are pending: a replan would close pull request #9 before they judge its work, so %s takes no `replan` until they settle. " +
+		"Once they settle red on a test outside the diff, `rerun_checks` runs them again"
+	for rung, who := range map[int]string{1: "the check-in", 2: "the factory agent"} {
+		if got, want := replan.refusal(f, rung, Resolution{Action: ActReplan}), fmt.Sprintf(pending, who); got != want {
+			t.Errorf("rung %d's replan = %q, want %q", rung, got, want)
+		}
+		if slices.Contains(offeredNames(f, rung), ActReplan) {
+			t.Errorf("rung %d is offered a replan while the checks run", rung)
+		}
+	}
+	if got := replan.refusal(f, 3, Resolution{Action: ActReplan}); got != "" {
+		t.Errorf("the human's replan = %q, want it taken", got)
+	}
+	dep := f
+	dep.Kind, dep.Plan, dep.Dependencies = CaseDependencyFailed, "p", []DepFact{{TaskID: "d", Issue: 5, Status: "failed"}}
+	if got := replan.refusal(dep, 1, Resolution{Action: ActReplan, Args: map[string]any{"task_id": "d"}}); got != "" {
+		t.Errorf("rung 1's replan of a failed dependency = %q, want it taken", got)
+	}
+	unread := f
+	unread.Checks, unread.Partial = "", []string{"checks"}
+	if got, want := replan.refusal(unread, 1, Resolution{Action: ActReplan}),
+		"the checks on the head could not be read, so it is unknown whether they still run, which `replan` needs: try again in a minute, or hand it up"; got != want {
+		t.Errorf("rung 1's replan with the checks unread = %q, want %q", got, want)
+	}
+	for _, checks := range []string{"green", "red"} {
+		settled := f
+		settled.Checks = checks
+		if got := replan.refusal(settled, 1, Resolution{Action: ActReplan}); got != "" {
+			t.Errorf("rung 1's replan on %s checks = %q, want it taken", checks, got)
+		}
+	}
+}
+
 // No answer leads a stop's list: at a budget floor, a session cap and an
 // agent time cap the human is offered the action table's rows in the
 // table's order. The table holds reverify before extend, so on an open
