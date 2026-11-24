@@ -29,7 +29,7 @@ forgejo-runner v13.2.2 forgejo-runner-13.2.2-linux-amd64 https://code.forgejo.or
 # version the database's modified time (index/db.json). The zip moves
 # with the database, so a bump pins the sha256 of a download made just
 # before its push.
-govulndb 20261123T200514Z vulndb.zip https://vuln.go.dev/vulndb.zip 5493d11c19e1bc9cf7e47764a90c34d530af052c869f043576bafd92ceabc736
+govulndb 20261124T155600Z vulndb.zip https://vuln.go.dev/vulndb.zip 217647abd48cf32d8df308fe5fa58cfac42aad05190c0dc36ee3f7639ba0e4df
 
 # Dockerfile.sandbox's downloads
 opencode v1.19.6 opencode-linux-x64.tar.gz https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-linux-x64.tar.gz 47734e08968b30cc22a0bffb6d9feeed76ad4aa743213a12122040392d09a057
