@@ -876,7 +876,7 @@ document.addEventListener("view", function (e) {
   document.addEventListener("click", function (e) {
     if (e.target.closest("#keys-toggle")) showKeys(true);
     else if (e.target.closest("#keys-close") || e.target.id === "keys") showKeys(false);
-    else if (e.target.closest("#drawer-close")) closeDrawer();
+    else if (e.target.closest("#drawer-close, .drawer-back")) closeDrawer();
   });
 })();
 

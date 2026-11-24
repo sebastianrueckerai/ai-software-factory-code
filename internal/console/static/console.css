@@ -416,6 +416,7 @@ fieldset.question legend { float: none; color: var(--text); font-weight: 600; fo
 .drawer h2 { flex: 1; min-width: 0; margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -.008em; overflow-wrap: anywhere; }
 .drawer h2:focus { outline: none; }
 .drawer-close { position: absolute; top: 12px; right: 14px; width: 28px; padding: 0; border-color: var(--btn-line); }
+.drawer-back { display: none; }
 .drawer-facts { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 8px 0 0; color: var(--text-muted); font-size: 12px; }
 .tabs { display: flex; gap: 0; margin: 0 -18px; padding: 0 12px; border-bottom: 1px solid var(--line); }
 .tabs button { position: relative; height: 38px; padding: 0 12px; border: 0; border-radius: 0; background: none; color: var(--text-muted); font-size: 12.5px; font-weight: 400; }
@@ -1046,8 +1047,9 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .tabs { flex-wrap: wrap; padding: 0 2px; }
   .tabs button { flex: 1 0 auto; height: 44px; padding: 0 5px; }
   .tabs button[aria-selected=true]::after { left: 5px; right: 5px; }
-  .drawer-close { top: 6px; right: 6px; width: 44px; height: 44px; }
-  .dr-title { padding-right: 48px; }
+  .drawer-close { top: 14px; right: 8px; width: 44px; height: 44px; }
+  .drawer-back { display: inline-flex; height: 44px; padding: 0; border: 0; color: var(--accent); font-size: 14px; }
+  .drawer-back:hover { background: none; text-decoration: underline; }
 }
 
 /* the secondary pages: the form of a new task or project */
@@ -1349,7 +1351,6 @@ form.composer { position: relative; }
 .growbar:hover::after, .growbar:focus-visible::after { opacity: 1; }
 [data-tip]:hover::after, [data-tip]:focus-visible::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--text-muted); font: 11px/1.5 var(--font-mono); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); z-index: 80; pointer-events: none; }
 #chat-divider[data-tip]:hover::after, #chat-divider[data-tip]:focus-visible::after { left: 14px; bottom: 50%; transform: translateY(50%); }
-.drawer-close { position: absolute; top: 12px; right: 14px; }
 
 /* a control near the top edge opens its tooltip downward, so no tooltip
    leaves the screen; the strip's right-hand cells right-align theirs */

@@ -1,5 +1,6 @@
 <div class="drawer-content" data-drawer="{{.Card.ID}}">
 <div class="drawer-head">
+<button type="button" class="drawer-back"><span aria-hidden="true">‹</span> Board</button>
 <button type="button" id="drawer-close" class="drawer-close" aria-label="Close the drawer">✕</button>
 <nav class="tabs" role="tablist" aria-label="The card's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/cards/{{$.Card.ID}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>
