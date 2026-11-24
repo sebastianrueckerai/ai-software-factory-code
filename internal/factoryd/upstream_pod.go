@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,12 +29,12 @@ const (
 	upstreamTeam = "upstream-copy"
 	// UpstreamLabel marks a copy pod's namespace.
 	UpstreamLabel = "factory.ai/upstream-copy"
-	// UpstreamSecretDir is where the pod finds the store's login and the
-	// lines to copy.
-	UpstreamSecretDir = "/var/run/secrets/upstream" // #nosec G101 -- a mount path
-	// UpstreamFinding leads each line the copy pod prints for an image line
-	// it cannot copy.
-	UpstreamFinding = "finding: "
+	// upstreamSecretDir is where the pod finds the store's login and the
+	// files it copies by.
+	upstreamSecretDir = "/var/run/secrets/upstream" // #nosec G101 -- a mount path
+	// upstreamFinding leads each line the pod prints again at its end for a
+	// line a script could not copy.
+	upstreamFinding = "finding: "
 	// upstreamTailLines is how much of the pod's log factoryd reads: the
 	// findings, printed last, and the reason of a failure.
 	upstreamTailLines   = 400
@@ -56,7 +58,9 @@ func upstreamSweepAge() time.Duration {
 }
 
 // upstreamFQDNs are the upstream registries upstream-images.txt names, their
-// token endpoints and the hosts their blobs redirect to.
+// token endpoints and the hosts their blobs redirect to; the hosts the https
+// lines of both lists download from and where those downloads redirect; and
+// the Go module proxy and the npm registry, which fill the two tarballs.
 var upstreamFQDNs = []any{
 	map[string]any{"matchName": "registry-1.docker.io"},
 	map[string]any{"matchName": "auth.docker.io"},
@@ -73,29 +77,73 @@ var upstreamFQDNs = []any{
 	map[string]any{"matchName": "cdn.factory.talos.dev"},
 	map[string]any{"matchPattern": "cdn*.quay.io"},
 	map[string]any{"matchPattern": "*-docker.pkg.dev"},
+	map[string]any{"matchName": "github.com"},
+	map[string]any{"matchName": "release-assets.githubusercontent.com"},
+	map[string]any{"matchName": "nodejs.org"},
+	map[string]any{"matchName": "vuln.go.dev"},
+	map[string]any{"matchName": "www.postgresql.org"},
+	map[string]any{"matchName": "proxy.golang.org"},
+	map[string]any{"matchName": "registry.npmjs.org"},
 }
 
-// UpstreamPod copies a pull request's new upstream image lines into the
-// store in a one-shot pod of its own: the pod holds a package token of the
-// store, minted for the run and revoked when it ends, and egress to the
-// upstream registries and the store, so factoryd keeps no egress to the
-// internet and the pod never holds the forge's own login. The pod runs
-// `factoryd upstream-copy` from factoryd's own image, which has the copy
-// code and a pull secret in place; its namespace and the token's Secret
-// die with the run.
+// upstreamHeadFiles are a head's files the copy reads: the two lists and the
+// inputs of the Go module and npm tarballs. upstreamScripts copy them, main's
+// own: the pod runs no file of the head.
+var (
+	upstreamHeadFiles = []string{upstreamImagesPath, upstreamFilesPath, "go.mod", "go.sum", "opencode-plugin/package.json", "opencode-plugin/package-lock.json"}
+	upstreamScripts   = []string{"scripts/upstream-copy", "scripts/upstream-files"}
+)
+
+// upstreamProgram is the pod's program, main CI's upstream job's: the
+// files at their repository paths in a directory of its own, crane's login
+// to the store, then both scripts. Each line a script could not copy is
+// printed again at the end, led by upstreamFinding, where the log's tail
+// holds it.
+var upstreamProgram = func() string {
+	var b strings.Builder
+	b.WriteString("set -euo pipefail\nin=" + upstreamSecretDir + "\ncd \"$(mktemp -d)\"\nmkdir -p opencode-plugin scripts\n")
+	for _, p := range append(slices.Clone(upstreamHeadFiles), upstreamScripts...) {
+		fmt.Fprintf(&b, "cp \"$in/%s\" %s\n", path.Base(p), p)
+	}
+	b.WriteString(`REGISTRY_USER=$(cat "$in/user")
+REGISTRY_PASSWORD=$(cat "$in/password")
+export REGISTRY_USER REGISTRY_PASSWORD
+printf %s "$REGISTRY_PASSWORD" | crane auth login "${UPSTREAM_STORE%%/*}" -u "$REGISTRY_USER" --password-stdin
+status=0
+bash scripts/upstream-copy 2>&1 | tee -a copy.log || status=1
+bash scripts/upstream-files 2>&1 | tee -a copy.log || status=1
+sed -n 's/^upstream-\(copy\|files\): /` + upstreamFinding + `&/p' copy.log
+exit "$status"
+`)
+	return b.String()
+}()
+
+// UpstreamPod copies what a pushed head adds to the factory's build inputs
+// into the store, before the head's checks, in a one-shot pod of its own:
+// main's scripts/upstream-copy and scripts/upstream-files over the head's
+// lists, go.mod, go.sum and plugin lockfile, in the CI runner image, which
+// has crane, go and npm. The pod holds a package token of the store, minted
+// for the run and revoked when it ends, and egress to the upstreams and the
+// store, so factoryd keeps no egress to the internet and the pod never holds
+// the forge's own login; its namespace and the token's Secret die with the
+// run.
 type UpstreamPod struct {
 	Kube Kube
 	// Forgejo mints and revokes the run's token; OpenBao holds the site
 	// admin's login that does it, which never leaves factoryd.
 	Forgejo *Forgejo
 	OpenBao SecretReader
-	// Namespace is factoryd's own, whose Deployment names the image and
-	// whose pull secret the pod's namespace copies.
+	// Namespace is factoryd's own, whose pull secret the pod's namespace
+	// copies.
 	Namespace  string
 	PullSecret string
-	// StoreURL is the in-cluster Forgejo, where the store lives.
-	StoreURL string
-	Scrub    *redact.Scrubber
+	// RunnerImage is the CI runner image at the digest factoryd pins
+	// (CI_RUNNER_IMAGE).
+	RunnerImage string
+	// StoreHost is the store's public host (REGISTRY_HOST), which in-cluster
+	// DNS answers with the edge gateway.
+	StoreHost string
+	Scrub     *redact.Scrubber
 	// Poll is the wait between reads of the pod's phase; zero is 2 s.
 	Poll time.Duration
 
@@ -103,19 +151,18 @@ type UpstreamPod struct {
 	tokenSwept time.Time
 }
 
-// Copy copies the image lines head adds to base into the store and returns
-// the findings, the lines the upstream cannot serve. A run that fails
-// returns the pod's exit and its last log lines, scrubbed.
-func (u *UpstreamPod) Copy(ctx context.Context, base, head string) ([]string, error) {
-	lines, findings := addedImageLines(base, head)
-	if len(lines) == 0 {
-		return findings, nil
-	}
+// Copy runs the pod over files, each path of upstreamHeadFiles and
+// upstreamScripts with its bytes, and returns the findings: each line a
+// script could not copy, as it printed it, and each line whose host the
+// pod's egress does not admit. A run that fails returns the pod's exit and
+// its last log lines, scrubbed.
+func (u *UpstreamPod) Copy(ctx context.Context, files map[string][]byte) ([]string, error) {
+	findings := unadmittedLines(files)
 	admin, err := adminAuth(ctx, u.OpenBao)
 	if err != nil {
 		return findings, u.scrubbed(err, "")
 	}
-	got, token, err := u.run(ctx, lines, admin)
+	got, token, err := u.run(ctx, files, admin)
 	for _, f := range got {
 		findings = append(findings, u.scrub(f, token))
 	}
@@ -139,14 +186,9 @@ func (u *UpstreamPod) scrub(s, secret string) string {
 
 // run returns the pod's findings and the token it minted, for the caller's
 // scrub.
-func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) (findings []string, token string, err error) {
-	img, err := u.image(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	store, err := url.Parse(u.StoreURL)
-	if err != nil || store.Hostname() == "" {
-		return nil, "", fmt.Errorf("upstream copy: the store URL %q is not absolute", u.StoreURL)
+func (u *UpstreamPod) run(ctx context.Context, files map[string][]byte, admin AdminAuth) (findings []string, token string, err error) {
+	if !strings.Contains(u.RunnerImage, "@sha256:") {
+		return nil, "", fmt.Errorf("the CI runner image %q carries no digest: pin CI_RUNNER_IMAGE as name@sha256:<digest>, which a roll writes", u.RunnerImage)
 	}
 	u.Sweep(ctx, true)
 	suffix := runSuffix()
@@ -188,15 +230,18 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 	minted = true
 	steps := []ciSetupStep{
 		{"egress policy", func() error {
-			return u.Kube.CreateCiliumNetworkPolicy(ctx, ns, "upstream-egress", upstreamEgressSpec(store.Hostname()))
+			return u.Kube.CreateCiliumNetworkPolicy(ctx, ns, "upstream-egress", upstreamEgressSpec(u.StoreHost))
 		}},
 		// the token reaches the pod as a file of a Secret that dies with its
 		// namespace, as the CI runner's registration token does, never in the
-		// stored pod spec or an env value
+		// stored pod spec or an env value; the files ride beside it, 57 KB of
+		// the 1 MiB a Secret holds
 		{"login secret", func() error {
-			return u.Kube.CreateSecret(ctx, ns, upstreamSecretName, "", map[string]string{
-				"user": UpstreamUser, "password": token, "lines": strings.Join(lines, "\n"),
-			})
+			data := map[string]string{"user": UpstreamUser, "password": token}
+			for p, b := range files {
+				data[path.Base(p)] = string(b)
+			}
+			return u.Kube.CreateSecret(ctx, ns, upstreamSecretName, "", data)
 		}},
 		{"pull secret", func() error {
 			return copyPullSecret(ctx, u.Kube, u.Namespace, u.PullSecret, ns)
@@ -205,7 +250,7 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 	if err := runSetupSteps(ctx, steps); err != nil {
 		return nil, token, err
 	}
-	if err := u.Kube.CreatePod(ctx, ns, upstreamPodName, u.podSpec(img)); err != nil {
+	if err := u.Kube.CreatePod(ctx, ns, upstreamPodName, u.podSpec()); err != nil {
 		return nil, token, fmt.Errorf("create the copy pod: %w", err)
 	}
 	phase, exit, err := u.wait(ctx, ns)
@@ -216,14 +261,16 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 	if err != nil {
 		return nil, token, fmt.Errorf("read the copy pod's log (phase %s, exit %d): %w", phase, exit, err)
 	}
-	if phase != "Succeeded" {
-		return nil, token, fmt.Errorf("the upstream copy pod %s with exit %d: %s%s", strings.ToLower(phase), exit,
-			strings.Join(lastLines(tail, upstreamReasonLines), " | "), u.state(ctx, ns))
-	}
 	for _, l := range strings.Split(tail, "\n") {
-		if f, ok := strings.CutPrefix(l, UpstreamFinding); ok {
+		if f, ok := strings.CutPrefix(l, upstreamFinding); ok {
 			findings = append(findings, f)
 		}
+	}
+	// a script exits 1 when it could not copy a line, which it then names;
+	// a failure that names none is the pod's own
+	if phase != "Succeeded" && len(findings) == 0 {
+		return nil, token, fmt.Errorf("the upstream copy pod %s with exit %d: %s%s", strings.ToLower(phase), exit,
+			strings.Join(lastLines(tail, upstreamReasonLines), " | "), u.state(ctx, ns))
 	}
 	return findings, token, nil
 }
@@ -272,23 +319,6 @@ func (u *UpstreamPod) state(ctx context.Context, ns string) string {
 		parts = append(parts, "newest event "+e)
 	}
 	return " (" + strings.Join(parts, "; ") + ")"
-}
-
-// image is the image of factoryd's own Deployment: the copy code is its
-// subcommand.
-func (u *UpstreamPod) image(ctx context.Context) (string, error) {
-	d, err := u.Kube.Deployment(ctx, u.Namespace, "factoryd")
-	if err != nil {
-		return "", fmt.Errorf("read factoryd's image: %w", err)
-	}
-	c := d.Spec.Template.Spec.Containers
-	if len(c) == 0 || c[0].Image == "" {
-		return "", errors.New("factoryd's Deployment names no image")
-	}
-	if !strings.Contains(c[0].Image, "@sha256:") {
-		return "", fmt.Errorf("factoryd's image %q carries no digest: pin the Deployment's image as name@sha256:<digest>, which a roll writes", c[0].Image)
-	}
-	return c[0].Image, nil
 }
 
 // startedAt is when the run named by name began, read from its suffix.
@@ -394,7 +424,7 @@ func (u *UpstreamPod) wait(ctx context.Context, ns string) (string, int32, error
 	}
 }
 
-func (u *UpstreamPod) podSpec(img string) map[string]any {
+func (u *UpstreamPod) podSpec() map[string]any {
 	pullSecrets := []any{}
 	if u.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": u.PullSecret})
@@ -414,36 +444,92 @@ func (u *UpstreamPod) podSpec(img string) map[string]any {
 			"dnsConfig":                     map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},
 			"containers": []any{map[string]any{
 				"name":    "copy",
-				"image":   img,
-				"command": []any{"/usr/local/bin/factoryd"},
-				"args":    []any{"upstream-copy", "-store", u.StoreURL, "-dir", UpstreamSecretDir},
+				"image":   u.RunnerImage,
+				"command": []any{"bash", "-c", upstreamProgram},
+				"env":     []any{map[string]any{"name": "UPSTREAM_STORE", "value": u.StoreHost + "/" + upstreamOrg}},
 				"resources": map[string]any{
-					"requests": map[string]any{"cpu": "250m", "memory": "256Mi"},
-					"limits":   map[string]any{"cpu": "1", "memory": "1Gi"},
+					"requests": map[string]any{"cpu": "250m", "memory": "512Mi"},
+					"limits":   map[string]any{"cpu": "2", "memory": "2Gi"},
 				},
 				"volumeMounts": []any{
-					map[string]any{"name": "login", "mountPath": UpstreamSecretDir, "readOnly": true},
+					map[string]any{"name": "login", "mountPath": upstreamSecretDir, "readOnly": true},
 					map[string]any{"name": "tmp", "mountPath": "/tmp"},
+					map[string]any{"name": "home", "mountPath": "/home/runner"},
 				},
 				"securityContext": ciSecurityContext(),
 			}},
 			"volumes": []any{
 				map[string]any{"name": "login", "secret": map[string]any{"secretName": upstreamSecretName}},
-				// a copy holds one blob, up to maxBlobBytes, at a time
-				map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+				// the work directory: the files a run downloads stay until it
+				// ends, beside the two tarballs
+				map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
+				// HOME: crane's login, npm's logs and go's module cache, which
+				// starts empty (275 MB for the go.sum of 2026-11-24)
+				map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 			},
 		},
 	})
 }
 
-// upstreamEgressSpec admits the copy pod to the in-cluster Forgejo (the
-// store), the upstream registries by name on 443 and DNS for those names.
+// upstreamEgressSpec admits the copy pod to the upstreams by name on 443, to
+// the store's public host, which in-cluster DNS answers with the edge
+// gateway (entity ingress, as a build job's runner reaches it), and DNS for
+// those names.
 func upstreamEgressSpec(storeHost string) map[string]any {
 	dns := append(append([]any{}, upstreamFQDNs...), matchNames(storeHost)...)
 	return map[string]any{
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": upstreamPodName},
 		},
-		"egress": []any{forgejoHTTPEgress(), fqdnEgress(upstreamFQDNs), dnsEgress(dns)},
+		"egress": []any{fqdnEgress(upstreamFQDNs), map[string]any{
+			"toEntities": []any{"ingress"},
+			"toPorts":    []any{map[string]any{"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}}}},
+		}, dnsEgress(dns)},
 	}
+}
+
+// unadmittedLines are the findings for the lines of the lists whose host the
+// pod's egress does not admit: an image line's registry, docker.io's being
+// registry-1.docker.io, and an https line's URL host.
+func unadmittedLines(files map[string][]byte) []string {
+	var out []string
+	for _, list := range []string{upstreamImagesPath, upstreamFilesPath} {
+		for _, l := range strings.Split(string(files[list]), "\n") {
+			f := strings.Fields(l)
+			if len(f) == 0 || strings.HasPrefix(f[0], "#") {
+				continue
+			}
+			ref := f[0]
+			if list == upstreamFilesPath && len(f) > 3 {
+				ref = f[3]
+			}
+			var host string
+			if u, err := url.Parse(ref); err == nil && u.Scheme == "https" {
+				host = u.Hostname()
+			} else if host, _, _ = strings.Cut(ref, "/"); host == "docker.io" {
+				host = "registry-1.docker.io"
+			}
+			if !upstreamAdmits(host) {
+				out = append(out, fmt.Sprintf("%s: %s names %s, outside the copy's egress: a commit adds the host to upstreamFQDNs in internal/factoryd/upstream_pod.go", list, ref, host))
+			}
+		}
+	}
+	return out
+}
+
+// upstreamAdmits says whether an entry of upstreamFQDNs admits host: a
+// matchPattern's `*` stands inside one DNS label, as Cilium's does.
+func upstreamAdmits(host string) bool {
+	for _, e := range upstreamFQDNs {
+		m := e.(map[string]any)
+		if m["matchName"] == host {
+			return true
+		}
+		if p, ok := m["matchPattern"].(string); ok && strings.Count(p, ".") == strings.Count(host, ".") {
+			if ok, _ := path.Match(p, host); ok {
+				return true
+			}
+		}
+	}
+	return false
 }

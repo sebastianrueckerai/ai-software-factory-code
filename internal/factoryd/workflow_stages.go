@@ -756,7 +756,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			t.holds++
 			*head = branch
 			if err := t.copyUpstream(branch); err != nil {
-				v, stop = failed("copy upstream images", err)
+				v, stop = failed("copy the upstream inputs", err)
 				return nil, v, stop
 			}
 			t.checkedHead, g.ChecksPassed = "", false
@@ -1373,7 +1373,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			t.holds++
 		}
 		if err := t.copyUpstream(branch); err != nil {
-			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
+			return verdict{final: "failed", reason: "copy the upstream inputs: " + errMessage(err)}
 		}
 		t.checkedHead, g.ChecksPassed = "", false
 		if t.autoMovedHead >= versionAutoMovedHead {

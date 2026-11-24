@@ -16,7 +16,9 @@
 # (roadmap 203, step 2).
 # The registry takes REGISTRY_USER and REGISTRY_PASSWORD; go and npm run
 # in this directory, on go.mod, go.sum and opencode-plugin/ beside the
-# list.
+# list, and run no code of a dependency or of a toolchain go.mod names:
+# go only downloads, on the local toolchain, and npm runs no install
+# script, which adds nothing to its cache.
 set -euo pipefail
 list=${1:-upstream-files.txt}
 store=${UPSTREAM_STORE:-git.aisoftwarefactory.world/upstream}
@@ -59,8 +61,10 @@ while read -r package version name url sum; do
 done < "$list"
 
 # go.sum's module download cache, one tarball in the GOPROXY file
-# layout. The runner image's GOMODCACHE is warm already, so the download
-# only fills what go.sum added since the image was built.
+# layout. In main's job the runner image's GOMODCACHE is warm, so the
+# download only fills what go.sum added since the image was built; the
+# copy pod's starts empty and takes every module from the proxy.
+export GOTOOLCHAIN=local GOFLAGS=-mod=mod
 sum=$(sha go.sum)
 if ! held go-modules "$sum" go-modules.tar.gz; then
   if go mod download \
@@ -75,7 +79,7 @@ fi
 # the opencode plugin lockfile's npm cache, one tarball of its _cacache
 sum=$(sha opencode-plugin/package-lock.json)
 if ! held npm-cache "$sum" npm-cache.tar.gz; then
-  if (cd opencode-plugin && npm ci --cache "$work/npm-cache") \
+  if (cd opencode-plugin && npm ci --ignore-scripts --cache "$work/npm-cache") \
     && tar -C "$work/npm-cache" -czf "$work/npm-cache.tar.gz" _cacache \
     && put npm-cache "$sum" npm-cache.tar.gz "$work/npm-cache.tar.gz"; then
     echo "uploaded npm-cache $sum"

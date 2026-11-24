@@ -59,8 +59,6 @@ func main() {
 			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 		case "image":
 			os.Exit(runImage(os.Args[2:], os.Stdout, os.Stderr))
-		case "upstream-copy":
-			upstreamCopyMain(os.Args[2:])
 		case "export-fixture":
 			exportFixtureMain(os.Args[2:])
 			return
@@ -392,11 +390,11 @@ func main() {
 		Builder: own.Repo(), BuildToken: forgejo.Access(own).Actions, Ladder: ladder.Aliases(), Now: time.Now, Workflows: workflows,
 		Timeline: runner.Timeline(), OpenBao: registrar.OpenBao}
 	runner.Imager = imager
-	// a branch's new upstream image lines reach the store before its image
-	// build reads it, copied by a pod of their own: factoryd reaches no
-	// upstream registry
+	// what a pushed head adds to the build inputs reaches the store before
+	// its checks read it, copied by a pod of its own in the CI runner image:
+	// factoryd reaches no upstream
 	upstream := &factoryd.UpstreamPod{Kube: kube, Forgejo: forgejo, OpenBao: registrar.OpenBao, Namespace: kube.Namespace(),
-		PullSecret: env("PULL_SECRET", "forgejo-registry"), StoreURL: forgejo.BaseURL, Scrub: runner.Scrub}
+		PullSecret: env("PULL_SECRET", "forgejo-registry"), RunnerImage: mustEnv("CI_RUNNER_IMAGE"), StoreHost: registryHost, Scrub: runner.Scrub}
 	runner.Upstream = upstream
 	// BootSweep took every copy namespace: the tokens of those runs go now
 	upstream.Sweep(ctx, true)
