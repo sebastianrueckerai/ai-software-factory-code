@@ -29,7 +29,7 @@ func TestRoutineCardMeetsTheContract(t *testing.T) {
 		`<article class="card face ghost" data-ghost="ai-software-factory-code/weekly-bump">`,
 		`<button type="button" class="open" data-routine="ai-software-factory-code/weekly-bump"><span class="visually-hidden">Open the routine Weekly bump</span></button>`,
 		`<p class="para"><span class="glyph" aria-hidden="true">↻</span> <strong class="title">Weekly bump</strong>. <span class="why">So security fixes reach the factory within a week.</span></p>`,
-		`<p class="foot"><span class="it">every Monday 06:00</span> <span class="it soon">Mon 06:00 · in 20 min · human card</span> ` +
+		`<p class="foot"><span class="it">every Monday 06:00</span> <span class="it soon">` + string(moment(bump.Next, "Mon 15:04 MST")) + ` · in 20 min · human card</span> ` +
 			`<span class="it">last run <a class="ref-link"`,
 	} {
 		if !strings.Contains(g, want) {
@@ -45,7 +45,7 @@ func TestRoutineCardMeetsTheContract(t *testing.T) {
 
 	d := getPage(r, ck, "/routines/"+bumpKey+"/drawer").Body.String()
 	if !strings.Contains(d, `<p class="o-why">So security fixes reach the factory within a week.</p>`) ||
-		!strings.Contains(d, "routine · every Monday 06:00 · human card · next Mon 06:00, in 20 min") {
+		!strings.Contains(d, "routine · every Monday 06:00 · human card · next "+string(moment(bump.Next, "Mon 15:04 MST"))+", in 20 min") {
 		t.Errorf("the opened routine card lacks its why line or its next run in words:\n%s", d)
 	}
 	for _, x := range []struct{ key, act, value string }{

@@ -143,5 +143,5 @@ func inboxState(m factoryd.ChatMessage) string {
 	case !m.Settled:
 		return " (open)"
 	}
-	return " (" + cmp.Or(m.Reason, "settled") + ")"
+	return " (" + factoryd.SettleLine(cmp.Or(m.Reason, "settled"), m.SettledAt) + ")"
 }

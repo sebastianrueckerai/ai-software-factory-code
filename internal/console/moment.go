@@ -23,7 +23,8 @@ var screenZone = func() *time.Location {
 }()
 
 // The layouts a screen's moments take, in Go's reference time with no
-// token but those time.js fills in: 2006 01 02 2 January Jan 15 04 05 MST.
+// token but those time.js fills in: 2006 01 02 2 January Jan Mon 15 04 05
+// MST.
 const (
 	momentWords  = "2 January at 15:04 MST"
 	momentClock  = "15:04 MST"
@@ -58,6 +59,32 @@ func escaped(text string) template.HTML {
 	return template.HTML(template.HTMLEscapeString(text)) // #nosec G203 -- escaped
 }
 
+// screenLayout is the layout a screen reads m in: m's own with the zone
+// named, an RFC 3339 stamp's as a stamp to the second.
+func screenLayout(m factoryd.Moment) string {
+	if m.Layout == factoryd.LayoutRFC3339 {
+		return momentSecond
+	}
+	return m.Layout + " MST"
+}
+
+// A screenTime is a moment as a page's script shows it in a text it writes
+// (time.js timed): its words, its instant and the layout it reads in.
+type screenTime struct {
+	Words  string    `json:"words"`
+	At     time.Time `json:"at"`
+	Layout string    `json:"layout"`
+}
+
+// screenTimes are ms as a page's script shows them.
+func screenTimes(ms factoryd.Moments) []screenTime {
+	var out []screenTime
+	for _, m := range ms {
+		out = append(out, screenTime{m.Words(), m.At.UTC(), screenLayout(m)})
+	}
+	return out
+}
+
 // timed is h with the words of each of ms in its text shown as its moment,
 // the longest words first; words in code stay as they are written.
 func timed(h template.HTML, ms factoryd.Moments) template.HTML {
@@ -66,7 +93,7 @@ func timed(h template.HTML, ms factoryd.Moments) template.HTML {
 	}
 	pairs := make([]string, 0, 2*len(ms))
 	for _, m := range slices.SortedStableFunc(slices.Values(ms), func(a, b factoryd.Moment) int { return len(b.Words()) - len(a.Words()) }) {
-		pairs = append(pairs, m.Words(), string(moment(m.At, m.Layout+" MST")))
+		pairs = append(pairs, m.Words(), string(moment(m.At, screenLayout(m))))
 	}
 	said := strings.NewReplacer(pairs...)
 	var b strings.Builder

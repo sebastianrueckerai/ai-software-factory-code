@@ -812,6 +812,58 @@ func TestAnAsksMessageDropsAWhyPastItsBound(t *testing.T) {
 	}
 }
 
+// An ask's row keeps, beside its words, the moments its words name: the
+// cap's turn its why says, not the start its story says, which the row
+// leaves to the card. The words stay in UTC, for the messengers and the
+// agents.
+func TestAPokeKeepsTheMomentsItsWordsName(t *testing.T) {
+	turn, fired := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC), time.Date(2026, 7, 1, 10, 30, 0, 0, time.UTC)
+	var said Moments
+	q := HumanQuestion{Ask: "The day cap is reached", Why: "Reset today's count, or it comes back at " + said.Say(turn, LayoutClock),
+		Happened: "It has fired since " + said.Say(fired, LayoutWords) + ".", Moments: said}
+	card := Task{ID: "t-1", Kind: "human", IssueNumber: 603, Objective: "Session store", Status: "waiting-human"}
+	e := HumanAsk{Q: q, By: "factoryd", Asker: SourceMonthCap, Via: ViaFactoryd}.Event(card)
+	e.Detail = stored(t, e.Detail)
+	m, ok := PokeOf(e, card, Task{})
+	if !ok {
+		t.Fatal("no row")
+	}
+	if want := "#603 (Session store) needs you. Reset today's count, or it comes back at 00:00 UTC."; m.Content != want {
+		t.Errorf("content = %q, want %q", m.Content, want)
+	}
+	if want := (Moments{{At: turn, Layout: LayoutClock}}); !reflect.DeepEqual(m.Moments, want) {
+		t.Errorf("moments = %+v, want %+v", m.Moments, want)
+	}
+}
+
+// A chat row keeps its moments: they read back beside its words, and a row
+// with none reads back with none.
+func TestAChatRowKeepsItsMoments(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_chat_moments"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	said := Moments{{At: time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC), Layout: LayoutClock}, {At: time.Date(2026, 7, 1, 10, 30, 5, 0, time.UTC), Layout: LayoutRFC3339}}
+	for _, m := range []ChatMessage{{Role: "assistant", Kind: MessagePoke, Content: "Back at 00:00 UTC, reset 2026-07-01T10:30:05Z.", Moments: said},
+		{Role: "user", Content: "ok"}} {
+		if _, err := insertChatMessage(ctx, s.db, "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.ChatMessages(ctx, "sf/code", "sebastian", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || !reflect.DeepEqual(rows[0].Moments, said) || rows[1].Moments != nil {
+		t.Errorf("rows = %+v, want the poke's moments back and none on the reply", rows)
+	}
+}
+
 // A refusal names each answer by the key an agent types, and a human
 // reads the answer's label: a key with its variant reads the variant's
 // label, a key no answer has stays as it is, and the name of a field an

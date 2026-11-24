@@ -67,9 +67,12 @@ type CaseFacts struct {
 	// session (SessionFunded): the day's, the month's or the project's cap
 	// binding before the card's own budget, as its question line
 	// (capWaitReason) says when it lifts and what raises it; "" for none.
-	CapWait    string   `json:"cap_wait,omitempty"`
-	CeilingEUR float64  `json:"ceiling_eur"`        // the card's own, else CardCeiling
-	Findings   []string `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
+	CapWait string `json:"cap_wait,omitempty"`
+	// CapTurn is when the cap CapWait names turns, the instant its words
+	// name.
+	CapTurn    time.Time `json:"cap_turn,omitzero"`
+	CeilingEUR float64   `json:"ceiling_eur"`        // the card's own, else CardCeiling
+	Findings   []string  `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
 	// FindingTexts maps each of Findings to its text.
 	FindingTexts map[string]string `json:"finding_texts,omitempty"`
 	// FindingOrder lists Findings in the order the gates raised them.
@@ -753,7 +756,8 @@ func (r *Runner) floorFacts(ctx context.Context, v policy.Version, t Task, model
 	why, err := r.SessionFunded(ctx, t.ID, m)
 	if d, ok := CapDecision(why); ok && err == nil {
 		_, state, _ := strings.Cut(why, "\n")
-		f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, CapTurn(d, r.Clock())), "\n")
+		f.CapTurn = CapTurn(d, r.Clock())
+		f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, f.CapTurn), "\n")
 	}
 	return err
 }

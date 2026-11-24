@@ -63,11 +63,16 @@ type ChatMessage struct {
 	// Cut marks an answer a member's stop cut short: the row keeps the
 	// words that had arrived when the model call ended.
 	Cut bool `json:"cut,omitempty"`
-	// Settled and Reason are the console's read of a poke row at render:
-	// the row wants nothing any more, an ask with its reason line. They
-	// are derived, never stored.
-	Settled bool   `json:"settled,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	// Settled, Reason and SettledAt are the console's read of a poke row at
+	// render: the row wants nothing any more, an ask with its reason
+	// (ReasonLead) and the time that settled it, zero for a reason with no
+	// time (SettleLine joins them). They are derived, never stored.
+	Settled   bool      `json:"settled,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	SettledAt time.Time `json:"settled_at,omitzero"`
+	// Moments are the instants its content names, stored beside it
+	// (Moment): a screen shows them in the reader's zone.
+	Moments Moments `json:"-"`
 	// Line is the one line the inbox shows of a note to the agent with the
 	// agent's reply to it, Short the opening of a long message above its
 	// fold; both derived, never stored.
@@ -942,9 +947,9 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 		return 0, err
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind, proposal, cut, token)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
-		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind, m.Proposal, m.Cut, m.Token).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind, proposal, cut, token, moments)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16::jsonb) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind, m.Proposal, m.Cut, m.Token, momentsJSON(m.Moments)).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -1015,16 +1020,21 @@ func (s *PGStore) ChatMessagesAfter(ctx context.Context, repository, login strin
 	return scanChatMessages(rows)
 }
 
-const chatMessageColumns = `id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal, cut, token`
+const chatMessageColumns = `id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal, cut, token, moments`
 
 func scanChatMessages(rows *sql.Rows) ([]ChatMessage, error) {
 	defer rows.Close()
 	var out []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		var calls, choices []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind, &m.Proposal, &m.Cut, &m.Token); err != nil {
+		var calls, choices, moments []byte
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind, &m.Proposal, &m.Cut, &m.Token, &moments); err != nil {
 			return nil, err
+		}
+		if len(moments) > 0 {
+			if err := json.Unmarshal(moments, &m.Moments); err != nil {
+				return nil, err
+			}
 		}
 		if len(calls) > 0 {
 			if err := json.Unmarshal(calls, &m.ToolCalls); err != nil {

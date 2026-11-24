@@ -372,12 +372,13 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		if bt.Kind != "human" {
 			o.AgentView = brief.AgentText()
 		}
-		// the life fold names the routine, so the body drops its stamp
+		// the life fold names the routine, so the body drops its stamp; the
+		// instants the card's objective names read in the reader's zone
 		body := brief.Text.Body
 		if i := strings.LastIndex(body, "\n"); o.Life.Routine != nil && strings.HasPrefix(body[i+1:], factoryd.RoutineProvenance) {
 			body = strings.TrimSpace(body[:max(i, 0)])
 		}
-		o.Brief.Body = c.linkMarkup(ctx, v, k.Repository, body)
+		o.Brief.Body = timed(c.linkMarkup(ctx, v, k.Repository, body), bt.Moments)
 		for _, it := range brief.Acceptance {
 			o.Brief.Acceptance = append(o.Brief.Acceptance, it.Text)
 		}

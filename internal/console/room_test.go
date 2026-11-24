@@ -622,3 +622,21 @@ func TestAnUntouchedBoxWeighsMoneyThatBecameShort(t *testing.T) {
 		t.Fatalf("#35 after the cleared press: %d raised sessions, %s raised time, %.2f EUR; want 2, 50m and 6.40", card.Usage.RaisedSessions, card.Usage.RaisedTime, card.BudgetEUR)
 	}
 }
+
+// A room the guard refuses says the last draw's time in the reader's zone:
+// a summer draw at 10:30 UTC reads 12:30 CEST, in the font of its sentence.
+func TestARoomsRefusalReadsInTheReadersZone(t *testing.T) {
+	drew := time.Date(2026, 7, 1, 10, 30, 0, 0, time.UTC)
+	f := factoryd.CaseFacts{Kind: factoryd.CaseSessionCap, FloorEUR: 1, LeftEUR: 0.2, SessionCap: 3, Attempts: 1, AgentTimeS: 100, AgentTimeCapS: 1200,
+		SessionLeastS: 300, LastDrawAt: &drew, MonthLeftEUR: 100}
+	v := readoutOf(f, func(field string) string {
+		if strings.HasSuffix(field, "sessions") {
+			return "1"
+		}
+		return ""
+	}, "f", roomField)
+	want := `The last draw at <time datetime="2026-07-01T10:30:00Z" data-layout="15:04 MST">12:30 CEST</time> bought nothing`
+	if !strings.HasPrefix(string(v.Why), want) {
+		t.Errorf("the room's why %s, want it to open %s", v.Why, want)
+	}
+}

@@ -105,6 +105,8 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 		Why:     whyLine + ".",
 		Info:    body,
 		Choices: choices(ActClose+"/"+variantNoted, KeyPark),
+		// the body's firing line names the start (AlertIssue)
+		Moments: Moments{AlertStart(a)}.In(body),
 	}
 	q.Happened = firedLine(a, &q.Moments)
 	return q
@@ -157,9 +159,9 @@ func RollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 
 // RerunQuestion is the card of a red main whose push run index of commit
 // sha failed only in jobs that lost their runner: failed names the jobs,
-// lost holds their records, why says why factoryd's own re-run did not
-// end it.
-func RerunQuestion(index int64, sha, failed string, lost []string, why string) HumanQuestion {
+// lost holds their records, which name the instants said, why says why
+// factoryd's own re-run did not end it.
+func RerunQuestion(index int64, sha, failed string, lost []string, said Moments, why string) HumanQuestion {
 	b := SourceBriefs[SourceRerun](BriefFacts{Name: failed})
 	return HumanQuestion{
 		Ask: b.Title,
@@ -173,6 +175,7 @@ func RerunQuestion(index int64, sha, failed string, lost []string, why string) H
 		Happened: fmt.Sprintf("CI run %d on main failed in %s, and each failed job lost its runner while it ran.", index, failed),
 		Waits:    queuePaused,
 		Check:    mainRunChecked,
+		Moments:  said,
 	}
 }
 

@@ -125,6 +125,19 @@ func (r Resolution) RoomRefusal() string {
 	return why
 }
 
+// Said are the instants a refusal on f names (HumanRefusal): the turn of
+// the cap it waits on and the time of its last draw.
+func (f CaseFacts) Said() Moments {
+	var said Moments
+	if f.CapWait != "" && !f.CapTurn.IsZero() {
+		said.Say(f.CapTurn, LayoutRFC3339)
+	}
+	if d, _ := weighedDraw(f); !d.At.IsZero() {
+		said.Say(d.At, LayoutClock)
+	}
+	return said
+}
+
 // HumanRefusal is why a human's press of r on f is refused, its guard
 // aside: what a room's readout and the chat's proposal show in place of
 // its figures.
@@ -1187,7 +1200,7 @@ func boughtNothingText(f CaseFacts) string {
 	if f.Planner {
 		since = "plan revision"
 	}
-	return "the last " + what + " at " + d.At.UTC().Format("15:04") + " UTC bought nothing, with no " + since + " since and the head, " +
+	return "the last " + what + " at " + (Moment{At: d.At, Layout: LayoutClock}).Words() + " bought nothing, with no " + since + " since and the head, " +
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 

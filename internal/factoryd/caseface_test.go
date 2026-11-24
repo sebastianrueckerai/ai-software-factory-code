@@ -48,6 +48,54 @@ func TestCaseFaceReadsTheStoredFace(t *testing.T) {
 	}
 }
 
+// A moment's words name UTC in every layout: as a word after the time, or
+// as the Z of an RFC 3339 stamp, in winter and in summer alike.
+func TestAMomentsWordsNameUTC(t *testing.T) {
+	winter, summer := time.Date(2026, 1, 15, 5, 12, 0, 0, time.UTC), time.Date(2026, 7, 1, 10, 30, 5, 0, time.FixedZone("CEST", 2*3600))
+	for _, c := range []struct {
+		m    Moment
+		want string
+	}{
+		{Moment{At: winter, Layout: LayoutWords}, "15 January at 05:12 UTC"},
+		{Moment{At: summer, Layout: LayoutClock}, "08:30 UTC"},
+		{Moment{At: summer, Layout: LayoutDay}, "1 Jul 08:30 UTC"},
+		{Moment{At: winter, Layout: LayoutStamp}, "2026-01-15 05:12 UTC"},
+		{Moment{At: winter, Layout: LayoutRFC3339}, "2026-01-15T05:12:00Z"},
+		{Moment{At: summer, Layout: LayoutRFC3339}, "2026-07-01T08:30:05Z"},
+	} {
+		if got := c.m.Words(); got != c.want {
+			t.Errorf("%s in %q = %q, want %q", c.m.At, c.m.Layout, got, c.want)
+		}
+	}
+}
+
+// A refusal of an answer on an ended case says when it ended in UTC, its
+// instant beside the words: a summer withdrawal at 12:30 CEST reads 10:30
+// UTC, a winter resolution at 10:04 UTC as it is.
+func TestACaseEndedSaysWhenInUTC(t *testing.T) {
+	summer, winter := time.Date(2026, 7, 1, 12, 30, 0, 0, time.FixedZone("CEST", 2*3600)), time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
+	for _, c := range []struct {
+		err  ErrCaseEnded
+		want string
+		at   time.Time
+	}{
+		{ErrCaseEnded{Card: "#7", Case: Case{Status: CaseWithdrawn, ResolvedAt: &summer, Resolution: &CaseResolution{Reason: "the card closed"}}},
+			"was withdrawn at 10:30 UTC: the card closed", summer},
+		{ErrCaseEnded{Card: "#7", Case: Case{Status: CaseResolved, ResolvedAt: &winter, Resolution: &CaseResolution{By: "sebastian", Action: "answer"}}},
+			"was resolved by sebastian with answer at 10:04 UTC", winter},
+	} {
+		if got := c.err.Error(); !strings.HasSuffix(got, c.want) {
+			t.Errorf("Error() = %q, want it to end %q", got, c.want)
+		}
+		if want := (Moments{{At: c.at.UTC(), Layout: LayoutClock}}); !reflect.DeepEqual(c.err.Moments(), want) {
+			t.Errorf("Moments() = %+v, want %+v", c.err.Moments(), want)
+		}
+	}
+	if m := (ErrCaseEnded{Case: Case{Status: CaseOpen}}).Moments(); m != nil {
+		t.Errorf("an unresolved case's moments = %+v, want none", m)
+	}
+}
+
 // The instants an ask names travel with it: its row stores them beside its
 // words, its case takes them, and its face carries them, before the
 // register stores the face and after. The texts keep their words in UTC:

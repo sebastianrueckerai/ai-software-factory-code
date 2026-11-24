@@ -127,7 +127,8 @@ th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var
 td a[href^="/tasks/"], td time { white-space: nowrap; }
 /* a time inside a sentence or a heading keeps its face */
 .turn time, .rst p time, .sp-note time, .step .detail time, .intake-by time, th time,
-.face .para time, .face .band time, .face .foot time, .o-head time, .o-line time, .o-ask time, .info time { font: inherit; }
+.face .para time, .face .band time, .face .foot time, .o-head time, .o-line time, .o-ask time, .info time, .o-body time,
+#flash time, .notes .why time, .msg .said time, .msg .settled-why time, .msg .fold time, .drawer-facts time, .top-block dd time { font: inherit; }
 td code { overflow-wrap: anywhere; }
 th { border-bottom-color: var(--line-strong); color: var(--text-muted); font: 600 12.5px var(--font-ui); white-space: nowrap; }
 th[scope=row] { border-bottom-color: var(--line); }

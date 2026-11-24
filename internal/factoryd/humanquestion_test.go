@@ -72,7 +72,7 @@ func TestHumanCardQuestions(t *testing.T) {
 		"roll refused": {RollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"Fix the signing of the images gateway, worker, then close this card", []QuestionChoice{did, notNow},
 			"Main's run is green at commit abc1234, and 2 images of it carry no signature by the factory's key."},
-		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "The factory re-ran it once."),
+		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, nil, "The factory re-ran it once."),
 			"Re-run the check ci / test on main after a lost runner", []QuestionChoice{did, notNow},
 			"CI run 1208 on main failed in ci / test, and each failed job lost its runner while it ran."},
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
@@ -141,7 +141,7 @@ func TestHumanCardQuestions(t *testing.T) {
 	}
 	const lostWhy = "CI run 1208 on main, at commit abc1234, failed, but none of its steps did: each failed job lost its runner while it ran " +
 		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. The factory re-ran it once."
-	if info := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, "The factory re-ran it once.").Info; !strings.HasPrefix(info, lostWhy+"\n\n") {
+	if info := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, nil, "The factory re-ran it once.").Info; !strings.HasPrefix(info, lostWhy+"\n\n") {
 		t.Errorf("rerun info = %q, want it to open with %q", info, lostWhy)
 	}
 }
@@ -264,5 +264,20 @@ func TestOuterGuardCardNamesTheReset(t *testing.T) {
 	}
 	if refusals := CheckBrief(BriefText{Title: q.Ask, Why: q.Why}, BriefAsk, nil); len(refusals) > 0 {
 		t.Errorf("the door refuses the ask %q: %q", q.Ask, refusals)
+	}
+}
+
+// A card whose ask is refaced keeps the instants its text names beside
+// those of its new ask: the cleared alert's ask names when it fired from
+// and until, in words, and its text the alert's start as a stamp.
+func TestARefacedAskKeepsTheCardsMoments(t *testing.T) {
+	start := time.Date(2026, 11, 16, 5, 12, 0, 0, time.UTC)
+	until := start.Add(52 * time.Minute)
+	card := Task{ID: "t-a", Kind: "human", Objective: "SigNoz fires the alert 5xx\n\nFiring since 2026-11-16T05:12:00Z.",
+		Moments: Moments{{At: start, Layout: LayoutRFC3339}}}
+	_, set := Refaced(card, AlertClearedQuestion("SigNoz", "5xx", "factoryd", start, until))
+	want := Moments{{At: start, Layout: LayoutWords}, {At: until, Layout: LayoutWords}, {At: start, Layout: LayoutRFC3339}}
+	if !reflect.DeepEqual(set["moments"], want) {
+		t.Errorf("moments = %+v, want %+v", set["moments"], want)
 	}
 }

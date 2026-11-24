@@ -110,7 +110,8 @@ var chatView = (function () {
   // row, where a turn stopped for money. fund, the stopped chat's fund
   // state on its newest open fund row, adds the fund control. A settled
   // row folds to one line — its reason, then the first words of what it
-  // said — and opens on a click to the full quiet row (round 06's pick)
+  // said — and opens on a click to the full quiet row (round 06's pick).
+  // The times its words and its reason name read in the browser's zone.
   function factoryHTML(m, fund) {
     if (m.kind === "summary") {
       return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
@@ -120,9 +121,9 @@ var chatView = (function () {
       (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") +
       (m.thread ? " <button type=\"button\" class=\"chip linkbtn\" data-open-thread=\"" + esc(m.thread) + "\"" +
         (m.thread_owner ? " data-thread-owner=\"" + esc(m.thread_owner) + "\"" : "") + ">thread ↗</button>" : "") + "</p>";
-    var body = m.short ? foldedHTML(m) : saidHTML(m.content);
+    var body = timed(m.short ? foldedHTML(m) : saidHTML(m.content), m.times);
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
-    if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
+    if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + reasonHTML(m) + "</p>";
     if (m.choices && m.choices.length && !esc1 && !m.settled) {
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
         return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
@@ -130,11 +131,16 @@ var chatView = (function () {
     if (fund) body += fundHTML(fund);
     var fold = "";
     if (m.settled) fold = "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
-      "<span class=\"visually-hidden\">Settled: </span><span class=\"fw\">" + esc(m.reason || "seen") + "</span>" +
-      "<span class=\"ft\">" + esc(m.content) + "</span></p>";
+      "<span class=\"visually-hidden\">Settled: </span><span class=\"fw\">" + reasonHTML(m) + "</span>" +
+      "<span class=\"ft\">" + timed(esc(m.content), m.times) + "</span></p>";
     return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + (m.settled ? " settled" : "") + "\"" +
       (m.task_id ? " data-card=\"" + esc(m.task_id) + "\"" : "") + " data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
       (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + fold + "</div>";
+  }
+  // reasonHTML is settled row m's reason and the time that settled it, read
+  // in the browser's zone
+  function reasonHTML(m) {
+    return esc(m.reason || "seen") + (m.settled_at ? " · " + timeHTML(new Date(m.settled_at), "15:04 MST") : "");
   }
   // fundHTML is the fund control of a stopped chat (b, GET /chat's
   // budget): the amount, prefilled with the suggested one, and one click

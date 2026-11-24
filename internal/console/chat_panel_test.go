@@ -172,7 +172,7 @@ console.log(JSON.stringify({
   pendingRow: JSON.stringify([chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes", "No"]}]) && 1,
     chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"]}, {id: 2, role: "user", content: "Yes"}]) && 1,
     chatView.pendingOf([{id: 1, kind: "escalation"}]), chatView.pendingOf([]),
-    chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"], settled: true, reason: "answered by sebastian · 09:14"}])]),
+    chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"], settled: true, reason: "answered by sebastian", settled_at: "2026-10-11T09:14:00Z"}])]),
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
   askAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One card"]}),
   boundAskAnswerRow: chatView.answerHTML({id: 2, kind: "ask", proposal: "tok", choices: ["close it", "hold"]}),
@@ -195,10 +195,11 @@ console.log(JSON.stringify({
   paletteHTML: chatView.paletteHTML(cmds.slice(0, 2), 1),
   expand: [chatView.expand(cmds, "/standup"), chatView.expand(cmds, "/compact"), chatView.expand(cmds, "/standup now")].join("|"),
   repeated: chatView.factoryHTML({id: 9, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:14:00Z", repeats: 2}),
-  settledEscalation: chatView.factoryHTML({id: 10, role: "assistant", kind: "escalation", content: "Which store?", at: "2026-10-11T09:15:00Z",
-    choices: ["Postgres", "SQLite"], settled: true, reason: "answered by sebastian · 09:14"}),
+  settledEscalation: chatView.factoryHTML({id: 10, role: "assistant", kind: "escalation", content: "Which store? Back at 00:00 UTC.", at: "2026-10-11T09:15:00Z",
+    choices: ["Postgres", "SQLite"], settled: true, reason: "answered by sebastian", settled_at: "2026-10-11T09:14:00Z",
+    times: [{words: "00:00 UTC", at: "2026-10-12T00:00:00Z", layout: "15:04 MST"}]}),
   settledPoke: chatView.factoryHTML({id: 11, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:16:00Z",
-    choices: ["Try the failed card again", "Not now"], settled: true, reason: "moved on · 09:16"}),
+    choices: ["Try the failed card again", "Not now"], settled: true, reason: "moved on", settled_at: "2026-10-11T09:16:00Z"}),
   calls: chatView.historyHTML([{role: "user", content: "look", at: "2026-10-11T09:30:01Z"},
     {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "c1", name: "board", arguments: "{}", result: "3 cards"},
       {id: "c2", name: "card", arguments: "{}", result: "Refused: no card 9"}]},
@@ -253,11 +254,14 @@ console.log(JSON.stringify({
 		t.Fatalf("node said %s: %v", out, err)
 	}
 	const (
-		you      = `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">file a card</p></div>`
-		agent    = `<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time datetime="2026-10-11T09:30:02.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>`
-		args     = `{&quot;title&quot;:&quot;Cache metrics&quot;,&quot;track&quot;:&quot;direct&quot;}`
-		result   = `Proposed to sebastian: File a card, title Cache metrics, track direct. Nothing runs until they press Do it.`
-		proposal = `<div class="proposal" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, track direct</li></ul>` +
+		you   = `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">file a card</p></div>`
+		agent = `<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time datetime="2026-10-11T09:30:02.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>`
+		args  = `{&quot;title&quot;:&quot;Cache metrics&quot;,&quot;track&quot;:&quot;direct&quot;}`
+		// a settled row's time reads in the browser's zone, UTC under TZ=UTC
+		settledAt = `<time datetime="2026-10-11T09:14:00.000Z" data-layout="15:04 MST">09:14 UTC</time>`
+		movedAt   = `<time datetime="2026-10-11T09:16:00.000Z" data-layout="15:04 MST">09:16 UTC</time>`
+		result    = `Proposed to sebastian: File a card, title Cache metrics, track direct. Nothing runs until they press Do it.`
+		proposal  = `<div class="proposal" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, track direct</li></ul>` +
 			`<details class="args"><summary>new_card arguments</summary><pre>` + args + `</pre></details>` +
 			`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`
 		dot = `<span class="tmark working"><i class="dot" aria-hidden="true"></i><span class="visually-hidden">a turn in flight</span></span>`
@@ -330,9 +334,12 @@ console.log(JSON.stringify({
 		{"repeated", `<div class="msg agent poke" data-message="9"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:14:00.000Z" data-layout="01-02 15:04 MST">10-11 09:14 UTC</time> <span class="rep">3 times</span></p>` +
 			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div></div>`},
 		{"settledEscalation", `<div class="msg agent poke esc settled" data-message="10"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:15:00.000Z" data-layout="01-02 15:04 MST">10-11 09:15 UTC</time></p>` +
-			`<div class="esc-b"><div class="said"><p>Which store?</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>answered by sebastian · 09:14</p></div><p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">answered by sebastian · 09:14</span><span class="ft">Which store?</span></p></div>`},
+			`<div class="esc-b"><div class="said"><p>Which store? Back at <time datetime="2026-10-12T00:00:00.000Z" data-layout="15:04 MST">00:00 UTC</time>.</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>answered by sebastian · ` + settledAt + `</p></div>` +
+			`<p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">answered by sebastian · ` + settledAt + `</span>` +
+			`<span class="ft">Which store? Back at <time datetime="2026-10-12T00:00:00.000Z" data-layout="15:04 MST">00:00 UTC</time>.</span></p></div>`},
 		{"settledPoke", `<div class="msg agent poke settled" data-message="11"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:16:00.000Z" data-layout="01-02 15:04 MST">10-11 09:16 UTC</time></p>` +
-			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>moved on · 09:16</p><p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">moved on · 09:16</span><span class="ft">#7 failed.</span></p></div>`},
+			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>moved on · ` + movedAt + `</p>` +
+			`<p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">moved on · ` + movedAt + `</span><span class="ft">#7 failed.</span></p></div>`},
 		{"calls", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">look</p></div>` +
 			agent + `<details class="calls"><summary>2 earlier calls</summary>` +
 			`<details class="tool"><summary>🔧 board · 3 cards</summary><pre>{}` + "\n\n" + `3 cards</pre></details>` +

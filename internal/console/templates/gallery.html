@@ -41,6 +41,7 @@
 document.querySelectorAll("[data-inbox]").forEach(function (el) {
   el.innerHTML = chatView.historyHTML(JSON.parse(el.dataset.inbox), "sebastian", [], JSON.parse(el.dataset.budget));
 });
+localTimes(document);
 </script>
 </body>
 </html>

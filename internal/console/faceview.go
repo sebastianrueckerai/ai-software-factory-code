@@ -63,10 +63,9 @@ type faceView struct {
 // run (Soon under an hour away), and its last run, a held run's words
 // (Held) or the card it runs (Running).
 type routineFoot struct {
-	Key, Title          string
-	Schedule, Next      string
-	Soon, Held, Running bool
-	Last                template.HTML
+	Key, Title, Schedule string
+	Next, Last           template.HTML
+	Soon, Held, Running  bool
 }
 
 // text is what face f says, in words: a card in Needs you its band, its

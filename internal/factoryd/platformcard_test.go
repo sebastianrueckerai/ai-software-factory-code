@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -42,14 +43,14 @@ func (s *platformStore) PlatformCards(ctx context.Context) ([]Task, error) {
 	return out, nil
 }
 
-func (s *platformStore) FacePlatformCard(ctx context.Context, id, objective, info string) error {
-	if s.tasks[id].Source != SourcePlatformDeaths {
+func (s *platformStore) FacePlatformCard(ctx context.Context, id, objective, info string, said Moments) error {
+	c := s.tasks[id]
+	if c.Source != SourcePlatformDeaths {
 		return fmt.Errorf("platform card %s: %w", id, ErrNotFound)
 	}
 	s.faces++
-	if err := s.SetObjective(ctx, id, objective); err != nil {
-		return err
-	}
+	c.Objective, c.Moments = objective, said.In(objective)
+	s.tasks[id] = c
 	return s.SetAskInfo(ctx, id, SourcePlatformDeaths, info)
 }
 
@@ -524,6 +525,23 @@ func TestPlatformCardReadsTheCardsItShows(t *testing.T) {
 	if store.taskReads > 10 || !strings.HasPrefix(card.Objective, platformTitle+"\n\n"+platformHead(25)+"- 23 Nov 14:24 UTC, card #124:") ||
 		!strings.Contains(card.Objective, "- 23 Nov 14:15 UTC, card #115:") || !strings.Contains(card.Objective, "- and 15 more\n") {
 		t.Fatalf("the open card's pass read %d cards, its face\n%s\nwant at most 10 reads and a face of 25 that lists #124 to #115", store.taskReads, card.Objective)
+	}
+}
+
+// The platform card keeps the instants its story and its list name beside
+// their UTC words: the newest death's minute and the oldest's, each once,
+// whose words the story repeats.
+func TestPlatformCardKeepsItsInstants(t *testing.T) {
+	deaths := []PodDeath{ciDeath("ci-job-2", nov(23, 14, 2), RuleGuardKill, "sf-2"), ciDeath("ci-job-1", nov(22, 23, 30), RuleGuardKill, "sf-2")}
+	q := PlatformDeathsQuestion(deaths, nil, "sf/acme")
+	if want := "The platform ended the factory's work 2 times between 22 Nov 23:30 UTC and 23 Nov 14:02 UTC."; q.Happened != want {
+		t.Errorf("the story %q, want %q", q.Happened, want)
+	}
+	if !strings.Contains(q.Info, "- 23 Nov 14:02 UTC, a CI job:") || !strings.Contains(q.Info, "- 22 Nov 23:30 UTC, a CI job:") {
+		t.Errorf("the list %q, want both deaths in UTC", q.Info)
+	}
+	if want := (Moments{{At: nov(23, 14, 2), Layout: LayoutDay}, {At: nov(22, 23, 30), Layout: LayoutDay}}); !reflect.DeepEqual(q.Moments, want) {
+		t.Errorf("moments %+v, want %+v", q.Moments, want)
 	}
 }
 

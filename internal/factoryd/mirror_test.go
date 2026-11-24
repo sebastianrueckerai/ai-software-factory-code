@@ -725,7 +725,7 @@ func TestRegisterImportAfterRestart(t *testing.T) {
 		if state != "pending" {
 			row.LastUpdate = rig.fj.created
 		}
-		row.State = strings.ReplaceAll(state, "T", row.LastUpdate.UTC().Format(minuteUTC))
+		row.State = strings.ReplaceAll(state, "T", row.LastUpdate.UTC().Format("2006-01-02 15:04 UTC"))
 		mirrors.rows["demo-app import"] = row
 		return rig, mirrors, row
 	}
@@ -775,7 +775,7 @@ func TestRegisterImportAfterRestart(t *testing.T) {
 		if err := rig.reg.Reconcile(context.Background(), rig.store.m["demo-app"]); err != nil || rig.reg.ReconcileError("demo-app") != "" {
 			t.Fatalf("started %v ago: reconcile error %v, %q", ago, err, rig.reg.ReconcileError("demo-app"))
 		}
-		line := "registration: repository demo-app/demo-app: copying github.com/acme/app since " + want.LastUpdate.UTC().Format(minuteUTC)
+		line := "registration: repository demo-app/demo-app: copying github.com/acme/app since " + want.LastUpdate.UTC().Format("2006-01-02 15:04 UTC")
 		if row := mirrors.rows["demo-app import"]; row != want || len(mirrors.set) != 0 || len(rig.fj.migrated) != 0 || len(rig.fj.seeds) != 0 ||
 			len(rig.gh.calls) != 0 || !strings.Contains(rig.logs.String(), "project demo-app: "+line+"\n") {
 			t.Fatalf("started %v ago: import row %+v, states set %q, migrates %d, seeds %d, GitHub calls %q; want %+v unchanged, none set, the line %q\n%s",

@@ -63,7 +63,8 @@ document.addEventListener("htmx:configRequest", function (e) {
 });
 
 // A refused board action answers one sentence; htmx swaps nothing on an
-// error, so show it. Every answer of the console carries its
+// error, so show it, the instants its X-Times names in the browser's zone
+// (time.js timed). Every answer of the console carries its
 // Content-Security-Policy: a 502 to 504 without
 // it, or no answer at all, is the router's while the console's pod rolls,
 // and says so in place of the router's text. The board's own reads flash
@@ -74,6 +75,8 @@ function refused(e) {
   var rolling = !xhr.status || xhr.status >= 502 && xhr.status <= 504 && !xhr.getResponseHeader("Content-Security-Policy");
   flash.textContent = rolling ? "The factory did not answer: it restarts after a deploy. Try again in a moment." :
     xhr.responseText.trim() || "The factory refused: " + xhr.status;
+  var times = !rolling && xhr.getResponseHeader("X-Times");
+  if (times) flash.innerHTML = timed(flash.innerHTML, JSON.parse(times));
   flash.hidden = false;
 }
 document.addEventListener("htmx:responseError", refused);
@@ -1850,14 +1853,6 @@ document.addEventListener("htmx:oobBeforeSwap", function (e) {
   if (e.detail.target.id === "status-line" && confirming(e.detail.target)) e.preventDefault();
 });
 
-// A screen's times read in the browser's zone (time.js). A <time> with a
-// title is an age, its moment the title.
-function localTimes(root) {
-  root.querySelectorAll("time[data-layout]").forEach(function (el) {
-    var text = localTime(new Date(el.dateTime), el.dataset.layout);
-    if (el.title) el.title = text;
-    else el.textContent = text;
-  });
-}
+// A screen's times read in the browser's zone (time.js).
 localTimes(document);
 document.addEventListener("htmx:load", function (e) { localTimes(e.target); });

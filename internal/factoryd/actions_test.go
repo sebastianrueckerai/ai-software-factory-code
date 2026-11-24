@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1658,6 +1659,24 @@ func TestARefusalListsTheAnswersOfTheStopItNames(t *testing.T) {
 	want := "the agent time cap of 20 minutes is reached (the card's answers at this stop: `extend`, `close` and `note`)"
 	if got := resume.refusal(f, 3, Resolution{Action: ActResume}); got != want {
 		t.Errorf("the resume's refusal = %q, want %q", got, want)
+	}
+}
+
+// A refusal on a card's facts names the cap's turn and the last draw's
+// time, which it keeps beside their words: a winter turn at 00:00 UTC as a
+// stamp, a summer draw at 12:30 CEST as 10:30 UTC.
+func TestARefusalSaysItsInstants(t *testing.T) {
+	turn, drew := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC), time.Date(2026, 7, 1, 12, 30, 0, 0, time.FixedZone("CEST", 2*3600))
+	line, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", turn), "\n")
+	f := CaseFacts{Kind: CaseSessionCap, CapWait: line, CapTurn: turn, LastDrawAt: &drew}
+	if want := (Moments{{At: turn, Layout: LayoutRFC3339}, {At: drew.UTC(), Layout: LayoutClock}}); !reflect.DeepEqual(f.Said(), want) {
+		t.Errorf("Said() = %+v, want %+v", f.Said(), want)
+	}
+	if !strings.Contains(line, "turns at 2026-11-12T00:00:00Z.") || !strings.Contains(boughtNothingText(f), "the last draw at 10:30 UTC bought nothing") {
+		t.Errorf("the words %q and %q, want the turn and the draw in UTC", line, boughtNothingText(f))
+	}
+	if said := (CaseFacts{}).Said(); said != nil {
+		t.Errorf("facts with no wait and no draw say %+v", said)
 	}
 }
 

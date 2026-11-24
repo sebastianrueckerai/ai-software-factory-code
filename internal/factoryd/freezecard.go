@@ -69,27 +69,31 @@ func freezeCardStart(t Task) time.Time {
 const freezePressedSentence = "The retry press closed this card"
 
 // freezePressedBody is the face of class's card the retry press by closed
-// at at: the reset the hold named bounds the press's episode, so a dated
-// refusal before it opens the card again and a limit after it files a new
-// card; a face with no reset bounds nothing, and a new limit files anew.
-func freezePressedBody(class, by string, at time.Time, reset string) string {
-	body := fmt.Sprintf("Class: %s\n\n%s at %s: %s ended the freeze of the %s model class, and the waiting cards call the provider again.", class, freezePressedSentence, stamp(at), by, class)
-	if _, err := time.Parse(time.RFC3339, reset); err == nil {
-		body += fmt.Sprintf("\n\nThe class resets at %s (the reset the provider named): if the provider refuses a call before then, this card opens again, and a limit after then files a new card.", reset)
+// at at, its instants kept in said: the reset the hold named bounds the
+// press's episode, so a dated refusal before it opens the card again and a
+// limit after it files a new card; a face with no reset bounds nothing,
+// and a new limit files anew.
+func freezePressedBody(class, by string, at time.Time, reset string, said *Moments) string {
+	body := fmt.Sprintf("Class: %s\n\n%s at %s: %s ended the freeze of the %s model class, and the waiting cards call the provider again.", class, freezePressedSentence, said.Say(at, LayoutRFC3339), by, class)
+	if r, err := time.Parse(time.RFC3339, reset); err == nil {
+		body += fmt.Sprintf("\n\nThe class resets at %s (the reset the provider named): if the provider refuses a call before then, this card opens again, and a limit after then files a new card.", said.Say(r, LayoutRFC3339))
 	}
 	return freezeCardTitle(class) + "\n\n" + body
 }
 
 // FreezePressedFace and FreezeRefusedFace are the faces of class's done
-// freeze card at the two ends no answer of its ask makes: the retry press
-// by closed it at at, and Forgejo refused its issue for good while
-// the freeze that started at since held until reset.
-func FreezePressedFace(class, by string, at time.Time, reset string) string {
-	return freezePressedBody(class, by, at, reset)
+// freeze card at the two ends no answer of its ask makes, with the
+// instants they name: the retry press by closed it at at, and Forgejo
+// refused its issue for good while the freeze that started at since held
+// until reset.
+func FreezePressedFace(class, by string, at time.Time, reset string) (string, Moments) {
+	var said Moments
+	return freezePressedBody(class, by, at, reset, &said), said
 }
 
-func FreezeRefusedFace(class string, issue int64, reset string, since time.Time) string {
-	return freezeRefusedBody(&freezeClass{class: class, issue: issue, reset: reset, frozenAt: since})
+func FreezeRefusedFace(class string, issue int64, reset string, since time.Time) (string, Moments) {
+	var said Moments
+	return freezeRefusedBody(&freezeClass{class: class, issue: issue, reset: reset, frozenAt: since}, &said), said
 }
 
 // beforeReset reports whether at lies before reset, an RFC 3339 stamp: a
@@ -111,12 +115,13 @@ func FreezeCardHolds(t Task) bool {
 const freezeSpokeLead = "The provider's limit has held the "
 
 // freezeSpoken is the sentence a freeze card of class says once its freeze,
-// which started at since, outgrew limit. It names since, so each freeze of
-// a card the press closed and a re-arm opened again says its own.
-func freezeSpoken(class string, limit time.Duration, since time.Time) string {
+// which started at since, outgrew limit, since kept in said. It names
+// since, so each freeze of a card the press closed and a re-arm opened
+// again says its own.
+func freezeSpoken(class string, limit time.Duration, since time.Time, said *Moments) string {
 	return fmt.Sprintf(freezeSpokeLead+"%s class since %s, for more than %s. "+
 		"Add a second model the class can fall back on, switch the class's model in policy, or keep waiting. The work cards ask nothing.",
-		class, stamp(since), minutesWord(limit))
+		class, said.Say(since, LayoutRFC3339), minutesWord(limit))
 }
 
 // freezeClassMarker opens the line of a freeze card's objective that names
@@ -165,7 +170,7 @@ type FreezeCardStore interface {
 	SetObjective(ctx context.Context, id, objective string) error
 	// FaceFreezeCard writes face on card taskID and info as what its
 	// newest ask knows, in one transaction.
-	FaceFreezeCard(ctx context.Context, taskID, face, info string) error
+	FaceFreezeCard(ctx context.Context, taskID, face, info string, said Moments) error
 	// AskFreezeCard writes face on card t and records ask as its ask, in
 	// one transaction.
 	AskFreezeCard(ctx context.Context, t Task, face string, ask HumanAsk) error
@@ -178,7 +183,7 @@ type FreezeCardStore interface {
 	// waits, or a close record that stands on the issue already (a close
 	// in flight that is not the watcher's: a human's through the console),
 	// writes nothing and answers moved false.
-	EndFreezeCard(ctx context.Context, t Task, face, comment string) (moved bool, err error)
+	EndFreezeCard(ctx context.Context, t Task, face, comment string, said Moments) (moved bool, err error)
 	// ReopenFreezeCard opens done card t again in one transaction: it
 	// moves the row to waiting-human, writes face, records ask as the
 	// card's ask of its new freeze, takes the close's
@@ -648,24 +653,27 @@ func (w *FreezeCard) askIfAskless(ctx context.Context, t Task, st *freezeClass) 
 		return err
 	}
 	_, body, _ := strings.Cut(t.Objective, "\n\n")
+	said := t.Moments
 	if st.reset != "" && st.resumedAt.IsZero() {
 		count, err := w.waitingCards(ctx, st)
 		if err != nil {
 			return err
 		}
-		body = freezeCardBody(FreezeEvent{Class: st.class, Reset: st.reset, Words: freezeFaceWords(t.Objective)}, count, w.now(), st.frozenAt)
+		said = nil
+		body = freezeCardBody(FreezeEvent{Class: st.class, Reset: st.reset, Words: freezeFaceWords(t.Objective)}, count, w.now(), st.frozenAt, &said)
 		// the older factoryd's one-time sentence names the policy key
 		if st.spoke = st.spoke || strings.Contains(t.Objective, "waits.provider_limit"); st.spoke {
-			body += "\n\n" + freezeSpoken(st.class, w.providerLimit(st.repo), st.frozenAt)
+			body += "\n\n" + freezeSpoken(st.class, w.providerLimit(st.repo), st.frozenAt, &said)
 		}
 	}
-	return w.Store.AskFreezeCard(ctx, t, freezeCardTitle(st.class)+"\n\n"+body, freezeAsk(freezeQuestion(st.class, body)))
+	return w.Store.AskFreezeCard(ctx, t, freezeCardTitle(st.class)+"\n\n"+body, freezeAsk(freezeQuestion(st.class, body, said)))
 }
 
 // setFace writes body as the face of the class's card and as what its
-// ask knows, which the opened card shows, in one write (FaceFreezeCard).
-func (w *FreezeCard) setFace(ctx context.Context, st *freezeClass, body string) error {
-	return w.Store.FaceFreezeCard(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body, body)
+// ask knows, which the opened card shows, with the instants it names, in
+// one write (FaceFreezeCard).
+func (w *FreezeCard) setFace(ctx context.Context, st *freezeClass, body string, said Moments) error {
+	return w.Store.FaceFreezeCard(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body, body, said)
 }
 
 // waitingCards counts the cards of the class's repository its hold freezes.
@@ -702,7 +710,7 @@ func freezeResetStamp(reset string) string {
 // (closeIssueAsFactory, which meets the record). A Forgejo that fails
 // there leaves the close to closeOwed.
 func (w *FreezeCard) closedByHuman(ctx context.Context, t Task, said string) error {
-	moved, err := w.Store.EndFreezeCard(ctx, t, "", "")
+	moved, err := w.Store.EndFreezeCard(ctx, t, "", "", nil)
 	if err != nil || !moved {
 		return err
 	}
@@ -871,7 +879,8 @@ func (w *FreezeCard) giveUp(ctx context.Context, st *freezeClass, cause error) (
 	}
 	words := freezeFaceWords(t.Objective)
 	if ok {
-		moved, err := w.end(ctx, t, freezeRefusedBody(st), "")
+		var said Moments
+		moved, err := w.end(ctx, t, freezeRefusedBody(st, &said), "", said)
 		if err != nil {
 			return "", err
 		}
@@ -891,8 +900,8 @@ func (w *FreezeCard) giveUp(ctx context.Context, st *freezeClass, cause error) (
 // there is logged, and a later pass, which meets the record too, posts
 // its body where the issue lacks this close's comment and closes the
 // issue (closeOwed). No comment closes no issue: the issue is gone.
-func (w *FreezeCard) end(ctx context.Context, t Task, face, comment string) (bool, error) {
-	moved, err := w.Store.EndFreezeCard(ctx, t, face, comment)
+func (w *FreezeCard) end(ctx context.Context, t Task, face, comment string, said Moments) (bool, error) {
+	moved, err := w.Store.EndFreezeCard(ctx, t, face, comment, said)
 	if err != nil || !moved {
 		return false, err
 	}
@@ -928,13 +937,14 @@ func countHumanEnd(ctx context.Context, m *telemetry.Metrics, store interface {
 }
 
 // freezeRefusedBody is the face of st's card whose issue Forgejo refused
-// for good; the cause stands in the card's row and the log. While the class is frozen it keeps the reset and the
-// start of its freeze, which the card filed in its place takes on.
-func freezeRefusedBody(st *freezeClass) string {
+// for good, its instants kept in said; the cause stands in the card's row
+// and the log. While the class is frozen it keeps the reset and the start
+// of its freeze, which the card filed in its place takes on.
+func freezeRefusedBody(st *freezeClass, said *Moments) string {
 	body := fmt.Sprintf("Class: %s\n\n%s #%d for good, so the card ended: a new card speaks for the %s model class while it is frozen. "+
 		"Forgejo no longer has the issue or refuses to change it, so check that issue #%d still exists.", st.class, freezeRefusedSentence, st.issue, st.class, st.issue)
 	if reset, err := time.Parse(time.RFC3339, st.reset); err == nil && st.resumedAt.IsZero() {
-		body += fmt.Sprintf(freezeRefusedReset+"%s (the reset the provider named).\n%s%s.", stamp(reset), freezeStarted, stamp(st.frozenAt))
+		body += fmt.Sprintf(freezeRefusedReset+"%s (the reset the provider named).\n%s%s.", said.Say(reset, LayoutRFC3339), freezeStarted, said.Say(st.frozenAt, LayoutRFC3339))
 	}
 	return freezeCardTitle(st.class) + "\n\n" + body
 }
@@ -1053,13 +1063,14 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return nil
 	}
 	// the open card of one episode: its face keeps the ask it spoke once
+	said := q.Moments
 	if st.spoke {
-		body += "\n\n" + freezeSpoken(st.class, w.providerLimit(st.repo), since)
+		body += "\n\n" + freezeSpoken(st.class, w.providerLimit(st.repo), since, &said)
 	}
 	if st.reset == ev.Reset {
 		// a recheck's lapse resumed the class and its probe met the reset
 		// the card holds: the frozen face comes back, the close is off
-		if err := w.setFace(ctx, st, body); err != nil {
+		if err := w.setFace(ctx, st, body, said); err != nil {
 			return err
 		}
 		st.frozenAt, st.resumedAt = since, time.Time{}
@@ -1078,7 +1089,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		fmt.Sprintf("The provider's limit holds the class longer: at %s it named the reset %s. %s.", stamp(ev.At), freezeResetStamp(ev.Reset), cardsWait(count))); err != nil {
 		return fmt.Errorf("comment the re-arm on issue #%d: %w", st.issue, err)
 	}
-	if err := w.setFace(ctx, st, body); err != nil {
+	if err := w.setFace(ctx, st, body, said); err != nil {
 		return err
 	}
 	st.reset, st.frozenAt, st.resumedAt = ev.Reset, since, time.Time{}
@@ -1206,8 +1217,13 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 	if !st.resumedAt.IsZero() {
 		return nil
 	}
-	body := fmt.Sprintf(freezeResumedFace, st.class, stamp(ev.At), freezeHeld(st.frozenAt, ev.At), stamp(ev.At.Add(freezeResumeHold)), stamp(st.frozenAt), st.reset)
-	if err := w.setFace(ctx, st, body); err != nil {
+	var said Moments
+	body := fmt.Sprintf(freezeResumedFace, st.class, said.Say(ev.At, LayoutRFC3339), freezeHeld(st.frozenAt, ev.At), said.Say(ev.At.Add(freezeResumeHold), LayoutRFC3339),
+		said.Say(st.frozenAt, LayoutRFC3339), st.reset)
+	if r, err := time.Parse(time.RFC3339, st.reset); err == nil {
+		said.Say(r, LayoutRFC3339)
+	}
+	if err := w.setFace(ctx, st, body, said); err != nil {
 		return err
 	}
 	st.resumedAt = ev.At
@@ -1243,7 +1259,8 @@ func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class, by str
 	}
 	t := open[i]
 	msg := fmt.Sprintf("%s"+freezePressSaid+"%s class's freeze: the freeze card closes at once.", by, class)
-	moved, err := w.end(ctx, t, freezePressedBody(class, by, w.now(), freezeFaceReset(t.Objective)), msg)
+	var said Moments
+	moved, err := w.end(ctx, t, freezePressedBody(class, by, w.now(), freezeFaceReset(t.Objective), &said), msg, said)
 	if err != nil {
 		return err
 	}
@@ -1439,7 +1456,8 @@ func (w *FreezeCard) providerLimit(repository string) time.Duration {
 // only after it: an ask Forgejo refused is on no face, so the next pass
 // does not read it as made (rehydrate).
 func (w *FreezeCard) speak(ctx context.Context, st *freezeClass, limit time.Duration) error {
-	ask := freezeSpoken(st.class, limit, st.frozenAt)
+	var said Moments
+	ask := freezeSpoken(st.class, limit, st.frozenAt, &said)
 	repo, err := SplitRepo(st.repo)
 	if err != nil {
 		return err
@@ -1453,7 +1471,7 @@ func (w *FreezeCard) speak(ctx context.Context, st *freezeClass, limit time.Dura
 	}
 	if ok {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")
-		if err := w.setFace(ctx, st, body+"\n\n"+ask); err != nil {
+		if err := w.setFace(ctx, st, body+"\n\n"+ask, append(t.Moments, said...)); err != nil {
 			return err
 		}
 	}
@@ -1468,7 +1486,7 @@ func (w *FreezeCard) close(ctx context.Context, st *freezeClass) error {
 		return err
 	}
 	msg := fmt.Sprintf("The freeze of the %s"+freezeEndedSaid+"%s, and the card closes.", st.class, freezeHeld(st.frozenAt, st.resumedAt))
-	moved, err := w.end(ctx, t, "", msg)
+	moved, err := w.end(ctx, t, "", msg, nil)
 	if moved {
 		log.Printf("freeze card: %s (#%d)", msg, t.IssueNumber)
 	}
@@ -1513,18 +1531,18 @@ func (w *FreezeCard) findClosedCard(ctx context.Context, st *freezeClass, at tim
 
 // freezeCardBody is a freeze card's face: the provider's words, the
 // class, the reset with its countdown, the waiting count, and what the
-// card does and does not do.
-func freezeCardBody(ev FreezeEvent, count int, now, since time.Time) string {
+// card does and does not do; its instants kept in said.
+func freezeCardBody(ev FreezeEvent, count int, now, since time.Time, said *Moments) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Class: %s\n\n", ev.Class)
 	b.WriteString("The provider's limit freezes the model class: the provider refuses every model call of the class until the limit resets.\n\n")
 	b.WriteString("The provider said:\n\n" + fenced(ev.Words) + "\n\n")
 	if reset, err := time.Parse(time.RFC3339, ev.Reset); err == nil {
-		fmt.Fprintf(&b, "The class resets at %s (%s). ", stamp(reset), freezeCountdown(reset, now))
+		fmt.Fprintf(&b, "The class resets at %s (%s). ", said.Say(reset, LayoutRFC3339), freezeCountdown(reset, now))
 	} else {
 		fmt.Fprintf(&b, "The class resets at %s. ", ev.Reset)
 	}
-	fmt.Fprintf(&b, "%s.\n%s%s.\n\n", cardsWait(count), freezeStarted, stamp(since))
+	fmt.Fprintf(&b, "%s.\n%s%s.\n\n", cardsWait(count), freezeStarted, said.Say(since, LayoutRFC3339))
 	b.WriteString("This card is a notice: it does no work and takes no place among the running cards. It updates when the provider names a new reset, and closes itself five minutes after the class resumes.")
 	return b.String()
 }
@@ -1534,15 +1552,18 @@ func freezeCardBody(ev FreezeEvent, count int, now, since time.Time) string {
 // (freezeCardBody), the retry that ends the freeze now and a notice's
 // answers, since the factory ends the freeze by itself at the reset.
 func FreezeQuestion(ev FreezeEvent, count int, now, since time.Time) HumanQuestion {
-	return freezeQuestion(ev.Class, freezeCardBody(ev, count, now, since))
+	var said Moments
+	body := freezeCardBody(ev, count, now, since, &said)
+	return freezeQuestion(ev.Class, body, said)
 }
 
-// freezeQuestion is the freeze card of class as it asks, body its face.
-func freezeQuestion(class, body string) HumanQuestion {
+// freezeQuestion is the freeze card of class as it asks, body its face,
+// which names the instants said.
+func freezeQuestion(class, body string, said Moments) HumanQuestion {
 	b := SourceBriefs[SourceFreezeCard](BriefFacts{Name: class})
 	return HumanQuestion{Ask: b.Title, Why: b.Why, Info: body, Choices: choices(ActRetry+"/"+variantThaw, ActClose+"/"+variantNoted, KeyPark),
 		Happened: "The model provider refused a call of the " + class + " model class and named when its limit resets.",
-		Waits:    "The cards of the class wait until the limit resets."}
+		Waits:    "The cards of the class wait until the limit resets.", Moments: said}
 }
 
 // freezeAsk is the freeze card's ask q as the factory puts it.
@@ -1679,14 +1700,15 @@ func (s *PGStore) FreezeCards(ctx context.Context, status string) ([]Task, error
 // reopen of the card is deleted. A row that no longer waits, or a close
 // record that stands on the issue already, rolls all of it back and
 // answers false.
-func (s *PGStore) EndFreezeCard(ctx context.Context, t Task, face, comment string) (bool, error) {
+func (s *PGStore) EndFreezeCard(ctx context.Context, t Task, face, comment string, said Moments) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	events, moved, err := changeStatusOn(ctx, tx, transitionSet+`, objective = CASE WHEN $4::text = '' THEN objective ELSE $4::text END`,
-		transitionWhere+` AND source = $5`, t.ID, "done", []string{"waiting-human"}, face, SourceFreezeCard)
+	events, moved, err := changeStatusOn(ctx, tx, transitionSet+`, objective = CASE WHEN $4::text = '' THEN objective ELSE $4::text END,
+		moments = CASE WHEN $4::text = '' THEN moments ELSE $6::jsonb END`,
+		transitionWhere+` AND source = $5`, t.ID, "done", []string{"waiting-human"}, face, SourceFreezeCard, momentsJSON(said.In(face)))
 	if err != nil || !moved {
 		return false, err
 	}
@@ -1724,8 +1746,8 @@ func (s *PGStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment st
 		return "", err
 	}
 	defer func() { _ = tx.Rollback() }()
-	events, moved, err := changeStatusOn(ctx, tx, transitionSet+`, objective = $4`,
-		transitionWhere+` AND source = $5`, t.ID, "waiting-human", []string{"done"}, face, SourceFreezeCard)
+	events, moved, err := changeStatusOn(ctx, tx, transitionSet+`, objective = $4, moments = $6::jsonb`,
+		transitionWhere+` AND source = $5`, t.ID, "waiting-human", []string{"done"}, face, SourceFreezeCard, momentsJSON(ask.Q.Moments.In(face)))
 	if err != nil {
 		return "", err
 	}
@@ -1761,23 +1783,23 @@ func (s *PGStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment st
 	return owed, nil
 }
 
-// sourceFaceSQL writes face $2 on card $1 of source $3.
-const sourceFaceSQL = `UPDATE tasks SET objective = $2 WHERE id = $1 AND source = $3`
+// sourceFaceSQL writes face $2 with its moments $4 on card $1 of source $3.
+const sourceFaceSQL = `UPDATE tasks SET objective = $2, moments = $4::jsonb WHERE id = $1 AND source = $3`
 
 // FaceFreezeCard writes face on freeze card taskID and info on the card's
 // newest ask of its own, the question_asked row the opened card reads, in
 // one transaction. A card that is no freeze card is ErrNotFound.
-func (s *PGStore) FaceFreezeCard(ctx context.Context, taskID, face, info string) error {
+func (s *PGStore) FaceFreezeCard(ctx context.Context, taskID, face, info string, said Moments) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, sourceFaceSQL, taskID, face, SourceFreezeCard)
+	res, err := tx.ExecContext(ctx, sourceFaceSQL, taskID, face, SourceFreezeCard, momentsJSON(said.In(face)))
 	if err := oneRow(res, err, "freeze card "+taskID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, askInfoSQL, taskID, info, EventQuestionAsked, SourceFreezeCard); err != nil {
+	if _, err := tx.ExecContext(ctx, askInfoSQL, taskID, info, EventQuestionAsked, SourceFreezeCard, momentsJSON(said.In(info))); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1791,7 +1813,7 @@ func (s *PGStore) AskFreezeCard(ctx context.Context, t Task, face string, ask Hu
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, sourceFaceSQL, t.ID, face, SourceFreezeCard)
+	res, err := tx.ExecContext(ctx, sourceFaceSQL, t.ID, face, SourceFreezeCard, momentsJSON(ask.Q.Moments.In(face)))
 	if err := oneRow(res, err, "freeze card "+t.ID); err != nil {
 		return err
 	}

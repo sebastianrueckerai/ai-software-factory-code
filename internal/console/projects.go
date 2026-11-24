@@ -551,7 +551,8 @@ const (
 
 type step struct {
 	Name, Tip, State, Detail, Link string
-	Since                          template.HTML // the board ready step's moment, before its Detail
+	Since                          template.HTML    // the board ready step's moment, before its Detail
+	Moments                        factoryd.Moments // the instants Detail names
 }
 
 type statusPanel struct {
@@ -674,11 +675,11 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 			from := "github.com/" + m.Remote
 			switch {
 			case strings.HasPrefix(m.State, "imported"):
-				imported.State, imported.Detail = stepDone, from+", "+m.State+"."
+				imported.State, imported.Detail, imported.Moments = stepDone, from+", "+m.State+".", factoryd.Moments{{At: m.LastUpdate, Layout: factoryd.LayoutStamp}}
 			case strings.HasPrefix(m.State, "failed"):
 				imported.State, imported.Detail = stepFailed, "The copy of "+from+" "+m.State+". The reconcile tries again at least hourly."
 			case strings.HasPrefix(m.State, "copying"):
-				imported.State, imported.Detail = stepRunning, from+", "+m.State+"."
+				imported.State, imported.Detail, imported.Moments = stepRunning, from+", "+m.State+".", factoryd.Moments{{At: m.LastUpdate, Layout: factoryd.LayoutStamp}}
 			case merged.State == stepDone:
 				imported.State, imported.Detail = stepRunning, "Registration copies "+from+" into the repository within a minute of the load."
 			}

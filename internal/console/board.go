@@ -70,6 +70,7 @@ var funcs = template.FuncMap{
 	},
 	"moment":      moment,
 	"momentTitle": momentTitle,
+	"timed":       func(text string, ms factoryd.Moments) template.HTML { return timed(escaped(text), ms) },
 	// ago and schedule word a cluster job's last runs and cron
 	"ago":      jobAge,
 	"schedule": jobSchedule,
@@ -2526,15 +2527,15 @@ func (c *Console) routineFace(ctx context.Context, v *boardView, repository stri
 	when, in, kind := nextWords(rv, now)
 	switch {
 	case in != "":
-		foot.Next = when + " · in " + in + " · " + kind
+		foot.Next = when + escaped(" · in "+in+" · "+kind)
 	case when != "":
 		foot.Next = when
 	default:
-		foot.Next = kind
+		foot.Next = escaped(kind)
 	}
 	switch {
 	case rv.State.SkipNext && when == "":
-		foot.Next = "skipped once · " + kind
+		foot.Next = escaped("skipped once · " + kind)
 	case rv.State.SkipNext:
 		foot.Next = "skipped once · next " + foot.Next
 	}
@@ -2556,14 +2557,15 @@ func (c *Console) routineFace(ctx context.Context, v *boardView, repository stri
 }
 
 // nextWords are routine rv's next run at now as its ghost and its drawer
-// say it: when it comes ("Mon 06:00", "after 6 more merges", "" for an
-// event's, which the schedule's words name), how soon a dated one comes
-// ("20 min", else ""), and what it files ("human card").
-func nextWords(rv factoryd.RoutineView, now time.Time) (when, in, kind string) {
-	when, kind = rv.NextWords, filesWords[rv.FilesInForce()]
+// say it: when it comes (a dated one as its moment, "Mon 06:00 CET" in the
+// reader's zone, "after 6 more merges", "" for an event's, which the
+// schedule's words name), how soon a dated one comes ("20 min", else ""),
+// and what it files ("human card").
+func nextWords(rv factoryd.RoutineView, now time.Time) (when template.HTML, in, kind string) {
+	when, kind = escaped(rv.NextWords), filesWords[rv.FilesInForce()]
 	switch {
 	case !rv.Next.IsZero():
-		in = coarse(rv.Next.Sub(now))
+		when, in = moment(rv.Next, rv.NextLayout+" MST"), coarse(rv.Next.Sub(now))
 	case rv.MergesLeft == 0:
 		when = ""
 	}

@@ -38,12 +38,12 @@ func bumpRuns() []factoryd.RoutineRun {
 // bumpRows are bumpRuns as the drawer's run rows, in their order: a run
 // that filed nothing shows no duration.
 var bumpRows = []string{
-	`<span class="mono">Mon 12 Oct 06:00</span><span class="mono"><a href="#card=t-790">#790</a></span><span class="k st-running">filed</span><span class="mono num">open</span><span class="mono num"></span><span class="tnote"></span>`,
-	`<span class="mono">Mon 5 Oct 06:00</span><span class="mono"><a href="#card=t-781">#781</a></span><span class="k st-done">merged</span><span class="mono num">2 d 2 h</span><span class="mono num">0.42 EUR</span><span class="tnote"></span>`,
-	`<span class="mono">Mon 28 Sep 06:00</span><span class="mono"></span><span class="k st-closed">skipped</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">skipped once by sebastian</span>`,
-	`<span class="mono">Mon 21 Sep 06:00</span><span class="mono"></span><span class="k st-waiting">held</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">held: #770 is still open</span>`,
-	`<span class="mono">Mon 14 Sep 06:00</span><span class="mono"><a href="#card=t-770">#770</a></span><span class="k st-failed">failed</span><span class="mono num">8 d 4 h</span><span class="mono num">1.10 EUR</span><span class="tnote"></span>`,
-	`<span class="mono">Mon 7 Sep 06:00</span><span class="mono"><a href="#card=t-762">#762</a></span><span class="k st-done">done</span><span class="mono num">3 h 0 min</span><span class="mono num">0.30 EUR</span><span class="tnote"></span>`,
+	`<span class="mono"><time datetime="2026-10-12T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 12 Oct 08:00 CEST</time></span><span class="mono"><a href="#card=t-790">#790</a></span><span class="k st-running">filed</span><span class="mono num">open</span><span class="mono num"></span><span class="tnote"></span>`,
+	`<span class="mono"><time datetime="2026-10-05T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 5 Oct 08:00 CEST</time></span><span class="mono"><a href="#card=t-781">#781</a></span><span class="k st-done">merged</span><span class="mono num">2 d 2 h</span><span class="mono num">0.42 EUR</span><span class="tnote"></span>`,
+	`<span class="mono"><time datetime="2026-09-28T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 28 Sep 08:00 CEST</time></span><span class="mono"></span><span class="k st-closed">skipped</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">skipped once by sebastian</span>`,
+	`<span class="mono"><time datetime="2026-09-21T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 21 Sep 08:00 CEST</time></span><span class="mono"></span><span class="k st-waiting">held</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">held: #770 is still open</span>`,
+	`<span class="mono"><time datetime="2026-09-14T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 14 Sep 08:00 CEST</time></span><span class="mono"><a href="#card=t-770">#770</a></span><span class="k st-failed">failed</span><span class="mono num">8 d 4 h</span><span class="mono num">1.10 EUR</span><span class="tnote"></span>`,
+	`<span class="mono"><time datetime="2026-09-07T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 7 Sep 08:00 CEST</time></span><span class="mono"><a href="#card=t-762">#762</a></span><span class="k st-done">done</span><span class="mono num">3 h 0 min</span><span class="mono num">0.30 EUR</span><span class="tnote"></span>`,
 }
 
 func getPage(r *rig, ck *http.Cookie, path string) *httptest.ResponseRecorder {
@@ -128,20 +128,23 @@ func TestRoutineDrawerTabs(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the overview = %d:\n%s", rec.Code, d)
 	}
+	// the next run reads in the reader's zone, as moment writes it
+	next := string(moment(bump.Next, "Mon 15:04 MST"))
 	runs := `<details class="sec" data-sec="runs"><summary>Runs (15)</summary><div class="sec-body"><div class="life runs">` + strings.Join(bumpRows[:3], "") + `</div></div></details>`
 	config := "<pre>- name: weekly-bump\n  title: Weekly bump\n  schedule:\n    - cron: 0 6 * * 1\n  files: human\n  brief: routines/weekly-bump.md</pre>" +
 		`<p class="quiet">A change of schedule is a configuration change. Ask the project agent to change this.</p>`
 	for _, want := range []string{
 		`<div class="drawer-content" data-routine-drawer="` + bumpKey + `:overview">`,
 		`<h2 tabindex="-1"><span class="glyph" aria-hidden="true">↻</span> Weekly bump</h2>`,
-		`<p class="drawer-facts">routine · every Monday 06:00 · human card · next Mon 06:00, in 20 min</p>`,
+		`<p class="drawer-facts">routine · every Monday 06:00 · human card · next ` + next + `, in 20 min</p>`,
 		`<button type="button" role="tab" aria-selected="true" aria-controls="drawer-panel" hx-get="/routines/` + bumpKey + `/drawer?tab=overview" hx-target="#drawer" hx-swap="innerHTML">Overview</button>`,
 		`<button type="button" role="tab" aria-selected="false" aria-controls="drawer-panel" hx-get="/routines/` + bumpKey + `/drawer?tab=runs" hx-target="#drawer" hx-swap="innerHTML">Runs</button>`,
 		`<button type="button" role="tab" aria-selected="false" aria-controls="drawer-panel" hx-get="/routines/` + bumpKey + `/drawer?tab=config" hx-target="#drawer" hx-swap="innerHTML">Config</button>`,
 		"<dl class=\"top-block\">\n" +
 			"<dt>Schedule</dt><dd>every Monday 06:00 <span class=\"why\">· UTC</span></dd>\n" +
-			"<dt>Next</dt><dd>Mon 06:00 · in 20 min</dd>\n" +
-			"<dt>Last</dt><dd><a href=\"#card=t-790\">#790 filed</a> <span class=\"why\">· Mon 12 Oct 06:00</span></dd>\n" +
+			"<dt>Next</dt><dd>" + next + " · in 20 min</dd>\n" +
+			"<dt>Last</dt><dd><a href=\"#card=t-790\">#790 filed</a> <span class=\"why\">· " +
+			`<time datetime="2026-10-12T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 12 Oct 08:00 CEST</time></span></dd>` + "\n" +
 			"<dt>While open</dt><dd>hold <span class=\"why\">· a run skips while the last card is open, and says so</span></dd>\n" +
 			"<dt>Tells</dt><dd>inbox <span class=\"why\">· a filing pokes the inbox</span></dd>\n</dl>",
 		acts("overview"),
@@ -178,7 +181,8 @@ func TestRoutineDrawerTabs(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{bump, audit()}
 	d = getPage(r, ck, path).Body.String()
 	for _, want := range []string{
-		"<dt>Last</dt><dd class=\"warn\"><a href=\"#card=t-790\">held: #790 is still open</a> <span class=\"why\">· Mon 19 Oct 06:00</span></dd>\n",
+		"<dt>Last</dt><dd class=\"warn\"><a href=\"#card=t-790\">held: #790 is still open</a> <span class=\"why\">· " +
+			`<time datetime="2026-10-19T06:00:00Z" data-layout="Mon 2 Jan 15:04 MST">Mon 19 Oct 08:00 CEST</time></span></dd>` + "\n",
 		"<dt>Missed</dt><dd>skip <span class=\"why\">· a missed run is skipped</span></dd>\n",
 	} {
 		if !strings.Contains(d, want) {
@@ -315,7 +319,7 @@ func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{soonBump()}
 	r.routines.onSkip = func(_, _ string, skip bool) {
 		v := &r.routines.views[0]
-		v.State.SkipNext, v.Next, v.NextWords = true, time.Now().Add(7*24*time.Hour+20*time.Minute+30*time.Second), "Mon 26 Oct 06:00"
+		v.State.SkipNext, v.Next, v.NextWords, v.NextLayout = true, time.Now().Add(7*24*time.Hour+20*time.Minute+30*time.Second), "Mon 26 Oct 06:00", "Mon 2 Jan 15:04"
 		if !skip {
 			*v = soonBump()
 		}
@@ -326,7 +330,7 @@ func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 	for _, want := range []string{
 		`<div class="drawer-content" data-routine-drawer="` + bumpKey + `:overview">`,
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">`,
-		"<dt>Next</dt><dd>skipped once · next Mon 26 Oct 06:00 · in 7 d</dd>\n",
+		"<dt>Next</dt><dd>skipped once · next " + string(moment(r.routines.views[0].Next, "Mon 2 Jan 15:04 MST")) + " · in 7 d</dd>\n",
 		`<input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="overview"><input type="hidden" name="undo" value="1">` + "\n" +
 			`<button type="submit" class="pick">Undo the skip</button>`,
 	} {

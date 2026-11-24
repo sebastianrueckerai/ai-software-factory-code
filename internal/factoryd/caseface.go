@@ -33,27 +33,58 @@ type Moment struct {
 }
 
 // The layouts of a Moment, in Go's reference time, without the zone its
-// words add.
+// words add; an RFC 3339 stamp names UTC by its Z.
 const (
-	LayoutWords = "2 January at 15:04"
-	LayoutClock = "15:04"
-	LayoutDay   = "2 Jan 15:04"
-	LayoutStamp = "2006-01-02 15:04"
+	LayoutWords   = "2 January at 15:04"
+	LayoutClock   = "15:04"
+	LayoutDay     = "2 Jan 15:04"
+	LayoutStamp   = "2006-01-02 15:04"
+	LayoutRFC3339 = time.RFC3339
 )
 
-// Words is m as a text says it: "16 November at 05:12 UTC".
-func (m Moment) Words() string { return m.At.UTC().Format(m.Layout) + " UTC" }
+// Words is m as a text says it: "16 November at 05:12 UTC", or
+// "2026-11-16T05:12:00Z".
+func (m Moment) Words() string {
+	if m.Layout == LayoutRFC3339 {
+		return m.At.UTC().Format(time.RFC3339)
+	}
+	return m.At.UTC().Format(m.Layout) + " UTC"
+}
 
 // Moments are the instants of a text, each beside its words.
 type Moments []Moment
 
-// Say is t in layout as a text says it (Moment.Words), kept in m once.
+// Say is t in layout as a text says it (Moment.Words), kept in m once per
+// words: a screen shows the same words as one moment.
 func (m *Moments) Say(t time.Time, layout string) string {
 	at := Moment{At: t.UTC(), Layout: layout}
-	if !slices.Contains(*m, at) {
+	if !slices.ContainsFunc(*m, func(x Moment) bool { return x.Words() == at.Words() }) {
 		*m = append(*m, at)
 	}
 	return at.Words()
+}
+
+// In are the moments of m whose words text says.
+func (m Moments) In(text string) Moments {
+	var out Moments
+	for _, x := range m {
+		if strings.Contains(text, x.Words()) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// momentsJSON is m as a column stores it: NULL for none.
+func momentsJSON(m Moments) any {
+	if len(m) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // momentsOf are the moments a row stores under its key "moments", none for

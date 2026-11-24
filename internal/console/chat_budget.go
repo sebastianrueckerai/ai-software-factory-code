@@ -193,18 +193,19 @@ func fundRow(m factoryd.ChatMessage) bool {
 }
 
 // fundSettle is fund row m's derived state (the notification-settling
-// concept): settled by the first fund at or after it, "funded by <actor>
-// · 15:04", else once the chat stands stopped no more, "moved on".
-func fundSettle(m factoryd.ChatMessage, s chatStop) (bool, string) {
+// concept): settled by the first fund at or after it, "funded by <actor>"
+// at the fund's time, else once the chat stands stopped no more, "moved
+// on" with no time.
+func fundSettle(m factoryd.ChatMessage, s chatStop) (bool, string, time.Time) {
 	for i := len(s.funds) - 1; i >= 0; i-- {
 		if f := s.funds[i]; !f.At.Before(m.At) {
-			return true, factoryd.ReasonLine(factoryd.PokeSettle{Word: "funded", By: f.Actor, At: f.At})
+			return true, factoryd.ReasonLead(factoryd.PokeSettle{Word: "funded", By: f.Actor}), f.At
 		}
 	}
 	if !s.stopped {
-		return true, "moved on"
+		return true, "moved on", time.Time{}
 	}
-	return false, ""
+	return false, "", time.Time{}
 }
 
 // stopRow says the turn's thread's newest row is the chat budget's stop.

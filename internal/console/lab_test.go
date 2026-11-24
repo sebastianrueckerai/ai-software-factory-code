@@ -40,8 +40,8 @@ const labPull, labPullHead = "/api/v1/repos/sf/code/pulls/14", "5b2e7d1c4a9f8e3b
 // TestLab serves the console on a real port over the rig's fakes, seeded
 // as one of labScenes, for scripts/console-lab. GET /lab/scenario/{name}
 // seeds another scenario in place and names the running card the drawer
-// shots open in X-Lab-Drawer. It ends once $CONSOLE_LAB_DIR/stop exists,
-// or after 30 minutes.
+// shots open in X-Lab-Drawer; GET /lab/scenarios names them all. It ends
+// once $CONSOLE_LAB_DIR/stop exists, or after an hour.
 func TestLab(t *testing.T) {
 	if os.Getenv("CONSOLE_LAB") != "1" {
 		t.Skip("the screenshot lab runs with CONSOLE_LAB=1")
@@ -242,6 +242,10 @@ func TestLab(t *testing.T) {
 		w.Header().Set("X-Lab-Drawer", drawer)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /lab/scenarios", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(slices.Sorted(maps.Keys(labScenes)))
+	})
 	mux.HandleFunc("POST /lab/scene", func(w http.ResponseWriter, req *http.Request) {
 		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4<<20))
 		dec.DisallowUnknownFields()
@@ -309,7 +313,7 @@ func TestLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	fmt.Printf("console lab: http://%s/ shows scenario %s; touch %s to stop\n", addr, scenario, stop)
-	for end := time.Now().Add(30 * time.Minute); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+	for end := time.Now().Add(time.Hour); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
 		if _, err := os.Stat(stop); err == nil {
 			return
 		}
@@ -1476,10 +1480,11 @@ func labNext(v *factoryd.RoutineView, now, at, from time.Time) {
 	// soon as factoryd's views have it: under an hour away, the run after
 	// a day or more later, 23 h across the spring's clock change
 	after, more := v.Routine.NextCron(next, time.UTC)
-	v.Next, v.Soon, v.NextWords = now.Add(next.Sub(at)+30*time.Second), next.Sub(at) < time.Hour && (!more || after.Sub(next) >= 23*time.Hour), next.Format("Mon 15:04")
+	v.Next, v.Soon, v.NextLayout = now.Add(next.Sub(at)+30*time.Second), next.Sub(at) < time.Hour && (!more || after.Sub(next) >= 23*time.Hour), "Mon 15:04"
 	if next.Sub(at) >= 7*24*time.Hour {
-		v.NextWords = next.Format("Mon 2 Jan 15:04")
+		v.NextLayout = "Mon 2 Jan 15:04"
 	}
+	v.NextWords = next.Format(v.NextLayout)
 }
 
 // addRoutines gives s the round's routines, their runs and the cards
