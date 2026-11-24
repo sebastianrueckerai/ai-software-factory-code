@@ -1886,6 +1886,30 @@ func TestAFailedCommentOfAPullRequestsCardIsPostedAgain(t *testing.T) {
 	}
 }
 
+// The factory's own close of a pull request ends its card's ask with a row
+// that names the case it ends, as every close of an ask at the human by the
+// factory does: its kind, its reason and the question the human was asked.
+func TestAFactoryClosedPullRequestNamesTheCaseItWithdraws(t *testing.T) {
+	ctx := context.Background()
+	g := newPRCardRig(t, `{"number":5,"state":"closed","merged":false}`)
+	g.prClosedBy = "factory-agent"
+	g.store.cases = append(g.store.cases, Case{ID: 7469, TaskID: "t-pr", Kind: CaseHumanCard, Status: CaseAtHuman})
+	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {
+		t.Fatal(err)
+	}
+	var withdrawn []Event
+	for _, e := range g.rows.rows {
+		if e.Kind == EventQuestionWithdrawn {
+			withdrawn = append(withdrawn, e)
+		}
+	}
+	const reason = "the factory closed pull request #5: the heal pass found it closed by the factory"
+	if len(withdrawn) != 1 || withdrawn[0].Detail["case_id"] != int64(7469) || withdrawn[0].Detail["case_kind"] != "human_card" ||
+		withdrawn[0].Detail["reason"] != reason {
+		t.Fatalf("question_withdrawn %+v, want one naming case 7469 human_card for %q", withdrawn, reason)
+	}
+}
+
 // The heal pass ends a pull request's human card whose closing webhook
 // was lost, as the webhook does but via factoryd: a merge credited to its
 // merger, a close without a merge to its closer, read from the pull

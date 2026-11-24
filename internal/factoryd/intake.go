@@ -1764,11 +1764,18 @@ func (in *Intake) prDecided(ctx context.Context, t Task, pr int64, merged bool, 
 
 // WithdrawPRCard ends human card t, whose pull request pr factoryd closed
 // itself for why: no person decided, so its ask is withdrawn, and the card
-// ends closed. A held card's withdrawal is marked held: its ask reached
-// nobody.
+// ends closed. The withdrawal names the card's live ask (WithdrawnRow). A
+// held card's withdrawal is marked held: its ask reached nobody.
 func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why string) error {
 	reason := fmt.Sprintf("the factory closed pull request #%d: %s", pr, why)
+	c, err := in.Store.NewestAskCase(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("the ask of card %s: %w", t.ID, err)
+	}
 	detail := map[string]any{"reason": reason}
+	if c.ID != 0 {
+		detail = WithdrawnRow(c, reason, nil)
+	}
 	if t.Status == "waiting-agent" {
 		detail["held"] = true
 	}
