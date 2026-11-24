@@ -1057,11 +1057,29 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 
 // A human card's opened card asks its question with its choices as the
 // answers, and its full brief holds what each answer does, rendered as
-// markup.
+// markup. An act stands in the full brief as its own block, exact as
+// written; a question without one shows none.
 func TestAHumanCardsOpenedCardRendersItsQuestionsParts(t *testing.T) {
+	const actBlock = `<h4>What you do outside the factory</h4><pre class="exact">REGISTRY_USER=bot scripts/upstream-files --head &lt;sha&gt;</pre>`
+	for _, act := range []string{"", "REGISTRY_USER=bot scripts/upstream-files --head <sha>"} {
+		page := humanCardPage(t, act)
+		if got := strings.Contains(page, actBlock); got != (act != "") {
+			t.Errorf("with the act %q the full brief holds the act's block: %v, want %v:\n%s", act, got, act != "", page)
+		}
+		if act == "" && strings.Contains(page, "What you do outside the factory") {
+			t.Errorf("a question without an act shows an act's heading:\n%s", page)
+		}
+	}
+}
+
+// humanCardPage is the opened card of a human card whose question carries
+// act, its question's other parts checked as every human card shows them.
+func humanCardPage(t *testing.T, act string) string {
+	t.Helper()
 	r, _ := newRigWithEvents(t)
 	q := factoryd.HumanQuestion{Ask: "Renew the certificate?", Why: "The certificate expires on Friday.",
 		Info:    "## What each answer does\n- Done closes the card\n\n```sh\nrenew --now\n```",
+		Act:     act,
 		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerDone, Label: "I did it"}, {Value: factoryd.AnswerPark, Label: "Not now"}}}
 	card := factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 16, Objective: "Renew the certificate"}
 	r.tasks.tasks = []factoryd.BoardTask{{Task: card, Escalation: q.Ask, Question: &q}}
@@ -1095,6 +1113,7 @@ func TestAHumanCardsOpenedCardRendersItsQuestionsParts(t *testing.T) {
 	if strings.Contains(page, "&lt;h2&gt;") {
 		t.Errorf("the opened card renders the markup as text:\n%s", page)
 	}
+	return page
 }
 
 // The per-kind board fixtures render their asks on the opened card: an

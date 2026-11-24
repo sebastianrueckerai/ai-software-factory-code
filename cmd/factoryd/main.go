@@ -758,7 +758,7 @@ func main() {
 		Chat:           store,
 		ChatTokens:     store,
 		Notes:          store,
-		Escalate: func(ctx context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
+		Escalate: func(ctx context.Context, repository string, q factoryd.HumanQuestion, by, about string) (int64, error) {
 			repo, err := factoryd.SplitRepo(repository)
 			if err != nil {
 				return 0, err
@@ -766,7 +766,11 @@ func main() {
 			if ctx, err = factoryd.WithBriefDocs(ctx, policyLoader.Current().Tree, repository); err != nil {
 				return 0, err
 			}
-			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, repo, q, by, factoryd.Task{Source: factoryd.SourceChat})
+			var facts map[string]any
+			if about != "" {
+				facts = map[string]any{factoryd.FactAbout: about}
+			}
+			t, err := factoryd.EscalateToHumanWith(ctx, store, forgejo, repo, q, by, factoryd.Task{Source: factoryd.SourceChat}, facts)
 			return t.IssueNumber, err
 		},
 		AttachAnalysis: store.AttachAnalysis,

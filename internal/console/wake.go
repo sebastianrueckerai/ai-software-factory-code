@@ -73,7 +73,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	}
 	booked = true // from here a turn of the thread settles the cases: this one, or the one that reads the note
 	c.books.note(t.key(), id, cases)
-	t.wakeCases = slices.Clone(cases)
+	t.wakeCases, t.wakeCards = slices.Clone(cases), factoryd.WakeCards(text)
 	t.detach()
 	t.quiet()
 	t.takeTurn(pos, wait)

@@ -15,6 +15,10 @@ import (
 // as its escalation (roadmap 239).
 const SourceChat = "chat"
 
+// FactAbout is the fact of a chat escalation's ask row, and so of its
+// case, that names the task id of the card or plan the ask is about.
+const FactAbout = "about"
+
 // EscalateToHuman files an escalation on repo as the bot: a human-lane
 // card whose question carries its five parts (the question format), and
 // its question_asked row. card gives the card its source and commit. A
@@ -114,6 +118,9 @@ func questionBody(q HumanQuestion, footer string) string {
 	if q.Recommendation != "" {
 		b.WriteString("\n\nRecommendation: " + q.Recommendation)
 	}
+	if q.Act != "" {
+		b.WriteString("\n\nAct:\n\n" + fenced(q.Act))
+	}
 	if len(q.Choices) > 0 {
 		b.WriteString("\n\nChoices:\n")
 		for _, c := range q.Choices {
@@ -148,7 +155,7 @@ func (a HumanAsk) Event(t Task) Event {
 		"source":   a.Asker,
 		"by":       a.By,
 	})
-	for key, line := range map[string]string{"happened": a.Q.Happened, "waits": a.Q.Waits, "check": a.Q.Check} {
+	for key, line := range map[string]string{"happened": a.Q.Happened, "waits": a.Q.Waits, "check": a.Q.Check, "act": a.Q.Act} {
 		if line != "" {
 			asked[key] = line
 		}
@@ -226,6 +233,9 @@ type HumanQuestion struct {
 	Happened string `json:"happened,omitempty"`
 	Waits    string `json:"waits,omitempty"`
 	Check    string `json:"check,omitempty"`
+	// Act is the exact command or press a human does outside the factory,
+	// "" for none: the card shows it as its own block.
+	Act string `json:"act,omitempty"`
 	// Moments are the instants its texts name, which a screen shows in
 	// the reader's zone.
 	Moments Moments `json:"moments,omitempty"`
