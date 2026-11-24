@@ -607,7 +607,7 @@ func unadmittedLines(files map[string][]byte) []string {
 		} else if host, _, _ = strings.Cut(ref, "/"); host == "docker.io" {
 			host = "registry-1.docker.io"
 		}
-		if !upstreamAdmits(host) {
+		if !admits(upstreamFQDNs, host) {
 			out = append(out, fmt.Sprintf("%s: %s names %s, outside the copy's egress: a commit adds the host to upstreamFQDNs in internal/factoryd/upstream_pod.go", list, ref, host))
 		}
 	}
@@ -622,10 +622,10 @@ func unadmittedLines(files map[string][]byte) []string {
 	return out
 }
 
-// upstreamAdmits says whether an entry of upstreamFQDNs admits host: a
-// matchPattern's `*` stands inside one DNS label, as Cilium's does.
-func upstreamAdmits(host string) bool {
-	for _, e := range upstreamFQDNs {
+// admits says whether an entry of fqdns admits host: a matchPattern's `*`
+// stands inside one DNS label, as Cilium's does.
+func admits(fqdns []any, host string) bool {
+	for _, e := range fqdns {
 		m := e.(map[string]any)
 		if m["matchName"] == host {
 			return true

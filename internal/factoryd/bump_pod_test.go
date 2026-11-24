@@ -8,7 +8,6 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -128,21 +127,13 @@ func TestBumpPodProgramRunsUpstreamBumpOverTheFilesInPlace(t *testing.T) {
 // against the real hosts on 2026-11-24, redirects among them, and those go
 // and npm ask.
 func TestBumpPodEgressAdmitsTheHostsTheLookupReaches(t *testing.T) {
-	admits := func(host string) bool {
-		return slices.ContainsFunc(bumpFQDNs, func(e any) bool {
-			m := e.(map[string]any)
-			p, ok := m["matchPattern"].(string)
-			match, _ := path.Match(p, host)
-			return m["matchName"] == host || ok && match && strings.Count(p, ".") == strings.Count(host, ".")
-		})
-	}
 	for _, host := range []string{
 		"registry-1.docker.io", "auth.docker.io", "ghcr.io", "quay.io", "registry.k8s.io", "us-west2-docker.pkg.dev",
 		"code.forgejo.org", "factory.talos.dev", "api.github.com", "github.com", "release-assets.githubusercontent.com",
 		"nodejs.org", "go.dev", "dl.google.com", "vuln.go.dev", "apt.postgresql.org",
 		"proxy.golang.org", "sum.golang.org", "registry.npmjs.org",
 	} {
-		if !admits(host) {
+		if !admits(bumpFQDNs, host) {
 			t.Errorf("the bump pod's egress does not admit %s", host)
 		}
 	}

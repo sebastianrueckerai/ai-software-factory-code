@@ -122,6 +122,16 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		}
 		return filed(t.ID, ref.Number, told(fmt.Sprintf("%s Filed #%d %q.", NothingForYou, ref.Number, rt.Title)))
 	case policy.FilesPullRequest:
+		if rt.Pass == policy.PassBump {
+			t, ref, err := r.bumpPass(ctx, p, rt, brief, provenance)
+			if err != nil {
+				return RoutineRunResult{}, err
+			}
+			if t.ID == "" {
+				return end("no change", "no pin moved", "")
+			}
+			return filed(t.ID, ref.Number, told(fmt.Sprintf("%s Filed #%d %q.", NothingForYou, ref.Number, rt.Title)))
+		}
 		cards, err := r.TemplatePass(ctx)
 		if err != nil {
 			return RoutineRunResult{}, err

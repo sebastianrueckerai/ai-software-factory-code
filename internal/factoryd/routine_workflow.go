@@ -50,7 +50,8 @@ func RoutineRunWorkflow(ctx workflow.Context, in RoutineRunInput) error {
 		return terminalError("routine %s/%s: the run has no due time", in.Project, in.Routine)
 	}
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout:    5 * time.Minute,
+		// a bump's run holds its pod and the copy's
+		StartToCloseTimeout:    routineRunBound(),
 		ScheduleToCloseTimeout: 24 * time.Hour,
 		RetryPolicy:            &temporal.RetryPolicy{InitialInterval: 10 * time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Minute, NonRetryableErrorTypes: []string{errTerminal}},
 	})
@@ -67,6 +68,13 @@ func RoutineRunWorkflow(ctx workflow.Context, in RoutineRunInput) error {
 		workflow.GetLogger(ctx).Error("routine run: record the failure", "project", in.Project, "routine", in.Routine, "error", ferr)
 	}
 	return err
+}
+
+// routineRunBound is how long a run's activity may take: the bump pod's
+// bound and the copy pod's, each with its start, and 5 minutes for the
+// forge's calls.
+func routineRunBound() time.Duration {
+	return bumpDeadline + upstreamDeadline + 2*upstreamStartGrace + 5*time.Minute
 }
 
 // failureWords are an activity's failure as a run's note: the

@@ -39,7 +39,15 @@ type codeIssues struct {
 
 func (c *codeIssues) srv(t *testing.T) *Forgejo {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(c.handler(t))
+	t.Cleanup(srv.Close)
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+}
+
+// handler serves the issue API.
+func (c *codeIssues) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/ai-software-factory-code/")
@@ -113,9 +121,7 @@ func (c *codeIssues) srv(t *testing.T) *Forgejo {
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	}
 }
 
 // codeProject is the fixture tree's code project, which holds the weekly
