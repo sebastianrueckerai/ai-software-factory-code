@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -72,5 +73,37 @@ func TestDrainCancelsACallPastItAndLetsItSettle(t *testing.T) {
 	}
 	if d := time.Since(begin); d > time.Second {
 		t.Fatalf("the shutdown took %s, want the drain plus the settling only", d)
+	}
+}
+
+// While the database is unreachable, the store wait retries instead of
+// fatal on the first error: a failover or a node flap made the gateway
+// crash-loop for a transient fault. A SIGTERM (a roll) ends the wait.
+func TestOpenStoreWaitRetriesUntilTheWaitPasses(t *testing.T) {
+	start := time.Now()
+	if _, err := openStoreWait(context.Background(), "postgres://postgres@127.0.0.1:1/postgres", 400*time.Millisecond, 100*time.Millisecond); err == nil {
+		t.Fatal("openStoreWait on a closed port: err = nil, want the dial error")
+	}
+	if took := time.Since(start); took < 400*time.Millisecond {
+		t.Fatalf("openStoreWait gave up after %s, want retries past the 400 ms wait", took)
+	}
+}
+
+func TestOpenStoreWaitEndsOnACancel(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := openStoreWait(ctx, "postgres://postgres@127.0.0.1:1/postgres", time.Minute, time.Hour)
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	stop()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("openStoreWait after a cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancel did not end the wait")
 	}
 }
