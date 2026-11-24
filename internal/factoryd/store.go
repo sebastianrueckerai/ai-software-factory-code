@@ -367,8 +367,9 @@ type Store interface {
 	// same write clears its queue reason and queue_since. A held card is
 	// stamped not: errHeld.
 	SetAdmitted(ctx context.Context, id string) error
-	// SetCardHold and EndCardHold put a human's hold on a card that has
-	// not started, and end it (PGStore's).
+	// SetCardHold and EndCardHold put a human's hold on a card Holdable
+	// names (queued and never admitted, queued to resume, running, or in
+	// waiting-deps on an open dependency), and end it (PGStore's).
 	SetCardHold(ctx context.Context, id string, h CardHold) (bool, error)
 	EndCardHold(ctx context.Context, id, release string) (bool, error)
 	// HeldOn are the cards a hold keeps (Held) until card release ends

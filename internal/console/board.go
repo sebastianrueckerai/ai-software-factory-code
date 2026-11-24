@@ -3045,6 +3045,13 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	id, action, named := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("case_id")
 	field := func(name string) string { return strings.Join(r.PostForm[action+"."+name], "\n") }
 	if named == "" {
+		if a, _, _ := strings.Cut(action, "/"); a == factoryd.AnswerHold {
+			// the press waits for the live session to take its stop; the
+			// server's WriteTimeout would cut the answer after a minute
+			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(factoryd.HoldAskWait + time.Minute)); err != nil {
+				log.Printf("console: a hold press keeps the server's write deadline: %v", err)
+			}
+		}
 		_, err := c.doCardAnswer(r.Context(), button(r), id, action, field)
 		roomPressed(w, action, err)
 		c.pressed(w, r, err)

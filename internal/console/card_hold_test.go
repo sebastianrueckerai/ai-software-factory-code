@@ -256,6 +256,41 @@ func TestHoldARunningCardFromTheBoard(t *testing.T) {
 	checkRows(t, r.events, before, wantHeld, wantHeld)
 }
 
+// A press waits for the live session to take its stop: past the server's
+// write timeout the press still answers.
+func TestAHoldPressOutlivesTheWriteTimeout(t *testing.T) {
+	r, _ := newWritesRig(t)
+	withPlan(r)
+	startedCards(r)
+	r.holdStopped = true
+	ck, s := r.loggedIn(t)
+	hold := r.c.cfg.HoldCard
+	r.c.cfg.HoldCard = func(ctx context.Context, id, release, reason, by string) (factoryd.HoldResult, error) {
+		time.Sleep(2 * time.Second)
+		return hold(ctx, id, release, reason, by)
+	}
+	srv := httptest.NewUnstartedServer(r.c)
+	srv.Config.WriteTimeout = time.Second
+	srv.Start()
+	t.Cleanup(srv.Close)
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {"hold_card/started"}, "hold_card/started.note": {"out of the way"}}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/tasks/t-run/resolve", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(ck)
+	client := srv.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("the press past the write timeout = %v, want its answer", err)
+	}
+	resp.Body.Close()
+	equal(t, "the Put on hold button", []any{resp.StatusCode, resp.Header.Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
+	equal(t, "the seam", r.holdCalls, []string{"t-run||out of the way|sebastian"})
+}
+
 // A running card between sessions has no live session to stop: the seam
 // answers Held alone, and the answer says the card waits before its next
 // session. The row carries no stopped.

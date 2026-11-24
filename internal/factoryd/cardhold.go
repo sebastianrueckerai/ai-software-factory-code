@@ -249,13 +249,13 @@ func cardHoldWait(ctx context.Context, store Store, t Task) (string, error) {
 // Stopped, its live session took the ask to stop.
 type HoldResult struct{ Held, Stopped bool }
 
-// holdAskWait bounds how long a press waits for the live session to take
+// HoldAskWait bounds how long a press waits for the live session to take
 // its ask: a session reads none while it pushes.
-const holdAskWait = 10 * time.Minute
+const HoldAskWait = 10 * time.Minute
 
 // HoldCard puts card id on hold for by, a human, for reason, until a
 // human releases it or release ("" for none) ends done or merged. A
-// running card's live session is asked to stop, for up to holdAskWait
+// running card's live session is asked to stop, for up to HoldAskWait
 // however the press's own request ends; one between sessions, or one that
 // took no ask by then, is signalled (SignalHeld), so a wait that holds its
 // slot ends. Held false: the card is in no state to take a hold.
@@ -272,7 +272,7 @@ func (r *Runner) HoldCard(ctx context.Context, id, release, reason, by string) (
 		return HoldResult{Held: true}, nil
 	}
 	ctx = context.WithoutCancel(ctx)
-	ask, cancel := context.WithTimeout(ctx, holdAskWait)
+	ask, cancel := context.WithTimeout(ctx, HoldAskWait)
 	defer cancel()
 	switch err := r.EscalateSession(ask, id, holdAsk(h)); {
 	case err == nil:
