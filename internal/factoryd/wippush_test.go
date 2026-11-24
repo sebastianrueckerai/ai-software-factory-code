@@ -1058,27 +1058,33 @@ func seedGit(dir, stdin string, args ...string) (string, error) {
 
 // shipsTree makes the fake pod ship a WIP commit on the start whose tree
 // build makes in the seed repository from objects alone: no file reaches
-// the disk, so the work of a test is the size of its objects.
-func (s *wipServe) shipsTree(build func(seed string) (string, error)) {
-	s.ship = func(i int, _ string) (string, []byte, error) {
-		tree, err := build(s.seed)
+// the disk, so the work of a test is the size of its objects. The commit
+// and its bundle are built here, before the session, so the ask's bound
+// (wipAskTimeout) times the pod's answer alone, never git's work on a wide
+// tree, which takes tens of seconds on a loaded CI runner.
+func (s *wipServe) shipsTree(t *testing.T, build func(seed string) (string, error)) {
+	t.Helper()
+	git := func(env []string, args ...string) string {
+		t.Helper()
+		out, err := wipGitRun(s.seed, env, args...)
 		if err != nil {
-			return "", nil, err
+			t.Fatal(err)
 		}
-		commit, err := wipGitRun(s.seed, ruleIdentity, "commit-tree", tree, "-p", s.base, "-m", "wip")
-		if err != nil {
-			return "", nil, err
-		}
-		if _, err := wipGitRun(s.seed, nil, "update-ref", "refs/heads/wip", commit); err != nil {
-			return "", nil, err
-		}
-		file := filepath.Join(s.dir, "tree.bundle")
-		if _, err := wipGitRun(s.seed, nil, "bundle", "create", file, s.base+"..refs/heads/wip"); err != nil {
-			return "", nil, err
-		}
-		body, err := os.ReadFile(file)
-		return commit, body, err
+		return out
 	}
+	tree, err := build(s.seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := git(ruleIdentity, "commit-tree", tree, "-p", s.base, "-m", "wip")
+	git(nil, "update-ref", "refs/heads/wip", commit)
+	file := filepath.Join(s.dir, "tree.bundle")
+	git(nil, "bundle", "create", file, s.base+"..refs/heads/wip")
+	body, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ship = func(int, string) (string, []byte, error) { return commit, body, nil }
 }
 
 // Work too large for any card is refused before any diff or listing reads
@@ -1086,19 +1092,20 @@ func (s *wipServe) shipsTree(build func(seed string) (string, error)) {
 // inflates to 700 MiB), a directory of 100,000 entries (a tree object over
 // the tree bound), 60,000 files in small directories (over the file bound
 // of the whole tree), and one 7 MiB blob under ten names (over the blob
-// bound of the whole tree). The trees are built from objects, so no test
-// waits on the disk. The failing step is the size check, and git never ran
-// diff or read-tree on it.
+// bound of the whole tree). The trees are built from objects before the
+// session, so no test waits on the disk and no ask waits on the build. The
+// failing step is the size check, and git never ran diff or read-tree on
+// it.
 func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
-	noEdit := func(string) {}
-	for name, tc := range map[string]struct {
-		edit func(dir string)
-		tree func(seed string) (string, error)
-	}{
-		"file-of-newlines": {edit: func(dir string) {
-			os.WriteFile(filepath.Join(dir, "nl.txt"), bytes.Repeat([]byte("\n"), 16<<20), 0o644)
-		}},
-		"many-files": {edit: noEdit, tree: func(seed string) (string, error) {
+	for name, tree := range map[string]func(seed string) (string, error){
+		"file-of-newlines": func(seed string) (string, error) {
+			blob, err := seedGit(seed, strings.Repeat("\n", 16<<20), "hash-object", "-w", "--stdin")
+			if err != nil {
+				return "", err
+			}
+			return seedGit(seed, "100644 blob "+blob+"\tnl.txt\n", "mktree")
+		},
+		"many-files": func(seed string) (string, error) {
 			empty, err := seedGit(seed, "", "hash-object", "-w", "--stdin")
 			if err != nil {
 				return "", err
@@ -1116,8 +1123,8 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 				fmt.Fprintf(&top, "040000 tree %s\td%02d\n", id, d)
 			}
 			return seedGit(seed, top.String(), "mktree")
-		}},
-		"ten-copies-of-a-blob": {edit: noEdit, tree: func(seed string) (string, error) {
+		},
+		"ten-copies-of-a-blob": func(seed string) (string, error) {
 			blob, err := seedGit(seed, string(make([]byte, 7<<20)), "hash-object", "-w", "--stdin")
 			if err != nil {
 				return "", err
@@ -1127,8 +1134,8 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 				fmt.Fprintf(&top, "100644 blob %s\tcopy%d.bin\n", blob, i)
 			}
 			return seedGit(seed, top.String(), "mktree")
-		}},
-		"tree-bound-alone": {edit: noEdit, tree: func(seed string) (string, error) {
+		},
+		"tree-bound-alone": func(seed string) (string, error) {
 			// 40,000 entries with 40-character names: a 2.7 MB tree, over the tree
 			// bound and under every other bound
 			empty, err := seedGit(seed, "", "hash-object", "-w", "--stdin")
@@ -1144,8 +1151,8 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 				return "", err
 			}
 			return seedGit(seed, "040000 tree "+id+"\twide\n", "mktree")
-		}},
-		"wide-tree": {edit: noEdit, tree: func(seed string) (string, error) {
+		},
+		"wide-tree": func(seed string) (string, error) {
 			empty, err := seedGit(seed, "", "hash-object", "-w", "--stdin")
 			if err != nil {
 				return "", err
@@ -1159,13 +1166,11 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 				return "", err
 			}
 			return seedGit(seed, "040000 tree "+id+"\twide\n", "mktree")
-		}},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			runner, objects, serve := wipRig(t, nil, tc.edit)
-			if tc.tree != nil {
-				serve.shipsTree(tc.tree)
-			}
+			runner, objects, serve := wipRig(t, nil, func(string) {})
+			serve.shipsTree(t, tree)
 			version := testPolicyVersion()
 			version.Document.Risk.LargeLines = 1000
 			runner.cfg.Policy = func() policy.Version { return version }
