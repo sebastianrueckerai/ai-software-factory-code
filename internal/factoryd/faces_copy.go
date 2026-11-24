@@ -403,7 +403,7 @@ func waitEffect(f Facts) string {
 		return "The plan stays open until someone closes it."
 	}
 	if asked, err := time.Parse(time.RFC3339, factString(f.Case, "asked_at")); err == nil && f.Case.Kind == CaseAgentRequestInfo {
-		return "The card keeps waiting for the author's answer until " + TimeWords(asked.Add(infoWait)) +
+		return "The card keeps waiting for the author's answer until " + f.say(asked.Add(infoWait), LayoutWords) +
 			", then its issue closes as not reproducible."
 	}
 	return ""
@@ -423,12 +423,16 @@ func capReset(f Facts) string {
 	default:
 		return ""
 	}
-	at := cmp.Or(f.Case.OpenedAt, time.Now())
+	return f.say(CapTurn(decision, capFrom(f)), LayoutWords)
+}
+
+// capFrom is when the cap a card waits on bound: when its case opened, or
+// now at a question, which opened before its cap bound.
+func capFrom(f Facts) time.Time {
 	if slices.Contains(questionKinds, f.Case.Kind) {
-		// the question opened before its cap bound: the cap is today's
-		at = time.Now()
+		return time.Now()
 	}
-	return TimeWords(CapTurn(decision, at))
+	return cmp.Or(f.Case.OpenedAt, time.Now())
 }
 
 // CaseFaces are the faces of every case kind.
@@ -1117,12 +1121,14 @@ func budgetWhy(f Facts) string {
 // wait's reason name the commit that raises the cap. At an agent's
 // question, the question comes back.
 func capWhy(f Facts) string {
-	count, turn := "today's count", "at 00:00 UTC"
+	count, turn := "today's count", ""
 	switch f.Kind {
 	case CaseMonthCap:
 		count, turn = "the month's count", "when the month turns"
 	case CaseProjectCap:
 		count, turn = "the project's month count", "when the month turns"
+	default:
+		turn = "at " + f.say(CapTurn(policy.RefusedDayCap, capFrom(f)), LayoutClock)
 	}
 	if slices.Contains(questionKinds, f.Case.Kind) {
 		return fmt.Sprintf("Reset %s in the status panel to have the agent's question back sooner, or it comes back %s.", count, turn)
@@ -2011,15 +2017,15 @@ var criteriaFace = FaceSpec{
 		case stateHuman:
 			s.Left = "No human judged it yet."
 		case stateRunning:
-			s.Happened, s.Left = fmt.Sprintf("The tests run now, as %s asked at %s.", askedBy(run.By), runStamp(run.At)), "Each result lands on its promise."
+			s.Happened, s.Left = fmt.Sprintf("The tests run now, as %s asked at %s.", askedBy(run.By), f.say(run.At, LayoutStamp)), "Each result lands on its promise."
 		case stateNoRoom:
 			s.Happened = fmt.Sprintf("The last card had no room under its spend limit for the tests %s asked for, so they did not run.", askedBy(run.By))
 			s.Left = "A new card brings a budget of its own."
 		case stateCut:
-			s.Happened = line(fmt.Sprintf("The tests %s asked for at %s stopped before they finished: %s.", askedBy(run.By), runStamp(run.At), cmp.Or(run.Why, "no reason was recorded")))
+			s.Happened = line(fmt.Sprintf("The tests %s asked for at %s stopped before they finished: %s.", askedBy(run.By), f.say(run.At, LayoutStamp), cmp.Or(run.Why, "no reason was recorded")))
 			s.Left = "No test checked it."
 		case stateRanPast:
-			s.Happened, s.Left = fmt.Sprintf("The tests ran at %s, but left no result for it.", runStamp(run.At)), "No test checked it."
+			s.Happened, s.Left = fmt.Sprintf("The tests ran at %s, but left no result for it.", f.say(run.At, LayoutStamp)), "No test checked it."
 		case stateRunnable:
 			s.Happened, s.Left = line(factString(f.Case, "not_run")), "No test checked it."
 		case stateNoTest:
@@ -2171,9 +2177,6 @@ func askedBy(by string) string {
 	}
 	return by
 }
-
-// runStamp is a run's time as a face names it.
-func runStamp(t time.Time) string { return t.UTC().Format("2006-01-02 15:04") + " UTC" }
 
 // resourceOf is the resource a request on the case asks for.
 func resourceOf(f Facts) resourceFacts {
@@ -2376,7 +2379,7 @@ func flagStory(f Facts) Story {
 	}
 	var waits []string
 	for _, d := range f.Dependencies {
-		waits = append(waits, d.waitSentence())
+		waits = append(waits, d.waitSentence(f))
 	}
 	if l := line(strings.Join(waits, " ")); l != "" {
 		s.Left = l
@@ -2391,8 +2394,8 @@ func endedStory(f Facts) Story {
 }
 
 // waitSentence is what the card waits on in dependency d, which waits on a
-// human's answer or holds its status since a time.
-func (d DepFact) waitSentence() string {
+// human's answer or holds its status since a time, as the face of f says it.
+func (d DepFact) waitSentence(f Facts) string {
 	what := "card"
 	if d.Plan {
 		what = "plan"
@@ -2402,7 +2405,7 @@ func (d DepFact) waitSentence() string {
 		s = fmt.Sprintf("The card waits on %s #%d, which waits on a human to answer %q", what, d.Issue, d.Ask)
 	}
 	if d.Since != nil {
-		s += " since " + d.Since.UTC().Format("2006-01-02 15:04") + " UTC"
+		s += " since " + f.say(*d.Since, LayoutStamp)
 	}
 	return s + "."
 }

@@ -450,10 +450,6 @@ type card struct {
 	// RollID is the roll task a merged card waits for.
 	RollID string
 	Reason string // an escalation's reason, which the find reads
-	// Question is the escalation's question: a human card's ask is its
-	// title, and the activity line names it. nil on a card whose ask no
-	// template shaped.
-	Question *factoryd.HumanQuestion
 	// MayExtend: the viewer may give the live agent card more room,
 	// MayReplan send it back to the planner, MayRetry file the failed plan
 	// card again; each an approver's action.
@@ -476,8 +472,6 @@ type card struct {
 	PlanURL                   string // a plan's card: the plan's issue on the forge
 	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
-	Activity                  string // the task's newest event as one line, or the escalation's question
-	WaitingForActivity        bool   // the activity line stands for the wait's reason
 	// HoldLine is a human's hold on the card as the board words it, ""
 	// for none.
 	HoldLine string
@@ -499,7 +493,7 @@ type card struct {
 	// cost of them, "" on a task without calls.
 	CallsText string
 	// Stale is a card without an event for the stale window: an amber
-	// ring, and these words on its activity line.
+	// ring, and these words on the opened card's stale chip.
 	Stale     bool
 	StaleText string
 	// stepAt is the card's newest timeline step's time: the work its own
@@ -517,7 +511,7 @@ type card struct {
 	// ladder's short backoff; Fine are its fine states as chips.
 	Retrying bool
 	Provider bool
-	Frozen   string
+	Frozen   template.HTML
 	Fine     []fine
 	// endAt is the moment the card's clocks were aged to: now, or its
 	// end once it finished.
@@ -551,7 +545,10 @@ type card struct {
 func (k card) Routine() bool { return k.Source == factoryd.SourceRoutine }
 
 // fine is a card's fine state as a chip in the pill's hues.
-type fine struct{ Words, Class string }
+type fine struct {
+	Words template.HTML
+	Class string
+}
 
 // fineStates are what k's column and pill leave unsaid: retrying, waiting
 // on the author and stale. Failed and closed are the pill's own words.
@@ -715,7 +712,7 @@ type checks struct {
 	count              string
 	attempt            string
 	retrying, provider bool
-	frozen             string
+	frozen             template.HTML
 	freeze             []frozenSpan
 	stepAt             time.Time
 	at                 time.Time
@@ -1482,9 +1479,9 @@ func (k *card) splitClocks(freezes []frozenSpan) {
 // freezeOf is what steps say of a provider-limit freeze: the span of
 // every provider_refused step whose backoff outlasts the ladder's, oldest
 // first, and the newest refusal's words for the chip — "frozen until
-// 17:04 UTC: …" with the provider's words — "" when it is the ladder's
+// 18:04 CET: …" with the provider's words — "" when it is the ladder's
 // short backoff, or its reset has passed.
-func freezeOf(steps []map[string]any, now time.Time) ([]frozenSpan, string) {
+func freezeOf(steps []map[string]any, now time.Time) ([]frozenSpan, template.HTML) {
 	var spans []frozenSpan
 	last := -1
 	for i, m := range steps {
@@ -1505,9 +1502,9 @@ func freezeOf(steps []map[string]any, now time.Time) ([]frozenSpan, string) {
 	if backoff <= frozenLimit || at.IsZero() || !at.Add(backoff).After(now) {
 		return spans, ""
 	}
-	words := "frozen until " + at.Add(backoff).UTC().Format("15:04 UTC")
+	words := "frozen until " + moment(at.Add(backoff), momentClock)
 	if w := strings.TrimSpace(textAt(m, "words")); w != "" {
-		words += ": " + textutil.Truncate(w, 120)
+		words += escaped(": " + textutil.Truncate(w, 120))
 	}
 	return spans, words
 }
@@ -1809,7 +1806,7 @@ func (v *boardView) approves(repository string) bool {
 }
 
 // boardCard is bt's card as the board shows it, in a column or in Needs
-// you, and as the card fragment swaps it in; its activity line, checks
+// you, and as the card fragment swaps it in; its stale ring, checks
 // and forms follow from finishCards. Place is where the board puts it:
 // the script swaps a card whose place changed with the whole board.
 func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
@@ -1852,7 +1849,6 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Helper = &h
 	}
 	if v.humanLane(t) {
-		k.Question = bt.Question
 		if bt.Question != nil {
 			k.Title = bt.Question.Ask
 		}
@@ -1876,27 +1872,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	k.MayReplan = factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository)
 	k.MayExtend = v.approves(t.Repository) && extendable(t)
 	if v.escalated(t) {
-		k.Reason, k.Question = cardReason(bt.Escalation), bt.Question
+		k.Reason = cardReason(bt.Escalation)
 	}
 	return k
-}
-
-// activityLine is event e on its card's activity line: what happened in
-// words, by whom, which way and when; a task_status row names the status and gate
-// it left the task in.
-func activityLine(e factoryd.Event) string {
-	at := e.At.UTC().Format("15:04")
-	if e.Kind == factoryd.EventTaskStatus {
-		words := fmt.Sprintf("status %v", e.Detail["status"])
-		if gate, _ := e.Detail["gate"].(string); gate != "" {
-			words += ", gate " + gate + ","
-		}
-		return words + " at " + at
-	}
-	if e.Kind == factoryd.EventIssueClosedWithoutWriteAccess {
-		return fmt.Sprintf("Ignored the close by %s: %s cannot write the repository.", e.Actor, e.Actor)
-	}
-	return fmt.Sprintf("%s by %s via %s at %s", strings.ReplaceAll(e.Kind, "_", " "), e.Actor, e.Via, at)
 }
 
 // maxCardReason bounds what a card shows of an escalation body even
@@ -1929,7 +1907,7 @@ func cardReason(body string) string {
 }
 
 // finishCards fills what each card's face reads per render rather than
-// from its task: the newest event's activity line and the stale ring, the
+// from its task: the failure its newest event names and the stale ring, the
 // checks count and the retry, the fine states, and for a writer of the
 // card's project the summary and accent forms with the board's filter.
 // each visits every card once.
@@ -1945,17 +1923,13 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	if err != nil {
 		log.Printf("console: newest events: %v", err)
 	}
-	// A card with no event keeps its escalation's first line, the
-	// question it waits on an answer to; a card with neither claims
-	// nothing. On a waiting card that reason is what the human owes it:
-	// it stands in place of the newest event. The stale ring — one whose
-	// newest activity is older than the stale window wears it, the
-	// newest of its newest event and its newest timeline step (its own
-	// session's last report), one that never had either its own age —
-	// comes only on a card that is running its work: never a final one,
-	// a queued one or one that waits for a human's answer; a card parked
-	// for a slot owes no work while it waits. A helper task at work on the
-	// card is the card's activity.
+	// The stale ring — one whose newest activity is older than the stale
+	// window wears it, the newest of its newest event and its newest
+	// timeline step (its own session's last report), one that never had
+	// either its own age — comes only on a card that is running its work:
+	// never a final one, a queued one or one that waits for a human's
+	// answer; a card parked for a slot owes no work while it waits. A
+	// helper task at work on the card is the card's activity.
 	setActivity := func(k *card) {
 		lastAt := func(at time.Time) time.Time {
 			last := []time.Time{at, k.stepAt}
@@ -1966,14 +1940,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		}
 		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
 		live := !factoryd.Final(k.Status) && k.Status != "queued" && k.Status != "waiting-human" && k.Status != "waiting-poster" && k.MergeBehind == 0 && k.HeldFor == 0
-		reason := func() string {
-			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
-			return q
-		}
-		// a human card's title is its ask
-		titled := k.Kind == "human" && k.Question != nil
 		if e, ok := newest[k.ID]; ok {
-			k.Activity = activityLine(e)
 			if why, _ := e.Detail["reason"].(string); e.Kind == factoryd.EventTaskEnded && k.Status == "failed" {
 				k.Failure = failureClause(why)
 				if s, ok := v.byID[factoryd.SuccessorID(k.ID)]; ok && s.IssueNumber > 0 {
@@ -1988,28 +1955,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			if k.Stale {
 				k.StaleText = "nothing for over " + minutes(time.Since(lastAt(e.At)))
 			}
-			// a shaped question's face carries its ask alone — its why
-			// belongs to the drawer, never the board
-			switch {
-			case titled:
-			case k.Question != nil && strings.HasPrefix(k.Status, "waiting"):
-				k.Activity, k.WaitingForActivity = askline(k.Question.Ask), true
-			case k.Reason != "" && strings.HasPrefix(k.Status, "waiting"):
-				k.Activity = reason()
-				k.WaitingForActivity = true
-			}
 			return
 		}
 		k.Stale = live && ring(time.Since(lastAt(k.CreatedAt)))
 		if k.Stale {
 			k.StaleText = "no event yet, " + minutes(time.Since(lastAt(k.CreatedAt))) + " on the card"
-		}
-		switch {
-		case titled:
-		case k.Question != nil:
-			k.Activity = askline(k.Question.Ask)
-		case k.Reason != "":
-			k.Activity = reason()
 		}
 	}
 	c.faceTimelines(ctx, each)

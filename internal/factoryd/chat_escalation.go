@@ -97,7 +97,7 @@ func askQuestion(ask string) string {
 func Refaced(t Task, q HumanQuestion) (Task, map[string]any) {
 	_, body, _ := strings.Cut(t.Objective, "\n\n")
 	t.Objective, t.Why = IssueObjective(askTitle(q), body), q.Why
-	return t, map[string]any{"ask": q.Ask, "question": askQuestion(q.Ask), "why": q.Why, "happened": q.Happened}
+	return t, map[string]any{"ask": q.Ask, "question": askQuestion(q.Ask), "why": q.Why, "happened": q.Happened, "moments": q.Moments}
 }
 
 // questionBody is a human card's text: the question's parts in order but
@@ -147,6 +147,9 @@ func (a HumanAsk) Event(t Task) Event {
 		if line != "" {
 			asked[key] = line
 		}
+	}
+	if len(a.Q.Moments) > 0 {
+		asked["moments"] = a.Q.Moments
 	}
 	if a.Q.Recommendation != "" {
 		asked["recommendation"], asked["recommended_by"] = a.Q.Recommendation, cmp.Or(a.Q.Source, "the factory")
@@ -218,6 +221,9 @@ type HumanQuestion struct {
 	Happened string `json:"happened,omitempty"`
 	Waits    string `json:"waits,omitempty"`
 	Check    string `json:"check,omitempty"`
+	// Moments are the instants its texts name, which a screen shows in
+	// the reader's zone.
+	Moments Moments `json:"moments,omitempty"`
 }
 
 // The caps an escalation names.

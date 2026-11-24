@@ -12,7 +12,12 @@ decimals: a task's model calls cost fractions of a cent. Every time a
 screen shows is a `<time datetime>` of the instant in UTC whose text the
 server writes in Europe/Berlin (CET, CEST) and `static/time.js` writes
 again in the browser's own zone, on load and after every swap; the
-periods the caps and the ledger count still turn at 00:00 UTC.
+periods the caps and the ledger count still turn at 00:00 UTC. A card's
+ask says its times in UTC words, as the agents, the card's issue and the
+inbox read them, and keeps each instant beside its words (`moments` on
+the ask's row and its stored face). The small card and the opened card
+show those words as such a `<time>`. The text of a message, such as an
+inbox row or a refused press, keeps its UTC words.
 
 - Login: Forgejo OAuth2 authorization code with PKCE (S256), confidential
   client `factory-console` (secret `console-oauth`: `client_id`,

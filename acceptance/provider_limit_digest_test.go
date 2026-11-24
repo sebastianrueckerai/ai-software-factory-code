@@ -97,8 +97,9 @@ func plFlagCases(t *testing.T, r *parkRig, id string) []string {
 // the quiet bound nor the check-in's or the grant's flags fire: no digest
 // holds a flag and the monitor's sweep opens no case. Ten hours in, the
 // face splits the clocks — "3 h 12 min, frozen 6 h 48 min", Total the same
-// — and its chip shows the words and the reset; the life records the
-// frozen interval by its length, the 7 h backoff. [digest_quiet_in_freeze]
+// — and its chip shows the words and the reset, a moment in Europe/Berlin
+// until the browser reads it in its own zone; the life records the frozen
+// interval by its length, the 7 h backoff. [digest_quiet_in_freeze]
 func TestDigestQuietInsideFreeze(t *testing.T) {
 	r := newParkRig(t)
 	ctx := context.Background()
@@ -146,7 +147,11 @@ func TestDigestQuietInsideFreeze(t *testing.T) {
 
 	ck := r.session(t)
 	reset := tenHours.Add(192*time.Minute + 7*time.Hour)
-	chip := "frozen until " + reset.UTC().Format("15:04 UTC") + ": " + plFrozenWords
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chip := `frozen until <time datetime="` + reset.UTC().Format(time.RFC3339) + `" data-layout="15:04 MST">` + reset.In(berlin).Format("15:04 MST") + "</time>: " + plFrozenWords
 	board := r.get(t, "/board", ck).Body.String()
 	for _, want := range []string{`building</span> 3 h 12 min, frozen 6 h 48 min</span>`, chip} {
 		if !strings.Contains(board, want) {

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FieldKind is what a field of an answer takes.
@@ -100,6 +101,17 @@ type Facts struct {
 	Card      Task
 	Case      Case
 	Recommend Recommendation
+	// said, set by FaceOf, keeps the instants the face's words name (say)
+	said *Moments
+}
+
+// say is t in layout as a face's words say it (Moment.Words); FaceOf keeps
+// the instant beside them.
+func (f Facts) say(t time.Time, layout string) string {
+	if f.said == nil {
+		return Moment{At: t, Layout: layout}.Words()
+	}
+	return f.said.Say(t, layout)
 }
 
 // Recommendation is an answer a rung or the case writer recommends: its
@@ -114,7 +126,7 @@ type Recommendation struct {
 // story, at most four answers with the suggested one first, the ask's own
 // answers past the four in Over, which the opened card shows with them, and
 // every other answer that holds in More. Findings are the texts of the
-// findings its ask and story count.
+// findings its ask and story count, Moments the instants its texts name.
 type AskFace struct {
 	Ask, Why                        string
 	Story                           Story
@@ -125,6 +137,7 @@ type AskFace struct {
 	SuggestedArgs map[string]any
 	More          []Answer
 	Findings      []string
+	Moments       Moments
 }
 
 // factoryNames are the names of the factory's own machinery, which no face
@@ -305,6 +318,8 @@ func ownAsk(c Case, t Task) string {
 // action is there; a request's and a plan's ask offer only their own.
 func FaceOf(c Case, f Facts) AskFace {
 	question := cmp.Or(f.Kind, c.Kind)
+	said := momentsOf(c.Facts)
+	f.said = &said
 	c, f = facing(c, f)
 	spec := faceSpecOf(c, f)
 	face := AskFace{Ask: spec.Ask(f), Why: spec.Why(f), Findings: openFindingTexts(f.CaseFacts)}
@@ -390,6 +405,7 @@ func FaceOf(c Case, f Facts) AskFace {
 			face.More = append(face.More, a)
 		}
 	}
+	face.Moments = said
 	if step := HelperStep(f.Card.Source); step != "" {
 		return face.ofStep(step)
 	}

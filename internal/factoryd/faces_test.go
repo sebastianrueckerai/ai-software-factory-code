@@ -3,6 +3,7 @@ package factoryd_test
 import (
 	"fmt"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -318,9 +319,11 @@ func TestBudgetFloorWithFindingsAsksOnce(t *testing.T) {
 // A card that waits on a spending limit says when it goes on by itself:
 // its Not now names the reset after the stop, and it offers no raise to
 // go on. A stop at 18:00 on 30 November resets on the next day and month
-// alike.
+// alike. The face keeps the reset beside its words, which a screen shows
+// in the reader's zone, and a day cap's why line its clock.
 func TestACapWaitSaysWhenItGoesOnByItself(t *testing.T) {
 	opened := time.Date(2026, 11, 30, 18, 0, 0, 0, time.UTC)
+	turn := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
 	for kind, when := range map[factoryd.CaseKind]string{factoryd.CaseMonthCap: "1 December at 00:00 UTC", factoryd.CaseDayCap: "1 December at 00:00 UTC",
 		factoryd.CaseProjectCap: "1 December at 00:00 UTC"} {
 		face := factoryd.FaceOf(factoryd.Case{Kind: kind, OpenedAt: opened}, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 3}})
@@ -334,6 +337,25 @@ func TestACapWaitSaysWhenItGoesOnByItself(t *testing.T) {
 		if want := "The card waits and goes on by itself when the limit resets on " + when + "."; face.Answers[0].Effect != want {
 			t.Errorf("%s: Not now says %q, want %q", kind, face.Answers[0].Effect, want)
 		}
+		want := factoryd.Moments{{At: turn, Layout: factoryd.LayoutWords}}
+		if kind == factoryd.CaseDayCap {
+			want = factoryd.Moments{{At: turn, Layout: factoryd.LayoutClock}, {At: turn, Layout: factoryd.LayoutWords}}
+		}
+		if !reflect.DeepEqual(face.Moments, want) {
+			t.Errorf("%s: moments %+v, want %+v", kind, face.Moments, want)
+		}
+		// the inbox and the card's issue read the words in UTC
+		row := factoryd.FaceKeys(face)
+		poke, _ := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: "t1", IssueNumber: 3, Detail: row}, factoryd.Task{ID: "t1", IssueNumber: 3}, factoryd.Task{})
+		for where, text := range map[string]string{"the inbox": poke.Content, "the issue": factoryd.IssueAsk(row)} {
+			if !strings.Contains(text, face.Why) {
+				t.Errorf("%s: %s reads %q, want %q", kind, where, text, face.Why)
+			}
+		}
+	}
+	day := factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseDayCap, OpenedAt: opened}, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 3}})
+	if want := "Reset today's count in the status panel to resume it sooner, or it resumes at 00:00 UTC."; day.Why != want {
+		t.Errorf("the day cap's why = %q, want %q", day.Why, want)
 	}
 }
 

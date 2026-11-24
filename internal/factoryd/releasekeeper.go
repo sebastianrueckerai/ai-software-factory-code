@@ -331,8 +331,8 @@ func HoldQuestion(name string, since, now time.Time, groups []Group, fixes []Tas
 		q.Happened = fmt.Sprintf("Production of %s has waited %s for %s, which has %d of %d cards merged.", name, hours(now.Sub(since)), PlanWords(plans[0].Name, plans[0].Issue), plans[0].Merged, plans[0].Total)
 	}
 	q.Waits = fmt.Sprintf("Production of %s stays held while %s.", name, HoldReason(groups))
-	q.Info = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production. Production has waited since %s UTC.",
-		name, since.UTC().Format("2006-01-02 15:04"))), " ") + "\n\n" + holdInfo(plans)
+	q.Info = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production. Production has waited since %s.",
+		name, q.Moments.Say(since, LayoutStamp))), " ") + "\n\n" + holdInfo(plans)
 	return q
 }
 

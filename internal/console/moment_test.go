@@ -1,11 +1,16 @@
 package console
 
 import (
+	"html/template"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // A moment reads in Europe/Berlin until the browser reads it in its own
@@ -65,5 +70,81 @@ console.log([c.localTime(turn, "2 January at 15:04 MST"), c.localTime(turn, "15:
 		if got := strings.TrimSpace(string(out)); got != c.want {
 			t.Errorf("under %s:\n%s\nwant\n%s", c.zone, got, c.want)
 		}
+	}
+}
+
+// timed shows each moment's UTC words in a text as the moment, in
+// Europe/Berlin until the browser reads it: a winter turn at 01:00 CET, a
+// summer start at 12:30 CEST. The longer words win where one holds the
+// other, words in an attribute or in code stay, the text around them stays
+// escaped, and a text without moments stays as it was.
+func TestTimed(t *testing.T) {
+	turn := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	summer := time.Date(2026, 7, 1, 10, 30, 0, 0, time.UTC)
+	ms := factoryd.Moments{{At: turn, Layout: factoryd.LayoutClock}, {At: turn, Layout: factoryd.LayoutWords}, {At: summer, Layout: factoryd.LayoutWords}}
+	in := template.HTML(`<p title="1 December at 00:00 UTC">Resets on 1 December at 00:00 UTC, &lt;or&gt; at 00:00 UTC; fired since 1 July at 10:30 UTC.</p>` +
+		`<pre><code>1 July at 10:30 UTC</code></pre>`)
+	want := `<p title="1 December at 00:00 UTC">Resets on <time datetime="2026-12-01T00:00:00Z" data-layout="2 January at 15:04 MST">1 December at 01:00 CET</time>, ` +
+		`&lt;or&gt; at <time datetime="2026-12-01T00:00:00Z" data-layout="15:04 MST">01:00 CET</time>; ` +
+		`fired since <time datetime="2026-07-01T10:30:00Z" data-layout="2 January at 15:04 MST">1 July at 12:30 CEST</time>.</p>` +
+		`<pre><code>1 July at 10:30 UTC</code></pre>`
+	if got := string(timed(in, ms)); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	if got := timed(in, nil); got != in {
+		t.Errorf("without moments: %s", got)
+	}
+}
+
+// A card's ask shows each time it names in the browser's zone, in
+// Europe/Berlin as the server writes it: a card at the month cap opened in
+// winter goes on by itself on 1 December at 01:00 CET, its Not now says;
+// one at the day cap opened in summer resumes at 02:00 CEST, its why line
+// on the small card and the opened card says, and on 16 July at 02:00
+// CEST; an alert's card that fires since a summer morning says so at 12:30
+// CEST. The words in UTC are the agents' and the issue's (factoryd's
+// tests).
+func TestAnAsksTimesReadInTheBrowsersZone(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	agentCard := func(id string, issue int64) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: issue, Objective: "Count the skipped rows"},
+			Escalation: "the spending limit cannot fund a call"}
+	}
+	alert := factoryd.AlertQuestion(factoryd.SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "disk full", "service": "db"},
+		StartsAt: time.Date(2026, 7, 1, 10, 30, 0, 0, time.UTC)}, "code", "prod", "the project runs no agents", "The disk of db is full.")
+	fires := factoryd.BoardTask{Task: factoryd.Task{ID: "t-alert", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 23, Objective: alert.Ask},
+		Escalation: alert.Ask, Question: &alert}
+	r.tasks.tasks = []factoryd.BoardTask{agentCard("t-month", 21), agentCard("t-day", 22), fires}
+	r.openCases = map[string][]factoryd.Case{
+		"t-month": {{ID: 1, TaskID: "t-month", Kind: factoryd.CaseMonthCap, Status: factoryd.CaseAtHuman, Problem: "the month cap is reached",
+			OpenedAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}},
+		"t-day": {{ID: 2, TaskID: "t-day", Kind: factoryd.CaseDayCap, Status: factoryd.CaseAtHuman, Problem: "the day cap is reached",
+			OpenedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)}},
+		"t-alert": {{ID: 3, TaskID: "t-alert", Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman, Problem: alert.Ask,
+			Facts: factoryd.HumanAsk{Q: alert, Asker: factoryd.SourceAlert, Via: factoryd.ViaFactoryd}.Event(fires.Task).Detail}},
+	}
+	resumes := `or it resumes at <time datetime="2026-07-16T00:00:00Z" data-layout="15:04 MST">02:00 CEST</time>.`
+	for id, wants := range map[string][]string{
+		"t-month": {`goes on by itself when the limit resets on <time datetime="2026-12-01T00:00:00Z" data-layout="2 January at 15:04 MST">1 December at 01:00 CET</time>.`},
+		"t-day": {resumes,
+			`goes on by itself when the limit resets on <time datetime="2026-07-16T00:00:00Z" data-layout="2 January at 15:04 MST">16 July at 02:00 CEST</time>.`},
+		"t-alert": {`It has fired since <time datetime="2026-07-01T10:30:00Z" data-layout="2 January at 15:04 MST">1 July at 12:30 CEST</time>.`},
+	} {
+		body := drawer(t, r, ck, id, "overview")
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("the opened card of %s lacks %s:\n%s", id, want, askBlockOf(t, body))
+			}
+		}
+		for _, utc := range []string{"00:00 UTC", "10:30 UTC"} {
+			if strings.Contains(askBlockOf(t, body), utc) {
+				t.Errorf("the ask of %s still reads %q", id, utc)
+			}
+		}
+	}
+	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	if face := faceOf(t, board, "t-day"); !strings.Contains(face, resumes) {
+		t.Errorf("the small card of the day cap lacks %s:\n%s", resumes, face)
 	}
 }

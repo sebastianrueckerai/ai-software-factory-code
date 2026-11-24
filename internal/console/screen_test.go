@@ -982,16 +982,6 @@ func TestEscalatedCardAsksNoVerdict(t *testing.T) {
 	}
 }
 
-// An alert_verdict row from before the survey went still reads on its
-// card's activity line.
-func TestOldVerdictEventsStillRender(t *testing.T) {
-	e := factoryd.Event{Kind: factoryd.EventAlertVerdict, Actor: "sebastian", Via: "board",
-		At: time.Date(2026, 9, 28, 9, 30, 0, 0, time.UTC), Detail: map[string]any{"alert": 3, "verdict": "real"}}
-	if got, want := activityLine(e), "alert verdict by sebastian via board at 09:30"; got != want {
-		t.Errorf("activityLine = %q, want %q", got, want)
-	}
-}
-
 // The approval cards' forms carry the board's filter and land on it: an
 // approval of another project's merge goes back to that project's board.
 // Each answer is its own send, and the decision lands on the card: its
@@ -1664,15 +1654,6 @@ func TestTellTheRunningSessionWithoutSteer(t *testing.T) {
 	}
 }
 
-// The note of a close by a user without write access says on the card's
-// activity line that the close was ignored, why, and names the user.
-func TestActivityLineOfAnIssueClosedWithoutWriteAccess(t *testing.T) {
-	e := factoryd.Event{Kind: factoryd.EventIssueClosedWithoutWriteAccess, Actor: "mallory", Via: factoryd.ViaFactoryd, At: time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)}
-	if got, want := activityLine(e), "Ignored the close by mallory: mallory cannot write the repository."; got != want {
-		t.Errorf("activityLine = %q, want %q", got, want)
-	}
-}
-
 // The four columns are the one board: an old link to the wide view reads
 // the board as any other link does, with no lanes, no toggle and no view
 // carried on.
@@ -1702,7 +1683,8 @@ func TestNoWideView(t *testing.T) {
 // A running card frozen on a named provider limit splits its clocks: a
 // ten-hour building stage with six hours and 48 minutes of it frozen
 // reads "3 h 12 min, frozen 6 h 48 min", and its flag carries the
-// provider's words and the reset it named.
+// provider's words and the reset it named, 14:42:45 UTC on 20 November,
+// as a moment: 15:42 CET.
 func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1713,8 +1695,7 @@ func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
 	admitted := now.Add(-10 * time.Hour)
 	r.tasks.set("", factoryd.Task{ID: "t-frozen", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/code",
 		Objective: "t-frozen", CreatedAt: admitted, AdmittedAt: &admitted})
-	refused := admitted.Add(192 * time.Minute) // 3 h 12 m into the stage
-	reset := refused.Add(7 * time.Hour)
+	refused := admitted.Add(192 * time.Minute) // 3 h 12 m into the stage, 07:42:45 UTC
 	line, err := json.Marshal(map[string]any{"step": "provider_refused", "time": refused.UTC().Format(time.RFC3339Nano),
 		"status": 429, "backoff_s": 25200, "words": "rate limit exceeded"})
 	if err != nil {
@@ -1723,7 +1704,7 @@ func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
 	r.objects["sessions/t-frozen/timeline.jsonl"] = append([]byte(`{"step":"session_start","attempt":1}
 {"step":"session_end","attempt":1,"outcome":"provider_refused"}
 `), append(line, '\n')...)
-	until := `<span class="it flag">frozen until ` + reset.UTC().Format("15:04 UTC") + `: rate limit exceeded</span>`
+	until := `<span class="it flag">frozen until <time datetime="2026-11-20T14:42:45Z" data-layout="15:04 MST">15:42 CET</time>: rate limit exceeded</span>`
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if face, want := faceOf(t, body, "t-frozen"), `building</span> 3 h 12 min, frozen 6 h 48 min</span> `+until; !strings.Contains(face, want) {
 		t.Errorf("the face lacks %s:\n%s", want, face)

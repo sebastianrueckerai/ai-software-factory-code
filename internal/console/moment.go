@@ -2,8 +2,14 @@ package console
 
 import (
 	"html/template"
+	"slices"
+	"strings"
 	"time"
 	_ "time/tzdata" // the zone database travels in the binary, whatever the image holds
+
+	"golang.org/x/net/html"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // screenZone is the zone a screen's times read in until the browser reads
@@ -50,4 +56,37 @@ func momentTag(t time.Time, layout, title, text string) template.HTML {
 // escaped is text as markup that a moment may stand beside.
 func escaped(text string) template.HTML {
 	return template.HTML(template.HTMLEscapeString(text)) // #nosec G203 -- escaped
+}
+
+// timed is h with the words of each of ms in its text shown as its moment,
+// the longest words first; words in code stay as they are written.
+func timed(h template.HTML, ms factoryd.Moments) template.HTML {
+	if len(ms) == 0 {
+		return h
+	}
+	pairs := make([]string, 0, 2*len(ms))
+	for _, m := range slices.SortedStableFunc(slices.Values(ms), func(a, b factoryd.Moment) int { return len(b.Words()) - len(a.Words()) }) {
+		pairs = append(pairs, m.Words(), string(moment(m.At, m.Layout+" MST")))
+	}
+	said := strings.NewReplacer(pairs...)
+	var b strings.Builder
+	code := 0
+	z := html.NewTokenizer(strings.NewReader(string(h)))
+	for {
+		tt := z.Next()
+		name, _ := z.TagName()
+		inCode := string(name) == "code" || string(name) == "pre"
+		switch {
+		case tt == html.ErrorToken:
+			return template.HTML(b.String()) // #nosec G203 -- h's own markup; each moment escapes its text
+		case tt == html.TextToken && code == 0:
+			b.WriteString(said.Replace(string(z.Raw())))
+			continue
+		case tt == html.StartTagToken && inCode:
+			code++
+		case tt == html.EndTagToken && inCode && code > 0:
+			code--
+		}
+		b.Write(z.Raw())
+	}
 }

@@ -2135,7 +2135,8 @@ func TestLabDocumentScene(t *testing.T) {
 }
 
 // casesScene is the busy board with the Needs you column as cases: #603
-// holds four cases at the human, #610 one.
+// holds four cases at the human, #610 one, and #611 waits at the month
+// cap, whose Not now names the cap's turn.
 func casesScene(now time.Time) labScene {
 	s := busyScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -2145,7 +2146,12 @@ func casesScene(now time.Time) labScene {
 		Question: &factoryd.HumanQuestion{Ask: "#610 used its 3 sessions, and 2 findings are still open.", Choices: []factoryd.QuestionChoice{
 			{Value: "grant", Label: "Grant one session"}, {Value: "park", Label: "Back to the planner"}, {Value: "close", Label: "Close the card"}}}}
 	capped.SpentEUR = 1.48
-	s.tasks = append(s.tasks, capped)
+	monthCap := factoryd.BoardTask{Task: labCard(now, 611, "waiting-human", "direct", 2*time.Hour, "Costs page: a from and a to date",
+		"Give the costs page a from and a to date, both UTC days, both included."),
+		Escalation: "the month cap cannot fund a call: Reset the month's count in the console's status panel, or raise the month cap in policy.yaml by a commit, " +
+			"and answer, or wait for the next UTC month and answer.", EscalatedAt: ago(40 * time.Minute)}
+	monthCap.SpentEUR = 0.92
+	s.tasks = append(s.tasks, capped, monthCap)
 	// card #603's question is its newest case's: the budget floor's
 	for i := range s.tasks {
 		if s.tasks[i].ID == labID(603) {
@@ -2167,6 +2173,7 @@ func casesScene(now time.Time) labScene {
 			at(104, labID(603), factoryd.CaseBudgetFloor, 28*time.Minute, "The card's budget cannot fund the next session."),
 		},
 		labID(610): {capCase},
+		labID(611): {at(106, labID(611), factoryd.CaseMonthCap, 40*time.Minute, "The factory's month cap is reached.")},
 	}
 	s.steps = map[int64][]factoryd.CaseStep{
 		105: {

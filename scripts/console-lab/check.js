@@ -2255,6 +2255,27 @@ async function text(page) {
     if (wide.length) fails.push("local time: in Asia/Kolkata at 390 a Spend row runs wider than the panel: " + wide.map((r) => r.label).join(" | "));
     await kol.ctx.close();
   }
+  // a card's ask names its times in the browser's zone too: #611 waits at
+  // the month cap, and its Not now on the opened card says the cap resets
+  // when the UTC month turns, 19:00 EST the day before in America/New_York
+  // (20:00 EDT in summer), with no UTC words left in the ask
+  await seed("cases");
+  {
+    const ny = await open(browser, { width: 1440, height: 900 }, false, "America/New_York");
+    await ny.page.goto(base + "/#card=" + labID(611), { waitUntil: "load" });
+    await ny.page.waitForTimeout(900);
+    await ny.page.locator("#drawer").getByRole("tab", { name: "Overview", exact: true }).click();
+    await ny.page.waitForTimeout(900);
+    const ask = await ny.page.evaluate(() => {
+      const block = document.querySelector("#drawer .o-ask");
+      if (!block) return null;
+      return { text: block.innerText, turns: Array.from(block.querySelectorAll('time[data-layout="2 January at 15:04 MST"]')).map((t) => [t.dateTime, t.textContent]) };
+    });
+    const turn = ask && ask.turns.find(([at]) => /-01T00:00:00Z$/.test(at));
+    if (!turn || !/^\d+ \w+ at (19:00 EST|20:00 EDT)$/.test(turn[1])) fails.push("local time: in America/New_York the month cap's turn on #611's ask reads " + JSON.stringify(ask && ask.turns));
+    if (!ask || /\bUTC\b/.test(ask.text)) fails.push("local time: #611's ask still names UTC: " + JSON.stringify(ask && ask.text));
+    await ny.ctx.close();
+  }
   // a narrow desk at 960: the strip's cells wrap where they do not fit, the
   // board's head fits its row, the documents' head wraps in its panel
   for (const sc of ["busy", "fire"]) {

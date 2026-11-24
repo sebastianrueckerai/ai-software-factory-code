@@ -48,6 +48,40 @@ func TestCaseFaceReadsTheStoredFace(t *testing.T) {
 	}
 }
 
+// The instants an ask names travel with it: its row stores them beside its
+// words, its case takes them, and its face carries them, before the
+// register stores the face and after. The texts keep their words in UTC:
+// the face, and the comment that asks on the card's issue.
+func TestAnAsksMomentsTravelToItsFace(t *testing.T) {
+	since := time.Date(2026, 11, 16, 5, 12, 0, 0, time.UTC)
+	q := StallQuestion("sf/code", "abc1234def", since, []string{"ci / test"}, nil)
+	card := Task{ID: "t-stall", Kind: "human", Repository: "sf/code", IssueNumber: 7, Status: "waiting-human"}
+	row := stored(t, HumanAsk{Q: q, By: "factoryd", Asker: SourceChainStall, Via: ViaFactoryd}.Event(card).Detail)
+	c, err := CaseFromAsk(card, Event{Detail: row}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Moments{{At: since, Layout: LayoutStamp}, {At: since, Layout: LayoutWords}}
+	face := CaseFace(c, card, CaseAsk{Detail: row})
+	if !reflect.DeepEqual(face.Moments, want) {
+		t.Errorf("moments = %+v, want %+v", face.Moments, want)
+	}
+	happened := "The chain at commit abc1234 has been pending since 16 November at 05:12 UTC, waiting on 1 check."
+	if face.Story.Happened != happened || !strings.Contains(face.Info, "pending at commit abc1234 since 2026-11-16 05:12 UTC, past") {
+		t.Errorf("happened %q, info %q: want the words in UTC", face.Story.Happened, face.Info)
+	}
+	keys := FaceKeys(FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card}))
+	for k, v := range stored(t, keys) {
+		row[k] = v
+	}
+	if face := CaseFace(c, card, CaseAsk{Detail: row}); !reflect.DeepEqual(face.Moments, want) || face.Story.Happened != happened {
+		t.Errorf("the stored face: moments %+v, happened %q", face.Moments, face.Story.Happened)
+	}
+	if comment := IssueAsk(keys); !strings.Contains(comment, happened) {
+		t.Errorf("the issue's comment = %q, want %q", comment, happened)
+	}
+}
+
 // A case whose ask stored no face, a request's case, is faced by the
 // register on the case's own facts, its suggestion the ask row's.
 func TestCaseFaceWithoutAStoredFaceReadsTheRegister(t *testing.T) {
@@ -78,14 +112,19 @@ func TestCaseFaceOfAMergeApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 }
 
 // A monitor flag on a wait for dependencies names, as what is left, what
-// each dependency waits on; a flag on any other wait names none.
+// each dependency waits on, its since beside its words; a flag on any
+// other wait names none.
 func TestCaseFaceOfADependencyWaitNamesThePlansOwnWait(t *testing.T) {
 	since := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
 	c := Case{Kind: CaseMonitorFlag, Facts: map[string]any{"flag": "wait_over_bound", "wait": "dependency",
 		"dependencies": []any{map[string]any{"issue": 31, "status": "waiting-human", "plan": true, "ask": "Confirm the plan?", "since": since}}}}
 	want := `The card waits on plan #31, which waits on a human to answer "Confirm the plan?" since 2026-11-01 08:00 UTC.`
-	if got := CaseFace(c, Task{ID: "t1"}, CaseAsk{}).Story.Left; got != want {
+	face := CaseFace(c, Task{ID: "t1"}, CaseAsk{})
+	if got := face.Story.Left; got != want {
 		t.Errorf("Left = %q, want %q", got, want)
+	}
+	if want := (Moments{{At: since, Layout: LayoutStamp}}); !reflect.DeepEqual(face.Moments, want) {
+		t.Errorf("moments = %+v, want the since beside its words, %+v", face.Moments, want)
 	}
 	c.Facts["dependencies"] = []any{map[string]any{"issue": 5, "status": "running", "since": since}}
 	if got, want := CaseFace(c, Task{ID: "t1"}, CaseAsk{}).Story.Left, "The card waits on card #5, which is running since 2026-11-01 08:00 UTC."; got != want {

@@ -987,8 +987,8 @@ func TestStreamEndsAtTheServersShutdown(t *testing.T) {
 // for byte, under the board's filter: the escalated card in its column and
 // in the escalations, queued cards, a done plan with its rollup, a plan's
 // cards with Retry and their plan's issue, the blocked, waiting and merge
-// queue lines, a human task, an accent, an unchecked brief and an
-// activity line.
+// queue lines, a human task, an accent, an unchecked brief and a card
+// with an event.
 func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	withLinkshort(r)

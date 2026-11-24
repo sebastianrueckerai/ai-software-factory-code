@@ -12,7 +12,8 @@ import (
 // agent's view, the suggestion with the one who made it and its grounds,
 // the answers, the suggested one named in Preselected with the args its
 // proposal names, and the findings the ask and the story count. Money is
-// the money line an approval adds.
+// the money line an approval adds. Moments are the instants its texts
+// name, each in its UTC words.
 type Face struct {
 	Ask, Money, Why, Info, Recommendation, Source string
 	Story                                         Story
@@ -20,6 +21,49 @@ type Face struct {
 	Preselected                                   string
 	PreselectedArgs                               map[string]any
 	Findings                                      []string
+	Moments                                       Moments
+}
+
+// A Moment is an instant a text names: the text says it in its Words, in
+// UTC, which every reader takes as they are, and a screen shows it in the
+// reader's own zone.
+type Moment struct {
+	At     time.Time `json:"at"`
+	Layout string    `json:"layout"`
+}
+
+// The layouts of a Moment, in Go's reference time, without the zone its
+// words add.
+const (
+	LayoutWords = "2 January at 15:04"
+	LayoutClock = "15:04"
+	LayoutDay   = "2 Jan 15:04"
+	LayoutStamp = "2006-01-02 15:04"
+)
+
+// Words is m as a text says it: "16 November at 05:12 UTC".
+func (m Moment) Words() string { return m.At.UTC().Format(m.Layout) + " UTC" }
+
+// Moments are the instants of a text, each beside its words.
+type Moments []Moment
+
+// Say is t in layout as a text says it (Moment.Words), kept in m once.
+func (m *Moments) Say(t time.Time, layout string) string {
+	at := Moment{At: t.UTC(), Layout: layout}
+	if !slices.Contains(*m, at) {
+		*m = append(*m, at)
+	}
+	return at.Words()
+}
+
+// momentsOf are the moments a row stores under its key "moments", none for
+// a row that stores none or a malformed one.
+func momentsOf(row map[string]any) Moments {
+	var m Moments
+	if b, err := json.Marshal(row["moments"]); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	return m
 }
 
 // CaseAsk is the newest question_asked of a case: when it was asked and
@@ -43,7 +87,7 @@ func CaseFace(c Case, t Task, ask CaseAsk) Face {
 		af.Story = writerLines(af.Story, c).without(af.Ask, af.Why)
 	}
 	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: offersOfAnswers(af.Answers), Preselected: af.Suggested, PreselectedArgs: af.SuggestedArgs,
-		Source: af.SuggestedBy, Recommendation: af.Grounds, Findings: af.Findings}
+		Source: af.SuggestedBy, Recommendation: af.Grounds, Findings: af.Findings, Moments: af.Moments}
 	face.Info, _ = ask.Detail["info"].(string)
 	if ask.Analysis != "" {
 		face.Info = strings.TrimSpace(face.Info + "\n\n" + Quoted(ask.Analysis))
@@ -67,7 +111,7 @@ func storedFace(detail map[string]any) (AskFace, bool) {
 	if err != nil || json.Unmarshal(b, &row) != nil {
 		return AskFace{}, false
 	}
-	face := AskFace{Ask: row.Ask, Why: row.Why, Story: row.Story, Findings: row.Findings}
+	face := AskFace{Ask: row.Ask, Why: row.Why, Story: row.Story, Findings: row.Findings, Moments: momentsOf(detail)}
 	for _, o := range row.Offers {
 		a, _ := AnswerOf(o.Value)
 		a.Label, a.Effect = o.Label, o.Effect
@@ -209,5 +253,6 @@ func questionOfAsk(detail map[string]any) *HumanQuestion {
 	q.Happened, _ = detail["happened"].(string)
 	q.Waits, _ = detail["waits"].(string)
 	q.Check, _ = detail["check"].(string)
+	q.Moments = momentsOf(detail)
 	return q
 }
