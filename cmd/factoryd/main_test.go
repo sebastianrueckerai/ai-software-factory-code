@@ -40,6 +40,49 @@ func TestReadyzNamesEveryPassAge(t *testing.T) {
 	}
 }
 
+// The boot retries a failed store open instead of exiting: a node churn
+// hangs the dial and an exit restart-looped factoryd, so the open is
+// retried every 5s until the boot's wait has passed, then the last
+// error answers.
+func TestBootStoreRetriesUntilDeadline(t *testing.T) {
+	tries := 0
+	open := func(context.Context, string) (*factoryd.PGStore, error) {
+		tries++
+		return nil, errors.New("dial tcp: connect: connection refused")
+	}
+	now := time.Unix(0, 0)
+	advance := make(map[int]time.Duration)
+	sleep := func(d time.Duration) {
+		advance[tries] = d
+		now = now.Add(d)
+	}
+	if _, err := bootStore(t.Context(), "dsn", open, sleep, func() time.Time { return now }); err == nil {
+		t.Fatal("bootStore with a store that never opens = nil error, want the last open error")
+	}
+	if tries != 121 { // the first try, then a retry every 5s across the 10-minute wait
+		t.Fatalf("open tried %d times, want 121: the first try, then one retry every 5s until the wait had passed", tries)
+	}
+	if advance[1] != 5*time.Second {
+		t.Fatalf("retry slept %v, want 5s", advance[1])
+	}
+
+	tries = 0
+	openOK := func(context.Context, string) (*factoryd.PGStore, error) {
+		tries++
+		if tries < 3 {
+			return nil, errors.New("dial tcp: connect: connection refused")
+		}
+		return &factoryd.PGStore{}, nil
+	}
+	now = time.Unix(0, 0)
+	if s, err := bootStore(t.Context(), "dsn", openOK, sleep, func() time.Time { return now }); err != nil || s == nil {
+		t.Fatalf("bootStore with a store that opens on the third try = %v, %v, want a store and no error", s, err)
+	}
+	if tries != 3 {
+		t.Fatalf("open tried %d times, want 3", tries)
+	}
+}
+
 func TestRequireBearer(t *testing.T) {
 	h := requireBearer("s3cret", func(w http.ResponseWriter, r *http.Request) {})
 	for header, want := range map[string]int{
