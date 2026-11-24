@@ -44,10 +44,12 @@ var unreadTransports = map[string]string{
 }
 
 // carriers hand a prompt their caller wrote on to a model call, so the
-// walk goes on to their callers: OperatorModel's methods, the review's
+// walk goes on to their callers: OperatorModel's methods, SupervisorModel's
+// Chat and the check-in's gateway, both over postChat, the review's
 // fan-out and retry, the check-in's conversation, the report session, and
 // the gateway's handler that relays each client's call to its provider.
 var carriers = []string{
+	"factoryd.(*SupervisorModel).Chat", "factoryd.(*SupervisorModel).call", "factoryd.(*checkinGateway).Call",
 	"factoryd.(*OperatorModel).call", "factoryd.(*OperatorModel).stream", "factoryd.(*OperatorModel).Stream",
 	"factoryd.(*OperatorModel).Compact", "factoryd.(*OperatorModel).Digest", "factoryd.(*OperatorModel).Research",
 	"factoryd.(*OperatorModel).Vision", "factoryd.(*OperatorModel).Title",

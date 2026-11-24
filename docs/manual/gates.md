@@ -78,14 +78,25 @@ activities, each with a timeline step and a comment on the pull request:
    it back” (“Reject and close it” on a pull request the factory opened). A call the gateway refuses for
    headroom (the task's budget, the day's, the month's or the project's
    cap) is made again after the others, one at a time. An answer that does
-   not parse — the model's JSON cut at its output bound, say — is asked
-   once more on the same part and the same model, the retry's input
-   carrying the parse error and the bounds (one JSON object, a summary
-   under 1000 characters, at most 10 findings), and its cost booked to the
-   card like the first call; the second answer that does not parse is the
-   note. The activity's
-   bound follows the waves of four calls, plus one for each retried call,
-   and stays ten minutes under the six hours of its attempt. The parts'
+   not parse is asked once more on the same part and the same model, the
+   retry's input carrying the parse error and the bounds (one JSON object,
+   a summary under 1000 characters, at most 10 findings), and its cost
+   booked to the card like the first call; the second answer that does
+   not parse is the note. An answer cut at its output limit is not such an
+   answer: every gate call reads why its answer stopped, and one that
+   stopped at the limit (`finish_reason` `length`: the model thought the
+   limit away) is asked once more with twice the limit, which the gateway
+   clamps to the alias's limit and the free headroom. The second cut
+   answer, or a first the gateway already gave less than it asked, is the
+   note "model review failed: the model used its whole answer limit of
+   <n> tokens before it answered", `n` the limit the gateway named, and no
+   retry follows it; a call its timeout cut is the note "model review
+   failed: the model did not answer within <d>". The audit, the gate
+   supervisor, the screening of an answer, the delta round and the
+   briefs name a cut answer the same way. The activity's
+   bound follows the waves of four calls, plus one for each retried call
+   and one call's timeout for each call asked again with more room, and
+   stays ten minutes under the six hours of its attempt. The parts'
    findings keep the first 50 and a line that counts the rest; their
    summaries keep 8 KiB. The review of an integration card or a delta
    card adds one call, for the feature's behaviours: it reads the cards'

@@ -1534,14 +1534,19 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	for try := range deltaAttempts {
 		content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
 			bound, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
-		if errors.Is(err, context.DeadlineExceeded) {
+		var cut *cutAnswerError
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			why = fmt.Sprintf("the model call ran past its bound of %s", DurationText(bound))
-			log.Printf("plan %s: the delta round: %s", t.ID, why)
-			continue
-		}
-		if err != nil {
+		case errors.As(err, &cut):
+			why = cut.Error()
+		case err != nil:
 			log.Printf("plan %s: the delta round's call: %v", t.ID, err)
 			return
+		}
+		if err != nil {
+			log.Printf("plan %s: the delta round: %s", t.ID, why)
+			continue
 		}
 		if card, merged, why = judgeDelta(p, deltaKey(t.ID, revision, dues), content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
 			refs, err := botRefsOf(ctx, r.forgejo, v.Tree, t.Repository)

@@ -139,6 +139,11 @@ const (
 	// the check-in's, which the provider-limit hold holds under the card's
 	// class (policy.Document.HeldClass).
 	HeaderFactoryCard = "X-Factory-Card"
+	// HeaderOutputLimit names the output limit an admitted call was
+	// forwarded at, what it asked clamped to the alias's limit and the
+	// free headroom: the caller of an answer cut at its limit reads the
+	// limit it got.
+	HeaderOutputLimit = "X-Gateway-Output-Limit"
 )
 
 // RefusedContext is the decision of a call the provider refused for a
@@ -1374,6 +1379,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		defer res.Body.Close()
 
 		w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
+		w.Header().Set(HeaderOutputLimit, strconv.Itoa(c.hold.MaxOut))
 		if c.kind != "" && c.deployment != "" {
 			w.Header().Set(HeaderDeployment, c.deployment)
 		}

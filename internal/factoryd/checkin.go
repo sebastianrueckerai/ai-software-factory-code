@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"regexp"
@@ -15,7 +14,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -514,6 +512,9 @@ type CheckinResponse struct {
 	// before the model or the record sees them.
 	ToolErr, ToolRaw string
 	UsageEUR         float64
+	// Cut is the output limit an answer stopped at (finish_reason
+	// length), as the gateway named it; 0 for an answer that ended.
+	Cut int
 }
 
 // CheckinTool is one tool the check-in may call, in the OpenAI form.
@@ -1079,7 +1080,7 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 			return finish(convRefused, oneLine(c.Scrub(err.Error())), err)
 		}
 		answer := resp.Text
-		if resp.ToolName != "" {
+		if resp.ToolName != "" && resp.Cut == 0 {
 			if resp.ToolName != c.Answer.Name {
 				if last {
 					return finish(convCallCap, "")
@@ -1117,8 +1118,10 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 			args, _ := json.Marshal(resp.ToolArgs)
 			answer = string(args)
 		}
-		perr := c.Parse(answer)
-		if perr == nil {
+		var perr error
+		if resp.Cut > 0 {
+			perr = &cutAnswerError{resp.Cut}
+		} else if perr = c.Parse(answer); perr == nil {
 			return finish(convAnswered, "")
 		}
 		refusal := oneLine(c.Scrub(perr.Error()))
@@ -1210,8 +1213,9 @@ func withNamedRepeats(ask *CheckInAsk, a checkinAnswer) []CheckFinding {
 
 // checkinGateway is the production checkinChat: the gateway's chat
 // completions under purpose checkin, unstreamed, the answer's first tool
-// call read beside its text. The cost is the response's own figure when the
-// upstream echoes one — the ledger books the true cost.
+// call read beside its text, or of an answer cut at its limit the limit
+// alone. The cost is the response's own figure when the upstream echoes
+// one — the ledger books the true cost.
 type checkinGateway struct {
 	URL, Token string
 	HTTP       *http.Client
@@ -1233,52 +1237,12 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 	if err != nil {
 		return CheckinResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.URL+"/v1/chat/completions", bytes.NewReader(payload))
+	out, _, err := postChat(ctx, g.HTTP, g.URL, g.Token, taskID, policy.PurposeCheckin, payload)
 	if err != nil {
 		return CheckinResponse{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+g.Token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(gateway.HeaderFactoryTask, taskID)
-	req.Header.Set(gateway.HeaderFactoryPurpose, policy.PurposeCheckin)
-	setCard(ctx, req)
-	client := g.HTTP
-	if client == nil {
-		client = http.DefaultClient
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return CheckinResponse{}, err
-	}
-	defer res.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if err != nil {
-		return CheckinResponse{}, err
-	}
-	if res.StatusCode != http.StatusOK {
-		if err := gatewayRefused(res.Header, raw); err != nil {
-			return CheckinResponse{}, err
-		}
-		return CheckinResponse{}, fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(raw)), 300))
-	}
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			Cost float64 `json:"cost"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil || len(out.Choices) == 0 {
-		return CheckinResponse{}, fmt.Errorf("unreadable completion: %s", textutil.Truncate(string(raw), 300))
+	if out.cut() {
+		return CheckinResponse{UsageEUR: out.Usage.Cost, Cut: out.limit(0)}, nil
 	}
 	msg := out.Choices[0].Message
 	resp := CheckinResponse{Text: msg.Content, UsageEUR: out.Usage.Cost}

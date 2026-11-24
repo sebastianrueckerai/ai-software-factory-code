@@ -2234,18 +2234,20 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	for i, res := range results[:len(parts)] {
 		a := reviewAnswer(res.Content, res.Err)
 		if a.Verdict == "" {
-			// an answer that does not parse — the model's JSON cut at its
-			// output bound, say, two characters short of a verdict — or a
-			// call that failed without the gateway refusing it (a transport
-			// EOF, say) is asked once more on the same part and the same
-			// model, the input carrying the why and the bounds the answer
-			// must keep (reviewRetry); the second miss is the note as today.
-			// A money refusal is never called again: its note says what
-			// lifts it (reviewUnblocks)
+			// an answer that does not parse — the model's JSON two
+			// characters short of a verdict, say — or a call that failed
+			// without the gateway refusing it (a transport EOF, say) is
+			// asked once more on the same part and the same model, the
+			// input carrying the why and the bounds the answer must keep
+			// (reviewRetry); the second miss is the note as today. A money
+			// refusal is never called again: its note says what lifts it
+			// (reviewUnblocks); nor is an answer cut at its limit, which
+			// Chat already asked once more with twice the limit
+			var cut *cutAnswerError
 			why := ""
 			if res.Err == nil {
 				_, why = parseReviewWhy(res.Content)
-			} else if refusalOf(a.Note) == "" {
+			} else if refusalOf(a.Note) == "" && !errors.As(res.Err, &cut) {
 				why = "the call failed: " + textutil.Truncate(res.Err.Error(), 300)
 			}
 			if why != "" {

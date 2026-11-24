@@ -419,25 +419,36 @@ func TestGateAuditClear(t *testing.T) {
 	}
 }
 
-// No verdict is never a pass: an unparseable answer, a gateway refusal, a
-// failed call and a policy without an audit model are each a finding.
+// No verdict is never a pass: an unparseable answer, an answer cut at its
+// limit twice (9000 tokens, then 18000), a call its timeout cut, a gateway
+// refusal, a failed call and a policy without an audit model are each a
+// finding that names why.
 func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
 	for name, tc := range map[string]struct {
-		ll    *fakeLiteLLM
-		model bool
-		why   string
+		ll      *fakeLiteLLM
+		model   bool
+		why     string
+		timeout time.Duration
 	}{
-		"unparseable":    {&fakeLiteLLM{content: "LGTM"}, true, "the answer is not one JSON object"},
-		"empty":          {&fakeLiteLLM{content: ""}, true, "the answer is not one JSON object"},
-		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"}, true, "refused by the gateway (refused_budget)"},
-		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, true, "status 502"},
-		"no audit model": {&fakeLiteLLM{content: "{}"}, false, "the policy names no audit model"},
+		"unparseable": {&fakeLiteLLM{content: "LGTM"}, true, "the answer is not one JSON object", 0},
+		"empty":       {&fakeLiteLLM{content: ""}, true, "the answer is not one JSON object", 0},
+		"cut twice": {&fakeLiteLLM{content: `{"`, finishes: []string{"length", "length"}}, true,
+			"the audit call failed: the model used its whole answer limit of 18000 tokens before it answered", 0},
+		"timed out":      {&fakeLiteLLM{content: `{}`, delay: time.Second}, true, "the audit call failed: the model did not answer within 50ms", 50 * time.Millisecond},
+		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"}, true, "refused by the gateway (refused_budget)", 0},
+		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, true, "status 502", 0},
+		"no audit model": {&fakeLiteLLM{content: "{}"}, false, "the policy names no audit model", 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _ := newAuditRunner(t, &gateForgejo{diff: "d"}, tc.ll, true)
 			if !tc.model {
 				v := testPolicyVersion()
 				v.Projects["repo"] = policy.ProjectConfig{Repository: "sf/repo", Audit: true}
+				r.cfg.Policy = func() policy.Version { return v }
+			}
+			if tc.timeout > 0 {
+				v := auditVersion(true)
+				v.Document.Limits.SupervisorTimeout = tc.timeout
 				r.cfg.Policy = func() policy.Version { return v }
 			}
 			val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})

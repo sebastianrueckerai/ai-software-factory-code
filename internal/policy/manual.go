@@ -52,7 +52,7 @@ var spendRailRows = []spendRow{
 	{"limits.supervisor_timeout",
 		"one supervisor or review model call, 30s to 15m",
 		"0 is refused: \"policy: limits.supervisor_timeout must lie between 30s and 15m0s, is %s\"",
-		"the call is cut at the bound. No line names it to the agent. It also bounds the gate activity SuperviseGate at the timeout plus two minutes"},
+		"the call is cut at the bound, and the gate's reason reads \"the model did not answer within %s\". No line names it to the agent. It also bounds the gate activity SuperviseGate at the timeout plus two minutes"},
 	{"limits.stronger_after",
 		"how many returns from the same stage a task takes on its model before the next return climbs to the stronger rung",
 		"0 and absent read the same: the first return climbs",

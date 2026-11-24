@@ -1529,9 +1529,9 @@ func TestAgentCallsOnlyItsSessionAlias(t *testing.T) {
 
 // A call that asks for no output limit is held and forwarded at its
 // alias's: prices.max_output_tokens, lowered by a smaller one its
-// deployments publish, never raised by a larger; an alias the policy
-// names no limit for is refused like an unpriced one, whatever its
-// deployments publish. Hand-derived at 1e-6 in, 4e-6 out per token, the
+// deployments publish, never raised by a larger, and its answer names the
+// limit; an alias the policy names no limit for is refused like an
+// unpriced one, whatever its deployments publish. Hand-derived at 1e-6 in, 4e-6 out per token, the
 // body's 38 bytes plus 64 at most its 102 prompt tokens (0.000102).
 func TestCallAskingNoLimitTakesTheAliasLimit(t *testing.T) {
 	for _, tc := range []struct {
@@ -1573,6 +1573,9 @@ func TestCallAskingNoLimitTakesTheAliasLimit(t *testing.T) {
 			if rr.Code != http.StatusOK || last.Decision != "allowed" || len(bodies) != 1 ||
 				bodies[0] != withMaxTokens(t, body, tc.wantLimit) || *last.OutputLimit != tc.wantLimit || math.Abs(*last.HoldEUR-tc.wantEUR) > 1e-12 {
 				t.Fatalf("%d %s, audit %+v, upstream %q; want max_tokens %d held at %g EUR", rr.Code, rr.Body.String(), last, bodies, tc.wantLimit, tc.wantEUR)
+			}
+			if got := rr.Header().Get(HeaderOutputLimit); got != fmt.Sprint(tc.wantLimit) {
+				t.Fatalf("output limit header %q, want %d: the caller reads the limit its call got", got, tc.wantLimit)
 			}
 		})
 	}

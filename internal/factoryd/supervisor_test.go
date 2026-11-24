@@ -1,14 +1,17 @@
 package factoryd
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The cost and state block renders once, as the one JSON object both
@@ -199,6 +203,12 @@ type fakeLiteLLM struct {
 	// book, when set, runs for each chat call served, with the task the
 	// call names: the spend the gateway would book
 	book func(taskID string)
+	// finishes are the answers' finish reasons in order of arrival; past
+	// the last, none
+	finishes []string
+	// ceiling, when set, clamps a call's max_tokens as the gateway does;
+	// the answer's output-limit header names the limit the call got
+	ceiling int
 }
 
 // running is the number of chat calls in the handler now.
@@ -251,6 +261,10 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			if n <= len(f.statuses) {
 				status = f.statuses[n-1]
 			}
+			finish := ""
+			if n <= len(f.finishes) {
+				finish = f.finishes[n-1]
+			}
 			if f.book != nil {
 				f.book(r.Header.Get(gateway.HeaderFactoryTask))
 			}
@@ -269,7 +283,17 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			if f.deployment != "" {
 				w.Header().Set(gateway.HeaderDeployment, f.deployment)
 			}
-			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}}}})
+			if limit, _ := body["max_tokens"].(float64); limit > 0 {
+				if f.ceiling > 0 {
+					limit = min(limit, float64(f.ceiling))
+				}
+				w.Header().Set(gateway.HeaderOutputLimit, fmt.Sprint(limit))
+			}
+			choice := map[string]any{"message": map[string]any{"content": content}}
+			if finish != "" {
+				choice["finish_reason"] = finish
+			}
+			out, _ := json.Marshal(map[string]any{"choices": []any{choice}})
 			w.Write(out)
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
@@ -284,6 +308,73 @@ func testSupervisorModel(url string) *SupervisorModel {
 		GatewayURL: url,
 		Token:      "gw-token",
 		Budget:     TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
+	}
+}
+
+// A JSON-mode answer that stops at its answer limit (finish_reason
+// length: a reasoning model thought the limit away and two bytes of
+// answer are left) is asked once more with twice the limit, and the
+// second answer is Chat's; an answer that ends is asked once, at the
+// limit, 1000 + 8000 tokens.
+func TestChatAsksACutAnswerOnceMoreWithTwiceTheLimit(t *testing.T) {
+	ll := &fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, `{"verdict":"clear"}`}}
+	got, _, err := testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
+	if err != nil || got != `{"verdict":"clear"}` || len(ll.chats) != 2 || ll.chats[0]["max_tokens"] != 9000.0 || ll.chats[1]["max_tokens"] != 18000.0 {
+		t.Fatalf("Chat = %q, %v after %d calls; want the second answer, asked at 9000 and then 18000 tokens", got, err, len(ll.chats))
+	}
+	ll = &fakeLiteLLM{finishes: []string{"stop"}, content: `{"verdict":"clear"}`}
+	got, _, err = testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
+	if err != nil || got != `{"verdict":"clear"}` || len(ll.chats) != 1 || ll.chats[0]["max_tokens"] != 9000.0 {
+		t.Fatalf("Chat = %q, %v after %d calls; want the one answer at 9000 tokens", got, err, len(ll.chats))
+	}
+}
+
+// A second answer cut at its limit, or a first the gateway already gave
+// less room than it asked for, is no answer: the error names the limit the
+// gateway gave, as its output-limit header says. With no minute left
+// before the caller's deadline the cut answer is not asked again.
+func TestChatNamesTheAnswerLimitACutAnswerSpent(t *testing.T) {
+	soon, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for name, tc := range map[string]struct {
+		ctx   context.Context
+		ll    *fakeLiteLLM
+		calls int
+		limit int
+	}{
+		"cut twice":                       {context.Background(), &fakeLiteLLM{finishes: []string{"length", "length"}, content: `{"`}, 2, 18000},
+		"cut twice under the alias limit": {context.Background(), &fakeLiteLLM{finishes: []string{"length", "length"}, content: `{"`, ceiling: 12000}, 2, 12000},
+		"cut with no more room":           {context.Background(), &fakeLiteLLM{finishes: []string{"length"}, content: `{"`, ceiling: 5000}, 1, 5000},
+		"cut with no time left":           {soon, &fakeLiteLLM{finishes: []string{"length"}, content: `{"`}, 1, 9000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, _, err := testSupervisorModel(tc.ll.srv(t).URL).Chat(tc.ctx, "t1", "big", policy.PurposeReview, time.Minute, "sys", map[string]any{})
+			want := fmt.Sprintf("the model used its whole answer limit of %d tokens before it answered", tc.limit)
+			if err == nil || err.Error() != want || got != "" || len(tc.ll.chats) != tc.calls {
+				t.Fatalf("Chat = %q, %v after %d calls; want %q after %d", got, err, len(tc.ll.chats), want, tc.calls)
+			}
+		})
+	}
+}
+
+// The call once more holds its wave one more call's timeout: Chat tells
+// the activity's watch so before it asks again.
+func TestChatTellsTheWatchOfTheCallOnceMore(t *testing.T) {
+	var told []time.Duration
+	ctx := context.WithValue(context.Background(), oneMoreKey{}, func(d time.Duration) { told = append(told, d) })
+	ll := &fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, `{}`}}
+	if _, _, err := testSupervisorModel(ll.srv(t).URL).Chat(ctx, "t1", "big", policy.PurposeReview, time.Minute, "sys", map[string]any{}); err != nil || !slices.Equal(told, []time.Duration{time.Minute}) {
+		t.Fatalf("Chat: %v, told %v; want one more call of a minute told", err, told)
+	}
+}
+
+// A call its timeout cut says so in plain words and stays a deadline
+// exceeded for the callers that read one.
+func TestChatNamesItsTimeout(t *testing.T) {
+	ll := &fakeLiteLLM{content: `{}`, delay: time.Second}
+	_, _, err := testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "big", policy.PurposeReview, 50*time.Millisecond, "sys", map[string]any{})
+	if err == nil || err.Error() != "the model did not answer within 50ms" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Chat = %v, want the timeout named and a deadline exceeded", err)
 	}
 }
 

@@ -1051,7 +1051,7 @@ func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
 	began := time.Now()
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7, Policy: PolicyGate{Class: "normal"}})
 	rv := getInto[Review](t, val, err)
-	if !strings.Contains(rv.Note, "deadline exceeded") || time.Since(began) > 10*time.Second {
+	if !strings.Contains(rv.Note, "the model did not answer within 50ms") || time.Since(began) > 10*time.Second {
 		t.Fatalf("review = %+v after %s, want the call cut at 50ms", rv, time.Since(began))
 	}
 }
@@ -1059,7 +1059,9 @@ func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
 // A task at its budget cap: the gateway refuses the review with
 // refused_budget, and again on the one retry, which becomes the review's
 // note on the pull request and the card; an upstream error is a note too,
-// and an invalid answer one after its one re-ask. None fails the gate.
+// and an invalid answer one after its one re-ask. An answer cut at its
+// limit twice, 9000 tokens and then 18000, is a note at once: the call
+// already asked it once more. None fails the gate.
 func TestModelReviewNotes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		model *fakeLiteLLM
@@ -1070,6 +1072,8 @@ func TestModelReviewNotes(t *testing.T) {
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
 			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR", 2},
 		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 2},
+		"cut twice": {&fakeLiteLLM{content: `{"`, finishes: []string{"length", "length"}},
+			"model review failed: the model used its whole answer limit of 18000 tokens before it answered", 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fj := &gateForgejo{diff: "d"}
@@ -1093,8 +1097,8 @@ func TestModelReviewNotes(t *testing.T) {
 	}
 }
 
-// An answer that does not parse — the model's JSON cut inside its summary
-// at the output bound — is asked once more on the same part and the same
+// An answer that does not parse — the model's JSON ending inside its
+// summary — is asked once more on the same part and the same
 // model, the retry's input carrying the parse error and the bounds: the
 // second answer's verdict is the review's, and the round records no
 // not-run row.

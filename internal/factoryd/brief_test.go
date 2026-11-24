@@ -734,6 +734,44 @@ func TestBriefWriterRetriesANoBriefAnswerOnce(t *testing.T) {
 	}
 }
 
+// An answer cut at its limit in both of a call's asks, 1024 tokens and then
+// 2048, is no brief too: the case is marked once with the cause, the next
+// pass hands the cause to the model as its last refusal, and its second
+// cut answer is terminal.
+func TestBriefWriterNamesAnAnswerCutAtItsLimit(t *testing.T) {
+	var limits []float64
+	var users []string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		limit, _ := body["max_tokens"].(float64)
+		limits = append(limits, limit)
+		users = append(users, userMessage(body))
+		w.Header().Set(gateway.HeaderOutputLimit, fmt.Sprint(limit))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\""},"finish_reason":"length"}]}`))
+	}))
+	defer gw.Close()
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman})
+	w := briefCaseWriter(store, gw)
+	var marks []string
+	for range 3 {
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		marks = append(marks, store.caseFailed[5])
+		if strings.HasPrefix(store.caseFailed[5], BriefTerminal) {
+			store.cases = nil
+		}
+	}
+	const cause = "the model used its whole answer limit of 2048 tokens before it answered"
+	if !slices.Equal(limits, []float64{1024, 2048, 1024, 2048}) || marks[0] != noBriefMark+cause || marks[1] != BriefTerminal+cause {
+		t.Fatalf("asked %v, marks %q; want each pass at 1024 and 2048 tokens, the first mark %q and the second terminal", limits, marks, noBriefMark+cause)
+	}
+	if !strings.Contains(users[2], `"last_refusal":"`+cause+`"`) {
+		t.Fatalf("the second pass's facts carry no last refusal of the cut: %s", users[2])
+	}
+}
+
 // Every string of the facts is scrubbed as the text it is, so a token at the
 // start of a line and a header quoted in a command are masked, and the JSON
 // the gateway reads stays valid.

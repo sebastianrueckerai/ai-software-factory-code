@@ -212,13 +212,15 @@ func (b *BriefWriter) Pass(ctx context.Context) error {
 // failed marks the row whose writer failed with err, once per mark, and
 // records the failure for telemetry; prev is the mark the row holds. A
 // terminal failure's mark carries its class, which the pass then skips: a
-// failure no retry can fix. An answer that is no brief marks the row once
-// and is retried on the next pass; a second one is terminal, since the
-// call's limit is the class's whole.
+// failure no retry can fix. An answer that is no brief, or one cut at its
+// limit after the call asked it once more with twice the limit, marks the
+// row once and is retried on the next pass; a second one is terminal.
 func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string, mark func(context.Context, string) error, detail map[string]any) error {
 	text := b.scrub(err.Error())
 	var refusal *policy.Refusal
-	var noBrief *noBriefError
+	var nb *noBriefError
+	var cut *cutAnswerError
+	noBrief := errors.As(err, &nb) || errors.As(err, &cut)
 	var frozen frozenError
 	switch {
 	case errors.Is(err, errJudgmentSpent):
@@ -229,9 +231,9 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 		text = errJudgmentSpent.Error()
 	case errors.As(err, &refusal):
 		text = b.scrub(refusal.Decision + ": " + refusal.Reason)
-	case errors.As(err, &noBrief) && strings.HasPrefix(prev, noBriefMark):
+	case noBrief && strings.HasPrefix(prev, noBriefMark):
 		text = BriefTerminal + text
-	case errors.As(err, &noBrief):
+	case noBrief:
 		text = noBriefMark + text
 	}
 	if isTerminal(err) {

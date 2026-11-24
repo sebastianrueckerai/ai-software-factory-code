@@ -64,7 +64,8 @@
   a sandbox's JWT or a wrong bearer they are ignored and the call is an
   agent's. Its LiteLLM key is the task's factoryd slot, apart from the
   session's key, limited to those aliases. A refusal names its decision in
-  the `X-Gateway-Decision` header. It also serves the agent's tools over MCP at
+  the `X-Gateway-Decision` header, and an admitted call's answer the
+  output limit it got in `X-Gateway-Output-Limit`. It also serves the agent's tools over MCP at
   `/mcp`, see [Tools](policy.md#tools).
 - `cmd/agent-worker`: pid 1 in the sandbox pod. The pod's first init
   container, `harness`, copies agent-worker, opencode and the opencode
