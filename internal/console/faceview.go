@@ -282,7 +282,7 @@ func (c *Console) approvalFace(ctx context.Context, v *boardView, a approvalCard
 func (v *boardView) scrubbed(face factoryd.Face) factoryd.Face {
 	hosts := v.policy.Document.LinkHosts
 	face.Findings = slices.Clone(face.Findings)
-	texts := []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Story.View, &face.Info, &face.Recommendation, &face.Source}
+	texts := []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Story.View, &face.Info, &face.Recommendation, &face.Source, &face.Act}
 	for i := range face.Findings {
 		texts = append(texts, &face.Findings[i])
 	}

@@ -413,7 +413,7 @@ func TestChatStopReachesThePressBeforeAMessageThatWaits(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	ran, release := make(chan struct{}), make(chan struct{})
-	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string, string) (int64, error) {
 		close(ran)
 		<-release
 		return 0, errors.New("forgejo is down")

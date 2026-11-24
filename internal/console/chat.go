@@ -145,6 +145,9 @@ type turn struct {
 	line         int64
 	absorbedWake bool
 	wakeCases    []int64
+	// wakeCards are the cards the first line of the turn's wake names
+	// (factoryd.WakeCards): the cards the turn is about.
+	wakeCards []string
 	// task is the chat task whose account the turn's model calls and
 	// looks bill.
 	task string

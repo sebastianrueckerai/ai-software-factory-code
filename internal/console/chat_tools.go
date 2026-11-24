@@ -112,6 +112,9 @@ type toolInput struct {
 	Info           string   `json:"info,omitempty"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
+	// Act is an escalation's act: the exact command or press a human does
+	// outside the factory.
+	Act string `json:"act,omitempty"`
 	// Choice is the ask's bound choice, Args the bound tool call's
 	// arguments, as the ask tool binds them; for escalate, the choice it
 	// would pick.
@@ -2276,11 +2279,13 @@ func init() {
 				"recommendation": str("the answer you would pick and where you read it"),
 				"choice":         str("the one of choices you would pick, as written"),
 				"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": writingguide.MaxChoice},
-					"description": "answers the humans may press, each once"}},
+					"description": "answers the humans may press, each once"},
+				"act":     str("the command or press a human does that the factory cannot"),
+				"task_id": str("the card or plan the ask is about")},
 			required: []string{"ask", "why", "info", "recommendation", "choices"},
 			about:    "Ask the humans for a decision, its why and its info with it.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choice, in.Choices)
+				s, err := t.escalate(in)
 				return s, nil, err
 			}},
 		{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,

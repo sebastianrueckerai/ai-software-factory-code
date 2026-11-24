@@ -104,6 +104,38 @@ func TestEscalateToHuman(t *testing.T) {
 	}
 }
 
+// The chat's escalation with an act: the issue text holds the act as its
+// own fenced block after the recommendation, the ask row carries it and
+// the card it is about, and the row's question reads the act back.
+func TestEscalateToHumanWithAnAct(t *testing.T) {
+	ctx := context.Background()
+	f, _ := fileStub(t)
+	store := newFakeStore()
+	q := HumanQuestion{Ask: "Fill the file store?", Why: "the bump's build reads its new files from the store", Info: "the store answers 404 for four files",
+		Recommendation: "Run the copy at the pull request's head", Source: "the project agent",
+		Act:     "git checkout e89590bb\nREGISTRY_USER=… REGISTRY_PASSWORD=… scripts/upstream-files",
+		Choices: []QuestionChoice{{Value: "say:Filled", Label: "Filled"}, {Value: "say:Not now", Label: "Not now"}}}
+	got, err := EscalateToHumanWith(ctx, store, f, Repo{Owner: "sf", Name: "r"}, q, "sebastian", Task{Source: SourceChat}, map[string]any{FactAbout: "t-bump"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBody := "```\nFill the file store?\n```\n\n" +
+		"Info: the store answers 404 for four files\n\n" +
+		"Recommendation: Run the copy at the pull request's head\n\n" +
+		"Act:\n\n```\ngit checkout e89590bb\nREGISTRY_USER=… REGISTRY_PASSWORD=… scripts/upstream-files\n```\n\n" +
+		"Choices:\n- Filled\n- Not now\n\n" +
+		"The project agent asked in sebastian's chat. Answer in the chat's inbox, or close this issue once decided.\n\nFiled by the factory."
+	if got.Objective != "Fill the file store?\n\n"+wantBody {
+		t.Fatalf("the card's text =\n%s\nwant\n%s", got.Objective, "Fill the file store?\n\n"+wantBody)
+	}
+	if len(store.events) != 1 || store.events[0].Detail["act"] != q.Act || store.events[0].Detail[FactAbout] != "t-bump" {
+		t.Fatalf("rows = %+v, want the ask row with the act and the card it is about", store.events)
+	}
+	if back := questionOfAsk(store.events[0].Detail); back == nil || back.Act != q.Act {
+		t.Fatalf("the row's question = %+v, want the act %q", back, q.Act)
+	}
+}
+
 // An escalation factoryd files itself, as the stall card: the card wears
 // its source and commit, the issue says factoryd asks and never the chat
 // agent, and its question_asked row is factoryd's, so the wake reads it

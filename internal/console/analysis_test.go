@@ -95,14 +95,15 @@ func TestTheChatsRecommendationsNameNoMachinery(t *testing.T) {
 		t.Error("an analysis with a faulty recommendation was filed")
 		return nil
 	}
-	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string, string) (int64, error) {
 		t.Error("an escalation with a faulty recommendation was filed")
 		return 0, nil
 	}
 	const want = `recommendation: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`
 	tool, _ := r.c.chatTool("attach_analysis")
 	_, _, analysis := tool.run(trn, toolInput{TaskID: "t-e", Found: "found", Recommendation: "Keep one replica, as factory-chat found."})
-	_, escalation := trn.escalate("Which store?", "Postgres runs out of connections at the peak.", "The counts say so.", "Postgres, as factory-chat found", "Postgres", []string{"Postgres", "SQLite"})
+	_, escalation := trn.escalate(toolInput{Ask: "Which store?", Why: "Postgres runs out of connections at the peak.", Info: "The counts say so.",
+		Recommendation: "Postgres, as factory-chat found", Choice: "Postgres", Choices: []string{"Postgres", "SQLite"}})
 	for door, err := range map[string]error{"attach_analysis": analysis, "escalate": escalation} {
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusBadRequest || no.msg != want {
