@@ -360,7 +360,8 @@ func TestAReportedFailureGetsItsDeath(t *testing.T) {
 // A worker that reported its own end, a success, a failure or its stop
 // after factoryd's, was not killed, whatever its node does at the read: its
 // record is unknown, its outcome stays, the next session's lines hold
-// Forgejo's restart and no class sentence, and no kill line is asked for.
+// Forgejo's restart and no class sentence, and neither a kill line nor the
+// node is read.
 // A stop factoryd did not send on a node gone at the read is still the
 // platform's.
 func TestAReportedEndStaysTheWorkers(t *testing.T) {
@@ -422,6 +423,11 @@ func TestAReportedEndStaysTheWorkers(t *testing.T) {
 			}
 			if n := g.kernel.called(); n != 0 {
 				t.Fatalf("kernel reads %d, want none: no kill line names a reported end", n)
+			}
+			g.kube.mu.Lock()
+			defer g.kube.mu.Unlock()
+			if g.kube.stateReads != 1 {
+				t.Fatalf("node reads %d, want the start's read of its boot alone: no rule reads the node of a reported end", g.kube.stateReads)
 			}
 		})
 	}

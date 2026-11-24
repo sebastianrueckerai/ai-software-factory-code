@@ -106,7 +106,8 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	if in.node != "" {
 		f.Pod.Node = in.node
 	}
-	if f.Pod.Node != "" {
+	// no rule reads the node of an end the worker reported
+	if f.Pod.Node != "" && !in.reported {
 		n, err := d.kube.NodeState(ctx, f.Pod.Node)
 		switch {
 		case err == nil:

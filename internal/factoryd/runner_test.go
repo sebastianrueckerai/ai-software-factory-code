@@ -81,6 +81,7 @@ type fakeKube struct {
 	events      map[string]string         // ns/pod → its newest event
 	podEvents   map[string][]PodEvent     // ns/pod → its events, oldest first
 	nodeStates  map[string]NodeState      // node name → its state; a missing one is ErrNotFound
+	stateReads  int                       // NodeState calls
 	servicePods map[string][]ServicePod   // ns/selector → its pods
 	cronJobsErr map[string]error          // "<kind> <namespace>" → injected failure of its read
 	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
@@ -431,6 +432,7 @@ func (k *fakeKube) PodEvents(ctx context.Context, namespace, pod string) ([]PodE
 func (k *fakeKube) NodeState(ctx context.Context, name string) (NodeState, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.stateReads++
 	n, ok := k.nodeStates[name]
 	if !ok {
 		return NodeState{}, ErrNotFound
