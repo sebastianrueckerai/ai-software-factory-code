@@ -967,9 +967,10 @@ func (s *PGStore) OpenCasesIn(ctx context.Context, repository string) ([]Case, e
 }
 
 // OpenCasesOfKinds are the open and at_human cases of kinds in every
-// repository, oldest first.
+// repository whose card has not ended, oldest first.
 func (s *PGStore) OpenCasesOfKinds(ctx context.Context, kinds ...CaseKind) ([]Case, error) {
-	return s.cases(ctx, `SELECT `+caseColumns+` FROM cases WHERE `+caseLive+` AND kind = ANY($1::text[]) ORDER BY id`, kindNames(kinds))
+	return s.cases(ctx, `SELECT `+caseColumns+` FROM cases c WHERE `+caseLive+` AND kind = ANY($1::text[])
+		AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = c.task_id AND t.status = ANY($2)) ORDER BY id`, kindNames(kinds), FinalStatuses)
 }
 
 // kindNames are kinds as the text a query's array parameter takes.

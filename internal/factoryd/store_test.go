@@ -2447,7 +2447,7 @@ func (s *fakeStore) OpenCasesIn(ctx context.Context, repository string) ([]Case,
 func (s *fakeStore) OpenCasesOfKinds(ctx context.Context, kinds ...CaseKind) ([]Case, error) {
 	var out []Case
 	for _, c := range s.cases {
-		if slices.Contains(kinds, c.Kind) && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+		if slices.Contains(kinds, c.Kind) && (c.Status == CaseOpen || c.Status == CaseAtHuman) && !Final(s.tasks[c.TaskID].Status) {
 			out = append(out, c)
 		}
 	}

@@ -234,15 +234,16 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 // the human (m1), a day wait at the human (d1), an agent's ask at the human
 // (a1), a month wait rung 2 holds on a running card (r1), a month wait a
 // human answered before the agent asked (l1), a month wait withdrawn when
-// it ended on its own (w1), and a card with two live cap waits, the
-// project's rung 0 holds and the month's at the human (b1).
+// it ended on its own (w1), a card with two live cap waits, the
+// project's rung 0 holds and the month's at the human (b1), and a done
+// card whose month wait is still live (x1).
 func capWaitStore(t *testing.T) *fakeStore {
 	t.Helper()
 	store, ctx := newFakeStore(), context.Background()
 	month := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
 	day := CapWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
 	for id, status := range map[string]string{"m1": "waiting-human", "d1": "waiting-human", "a1": "waiting-human", "r1": "running",
-		"l1": "waiting-human", "w1": "running", "b1": "waiting-human"} {
+		"l1": "waiting-human", "w1": "running", "b1": "waiting-human", "x1": "done"} {
 		if err := store.CreateTask(ctx, Task{ID: id, Status: status, Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
@@ -272,6 +273,7 @@ func capWaitStore(t *testing.T) *fakeStore {
 	must(store.WithdrawCase(ctx, open("w1", CaseMonthCap), "the wait ended on its own: the cap no longer binds a session"))
 	open("b1", CaseProjectCap)
 	store.face("b1", 9, CaseMonthCap, 109, month, oct31(21, 0, 0))
+	store.face("x1", 10, CaseMonthCap, 110, month, oct31(21, 0, 0))
 	return store
 }
 
@@ -279,8 +281,8 @@ func capWaitStore(t *testing.T) *fakeStore {
 // it, oldest case first and each card once: the month's (m1) and the
 // day's (d1) at the human, the month's that rung 2 holds (r1), and the
 // card with two (b1). It signals no agent's ask (a1), no answered wait
-// (l1) and no withdrawn one (w1), and its log line says what it ran
-// for. A signal that fails leaves the others signalled and Wake failing.
+// (l1), no withdrawn one (w1) and no ended card (x1), and its log line
+// says what it ran for. A signal that fails leaves the others signalled and Wake failing.
 func TestCapWaitsWake(t *testing.T) {
 	var sent []string
 	var broken string

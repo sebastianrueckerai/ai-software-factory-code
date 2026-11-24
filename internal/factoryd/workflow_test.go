@@ -2944,8 +2944,10 @@ func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
 }
 
 // The sizing card of 2026-11-24: the month cap refuses its session at
-// 07:03, and the run waits on its case, which rung 2 holds while the card
-// runs, due at 07:38. A human resets the month's count at 07:30: Wake
+// 07:03, and the trip hands its case below the human with no comment
+// (rungOne; the run reads no rung), so the run waits on it while the card
+// runs; in the store rung 2 holds the case, due at 07:38. A human resets
+// the month's count at 07:30: Wake
 // signals the card though no face came, the check gateway.PolicyTTL later
 // finds the cap no longer binding, and the run withdraws its case and
 // starts its next session at 07:30:30, before the rung's due could hand

@@ -402,8 +402,8 @@ type CapWaits struct {
 	Signal func(ctx context.Context, taskID string) error
 }
 
-// Wake signals every card a live cap wait's case belongs to, whichever
-// rung holds the case, once, for why, what it runs for, which its log line
+// Wake signals every card that has not ended and holds a live cap wait's
+// case, whichever rung holds the case, once, for why, what it runs for, which its log line
 // opens with. It signals them all even when one fails, and returns the
 // failures.
 func (c *CapWaits) Wake(ctx context.Context, why string) error {
