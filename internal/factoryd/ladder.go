@@ -131,8 +131,27 @@ var rung0 = []resolver{
 		return "every check on head " + ShortSHA(f.Head) + " is green, so the factory resumed the checks wait"
 	}},
 	// a day's, a month's or a project's cap: the run's own wait (capWait)
-	// ends it when the cap turns, and the case waits on the human until then
-	{Name: "cap_wait", Fire: func(context.Context, *Runner, Case, CaseFacts) (*Resolution, error) { return nil, nil }},
+	// ends it once the cap no longer binds a session or its period turns,
+	// and the same check (capLift) resumes the card here when it reads so
+	// first, its words the check's; a case that names no model has no
+	// session to weigh and waits for the run
+	{Name: "cap_wait", Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		model, _ := c.Facts["model"].(string)
+		if model == "" {
+			return nil, nil
+		}
+		var decision string
+		for d, k := range capWaitKinds {
+			if k == c.Kind {
+				decision = d
+			}
+		}
+		lift, err := r.capLift(ctx, CapCheck{TaskID: c.TaskID, Model: model, Decision: decision, Turned: !r.Clock().Before(CapTurn(decision, c.OpenedAt))})
+		if err != nil || !lift.Resume {
+			return nil, err
+		}
+		return rungZeroTakes(f, Resolution{Action: ActResume, Note: lift.Why, Moments: lift.Moments}), nil
+	}, Took: func(_ Case, _ CaseFacts, res Resolution) string { return res.Note }},
 	// a failed dependency outside a plan is filed again once, and a retry
 	// that failed in turn goes to the human
 	{Name: "retry_dependency", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {

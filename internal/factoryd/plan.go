@@ -2664,15 +2664,16 @@ func (t *taskRun) leavePlanWait(final, why string, answered bool, onCap *capWait
 		return
 	}
 	reason := "a writer's comment moved the plan on"
+	var said Moments
 	switch {
 	case final != "":
 		reason = "the run ended: " + why
 	case answered:
 		reason = "the plan's questions were answered"
 	case onCap.over():
-		reason = "the wait ended on its own: " + onCap.name()
+		reason, said = onCap.name(), onCap.said()
 	}
-	t.endCase(reason)
+	t.endCase(reason, said)
 }
 
 // planCommentsWhole is planComments with the rest of the burst a comment

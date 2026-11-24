@@ -209,7 +209,7 @@ func TestWorkflowWithdrawsTheCaseWhenTheCapTurns(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if want := []string{"701 the wait ended on its own: the cap no longer binds a session"}; !slices.Equal(h.ended, want) {
+	if want := []string{"701 the UTC day turned"}; !slices.Equal(h.ended, want) {
 		t.Fatalf("EndCase calls %q, want %q", h.ended, want)
 	}
 	if len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) {
@@ -2304,7 +2304,7 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 			withdrawn = append(withdrawn, comment)
 			return 900, nil
 		}, activity.RegisterOptions{Name: ActivityWithdrawQuestion})
-		env.RegisterActivityWithOptions(func(ctx context.Context, caseID int64, reason string) error {
+		env.RegisterActivityWithOptions(func(ctx context.Context, caseID int64, reason string, said Moments) error {
 			if caseID != 7 {
 				return fmt.Errorf("ending named case %d, want 7", caseID)
 			}

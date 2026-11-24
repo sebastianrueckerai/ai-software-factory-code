@@ -86,8 +86,9 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 
 // Rung 0's rows on a case's kind and facts, the first that fires winning:
 // a green approved head goes to its approval, a red one's checks run once,
-// a cap of the day waits, and a failed dependency is retried outside a plan
-// and sent to its planner inside one, unless it is a retry itself.
+// and a failed dependency is retried outside a plan and sent to its
+// planner inside one, unless it is a retry itself. The cap row reads the
+// cap itself: the retake tests hold it.
 func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 	room := CaseFacts{SessionCap: 3, AgentTimeCapS: 3600}
 	head := func(checks string, approved bool) CaseFacts {
@@ -123,7 +124,6 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		{"a checks wait's stop with red checks", CaseGateStop, checksWait("red", false), &Resolution{Action: ActRerunChecks}},
 		{"a checks wait's stop with checks pending", CaseGateStop, checksWait("pending", false), nil},
 		{"green at a stop of no head", CaseAgentEscalate, head("green", true), nil},
-		{"the day cap", CaseDayCap, head("green", true), nil},
 		{"a failed dependency", CaseDependencyFailed, failed("", ""), &Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}},
 		{"a failed retry", CaseDependencyFailed, failed("", "t-old"), nil},
 		// a retry filed its replacement already: rung 0's retry names it (Act)
