@@ -30,7 +30,7 @@ func bumpLog(t *testing.T, r bump.Result) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return "go: downloading golang.org/x/vuln v1.10.0\n" + r.Text + enc
+	return "go: downloading golang.org/x/vuln v1.10.0\n" + r.Report.Text() + enc
 }
 
 // The bump pod runs upstream-bump in the runner image over main's files,
@@ -39,7 +39,7 @@ func bumpLog(t *testing.T, r bump.Result) string {
 func TestBumpPodRunsUpstreamBumpOverMainsFilesWithoutALogin(t *testing.T) {
 	u := newUpstreamPod(t)
 	k := podKube(u)
-	want := bump.Result{Files: map[string]string{"go.mod": "module m\n\ntoolchain go1.26.11\n"}, Text: "Moved:\n- node v24.22.2 → v24.22.3\n"}
+	want := bump.Result{Files: map[string]string{"go.mod": "module m\n\ntoolchain go1.26.11\n"}, Report: bump.Report{Moved: []string{"node v24.22.2 → v24.22.3"}}}
 	var spec, policy map[string]any
 	k.run = func(secret map[string]string) (string, int32) {
 		for ns := range k.namespaces {

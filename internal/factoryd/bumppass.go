@@ -10,6 +10,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/bump"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // bumpPass is a run of routine rt, a pull-request routine of pass bump, on
@@ -53,13 +54,14 @@ func (r *Runner) bumpPass(ctx context.Context, p Project, rt policy.Routine, bri
 		}
 		want[path] = []byte(s)
 	}
-	text := strings.TrimSpace(res.Text)
+	text := strings.TrimSpace(res.Report.Text())
 	if findings := r.copyBump(ctx, main, want); len(findings) > 0 {
 		text += "\n\nThe copy into the store before the checks could not copy:\n- " + strings.Join(findings, "\n- ")
 	}
 	text = r.untrusted(Task{Repository: p.Repository}, text)
 
 	b := RoutineCard(rt, brief)
+	b.Summary = bumpSummary(res.Report)
 	b.Body = strings.TrimSpace(b.Body + "\n\n" + text)
 	t := Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: r.cfg.Policy().Document.Budget.ClampBudget(0),
 		Objective: IssueObjective(b.Title, b.Body), Source: SourceRoutine}
@@ -94,6 +96,26 @@ func (r *Runner) bumpPass(ctx context.Context, p Project, rt policy.Routine, bri
 		log.Printf("routine %s: pull request #%d: name its card #%d: %v", rt.Name, pr.Number, ref.Number, err)
 	}
 	return t, ref, nil
+}
+
+// bumpSummary is the summary of a bump's card: how many pins moved, that
+// an agent works only on a failed check, and each pin the lookup could not
+// resolve.
+func bumpSummary(r bump.Report) string {
+	pins := fmt.Sprintf("%d pins", len(r.Moved))
+	if len(r.Moved) == 1 {
+		pins = "1 pin"
+	}
+	s := "The factory's lookup moved " + pins + " in this card's pull request. Its checks and review judge it, and an agent works on it only when a check fails."
+	if len(r.Failed) > 0 {
+		names := make([]string, len(r.Failed))
+		for i, f := range r.Failed {
+			name, _, _ := strings.Cut(f, ": ")
+			names[i], _, _ = strings.Cut(name, "@")
+		}
+		s += " Not resolved, kept as they were: " + strings.Join(names, ", ") + "."
+	}
+	return textutil.Truncate(s, summaryMax)
 }
 
 // copyBump copies into the store what the bump's files add, before its

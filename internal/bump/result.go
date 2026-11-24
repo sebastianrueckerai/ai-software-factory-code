@@ -12,10 +12,10 @@ import (
 )
 
 // Result is what a bump hands back from its pod: the files it changed, by
-// path, and the pull request's text.
+// path, and its report.
 type Result struct {
-	Files map[string]string `json:"files"`
-	Text  string            `json:"text"`
+	Files  map[string]string `json:"files"`
+	Report Report            `json:"report"`
 }
 
 // The lines around a result in the pod's log.

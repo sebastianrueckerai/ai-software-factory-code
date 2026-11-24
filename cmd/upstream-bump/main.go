@@ -93,8 +93,8 @@ func run(ctx context.Context, dir string, result bool, w *bump.Web, cmd func(ctx
 	if was != nil && now != nil && was[1] != now[1] {
 		report.Moved = append(report.Moved, fmt.Sprintf("golang.org/x/vuln %s → %s, govulncheck's module", was[1], now[1]))
 	}
-	out.Text = report.Text()
-	fmt.Fprint(stdout, out.Text)
+	out.Report = report
+	fmt.Fprint(stdout, report.Text())
 	if result {
 		enc, err := out.Encode()
 		if err != nil {

@@ -97,7 +97,7 @@ func TestTheCommandHandsBackTheBumpGoAndNpmMade(t *testing.T) {
 		t.Errorf("files %q", got.Files)
 	}
 	for _, line := range []string{"- opencode v1.19.5 → v1.19.6\n", "- golang.org/x/vuln v1.9.0 → v1.10.0, govulncheck's module\n"} {
-		if !strings.Contains(got.Text, line) || !strings.HasPrefix(stdout.String(), got.Text) {
+		if text := got.Report.Text(); !strings.Contains(text, line) || !strings.HasPrefix(stdout.String(), text) {
 			t.Errorf("the text lacks %q or does not lead the output:\n%s", line, stdout.String())
 		}
 	}
@@ -117,7 +117,7 @@ func TestAFailedGoStepIsNamedAndTheBumpStands(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	got, err := bump.DecodeResult(stdout.String())
-	if err != nil || len(got.Files) != 0 || !strings.Contains(got.Text, "Not resolved, kept as they were:\n- go get -tool golang.org/x/vuln/cmd/govulncheck@latest: exit status 1: proxy.golang.org: no such host\n") {
+	if err != nil || len(got.Files) != 0 || !strings.Contains(got.Report.Text(), "Not resolved, kept as they were:\n- go get -tool golang.org/x/vuln/cmd/govulncheck@latest: exit status 1: proxy.golang.org: no such host\n") {
 		t.Errorf("result %+v, %v", got, err)
 	}
 }

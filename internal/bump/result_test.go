@@ -9,7 +9,7 @@ import (
 // A result survives the log: its lines are short, what the program
 // printed before it is left, and a log without one says so.
 func TestAResultRoundTripsThroughThePodsLog(t *testing.T) {
-	r := Result{Files: map[string]string{"go.mod": "module m\n\ntoolchain go1.26.11\n", "upstream-files.txt": strings.Repeat("a line\n", 400)}, Text: "Moved:\n- node v24.22.2 → v24.22.3\n"}
+	r := Result{Files: map[string]string{"go.mod": "module m\n\ntoolchain go1.26.11\n", "upstream-files.txt": strings.Repeat("a line\n", 400)}, Report: Report{Moved: []string{"node v24.22.2 → v24.22.3"}, Failed: []string{"opencode v1.19.5: GET https://api.github.com/repos/anomalyco/opencode/releases?per_page=100: 404 Not Found"}}}
 	enc, err := r.Encode()
 	if err != nil {
 		t.Fatal(err)

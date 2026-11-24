@@ -24,13 +24,13 @@ var dockerfiles = []string{"Dockerfile", "Dockerfile.runner", "Dockerfile.sandbo
 // Report is what a bump did, in lines for the pull request's text.
 type Report struct {
 	// Moved names each pin that moved: its line, from and to.
-	Moved []string
+	Moved []string `json:"moved,omitempty"`
 	// Newer names the newer lines a rule left: a newer major, or a newer
 	// minor of a patch line.
-	Newer []string
+	Newer []string `json:"newer,omitempty"`
 	// Failed names each pin the bump could not resolve, which it kept, and
-	// why.
-	Failed []string
+	// why: the pin, then ": " and the error.
+	Failed []string `json:"failed,omitempty"`
 }
 
 // Text is the report as the pull request's description.

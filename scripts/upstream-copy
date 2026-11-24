@@ -21,8 +21,9 @@
 #     secret is a login only for its kubelet.
 # A word after these (patch, hold or with <name>) is the weekly bump's
 # (cmd/upstream-bump), which the copy leaves alone. A copy the store holds
-# already is not made again, so only a new line touches its upstream. crane reads the store's login from its docker
-# config; the Helm repository's take REGISTRY_USER and REGISTRY_PASSWORD.
+# already is not made again, so only a new line touches its upstream.
+# crane reads the store's login from its docker config; the Helm
+# repository's take REGISTRY_USER and REGISTRY_PASSWORD.
 set -euo pipefail
 list=${1:-upstream-images.txt}
 store=${UPSTREAM_STORE:-git.aisoftwarefactory.world/upstream}

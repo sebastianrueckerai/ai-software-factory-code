@@ -1,9 +1,11 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -39,10 +41,11 @@ func (f *bumpForge) handler(t *testing.T, issues http.HandlerFunc) http.HandlerF
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		*f.log = append(*f.log, r.Method+" "+r.URL.Path)
+		// the body stays readable for the issue API
+		raw, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(raw))
 		var in map[string]any
-		if r.Method == http.MethodPost || r.Method == http.MethodPatch {
-			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
-		}
+		json.Unmarshal(raw, &in) // #nosec G104 -- test stub
 		answer := func(status int, v any) {
 			w.WriteHeader(status)
 			json.NewEncoder(w).Encode(v) // #nosec G104 -- test stub
@@ -139,7 +142,8 @@ var bumped = bump.Result{
 		"upstream-files.txt": "node v24.22.3 node-v24.22.3-linux-x64.tar.xz https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz 4f2b\n",
 		"go.mod":             "module m\n\ntoolchain go1.26.11\n",
 	},
-	Text: "The factory's lookup moved the pins below.\n\nMoved:\n- node v24.22.2 → v24.22.3\n",
+	Report: bump.Report{Moved: []string{"node v24.22.2 → v24.22.3"},
+		Failed: []string{"ghcr.io/cloudnative-pg/postgresql:18.7-system-trixie@sha256:6ebb: GET https://ghcr.io/v2/cloudnative-pg/postgresql/tags/list?n=1000: 429 Too Many Requests"}},
 }
 
 // The bump pass commits the pod's files on the bot's fork at the new
@@ -153,13 +157,19 @@ func TestRoutineRunBumpFilesTheCardOfItsPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := onlyTask(t, b.store)
-	text := strings.TrimSpace(bumped.Text)
+	// a link to a host the repository's text may not name is defanged
+	text := strings.Replace(strings.TrimSpace(bumped.Report.Text()), "https://ghcr.io/", "hxxps://ghcr[.]io/", 1)
 	if card.Kind != "agent" || card.Source != SourceRoutine || card.PRNumber != 2400 || card.IssueNumber != 71 || card.Track != policy.TrackDirect ||
 		card.Objective != "Update the fixed versions of outside software every week\n\nA check of this pull request failed: fix what it names.\n\n"+text {
 		t.Fatalf("card %+v", card)
 	}
 	if want := (RoutineRunResult{Outcome: "filed", TaskID: card.ID, Issue: 71}); res != want {
 		t.Errorf("result %+v, want %+v", res, want)
+	}
+	// the card's summary names the pin the lookup could not resolve
+	if summary := "Summary: The factory's lookup moved 1 pin in this card's pull request. Its checks and review judge it, and an agent works on it only when a check fails. " +
+		"Not resolved, kept as they were: ghcr.io/cloudnative-pg/postgresql:18.7-system-trixie.\n"; len(b.issues.issues) != 1 || !strings.Contains(b.issues.issues[0], summary) {
+		t.Errorf("issues %q, want the summary %q", b.issues.issues, summary)
 	}
 	if !slices.Equal(b.wf.started, []string{card.ID}) {
 		t.Errorf("started %v, want the card's run", b.wf.started)
@@ -202,7 +212,7 @@ func TestRoutineRunBumpFilesTheCardOfItsPullRequest(t *testing.T) {
 
 // A bump that moves no pin files nothing and copies nothing.
 func TestRoutineRunBumpWithNoMoveFilesNothing(t *testing.T) {
-	b := newBumpRun(t, bump.Result{Files: map[string]string{}, Text: "The factory's lookup moved the pins below.\n"})
+	b := newBumpRun(t, bump.Result{Files: map[string]string{}})
 	res, err := b.r.RoutineRun(context.Background(), RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now()})
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +245,7 @@ func TestRoutineRunBumpClosesThePullRequestOfACardItCouldNotFile(t *testing.T) {
 // A file the pod hands back that no bump writes is refused: the pod's
 // answer is data, and only the bump's files reach the branch.
 func TestRoutineRunBumpRefusesAFileNoBumpWrites(t *testing.T) {
-	res := bump.Result{Files: maps.Clone(bumped.Files), Text: bumped.Text}
+	res := bump.Result{Files: maps.Clone(bumped.Files), Report: bumped.Report}
 	res.Files[".forgejo/workflows/pr.yml"] = "on: push\n"
 	b := newBumpRun(t, res)
 	_, err := b.r.RoutineRun(context.Background(), RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now()})
