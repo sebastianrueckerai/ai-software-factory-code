@@ -44,8 +44,8 @@ type deathInput struct {
 }
 
 const (
-	// deathWait bounds the wait for a kill line of a pod that ended with
-	// exit code 137: a memory guard's kill reaches SigNoz seconds after it.
+	// deathWait bounds the wait for a kill line of a pod that a SIGKILL
+	// ended: a memory guard's kill reaches SigNoz seconds after it.
 	deathWait = 90 * time.Second
 	killPoll  = 15 * time.Second
 	// deathMargin is the time a read leaves before its context's deadline
@@ -182,9 +182,12 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		asked = readKernel(firstEnd)
 	}
 	r := Classify(f)
-	// after factoryd's own stop a 137 is the kubelet's kill at the grace's end
-	killed137 := slices.ContainsFunc(f.Pod.Containers, func(c ContainerState) bool { return c.State == "terminated" && c.ExitCode == 137 })
-	if asked && !in.stoppedByFactory && r.Rule == RuleNone && killed137 {
+	// a SIGKILL ends a container 137 under runc and 128 under gVisor; after
+	// factoryd's own stop it is the kubelet's kill at the grace's end
+	killed := slices.ContainsFunc(f.Pod.Containers, func(c ContainerState) bool {
+		return c.State == "terminated" && (c.ExitCode == 137 || c.ExitCode == 128)
+	})
+	if asked && !in.stoppedByFactory && r.Rule == RuleNone && killed {
 	wait:
 		for time.Now().Before(waitEnd) {
 			select {
