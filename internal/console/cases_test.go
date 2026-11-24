@@ -274,7 +274,7 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	if strings.Count(needs, ` data-case="`) != 1 || strings.Contains(needs, `class="card approval plan"`) {
 		t.Fatalf("want one small card and no plan card in it:\n%s", needs)
 	}
-	if want := `<strong class="title">Keep this extra promise for plan “Link shortener”?</strong> <span class="why">The plan&#39;s cards start only once each extra promise is kept or dropped.</span>`; !strings.Contains(needs, want) {
+	if want := `<strong class="title">Keep the extra promise “The door stays shut until a key that fits turns the lock” for plan “Link shortener”?</strong> <span class="why">The plan&#39;s cards start only once each extra promise is kept or dropped.</span>`; !strings.Contains(needs, want) {
 		t.Errorf("the plan's small card lacks %s:\n%s", want, needs)
 	}
 	for _, raw := range []string{"The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",

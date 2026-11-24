@@ -47,6 +47,7 @@ type toolInput struct {
 	Sessions    int      `json:"sessions,omitempty"`
 	Money       bool     `json:"money,omitempty"`
 	Question    int      `json:"question,omitempty"`
+	Holdout     int      `json:"holdout,omitempty"`
 	Decision    string   `json:"decision,omitempty"`
 	Note        string   `json:"note,omitempty"`
 	Minutes     int      `json:"minutes,omitempty"`
@@ -653,6 +654,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 				parts = append(parts, "question "+factoryd.QuestionLine(in.Question, qs[in.Question-1]))
 			}
 		}
+		if in.Holdout > 0 {
+			parts = append(parts, fmt.Sprintf("extra promise %d", in.Holdout))
+		}
 		if in.Decision != "" {
 			parts = append(parts, "decision "+in.Decision)
 		}
@@ -817,6 +821,9 @@ func (t *turn) answerIn(ctx context.Context, in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if in.Holdout != 0 {
+		return t.decideHoldout(ctx, k, in)
+	}
 	qs, err := t.c.planQuestions(ctx, k)
 	if err != nil {
 		return "", err
@@ -846,6 +853,31 @@ func (t *turn) answerIn(ctx context.Context, in toolInput) (string, error) {
 		return t.c.doAnswerAs(ctx, t.a, in.TaskID, in.Text, in.Action, in.Args)
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
+}
+
+// decideHoldout keeps or drops the extra promise in.Holdout of plan k's
+// revision in.Revision through the door a human's press uses, in.Text the
+// reason the event records.
+func (t *turn) decideHoldout(ctx context.Context, k factoryd.Task, in toolInput) (string, error) {
+	a, err := t.planActor()
+	if err != nil {
+		return "", err
+	}
+	verb := map[string]string{factoryd.DecisionKeep: "okay", factoryd.DecisionDrop: "drop"}[in.Decision]
+	switch {
+	case in.Revision == 0:
+		return "", refuseAgent(http.StatusBadRequest, "An extra promise is kept or dropped with its plan's `revision`, which the statement of the plan's confirmation names.")
+	case verb == "":
+		return "", refuseAgent(http.StatusBadRequest, fmt.Sprintf("An extra promise is kept or dropped with `decision` %s or %s.", factoryd.DecisionKeep, factoryd.DecisionDrop))
+	}
+	if err := t.c.doDecideHoldout(ctx, a, in.TaskID, in.Revision, in.Holdout, verb, in.Text); err != nil {
+		return "", err
+	}
+	done := "Kept"
+	if verb == "drop" {
+		done = "Dropped"
+	}
+	return fmt.Sprintf("%s extra promise %d of plan #%d.", done, in.Holdout, k.IssueNumber), nil
 }
 
 // fileForCase files the card of in as the file_card of the live case of card
@@ -1806,10 +1838,11 @@ func init() {
 					"size":       map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
 					"criterion":  map[string]any{"type": "string", "description": "answer_criteria's criterion"},
 					"verdict":    map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
-			"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
+			"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise, factoryd.DecisionKeep, factoryd.DecisionDrop},
 				"description": "confirm accepts the plan, revise asks for changes in text"},
 			"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
-			"revision": map[string]any{"type": "integer", "description": "the plan's revision, for a plan's questions", "minimum": 1},
+			"holdout":  map[string]any{"type": "integer", "minimum": 1, "description": "an extra promise's number to keep or drop, reason in text"},
+			"revision": map[string]any{"type": "integer", "description": "the plan's revision, for its questions and extra promises", "minimum": 1},
 			"answers": map[string]any{"type": "array", "description": "every open question's answer at once",
 				"items": map[string]any{"type": "object", "properties": map[string]any{
 					"question": map[string]any{"type": "integer", "description": "the question's number", "minimum": 1},

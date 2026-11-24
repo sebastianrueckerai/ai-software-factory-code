@@ -483,6 +483,28 @@ func TestAGateStopSuggestsTheAnswerItsRecommendationNames(t *testing.T) {
 	}
 }
 
+// Each extra promise's page asks for its own claim, so three promises of
+// one plan ask three things under the same why line: a claim with room
+// for the plan's name names the plan, a longer one drops it, and one past
+// the ask's 110 runes is cut at a word.
+func TestEachExtraPromiseAsksForItsOwnClaim(t *testing.T) {
+	x := fixture(t, facefixtures.GroupVariant, "plan_approval on an extra promise's page")
+	for i, c := range []struct{ claim, ask string }{
+		{"A steer typed while the feed reloads still shows once.",
+			"Keep the extra promise “A steer typed while the feed reloads still shows once” for plan “activity feed”?"},
+		{"A filter by kind keeps the rows of that kind and drops every other row.",
+			"Keep the extra promise “A filter by kind keeps the rows of that kind and drops every other row”?"},
+		{"When the task store never comes up, the gateway retries it for the full 3 minutes and then gives up, exiting with a non-zero status instead of retrying forever.",
+			"Keep the extra promise “When the task store never comes up, the gateway retries it for the full 3 minutes…”?"},
+	} {
+		page := factoryd.OnHoldout(x.c, factoryd.HoldoutFact{Idx: i + 1, Claim: c.claim})
+		face := factoryd.FaceOf(page, factoryd.Facts{CaseFacts: factoryd.FactsOf(page), Card: x.fx.Task})
+		if face.Ask != c.ask || face.Why != "The plan's cards start only once each extra promise is kept or dropped." {
+			t.Errorf("extra promise %d: ask %q, why %q; want %q", i+1, face.Ask, face.Why, c.ask)
+		}
+	}
+}
+
 // A held production's replans name the plan by its name and its number.
 func TestTheHoldsReplansNameThePlan(t *testing.T) {
 	x := fixture(t, "case", string(factoryd.CaseRollHeld))

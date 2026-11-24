@@ -1092,28 +1092,69 @@ func TestAClimbingPlanQuestionTakesNoAnswerInTheChat(t *testing.T) {
 	}
 }
 
-// Rung 2 confirms at full auto a revision that takes nothing off main once
-// every hold-out of its round is decided: while one waits its confirmation
-// is refused naming it, and nothing is answered.
+// Rung 2 keeps or drops an extra promise in its case's wake through the
+// door a human's press uses, and only at full auto: below it the guard
+// refuses with the project's level, the human's press and the agent's next
+// step, and nothing is decided. At full auto a keep or a drop without its
+// reason is refused, one with it is stored under the agent's login and
+// recorded with the reason, and nothing is posted on the issue. The
+// confirmation is refused while one extra promise waits, naming it and the
+// agent's tool, and confirms once each is kept or dropped.
 func TestRung2ConfirmsAPlanOnceItsHoldoutsAreDecided(t *testing.T) {
 	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	const keep = `{"task_id":"t-p","revision":1,"holdout":1,"decision":"keep","text":"no test of the gateway covers a store that never comes up"}`
+	const drop = `{"task_id":"t-p","revision":1,"holdout":2,"decision":"drop","text":"the reproduction gate runs this check already"}`
 	r, trn, _ := planGuardRig(t, true)
 	r.tasks.mu.Lock()
-	r.tasks.proofs = map[string][]factoryd.PlanProof{"t-p": {{Idx: 1, Round: 1, ID: "door_state", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed}}}
+	r.tasks.proofs = map[string][]factoryd.PlanProof{"t-p": {
+		{Idx: 1, Round: 1, ID: "gives_up", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed},
+		{Idx: 2, Round: 1, ID: "repro_flips", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed}}}
 	r.tasks.mu.Unlock()
-	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.EventCaseClimbed
-	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); res != "Refused: 1 extra promise of plan #20 waits for Keep it or Drop it on its page before the confirmation." ||
-		slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") }) {
-		t.Fatalf("with a hold-out waiting: result %q, calls %v", res, r.fg.calls)
+	signalled := func() bool {
+		return slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") })
 	}
-	r.tasks.mu.Lock()
-	r.tasks.proofs["t-p"][0].State = factoryd.ProofDropped
-	r.tasks.mu.Unlock()
+	trn.a.wake, trn.a.birth = true, factoryd.EventCaseClimbed
+	for _, level := range []string{policy.AutonomyAssisted, policy.AutonomyAutonomous} {
+		trn.a.level = level
+		want := "Refused: The project runs at " + level + ", and below full auto an extra promise is the human's, kept or dropped with Keep it or Drop it on its page of the plan's card." + agentStep
+		if res, _, status := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: keep}); res != want || status != http.StatusConflict || signalled() {
+			t.Fatalf("a keep at %s: result %q, status %d, calls %v; want %q and 409", level, res, status, r.fg.calls, want)
+		}
+	}
+	// in a human's turn the keep is proposed, naming the extra promise
+	trn.cfg.Confirm = policy.ConfirmFor(policy.AutonomyAssisted, policy.MergeHuman, policy.DefaultChat.Confirm)
+	trn.a.wake, trn.a.birth = false, ""
+	if res, proposal, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: keep}); proposal == "" ||
+		res != `Proposed to sebastian: Answer a card, #20 t-p "Build the link shortener.", text no test of the gateway covers a store that never comes up, revision 1, extra promise 1, decision keep. Nothing runs until they press Do it.` {
+		t.Fatalf("a keep in a human's turn: result %q, proposal %q", res, proposal)
+	}
+	trn.cfg.Confirm, trn.a.wake, trn.a.birth = nil, true, factoryd.EventCaseClimbed
+	trn.a.level = policy.AutonomyFullAuto
+	if res, _, status := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"holdout":1,"decision":"keep"}`}); res != "Refused: Keeping or dropping an extra promise takes your reason as `text`, 1 to 1000 characters." ||
+		status != http.StatusBadRequest || signalled() {
+		t.Fatalf("a keep without its reason: result %q, status %d, calls %v", res, status, r.fg.calls)
+	}
 	trn.conv = 7
 	before := r.events.count()
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: keep}); res != "Kept extra promise 1 of plan #20."+noUndoSentence ||
+		!slices.Contains(r.fg.calls, "SIGNAL holdout_decided t-p 1 1 okay by "+factoryd.ChatUser) || len(r.fg.comments) > 0 {
+		t.Fatalf("the agent's keep: result %q, calls %v, comments %v", res, r.fg.calls, r.fg.comments)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventHoldoutDecided,
+		Detail: map[string]any{"revision": 1, "index": 1, "verb": "okay", "reason": "no test of the gateway covers a store that never comes up",
+			"birth": factoryd.EventCaseClimbed, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+	if res, _, status := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); res != "Refused: 1 extra promise of plan #20 waits to be kept or dropped before the confirmation: keep or drop it with the answer tool (`revision` 1, `holdout` 2, `decision` keep or drop, your reason as `text`)." ||
+		status != http.StatusConflict || slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL plan_answered") }) {
+		t.Fatalf("the confirmation with one extra promise waiting: result %q, status %d, calls %v", res, status, r.fg.calls)
+	}
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: drop}); res != "Dropped extra promise 2 of plan #20."+noUndoSentence ||
+		!slices.Contains(r.fg.calls, "SIGNAL holdout_decided t-p 1 2 drop by "+factoryd.ChatUser) {
+		t.Fatalf("the agent's drop: result %q, calls %v", res, r.fg.calls)
+	}
+	before = r.events.count()
 	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") ||
 		!slices.Contains(r.fg.calls, "SIGNAL plan_answered t-p 1 1 by "+factoryd.ChatUser) {
-		t.Fatalf("with its hold-out dropped: result %q, calls %v", res, r.fg.calls)
+		t.Fatalf("with each extra promise settled: result %q, calls %v", res, r.fg.calls)
 	}
 	// the row's actor is the venue's human; the stored answer, which the
 	// case's resolution reads, is the agent's

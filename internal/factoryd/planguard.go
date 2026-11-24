@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -34,6 +35,23 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 		return "This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with Confirm the plan on the plan's card." + planAgentStep
 	}
 	return ""
+}
+
+// HoldoutRefusal is PlanAnswerRefusal's rule for keeping or dropping one
+// extra promise of a plan's round: the human always, the factory agent at
+// full auto, any other rung never. "" when the decider may.
+func HoldoutRefusal(rung int, autonomy string) string {
+	if PlanAnswerRefusal(rung, autonomy, false, false) == "" {
+		return ""
+	}
+	const press = "kept or dropped with Keep it or Drop it on its page of the plan's card."
+	switch {
+	case rung != 2:
+		return capitalize(who(rung)) + " decides no extra promise: it is the factory agent's at full auto, or the human's, " + press
+	case autonomy == "":
+		return "The project's autonomy level could not be read, so an extra promise stays the human's, " + press + planAgentStep
+	}
+	return "The project runs at " + autonomy + ", and below full auto an extra promise is the human's, " + press + planAgentStep
 }
 
 // OffMainReplanRefusal is the rule for a replan that takes the plan's merged
@@ -75,8 +93,11 @@ func RevisionTakesOffMain(ctx context.Context, s planRevisions, taskID string, n
 }
 
 // planOffer is the line of rung 2's statement on a plan case: what the
-// agent may do with the answer tool, as PlanAnswerRefusal allows it.
-func planOffer(c Case, autonomy string, takesOffMain, holdoutsOpen bool) string {
+// agent may do with the answer tool, as PlanAnswerRefusal allows it, and
+// on a confirmation whose extra promises open wait, each of them with its
+// claim, its inputs and what it expects where HoldoutRefusal lets the agent
+// keep or drop it.
+func planOffer(c Case, autonomy string, takesOffMain bool, open []PlanProof) string {
 	revision, _ := toInt(c.Facts["revision"])
 	index, _ := toInt(c.Facts["index"])
 	at := fmt.Sprintf("revision %d, question %d", revision, index)
@@ -88,14 +109,30 @@ func planOffer(c Case, autonomy string, takesOffMain, holdoutsOpen bool) string 
 	}
 	confirmWhy := PlanAnswerRefusal(2, autonomy, true, takesOffMain)
 	reviseWhy := PlanAnswerRefusal(2, autonomy, false, false)
-	if confirmWhy == "" && holdoutsOpen {
-		confirmWhy = "Hold-out candidates of this revision are undecided, and only the human okays or drops them, so its confirmation waits for them."
+	var settle string
+	if len(open) > 0 && HoldoutRefusal(2, autonomy) == "" {
+		settle = holdoutOffer(revision, open)
 	}
 	switch {
+	case confirmWhy == "" && settle != "":
+		return settle + fmt.Sprintf("Once each is kept or dropped, you may confirm this plan with the answer tool (%s, decision confirm), or request changes (decision revise, with your words).", at)
 	case confirmWhy == "":
 		return fmt.Sprintf("You may confirm this plan with the answer tool (%s, decision confirm), or request changes (decision revise, with your words).", at)
 	case reviseWhy == "":
-		return confirmWhy + fmt.Sprintf(" You may request changes with the answer tool (%s, decision revise, with your words).", at)
+		return settle + confirmWhy + fmt.Sprintf(" You may request changes with the answer tool (%s, decision revise, with your words).", at)
 	}
 	return confirmWhy
+}
+
+// holdoutOffer is the part of rung 2's statement that lists the extra
+// promises open of revision, each by its number with its claim, its inputs
+// and what it expects, and how the agent keeps or drops one.
+func holdoutOffer(revision int, open []PlanProof) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "This revision's extra promises wait to be kept or dropped, and its confirmation waits for them: each is a claim the plan's criteria missed, which a test the building agents never see checks once it is kept. "+
+		"Keep or drop each with the answer tool (revision %d, holdout its number, decision %s or %s, your reason as text).\n", revision, DecisionKeep, DecisionDrop)
+	for _, p := range open {
+		fmt.Fprintf(&b, "- holdout %d: %s\n  inputs: %s\n  expected: %s\n", p.Idx, p.Claim, p.Inputs, p.Expected)
+	}
+	return b.String()
 }

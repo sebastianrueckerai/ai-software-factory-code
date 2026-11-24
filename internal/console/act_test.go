@@ -1156,7 +1156,7 @@ func TestAnswerRefusesARoom(t *testing.T) {
 	}
 	args, _ := tool.params["args"].(map[string]any)["properties"].(map[string]any)
 	equal(t, "the answer tool's parameters", slices.Sorted(maps.Keys(tool.params)),
-		[]string{"action", "answers", "args", "case_id", "decision", "question", "revision", "task_id", "text"})
+		[]string{"action", "answers", "args", "case_id", "decision", "holdout", "question", "revision", "task_id", "text"})
 	equal(t, "the answer tool's args", slices.Sorted(maps.Keys(args)),
 		[]string{"action", "body", "criterion", "depends_on", "model", "size", "summary", "task_id", "title", "verdict", "why"})
 }

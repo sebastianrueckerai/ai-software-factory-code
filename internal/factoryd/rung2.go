@@ -52,11 +52,14 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 		if err != nil {
 			return "", err
 		}
-		open, err := r.store.UndecidedProofs(ctx, t.ID, revision)
+		proofs, err := r.store.PlanProofs(ctx, t.ID)
 		if err != nil {
 			return "", err
 		}
-		text += planOffer(c, f.Autonomy, off, open > 0) + "\n"
+		open := slices.DeleteFunc(proofs, func(p PlanProof) bool {
+			return p.Origin != ProofOriginHoldout || p.Round != revision || p.State != ProofProposed
+		})
+		text += r.scrub(planOffer(c, f.Autonomy, off, open)) + "\n"
 	}
 	return text, nil
 }

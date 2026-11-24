@@ -54,7 +54,7 @@ func (c *Console) planChoiceOf(ctx context.Context, a actor, id string, revision
 func (c *Console) planHoldout(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
-	c.pressed(w, r, c.doDecideHoldout(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("verb")))
+	c.pressed(w, r, c.doDecideHoldout(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("verb"), ""))
 }
 
 // planChanges posts a writer's change request on the plan
