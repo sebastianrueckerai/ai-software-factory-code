@@ -977,19 +977,14 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// stop
 	factoryStopped := func() bool { return stoppedBefore || podStopped.Load() != 0 }
 	digest := newDigestBuilder(time.Now())
-	// deathNow reads how the pod ended, or is ending when live; the last
-	// push is the session's own, else its interim one, else the branch's at
-	// its start. A result the worker sent, but a stop factoryd did not
-	// send, is its own end.
+	// deathNow reads how the pod ended, or is ending when live. A result
+	// the worker sent, but a stop factoryd did not send, is its own end; a
+	// stop this factoryd sent is for a decision it holds.
 	deathNow := func(live bool) DeathRecord {
-		last := cmp.Or(out.commit, out.wip)
-		if last == "" && s.startRef != s.base {
-			last = s.startRef
-		}
 		stopped := factoryStopped()
 		reported := out.result != nil && (!out.result.Stopped || stopped)
 		return r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
-			stoppedByFactory: stopped, live: live, reported: reported, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
+			stoppedByFactory: stopped, live: live, reported: reported, decided: podStopped.Load() != 0, lastCommand: r.scrub(digest.lastCommand())})
 	}
 	keepDeath := func(death DeathRecord) {
 		out.death = &death

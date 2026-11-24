@@ -73,6 +73,9 @@ type ServiceRestart struct {
 type DeathFacts struct {
 	Pod                                     PodDiagnosis
 	PodGone, StoppedByFactory, AfterRestart bool
+	// Decided: this factoryd sent the pod its stop for a decision it holds.
+	// A stop an earlier factoryd sent lost its decision with it.
+	Decided bool
 	// Reported: the worker reported its own end, a success, a failure or
 	// its stop after factoryd's, so nothing killed it.
 	Reported    bool
@@ -102,10 +105,10 @@ type DeathRecord struct {
 	Limit       string     `json:"limit,omitempty"`
 	KillSource  string     `json:"kill_source,omitempty"`
 	LastCommand string     `json:"last_command,omitempty"`
-	// Stopped: factoryd had sent the pod its stop for a decision before
-	// the end was read. The end is the decision's, not free, whatever its
-	// class.
-	Stopped  bool             `json:"stopped,omitempty"`
+	// Decided: the factoryd that read the end had sent the pod its stop
+	// for a decision it holds. The end is the decision's, never free,
+	// whatever its class.
+	Decided  bool             `json:"decided,omitempty"`
 	Restarts []ServiceRestart `json:"restarts,omitempty"`
 	// Events hold no message: the record holds no raw message text
 	Events []PodEvent `json:"events,omitempty"`
@@ -121,7 +124,7 @@ var (
 // worker that reported its own end ended it: no rule applies.
 func Classify(f DeathFacts) DeathRecord {
 	r := DeathRecord{Class: DeathUnknown, Rule: RuleNone, At: f.Ended, Node: f.Pod.Node, PodUID: f.Pod.UID, LastCommand: f.LastCommand,
-		Stopped: f.StoppedByFactory}
+		Decided: f.Decided}
 	failed := slices.IndexFunc(f.Pod.Containers, ContainerState.failed)
 	if failed >= 0 {
 		c := f.Pod.Containers[failed]
@@ -263,11 +266,12 @@ const (
 
 // GateLines are the lines the next session's handover carries: the class
 // line first, then the gated services' restarts while the count and the
-// size bounds hold.
-func GateLines(r DeathRecord, lastPush string) []string {
+// size bounds hold. A platform end has its class line only when it went
+// free, as that line says.
+func GateLines(r DeathRecord, lastPush string, free bool) []string {
 	var lines []string
 	total := 0
-	if l := classLine(r, lastPush); l != "" {
+	if l := classLine(r, lastPush, free); l != "" {
 		lines, total = append(lines, l), len(l)
 	}
 	restarts := slices.Clone(r.Restarts)
@@ -286,12 +290,11 @@ func GateLines(r DeathRecord, lastPush string) []string {
 	return lines
 }
 
-func classLine(r DeathRecord, lastPush string) string {
+func classLine(r DeathRecord, lastPush string, free bool) string {
 	at := clock(r.At)
 	switch r.Class {
 	case DeathPlatform:
-		// a stop factoryd sent keeps its decision: the end counted
-		if r.Stopped {
+		if !free {
 			return ""
 		}
 		node, on := "Its node", ""

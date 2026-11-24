@@ -34,13 +34,14 @@ type deathReader struct {
 // is a read of a pod that may still run. It and a pod factoryd stopped are
 // classed by the end's evidence alone: a node that went NotReady and
 // answers again ended nothing. reported is an end the worker reported
-// itself, which nothing killed (DeathFacts.Reported).
+// itself, which nothing killed (DeathFacts.Reported); decided a stop this
+// factoryd sent for a decision it holds (DeathFacts.Decided).
 type deathInput struct {
-	ns, pod                                        string
-	uid, node, boot                                string
-	started, ended                                 time.Time
-	stoppedByFactory, afterRestart, live, reported bool
-	lastCommand, lastPush                          string
+	ns, pod                                                 string
+	uid, node, boot                                         string
+	started, ended                                          time.Time
+	stoppedByFactory, afterRestart, live, reported, decided bool
+	lastCommand                                             string
 }
 
 const (
@@ -90,7 +91,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	if dl, ok := ctx.Deadline(); ok {
 		waitEnd, firstEnd = earliest(waitEnd, dl.Add(-d.margin)), earliest(firstEnd, dl.Add(-d.margin))
 	}
-	f := DeathFacts{StoppedByFactory: in.stoppedByFactory, AfterRestart: in.afterRestart, Reported: in.reported, BootAtStart: in.boot,
+	f := DeathFacts{StoppedByFactory: in.stoppedByFactory, AfterRestart: in.afterRestart, Reported: in.reported, Decided: in.decided, BootAtStart: in.boot,
 		Started: in.started, Ended: in.ended, LastCommand: in.lastCommand}
 	pod, err := d.kube.PodDiagnosis(ctx, in.ns, in.pod)
 	switch {
@@ -218,7 +219,6 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	}
 	r.Started = in.started
 	r.Restarts = d.restarts(ctx, in, life)
-	r.Lines = GateLines(r, in.lastPush)
 	return r
 }
 

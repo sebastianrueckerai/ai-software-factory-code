@@ -224,54 +224,54 @@ func TestClassifyIgnoresKillsOutsideTheSession(t *testing.T) {
 func TestGateLinesExact(t *testing.T) {
 	guard := DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, At: deathEnd, Node: "sf-2"}
 	want := "Your previous session did not fail on its own. The node's memory guard killed its pod on sf-2 at 14:02 UTC. Work after the last push, commit abc1234, is lost. That session does not count against the card."
-	if got := strings.Join(GateLines(guard, "abc1234def"), " "); got != want {
+	if got := strings.Join(GateLines(guard, "abc1234def", true), " "); got != want {
 		t.Errorf("guard lines = %q", got)
 	}
-	if got := GateLines(guard, "")[0]; !strings.Contains(got, "Work it did not push is lost.") {
+	if got := GateLines(guard, "", true)[0]; !strings.Contains(got, "Work it did not push is lost.") {
 		t.Errorf("no push = %q", got)
 	}
 
 	mem := DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Limit: "4Gi", LastCommand: "go test -race ./..."}
 	want = "Your previous session's pod reached its 4 GiB memory limit while it ran `go test -race ./...`, and the kernel killed it."
-	if got := GateLines(mem, ""); len(got) != 1 || got[0] != want {
+	if got := GateLines(mem, "", true); len(got) != 1 || got[0] != want {
 		t.Errorf("memory lines = %q", got)
 	}
 	mem.LastCommand = "echo `date`\n  go test ./..."
 	want = "Your previous session's pod reached its 4 GiB memory limit while it ran ``echo `date` go test ./...``, and the kernel killed it."
-	if got := GateLines(mem, ""); len(got) != 1 || got[0] != want {
+	if got := GateLines(mem, "", true); len(got) != 1 || got[0] != want {
 		t.Errorf("two-line command lines = %q", got)
 	}
 	mem.Limit, mem.LastCommand = "", " \n "
 	want = "Your previous session's pod reached its memory limit, and the kernel killed it."
-	if got := GateLines(mem, ""); len(got) != 1 || got[0] != want {
+	if got := GateLines(mem, "", true); len(got) != 1 || got[0] != want {
 		t.Errorf("bare memory lines = %q", got)
 	}
 
 	vol := DeathRecord{Class: DeathOwnLimit, Rule: RuleStorageLimit, Resource: "tmp", Limit: "4Gi", LastCommand: "npm ci"}
 	want = "Your previous session's pod filled its `tmp` volume past its 4 GiB limit while it ran `npm ci`, and Kubernetes evicted it."
-	if got := GateLines(vol, ""); len(got) != 1 || got[0] != want {
+	if got := GateLines(vol, "", true); len(got) != 1 || got[0] != want {
 		t.Errorf("volume lines = %q", got)
 	}
 	eph := DeathRecord{Class: DeathOwnLimit, Rule: RuleStorageLimit, Resource: "ephemeral-storage", Limit: "512Mi", LastCommand: "npm ci"}
 	want = "Your previous session's pod used more than its 512 MiB of local storage while it ran `npm ci`, and Kubernetes evicted it."
-	if got := GateLines(eph, ""); len(got) != 1 || got[0] != want {
+	if got := GateLines(eph, "", true); len(got) != 1 || got[0] != want {
 		t.Errorf("ephemeral lines = %q", got)
 	}
 
 	at := func(h, m int) time.Time { return time.Date(2026, 11, 23, h, m, 0, 0, time.UTC) }
 	fg := DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Restarts: []ServiceRestart{{Service: ServiceForgejo, From: at(14, 2), Until: at(14, 4), Cause: "guard"}}}
 	want = "Forgejo restarted from 14:02 to 14:04 UTC during your previous session. The node's memory guard killed it. Git errors in that window came from the restart."
-	if got := GateLines(fg, ""); len(got) != 2 || got[1] != want {
+	if got := GateLines(fg, "", true); len(got) != 2 || got[1] != want {
 		t.Errorf("forgejo lines = %q", got)
 	}
 	open := DeathRecord{Class: DeathUnknown, Rule: RuleNone, Restarts: []ServiceRestart{{Service: ServiceLiteLLM, From: at(14, 2), Cause: "kernel"}}}
 	want = "LiteLLM restarted at 14:02 UTC during your previous session. The kernel killed it for its memory. Model call errors in that window came from the restart."
-	if got := GateLines(open, ""); len(got) != 1 || got[0] != want {
+	if got := GateLines(open, "", true); len(got) != 1 || got[0] != want {
 		t.Errorf("open restart lines = %q", got)
 	}
 	gw := DeathRecord{Class: DeathUnknown, Rule: RuleNone, Restarts: []ServiceRestart{{Service: ServiceGateway, From: at(14, 2), Until: at(14, 3)}}}
 	want = "The model gateway restarted from 14:02 to 14:03 UTC during your previous session. Model call errors in that window came from the restart."
-	if got := GateLines(gw, ""); len(got) != 1 || got[0] != want {
+	if got := GateLines(gw, "", true); len(got) != 1 || got[0] != want {
 		t.Errorf("gateway lines = %q", got)
 	}
 }
@@ -302,7 +302,7 @@ func TestGateLinesRuleSentences(t *testing.T) {
 		{DeathRecord{Rule: RuleDeleted}, "Something outside the factory deleted its pod at 14:02 UTC."},
 	} {
 		c.r.Class, c.r.At = DeathPlatform, deathEnd
-		got := GateLines(c.r, "")
+		got := GateLines(c.r, "", true)
 		if len(got) != 1 || !strings.Contains(got[0], " "+c.want+" Work it did not push is lost.") {
 			t.Errorf("%s = %q", c.r.Rule, got)
 		}
@@ -315,7 +315,7 @@ func TestGateLinesCaps(t *testing.T) {
 	for _, s := range []string{ServiceForgejo, ServiceGateway, ServiceLiteLLM, ServiceForgejo} {
 		r.Restarts = append(r.Restarts, ServiceRestart{Service: s, From: at, Until: at.Add(time.Minute)})
 	}
-	if got := GateLines(r, ""); len(got) != 3 {
+	if got := GateLines(r, "", true); len(got) != 3 {
 		t.Errorf("four restarts gave %d lines", len(got))
 	}
 	r.Restarts = []ServiceRestart{
@@ -327,7 +327,7 @@ func TestGateLinesCaps(t *testing.T) {
 		"Forgejo restarted from 14:02 to 14:03 UTC during your previous session. Git errors in that window came from the restart.",
 		"The model gateway restarted from 14:05 to 14:06 UTC during your previous session. Model call errors in that window came from the restart.",
 	}
-	if got := GateLines(r, ""); len(got) != 3 || got[1] != oldest[0] || got[2] != oldest[1] {
+	if got := GateLines(r, "", true); len(got) != 3 || got[1] != oldest[0] || got[2] != oldest[1] {
 		t.Errorf("restarts given newest first = %q; want the two oldest, oldest first", got)
 	}
 
@@ -336,7 +336,7 @@ func TestGateLinesCaps(t *testing.T) {
 	for _, from := range []time.Time{at, at.Add(3 * time.Minute)} {
 		long.Restarts = append(long.Restarts, ServiceRestart{Service: ServiceGateway, From: from, Until: from.Add(2 * time.Minute), Cause: "kernel"})
 	}
-	got := GateLines(long, "")
+	got := GateLines(long, "", true)
 	total := 0
 	for _, l := range got {
 		total += len(l)
@@ -348,10 +348,10 @@ func TestGateLinesCaps(t *testing.T) {
 	}
 
 	skip := DeathRecord{Class: DeathUnknown, Rule: RuleNone, Restarts: []ServiceRestart{{Service: ServiceFactoryd, From: at}, {Service: ServiceAPIServer, From: at}, {Service: ServiceOpenBao, From: at}}}
-	if got := GateLines(skip, ""); len(got) != 0 {
+	if got := GateLines(skip, "", true); len(got) != 0 {
 		t.Errorf("factoryd, apiserver and openbao restarts gave %q", got)
 	}
-	if got := GateLines(DeathRecord{Class: DeathUnknown, Rule: RuleNone}, ""); len(got) != 0 {
+	if got := GateLines(DeathRecord{Class: DeathUnknown, Rule: RuleNone}, "", true); len(got) != 0 {
 		t.Errorf("unknown gave %q", got)
 	}
 }

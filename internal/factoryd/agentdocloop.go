@@ -127,7 +127,7 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 // before it, which the node's memory guard killed: GateLines on a fixture
 // record.
 func agentDocDeathLines() []string {
-	return GateLines(DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, Node: "sf-2", At: time.Date(2026, 11, 21, 14, 2, 0, 0, time.UTC)}, "abc1234")
+	return GateLines(DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, Node: "sf-2", At: time.Date(2026, 11, 21, 14, 2, 0, 0, time.UTC)}, "abc1234", true)
 }
 
 // agentDocLoopSpans tiles the mode's brief — the session's first user
