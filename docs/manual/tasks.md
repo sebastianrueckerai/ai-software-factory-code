@@ -81,16 +81,20 @@ card it depends on is done (or one ended closed, which its workflow takes
 to a person), and its project's month budget has headroom. Otherwise it
 stays queued, holding no slot.
 
-A human holds a card that has not started (queued and never admitted, or
-in `waiting-deps`) with "Put on hold", among the opened card's other
-actions, or the chat's `hold_card`: a
+A human holds a queued, `waiting-deps` or running card with "Put on
+hold", among the opened card's other actions, or the chat's `hold_card`: a
 reason the board shows, and an optional release card, any card of the
 same repository of any plan but not a plan itself, which is `done` once
 it files its cards, before their work lands. A release card that already
 waits on the held card, through its dependencies or another hold, is
 refused: both would wait for ever. The held card gets no work slot, and
 its dependency wait asks nothing, until the human releases it ("Release the hold",
-`release_hold`) or its release card is `merged` or `done`. The hold
+`release_hold`) or its release card is `merged` or `done`. On a running
+card the session stops now and keeps its work, and the card waits in
+Queued; after the release it goes on from its saved work, ahead of the
+cards that have not started. A card in review, closing or merged, and one
+that waits for an answer, takes no hold: it is refused with its state and
+the action that fits. The hold
 follows the release card's work into a retry or a successor, as a
 dependency edge does. A release card that ends `failed` or `closed`, or
 that a cut turns into a plan, releases nothing: the card stays held and

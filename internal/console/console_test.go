@@ -1344,6 +1344,9 @@ type rig struct {
 	signalErr   error
 	retried     []string // "task by user" per RetryCard
 	retryErr    error
+	holdStopped bool     // what HoldCard answers as Stopped
+	holdErr     error    // what HoldCard returns beside its result
+	holdCalls   []string // "task|release|reason|by" per HoldCard
 	handed      []string // "task by user" per GoCard
 	goErr       error
 	metrics     *sdkmetric.ManualReader
@@ -1869,7 +1872,9 @@ func newRig(t *testing.T) *rig {
 			return 16, r.goErr
 		},
 		HoldCard: func(_ context.Context, taskID, release, reason, by string) (factoryd.HoldResult, error) {
-			return factoryd.HoldResult{Held: r.tasks.setHold(taskID, &factoryd.CardHold{Reason: reason, Release: release, By: by})}, nil
+			r.holdCalls = append(r.holdCalls, taskID+"|"+release+"|"+reason+"|"+by)
+			held := r.tasks.setHold(taskID, &factoryd.CardHold{Reason: reason, Release: release, By: by})
+			return factoryd.HoldResult{Held: held, Stopped: held && r.holdStopped}, r.holdErr
 		},
 		ReleaseCardHold: func(_ context.Context, taskID string) (bool, error) {
 			return r.tasks.setHold(taskID, nil), nil

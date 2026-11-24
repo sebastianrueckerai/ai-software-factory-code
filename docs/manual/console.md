@@ -474,13 +474,18 @@ decimals: a task's model calls cost fractions of a cent.
   the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
   one, and the refusal of an edge across two names the fitting action: a
-  hold with the other card as its release card. `hold_card` holds a card
-  that has not started, with a reason and an optional release card of any
+  hold with the other card as its release card. `hold_card` holds a queued or running
+  card, with a reason and an optional release card of any
   plan of the project, not a plan itself and not one that waits on the
   held card, and `release_hold` ends a hold; both run only on a
   line the human typed in that turn, or on their press, and "Put on hold"
   and "Release the hold", among the opened card's other actions, do the
-  same. A held card's face carries its hold in its waits line, which says
+  same. On a running card the press stops its session, which keeps its
+  work: the answer is "#N stops its session, keeps its work and waits in
+  Queued until a human releases it", and where the card has no live
+  session, "#N waits in Queued before its next session until a human
+  releases it". A card in review, closing or merged, and one that waits
+  for an answer, is refused with its state and the action that fits. A held card's face carries its hold in its waits line, which says
   so once its release card ended failed or closed or became a plan. `set_pool` sets the money
   of the project's escalation pool, or tops up the money its project file
   already sets, as `escalation.pool.eur` written through a pull request on

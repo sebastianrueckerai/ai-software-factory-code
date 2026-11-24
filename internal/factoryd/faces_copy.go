@@ -68,6 +68,7 @@ const (
 	variantFile     = "file"
 	variantOpen     = "open"
 	variantAgain    = "again"
+	variantStarted  = "started"
 )
 
 // The keys of a routine's answers in their other states: the undo of a
@@ -92,6 +93,10 @@ func requiredNote(label, hint string) Field {
 func none(Facts) string { return "" }
 
 func fixed(v string) func(Facts) string { return func(Facts) string { return v } }
+
+// holdFields are the fields of Put on hold.
+var holdFields = []Field{requiredNote("Why it waits", "The reason, which the board shows on the card"),
+	{Name: "release", Label: "The card that releases it", Hint: "An issue number, or empty to release it yourself", Kind: FieldText, Default: none}}
 
 // Vocabulary is every answer a face may offer: one row per action a human
 // may pick, plus the named variants of a card class. No label exists
@@ -188,10 +193,12 @@ var Vocabulary = []Answer{
 	{Action: AnswerSteer, Label: "Tell the running session", Effect: "The running session reads your message at its next step.",
 		Fields: []Field{requiredNote("Your message", "What the session should know")}},
 	{Action: AnswerHold, Label: "Put on hold", Effect: "The card does not start until you release it, or until the card you name is merged or done.",
-		Fields: []Field{requiredNote("Why it waits", "The reason, which the board shows on the card"),
-			{Name: "release", Label: "The card that releases it", Hint: "An issue number, or empty to release it yourself", Kind: FieldText, Default: none}}},
+		Fields: holdFields},
+	{Action: AnswerHold, Variant: variantStarted, Label: "Put on hold", Effect: "The session stops now and keeps its work. The card waits in Queued until you release it, or until the card you name is merged or done.",
+		Fields: holdFields},
 	{Action: AnswerHold, Variant: variantAgain, Label: "Hold again", Effect: "The hold takes your new reason and the card you name in place of the ones it has."},
 	{Action: AnswerRelease, Label: "Release the hold", Effect: "The card takes its turn to start again."},
+	{Action: AnswerRelease, Variant: variantStarted, Label: "Release the hold", Effect: "The card goes on from its saved work, ahead of the cards that have not started."},
 	{Action: AnswerEditBrief, Label: "Edit the brief", Effect: "Changes the title, why line and summary for the agent and the board.",
 		Fields: []Field{{Name: "title", Label: "Title", Kind: FieldText, Default: func(f Facts) string { return CardTitle(f.Card) }},
 			{Name: "why", Label: "Why", Kind: FieldText, Default: func(f Facts) string { return f.Card.Why }},

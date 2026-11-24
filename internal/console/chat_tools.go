@@ -1910,7 +1910,7 @@ func init() {
 				"release_card": str("the card whose merge or done releases it, any plan"),
 				"reason":       str("why the card waits, one line the board shows")},
 			required: []string{"task_id", "reason"},
-			about:    "Hold a card that has not started, on the human's word, until it is released.",
+			about:    "Hold a queued or running card on the human's word: a running one stops and keeps its work.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
 				a, err := t.humanWord("sets no hold: a hold is the human's own", "hold_card", "Put on hold")
 				if err != nil {
