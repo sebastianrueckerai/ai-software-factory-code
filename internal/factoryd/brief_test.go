@@ -734,10 +734,10 @@ func TestBriefWriterRetriesANoBriefAnswerOnce(t *testing.T) {
 	}
 }
 
-// An answer cut at its limit in both of a call's asks, 1024 tokens and then
-// 2048, is no brief too: the case is marked once with the cause, the next
-// pass hands the cause to the model as its last refusal, and its second
-// cut answer is terminal.
+// An answer cut at its limit of 1024 tokens in both of a call's asks is no
+// brief too: the case is marked once with the cause, the next pass hands
+// the cause to the model as its last refusal, and its second cut answer is
+// terminal.
 func TestBriefWriterNamesAnAnswerCutAtItsLimit(t *testing.T) {
 	var limits []float64
 	var users []string
@@ -763,9 +763,9 @@ func TestBriefWriterNamesAnAnswerCutAtItsLimit(t *testing.T) {
 			store.cases = nil
 		}
 	}
-	const cause = "the model used its whole answer limit of 2048 tokens before it answered"
-	if !slices.Equal(limits, []float64{1024, 2048, 1024, 2048}) || marks[0] != noBriefMark+cause || marks[1] != BriefTerminal+cause {
-		t.Fatalf("asked %v, marks %q; want each pass at 1024 and 2048 tokens, the first mark %q and the second terminal", limits, marks, noBriefMark+cause)
+	const cause = "the model used its whole answer limit of 1024 tokens before it answered"
+	if !slices.Equal(limits, []float64{1024, 1024, 1024, 1024}) || marks[0] != noBriefMark+cause || marks[1] != BriefTerminal+cause {
+		t.Fatalf("asked %v, marks %q; want two calls of 1024 tokens a pass, the first mark %q and the second terminal", limits, marks, noBriefMark+cause)
 	}
 	if !strings.Contains(users[2], `"last_refusal":"`+cause+`"`) {
 		t.Fatalf("the second pass's facts carry no last refusal of the cut: %s", users[2])

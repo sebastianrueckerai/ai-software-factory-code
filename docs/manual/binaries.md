@@ -28,8 +28,9 @@
 - `cmd/factory-gateway`: the enforcement point. Validates the pod's
   projected ServiceAccount JWT and checks the call against the policy
   version in force (read from Postgres, at most 30 s old; 503 while none
-  is loaded). It forwards only the OpenAI chat fields (400 `refused_body`
-  for anything else, above all LiteLLM's `fallbacks`,
+  is loaded). It forwards only the OpenAI chat fields, and LiteLLM's
+  `allowed_openai_params` only as exactly `["reasoning_effort"]` (400
+  `refused_body` for anything else, above all LiteLLM's `fallbacks`,
   `router_settings_override` and `mock_testing_*`, and for `n` above 1),
   and of their values only function tools and text content: a provider's
   built-in tools (web search, retrieval) bill per use and reach the

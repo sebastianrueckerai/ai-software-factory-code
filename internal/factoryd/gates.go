@@ -1990,12 +1990,13 @@ func retriedInput(in any, retry *answerRetry) any {
 // them — the review's own step checks its work and corrects itself. The
 // retry's cost books to the card like the first call; an answer that
 // parses is the review's, and the second miss, or a refused call, is the
-// note as today.
-func (r *Runner) reviewRetry(ctx context.Context, taskID, model string, timeout time.Duration, began time.Time, call reviewCall, why string) Review {
+// note as today. low: the answer came from the call once more at low
+// thinking depth.
+func (r *Runner) reviewRetry(ctx context.Context, taskID, model string, timeout time.Duration, began time.Time, call reviewCall, why string) (rv Review, low bool) {
 	boundByParts(ctx, wavesSince(began, timeout)+1)
-	content, _, err := r.supervisor.Chat(ctx, taskID, model, policy.PurposeReview, timeout, call.Prompt,
+	content, _, low, err := r.supervisor.chat(ctx, taskID, model, policy.PurposeReview, timeout, call.Prompt,
 		retriedInput(call.Input(), &answerRetry{ParseError: why, Bounds: reviewAnswerBounds}))
-	return reviewAnswer(content, err)
+	return reviewAnswer(content, err), low
 }
 
 // combineReviews joins the verdicts of a diff's parts: concerns with every
@@ -2231,8 +2232,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		return Review{}, err
 	}
 	var answers []Review
+	low := false
 	for i, res := range results[:len(parts)] {
-		a := reviewAnswer(res.Content, res.Err)
+		a, aLow := reviewAnswer(res.Content, res.Err), res.Low
 		if a.Verdict == "" {
 			// an answer that does not parse — the model's JSON two
 			// characters short of a verdict, say — or a call that failed
@@ -2242,7 +2244,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 			// (reviewRetry); the second miss is the note as today. A money
 			// refusal is never called again: its note says what lifts it
 			// (reviewUnblocks); nor is an answer cut at its limit, which
-			// Chat already asked once more with twice the limit
+			// Chat already asked once more at low thinking depth
 			var cut *cutAnswerError
 			why := ""
 			if res.Err == nil {
@@ -2251,7 +2253,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 				why = "the call failed: " + textutil.Truncate(res.Err.Error(), 300)
 			}
 			if why != "" {
-				a = r.reviewRetry(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, began, calls[i], why)
+				a, aLow = r.reviewRetry(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, began, calls[i], why)
 			}
 		}
 		if a.Verdict == "" {
@@ -2269,6 +2271,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 			rv = a
 			break
 		}
+		low = low || aLow
 		answers = append(answers, a)
 	}
 	var behaviours []string
@@ -2327,6 +2330,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	if rv.TurnedFrom != "" {
 		detail["turned_from"] = rv.TurnedFrom
+	}
+	if low {
+		detail["thinking"] = thinkingLow
 	}
 	r.record(ctx, t.ID, "model_review", detail)
 	if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model,

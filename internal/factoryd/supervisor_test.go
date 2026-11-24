@@ -313,26 +313,37 @@ func testSupervisorModel(url string) *SupervisorModel {
 
 // A JSON-mode answer that stops at its answer limit (finish_reason
 // length: a reasoning model thought the limit away and two bytes of
-// answer are left) is asked once more with twice the limit, and the
-// second answer is Chat's; an answer that ends is asked once, at the
-// limit, 1000 + 8000 tokens.
-func TestChatAsksACutAnswerOnceMoreWithTwiceTheLimit(t *testing.T) {
+// answer are left) is asked once more at the same limit, 1000 + 8000
+// tokens, at low thinking depth: reasoning_effort low, which LiteLLM
+// passes on only when allowed_openai_params lists it. The second answer is
+// Chat's, marked low. An answer that ends is asked once, with neither
+// field.
+func TestChatAsksACutAnswerOnceMoreAtLowThinkingDepth(t *testing.T) {
 	ll := &fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, `{"verdict":"clear"}`}}
-	got, _, err := testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
-	if err != nil || got != `{"verdict":"clear"}` || len(ll.chats) != 2 || ll.chats[0]["max_tokens"] != 9000.0 || ll.chats[1]["max_tokens"] != 18000.0 {
-		t.Fatalf("Chat = %q, %v after %d calls; want the second answer, asked at 9000 and then 18000 tokens", got, err, len(ll.chats))
+	got, _, low, err := testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
+	if err != nil || got != `{"verdict":"clear"}` || !low || len(ll.chats) != 2 {
+		t.Fatalf("chat = %q, low %v, %v after %d calls; want the second answer, low", got, low, err, len(ll.chats))
+	}
+	first, second := ll.chats[0], ll.chats[1]
+	if first["max_tokens"] != 9000.0 || first["reasoning_effort"] != nil || first["allowed_openai_params"] != nil {
+		t.Fatalf("the first call = %v, want 9000 tokens at the model's own depth", first)
+	}
+	if second["max_tokens"] != 9000.0 || second["reasoning_effort"] != "low" || !reflect.DeepEqual(second["allowed_openai_params"], []any{"reasoning_effort"}) {
+		t.Fatalf("the call once more = %v, want 9000 tokens, reasoning_effort low and its allowed_openai_params", second)
 	}
 	ll = &fakeLiteLLM{finishes: []string{"stop"}, content: `{"verdict":"clear"}`}
-	got, _, err = testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
-	if err != nil || got != `{"verdict":"clear"}` || len(ll.chats) != 1 || ll.chats[0]["max_tokens"] != 9000.0 {
-		t.Fatalf("Chat = %q, %v after %d calls; want the one answer at 9000 tokens", got, err, len(ll.chats))
+	got, _, low, err = testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
+	if err != nil || got != `{"verdict":"clear"}` || low || len(ll.chats) != 1 || ll.chats[0]["max_tokens"] != 9000.0 ||
+		ll.chats[0]["reasoning_effort"] != nil || ll.chats[0]["allowed_openai_params"] != nil {
+		t.Fatalf("chat = %q, low %v, %v after calls %v; want the one answer at 9000 tokens with neither field", got, low, err, ll.chats)
 	}
 }
 
-// A second answer cut at its limit, or a first the gateway already gave
-// less room than it asked for, is no answer: the error names the limit the
-// gateway gave, as its output-limit header says. With no minute left
-// before the caller's deadline the cut answer is not asked again.
+// A second answer cut at its limit is no answer: the error names the limit
+// the gateway gave, as its output-limit header says; a first call the
+// headroom clamped is asked once more all the same, since the call at low
+// thinking depth needs less room. With no minute left before the caller's
+// deadline the cut answer is not asked again.
 func TestChatNamesTheAnswerLimitACutAnswerSpent(t *testing.T) {
 	soon, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -342,10 +353,9 @@ func TestChatNamesTheAnswerLimitACutAnswerSpent(t *testing.T) {
 		calls int
 		limit int
 	}{
-		"cut twice":                       {context.Background(), &fakeLiteLLM{finishes: []string{"length", "length"}, content: `{"`}, 2, 18000},
-		"cut twice under the alias limit": {context.Background(), &fakeLiteLLM{finishes: []string{"length", "length"}, content: `{"`, ceiling: 12000}, 2, 12000},
-		"cut with no more room":           {context.Background(), &fakeLiteLLM{finishes: []string{"length"}, content: `{"`, ceiling: 5000}, 1, 5000},
-		"cut with no time left":           {soon, &fakeLiteLLM{finishes: []string{"length"}, content: `{"`}, 1, 9000},
+		"cut twice":                  {context.Background(), &fakeLiteLLM{finishes: []string{"length", "length"}, content: `{"`}, 2, 9000},
+		"cut twice under a headroom": {context.Background(), &fakeLiteLLM{finishes: []string{"length", "length"}, content: `{"`, ceiling: 5000}, 2, 5000},
+		"cut with no time left":      {soon, &fakeLiteLLM{finishes: []string{"length"}, content: `{"`}, 1, 9000},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, _, err := testSupervisorModel(tc.ll.srv(t).URL).Chat(tc.ctx, "t1", "big", policy.PurposeReview, time.Minute, "sys", map[string]any{})

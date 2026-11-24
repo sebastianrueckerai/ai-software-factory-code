@@ -950,8 +950,8 @@ func TestDeltaPassRefusesATimedOutRoundOnceBeyondThePass(t *testing.T) {
 	}
 }
 
-// A delta round whose answers the model cuts at their limit, each call
-// asking 9000 tokens and then 18000, ends refused once after its three
+// A delta round whose answers the model cuts at their limit of 9000
+// tokens, each asked once more, ends refused once after its three
 // attempts, the refusal naming the cut.
 func TestDeltaPassRefusesARoundOfCutAnswers(t *testing.T) {
 	model := &fakeLiteLLM{content: `{"`, finishes: slices.Repeat([]string{"length"}, 6)}
@@ -964,7 +964,7 @@ func TestDeltaPassRefusesARoundOfCutAnswers(t *testing.T) {
 		t.Fatalf("model calls = %d, want 6: three attempts of two calls", n)
 	}
 	tl, _ := objs.Get(context.Background(), "sessions/t-plan/timeline.jsonl")
-	if !strings.Contains(string(tl), `"step":"delta_refused"`) || !strings.Contains(string(tl), "the model used its whole answer limit of 18000 tokens before it answered") {
+	if !strings.Contains(string(tl), `"step":"delta_refused"`) || !strings.Contains(string(tl), "the model used its whole answer limit of 9000 tokens before it answered") {
 		t.Fatalf("the plan's timeline:\n%s", tl)
 	}
 }

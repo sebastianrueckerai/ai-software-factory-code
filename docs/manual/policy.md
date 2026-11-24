@@ -303,15 +303,17 @@ Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking
 does not, so the Qwen vision deployment runs with thinking off, and the
-gateway refuses a client's `thinking` field. An admitted call's answer
-names the output limit the call got in `X-Gateway-Output-Limit`. A
-reasoning model can think a whole limit away, so factoryd's JSON-mode
-calls read why the answer stopped: an answer cut at its limit is asked
-once more with twice the limit, a second hold and a second booking, and
-the second cut, or a first the gateway already gave less than it asked,
-is no answer with the reason "the model used its whole answer limit of
-<n> tokens before it answered". The check-in asks no limit; its cut
-answer gets the conversation's one repair round with that reason. `holds` has kinds `model`,
+gateway refuses a client's `thinking` field. It forwards LiteLLM's
+`allowed_openai_params` only as exactly `["reasoning_effort"]`: LiteLLM's
+z.ai provider drops `reasoning_effort` unless the call lists it. An
+admitted call's answer names the output limit the call got in
+`X-Gateway-Output-Limit`. A reasoning model can think a whole limit
+away, so factoryd's JSON-mode calls read why the answer stopped: an
+answer cut at its limit is asked once more at the same limit with
+`reasoning_effort` `low`, a second hold and a second booking, and the
+second cut is no answer with the reason "the model used its whole answer
+limit of <n> tokens before it answered". The check-in asks no limit; its
+cut answer gets the conversation's one repair round with that reason. `holds` has kinds `model`,
 `tool` (see "Tools") and `resource`. During a superseded key's grace (the
 calls still in flight on it when a new run or policy version mints its
 replacement), a task briefly has two live keys; the holds cap both. LiteLLM's

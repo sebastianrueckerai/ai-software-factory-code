@@ -420,7 +420,7 @@ func TestGateAuditClear(t *testing.T) {
 }
 
 // No verdict is never a pass: an unparseable answer, an answer cut at its
-// limit twice (9000 tokens, then 18000), a call its timeout cut, a gateway
+// limit of 9000 tokens twice, a call its timeout cut, a gateway
 // refusal, a failed call and a policy without an audit model are each a
 // finding that names why.
 func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
@@ -433,7 +433,7 @@ func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
 		"unparseable": {&fakeLiteLLM{content: "LGTM"}, true, "the answer is not one JSON object", 0},
 		"empty":       {&fakeLiteLLM{content: ""}, true, "the answer is not one JSON object", 0},
 		"cut twice": {&fakeLiteLLM{content: `{"`, finishes: []string{"length", "length"}}, true,
-			"the audit call failed: the model used its whole answer limit of 18000 tokens before it answered", 0},
+			"the audit call failed: the model used its whole answer limit of 9000 tokens before it answered", 0},
 		"timed out":      {&fakeLiteLLM{content: `{}`, delay: time.Second}, true, "the audit call failed: the model did not answer within 50ms", 50 * time.Millisecond},
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"}, true, "refused by the gateway (refused_budget)", 0},
 		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, true, "status 502", 0},
@@ -455,6 +455,29 @@ func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
 			res := getInto[AuditResult](t, val, err)
 			if res.Verdict != AuditFindings || len(res.Findings) != 1 || res.Findings[0].Item != auditNoVerdict || !strings.Contains(res.Findings[0].Why, tc.why) {
 				t.Fatalf("audit = %+v, want the no-verdict finding with %q", res, tc.why)
+			}
+		})
+	}
+}
+
+// A verdict that came from the call once more at low thinking depth says
+// so beside the model, on the result and on the timeline step; a verdict
+// at the model's own depth names no depth.
+func TestGateAuditNamesAVerdictAtLowThinkingDepth(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ll   *fakeLiteLLM
+		want string
+	}{
+		"cut, then answered": {&fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, `{"verdict":"clear"}`}}, "low"},
+		"answered":           {&fakeLiteLLM{content: `{"verdict":"clear"}`}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, objects := newAuditRunner(t, &gateForgejo{diff: "d"}, tc.ll, true)
+			val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			res := getInto[AuditResult](t, val, err)
+			step := timelineStep(t, objects, "t1", "audit")
+			if thinking, _ := step["thinking"].(string); res.Verdict != AuditClear || res.Thinking != tc.want || step["model"] != "big" || thinking != tc.want {
+				t.Fatalf("audit = %+v, step %v; want a clear verdict at thinking %q", res, step, tc.want)
 			}
 		})
 	}

@@ -29,10 +29,12 @@ type reviewCall struct {
 	Input  func() any
 }
 
-// callResult is one call's answer, or why it has none.
+// callResult is one call's answer, or why it has none; Low: the answer
+// came from the call once more at low thinking depth.
 type callResult struct {
 	Content    string
 	Deployment string
+	Low        bool
 	Err        error
 }
 
@@ -62,8 +64,8 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 				return
 			}
 		}
-		content, deployment, err := r.supervisor.Chat(ctx, taskID, model, purpose, limit, calls[i].Prompt, calls[i].Input())
-		results[i] = callResult{content, deployment, err}
+		content, deployment, low, err := r.supervisor.chat(ctx, taskID, model, purpose, limit, calls[i].Prompt, calls[i].Input())
+		results[i] = callResult{content, deployment, low, err}
 	}
 	next := make(chan int, len(calls))
 	for i := range calls {

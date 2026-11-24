@@ -386,15 +386,15 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 	}
 }
 
-// An answer the screening model cut at its limit twice, 9000 tokens and
-// then 18000, is no verdict: suspect, the reason naming the cut.
+// An answer the screening model cut at its limit of 9000 tokens twice is
+// no verdict: suspect, the reason naming the cut.
 func TestScreenAnswerOfACutAnswerIsSuspect(t *testing.T) {
 	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{})
 	ll := &fakeLiteLLM{content: `{"`, finishes: []string{"length", "length"}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityScreenAnswer, "t1", "the log says X", int64(7))
 	res := getInto[ScreenResult](t, val, err)
-	want := []string{"the screening's answer is no verdict: the model used its whole answer limit of 18000 tokens before it answered"}
+	want := []string{"the screening's answer is no verdict: the model used its whole answer limit of 9000 tokens before it answered"}
 	if res.Verdict != ScreenSuspect || !slices.Equal(res.Reasons, want) || len(ll.chats) != 2 {
 		t.Fatalf("result = %+v after %d calls, want suspect for %q", res, len(ll.chats), want)
 	}

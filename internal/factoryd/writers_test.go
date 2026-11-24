@@ -49,7 +49,7 @@ var unreadTransports = map[string]string{
 // fan-out and retry, the check-in's conversation, the report session, and
 // the gateway's handler that relays each client's call to its provider.
 var carriers = []string{
-	"factoryd.(*SupervisorModel).Chat", "factoryd.(*SupervisorModel).call", "factoryd.(*checkinGateway).Call",
+	"factoryd.(*SupervisorModel).Chat", "factoryd.(*SupervisorModel).chat", "factoryd.(*SupervisorModel).call", "factoryd.(*checkinGateway).Call",
 	"factoryd.(*OperatorModel).call", "factoryd.(*OperatorModel).stream", "factoryd.(*OperatorModel).Stream",
 	"factoryd.(*OperatorModel).Compact", "factoryd.(*OperatorModel).Digest", "factoryd.(*OperatorModel).Research",
 	"factoryd.(*OperatorModel).Vision", "factoryd.(*OperatorModel).Title",

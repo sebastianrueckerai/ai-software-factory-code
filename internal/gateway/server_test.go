@@ -912,6 +912,39 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
+			// the gates' call once more at low thinking depth: LiteLLM's
+			// provider config for z.ai drops reasoning_effort unless the
+			// call lists it
+			name:            "allowed_openai_params naming reasoning_effort alone passes",
+			task:            &runningTask,
+			reqBody:         `{"allowed_openai_params":["reasoning_effort"],"max_tokens":100,"messages":[],"model":"small","reasoning_effort":"low"}`,
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0005"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantSpent:       ptr(2.0005),
+			wantUpstreamHit: 1,
+		},
+		{
+			name:         "allowed_openai_params naming another field is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"allowed_openai_params":["reasoning_effort","fallbacks"],"messages":[],"model":"small"}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantReason:   `allowed_openai_params must be exactly ["reasoning_effort"], is ["reasoning_effort","fallbacks"]`,
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "allowed_openai_params that is no list is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"allowed_openai_params":"reasoning_effort","messages":[],"model":"small"}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantReason:   `allowed_openai_params must be exactly ["reasoning_effort"], is "reasoning_effort"`,
+			wantErrType:  "invalid_request_error",
+		},
+		{
 			name:         "n above 1 is refused",
 			wantNoMint:   true,
 			task:         &runningTask,

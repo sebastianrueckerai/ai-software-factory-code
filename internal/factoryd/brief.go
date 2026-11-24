@@ -213,7 +213,7 @@ func (b *BriefWriter) Pass(ctx context.Context) error {
 // records the failure for telemetry; prev is the mark the row holds. A
 // terminal failure's mark carries its class, which the pass then skips: a
 // failure no retry can fix. An answer that is no brief, or one cut at its
-// limit after the call asked it once more with twice the limit, marks the
+// limit after the call asked it once more at low thinking depth, marks the
 // row once and is retried on the next pass; a second one is terminal.
 func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string, mark func(context.Context, string) error, detail map[string]any) error {
 	text := b.scrub(err.Error())

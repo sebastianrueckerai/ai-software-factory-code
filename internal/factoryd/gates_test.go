@@ -1060,8 +1060,8 @@ func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
 // refused_budget, and again on the one retry, which becomes the review's
 // note on the pull request and the card; an upstream error is a note too,
 // and an invalid answer one after its one re-ask. An answer cut at its
-// limit twice, 9000 tokens and then 18000, is a note at once: the call
-// already asked it once more. None fails the gate.
+// limit of 9000 tokens twice is a note at once: the call already asked it
+// once more. None fails the gate.
 func TestModelReviewNotes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		model *fakeLiteLLM
@@ -1073,7 +1073,7 @@ func TestModelReviewNotes(t *testing.T) {
 			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR", 2},
 		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 2},
 		"cut twice": {&fakeLiteLLM{content: `{"`, finishes: []string{"length", "length"}},
-			"model review failed: the model used its whole answer limit of 18000 tokens before it answered", 2},
+			"model review failed: the model used its whole answer limit of 9000 tokens before it answered", 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fj := &gateForgejo{diff: "d"}
@@ -1092,6 +1092,31 @@ func TestModelReviewNotes(t *testing.T) {
 			}
 			if step := timelineStep(t, objects, "t1", "model_review"); !strings.HasPrefix(fmt.Sprint(step["note"]), tc.note) {
 				t.Fatalf("model_review step = %v", step)
+			}
+		})
+	}
+}
+
+// A review whose verdict came from the call once more at low thinking
+// depth says so beside the model on its step; one at the model's own depth
+// names no depth.
+func TestModelReviewNamesAVerdictAtLowThinkingDepth(t *testing.T) {
+	const approve = `{"verdict":"approve","summary":"ok","findings":[]}`
+	for name, tc := range map[string]struct {
+		ll   *fakeLiteLLM
+		want any
+	}{
+		"cut, then answered": {&fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, approve}}, "low"},
+		"answered":           {&fakeLiteLLM{content: approve}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, objects := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+			r.supervisor = testSupervisorModel(tc.ll.srv(t).URL)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			rv := getInto[Review](t, val, err)
+			step := timelineStep(t, objects, "t1", "model_review")
+			if rv.Verdict != "approve" || step["model"] != "big" || step["thinking"] != tc.want {
+				t.Fatalf("review = %+v, step %v; want approve at thinking %v", rv, step, tc.want)
 			}
 		})
 	}

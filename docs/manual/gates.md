@@ -85,17 +85,19 @@ activities, each with a timeline step and a comment on the pull request:
    not parse is the note. An answer cut at its output limit is not such an
    answer: every gate call reads why its answer stopped, and one that
    stopped at the limit (`finish_reason` `length`: the model thought the
-   limit away) is asked once more with twice the limit, which the gateway
-   clamps to the alias's limit and the free headroom. The second cut
-   answer, or a first the gateway already gave less than it asked, is the
-   note "model review failed: the model used its whole answer limit of
+   limit away) is asked once more at the same limit and low thinking
+   depth (`reasoning_effort` `low`, with `allowed_openai_params`
+   `["reasoning_effort"]`, which LiteLLM's z.ai provider needs to pass the
+   field on). A verdict that call gave carries `thinking: low` beside the
+   model on the `model_review` and `audit` steps. The second cut answer is
+   the note "model review failed: the model used its whole answer limit of
    <n> tokens before it answered", `n` the limit the gateway named, and no
    retry follows it; a call its timeout cut is the note "model review
    failed: the model did not answer within <d>". The audit, the gate
    supervisor, the screening of an answer, the delta round and the
    briefs name a cut answer the same way. The activity's
    bound follows the waves of four calls, plus one for each retried call
-   and one call's timeout for each call asked again with more room, and
+   and one call's timeout for each call asked once more at low depth, and
    stays ten minutes under the six hours of its attempt. The parts'
    findings keep the first 50 and a line that counts the rest; their
    summaries keep 8 KiB. The review of an integration card or a delta
