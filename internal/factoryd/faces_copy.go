@@ -587,6 +587,19 @@ func endSentence(s string) string {
 	return s + "."
 }
 
+// wordCut is s cut at a word to n runes and marked "…" when it is longer.
+func wordCut(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	cut := string(r[:n])
+	if i := strings.LastIndex(cut, " "); i > 0 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:.") + "…"
+}
+
 // line is s as one story line: "" when it runs past the bound.
 func line(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
@@ -1533,8 +1546,8 @@ var planQuestionFace = FaceSpec{
 // or a page of one extra promise its round proposed.
 var planConfirmFace = FaceSpec{
 	Ask: func(f Facts) string {
-		if _, ok := holdoutOn(f); ok {
-			return "Keep this extra promise for " + askedPlan(f) + "?"
+		if h, ok := holdoutOn(f); ok {
+			return holdoutAsk(f, h)
 		}
 		p, ok := planOn(f)
 		if p.HoldoutsOpen > 0 {
@@ -1592,6 +1605,15 @@ var planConfirmFace = FaceSpec{
 		}
 		return []string{AnswerConfirmPlan, AnswerRevisePlan}
 	},
+}
+
+// holdoutAsk is the ask of extra promise h's page: its claim quoted, with
+// the plan named where the ask has room, else cut at a word to fit.
+func holdoutAsk(f Facts, h HoldoutFact) string {
+	const open, end = "Keep the extra promise \u201c", "\u201d?"
+	claim := strings.TrimRight(strings.Join(strings.Fields(h.Claim), " "), ".?! ")
+	room := askMax - utf8.RuneCountInString(open+end) - 1
+	return firstAsk(open+claim+"\u201d for "+askedPlan(f)+"?", open+wordCut(claim, room)+end, "Keep this extra promise for "+askedPlan(f)+"?")
 }
 
 // planConfirmWhy is why a plan's confirmation asks: on its row, which the

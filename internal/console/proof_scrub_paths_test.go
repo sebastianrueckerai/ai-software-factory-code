@@ -107,7 +107,7 @@ func TestRawErrorRefusalsAreScrubbed(t *testing.T) {
 	_, err = r.c.doAnswerPlanQuestions(ctx, a, "t-p", 1, []PlanAnswerInput{{Question: 1, Text: "60 seconds"}})
 	maskedLeak(t, "the answers refusal", err.Error())
 	r.c.cfg.DecideHoldout = func(context.Context, string, int, int, string, string) error { return leakyError() }
-	err = r.c.doDecideHoldout(ctx, a, "t-p", 1, 1, "okay")
+	err = r.c.doDecideHoldout(ctx, a, "t-p", 1, 1, "okay", "")
 	maskedLeak(t, "the hold-out refusal", err.Error())
 }
 

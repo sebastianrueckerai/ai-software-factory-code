@@ -51,27 +51,61 @@ func TestPlanAnswerRefusal(t *testing.T) {
 	}
 }
 
+// By hand: the human keeps or drops an extra promise at every level, the
+// agent only at full auto, and a refusal names the project's level, the
+// human's press and the agent's next step; the check-in decides none.
+func TestHoldoutRefusal(t *testing.T) {
+	const press = "kept or dropped with Keep it or Drop it on its page of the plan's card."
+	for _, c := range []struct {
+		name     string
+		rung     int
+		autonomy string
+		want     string
+	}{
+		{"a human at manual", 3, policy.AutonomyManual, ""},
+		{"the agent at full auto", 2, policy.AutonomyFullAuto, ""},
+		{"the agent at autonomous", 2, policy.AutonomyAutonomous, "The project runs at autonomous, and below full auto an extra promise is the human's, " + press + planAgentStep},
+		{"the agent at assisted", 2, policy.AutonomyAssisted, "The project runs at assisted, and below full auto an extra promise is the human's, " + press + planAgentStep},
+		{"the agent with no level read", 2, "", "The project's autonomy level could not be read, so an extra promise stays the human's, " + press + planAgentStep},
+		{"the check-in at full auto", 1, policy.AutonomyFullAuto, "The check-in decides no extra promise: it is the factory agent's at full auto, or the human's, " + press},
+	} {
+		if got := HoldoutRefusal(c.rung, c.autonomy); got != c.want {
+			t.Errorf("%s: refusal %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // Rung 2's statement offers the confirmation only where the guard passes
 // it: at full auto on a revision that takes nothing off main; on one that
 // takes work off main it names the human's press and offers Request
-// changes; below full auto it offers nothing.
+// changes; below full auto it offers nothing. At full auto it lists each
+// extra promise that waits with its claim, its inputs and what it expects,
+// and offers to keep or drop it; below full auto it names none.
 func TestPlanOfferFollowsTheGuard(t *testing.T) {
 	confirm := Case{Kind: CasePlanConfirmation, Facts: map[string]any{"revision": float64(3), "index": float64(2)}}
 	question := Case{Kind: CasePlanQuestion, Facts: map[string]any{"revision": float64(3), "index": float64(1)}}
+	open := []PlanProof{{Idx: 4, Round: 3, ID: "gives_up", Origin: ProofOriginHoldout, State: ProofProposed,
+		Claim: "The gateway gives up after 3 minutes without a store.", Inputs: "a store URL that refuses every connection", Expected: "exit code 1 within 4 minutes"}}
+	const promise = "- holdout 4: The gateway gives up after 3 minutes without a store.\n  inputs: a store URL that refuses every connection\n  expected: exit code 1 within 4 minutes\n"
+	const settle = "Keep or drop each with the answer tool (revision 3, holdout its number, decision keep or drop, your reason as text)"
 	for _, c := range []struct {
 		name     string
 		c        Case
 		autonomy string
 		off      bool
-		holdouts bool
+		holdouts []PlanProof
 		has, not []string
 	}{
-		{"confirmation at full auto", confirm, policy.AutonomyFullAuto, false, false, []string{"You may confirm this plan with the answer tool (revision 3, question 2, decision confirm)"}, nil},
-		{"confirmation with hold-outs undecided", confirm, policy.AutonomyFullAuto, false, true, []string{"Hold-out candidates", "only the human okays or drops them", "decision revise"}, []string{"You may confirm"}},
-		{"confirmation taking work off main", confirm, policy.AutonomyFullAuto, true, false, []string{offMainWord, humanConfirmButton, "decision revise"}, []string{"You may confirm"}},
-		{"confirmation at autonomous", confirm, policy.AutonomyAutonomous, false, false, []string{belowFullAutoWord}, []string{"You may"}},
-		{"question at full auto", question, policy.AutonomyFullAuto, false, false, []string{"You may answer this question with the answer tool (revision 3, question 1)"}, nil},
-		{"question at assisted", question, policy.AutonomyAssisted, false, false, []string{belowFullAutoWord}, []string{"You may"}},
+		{"confirmation at full auto", confirm, policy.AutonomyFullAuto, false, nil, []string{"You may confirm this plan with the answer tool (revision 3, question 2, decision confirm)"}, []string{"holdout"}},
+		{"confirmation with hold-outs undecided", confirm, policy.AutonomyFullAuto, false, open,
+			[]string{promise, settle, "Once each is kept or dropped, you may confirm this plan with the answer tool (revision 3, question 2, decision confirm), or request changes (decision revise, with your words)."},
+			[]string{"You may confirm"}},
+		{"hold-outs undecided on a revision taking work off main", confirm, policy.AutonomyFullAuto, true, open, []string{promise, settle, offMainWord, humanConfirmButton, "decision revise"}, []string{"may confirm"}},
+		{"confirmation taking work off main", confirm, policy.AutonomyFullAuto, true, nil, []string{offMainWord, humanConfirmButton, "decision revise"}, []string{"You may confirm"}},
+		{"confirmation at autonomous", confirm, policy.AutonomyAutonomous, false, nil, []string{belowFullAutoWord}, []string{"You may"}},
+		{"hold-outs undecided at autonomous", confirm, policy.AutonomyAutonomous, false, open, []string{belowFullAutoWord}, []string{"You may", "holdout", "gives up"}},
+		{"question at full auto", question, policy.AutonomyFullAuto, false, nil, []string{"You may answer this question with the answer tool (revision 3, question 1)"}, nil},
+		{"question at assisted", question, policy.AutonomyAssisted, false, nil, []string{belowFullAutoWord}, []string{"You may"}},
 	} {
 		got := planOffer(c.c, c.autonomy, c.off, c.holdouts)
 		for _, w := range c.has {

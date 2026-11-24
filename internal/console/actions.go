@@ -825,24 +825,37 @@ const maxPlanAnswer = 1000
 // maxCriterionReason bounds a human's reason beside a criterion's verdict.
 const maxCriterionReason = 2000
 
-// holdoutsWait is the sentence a confirmation meets while the revision's
-// extra promises are open: how many wait to be kept or dropped on their
-// pages, or the plan by name when the count cannot be read.
-func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision int) string {
-	n := 0
+// holdoutsWait is the refusal a confirmation meets while the revision's
+// extra promises are open: how many wait to be kept or dropped, or the plan
+// by name when the count cannot be read, and the act that settles them: a
+// human's Keep it or Drop it on their pages, the agent's answer tool where
+// it may keep or drop them.
+func (c *Console) holdoutsWait(ctx context.Context, a actor, t factoryd.Task, revision int) error {
+	var open []string
 	if proofs, err := c.cfg.Tasks.PlanProofs(ctx, t.ID); err == nil {
 		for _, p := range proofs {
 			if p.Origin == factoryd.ProofOriginHoldout && p.Round == revision && p.State == factoryd.ProofProposed {
-				n++
+				open = append(open, strconv.Itoa(p.Idx))
 			}
 		}
 	}
-	if n == 1 {
-		return fmt.Sprintf("1 extra promise of plan #%d waits for Keep it or Drop it on its page before the confirmation.", t.IssueNumber)
-	} else if n > 1 {
-		return fmt.Sprintf("%d extra promises of plan #%d wait for Keep it or Drop it on their pages before the confirmation.", n, t.IssueNumber)
+	n := len(open)
+	subject, wait, pages := fmt.Sprintf("The extra promises of plan #%d", t.IssueNumber), "wait", "their pages"
+	switch {
+	case n == 1:
+		subject, wait, pages = fmt.Sprintf("1 extra promise of plan #%d", t.IssueNumber), "waits", "its page"
+	case n > 1:
+		subject = fmt.Sprintf("%d extra promises of plan #%d", n, t.IssueNumber)
 	}
-	return fmt.Sprintf("The extra promises of plan #%d wait for Keep it or Drop it on their pages before the confirmation.", t.IssueNumber)
+	if a.decider == "agent" && factoryd.HoldoutRefusal(a.rung(), a.level) == "" {
+		it := "each"
+		if n == 1 {
+			it = "it"
+		}
+		return refuseAgent(http.StatusConflict, fmt.Sprintf("%s %s to be kept or dropped before the confirmation: keep or drop %s with the answer tool (`revision` %d, `holdout` %s, `decision` %s or %s, your reason as `text`).",
+			subject, wait, it, revision, cmp.Or(orWords(open...), "its number"), factoryd.DecisionKeep, factoryd.DecisionDrop))
+	}
+	return refuse(http.StatusConflict, fmt.Sprintf("%s %s for Keep it or Drop it on %s before the confirmation.", subject, wait, pages))
 }
 
 // doAnswerPlanQuestion answers question idx of revision revision of plan
@@ -889,7 +902,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	case errors.Is(err, factoryd.ErrReviseWords):
 		return "", refuse(http.StatusBadRequest, "Ask for changes needs your words: they go to the next planner round.")
 	case errors.Is(err, factoryd.ErrHoldoutsOpen):
-		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
+		return "", c.holdoutsWait(ctx, a, t, revision)
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusBadGateway, "The answer is recorded, but the factory could not pass it to the plan. “Ask for changes” sends the plan to the planner with the answers.")
@@ -1045,7 +1058,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	case errors.Is(err, factoryd.ErrReviseWords):
 		return "", refuse(http.StatusBadRequest, "Ask for changes needs your words: they go to the next planner round.")
 	case errors.Is(err, factoryd.ErrHoldoutsOpen):
-		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
+		return "", c.holdoutsWait(ctx, a, t, revision)
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
 		return "", refuse(http.StatusBadGateway, "The answers are recorded, but the factory could not pass them to the plan. “Ask for changes” sends the plan to the planner with the answers.")
@@ -1075,16 +1088,25 @@ func batchLines(batch []factoryd.PlanAnswer) []string {
 }
 
 // doDecideHoldout runs a writer's okay or drop of hold-out idx of plan
-// id's newest revision: factoryd stores the decision. Nothing is posted
-// on the issue: the agent reads it, and the hold-outs stay hidden from
-// the agent by routing; the event feed carries the decision.
-func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revision, idx int, verb string) error {
+// id's newest revision as its decider, past the plan's guard
+// (factoryd.HoldoutRefusal): factoryd stores the decision. The agent gives
+// its reason, which the event records. Nothing is posted on the issue: the
+// agent reads it, and the hold-outs stay hidden from the agent by routing;
+// the event feed carries the decision.
+func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revision, idx int, verb, reason string) error {
 	if verb != "okay" && verb != "drop" {
 		return refuse(http.StatusBadRequest, "okay or drop is required")
 	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {
 		return err
+	}
+	if why := factoryd.HoldoutRefusal(a.rung(), a.level); why != "" {
+		return refuse(http.StatusConflict, why)
+	}
+	reason = strings.Join(strings.Fields(reason), " ")
+	if a.decider == "agent" && reason == "" || utf8.RuneCountInString(reason) > maxPlanAnswer {
+		return refuseAgent(http.StatusBadRequest, fmt.Sprintf("Keeping or dropping an extra promise takes your reason as `text`, 1 to %d characters.", maxPlanAnswer))
 	}
 	var stale factoryd.ErrStalePlan
 	switch err := c.cfg.DecideHoldout(ctx, t.ID, revision, idx, verb, a.approver()); {
@@ -1098,7 +1120,11 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 		log.Printf("console: %s decides hold-out %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %s. Reload the board and press Keep it or Drop it again.", errText(err)))
 	}
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
+	detail := agentDetail(a, map[string]any{"revision": revision, "index": idx, "verb": verb})
+	if reason != "" {
+		detail["reason"] = reason
+	}
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, detail)
 	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
 	return nil
 }
