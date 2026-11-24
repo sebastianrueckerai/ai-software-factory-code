@@ -308,7 +308,10 @@ decimals: a task's model calls cost fractions of a cent.
   and its card says that the factory agent did not answer. Its tools (`policy.ChatTools`) are the reads `system` (the
   factory's manual, rendered from the code at call time; its states,
   gates and section on sandbox images come from `internal/manual`, which
-  the workers' `manual` tool reads too), `board`,
+  the workers' `manual` tool reads too), `board`, `find_cards` (the
+  board's find box over the project's cards, open and finished of every
+  age: words, `#N`, a task id and key:value facts, up to 25 cards on the
+  board read's line, then how many more matched),
   `card` (the card in full, led by its life: where it stands, one line
   per step with its number, repeated steps in a row folded into one, and
   the flags the steps show, or `digest unreadable: <why>` when its life

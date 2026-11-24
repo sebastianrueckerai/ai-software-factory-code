@@ -421,7 +421,7 @@ func (t *turn) cardID(id *string) error {
 		if why, err := t.c.cfg.Tasks.IntakeRefusals(t.r.Context(), t.p.Repository, n); err == nil && len(why) > 0 {
 			return refuse(http.StatusConflict, fmt.Sprintf("Issue #%d has no card. %s", n, why[len(why)-1].Reason))
 		}
-		return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no card #%d: the board read lists its cards.", t.p.Name, n))
+		return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no card #%d: find the card you mean by the words of its title.", t.p.Name, n))
 	}
 	*id = k.ID
 	return nil
@@ -915,9 +915,74 @@ func cardLine(t factoryd.Task) string {
 	return s
 }
 
+// boardLine is card k on one line as the agent's board read lists it.
+func boardLine(k card) string {
+	s := cardLine(k.Task)
+	if k.Provider {
+		s += ", " + providerWords
+	}
+	if h := k.Helper; h != nil {
+		s += fmt.Sprintf(", its %s %s is %s", h.Source, h.ID, h.Status)
+	}
+	if k.HoldLine != "" {
+		s += ", " + k.HoldLine
+	}
+	return s
+}
+
 // boardListed bounds each list of the board the agent reads: a column's
 // cards, the approval requests and the notes.
 const boardListed = 25
+
+// findTerms is what a find of the cards takes, as the board's find box
+// does.
+const findTerms = "A find matches a card when every term matches it. A term is a word of the card's face (its title, #N, its task id, pr #N) " +
+	"or a fact as key:value (status:failed, stage:verifying, is:failed|blocked|stale|provider|near|retrying, plan:558, by:<login>, model:small, pr:612)."
+
+// foundText is the find q over project p's cards, open and finished of
+// every age, as the board's find box matches them, for the agent. a is
+// the chat's actor, as boardText's is.
+func (c *Console) foundText(r *http.Request, p factoryd.Project, a actor, q string) (string, error) {
+	if strings.TrimSpace(q) == "" {
+		return "", refuse(http.StatusBadRequest, "The find needs a query. "+findTerms)
+	}
+	d, err := c.boardOf(r, boardFilter{Project: p.Name, Q: q, Ever: true}, a)
+	if errors.Is(err, errNoProject) {
+		return "Project " + p.Name + " takes no agent cards: it has no board.", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var cards []card
+	for _, col := range d.Columns {
+		for _, n := range col.Needs {
+			if n.Approval == nil {
+				cards = append(cards, n.Card)
+			}
+		}
+		cards = append(cards, col.Cards...)
+	}
+	return foundWords(p.Name, q, cards), nil
+}
+
+// foundWords is find q's cards of project for the agent: up to
+// boardListed of them, each as the board read lists it, then how many
+// more matched.
+func foundWords(project, q string, cards []card) string {
+	if len(cards) == 0 {
+		return fmt.Sprintf("No card of project %s, open or finished, matches %q. %s Drop a term or change one.", project, q, findTerms)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Cards matching %q (%d):", q, len(cards))
+	shown := min(len(cards), boardListed)
+	for _, k := range cards[:shown] {
+		b.WriteString("\n  " + boardLine(k))
+	}
+	if len(cards) > shown {
+		fmt.Fprintf(&b, "\n  and %d more: add a term to narrow the find.", len(cards)-shown)
+	}
+	return b.String()
+}
 
 // boardText is project p's board as the session's human sees it, for the
 // agent: each column with its cards and the approval requests waiting. a
@@ -953,16 +1018,7 @@ func boardWords(d boardData) string {
 		fmt.Fprintf(&b, "%s (%d):", title, whole)
 		lines := make([]string, len(cards))
 		for i, k := range cards {
-			lines[i] = cardLine(k.Task)
-			if k.Provider {
-				lines[i] += ", " + providerWords
-			}
-			if h := k.Helper; h != nil {
-				lines[i] += fmt.Sprintf(", its %s %s is %s", h.Source, h.ID, h.Status)
-			}
-			if k.HoldLine != "" {
-				lines[i] += ", " + k.HoldLine
-			}
+			lines[i] = boardLine(k)
 		}
 		listed("\n  ", lines, whole)
 		b.WriteString("\n")
@@ -1474,6 +1530,13 @@ func init() {
 			about: "The project's board: each column's cards and the approval requests in Needs you.",
 			run: func(t *turn, _ toolInput) (string, *inverse, error) {
 				s, err := t.c.boardText(t.r, t.p, t.a)
+				return s, nil, err
+			}},
+		{name: "find_cards", title: "Find cards", required: []string{"query"},
+			params: map[string]any{"query": str("words, #N, a task id or key:value facts")},
+			about:  "The project's cards of every age that match a find, as on the board: words, #N, key:value facts.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				s, err := t.c.foundText(t.r, t.p, t.a, in.Query)
 				return s, nil, err
 			}},
 		{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},

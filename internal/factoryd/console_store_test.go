@@ -455,6 +455,16 @@ func TestPGStoreFinishedPages(t *testing.T) {
 	}
 	page(FinishedQuery{Limit: 2, After: CursorOf(second[1].Task)}, []string{"f", "e"}, 2)
 	page(FinishedQuery{Limit: 2}, []string{"k", "a"}, 7)
+	// no Since reads the finished cards of every age: the card of a week
+	// ago comes last
+	all, rest, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses})
+	var ids []string
+	for _, b := range all {
+		ids = append(ids, b.ID)
+	}
+	if want := []string{"k", "a", "b", "c", "d", "f", "e", "g"}; err != nil || !slices.Equal(ids, want) || rest != 8 {
+		t.Fatalf("FinishedTasks with no Since = %v, %d, %v; want %v, 8", ids, rest, err, want)
+	}
 }
 
 // A card's brief and accent land on the task row and read back on the

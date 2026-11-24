@@ -907,6 +907,10 @@ type boardFilter struct {
 	Shown map[string]int
 	Col   string
 	After factoryd.Cursor
+	// Ever reads the finished cards of every age, not only those of the
+	// last finishedSince: find_cards finds among them. No query or form
+	// carries it.
+	Ever bool
 	// Routines is the routines control's choice (C16): "" shows every
 	// routine's ghost, within those whose next run is at most Within
 	// Unit away, none none. Within (1 to 999) and Unit (days or hours)
@@ -2314,6 +2318,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 // gets its whole count and the form of its next page.
 func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter, repository string) ([]factoryd.BoardTask, error) {
 	q := factoryd.FinishedQuery{Repository: repository, Statuses: factoryd.FinalStatuses, Since: time.Now().Add(-finishedSince), Oldest: f.Done.Order == "oldest"}
+	if f.Ever {
+		q.Since = time.Time{}
+	}
 	if f.whole() {
 		all, _, err := c.cfg.Tasks.FinishedTasks(ctx, q)
 		return all, err
