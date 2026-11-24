@@ -34,9 +34,13 @@ func setRequiredEnv(t *testing.T) {
 		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200", "LINE_BOUND": "100",
 		"MESSAGE_TOKEN_SHA256": testMessageHash, "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
-		// the worker's own sandbox exports REPO_SHA; the seeded repos of
-		// the tests hold no such commit, so none is pinned here
-		"REPO_SHA": "",
+		// the worker's own sandbox exports every other variable a start
+		// reads, and a test that runs there inherits them: each is empty
+		// unless a test sets it. The seeded repos hold no REPO_SHA commit
+		"REPO_SHA": "", "SESSION_ID": "", "START_WIP": "", "STRONGER_MODEL": "", "CHEAP_MODEL": "",
+		"AUTHOR": "", "AUTHOR_STANDING": "", "CARD_ROLE": "", "DOCS_DIR": "", "COMPANION_DIRS": "", "FACTS": "",
+		"MODE": "", "REPORT_GUIDE": "", "FINDINGS": "", "ANSWERS": "", "POSTER_INFO": "", "TOOLS": "",
+		"DIRECTORIES": "", "MIGRATION_GLOBS": "", "LEFT_OUT": "", "IMAGE_MANIFEST": "", "OTEL_EXPORTER_OTLP_ENDPOINT": "",
 		// a start puts its executable's directory first on PATH
 		"PATH": os.Getenv("PATH"),
 	} {
@@ -731,7 +735,6 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			setRequiredEnv(t)
 			t.Setenv("TASK_ID", tc.taskID)
-			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			// the restored opencode config: the baked one exists in the image only
