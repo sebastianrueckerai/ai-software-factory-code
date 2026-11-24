@@ -70,6 +70,8 @@ type ChatMessage struct {
 	Settled   bool      `json:"settled,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
 	SettledAt time.Time `json:"settled_at,omitzero"`
+	// ReasonMoments are the instants the reason names.
+	ReasonMoments Moments `json:"-"`
 	// Moments are the instants its content names, stored beside it
 	// (Moment): a screen shows them in the reader's zone.
 	Moments Moments `json:"-"`

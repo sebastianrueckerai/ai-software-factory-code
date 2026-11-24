@@ -297,3 +297,18 @@ func TestCardStepShowsAProofsEntryByItsIDAlone(t *testing.T) {
 		t.Fatalf("CardStep =\n%s\nwant it to end\n%s", got, want)
 	}
 }
+
+// The case line of a case the factory closed says why after its action.
+func TestCardStepNamesWhyTheFactoryClosedACase(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(30, EventQuestionAsked, FactoryDecider, map[string]any{"question": "The month cap stops the card.", "case_id": 7517})
+	g.store.cases = []Case{{ID: 7517, TaskID: "t1410", Kind: CaseMonthCap, StateKey: "k1", Status: CaseResolved, Problem: "the month cap stops the card",
+		OpenedAt: digestAt(30), Resolution: &CaseResolution{By: FactoryDecider, Rung: 0, Action: "resume", Reason: "the month cap's count was reset at 07:30 UTC by sebastian"}}}
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if want := "\ncase 7517 month_cap, resolved by factoryd: resume because the month cap's count was reset at 07:30 UTC by sebastian\n"; !strings.Contains(got, want) {
+		t.Fatalf("CardStep =\n%s\nwant it to hold%s", got, want)
+	}
+}

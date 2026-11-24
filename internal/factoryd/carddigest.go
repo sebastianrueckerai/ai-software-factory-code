@@ -679,13 +679,26 @@ func proofsEventStep(s DigestStep, e Event) DigestStep {
 // case the events writer files for it (caseFromAsk).
 func askOutcome(scrub *redact.Scrubber, t Task, e Event, cases []Case, i int) string {
 	if i >= 0 && cases[i].Problem != "" {
-		return string(cases[i].Kind) + ": " + digestText(scrub, cases[i].Problem)
+		out := string(cases[i].Kind) + ": " + digestText(scrub, cases[i].Problem)
+		if why := factoryClosedReason(cases[i]); why != "" {
+			out += "; closed by the factory: " + digestText(scrub, why)
+		}
+		return out
 	}
 	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return "an ask with no words"
 	}
 	return string(c.Kind) + ": " + digestText(scrub, c.Problem)
+}
+
+// factoryClosedReason is why the factory ended case c itself, on rung 0:
+// withdrawn or resolved, "" for any other end.
+func factoryClosedReason(c Case) string {
+	if r := c.Resolution; r != nil && r.By == FactoryDecider && r.Rung == 0 && (c.Status == CaseWithdrawn || c.Status == CaseResolved) {
+		return r.Reason
+	}
+	return ""
 }
 
 // askCaseIndex is the index among cases of the case ask e opened or

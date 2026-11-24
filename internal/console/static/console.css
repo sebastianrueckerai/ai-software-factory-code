@@ -1131,8 +1131,8 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
 .settled-why { margin: 4px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }
 .msg.settled .fold { display: flex; gap: 8px; align-items: baseline; min-width: 0; margin: 0 0 2px; color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
 .msg.settled .fold:hover, .msg.settled .fold:focus-visible { color: var(--text-muted); }
-.msg.settled .fold .fw { flex: none; color: var(--text-muted); }
-.msg.settled .fold .ft { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.msg.settled .fold .fw { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-muted); }
+.msg.settled .fold .ft { flex: 1 1 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .msg.settled .fold .ft a { color: inherit; }
 .msg.settled.expanded .fold { display: none; }
 .msg.settled.expanded .said { display: block; }

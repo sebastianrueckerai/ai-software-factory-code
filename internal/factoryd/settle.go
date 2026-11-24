@@ -244,7 +244,8 @@ func caseEnds(ask Event, events []Event) func(Event) bool {
 }
 
 // ReasonLead is a settled ask's word and actor, the decider line's pattern
-// before its time: "answered by sebastian", "withdrawn".
+// before its time: "answered by sebastian", "withdrawn". A withdrawal the
+// factory recorded with a reason reads "withdrawn: <reason>".
 func ReasonLead(s PokeSettle) string {
 	word, by := s.Word, DeciderWords(s.By)
 	if s.By == FactoryDecider {
@@ -254,6 +255,9 @@ func ReasonLead(s PokeSettle) string {
 			word, by = "withdrawn", ""
 		case word != "answered":
 			by = ""
+		}
+		if reason, _ := s.Event.Detail["reason"].(string); s.Event.Kind == EventQuestionWithdrawn && reason != "" {
+			return word + ": " + reason
 		}
 	}
 	if by != "" {

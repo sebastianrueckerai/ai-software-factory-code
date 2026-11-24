@@ -347,6 +347,8 @@ func (t *turn) save(m factoryd.ChatMessage) (int64, bool) {
 type chatRow struct {
 	factoryd.ChatMessage
 	Times []screenTime `json:"times,omitempty"`
+	// ReasonTimes are the moments a settled row's reason names.
+	ReasonTimes []screenTime `json:"reason_times,omitempty"`
 }
 
 type chatGetAnswer struct {
@@ -458,7 +460,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]chatRow, len(msgs))
 	for i, m := range msgs {
-		rows[i] = chatRow{m, screenTimes(m.Moments)}
+		rows[i] = chatRow{m, screenTimes(m.Moments), screenTimes(m.ReasonMoments)}
 	}
 	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: rows, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
 	if v, ok := c.inForce(ctx); ok {
@@ -663,6 +665,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 			}
 			if s := choiceSettle(m, pressed, events[m.TaskID], login); !s.Open {
 				msgs[i].Settled, msgs[i].Reason, msgs[i].SettledAt = true, factoryd.ReasonLead(s), s.At
+				msgs[i].ReasonMoments = factoryd.MomentsOf(s.Event.Detail).In(msgs[i].Reason)
 			}
 			continue
 		}
@@ -674,6 +677,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 		}
 		if s := factoryd.SettleOf(m, events[m.TaskID], statuses[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
 			msgs[i].Settled, msgs[i].Reason, msgs[i].SettledAt = true, factoryd.ReasonLead(s), s.At
+			msgs[i].ReasonMoments = factoryd.MomentsOf(s.Event.Detail).In(msgs[i].Reason)
 		} else if n := threads[m.TaskID]; n != 0 {
 			msgs[i].Thread, msgs[i].ThreadOwner = n, whose[m.TaskID]
 		}

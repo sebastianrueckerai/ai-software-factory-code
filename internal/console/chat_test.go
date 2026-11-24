@@ -5415,3 +5415,46 @@ func TestChatAnalyzeImageAskIsBounded(t *testing.T) {
 		t.Fatalf("an ask of 2000 characters in 4000 bytes = %v, %d vision calls, want one", events, len(g.visions))
 	}
 }
+
+// A settled ask whose card the factory closed reads "withdrawn: <reason>",
+// and the moment the reason names reaches the page beside the row, so the
+// browser shows it in the reader's zone.
+func TestASettledAskNamesItsReasonInTheReadersZone(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	ctx := t.Context()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-c", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 31}})
+	r.tasks.mu.Unlock()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "#31 needs you: the month cap", Choices: []string{"Yes", "No"}, TaskID: "t-c", Conversation: inbox}); err != nil {
+		t.Fatal(err)
+	}
+	const reason = "the month cap's count was reset at 07:30 UTC by sebastian"
+	at := time.Date(2026, 11, 24, 7, 30, 32, 0, time.UTC)
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-c", Kind: factoryd.EventQuestionWithdrawn, Actor: "factoryd", Via: factoryd.ViaFactoryd,
+		Detail: map[string]any{"reason": reason, "moments": factoryd.Moments{{At: at, Layout: factoryd.LayoutClock}}}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET = %d: %s", rec.Code, rec.Body.String())
+	}
+	var answer struct {
+		Messages []struct {
+			Reason      string       `json:"reason"`
+			ReasonTimes []screenTime `json:"reason_times"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil || len(answer.Messages) != 1 {
+		t.Fatalf("%v: %s", err, rec.Body.String())
+	}
+	m := answer.Messages[0]
+	if want := "withdrawn: " + reason; m.Reason != want {
+		t.Errorf("reason = %q, want %q", m.Reason, want)
+	}
+	if want := []screenTime{{Words: "07:30 UTC", At: at, Layout: "15:04 MST"}}; !reflect.DeepEqual(m.ReasonTimes, want) {
+		t.Errorf("reason_times = %+v, want %+v", m.ReasonTimes, want)
+	}
+}

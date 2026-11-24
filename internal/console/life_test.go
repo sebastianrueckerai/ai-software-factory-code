@@ -1,6 +1,7 @@
 package console
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -89,14 +90,16 @@ func TestRunsOfACardsLifeNoteAWithdrawnQuestion(t *testing.T) {
 		{TaskID: "t-w", Kind: factoryd.EventQuestionAsked, At: at(10, 15, 0), Detail: map[string]any{"question": q, "comment": 601.0}},
 		status(at(10, 20, 0), "in-review"),
 		{TaskID: "t-w", Kind: factoryd.EventQuestionWithdrawn, At: at(10, 20, 1), Detail: map[string]any{"question": q, "comment": 601.0, "reason": "the checks failed"}},
-		status(at(10, 21, 0), "running")}
+		status(at(10, 21, 0), "running"),
+		{TaskID: "t-w", Kind: factoryd.EventQuestionWithdrawn, At: at(10, 22, 0), Detail: map[string]any{"reason": "the flag no longer holds",
+			"moments": factoryd.Moments{{At: at(10, 21, 30), Layout: factoryd.LayoutClock}}}}}
 	runs := runsOf(task, events, nil, nil, at(10, 30, 0))
 	want := []struct{ kind, at, note string }{
 		{"queued", "09:50", ""},
 		{"verifying", "10:00", ""},
 		{"waiting on you", "10:15", "asked: " + q},
 		{"verifying", "10:20", "withdrawn because the checks failed: " + q},
-		{"building", "10:21", ""},
+		{"building", "10:21", "withdrawn because the flag no longer holds"},
 	}
 	if len(runs) != len(want) {
 		t.Fatalf("%d runs, want %d: %+v", len(runs), len(want), runs)
@@ -105,6 +108,9 @@ func TestRunsOfACardsLifeNoteAWithdrawnQuestion(t *testing.T) {
 		if r := runs[i]; r.Kind != w.kind || r.Start.UTC().Format("15:04") != w.at || r.Note() != w.note {
 			t.Errorf("run %d: %s at %s, %q; want %s at %s, %q", i, r.Kind, r.Start.UTC().Format("15:04"), r.Note(), w.kind, w.at, w.note)
 		}
+	}
+	if want := (factoryd.Moments{{At: at(10, 21, 30), Layout: factoryd.LayoutClock}}); !reflect.DeepEqual(runs[4].Moments, want) {
+		t.Errorf("the building run's moments = %+v, want %+v", runs[4].Moments, want)
 	}
 }
 

@@ -28,6 +28,8 @@ type run struct {
 	Attempt int
 	Model   string
 	Notes   []string
+	// Moments are the instants the notes name.
+	Moments factoryd.Moments
 }
 
 // Duration is the run's length in minutes, or hours and minutes.
@@ -87,14 +89,15 @@ func runKind(status, track string) string {
 // point is one moment of a card's life the runs are read from: a status
 // row, a session's start or end, a check, a review, a stall, a question.
 type point struct {
-	at    time.Time
-	order int // at the same moment: a session's end first, then a status row, then the other steps, so the end notes the run that ends and the row opens the run a start fills
-	kind  string
-	note  string
-	start bool // the point opens a run of kind
-	end   bool // a session's end: note is its outcome
-	calls int  // a session's attempt number
-	model string
+	at      time.Time
+	order   int // at the same moment: a session's end first, then a status row, then the other steps, so the end notes the run that ends and the row opens the run a start fills
+	kind    string
+	note    string
+	start   bool // the point opens a run of kind
+	end     bool // a session's end: note is its outcome
+	calls   int  // a session's attempt number
+	model   string
+	moments factoryd.Moments
 }
 
 // runsOf is card t's life as runs of its stages, in order, from its
@@ -120,7 +123,11 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 		case factoryd.EventQuestionWithdrawn:
 			q, _ := e.Detail["question"].(string)
 			why, _ := e.Detail["reason"].(string)
-			pts = append(pts, point{at: e.At, order: 1, note: "withdrawn because " + why + ": " + strings.TrimSpace(q)})
+			note := "withdrawn because " + why
+			if q = strings.TrimSpace(q); q != "" {
+				note += ": " + q
+			}
+			pts = append(pts, point{at: e.At, order: 1, note: note, moments: factoryd.MomentsOf(e.Detail)})
 		}
 	}
 	for _, m := range steps {
@@ -224,6 +231,7 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 				r = open("queued", p.at)
 			}
 			r.Notes = append(r.Notes, p.note)
+			r.Moments = append(r.Moments, p.moments...)
 		}
 	}
 	end := now

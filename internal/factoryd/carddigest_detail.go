@@ -192,6 +192,9 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 		if res.Action != "" {
 			b.WriteString(": " + res.Action)
 		}
+		if why := factoryClosedReason(k); why != "" {
+			b.WriteString(" because " + why)
+		}
 	}
 	b.WriteString("\n")
 	steps, err := r.store.CaseSteps(ctx, k.ID)

@@ -254,10 +254,14 @@ func TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal(t *testing.T) {
 	settle := func(kind, by string) PokeSettle {
 		return PokeSettle{Word: SettleWord(kind), By: by, At: at, Event: Event{Kind: kind, Actor: by}}
 	}
+	const reason = "the month cap's count was reset at 07:30 UTC by sebastian"
+	withReason := settle(EventQuestionWithdrawn, FactoryDecider)
+	withReason.Event.Detail = map[string]any{"reason": reason}
 	for _, c := range []struct {
 		s          PokeSettle
 		lead, want string
 	}{
+		{withReason, "withdrawn: " + reason, "withdrawn: " + reason + " · 09:30"},
 		{settle(EventCardClosed, FactoryDecider), "withdrawn", "withdrawn · 09:30"},
 		{settle(EventPlanClosed, FactoryDecider), "withdrawn", "withdrawn · 09:30"},
 		{settle(EventQuestionWithdrawn, FactoryDecider), "withdrawn", "withdrawn · 09:30"},

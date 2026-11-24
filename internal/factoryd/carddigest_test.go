@@ -1927,3 +1927,20 @@ func TestTheMonitorWatchesAHeldCardUntilItParks(t *testing.T) {
 		}
 	}
 }
+
+// A case the factory closed names its reason on the ask step, in the
+// stored UTC words an agent reads.
+func TestCardDigestNamesWhyTheFactoryClosedAnAsk(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(30, EventQuestionAsked, FactoryDecider, map[string]any{"question": "The month cap stops the card.", "case_id": 7517})
+	g.store.cases = []Case{{ID: 7517, TaskID: "t1410", Kind: CaseMonthCap, StateKey: "k1", Status: CaseResolved, Problem: "the month cap stops the card",
+		OpenedAt: digestAt(30), Resolution: &CaseResolution{By: FactoryDecider, Rung: 0, Action: "resume", Reason: "the month cap's count was reset at 07:30 UTC by sebastian"}}}
+	d := g.digest(t)
+	i := slices.IndexFunc(d.Steps, func(s DigestStep) bool { return s.Kind == "ask" })
+	if i < 0 {
+		t.Fatalf("no ask step in %+v", d.Steps)
+	}
+	if want := "month_cap: the month cap stops the card; closed by the factory: the month cap's count was reset at 07:30 UTC by sebastian"; d.Steps[i].Outcome != want {
+		t.Fatalf("ask outcome = %q, want %q", d.Steps[i].Outcome, want)
+	}
+}

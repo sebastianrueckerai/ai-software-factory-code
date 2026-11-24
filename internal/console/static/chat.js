@@ -140,7 +140,7 @@ var chatView = (function () {
   // reasonHTML is settled row m's reason and the time that settled it, read
   // in the browser's zone
   function reasonHTML(m) {
-    return esc(m.reason || "seen") + (m.settled_at ? " · " + timeHTML(new Date(m.settled_at), "15:04 MST") : "");
+    return (m.reason ? timed(esc(m.reason), m.reason_times) : "seen") + (m.settled_at ? " · " + timeHTML(new Date(m.settled_at), "15:04 MST") : "");
   }
   // fundHTML is the fund control of a stopped chat (b, GET /chat's
   // budget): the amount, prefilled with the suggested one, and one click
