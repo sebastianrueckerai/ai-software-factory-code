@@ -1344,7 +1344,10 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 		return "", refuse(http.StatusServiceUnavailable, "The card's facts could not be read, so nothing was pressed. Try again.")
 	}
 	more := factoryd.MoreOf(t, factoryd.Facts{CaseFacts: facts})
-	i := slices.IndexFunc(more, func(m factoryd.Answer) bool { return m.Key() == key })
+	// the hold's started variant follows the card's state, which moves under an open drawer
+	action, _, _ := strings.Cut(key, "/")
+	holds := action == factoryd.AnswerHold || action == factoryd.AnswerRelease
+	i := slices.IndexFunc(more, func(m factoryd.Answer) bool { return m.Key() == key || holds && m.Action == action })
 	if i < 0 {
 		return "", refuse(http.StatusBadRequest, "This answer names no question of the card. Reload the board and press the answer again.")
 	}
@@ -2840,6 +2843,8 @@ func unholdable(t factoryd.Task, f capFacts) error {
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is a human card: no agent starts it, so a hold keeps nothing. Close it, or leave it to its person.", t.IssueNumber))
 	case t.Unbound():
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs outside the work bound and starts at once, so a hold keeps nothing: close it if it must not run.", t.IssueNumber))
+	case (t.Status == "queued" || t.Status == "running") && t.Track == policy.TrackPlan:
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is a plan's planning run: it takes no hold, so a hold keeps nothing. Close it, or leave it to plan.", t.IssueNumber))
 	case t.Status == "queued":
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took its turn and starts now: close it, or steer it once it runs.", t.IssueNumber))
 	case t.Status == "in-review", t.Status == "closing", t.Status == "merged":

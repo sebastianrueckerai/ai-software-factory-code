@@ -306,6 +306,56 @@ func TestAHoldKeptBesideAFailedStopStands(t *testing.T) {
 	}
 }
 
+// A drawer is rendered before the card starts or parks, and the hold's
+// started variant follows the card's state: a press that names the other
+// variant still holds or releases the card.
+func TestAHoldOrReleasePressedWithTheOtherVariantGoesThrough(t *testing.T) {
+	r, _ := newWritesRig(t)
+	withPlan(r)
+	startedCards(r)
+	r.holdStopped = true
+	ck, s := r.loggedIn(t)
+	press := func(id, action string) int {
+		return r.do(post("/tasks/"+id+"/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {action},
+			action + ".note": {"out of the way"}}), ck).Code
+	}
+	before := r.events.count()
+	if code := press("t-run", "hold_card"); code != http.StatusSeeOther || holdOf(r, "t-run") == nil {
+		t.Fatalf("the fresh key on a running card = %d, hold %+v", code, holdOf(r, "t-run"))
+	}
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardHeld, repo: "sf/code", taskID: "t-run", detail: map[string]any{"reason": "out of the way", "stopped": true}})
+	if code := press("t-d", "hold_card/started"); code != http.StatusSeeOther || holdOf(r, "t-d") == nil {
+		t.Fatalf("the started key on a card that has not started = %d, hold %+v", code, holdOf(r, "t-d"))
+	}
+	if code := press("t-res", "release_hold"); code != http.StatusSeeOther || holdOf(r, "t-res") != nil {
+		t.Fatalf("the fresh release of a parked card = %d, hold %+v", code, holdOf(r, "t-res"))
+	}
+	if code := press("t-d", "release_hold/started"); code != http.StatusSeeOther || holdOf(r, "t-d") != nil {
+		t.Fatalf("the started release of a card that has not started = %d, hold %+v", code, holdOf(r, "t-d"))
+	}
+}
+
+// A plan's planning run takes no hold, queued or running: the refusal says
+// so and names what fits.
+func TestAPlansPlanningRunTakesNoHold(t *testing.T) {
+	r, _ := newWritesRig(t)
+	then := time.Now().Add(-time.Hour)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-pq", Kind: "agent", Status: "queued", Track: policy.TrackPlan, Process: "spec", Repository: "sf/code", IssueNumber: 60, AdmittedAt: &then, ResumedAt: &then}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-pr", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "sf/code", IssueNumber: 61}})
+	r.tasks.mu.Unlock()
+	_, s := r.loggedIn(t)
+	for id, n := range map[string]int{"t-pq": 60, "t-pr": 61} {
+		_, err := r.c.doHoldCard(t.Context(), actor{s: s, via: factoryd.ViaButton}, id, "", "x")
+		var no *refusal
+		want := fmt.Sprintf("Card #%d is a plan's planning run: it takes no hold, so a hold keeps nothing. Close it, or leave it to plan.", n)
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
+			t.Errorf("hold %s = %v, want 409 %q", id, err, want)
+		}
+	}
+}
+
 // The drawer of a running card offers Put on hold with what the hold does
 // to a started card; a held card that waits in Queued after its session
 // offers Release the hold with the started line. A card that has not
