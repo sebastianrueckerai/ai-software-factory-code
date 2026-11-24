@@ -571,13 +571,22 @@ over the card's newest session record, `card_facts`, `card_step`, `gates`,
 `read_file` at the case's head (at main when it has none), `grep` at the
 head and at main, and `cluster_facts` (what the cluster did to a session of
 the card, the newest by default, a running one read live from its pod, or
-the platform's incidents of a window). It
+the platform's incidents of a window). The monitor opens a flag's case on
+the head of the card's branch, which its pull request shows before any
+gate judged it. A card with no branch past its base gets the head the
+gates judged last. It
 has no `run`. Code builds its statement from the card's
 digest, facts, plan and earlier steps; it gets `limits.checkin_calls` calls
 and `limits.checkin_time`, its calls book on the project's chat task, and it
 answers through one forced tool call: one of the actions the action table
 offers rung 1, with a verdict and its evidence on every finding, or `hand_up`
-with the action it recommends. A valid answer resolves the case through
+with the action it recommends. While the checks on the head of the card's
+open pull request run, or could not be read, the table refuses rung 1 and
+rung 2 a `replan` of the card, since the replan closes the pull request
+before the checks judge its work. The refusal names the head and the pull
+request, and names `rerun_checks` for checks that settle red on a test
+outside the diff. A human's replan, and a replan of a failed dependency's
+work, go through. A valid answer resolves the case through
 the one answer path, within the card's draw bound; a draw past the bound, a
 hand-up, two unreadable answers and a rung that does not answer within
 `waits.rung_answer` (35m by default) hand the case to the human, who sees

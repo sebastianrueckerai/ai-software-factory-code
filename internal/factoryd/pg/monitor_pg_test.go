@@ -63,12 +63,19 @@ type monitorForge struct {
 	// close
 	failComments int
 	failClose    bool
+	// branches answers each named branch of the bot's fork with its head;
+	// any other branch is missing
+	branches map[string]string
 }
 
 func (f *monitorForge) serve(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if head, ok := f.branches[strings.TrimPrefix(r.URL.Path, "/api/v1/repos/factory-agent/demo-app/branches/")]; ok {
+			fmt.Fprintf(w, `{"commit": {"id": %q}}`, head)
+			return
+		}
 		rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/issues/")
 		if !ok {
 			rest, ok = strings.CutPrefix(r.URL.Path, "/api/v1/repos/sf/r/issues/")
@@ -354,6 +361,40 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	}
 	if got := g.cursor(t); got != again {
 		t.Fatalf("cursor = %d, want at the task_status row %d, the newest it read", got, again)
+	}
+}
+
+// A flag that fires after a push whose checks have not reported opens its
+// case on the head of the card's branch, h2, the head its pull request
+// shows, and not on h1, the head the gates judged last: the case's facts
+// and rung 1's reads are of the work as it stands.
+func TestAFlagsCaseJudgesTheBranchHeadNotTheHeadJudgedLast(t *testing.T) {
+	g := newMonitorRig(t)
+	g.rung1Off()
+	ctx := context.Background()
+	g.card(t, "t1", 12, "running")
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET pr_number = 9 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	g.forge.branches = map[string]string{"factory/t1": "h2"}
+	tl := `{"step":"checks","time":"2026-11-04T10:00:00Z","commit":"h1","state":"failure"}
+{"step":"pushed","time":"2026-11-04T10:30:00Z","session":"s2","commit":"h2"}
+{"step":"checkin","time":"2026-11-04T11:00:00Z","moment":"session"}
+`
+	if err := g.objects.Put(ctx, "sessions/t1/timeline.jsonl", []byte(tl)); err != nil {
+		t.Fatal(err)
+	}
+	g.pass(t)
+	g.event(t, "t1", 12, EventSessionEnd, map[string]any{"session": "s3"}, monitorAt.Add(-time.Minute))
+	g.pass(t)
+	var cut []Case
+	for _, c := range g.flagCases(t, "t1") {
+		if c.Facts["flag"] == "checkin_cut" {
+			cut = append(cut, c)
+		}
+	}
+	if len(cut) != 1 || cut[0].Facts["head"] != "h2" {
+		t.Fatalf("checkin_cut cases = %+v, want one on the branch's head h2", cut)
 	}
 }
 

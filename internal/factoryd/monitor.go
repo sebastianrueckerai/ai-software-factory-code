@@ -210,8 +210,8 @@ func (m *Monitor) logged(ctx context.Context, taskID string) error {
 
 // card builds the digest, reads its flags, and opens a case for each flag
 // that is new for its state key: kind monitor_flag, problem the flag's
-// line, facts the digest's facts plus flag and state, state key
-// flag|state. A faced case with that key, at the human or ended, is the
+// line, facts the digest's facts plus flag and state read on the head of
+// the card's branch, state key flag|state. A faced case with that key, at the human or ended, is the
 // flag's case, so a standing flag costs no call and a flag rung 0 resolved
 // opens nothing twice. A case still open has no face yet: OpenTrip
 // finishes it. A live case whose flag no longer holds on its key is
@@ -283,7 +283,17 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
 		}
 	}
-	head := digestHeadCommit(d)
+	if len(opens) == 0 {
+		return errors.Join(errs...)
+	}
+	// a case judges the work as it stands: the head of the card's branch,
+	// which its pull request shows before any gate judged it; with no branch
+	// past the base, the head the gates judged last
+	head, err := m.Runner.workHead(ctx, taskID)
+	if err != nil {
+		return errors.Join(append(errs, fmt.Errorf("the head of the card's branch: %w", err))...)
+	}
+	head = cmp.Or(head, digestHeadCommit(d))
 	for _, o := range opens {
 		o.facts["flag"], o.facts["detail"], o.facts["state"], o.facts["digest"] = o.f.Name, o.f.Detail, o.state, d.Render()
 		in := TripInput{TaskID: taskID, Reason: MonitorFlagReason(o.f), Head: head, Kind: CaseMonitorFlag, StateKey: o.key, Extra: o.facts}
