@@ -13,7 +13,8 @@ routines:
     why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.
     schedule:
       - cron: "0 6 * * 1"
-    files: human
+    files: pull-request
+    pass: bump
     brief: routines/weekly-bump.md
     while_open: hold
     missed: file-once

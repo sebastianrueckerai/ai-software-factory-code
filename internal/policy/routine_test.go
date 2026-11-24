@@ -202,7 +202,8 @@ func TestTreeParsesRoutinesAndBriefs(t *testing.T) {
 	p.Routines = nil
 	tr.Projects["linkshort"] = p
 
-	if r, ok := tr.Routine("ai-software-factory-code", "weekly-bump"); !ok || r.Missed != MissedFileOnce {
+	// a project's own weekly bump is a pull-request routine of pass bump
+	if r, ok := tr.Routine("ai-software-factory-code", "weekly-bump"); !ok || r.Missed != MissedFileOnce || r.Files != FilesPullRequest || r.Pass != PassBump {
 		t.Fatalf("Routine(code, weekly-bump) = %+v %v", r, ok)
 	}
 	if r, ok := tr.Routine("", "template-pass"); !ok || r.Pass != PassTemplate || r.WhileOpenRule() != WhileOpenFold || r.TellRule() != TellQuiet {
@@ -215,7 +216,7 @@ func TestTreeParsesRoutinesAndBriefs(t *testing.T) {
 		t.Fatal("found a routine the project does not have")
 	}
 	brief, ok := tr.Brief("routines/weekly-bump.md")
-	if !ok || !strings.HasPrefix(brief, "The factory pins every outside input") || strings.Contains(brief, "filed by factoryd") {
+	if !ok || !strings.HasPrefix(brief, "The factory's lookup (`upstream-bump`) opened this card's pull request.") || strings.Contains(brief, "filed by factoryd") {
 		t.Fatalf("the brief: %v %q", ok, brief)
 	}
 	if _, ok := tr.Brief("routines/none.md"); ok {
@@ -351,23 +352,5 @@ func TestRoutineSchema(t *testing.T) {
 		if !slices.Equal(r.Required, []string{"name", "title", "schedule", "files"}) {
 			t.Errorf("%s: routine required = %v", file, r.Required)
 		}
-	}
-}
-
-// A project's own weekly bump is a pull-request routine with pass bump.
-func TestTreeTakesAProjectsBumpPass(t *testing.T) {
-	files := fixtureTree(t)
-	const code = "projects/ai-software-factory-code.yaml"
-	f := string(files[code])
-	if !strings.Contains(f, "    files: human\n    brief: routines/weekly-bump.md") {
-		t.Fatalf("%s lacks the weekly bump's files", code)
-	}
-	files[code] = []byte(strings.Replace(f, "    files: human\n    brief: routines/weekly-bump.md", "    files: pull-request\n    pass: bump\n    brief: routines/weekly-bump.md", 1))
-	tr, err := ParseTree(files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r, ok := tr.Routine("ai-software-factory-code", "weekly-bump"); !ok || r.Files != FilesPullRequest || r.Pass != PassBump {
-		t.Errorf("weekly-bump = %+v", r)
 	}
 }

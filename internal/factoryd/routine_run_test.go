@@ -128,6 +128,18 @@ func (c *codeIssues) handler(t *testing.T) http.HandlerFunc {
 // bump and the audit.
 const codeProject = "ai-software-factory-code"
 
+// humanBumpTree is the fixture tree with its weekly bump filed for a human
+// in place of its bump pass: the routine these tests run a human routine's
+// rules on.
+func humanBumpTree(t *testing.T) policy.Tree {
+	t.Helper()
+	tree := routineTree(t)
+	weekly, _ := tree.Routine(codeProject, "weekly-bump")
+	weekly.Files, weekly.Pass = policy.FilesHuman, ""
+	audit, _ := tree.Routine(codeProject, "audit")
+	return withRoutines(tree, codeProject, weekly, audit)
+}
+
 // routineRunner is a runner over tree with an empty store, the code
 // project in the maintenance process, the code repository's issues, a
 // recorder of the workflows it starts and of the events it records.
@@ -212,7 +224,7 @@ func onlyTask(t *testing.T, store *fakeStore) Task {
 // files the same under tell quiet. Hand-derived: no issue is filed.
 func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	onTime := time.Now().Truncate(time.Minute)
 	res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime})
 	if err != nil {
@@ -243,13 +255,12 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if title != "Update the fixed versions of outside software every week" || card.Why != "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update." {
 		t.Errorf("title %q, why %q, objective %q", title, card.Why, card.Objective)
 	}
-	if !strings.Contains(body, "```\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
-		!strings.Contains(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1\n\nChoices:\n- I did it\n- Have the factory do it\n- Not now\n\nThe factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.") {
+	if !strings.Contains(body, "```\n\nInfo: The factory's lookup (`upstream-bump`) opened this card's pull request.") ||
+		!strings.Contains(body, "that is not this card's.\n\nfiled by the factory · routine weekly-bump · run 1\n\nChoices:\n- I did it\n- Have the factory do it\n- Not now\n\nThe factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.") {
 		t.Errorf("body:\n%s", body)
 	}
-	for _, want := range []string{"upstream-images.txt", "DEBIAN_SNAPSHOT", "POSTGRESQL_VERSION", "LIBPQ_VERSION", "POSTGRESQL_COMMON_VERSION",
-		"apt-archive.postgresql.org", "go.mod's `toolchain`", "ADD --checksum", "upstream-files.txt", "scripts/upstream-images-test/test.sh",
-		"chart", "index.yaml", "ts-go template", "Talos", "Cilium"} {
+	for _, want := range []string{"upstream-images.txt", "upstream-files.txt", "go test ./internal/reproducible", "govulncheck",
+		"go get <module>@<fixed version>", "`patch`", "`hold`", "`with <name>`", "`hold with <name>`", "no registry and no release page"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card names no %s:\n%s", want, body)
 		}
@@ -274,9 +285,9 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Fatalf("the held row's poke %+v, %v, decider line %v; want no poke and the routine's line", m, ok, asked[0].Detail["decider_line"])
 	}
 
-	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
+	bump, _ := humanBumpTree(t).Routine(codeProject, "weekly-bump")
 	bump.Tell = policy.TellQuiet
-	r, _, _, _ = routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
+	r, _, _, _ = routineRunner(t, withRoutines(humanBumpTree(t), codeProject, bump))
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +307,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 // hand-over is the first issue, #71; the budget the fixture's default 2.
 func TestGoHandsTheCardOver(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, wf := routineRunner(t, routineTree(t))
+	r, store, issues, wf := routineRunner(t, humanBumpTree(t))
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +367,7 @@ func TestGoHandsTheCardOver(t *testing.T) {
 // the run's card has no issue, so the refusal names it by its id.
 func TestGoFilesOnceWhenTwoHandsRace(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +398,7 @@ func TestGoFilesOnceWhenTwoHandsRace(t *testing.T) {
 // single-paragraph card is its title and that line.
 func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +443,7 @@ func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 // with no routine's label.
 func TestGoRefusedAndAPlainCard(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, wf := routineRunner(t, routineTree(t))
+	r, store, issues, wf := routineRunner(t, humanBumpTree(t))
 	if err := store.CreateTask(ctx, Task{ID: "t-agent", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 		Repository: "sf/ai-software-factory-code", IssueNumber: 5, Source: SourceRoutine, RiskClass: "standard", BudgetEUR: 2,
 		Objective: "Audit\n\nRun the skill audit."}); err != nil {
@@ -492,9 +503,9 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed"}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
+			bump, _ := humanBumpTree(t).Routine(codeProject, "weekly-bump")
 			bump.WhileOpen, bump.Tell = tt.whileOpen, tt.tell
-			r, store, issues, _ := routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
+			r, store, issues, _ := routineRunner(t, withRoutines(humanBumpTree(t), codeProject, bump))
 			issues.older = map[int64]string{781: "Update the fixed versions of outside software every week"}
 			store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine}
 			last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"}, true)
@@ -531,7 +542,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 		})
 	}
 
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "done", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine,
 		FinishedAt: &onTime}
 	last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"}, true)
@@ -549,7 +560,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 // files.
 func TestRoutineRunSkipsOnce(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	if err := store.SetRoutineSkip(ctx, codeProject, "weekly-bump", true, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
@@ -584,14 +595,14 @@ func TestRoutineRunMissed(t *testing.T) {
 	ctx := context.Background()
 	due := time.Date(2026, 10, 12, 6, 0, 0, 0, berlin) // Mon 06:00, days before the test runs
 	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: due}
-	r, filing, _, _ := routineRunner(t, routineTree(t))
+	r, filing, _, _ := routineRunner(t, humanBumpTree(t))
 	if res, err := r.RoutineRun(ctx, in); err != nil || res.Outcome != "filed" || len(filing.tasks) != 1 {
 		t.Fatalf("file-once: %+v, %v, tasks %d", res, err, len(filing.tasks))
 	}
 
-	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
+	bump, _ := humanBumpTree(t).Routine(codeProject, "weekly-bump")
 	bump.Missed = policy.MissedSkip
-	r, store, issues, _ := routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
+	r, store, issues, _ := routineRunner(t, withRoutines(humanBumpTree(t), codeProject, bump))
 	res, err := r.RoutineRun(ctx, in)
 	if err != nil {
 		t.Fatal(err)
@@ -616,7 +627,7 @@ func TestRoutineRunMissed(t *testing.T) {
 // names the run. Tell inbox pokes the filing.
 func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 	ctx := context.Background()
-	tree := routineTree(t)
+	tree := humanBumpTree(t)
 	audit, _ := tree.Routine(codeProject, "audit")
 	audit.Brief = "routines/audit.md"
 	tree.Briefs = maps.Clone(tree.Briefs)
@@ -665,7 +676,7 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 // body is the brief, with no "Run the skill" line.
 func TestRoutineRunFilesAnAgentCardWithoutSkill(t *testing.T) {
 	ctx := context.Background()
-	tree := routineTree(t)
+	tree := humanBumpTree(t)
 	audit, _ := tree.Routine(codeProject, "audit")
 	audit.Skill = ""
 	audit.Brief = "routines/audit.md"
@@ -692,7 +703,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	no, yes := false, true
 	onTime := time.Now().Truncate(time.Minute)
 
-	r, store, issues, wf := routineRunner(t, routineTree(t))
+	r, store, issues, wf := routineRunner(t, humanBumpTree(t))
 	if err := store.SetRoutineNeedsMe(ctx, codeProject, "weekly-bump", &no, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
@@ -703,8 +714,8 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if card.Kind != "agent" || card.Status != "queued" || card.Track != policy.TrackDirect || card.Source != SourceRoutine || card.BudgetEUR != 2 || card.IssueNumber != 71 || card.Author != "" {
 		t.Fatalf("the flipped bump's card %+v", card)
 	}
-	if obj := card.Objective; !strings.HasPrefix(obj, "Update the fixed versions of outside software every week\n\nThe factory pins") ||
-		!strings.HasSuffix(obj, "does not start.") || strings.Contains(obj, "Run the skill") {
+	if obj := card.Objective; !strings.HasPrefix(obj, "Update the fixed versions of outside software every week\n\nThe factory's lookup") ||
+		!strings.HasSuffix(obj, "that is not this card's.") || strings.Contains(obj, "Run the skill") {
 		t.Errorf("objective:\n%s", obj)
 	}
 	if body := issues.issues[0]; strings.Contains(body, "Run the skill") || !strings.HasSuffix(body, "filed by the factory · routine weekly-bump · run 1") {
@@ -722,7 +733,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}
 
-	tree := routineTree(t)
+	tree := humanBumpTree(t)
 	audit, _ := tree.Routine(codeProject, "audit")
 	audit.Brief = "routines/audit.md"
 	tree.Briefs = maps.Clone(tree.Briefs)
@@ -753,7 +764,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	}
 
 	// the undo clears the override: the config's side files again
-	r, store, _, _ = routineRunner(t, routineTree(t))
+	r, store, _, _ = routineRunner(t, humanBumpTree(t))
 	for _, side := range []*bool{&no, nil} {
 		if err := store.SetRoutineNeedsMe(ctx, codeProject, "weekly-bump", side, "sebastian"); err != nil {
 			t.Fatal(err)
@@ -767,7 +778,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	}
 
 	// a pull-request routine ignores the toggle
-	r, store, _, _ = routineRunner(t, routineTree(t))
+	r, store, _, _ = routineRunner(t, humanBumpTree(t))
 	if err := store.SetRoutineNeedsMe(ctx, "", "template-pass", &no, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +804,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 // again.
 func TestRoutineRunRunsTheTemplatePass(t *testing.T) {
 	ctx := context.Background()
-	tree := routineTree(t)
+	tree := humanBumpTree(t)
 	tree.Document.Routines = slices.Clone(tree.Document.Routines)
 	tree.Document.Routines[0].Tell = policy.TellInbox
 	r, store, _, _ := routineRunner(t, tree)
@@ -852,7 +863,7 @@ func TestRoutineRunRunsTheTemplatePass(t *testing.T) {
 // run's row says it ran.
 func TestRoutineRunReports(t *testing.T) {
 	ctx := context.Background()
-	tree := routineTree(t)
+	tree := humanBumpTree(t)
 	tree.Briefs = maps.Clone(tree.Briefs)
 	tree.Briefs["routines/drift.md"] = "The reverts and the drift of the week.\n"
 	drift := policy.Routine{Name: "drift", Title: "Revert and drift report", Schedule: []policy.Trigger{{Cron: "0 7 * * 1"}},
@@ -886,7 +897,7 @@ func TestRoutineRunReports(t *testing.T) {
 // writes and pokes nothing.
 func TestRoutineRunTwiceIsOnce(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}
 	first, err := r.RoutineRun(ctx, in)
 	if err != nil {
@@ -906,7 +917,7 @@ func TestRoutineRunTwiceIsOnce(t *testing.T) {
 
 // A run of a routine the tree no longer holds ends gone and writes no run.
 func TestRoutineRunOfARoutineGone(t *testing.T) {
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	res, err := r.RoutineRun(context.Background(), RoutineRunInput{Project: codeProject, Routine: "nightly", Trigger: "cron", Due: time.Now()})
 	if err != nil {
 		t.Fatal(err)
@@ -924,7 +935,7 @@ func TestRoutineRunOfARoutineGone(t *testing.T) {
 // one card.
 func TestRoutineRunRetryFilesTheCardWhoseRowFailed(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	store.createFails = 1
 	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}
 	if _, err := r.RoutineRun(ctx, in); err == nil {
@@ -976,7 +987,7 @@ func TestTaskEndedFinishesTheRun(t *testing.T) {
 // files, and the cron run after it is the one skipped.
 func TestRoutineRunNowLeavesTheSkip(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, _ := routineRunner(t, routineTree(t))
+	r, store, _, _ := routineRunner(t, humanBumpTree(t))
 	if err := store.SetRoutineSkip(ctx, codeProject, "weekly-bump", true, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
@@ -999,7 +1010,7 @@ func TestRoutineRunNowLeavesTheSkip(t *testing.T) {
 // Skip once to the next run.
 func TestRoutineRunFailedKeepsTheSkip(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, _ := routineRunner(t, routineTree(t))
+	r, store, _, _ := routineRunner(t, humanBumpTree(t))
 	if err := store.SetRoutineSkip(ctx, codeProject, "weekly-bump", true, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
@@ -1039,7 +1050,7 @@ func TestRoutineRunFailedKeepsTheSkip(t *testing.T) {
 // Go refuses with the state and files nothing.
 func TestGoRefusedOnAProjectWithoutAgents(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, store, issues, _ := routineRunner(t, humanBumpTree(t))
 	store.projects[0].Agents = policy.AgentsNone
 	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
 		IssueNumber: 6, Source: "webhook", RiskClass: "standard", Objective: "Tidy the docs"}); err != nil {
@@ -1065,7 +1076,7 @@ func TestGoRefusedOnAProjectWithoutAgents(t *testing.T) {
 // with no long wait writes none.
 func TestRoutineRunLongWaitsListsCardsPastADay(t *testing.T) {
 	ctx := context.Background()
-	tree := routineTree(t)
+	tree := humanBumpTree(t)
 	tree.Document.TimeZone = "UTC"
 	waits := policy.Routine{Name: "long-waits", Title: "Cards waiting on a human", Schedule: []policy.Trigger{{Cron: "0 8 * * *"}},
 		Files: policy.FilesReport, Pass: policy.PassLongWaits}

@@ -107,13 +107,8 @@ type bumpRun struct {
 
 func newBumpRun(t *testing.T, res bump.Result) *bumpRun {
 	t.Helper()
-	tree := routineTree(t)
-	weekly, _ := tree.Routine(codeProject, "weekly-bump")
-	weekly.Files, weekly.Pass = policy.FilesPullRequest, policy.PassBump
-	tree.Briefs = maps.Clone(tree.Briefs)
-	tree.Briefs[weekly.Brief] = "A check of this pull request failed: fix what it names.\n"
 	b := &bumpRun{}
-	b.r, b.store, b.issues, b.wf = routineRunner(t, withRoutines(tree, codeProject, weekly))
+	b.r, b.store, b.issues, b.wf = routineRunner(t, routineTree(t))
 	b.forge = &bumpForge{log: &b.log, main: map[string]string{}}
 	for _, p := range slices.Concat(bump.Files, upstreamScripts) {
 		b.forge.main[p] = "main's " + p + "\n"
@@ -157,10 +152,11 @@ func TestRoutineRunBumpFilesTheCardOfItsPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := onlyTask(t, b.store)
+	brief, _ := routineTree(t).Brief("routines/weekly-bump.md")
 	// a link to a host the repository's text may not name is defanged
 	text := strings.Replace(strings.TrimSpace(bumped.Report.Text()), "https://ghcr.io/", "hxxps://ghcr[.]io/", 1)
 	if card.Kind != "agent" || card.Source != SourceRoutine || card.PRNumber != 2400 || card.IssueNumber != 71 || card.Track != policy.TrackDirect ||
-		card.Objective != "Update the fixed versions of outside software every week\n\nA check of this pull request failed: fix what it names.\n\n"+text {
+		card.Objective != "Update the fixed versions of outside software every week\n\n"+strings.TrimSpace(brief)+"\n\n"+text {
 		t.Fatalf("card %+v", card)
 	}
 	if want := (RoutineRunResult{Outcome: "filed", TaskID: card.ID, Issue: 71}); res != want {
