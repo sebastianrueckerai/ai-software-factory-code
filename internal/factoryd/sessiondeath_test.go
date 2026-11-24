@@ -433,6 +433,53 @@ func TestAReportedEndStaysTheWorkers(t *testing.T) {
 	}
 }
 
+// A stop factoryd sent for a decision keeps the decision's outcome, though
+// a memory guard's kill line names the pod inside the stop: the record
+// keeps its platform facts for the tool, and the next session's lines say
+// nothing of an end that does not count.
+func TestADecidedStopKeepsItsDecision(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ask     *AgentAsk
+		outcome SessionOutcome
+	}{
+		"a person's replan":    {ask: &AgentAsk{Kind: AskReplan, Reason: "replanned by ana: too wide"}, outcome: OutcomeReplan},
+		"the agent's escalate": {ask: &AgentAsk{Kind: AskEscalation, Question: "Which API?", Reason: "two APIs fit"}, outcome: OutcomeEscalate},
+		"the wall clock":       {outcome: OutcomeWallClock},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t5k", nil)
+			g.kube.keepDeleted = true
+			g.r.stopWait = 5 * time.Second
+			at := time.Now().Add(time.Second)
+			g.kernel.kills = func(int) []KernelKill {
+				return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: at, Seq: 7}}
+			}
+			if tc.ask == nil {
+				setDetectors(g.r, map[string]int{policy.DetectorNoProgress: 3})
+				setLimits(g.r, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+			} else {
+				go func() {
+					for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+						if err := g.r.EscalateSession(context.Background(), "t5k", *tc.ask); !errors.Is(err, ErrNoLiveSession) {
+							return
+						}
+					}
+				}()
+			}
+			res := g.run(t, modelCall+sigtermLogs)
+			if res.Outcome != tc.outcome || res.Death == nil || res.Death.Class != DeathPlatform || res.Death.Rule != RuleGuardKill {
+				t.Fatalf("result = %q, death %+v; want %q with the guard kill on the record", res.Outcome, res.Death, tc.outcome)
+			}
+			if rec := g.stored(t, "t5k", res.SessionID); rec.Class != DeathPlatform || rec.Rule != RuleGuardKill {
+				t.Fatalf("stored = %+v, want the guard kill for the tool", rec)
+			}
+			if told := strings.Join(slices.Concat(res.Findings, res.Death.Lines), "\n"); strings.Contains(told, "does not count") {
+				t.Fatalf("findings and lines = %q, want nothing of an end that does not count", told)
+			}
+		})
+	}
+}
+
 // takenStore answers the live row as a newer attempt's.
 type takenStore struct{ Store }
 

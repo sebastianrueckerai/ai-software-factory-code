@@ -88,21 +88,25 @@ type DeathFacts struct {
 }
 
 type DeathRecord struct {
-	Class       DeathClass       `json:"class"`
-	Rule        DeathRule        `json:"rule"`
-	At          time.Time        `json:"at"`
-	Started     time.Time        `json:"started,omitzero"`
-	Node        string           `json:"node,omitempty"`
-	PodUID      string           `json:"pod_uid,omitempty"`
-	ExitCode    int32            `json:"exit_code,omitempty"`
-	Reason      string           `json:"reason,omitempty"`
-	Container   string           `json:"container,omitempty"`
-	Condition   string           `json:"condition,omitempty"`
-	Resource    string           `json:"resource,omitempty"`
-	Limit       string           `json:"limit,omitempty"`
-	KillSource  string           `json:"kill_source,omitempty"`
-	LastCommand string           `json:"last_command,omitempty"`
-	Restarts    []ServiceRestart `json:"restarts,omitempty"`
+	Class       DeathClass `json:"class"`
+	Rule        DeathRule  `json:"rule"`
+	At          time.Time  `json:"at"`
+	Started     time.Time  `json:"started,omitzero"`
+	Node        string     `json:"node,omitempty"`
+	PodUID      string     `json:"pod_uid,omitempty"`
+	ExitCode    int32      `json:"exit_code,omitempty"`
+	Reason      string     `json:"reason,omitempty"`
+	Container   string     `json:"container,omitempty"`
+	Condition   string     `json:"condition,omitempty"`
+	Resource    string     `json:"resource,omitempty"`
+	Limit       string     `json:"limit,omitempty"`
+	KillSource  string     `json:"kill_source,omitempty"`
+	LastCommand string     `json:"last_command,omitempty"`
+	// Stopped: factoryd had sent the pod its stop for a decision before
+	// the end was read. The end is the decision's, not free, whatever its
+	// class.
+	Stopped  bool             `json:"stopped,omitempty"`
+	Restarts []ServiceRestart `json:"restarts,omitempty"`
 	// Events hold no message: the record holds no raw message text
 	Events []PodEvent `json:"events,omitempty"`
 	Lines  []string   `json:"lines,omitempty"`
@@ -116,7 +120,8 @@ var (
 // Classify names who ended a session, by the first rule that holds. A
 // worker that reported its own end ended it: no rule applies.
 func Classify(f DeathFacts) DeathRecord {
-	r := DeathRecord{Class: DeathUnknown, Rule: RuleNone, At: f.Ended, Node: f.Pod.Node, PodUID: f.Pod.UID, LastCommand: f.LastCommand}
+	r := DeathRecord{Class: DeathUnknown, Rule: RuleNone, At: f.Ended, Node: f.Pod.Node, PodUID: f.Pod.UID, LastCommand: f.LastCommand,
+		Stopped: f.StoppedByFactory}
 	failed := slices.IndexFunc(f.Pod.Containers, ContainerState.failed)
 	if failed >= 0 {
 		c := f.Pod.Containers[failed]
@@ -285,6 +290,10 @@ func classLine(r DeathRecord, lastPush string) string {
 	at := clock(r.At)
 	switch r.Class {
 	case DeathPlatform:
+		// a stop factoryd sent keeps its decision: the end counted
+		if r.Stopped {
+			return ""
+		}
 		node, on := "Its node", ""
 		if r.Node != "" {
 			node, on = "The node "+r.Node, " on "+r.Node
