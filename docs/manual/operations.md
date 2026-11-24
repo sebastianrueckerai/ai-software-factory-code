@@ -9,13 +9,14 @@ Build and test machinery, the pull-request runner, telemetry, factoryd's own net
 
 `make test` runs `scripts/pg-test.sh go test -race -p 1 ./...`, the
 suite `ci.yml` runs on main, and `bash check` runs it after vet, gofmt and
-gosec (the runner image's `GOSEC_VERSION`). `scripts/gosec.sh` runs gosec
-the one way `bash check`, `ci.yml` and `pr.yml` run it: from a short link
-to the checkout, so go/packages never splits a package's list of file
-paths past 16,383 characters into parts that miss each other's names, and
-without `-quiet`, so a type error fails every run. It refuses a package
-whose list would pass that limit from the link: split the package. `pr.yml`
-runs the base's copy of the script. `bash check static` stops
+gosec (the runner image's `GOSEC_VERSION`). `.forgejo/gosec.sh` runs gosec
+the one way `bash check`, `ci.yml` and `pr.yml` run it, over the packages
+`go list ./...` names: from a short link to the checkout, so go/packages
+never splits a package's list of file paths past 16,383 characters into
+parts that miss each other's names, and without `-quiet`, so a type error
+fails every run. It refuses a package whose list would pass that limit
+from the link: split the package. It lives in `.forgejo/`, which no agent
+branch may change. `bash check static` stops
 before the tests. `bash check changed`, the run an agent makes before it
 ends, tests only the packages that `scripts/affected-packages.sh` selects
 for the change since `origin/HEAD`, without the race detector and two at a

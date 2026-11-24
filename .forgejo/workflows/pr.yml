@@ -94,20 +94,9 @@ jobs:
     runs-on: pr-untrusted
     steps:
       - uses: actions/checkout@v4
-      # the base's copy of scripts/gosec.sh, the one way bash check and
-      # main's CI run gosec: a pull request must not be able to edit the
-      # code that runs its own security scan. A base without the script
-      # runs the branch's copy.
-      - name: gosec
-        run: |
-          set -euo pipefail
-          base=${{ github.event.pull_request.base.sha }}
-          script=$(mktemp)
-          if ! { git fetch -q --depth=1 origin "$base" && git show "$base:scripts/gosec.sh" >"$script"; }; then
-            echo "cannot read the base's scripts/gosec.sh: the branch's copy runs"
-            cp scripts/gosec.sh "$script"
-          fi
-          bash "$script" gosec
+      # the one way bash check and main's CI run gosec; .forgejo is closed
+      # to agent edits, so a pull request's copy is its base's
+      - run: .forgejo/gosec.sh gosec
       # the runner image's copy of vuln.go.dev (Dockerfile.runner), which
       # the job's egress cannot reach. The image ships the binary in
       # /usr/local/bin; a live image older than that leaves it only under

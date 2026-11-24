@@ -8,10 +8,10 @@
 # sandbox image's binary, else `go run` builds Dockerfile.sandbox's
 # `GOTESTSUM_VERSION`.
 # `bash check static` stops before the tests: the pre-push hook's gate
-# (.githooks/pre-push). gosec is the runner image's
-# version, run by scripts/gosec.sh as CI runs it. govulncheck stays CI's: it reads the runner image's copy of
-# its database, which no sandbox or clone holds, and a finding reaches
-# the agent as the failing job's log lines.
+# (.githooks/pre-push). gosec is the runner image's version, run by
+# .forgejo/gosec.sh as CI runs it. govulncheck stays CI's: it reads the
+# runner image's copy of its database, which no sandbox or clone holds,
+# and a finding reaches the agent as the failing job's log lines.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -43,7 +43,7 @@ fi
 go vet ./...
 unformatted=$(gofmt -l .)
 if [ -n "$unformatted" ]; then echo "gofmt -w these files:"; echo "$unformatted"; exit 1; fi
-scripts/gosec.sh go run "github.com/securego/gosec/v2/cmd/gosec@v$(sed -n 's/^ARG GOSEC_VERSION=//p' Dockerfile.runner)"
+.forgejo/gosec.sh go run "github.com/securego/gosec/v2/cmd/gosec@v$(sed -n 's/^ARG GOSEC_VERSION=//p' Dockerfile.runner)"
 [ "${1:-}" = static ] && exit 0
 if [ "${1:-}" = changed ]; then
   base=$(git merge-base HEAD refs/remotes/origin/HEAD) || {
