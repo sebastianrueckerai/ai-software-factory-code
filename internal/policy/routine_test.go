@@ -63,7 +63,7 @@ func TestRoutineValidate(t *testing.T) {
 	}{
 		{Routine{Name: "Bad Name", Title: "t", Files: FilesHuman, Schedule: merges}, `routine "Bad Name": the name: lowercase letters, digits and dashes`},
 		{Routine{Name: "a", Title: "t", Files: "weekly", Schedule: merges}, `files is "weekly", not one of [human agent pull-request report]`},
-		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges}, "a pull-request routine names its pass, template"},
+		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges}, "a pull-request routine names its pass, template or bump"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman}, "no schedule"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1, Cron: "0 6 * * 1"}}}, "a trigger is one of cron, merges or on"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{}}}, "a trigger is one of cron, merges or on"},
@@ -83,7 +83,9 @@ func TestRoutineValidate(t *testing.T) {
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Skill: "audit"}, "skill is an agent routine's, this one files human"},
 		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, Pass: PassTemplate}, "pass is a pull-request or report routine's, this one files agent"},
 		{Routine{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Pass: PassTemplate}, `a report routine's pass is long-waits, not "template"`},
-		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassLongWaits}, "a pull-request routine names its pass, template"},
+		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassLongWaits}, "a pull-request routine names its pass, template or bump"},
+		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassBump, WhileOpen: WhileOpenFold}, "while_open fold is the template pass's, which folds into its open pull request: the bump files a card each run, so hold or file"},
+		{Routine{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Pass: PassBump}, `a report routine's pass is long-waits, not "bump"`},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "docs/a.md"}, `brief "docs/a.md": a file routines/<name>.md`},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "routines/a.txt"}, `brief "routines/a.txt": a file routines/<name>.md`},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Why: strings.Repeat("a", 161)}, "the why: one sentence on one line, at most 160 characters"},
@@ -97,6 +99,7 @@ func TestRoutineValidate(t *testing.T) {
 		{Name: "a", Title: "t", Files: FilesAgent, Schedule: merges},
 		{Name: "weekly-bump", Title: "t", Files: FilesAgent, Schedule: []Trigger{{Cron: "0 6 * * 1"}}},
 		{Name: "a", Title: "t", Files: FilesPullRequest, Pass: PassTemplate, Schedule: merges, WhileOpen: WhileOpenFold, Tell: TellQuiet},
+		{Name: "weekly-bump", Title: "t", Files: FilesPullRequest, Pass: PassBump, Schedule: []Trigger{{Cron: "0 6 * * 1"}}, WhileOpen: WhileOpenHold},
 		{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Tell: TellInbox},
 		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 3 1-7 * 0"}}},
 		{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Why: strings.Repeat("a", 160)},
@@ -263,8 +266,13 @@ func TestTreeRefusesRoutines(t *testing.T) {
 			`policy.yaml: policy: routine "template-pass": every 5 merges counts one project's work, a trigger of a project's own routine`},
 		"a factory routine on a push to main": {policyFile, "on: configuration-version", "on: push-main",
 			`policy.yaml: policy: routine "template-pass": on each push to main counts one project's work, a trigger of a project's own routine`},
-		"a project's own pull-request routine": {code, "routines:\n", "routines:\n  - {name: templates, title: t, schedule: [{cron: \"0 * * * *\"}], files: pull-request, pass: template}\n",
-			`projects/ai-software-factory-code.yaml: project ai-software-factory-code: routine "templates": files pull-request, a pass over every project, which policy.yaml holds`},
+		"a project's own template pass": {code, "routines:\n", "routines:\n  - {name: templates, title: t, schedule: [{cron: \"0 * * * *\"}], files: pull-request, pass: template}\n",
+			`projects/ai-software-factory-code.yaml: project ai-software-factory-code: routine "templates": pass template is a pass over every project, which policy.yaml holds: a project's own pull-request routine is pass bump`},
+		"a bump on a project without agents": {"projects/ai-software-factory-infra.yaml", "agents: none",
+			"agents: none\nroutines:\n  - {name: bump, title: t, schedule: [{cron: \"0 6 * * 1\"}], files: pull-request, pass: bump}",
+			`projects/ai-software-factory-infra.yaml: project ai-software-factory-infra: routine "bump": pass bump, and the project's agents are none, so no session would answer its pull request's failing checks`},
+		"a bump in policy.yaml": {policyFile, "pass: template\n    while_open: fold", "pass: bump\n    while_open: hold",
+			`policy.yaml: policy: routine "template-pass": a routine of policy.yaml is a pass over the projects, files pull-request with pass template`},
 		"an agent routine on a project without agents": {"projects/ai-software-factory-infra.yaml", "agents: none",
 			"agents: none\nroutines:\n  - {name: audit, title: t, schedule: [{merges: 20}], files: agent, skill: audit}",
 			`projects/ai-software-factory-infra.yaml: project ai-software-factory-infra: routine "audit": files agent, and the project's agents are none, so its card would never start`},
@@ -328,7 +336,7 @@ func TestRoutineSchema(t *testing.T) {
 		r := s.Properties["routines"].Items
 		for key, want := range map[string][]any{
 			"files":      {"human", "agent", "pull-request", "report"},
-			"pass":       {"template", "long-waits"},
+			"pass":       {"template", "long-waits", "bump"},
 			"while_open": {"hold", "fold", "file"},
 			"missed":     {"file-once", "skip"},
 			"tell":       {"inbox", "quiet"},
@@ -343,5 +351,23 @@ func TestRoutineSchema(t *testing.T) {
 		if !slices.Equal(r.Required, []string{"name", "title", "schedule", "files"}) {
 			t.Errorf("%s: routine required = %v", file, r.Required)
 		}
+	}
+}
+
+// A project's own weekly bump is a pull-request routine with pass bump.
+func TestTreeTakesAProjectsBumpPass(t *testing.T) {
+	files := fixtureTree(t)
+	const code = "projects/ai-software-factory-code.yaml"
+	f := string(files[code])
+	if !strings.Contains(f, "    files: human\n    brief: routines/weekly-bump.md") {
+		t.Fatalf("%s lacks the weekly bump's files", code)
+	}
+	files[code] = []byte(strings.Replace(f, "    files: human\n    brief: routines/weekly-bump.md", "    files: pull-request\n    pass: bump\n    brief: routines/weekly-bump.md", 1))
+	tr, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := tr.Routine("ai-software-factory-code", "weekly-bump"); !ok || r.Files != FilesPullRequest || r.Pass != PassBump {
+		t.Errorf("weekly-bump = %+v", r)
 	}
 }

@@ -1447,8 +1447,8 @@ func (d Document) Validate() error {
 		if err := r.Validate("policy"); err != nil {
 			return err
 		}
-		if r.Files != FilesPullRequest {
-			return fmt.Errorf("policy: routine %q: a routine of policy.yaml is a pass over the projects, files pull-request, and a project's own routine goes in its project file", r.Name)
+		if r.Files != FilesPullRequest || r.Pass != PassTemplate {
+			return fmt.Errorf("policy: routine %q: a routine of policy.yaml is a pass over the projects, files pull-request with pass template, and a project's own routine goes in its project file", r.Name)
 		}
 		for _, t := range r.Schedule {
 			if t.Merges != 0 || t.On == OnPushMain {

@@ -49,8 +49,10 @@ type Routine struct {
 	Brief string `yaml:"brief,omitempty" json:"brief,omitempty"`
 	// Skill is the skill an agent routine's card runs.
 	Skill string `yaml:"skill,omitempty" json:"skill,omitempty"`
-	// Pass names the pass a pull-request routine runs, template, or the
-	// list a report routine builds, long-waits.
+	// Pass names the pass a pull-request routine runs: template,
+	// policy.yaml's over every project, or bump, a project's own lookup of
+	// the newest releases of its pinned outside inputs, whose pull request
+	// is an agent card; or the list a report routine builds, long-waits.
 	Pass string `yaml:"pass,omitempty" json:"pass,omitempty"`
 	// WhileOpen says what a run does while the last card is open: hold
 	// (the default) skips the run, file opens another, and fold, a
@@ -80,6 +82,7 @@ const (
 
 	PassTemplate  = "template"
 	PassLongWaits = "long-waits"
+	PassBump      = "bump"
 
 	WhileOpenHold  = "hold"
 	WhileOpenFold  = "fold"
@@ -94,7 +97,7 @@ const (
 var (
 	RoutineFiles    = []string{FilesHuman, FilesAgent, FilesPullRequest, FilesReport}
 	RoutineEvents   = []string{OnConfigurationVersion, OnPushMain}
-	RoutinePasses   = []string{PassTemplate, PassLongWaits}
+	RoutinePasses   = []string{PassTemplate, PassLongWaits, PassBump}
 	WhileOpenValues = []string{WhileOpenHold, WhileOpenFold, WhileOpenFile}
 	MissedValues    = []string{MissedFileOnce, MissedSkip}
 	TellValues      = []string{TellInbox, TellQuiet}
@@ -134,8 +137,8 @@ func (r Routine) Validate(where string) error {
 		// an agent routine may name a skill or run on its brief alone:
 		// the card body is the brief, and a named skill prefixes it
 	case FilesPullRequest:
-		if r.Pass != PassTemplate {
-			return fmt.Errorf("%s: a pull-request routine names its pass, template", at)
+		if r.Pass != PassTemplate && r.Pass != PassBump {
+			return fmt.Errorf("%s: a pull-request routine names its pass, template or bump", at)
 		}
 	default:
 		return fmt.Errorf("%s: files is %q, not one of %v", at, r.Files, RoutineFiles)
@@ -189,6 +192,8 @@ func (r Routine) Validate(where string) error {
 	switch {
 	case r.WhileOpen == WhileOpenFold && r.Files != FilesPullRequest:
 		return fmt.Errorf("%s: while_open fold is a pull-request routine's, whose pass folds into its open pull request: this one files %s, so hold or file", at, r.Files)
+	case r.WhileOpen == WhileOpenFold && r.Pass == PassBump:
+		return fmt.Errorf("%s: while_open fold is the template pass's, which folds into its open pull request: the bump files a card each run, so hold or file", at)
 	case r.Files == FilesReport && r.Tell == TellQuiet:
 		return fmt.Errorf("%s: a report routine with tell quiet tells nobody: its report is the poke, so tell inbox", at)
 	}

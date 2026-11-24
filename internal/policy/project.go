@@ -774,8 +774,10 @@ func (p ProjectConfig) Validate(name string) error {
 	for i, r := range p.Routines {
 		errs = append(errs, r.Validate("project "+name))
 		switch {
-		case r.Files == FilesPullRequest:
-			bad("routine %q: files pull-request, a pass over every project, which policy.yaml holds", r.Name)
+		case r.Files == FilesPullRequest && r.Pass != PassBump:
+			bad("routine %q: pass %s is a pass over every project, which policy.yaml holds: a project's own pull-request routine is pass bump", r.Name, r.Pass)
+		case r.Files == FilesPullRequest && p.Agents == AgentsNone:
+			bad("routine %q: pass bump, and the project's agents are none, so no session would answer its pull request's failing checks", r.Name)
 		case r.Files == FilesAgent && p.Agents == AgentsNone:
 			bad("routine %q: files agent, and the project's agents are none, so its card would never start", r.Name)
 		}

@@ -267,6 +267,12 @@ func (k *copyPodKube) NewestPodEvent(ctx context.Context, namespace, name string
 	return k.event, nil
 }
 
+func (k *copyPodKube) PodLog(ctx context.Context, namespace, name string) (io.ReadCloser, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return io.NopCloser(strings.NewReader(k.logs[namespace])), nil
+}
+
 func (k *copyPodKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"path"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/bump"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
@@ -44,14 +46,60 @@ const (
 	upstreamTokenSweepEvery = 10 * time.Minute
 )
 
-// How long a copy pod may run, how long its start may take on top of that,
-// and the age past which a namespace or token of a run is its leftover: the
-// longest run plus 5 minutes. Variables so a test shortens them.
+// How long a copy pod and a bump pod may run, how long its start may take
+// on top of that, and the age past which a namespace or token of a run is
+// its leftover: the longest run plus 5 minutes. Variables so a test
+// shortens them.
 var (
 	upstreamDeadline   = 25 * time.Minute
+	bumpDeadline       = 15 * time.Minute
 	upstreamStartGrace = 2 * time.Minute
 	upstreamSweepSlack = 5 * time.Minute
 )
+
+// The bump pod: its name, and how much of its log factoryd reads, which
+// ends with the result (the files are about 80 KB).
+const (
+	bumpPodName  = "upstream-bump"
+	bumpLogBytes = 16 << 20
+)
+
+// bumpFQDNs are the hosts the bump pod reaches: the copy's, whose
+// registries and release downloads the lookup reads too, and the makers'
+// APIs it lists versions from (GitHub's, the PGDG archive's, go.dev's
+// downloads and where they redirect), and the Go checksum database, which
+// go get asks.
+var bumpFQDNs = append(slices.Clone(upstreamFQDNs),
+	map[string]any{"matchName": "api.github.com"},
+	map[string]any{"matchName": "apt.postgresql.org"},
+	map[string]any{"matchName": "go.dev"},
+	map[string]any{"matchName": "dl.google.com"},
+	map[string]any{"matchName": "sum.golang.org"},
+)
+
+// bumpProgram is the bump pod's program: main's files at their repository
+// paths in a directory of its own, then upstream-bump, which prints its
+// result last.
+var bumpProgram = func() string {
+	var b strings.Builder
+	b.WriteString("set -euo pipefail\nin=" + upstreamSecretDir + "\ncd \"$(mktemp -d)\"\nmkdir -p factory opencode-plugin\n")
+	for _, p := range bump.Files {
+		fmt.Fprintf(&b, "cp \"$in/%s\" %s\n", path.Base(p), p)
+	}
+	b.WriteString("exec upstream-bump -result\n")
+	return b.String()
+}()
+
+// bumpEgressSpec admits the bump pod to bumpFQDNs by name on 443, and DNS
+// for those names: no store, no cluster.
+func bumpEgressSpec() map[string]any {
+	return map[string]any{
+		"endpointSelector": map[string]any{
+			"matchLabels": map[string]string{"app.kubernetes.io/name": bumpPodName},
+		},
+		"egress": []any{fqdnEgress(bumpFQDNs), dnsEgress(bumpFQDNs)},
+	}
+}
 
 func upstreamSweepAge() time.Duration {
 	return upstreamDeadline + upstreamStartGrace + upstreamSweepSlack
@@ -162,11 +210,68 @@ func (u *UpstreamPod) Copy(ctx context.Context, files map[string][]byte) ([]stri
 	if err != nil {
 		return findings, u.scrubbed(err, "")
 	}
-	got, token, err := u.run(ctx, files, admin)
+	var got []string
+	job := podRun{pod: upstreamPodName, container: "copy", program: upstreamProgram, files: files, login: true,
+		egress: upstreamEgressSpec(u.StoreHost), env: []any{map[string]any{"name": "UPSTREAM_STORE", "value": u.StoreHost + "/" + upstreamOrg}},
+		deadline: upstreamDeadline}
+	token, err := u.run(ctx, job, admin, func(ns, phase string, exit int32) error {
+		tail, err := u.Kube.PodLogTail(ctx, ns, upstreamPodName, upstreamTailLines)
+		if err != nil {
+			return fmt.Errorf("read the copy pod's log (phase %s, exit %d): %w", phase, exit, err)
+		}
+		for _, l := range strings.Split(tail, "\n") {
+			if f, ok := strings.CutPrefix(l, upstreamFinding); ok {
+				got = append(got, f)
+			}
+		}
+		// a script exits 1 when it could not copy a line, which it then
+		// names; a failure that names none is the pod's own
+		if phase != "Succeeded" && len(got) == 0 {
+			return fmt.Errorf("the upstream copy pod %s with exit %d: %s%s", strings.ToLower(phase), exit,
+				strings.Join(lastLines(tail, upstreamReasonLines), " | "), u.state(ctx, ns, upstreamPodName))
+		}
+		return nil
+	})
+	if err != nil {
+		got = nil
+	}
 	for _, f := range got {
 		findings = append(findings, u.scrub(f, token))
 	}
 	return findings, u.scrubbed(err, token)
+}
+
+// Bump runs the weekly bump's lookup, upstream-bump in the runner image,
+// over files, each path of bump.Files with main's bytes, and returns what
+// it hands back: the files it changed and the pull request's text. The
+// pod holds no login, since the lookup writes nothing to the store, and
+// reaches the makers' hosts of bumpFQDNs alone.
+func (u *UpstreamPod) Bump(ctx context.Context, files map[string][]byte) (bump.Result, error) {
+	var res bump.Result
+	job := podRun{pod: bumpPodName, container: "bump", program: bumpProgram, files: files, egress: bumpEgressSpec(),
+		env: []any{
+			map[string]any{"name": "GOTOOLCHAIN", "value": "local"},
+			map[string]any{"name": "GOPROXY", "value": "https://proxy.golang.org"},
+		},
+		deadline: bumpDeadline}
+	_, err := u.run(ctx, job, AdminAuth{}, func(ns, phase string, exit int32) error {
+		rc, err := u.Kube.PodLog(ctx, ns, bumpPodName)
+		if err != nil {
+			return fmt.Errorf("read the bump pod's log (phase %s, exit %d): %w", phase, exit, err)
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(io.LimitReader(rc, bumpLogBytes))
+		if err != nil {
+			return fmt.Errorf("read the bump pod's log (phase %s, exit %d): %w", phase, exit, err)
+		}
+		if phase != "Succeeded" {
+			return fmt.Errorf("the bump pod %s with exit %d: %s%s", strings.ToLower(phase), exit,
+				strings.Join(lastLines(string(b), upstreamReasonLines), " | "), u.state(ctx, ns, bumpPodName))
+		}
+		res, err = bump.DecodeResult(string(b))
+		return err
+	})
+	return res, u.scrubbed(err, "")
 }
 
 func (u *UpstreamPod) scrubbed(err error, secret string) error {
@@ -184,11 +289,24 @@ func (u *UpstreamPod) scrub(s, secret string) string {
 	return redact.New(secret).String(sc.String(s))
 }
 
-// run returns the pod's findings and the token it minted, for the caller's
-// scrub.
-func (u *UpstreamPod) run(ctx context.Context, files map[string][]byte, admin AdminAuth) (findings []string, token string, err error) {
+// podRun is one run of a pod in the runner image: its name, program and
+// the files it reads, the egress its policy admits, its env and its bound,
+// and whether it holds a package token of the store.
+type podRun struct {
+	pod, container, program string
+	files                   map[string][]byte
+	login                   bool
+	egress                  map[string]any
+	env                     []any
+	deadline                time.Duration
+}
+
+// run runs job in a namespace of its own and hands the ended pod to read,
+// before the namespace goes. It returns the token it minted, for the
+// caller's scrub.
+func (u *UpstreamPod) run(ctx context.Context, job podRun, admin AdminAuth, read func(ns, phase string, exit int32) error) (token string, err error) {
 	if !strings.Contains(u.RunnerImage, "@sha256:") {
-		return nil, "", fmt.Errorf("the CI runner image %q carries no digest: pin CI_RUNNER_IMAGE as name@sha256:<digest>, which a roll writes", u.RunnerImage)
+		return "", fmt.Errorf("the CI runner image %q carries no digest: pin CI_RUNNER_IMAGE as name@sha256:<digest>, which a roll writes", u.RunnerImage)
 	}
 	u.Sweep(ctx, true)
 	suffix := runSuffix()
@@ -201,7 +319,7 @@ func (u *UpstreamPod) run(ctx context.Context, files map[string][]byte, admin Ad
 	// the namespace comes before the token: a token with no live namespace is
 	// a run's leftover, which the sweep revokes at once
 	if err := createFactorydNamespace(ctx, u.Kube, u.Namespace, ns, labels); err != nil {
-		return nil, "", err
+		return "", err
 	}
 	minted := false
 	// the run's end, or its context's, takes the token and the namespace,
@@ -220,27 +338,30 @@ func (u *UpstreamPod) run(ctx context.Context, files map[string][]byte, admin Ad
 			log.Printf("upstream copy: delete namespace %s: %v", ns, err)
 		}
 	}()
-	if err := u.ensureUser(ctx, admin); err != nil {
-		return nil, "", err
+	data := map[string]string{}
+	for p, b := range job.files {
+		data[path.Base(p)] = string(b)
 	}
-	token, err = u.Forgejo.AdminMintToken(ctx, admin, UpstreamUser, tokenName, []string{"write:package"}, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("mint the copy's package token: %w", err)
+	if job.login {
+		if err := u.ensureUser(ctx, admin); err != nil {
+			return "", err
+		}
+		token, err = u.Forgejo.AdminMintToken(ctx, admin, UpstreamUser, tokenName, []string{"write:package"}, nil)
+		if err != nil {
+			return "", fmt.Errorf("mint the copy's package token: %w", err)
+		}
+		minted = true
+		data["user"], data["password"] = UpstreamUser, token
 	}
-	minted = true
 	steps := []ciSetupStep{
 		{"egress policy", func() error {
-			return u.Kube.CreateCiliumNetworkPolicy(ctx, ns, "upstream-egress", upstreamEgressSpec(u.StoreHost))
+			return u.Kube.CreateCiliumNetworkPolicy(ctx, ns, "upstream-egress", job.egress)
 		}},
 		// the token reaches the pod as a file of a Secret that dies with its
 		// namespace, as the CI runner's registration token does, never in the
-		// stored pod spec or an env value; the files ride beside it, 57 KB of
-		// the 1 MiB a Secret holds
+		// stored pod spec or an env value; the files ride beside it, some
+		// 80 KB of the 1 MiB a Secret holds
 		{"login secret", func() error {
-			data := map[string]string{"user": UpstreamUser, "password": token}
-			for p, b := range files {
-				data[path.Base(p)] = string(b)
-			}
 			return u.Kube.CreateSecret(ctx, ns, upstreamSecretName, "", data)
 		}},
 		{"pull secret", func() error {
@@ -248,31 +369,16 @@ func (u *UpstreamPod) run(ctx context.Context, files map[string][]byte, admin Ad
 		}},
 	}
 	if err := runSetupSteps(ctx, steps); err != nil {
-		return nil, token, err
+		return token, err
 	}
-	if err := u.Kube.CreatePod(ctx, ns, upstreamPodName, u.podSpec()); err != nil {
-		return nil, token, fmt.Errorf("create the copy pod: %w", err)
+	if err := u.Kube.CreatePod(ctx, ns, job.pod, u.podSpec(job)); err != nil {
+		return token, fmt.Errorf("create the %s pod: %w", job.container, err)
 	}
-	phase, exit, err := u.wait(ctx, ns)
+	phase, exit, err := u.wait(ctx, ns, job)
 	if err != nil {
-		return nil, token, err
+		return token, err
 	}
-	tail, err := u.Kube.PodLogTail(ctx, ns, upstreamPodName, upstreamTailLines)
-	if err != nil {
-		return nil, token, fmt.Errorf("read the copy pod's log (phase %s, exit %d): %w", phase, exit, err)
-	}
-	for _, l := range strings.Split(tail, "\n") {
-		if f, ok := strings.CutPrefix(l, upstreamFinding); ok {
-			findings = append(findings, f)
-		}
-	}
-	// a script exits 1 when it could not copy a line, which it then names;
-	// a failure that names none is the pod's own
-	if phase != "Succeeded" && len(findings) == 0 {
-		return nil, token, fmt.Errorf("the upstream copy pod %s with exit %d: %s%s", strings.ToLower(phase), exit,
-			strings.Join(lastLines(tail, upstreamReasonLines), " | "), u.state(ctx, ns))
-	}
-	return findings, token, nil
+	return token, read(ns, phase, exit)
 }
 
 // ensureUser keeps the user the copy runs as and its team of package write
@@ -301,10 +407,10 @@ func runSuffix() string {
 
 // state is what the pod's diagnosis says of it, led by " (": its phase, its
 // reason and message, and what it waits on; "" when nothing can be read.
-func (u *UpstreamPod) state(ctx context.Context, ns string) string {
+func (u *UpstreamPod) state(ctx context.Context, ns, pod string) string {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	d, err := u.Kube.PodDiagnosis(ctx, ns, upstreamPodName)
+	d, err := u.Kube.PodDiagnosis(ctx, ns, pod)
 	if err != nil {
 		return ""
 	}
@@ -315,7 +421,7 @@ func (u *UpstreamPod) state(ctx context.Context, ns string) string {
 	if w := waitsOn(d); w != "" {
 		parts = append(parts, w)
 	}
-	if e, err := u.Kube.NewestPodEvent(ctx, ns, upstreamPodName); err == nil && e != "" {
+	if e, err := u.Kube.NewestPodEvent(ctx, ns, pod); err == nil && e != "" {
 		parts = append(parts, "newest event "+e)
 	}
 	return " (" + strings.Join(parts, "; ") + ")"
@@ -392,48 +498,47 @@ func (u *UpstreamPod) Sweep(ctx context.Context, force bool) {
 }
 
 // wait returns the pod's final phase and its exit code. It ends at the
-// longest run's bound with the pod's state: a pod that never starts says
-// why.
-func (u *UpstreamPod) wait(ctx context.Context, ns string) (string, int32, error) {
+// job's bound with the pod's state: a pod that never starts says why.
+func (u *UpstreamPod) wait(ctx context.Context, ns string, job podRun) (string, int32, error) {
 	poll := u.Poll
 	if poll <= 0 {
 		poll = 2 * time.Second
 	}
-	bound := upstreamDeadline + upstreamStartGrace
+	bound := job.deadline + upstreamStartGrace
 	runCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	for {
-		phase, exit, _, err := u.Kube.PodStatus(runCtx, ns, upstreamPodName)
+		phase, exit, _, err := u.Kube.PodStatus(runCtx, ns, job.pod)
 		if err != nil && ctx.Err() == nil && runCtx.Err() == nil {
-			return "", -1, fmt.Errorf("read the copy pod: %w", err)
+			return "", -1, fmt.Errorf("read the %s pod: %w", job.container, err)
 		}
 		if err == nil && (phase == "Succeeded" || phase == "Failed") {
 			return phase, exit, nil
 		}
 		select {
 		case <-ctx.Done():
-			return "", -1, fmt.Errorf("waiting for the copy pod: %w%s", ctx.Err(), u.state(ctx, ns))
+			return "", -1, fmt.Errorf("waiting for the %s pod: %w%s", job.container, ctx.Err(), u.state(ctx, ns, job.pod))
 		case <-runCtx.Done():
 			// the run's own end shows as the bound's too: it is told as itself
 			if err := ctx.Err(); err != nil {
-				return "", -1, fmt.Errorf("waiting for the copy pod: %w%s", err, u.state(ctx, ns))
+				return "", -1, fmt.Errorf("waiting for the %s pod: %w%s", job.container, err, u.state(ctx, ns, job.pod))
 			}
-			return "", -1, fmt.Errorf("the copy pod did not end within %s%s", bound, u.state(ctx, ns))
+			return "", -1, fmt.Errorf("the %s pod did not end within %s%s", job.container, bound, u.state(ctx, ns, job.pod))
 		case <-time.After(poll):
 		}
 	}
 }
 
-func (u *UpstreamPod) podSpec() map[string]any {
+func (u *UpstreamPod) podSpec(job podRun) map[string]any {
 	pullSecrets := []any{}
 	if u.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": u.PullSecret})
 	}
 	return requestEmptyDirs(map[string]any{
-		"metadata": map[string]any{"labels": map[string]string{"app.kubernetes.io/name": upstreamPodName}},
+		"metadata": map[string]any{"labels": map[string]string{"app.kubernetes.io/name": job.pod}},
 		"spec": map[string]any{
 			"restartPolicy":                "Never",
-			"activeDeadlineSeconds":        int64(upstreamDeadline / time.Second),
+			"activeDeadlineSeconds":        int64(job.deadline / time.Second),
 			"runtimeClassName":             "gvisor",
 			"automountServiceAccountToken": false,
 			"securityContext": map[string]any{
@@ -443,10 +548,10 @@ func (u *UpstreamPod) podSpec() map[string]any {
 			"terminationGracePeriodSeconds": 30,
 			"dnsConfig":                     map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},
 			"containers": []any{map[string]any{
-				"name":    "copy",
+				"name":    job.container,
 				"image":   u.RunnerImage,
-				"command": []any{"bash", "-c", upstreamProgram},
-				"env":     []any{map[string]any{"name": "UPSTREAM_STORE", "value": u.StoreHost + "/" + upstreamOrg}},
+				"command": []any{"bash", "-c", job.program},
+				"env":     job.env,
 				"resources": map[string]any{
 					"requests": map[string]any{"cpu": "250m", "memory": "512Mi"},
 					"limits":   map[string]any{"cpu": "2", "memory": "2Gi"},
