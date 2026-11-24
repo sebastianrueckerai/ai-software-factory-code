@@ -646,10 +646,13 @@ func TestTheFactorysStopIsNoPlatformDeath(t *testing.T) {
 // live ask and by the hold the session reads as it registers: the stop is
 // written to the session's row for its owner before the pod is deleted,
 // so the deleting pod, ended 143 on a Ready node with no kill line, is no
-// platform death. The session ends held, its record of no cluster cause.
+// platform death. The session ends held, its record decided and of no
+// cluster cause. A memory guard's kill inside the stop puts the kill on
+// the record and leaves the end the hold's: held, with no line of an end
+// that does not count.
 func TestAHeldStopIsTheFactorysOwnStop(t *testing.T) {
 	const reason = "held by sebastian: out of the way"
-	for name, press := range map[string]func(g deathRig){
+	presses := map[string]func(g deathRig){
 		"the live ask": func(g deathRig) {
 			go func() {
 				for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
@@ -665,47 +668,65 @@ func TestAHeldStopIsTheFactorysOwnStop(t *testing.T) {
 			card.Kind, card.Hold = "agent", &CardHold{Reason: "out of the way", By: "sebastian", At: time.Now()}
 			g.store.tasks[g.taskID] = card
 		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			g := newDeathRig(t, "t5h", func(p *fakePod) {
-				p.containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "terminated", Reason: "Error", ExitCode: 143}}
-			})
-			g.kube.keepDeleted = true
-			g.r.stopWait = 5 * time.Second
-			spy := &placeSpy{Store: g.store}
-			g.r.store = spy
-			// the stops written when each deletion came, under the kube's lock
-			var stopsAtDelete []int
-			g.kube.onDeletePod = func() {
+	}
+	for name, press := range presses {
+		for _, killed := range []bool{false, true} {
+			sub := name
+			if killed {
+				sub += ", the guard killing the pod inside it"
+			}
+			t.Run(sub, func(t *testing.T) {
+				g := newDeathRig(t, "t5h", func(p *fakePod) {
+					p.containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "terminated", Reason: "Error", ExitCode: 143}}
+				})
+				class, rule := DeathUnknown, RuleNone
+				if killed {
+					at := time.Now().Add(time.Second)
+					g.kernel.kills = func(int) []KernelKill {
+						return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: at, Seq: 7}}
+					}
+					class, rule = DeathPlatform, RuleGuardKill
+				}
+				g.kube.keepDeleted = true
+				g.r.stopWait = 5 * time.Second
+				spy := &placeSpy{Store: g.store}
+				g.r.store = spy
+				// the stops written when each deletion came, under the kube's lock
+				var stopsAtDelete []int
+				g.kube.onDeletePod = func() {
+					spy.mu.Lock()
+					defer spy.mu.Unlock()
+					stopsAtDelete = append(stopsAtDelete, len(spy.stops))
+				}
+				press(g)
+				res, err := runSession(t, nil, g.r, SessionInput{TaskID: g.taskID, Attempt: 1, Model: "m", HoldStop: true}, nil, modelCall+sigtermLogs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.Outcome != OutcomeHeld || res.Trip != string(TripHold) || res.Reason != reason {
+					t.Fatalf("result = %+v, want the held stop", res)
+				}
+				if d := res.Death; d == nil || d.Class != class || d.Rule != rule || !d.Decided || len(d.Lines) != 0 {
+					t.Fatalf("death = %+v, want %s by %s, decided, and no line", d, class, rule)
+				}
+				if rec := g.stored(t, g.taskID, res.SessionID); rec.Class != class || rec.Rule != rule || !rec.Decided || len(rec.Lines) != 0 {
+					t.Fatalf("stored = %+v, want %s by %s, decided, and no line", rec, class, rule)
+				}
+				if told := strings.Join(res.Findings, "\n"); strings.Contains(told, "does not count") {
+					t.Fatalf("findings = %q, want nothing of an end that does not count", told)
+				}
 				spy.mu.Lock()
 				defer spy.mu.Unlock()
-				stopsAtDelete = append(stopsAtDelete, len(spy.stops))
-			}
-			press(g)
-			res, err := runSession(t, nil, g.r, SessionInput{TaskID: g.taskID, Attempt: 1, Model: "m", HoldStop: true}, nil, modelCall+sigtermLogs)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if res.Outcome != OutcomeHeld || res.Trip != string(TripHold) || res.Reason != reason {
-				t.Fatalf("result = %+v, want the held stop", res)
-			}
-			if d := res.Death; d == nil || d.Class != DeathUnknown || d.Rule != RuleNone || len(d.Lines) != 0 {
-				t.Fatalf("death = %+v, want no cluster cause and no line", d)
-			}
-			if rec := g.stored(t, g.taskID, res.SessionID); rec.Class != DeathUnknown || rec.Rule != RuleNone {
-				t.Fatalf("stored = %+v, want no cluster cause", rec)
-			}
-			spy.mu.Lock()
-			defer spy.mu.Unlock()
-			if !slices.Equal(spy.stops, []string{"own"}) || len(spy.stopping) != 1 || spy.stopping[0] == nil {
-				t.Fatalf("stops written %q, the row's stop after each %v; want one stop on the session's row, for its owner", spy.stops, spy.stopping)
-			}
-			g.kube.mu.Lock()
-			defer g.kube.mu.Unlock()
-			if len(g.kube.deletedPods) != 1 || !slices.Equal(stopsAtDelete, []int{1}) {
-				t.Fatalf("deleted pods %q, stops written at each deletion %v; want the session's pod once, after its stop was written", g.kube.deletedPods, stopsAtDelete)
-			}
-		})
+				if !slices.Equal(spy.stops, []string{"own"}) || len(spy.stopping) != 1 || spy.stopping[0] == nil {
+					t.Fatalf("stops written %q, the row's stop after each %v; want one stop on the session's row, for its owner", spy.stops, spy.stopping)
+				}
+				g.kube.mu.Lock()
+				defer g.kube.mu.Unlock()
+				if len(g.kube.deletedPods) != 1 || !slices.Equal(stopsAtDelete, []int{1}) {
+					t.Fatalf("deleted pods %q, stops written at each deletion %v; want the session's pod once, after its stop was written", g.kube.deletedPods, stopsAtDelete)
+				}
+			})
+		}
 	}
 }
 
