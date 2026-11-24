@@ -317,6 +317,7 @@ type (
 	ApprovalRequest  = factoryd.ApprovalRequest
 	AskOffer         = factoryd.AskOffer
 	BoardTask        = factoryd.BoardTask
+	CapWaits         = factoryd.CapWaits
 	CardCapError     = factoryd.CardCapError
 	CardHold         = factoryd.CardHold
 	Case             = factoryd.Case
