@@ -750,12 +750,12 @@ func TestANodeNotReadyDuringTheSessionIsPlatform(t *testing.T) {
 	}
 }
 
-// The stored record keeps the pod's events without their messages, and the
-// kubelet's eviction message cut to 200 characters, the one text it holds.
-// The result the workflow takes, which rides the trip into the case facts,
-// carries the class, the rule and the lines, and no kubelet text.
+// The stored record holds no raw message text: the pod's events keep no
+// message, and an eviction keeps the resource its message names, never the
+// message. The result the workflow takes, which rides the trip into the
+// case facts, carries the class, the rule and the lines, and no events.
 func TestTheEventsStayOnTheStoredRecord(t *testing.T) {
-	msg := "The node was low on resource: memory. Threshold quantity: 100Mi, available: 50Mi. " + strings.Repeat("é", 200)
+	const msg = "The node was low on resource: memory. Threshold quantity: 100Mi, available: 50Mi. TOKEN=ghp_secretvalue"
 	var kube *fakeKube
 	g := newDeathRig(t, "t5e", func(p *fakePod) {
 		p.reason, p.message = "Evicted", msg
@@ -767,12 +767,16 @@ func TestTheEventsStayOnTheStoredRecord(t *testing.T) {
 	if want := []PodEvent{{Reason: "Evicted", Type: "Warning", Count: 1}}; !reflect.DeepEqual(stored.Events, want) {
 		t.Fatalf("stored events = %+v, want %+v: the eviction with no message", stored.Events, want)
 	}
-	if want := string([]rune(msg)[:200]) + "…"; stored.Eviction != want {
-		t.Fatalf("stored eviction = %q, want the kubelet's message cut to 200 characters %q", stored.Eviction, want)
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if d := res.Death; d == nil || d.Events != nil || d.Eviction != "" || d.Class != DeathPlatform || d.Rule != RuleNodePressure ||
+	if strings.Contains(string(raw), "ghp_") || strings.Contains(string(raw), "Threshold") || stored.Resource != "memory" {
+		t.Fatalf("stored record = %s, want the resource memory and no word of the eviction's message", raw)
+	}
+	if d := res.Death; d == nil || d.Events != nil || d.Class != DeathPlatform || d.Rule != RuleNodePressure ||
 		len(d.Lines) != 1 || !slices.Equal(d.Lines, stored.Lines) {
-		t.Fatalf("the result's death = %+v, want the stored one's class, rule and lines without its events and eviction", d)
+		t.Fatalf("the result's death = %+v, want the stored one's class, rule and lines without its events", d)
 	}
 }
 

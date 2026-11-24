@@ -1392,11 +1392,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	cause := ""
 	if res.Death != nil {
 		r.putDeath(ctx, t.ID, s.id, *res.Death)
-		// the pod's events and the eviction's message stay on the stored
-		// record: the result rides the card's stops into the case facts,
-		// which a model reads
+		// the pod's events stay on the stored record: the result rides the
+		// card's stops into the case facts, which a model reads
 		death := *res.Death
-		death.Events, death.Eviction = nil, ""
+		death.Events = nil
 		res.Death = &death
 		if death.Class != DeathUnknown {
 			cause = death.Short()

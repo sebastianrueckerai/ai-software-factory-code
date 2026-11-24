@@ -28,7 +28,6 @@ func fullRecord(when time.Time) DeathRecord {
 		KillSource: "guard", LastCommand: "go test ./...",
 		Restarts: []ServiceRestart{{Service: ServiceLiteLLM, From: when.Add(-time.Minute), Until: when, Cause: "guard"}},
 		Events:   []PodEvent{{Reason: "Killing", Type: "Normal", At: when, Count: 2}},
-		Eviction: "The node was low on resource: memory.",
 		Lines:    []string{"a", "b"},
 	}
 }

@@ -50,8 +50,6 @@ const (
 	// deathMargin is the time a read leaves before its context's deadline
 	// for the rest of the end it is part of.
 	deathMargin = 30 * time.Second
-	// evictionChars bounds the kubelet's eviction message a record keeps.
-	evictionChars = 200
 	// restartKill is how close to a restart a kill of its pod names its
 	// cause.
 	restartKill = time.Minute
@@ -207,12 +205,6 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	for _, e := range events {
 		e.Message = ""
 		r.Events = append(r.Events, e)
-	}
-	if f.Pod.Reason == "Evicted" {
-		r.Eviction = f.Pod.Message
-		if m := []rune(r.Eviction); len(m) > evictionChars {
-			r.Eviction = string(m[:evictionChars]) + "…"
-		}
 	}
 	r.Started = in.started
 	r.Restarts = d.restarts(ctx, in, life)
