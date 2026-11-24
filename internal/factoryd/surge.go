@@ -141,6 +141,9 @@ func (t *taskRun) awaitSlot() (final, why string) {
 		if err := workflow.ExecuteActivity(t.short, ActivityAdmitResume, t.taskID, since).Get(t.ctx, &s); err != nil {
 			return "failed", "admit the resumed session: " + errMessage(err)
 		}
+		// AdmitResume read the hold every press signalled: no later wait
+		// takes one
+		t.dropHolds()
 		if s.Granted {
 			return "", ""
 		}

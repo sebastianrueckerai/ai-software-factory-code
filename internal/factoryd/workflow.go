@@ -655,6 +655,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.retryPressDrop = workflow.GetVersion(ctx, "retry-press-drop", workflow.DefaultVersion, versionRetryPressDrop)
 	run.humanWaitQueue = workflow.GetVersion(ctx, "human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue)
 	run.roomWindow = workflow.GetVersion(ctx, "room-window", workflow.DefaultVersion, versionRoomWindow)
+	run.holdStop = workflow.GetVersion(ctx, "hold-stop", workflow.DefaultVersion, versionHoldStop)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -698,7 +699,8 @@ func (t *taskRun) isReport() bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved, SignalCaseFaced} {
+		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved, SignalCaseFaced,
+		SignalHeld} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -996,6 +998,15 @@ const (
 	// session with its time left alone, and grants an attempt at the
 	// session cap, else agent time, up to a quarter of the card's.
 	versionRoomWindow workflow.Version = 1
+	// versionHoldStop (change id "hold-stop"): a session carries HoldStop,
+	// so a human's hold stops it (OutcomeHeld), which runs no gate: the
+	// run gives the session's room back (refund), its push is the next
+	// start, and the loop's top parks the card (awaitSlot). The waits a
+	// running card holds its slot in, the provider's backoff and its
+	// freeze, end on the hold's SignalHeld, and awaitSlot drops the presses
+	// no wait read. A held stop counts toward no ask of sessions with no
+	// model answer. A run from before runs each session to its end.
+	versionHoldStop workflow.Version = 1
 )
 
 // keysCard tells whether the run's card is its key's card in its plan: a
@@ -1206,6 +1217,9 @@ type taskRun struct {
 	// roomWindow: a session's window holds raise headroom, and a grant is
 	// a session's worth at the card's average (versionRoomWindow)
 	roomWindow workflow.Version
+	// holdStop: a human's hold stops the session and ends the waits a
+	// running card holds its slot in (versionHoldStop)
+	holdStop workflow.Version
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -1367,7 +1381,8 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// refund is an attempt, or agent time alone after a session that took
 	// no number (u.LastUncounted): what a park on an image gives back for
-	// the session that asked for its tool
+	// the session that asked for its tool, and a hold for the session it
+	// stopped
 	refund := func() {
 		if u.LastUncounted {
 			t.grantTime(&u)
@@ -1891,7 +1906,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
-			PolicyVersion: t.cfg.PolicyVersion, AgentTime: agentTime, CheckIn: t.cfg.Task.CheckIn,
+			PolicyVersion: t.cfg.PolicyVersion, AgentTime: agentTime, CheckIn: t.cfg.Task.CheckIn, HoldStop: t.holdStop >= versionHoldStop,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults
@@ -1945,7 +1960,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.pendingPods = 0
 		if t.wipStart >= versionWipStart && err == nil && !decided && res.Commit != "" {
 			switch res.Outcome {
-			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap, OutcomeWallClock:
+			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap, OutcomeWallClock, OutcomeHeld:
 				startRef = res.Commit
 				if res.Outcome == OutcomeProviderRefused {
 					parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
@@ -1976,10 +1991,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			u.AgentTime += workflow.Now(t.ctx).Sub(began) - t.checkinTime(res)
 		}
 		u.LastUncounted = !t.sessionAnswered(res, began, attempt, model)
-		if u.LastUncounted {
-			unanswered++
-		} else {
+		switch {
+		case !u.LastUncounted:
 			u.Attempts, unanswered = attempt, 0
+		case res.Outcome != OutcomeHeld:
+			// a hold's stop is a human's, not the model's silence
+			unanswered++
 		}
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
@@ -2198,6 +2215,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			buy()
+			continue
+		case OutcomeHeld:
+			refund()
 			continue
 		}
 		startRef = res.Commit
@@ -2479,7 +2499,7 @@ func (t *taskRun) providerAnswered(refusals *int, err error) {
 }
 
 // waitOnProvider records the wait, which puts the task in gate provider,
-// and waits it out unless a terminal signal comes first.
+// and waits it out unless a terminal signal or a human's hold comes first.
 func (t *taskRun) waitOnProvider(w ProviderWait) {
 	if err := workflow.ExecuteActivity(t.short, ActivityProviderWait, t.taskID, w).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record the provider wait", "task", t.taskID, "error", err)
@@ -2491,7 +2511,19 @@ func (t *taskRun) waitOnProvider(w ProviderWait) {
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 	}
 	sel.AddFuture(workflow.NewTimer(timerCtx, w.Backoff), func(workflow.Future) {})
+	if t.holdStop >= versionHoldStop {
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHeld), func(workflow.ReceiveChannel, bool) { t.dropHolds() })
+	}
 	sel.Select(t.ctx)
+}
+
+// dropHolds drops the hold presses signalled so far (versionHoldStop).
+func (t *taskRun) dropHolds() {
+	if t.holdStop < versionHoldStop {
+		return
+	}
+	for workflow.GetSignalChannel(t.ctx, SignalHeld).ReceiveAsync(nil) {
+	}
 }
 
 // dropRetryPresses drops the retry switch's presses signalled before a
@@ -2513,9 +2545,10 @@ func (t *taskRun) dropRetryPresses() {
 // not keeps the timer to the reset; the retry switch's wake
 // (SignalProviderRetry) ends the hold at once, and so does an answer on
 // the card — a human comment, which the next session carries as its note
-// (takeHoldComments) — and the signals that decide the task, which the
-// loop takes after the hold. At the reset the next session starts, and
-// its first call is the probe.
+// (takeHoldComments) — a human's hold of the card (SignalHeld), which the
+// loop's top parks, and the signals that decide the task, which the loop
+// takes after the hold. At the reset the next session starts,
+// and its first call is the probe.
 func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 	w.Backoff = w.Until.Sub(workflow.Now(t.ctx))
 	if err := workflow.ExecuteActivity(t.short, ActivityProviderWait, t.taskID, w).Get(t.ctx, nil); err != nil {
@@ -2540,6 +2573,12 @@ func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHumanComment), func(workflow.ReceiveChannel, bool) {
 			woken = t.takeHoldComments(w.Words) || woken
 		})
+		if t.holdStop >= versionHoldStop {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHeld), func(workflow.ReceiveChannel, bool) {
+				t.dropHolds()
+				woken = true
+			})
+		}
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded), func(workflow.ReceiveChannel, bool) {
 			// the wake ends the wait only when the class's model moved;
 			// drop the loads signalled while the check ran
