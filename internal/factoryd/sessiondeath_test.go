@@ -605,6 +605,13 @@ func TestAHeldStopIsTheFactorysOwnStop(t *testing.T) {
 			g.r.stopWait = 5 * time.Second
 			spy := &placeSpy{Store: g.store}
 			g.r.store = spy
+			// the stops written when each deletion came, under the kube's lock
+			var stopsAtDelete []int
+			g.kube.onDeletePod = func() {
+				spy.mu.Lock()
+				defer spy.mu.Unlock()
+				stopsAtDelete = append(stopsAtDelete, len(spy.stops))
+			}
 			press(g)
 			res, err := runSession(t, nil, g.r, SessionInput{TaskID: g.taskID, Attempt: 1, Model: "m", HoldStop: true}, nil, modelCall+sigtermLogs)
 			if err != nil {
@@ -626,8 +633,8 @@ func TestAHeldStopIsTheFactorysOwnStop(t *testing.T) {
 			}
 			g.kube.mu.Lock()
 			defer g.kube.mu.Unlock()
-			if len(g.kube.deletedPods) != 1 {
-				t.Fatalf("deleted pods %q, want the session's pod once", g.kube.deletedPods)
+			if len(g.kube.deletedPods) != 1 || !slices.Equal(stopsAtDelete, []int{1}) {
+				t.Fatalf("deleted pods %q, stops written at each deletion %v; want the session's pod once, after its stop was written", g.kube.deletedPods, stopsAtDelete)
 			}
 		})
 	}
