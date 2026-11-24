@@ -77,7 +77,7 @@ func main() {
 
 	secrets := loadSecrets(true)
 	dsn := secrets["FACTORYD_DATABASE_URL"]
-	store, err := factoryd.OpenStore(context.Background(), dsn)
+	store, err := bootStore(context.Background(), dsn, factoryd.OpenStore, time.Sleep, time.Now)
 	if err != nil {
 		log.Fatalf("open task store (boot migrations): %v", err)
 	}
@@ -1081,6 +1081,32 @@ func recordHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerF
 // factoryd and the gateway share: factoryd presents it for its model calls.
 func escalationRoute(gatewayToken string, store factoryd.EscalationStore, sessions factoryd.SessionEscalator) http.Handler {
 	return requireBearer(gatewayToken, factoryd.EscalationHandler(store, sessions))
+}
+
+// bootStoreWait bounds the boot's wait for the task store's database. A
+// node churn hangs the dial for the kernel's connect timeout, and an
+// exit for that transient failure restart-looped factoryd and fired the
+// restart alert, so the boot waits out a short outage instead of dying
+// in it.
+const bootStoreWait = 10 * time.Minute
+
+// bootStore opens the task store, retrying a failed open every 5s until
+// bootStoreWait has passed, then the last error answers and main exits
+// fatally as before. sleep and now are seams for the test.
+func bootStore(ctx context.Context, dsn string, open func(context.Context, string) (*factoryd.PGStore, error),
+	sleep func(time.Duration), now func() time.Time) (*factoryd.PGStore, error) {
+	deadline := now().Add(bootStoreWait)
+	for {
+		s, err := open(ctx, dsn)
+		if err == nil {
+			return s, nil
+		}
+		if !now().Before(deadline) {
+			return nil, err
+		}
+		log.Printf("open task store: %v; retrying in 5s until %s", err, deadline.UTC().Format(time.RFC3339))
+		sleep(5 * time.Second)
+	}
 }
 
 // readyz answers once the store does: ok, then each pass's age since its
