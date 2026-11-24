@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -322,9 +324,12 @@ type SupervisorModel struct {
 // does not always hold the word.
 const ChatInputLead = "The input, as JSON:\n"
 
-// chatPayload builds one JSON-mode call's body.
-func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
-	return json.Marshal(map[string]any{
+// chatPayload builds one JSON-mode call's body; low asks the model to
+// think at low depth (reasoning_effort low), which LiteLLM passes on to a
+// provider that does not list the field only when allowed_openai_params
+// names it.
+func chatPayload(alias, system string, user []byte, limit int, low bool) ([]byte, error) {
+	body := map[string]any{
 		"model":           alias,
 		"max_tokens":      limit,
 		"response_format": map[string]string{"type": "json_object"},
@@ -332,7 +337,11 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 			{"role": "system", "content": system},
 			{"role": "user", "content": ChatInputLead + string(user)},
 		},
-	})
+	}
+	if low {
+		body["reasoning_effort"], body["allowed_openai_params"] = thinkingLow, []string{"reasoning_effort"}
+	}
+	return json.Marshal(body)
 }
 
 // chatBody is the body of Chat's call: input, compact JSON, as the user
@@ -342,7 +351,7 @@ func chatBody(alias, system string, input any, limit int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return chatPayload(alias, system, user, limit)
+	return chatPayload(alias, system, user, limit, false)
 }
 
 // Chat is one JSON-mode call of alias through the gateway on the task's
@@ -351,64 +360,164 @@ func chatBody(alias, system string, input any, limit int) ([]byte, error) {
 // limits.supervisor_timeout: a reasoning model thinks before it answers);
 // deployment is the one that answered, as the gateway names it. A gateway
 // refusal is a *policy.Refusal in the chain; alias "" (the policy names
-// none) makes no call.
+// none) makes no call. A reasoning model's thinking counts against the
+// answer limit: an answer cut at its limit is asked once more at the same
+// limit and low thinking depth, under its own timeout, a minute clear of
+// ctx's deadline. A second cut answer, or a first with no time left for
+// another call, is a *cutAnswerError; a call its timeout cut is an
+// answerTimeout.
 func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, input any) (content, deployment string, err error) {
+	content, deployment, _, err = m.chat(ctx, taskID, alias, purpose, timeout, system, input)
+	return content, deployment, err
+}
+
+// thinkingLow is the reasoning_effort of the call once more, and the
+// depth a gate records beside its model for an answer that call gave.
+const thinkingLow = "low"
+
+// chat is Chat with low: the answer came from the call once more at low
+// thinking depth, which a gate records beside its model.
+func (m *SupervisorModel) chat(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, input any) (content, deployment string, low bool, err error) {
 	if alias == "" {
-		return "", "", fmt.Errorf("the policy names no %s model for the task's capability classes", purpose)
+		return "", "", false, fmt.Errorf("the policy names no %s model for the task's capability classes", purpose)
 	}
 	limit, err := m.Budget.OutputLimit()
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
-	payload, err := chatBody(alias, system, input, limit)
+	user, err := json.Marshal(input)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if timeout <= 0 {
-		return "", "", fmt.Errorf("no timeout for the %s call", purpose)
+		return "", "", false, fmt.Errorf("no timeout for the %s call", purpose)
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.GatewayURL+"/v1/chat/completions", bytes.NewReader(payload))
+	c, deployment, err := m.call(ctx, taskID, alias, purpose, timeout, system, user, limit, false)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
-	req.Header.Set("Authorization", "Bearer "+m.Token)
+	if !c.cut() {
+		return c.Choices[0].Message.Content, deployment, false, nil
+	}
+	wait := timeout
+	if d, ok := ctx.Deadline(); ok {
+		wait = callTimeout(time.Now(), d, timeout)
+	}
+	if wait <= 0 {
+		return "", "", false, &cutAnswerError{c.limit(limit)}
+	}
+	oneMoreCall(ctx, wait)
+	if c, deployment, err = m.call(ctx, taskID, alias, purpose, wait, system, user, limit, true); err != nil {
+		return "", "", false, err
+	}
+	if c.cut() {
+		return "", "", false, &cutAnswerError{c.limit(limit)}
+	}
+	return c.Choices[0].Message.Content, deployment, true, nil
+}
+
+// call is one call of Chat asking limit output tokens, low at low
+// thinking depth, cut after timeout.
+func (m *SupervisorModel) call(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, user []byte, limit int, low bool) (completion, string, error) {
+	payload, err := chatPayload(alias, system, user, limit, low)
+	if err != nil {
+		return completion{}, "", err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	c, deployment, err := postChat(callCtx, m.HTTP, m.GatewayURL, m.Token, taskID, purpose, payload)
+	if err != nil && ctx.Err() == nil && callCtx.Err() == context.DeadlineExceeded {
+		return completion{}, "", answerTimeout(timeout)
+	}
+	return c, deployment, err
+}
+
+// completion is an unstreamed answer of the gateway's chat door: its
+// first choice and why it stopped, the call's cost, and the output limit
+// the gateway gave the call (gateway.HeaderOutputLimit), 0 when unnamed.
+type completion struct {
+	Choices []struct {
+		Message struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		Cost float64 `json:"cost"`
+	} `json:"usage"`
+	outputLimit int
+}
+
+// cut says the answer stopped at its output limit (finish_reason length).
+func (c completion) cut() bool { return c.Choices[0].FinishReason == "length" }
+
+// limit is the output limit the call got, asked when the gateway named
+// none.
+func (c completion) limit(asked int) int { return cmp.Or(c.outputLimit, asked) }
+
+// postChat posts payload to the chat door of the gateway at url as token,
+// on task taskID's account under purpose, and reads its one unstreamed
+// completion; deployment is the one that answered, as the gateway names
+// it. A gateway refusal is a *policy.Refusal in the chain.
+func postChat(ctx context.Context, client *http.Client, url, token, taskID, purpose string, payload []byte) (completion, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/v1/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return completion{}, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(gateway.HeaderFactoryTask, taskID)
 	req.Header.Set(gateway.HeaderFactoryPurpose, purpose)
 	setCard(ctx, req)
-	client := m.HTTP
 	if client == nil {
 		client = http.DefaultClient
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return completion{}, "", err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return "", "", err
+		return completion{}, "", err
 	}
 	if res.StatusCode != http.StatusOK {
 		if err := gatewayRefused(res.Header, body); err != nil {
-			return "", "", err
+			return completion{}, "", err
 		}
-		return "", "", fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(body), 300))
+		return completion{}, "", fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(body)), 300))
 	}
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
+	var c completion
+	if err := json.Unmarshal(body, &c); err != nil || len(c.Choices) == 0 {
+		return completion{}, "", fmt.Errorf("unreadable completion: %s", textutil.Truncate(string(body), 300))
 	}
-	if err := json.Unmarshal(body, &out); err != nil || len(out.Choices) == 0 {
-		return "", "", fmt.Errorf("unreadable completion: %s", textutil.Truncate(string(body), 300))
-	}
-	return out.Choices[0].Message.Content, res.Header.Get(gateway.HeaderDeployment), nil
+	c.outputLimit, _ = strconv.Atoi(res.Header.Get(gateway.HeaderOutputLimit))
+	return c, res.Header.Get(gateway.HeaderDeployment), nil
 }
+
+// cutAnswerError is a model call whose answer stopped at its output limit:
+// a reasoning model can think the whole limit away before it answers.
+type cutAnswerError struct{ limit int }
+
+func (e *cutAnswerError) Error() string {
+	return fmt.Sprintf("the model used its whole answer limit of %d tokens before it answered", e.limit)
+}
+
+// answerTimeout is a model call its timeout cut; it is a
+// context.DeadlineExceeded to the callers that read one.
+type answerTimeout time.Duration
+
+func (d answerTimeout) Error() string {
+	return "the model did not answer within " + DurationText(time.Duration(d))
+}
+
+func (answerTimeout) Unwrap() error { return context.DeadlineExceeded }
 
 // cardClassesKey carries the classes of the card a call on the project's
 // chat task runs for.

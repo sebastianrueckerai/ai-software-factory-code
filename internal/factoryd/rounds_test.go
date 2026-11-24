@@ -950,6 +950,25 @@ func TestDeltaPassRefusesATimedOutRoundOnceBeyondThePass(t *testing.T) {
 	}
 }
 
+// A delta round whose answers the model cuts at their limit of 9000
+// tokens, each asked once more, ends refused once after its three
+// attempts, the refusal naming the cut.
+func TestDeltaPassRefusesARoundOfCutAnswers(t *testing.T) {
+	model := &fakeLiteLLM{content: `{"`, finishes: slices.Repeat([]string{"length"}, 6)}
+	r, store, objs := deltaPassRig(t, model, time.Minute)
+	r.DeltaPass(context.Background())
+	if n := catchesOfKind(t, store, CatchDeltaRefused); n != 1 {
+		t.Fatalf("%d delta_refused marks, want exactly 1", n)
+	}
+	if n := len(model.chats); n != 6 {
+		t.Fatalf("model calls = %d, want 6: three attempts of two calls", n)
+	}
+	tl, _ := objs.Get(context.Background(), "sessions/t-plan/timeline.jsonl")
+	if !strings.Contains(string(tl), `"step":"delta_refused"`) || !strings.Contains(string(tl), "the model used its whole answer limit of 9000 tokens before it answered") {
+		t.Fatalf("the plan's timeline:\n%s", tl)
+	}
+}
+
 // deltaCardAnswer's key, "delta-911f3ad0", is the first 8 hex digits of
 // printf 't-plan\n1\nredirect_302 grant 9' | sha256sum.
 const deltaCardAnswer = `{"card": {"title": "Fix the stats", "why": "So each redirect counts once in the stats.", "summary": "It counts each redirect once. A test follows two redirects and reads two clicks.", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +

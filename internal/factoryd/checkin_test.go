@@ -1492,6 +1492,34 @@ func TestCheckinGatewayTruncatedAnswerArgumentsGetTheRepairRound(t *testing.T) {
 	}
 }
 
+// An answer cut at its limit (finish_reason length) is unreadable for that
+// cause: the repair round tells the model so, and the second cut answer
+// sends the check-in to the human naming the cause and the limit the
+// gateway gave, as its output-limit header says.
+func TestCheckinGatewayCutAnswerNamesItsLimit(t *testing.T) {
+	var inputs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct{ Content string } `json:"messages"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		inputs = append(inputs, body.Messages[1].Content)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(gateway.HeaderOutputLimit, "24576")
+		w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"answer","arguments":"{\"decision\":\"hand"}}]},"finish_reason":"length"}]}`))
+	}))
+	defer srv.Close()
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, &checkinGateway{URL: srv.URL, Token: "b"}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+	const cause = "the model used its whole answer limit of 24576 tokens before it answered"
+	if out.Decision != RungHandUp || out.ReasonKind != CheckUnreadable || out.Reason != "check-in answer unreadable: "+cause {
+		t.Fatalf("outcome = %+v, want the human with the cut named", out)
+	}
+	if len(inputs) != 2 || !strings.Contains(inputs[1], "Your last answer was unreadable: "+cause+".") {
+		t.Fatalf("%d calls, the repair input %q; want one repair round that names the cut", len(inputs), inputs)
+	}
+}
+
 // The check-in names no output limit: the gateway holds the call at the
 // alias's whole limit, which leaves a reasoning model room to think and
 // then answer.

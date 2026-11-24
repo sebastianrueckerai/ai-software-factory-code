@@ -54,7 +54,7 @@ var refused = map[string][]string{
 var wantTrip = map[string][]string{
 	"limits.sessions":           {`"the session cap is reached: the findings go back to the loop and the ladder judges this stop"`},
 	"limits.agent_time":         {`"the task's wall-clock cap is reached"`, `"the agent time is used up: the ladder judges this stop before a human is asked"`},
-	"limits.supervisor_timeout": nil, // the call is cut at the bound; no line names it to the agent
+	"limits.supervisor_timeout": {`"the model did not answer within %s"`}, // supervisor.go's answerTimeout; no line names it to the agent
 	"limits.stronger_after":     {`"factoryd: this session continues on the stronger model, %s: %s. Carry on from where you are."`},
 	"limits.steps":              {`"CRITICAL - MAXIMUM STEPS REACHED"`},
 	"limits.nudge_after":        {`"You repeated the same call %s (%s). Change approach, then continue."`},

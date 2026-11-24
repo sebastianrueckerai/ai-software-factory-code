@@ -139,6 +139,11 @@ const (
 	// the check-in's, which the provider-limit hold holds under the card's
 	// class (policy.Document.HeldClass).
 	HeaderFactoryCard = "X-Factory-Card"
+	// HeaderOutputLimit names the output limit an admitted call was
+	// forwarded at, what it asked clamped to the alias's limit and the
+	// free headroom: the caller of an answer cut at its limit reads the
+	// limit it got.
+	HeaderOutputLimit = "X-Gateway-Output-Limit"
 )
 
 // RefusedContext is the decision of a call the provider refused for a
@@ -739,10 +744,11 @@ func (s *Server) factorydBearer(r *http.Request) bool {
 }
 
 // forwardedFields are the request fields LiteLLM receives: the OpenAI chat
-// parameters. Everything else is refused, above all LiteLLM's own routing
-// overrides (fallbacks, context_window_fallbacks, content_policy_fallbacks,
-// router_settings_override, mock_testing_*), which would reach aliases
-// outside the task's classes.
+// parameters, and LiteLLM's allowed_openai_params, which may name only
+// reasoning_effort (reasoningEffortOnly). Everything else is refused, above
+// all LiteLLM's own routing overrides (fallbacks, context_window_fallbacks,
+// content_policy_fallbacks, router_settings_override, mock_testing_*),
+// which would reach aliases outside the task's classes.
 var forwardedFields = map[string]bool{
 	"model": true, "messages": true, "stream": true, "stream_options": true,
 	"max_tokens": true, "max_completion_tokens": true, "n": true,
@@ -751,7 +757,13 @@ var forwardedFields = map[string]bool{
 	"logprobs": true, "top_logprobs": true, "user": true,
 	"tools": true, "tool_choice": true, "parallel_tool_calls": true,
 	"response_format": true, "reasoning_effort": true,
+	"allowed_openai_params": true,
 }
+
+// reasoningEffortOnly is the one allowed_openai_params a call may send: a
+// provider config that drops reasoning_effort (LiteLLM's z.ai one) passes
+// it then, so a call can bound the model's thinking.
+var reasoningEffortOnly = []string{"reasoning_effort"}
 
 type chatRequest struct {
 	Model  string
@@ -800,6 +812,12 @@ func parseChat(body []byte, purpose string) (chatRequest, error) {
 	if raw, ok := req.fields["stream"]; ok {
 		if err := json.Unmarshal(raw, &req.Stream); err != nil {
 			return req, errors.New("stream is not a boolean")
+		}
+	}
+	if raw, ok := req.fields["allowed_openai_params"]; ok {
+		var params []string
+		if err := json.Unmarshal(raw, &params); err != nil || !slices.Equal(params, reasoningEffortOnly) {
+			return req, fmt.Errorf(`allowed_openai_params must be exactly ["reasoning_effort"], is %s`, raw)
 		}
 	}
 	if err := checkTools(req.fields); err != nil {
@@ -1374,6 +1392,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		defer res.Body.Close()
 
 		w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
+		w.Header().Set(HeaderOutputLimit, strconv.Itoa(c.hold.MaxOut))
 		if c.kind != "" && c.deployment != "" {
 			w.Header().Set(HeaderDeployment, c.deployment)
 		}

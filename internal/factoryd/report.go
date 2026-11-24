@@ -407,10 +407,14 @@ const (
 	maxScreenReason  = 1000
 )
 
+// screeningNoVerdict opens the reason of a screening whose answer is no
+// verdict.
+const screeningNoVerdict = "the screening's answer is no verdict: "
+
 // parseScreening reads the screening's verdict, the JSON object in its
 // last message; anything else is suspect, which a human then judges.
 func parseScreening(text string) ScreenResult {
-	invalid := ScreenResult{Verdict: ScreenSuspect, Reasons: []string{"the screening's answer is no verdict: " + textutil.Truncate(strings.TrimSpace(text), 300)}}
+	invalid := ScreenResult{Verdict: ScreenSuspect, Reasons: []string{screeningNoVerdict + textutil.Truncate(strings.TrimSpace(text), 300)}}
 	i, j := strings.Index(text, "{"), strings.LastIndex(text, "}")
 	if i < 0 || j < i {
 		return invalid
@@ -470,9 +474,10 @@ type answerInput struct {
 // one call of the review model the task's pinned version (pin) names,
 // through the gateway on the task's account, with the screening's
 // criteria and the answer sanitised between markers of a random tag. A
-// gateway refusal or an answer that is no verdict is suspect, and a
-// suspect verdict opens the task's screening alert unless it has one; a
-// failed call is an error, retried, which the workflow takes as suspect.
+// gateway refusal or an answer that is no verdict, one cut at its limit
+// among them, is suspect, and a suspect verdict opens the task's
+// screening alert unless it has one; a failed call is an error, retried,
+// which the workflow takes as suspect.
 func (r *Runner) ScreenAnswer(ctx context.Context, taskID, text string, pin int64) (ScreenResult, error) {
 	defer beatUntilDone(ctx, "screening")()
 	t, _, err := r.task(ctx, taskID)
@@ -493,10 +498,13 @@ func (r *Runner) ScreenAnswer(ctx context.Context, taskID, text string, pin int6
 	content, _, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout,
 		answerSystem(open, closing), answerInput{Repository: t.Repository, Answer: open + "\n" + text + "\n" + closing})
 	var refusal *policy.Refusal
+	var cut *cutAnswerError
 	var res ScreenResult
 	switch {
 	case errors.As(err, &refusal):
 		res = ScreenResult{Verdict: ScreenSuspect, Reasons: []string{"the screening failed: refused by the gateway (" + refusal.Decision + "): " + refusal.Reason}}
+	case errors.As(err, &cut):
+		res = ScreenResult{Verdict: ScreenSuspect, Reasons: []string{screeningNoVerdict + cut.Error()}}
 	case err != nil:
 		return ScreenResult{}, err
 	default:

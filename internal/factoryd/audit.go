@@ -33,7 +33,11 @@ type AuditResult struct {
 	Findings   []AuditFinding `json:"findings,omitempty"`
 	Model      string         `json:"model,omitempty"`
 	Deployment string         `json:"deployment,omitempty"`
-	Skipped    string         `json:"skipped,omitempty"`
+	// Thinking is "low" when a part's answer came from the call once
+	// more at low thinking depth (SupervisorModel.Chat); "" at the
+	// model's own.
+	Thinking string `json:"thinking,omitempty"`
+	Skipped  string `json:"skipped,omitempty"`
 	// MovedTo is the head the pull request held instead of the audited
 	// commit, when the audit did not run for it
 	MovedTo string `json:"moved_to,omitempty"`
@@ -348,6 +352,9 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		case got.Err != nil:
 			gap, text = "the audit call failed: "+cmp.Or(failedStatus.FindString(got.Err.Error()), got.Err.Error()), "the audit call failed: "+got.Err.Error()
 		default:
+			if got.Low {
+				res.Thinking = thinkingLow
+			}
 			parsed, why := parseAudit(got.Content)
 			if why != "" {
 				noVerdict(fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content)))
@@ -429,8 +436,12 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 	if len(res.Findings) > 0 {
 		res.Verdict = AuditFindings
 	}
-	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
-		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings, "confirmed": res.Confirmed, "covered": res.Covered}))
+	detail := map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
+		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings, "confirmed": res.Confirmed, "covered": res.Covered}
+	if res.Thinking != "" {
+		detail["thinking"] = res.Thinking
+	}
+	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, detail))
 	return res, r.auditFact(ctx, t, pr, commit, round, res)
 }
 

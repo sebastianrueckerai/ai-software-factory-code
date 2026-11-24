@@ -206,6 +206,7 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	}
 	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
 	waves := func(n int) { i.g.rebound(run, i.g.Bound(ctx, name, pin, n)) }
+	more := func(d time.Duration) { i.g.extend(run, d) }
 	key := runKey(info.WorkflowExecution.ID, info.ActivityID)
 	i.g.mu.Lock()
 	if i.g.runs == nil {
@@ -227,7 +228,7 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 			delete(i.g.runs, key)
 		}
 	}()
-	out, err := i.Next.ExecuteActivity(context.WithValue(ctx, wavesKey{}, waves), in)
+	out, err := i.Next.ExecuteActivity(context.WithValue(context.WithValue(ctx, wavesKey{}, waves), oneMoreKey{}, more), in)
 	if err != nil && errors.Is(context.Cause(ctx), errGateRetry) {
 		return nil, temporal.NewApplicationError(errGateRetry.Error()+": "+err.Error(), gateRetryError)
 	}
@@ -356,6 +357,18 @@ func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
 	run.timer = time.AfterFunc(time.Until(run.started.Add(bound)), func() { run.raise(bound, false) })
 }
 
+// extend moves run's end out by d, a wait's extended end included: a call
+// asked once more runs up to d past its wave.
+func (g *GateWatch) extend(run *watchedRun, d time.Duration) {
+	g.mu.Lock()
+	end := max(run.bound, run.told)
+	if run.extended {
+		end = run.deadline.Sub(run.started)
+	}
+	g.mu.Unlock()
+	g.rebound(run, end+d)
+}
+
 // repositoryKey carries the repository of the task a checks wait runs for
 // to the bound: a project may shorten the wait's bound.
 type repositoryKey struct{}
@@ -369,6 +382,17 @@ type wavesKey struct{}
 func boundByParts(ctx context.Context, waves int) {
 	if f, ok := ctx.Value(wavesKey{}).(func(int)); ok {
 		f(waves)
+	}
+}
+
+// oneMoreKey carries an activity's call to move its end out.
+type oneMoreKey struct{}
+
+// oneMoreCall tells the running activity that one of its calls is asked
+// once more (SupervisorModel.Chat): its wave runs up to timeout longer.
+func oneMoreCall(ctx context.Context, timeout time.Duration) {
+	if f, ok := ctx.Value(oneMoreKey{}).(func(time.Duration)); ok {
+		f(timeout)
 	}
 }
 
