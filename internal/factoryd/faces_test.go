@@ -1133,7 +1133,7 @@ func TestDeathLinesReadPlainly(t *testing.T) {
 		records = append(records, factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: factoryd.RuleDisruption, At: at, Condition: reason})
 	}
 	for _, r := range records {
-		for _, l := range factoryd.GateLines(r, "abc1234def") {
+		for _, l := range factoryd.GateLines(r, "abc1234def", true) {
 			if faults := facefixtures.TextFaults(l); len(faults) > 0 {
 				t.Errorf("%q: %v", l, faults)
 			}

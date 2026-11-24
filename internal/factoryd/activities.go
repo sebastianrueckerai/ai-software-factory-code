@@ -1227,7 +1227,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 					last = s.startRef
 				}
 				death := r.deathOf(ctx, deathInput{ns: l.Namespace, pod: l.Pod, uid: l.PodUID, node: l.Node, boot: l.BootID,
-					started: l.StartedAt, ended: time.Now(), stoppedByFactory: l.StoppingAt != nil, afterRestart: true, lastPush: last})
+					started: l.StartedAt, ended: time.Now(), stoppedByFactory: l.StoppingAt != nil, afterRestart: true})
+				// a fresh session replaces it: its end went free
+				death.Lines = GateLines(death, last, true)
 				r.putDeath(ctx, t.ID, l.SessionID, death)
 				s.findings = slices.Concat(s.findings, death.Lines)
 			}
@@ -1391,6 +1393,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		"outcome": res.Outcome, "summary": res.Summary, "started": began}
 	cause := ""
 	if res.Death != nil {
+		res.Death.Lines = GateLines(*res.Death, lastPushOf(s, out), res.Outcome == OutcomePlatformKilled)
 		r.putDeath(ctx, t.ID, s.id, *res.Death)
 		// the pod's events stay on the stored record: the result rides the
 		// card's stops into the case facts, which a model reads
@@ -1597,6 +1600,16 @@ func (r *Runner) interimStart(ctx context.Context, repo Repo, start, base string
 	return wip, head == base, nil
 }
 
+// lastPushOf is the session's last push: its own, else its interim one,
+// else the branch's at its start.
+func lastPushOf(s sessionSpec, out sessionOutcome) string {
+	last := cmp.Or(out.commit, out.wip)
+	if last == "" && s.startRef != s.base {
+		last = s.startRef
+	}
+	return last
+}
+
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 // Where the over-bound work went leads the findings on every path.
 func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
@@ -1604,8 +1617,9 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if out.overBound != "" {
 			res.Findings = slices.Insert(res.Findings, 0, out.overBound)
 		}
-		// the cluster ended the session: no end of its own, a pushed one aside
-		if d := out.death; d != nil && d.Class == DeathPlatform && (res.Outcome == OutcomeNoPush || out.trip != nil && res.Outcome != OutcomePushed) {
+		// the cluster ended a session this factoryd had not stopped for a
+		// decision: a stop it sent keeps its decision
+		if d := out.death; d != nil && d.Class == DeathPlatform && !d.Decided && res.Outcome == OutcomeNoPush {
 			res.Outcome = OutcomePlatformKilled
 		}
 	}()

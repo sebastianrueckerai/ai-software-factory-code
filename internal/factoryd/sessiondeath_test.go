@@ -437,6 +437,75 @@ func TestAReportedEndStaysTheWorkers(t *testing.T) {
 	}
 }
 
+// A stop factoryd sent for a decision keeps the decision's outcome, though
+// a memory guard's kill line names the pod inside the stop: the record
+// keeps its platform facts for the tool, and the next session's lines say
+// nothing of an end that does not count.
+func TestADecidedStopKeepsItsDecision(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ask     *AgentAsk
+		outcome SessionOutcome
+	}{
+		"a person's replan":    {ask: &AgentAsk{Kind: AskReplan, Reason: "replanned by ana: too wide"}, outcome: OutcomeReplan},
+		"the agent's escalate": {ask: &AgentAsk{Kind: AskEscalation, Question: "Which API?", Reason: "two APIs fit"}, outcome: OutcomeEscalate},
+		"the wall clock":       {outcome: OutcomeWallClock},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t5k", nil)
+			g.kube.keepDeleted = true
+			g.r.stopWait = 5 * time.Second
+			at := time.Now().Add(time.Second)
+			g.kernel.kills = func(int) []KernelKill {
+				return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: at, Seq: 7}}
+			}
+			if tc.ask == nil {
+				setDetectors(g.r, map[string]int{policy.DetectorNoProgress: 3})
+				setLimits(g.r, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+			} else {
+				go func() {
+					for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+						if err := g.r.EscalateSession(context.Background(), "t5k", *tc.ask); !errors.Is(err, ErrNoLiveSession) {
+							return
+						}
+					}
+				}()
+			}
+			res := g.run(t, modelCall+sigtermLogs)
+			if res.Outcome != tc.outcome || res.Death == nil || res.Death.Class != DeathPlatform || res.Death.Rule != RuleGuardKill {
+				t.Fatalf("result = %q, death %+v; want %q with the guard kill on the record", res.Outcome, res.Death, tc.outcome)
+			}
+			if rec := g.stored(t, "t5k", res.SessionID); rec.Class != DeathPlatform || rec.Rule != RuleGuardKill {
+				t.Fatalf("stored = %+v, want the guard kill for the tool", rec)
+			}
+			if told := strings.Join(slices.Concat(res.Findings, res.Death.Lines), "\n"); strings.Contains(told, "does not count") {
+				t.Fatalf("findings and lines = %q, want nothing of an end that does not count", told)
+			}
+		})
+	}
+	// the check-in's handover rides the no_progress trip's stop and ends
+	// no_push: the end is the handover's though the guard killed the pod
+	// inside the stop, after the trip's own read found no cause
+	t.Run("a check-in's handover", func(t *testing.T) {
+		g := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: true}, CheckinResponse{Text: `{"decision":"handover","handover":"stop here"}`})
+		g.kube.keepDeleted, g.runner.stopWait = true, 5*time.Second
+		at := time.Now().Add(time.Second)
+		g.runner.cfg.Kernel = &scriptedKernel{kills: func(call int) []KernelKill {
+			if call < 2 {
+				return nil
+			}
+			return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: at, Seq: 7}}
+		}}
+		res, err := runSession(t, nil, g.runner, stallInput, nil, sigtermLogs)
+		if err != nil || res.Outcome != OutcomeNoPush || res.CheckIn == nil || res.CheckIn.Handover != "stop here" ||
+			res.Death == nil || res.Death.Class != DeathPlatform || res.Death.Rule != RuleGuardKill || !res.Death.Decided {
+			t.Fatalf("result = (%+v, %v), death %+v; want the handover's no_push with the guard kill on a decided record", res, err, res.Death)
+		}
+		if told := strings.Join(slices.Concat(res.Findings, res.Death.Lines), "\n"); strings.Contains(told, "does not count") {
+			t.Fatalf("findings and lines = %q, want nothing of an end that does not count", told)
+		}
+	})
+}
+
 // takenStore answers the live row as a newer attempt's.
 type takenStore struct{ Store }
 
@@ -792,8 +861,8 @@ func TestTheIncidentLogNamesKillsAndRestarts(t *testing.T) {
 	if !reflect.DeepEqual(r.Restarts, want) {
 		t.Fatalf("restarts = %+v, want %+v", r.Restarts, want)
 	}
-	if len(r.Lines) != 3 || !strings.Contains(r.Lines[2], "Forgejo restarted from") || !strings.Contains(r.Lines[2], "The node's memory guard killed it.") {
-		t.Fatalf("lines = %q, want the class line and both restarts", r.Lines)
+	if lines := GateLines(r, "", true); len(lines) != 3 || !strings.Contains(lines[2], "Forgejo restarted from") || !strings.Contains(lines[2], "The node's memory guard killed it.") {
+		t.Fatalf("lines = %q, want the class line and both restarts", lines)
 	}
 	if want := []PodEvent{{Reason: "Killing", Type: "Normal", At: in.ended}}; !reflect.DeepEqual(r.Events, want) {
 		t.Fatalf("events = %+v, want %+v: no message", r.Events, want)
@@ -925,6 +994,62 @@ func TestReattachRecordsThePlaceTheRowLacks(t *testing.T) {
 	defer spy.mu.Unlock()
 	if len(spy.rows) != 1 || spy.rows[0].PodUID != deathUID || spy.rows[0].Node != "sf-1" || spy.rows[0].BootID != "b-1" {
 		t.Fatalf("rows after the place's writes %+v, want one naming %s on sf-1 at boot b-1", spy.rows, deathUID)
+	}
+}
+
+// A stop an earlier factoryd sent lost its decision with that factoryd. A
+// memory guard's kill inside it ends the session free, with the class line:
+// the reattached session whose log ends without a result is
+// platform_killed, and a pod gone at the reattach hands its line to the
+// fresh session. The pod's deletion stays factoryd's own, so the kill
+// line, not the pod's absence, names the cause.
+func TestAStopTheFactorydBeforeSentGoesFree(t *testing.T) {
+	const line = "Your previous session did not fail on its own. The node's memory guard killed its pod on sf-1 at "
+	for name, gone := range map[string]bool{"the reattached pod": false, "the pod gone at the reattach": true} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t2", nil)
+			g.kube.keepDeleted = true
+			first := g.detach(t, modelCall+cutLogs)
+			if err := g.store.SetLiveSessionStopping(context.Background(), "t2", first.Owner, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now()
+			g.kernel.kills = func(int) []KernelKill {
+				return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: at, Seq: 5}}
+			}
+			key := first.Namespace + "/" + first.Pod
+			g.kube.mu.Lock()
+			if gone {
+				delete(g.kube.pods, key)
+			} else {
+				g.kube.pods[key].deleted, g.kube.pods[key].phase = true, "Failed"
+			}
+			g.kube.mu.Unlock()
+			var bodies []string
+			if gone {
+				bodies = []string{pushedLine("c2") + "\n" + resultLine(true, "pushed")}
+			}
+			res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, bodies, func(env *testsuite.TestActivityEnvironment) {
+				env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := g.stored(t, "t2", first.SessionID)
+			if rec.Class != DeathPlatform || rec.Rule != RuleGuardKill || rec.Decided || len(rec.Lines) != 1 || !strings.HasPrefix(rec.Lines[0], line) {
+				t.Fatalf("stored = %+v, want the guard kill, free, with its class line", rec)
+			}
+			if gone {
+				findings, _ := timelineStep(t, g.objects, "t2", "session_start")["findings"].([]any)
+				if res.SessionID == first.SessionID || !slices.Contains(findings, any(rec.Lines[0])) {
+					t.Fatalf("the fresh session %s's findings %q, want the class line", res.SessionID, findings)
+				}
+				return
+			}
+			if res.SessionID != first.SessionID || res.Outcome != OutcomePlatformKilled || !slices.Equal(res.Death.Lines, rec.Lines) {
+				t.Fatalf("result = %q of %s, lines %q; want the reattached session platform_killed with the class line", res.Outcome, res.SessionID, res.Death.Lines)
+			}
+		})
 	}
 }
 

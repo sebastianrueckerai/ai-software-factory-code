@@ -953,8 +953,7 @@ func (s *CISpawner) recordDeath(ctx context.Context, ns, phase string, gone bool
 		started = s.now()
 	}
 	death := s.deaths.read(rctx, deathInput{ns: ns, pod: ciPodName, uid: pod.UID, node: pod.Node, started: started, ended: s.now()})
-	// Lines speak to a session's successor; a runner pod has none
-	death.Started, death.Lines = pod.StartedAt, nil
+	death.Started = pod.StartedAt
 	if err := s.deaths.cluster.PutPodDeath(ctx, PodDeath{Kind: "ci", Runner: runner, Record: death}); err != nil {
 		log.Printf("ci spawner: %s: store the death of runner %s: %s", ns, runner, s.deaths.scrub.String(err.Error()))
 	}

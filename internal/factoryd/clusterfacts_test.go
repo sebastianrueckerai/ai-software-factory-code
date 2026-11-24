@@ -362,7 +362,7 @@ func TestSessionFactsTextOfARunningSessionNamesItsNodeWhateverTheReads(t *testin
 
 func ownLimitRecord() DeathRecord {
 	rec := DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, At: digestAt(610), LastCommand: "go test ./proofs/key_log"}
-	rec.Lines = GateLines(rec, "")
+	rec.Lines = GateLines(rec, "", true)
 	return rec
 }
 

@@ -511,7 +511,7 @@ func TestChatClusterFactsOmitsAProversLastCommand(t *testing.T) {
 	r.objects["sessions/t-prove/timeline.jsonl"] = []byte(sessionsTimeline)
 	rec := factoryd.DeathRecord{Class: factoryd.DeathOwnLimit, Rule: factoryd.RuleMemoryLimit, At: time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC),
 		LastCommand: "go test ./proofs/key_log"}
-	rec.Lines = factoryd.GateLines(rec, "")
+	rec.Lines = factoryd.GateLines(rec, "", true)
 	if len(rec.Lines) == 0 || !strings.Contains(strings.Join(rec.Lines, "\n"), "proofs/key_log") {
 		t.Fatalf("lines = %q, want a class line that quotes the command", rec.Lines)
 	}

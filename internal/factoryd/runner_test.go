@@ -1897,8 +1897,9 @@ func TestNoProgressOnALostNodeEndsWithoutACheckin(t *testing.T) {
 	g.runner.stopWait = time.Minute
 	began := time.Now()
 	res, err := runSession(t, nil, g.runner, stallInput, nil, hangLogs)
-	if err != nil || res.Outcome != OutcomePlatformKilled || res.Trip != string(TripNoProgress) || res.Death == nil || res.Death.Rule != RuleNodeNotReady {
-		t.Fatalf("result = (%+v, %v), death %+v; want platform_killed on the no_progress trip, by the node gone NotReady", res, err, res.Death)
+	if err != nil || res.Outcome != OutcomePlatformKilled || res.Trip != string(TripNoProgress) || res.Death == nil || res.Death.Rule != RuleNodeNotReady ||
+		len(res.Death.Lines) != 1 || !strings.HasSuffix(res.Death.Lines[0], "That session does not count against the card.") {
+		t.Fatalf("result = (%+v, %v), death %+v; want platform_killed on the no_progress trip, by the node gone NotReady, with its class line", res, err, res.Death)
 	}
 	if g.chat.calls != 0 || g.asks() != 0 {
 		t.Fatalf("check-in calls %d, interim push asks %d; want none of either", g.chat.calls, g.asks())
