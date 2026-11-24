@@ -1407,7 +1407,7 @@ form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible)
 .opened .o-line .it:not(:last-child)::after { content: " ·"; color: var(--text-faint); }
 .opened .o-line :is(.flag, .unchecked) { color: var(--need-text); }
 .opened .o-line a { color: inherit; }
-.opened :is(.o-ask, .o-sent, .o-summary, .o-folds) { margin: 0; padding: 14px 0; border-top: 1px solid var(--line); }
+.opened :is(.o-ask, .o-sent, .o-hold, .o-summary, .o-folds) { margin: 0; padding: 14px 0; border-top: 1px solid var(--line); }
 .opened .o-label { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--need-text); font-size: 12px; font-weight: 600; letter-spacing: .06em; font-variant-caps: all-small-caps; }
 .opened .o-pages { display: flex; gap: 2px; margin-left: auto; }
 .opened .o-pages :is(a, span) { min-width: 24px; color: var(--accent); font-size: 16px; line-height: 1; text-align: center; text-decoration: none; }

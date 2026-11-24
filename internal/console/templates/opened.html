@@ -16,6 +16,7 @@
 {{end}}{{with .Answers}}<div class="o-answers">{{range .}}{{template "answer" .}}{{end}}</div>
 {{end}}</section>
 {{end}}{{if .Sent}}<p class="o-sent" role="status">The answer is on its way to the card.</p>
+{{end}}{{with .Hold}}<section class="o-hold o-answers" aria-label="The hold">{{range .}}{{template "answer" .}}{{end}}</section>
 {{end}}{{with .Summary}}<p class="o-summary">{{.}}</p>
 {{end}}<div class="o-folds">
 {{with .Ask}}{{range .Words}}<details class="fold" data-sec="words"><summary>{{.Title}}<span class="hint">{{.Hint}}</span></summary><div class="fold-body"><p class="own-words">{{.Text}}</p></div></details>
