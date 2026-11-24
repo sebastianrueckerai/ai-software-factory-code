@@ -54,6 +54,9 @@ func TestReconcileCasesWithdrawsTheCasesOfEndedCards(t *testing.T) {
 
 			reconcile(t, s, CaseHealReport{Withdrawn: 1})
 			withdrawnFor(t, s, c.ID, "card ended "+status, 1)
+			if rows := taskRows(t, s, caseTask, EventQuestionWithdrawn); len(rows) != 0 {
+				t.Fatalf("question_withdrawn rows = %+v, want none: the card's end is the record", rows)
+			}
 			reconcile(t, s, CaseHealReport{})
 		})
 	}
@@ -290,6 +293,9 @@ func TestReconcileCasesKeepsThePlanCaseOfACardWithNoRevision(t *testing.T) {
 	}
 }
 
+// An ask at the human on a card that moved on with no answer is withdrawn
+// by the row that records the close, so the inbox and the card's life say
+// it; the plan's question and the merge keep their own ends.
 func TestReconcileCasesWithdrawsTheAsksOfACardThatMovedOn(t *testing.T) {
 	ctx := context.Background()
 	s := cardCaseStore(t, "cases_heal")
@@ -300,6 +306,10 @@ func TestReconcileCasesWithdrawsTheAsksOfACardThatMovedOn(t *testing.T) {
 
 	reconcile(t, s, CaseHealReport{Moved: 1})
 	withdrawnFor(t, s, capCase.ID, "the card moved on to running", 1)
+	rows := taskRows(t, s, caseTask, EventQuestionWithdrawn)
+	if len(rows) != 1 || rows[0].Actor != FactoryDecider || rows[0].Detail["case_id"] != float64(capCase.ID) || rows[0].Detail["reason"] != "the card moved on to running" {
+		t.Fatalf("question_withdrawn rows = %+v, want one by factoryd naming case %d as the card moved on to running", rows, capCase.ID)
+	}
 	open, err := s.OpenCasesOf(ctx, caseTask)
 	if err != nil || len(open) != 2 || open[0].Kind != CasePlanQuestion || open[1].Kind != CaseMergeApproval {
 		t.Fatalf("OpenCasesOf = %+v, %v; want the plan question and the merge live", open, err)
@@ -341,6 +351,9 @@ func TestReconcileCasesLeavesATripsCaseToItsFace(t *testing.T) {
 	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "the card moved on to running"}
 	if got := caseByID(t, s, fresh.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("case = %+v, resolution %+v; want withdrawn %+v", got, got.Resolution, want)
+	}
+	if rows := taskRows(t, s, caseTask, EventQuestionWithdrawn); len(rows) != 0 {
+		t.Fatalf("question_withdrawn rows = %+v, want none: no human was asked", rows)
 	}
 }
 

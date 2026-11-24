@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -48,14 +49,14 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// A plan at rest owns its wait on a failed card: its close check ends
 	// that case (ownFailedCard). A closed plan's ask to close it stands on
 	// its closed card: the plan's close ends it
-	ended, err := s.withdrawCases(ctx, `SELECT c.id, 'card ended ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
+	ended, err := s.withdrawCases(ctx, false, `SELECT c.id, 'card ended ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND t.status IN ('done', 'failed', 'closed') AND c.kind NOT IN ($2, $3, $6)
 		AND NOT (c.kind = $4 AND t.track = $5)`,
 		repository, CaseMonitorFlag, CasePlanCriteria, CaseDependencyFailed, policy.TrackPlan, CasePlanHeld)
 	if err != nil {
 		return r, err
 	}
-	replaced, err := s.withdrawCases(ctx, `SELECT c.id, 'plan revision ' || p.revision || ' replaced it'
+	replaced, err := s.withdrawCases(ctx, false, `SELECT c.id, 'plan revision ' || p.revision || ' replaced it'
 		FROM cases c JOIN LATERAL (SELECT max(revision) AS revision FROM plan_revisions WHERE task_id = c.task_id) p ON true
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind IN ($2, $3) AND (c.facts->>'revision')::int < p.revision`,
 		repository, CasePlanQuestion, CasePlanConfirmation)
@@ -74,7 +75,7 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// faces it at the wake, and a face that fails keeps the wake for the
 	// next pass. The run ends the case of a wait it leaves. A merged card
 	// takes no face, so its case goes as any other
-	if r.Moved, err = s.withdrawCases(ctx, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
+	if r.Moved, err = s.withdrawCases(ctx, true, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6, $7)
 		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')
 		AND NOT (c.owner_rung < 3 AND c.next_wake_at IS NOT NULL AND t.status <> 'merged')
@@ -133,8 +134,10 @@ func (s *PGStore) endDecidedCase(ctx context.Context, id int64, kind CaseKind, s
 }
 
 // withdrawCases withdraws each live case query answers, for the reason
-// it answers beside the case's id, and counts the cases it withdrew.
-func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) (int, error) {
+// it answers beside the case's id, and counts the cases it withdrew. With
+// recorded, a case at the human is withdrawn by the question_withdrawn row
+// that records the close, which the events writer ends it by.
+func (s *PGStore) withdrawCases(ctx context.Context, recorded bool, query string, args ...any) (int, error) {
 	type withdrawal struct {
 		id     int64
 		reason string
@@ -147,7 +150,11 @@ func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) 
 	}
 	n := 0
 	for _, w := range ws {
-		switch err := withdrawCase(ctx, s.db, w.id, w.reason); {
+		end := func() error { return withdrawCase(ctx, s.db, w.id, w.reason) }
+		if recorded {
+			end = func() error { return s.withdrawRecorded(ctx, w.id, w.reason) }
+		}
+		switch err := end(); {
 		case errors.Is(err, ErrNotFound):
 		case err != nil:
 			return n, err
@@ -156,6 +163,29 @@ func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) 
 		}
 	}
 	return n, nil
+}
+
+// withdrawRecorded withdraws live case id for reason: by the
+// question_withdrawn row that records the close when the case is at the
+// human, else with no row, for no human was asked.
+func (s *PGStore) withdrawRecorded(ctx context.Context, id int64, reason string) error {
+	c, err := s.CaseByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if c.Status != CaseAtHuman {
+		return withdrawCase(ctx, s.db, id, reason)
+	}
+	t, ok, err := s.Task(ctx, c.TaskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("case %d: no task %s: %w", id, c.TaskID, ErrNotFound)
+	}
+	_, err = s.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: t.IssueNumber, Kind: EventQuestionWithdrawn,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: WithdrawnRow(c, reason, nil)})
+	return err
 }
 
 // openMissedMerges opens the merge case of each of repository's pending
