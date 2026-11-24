@@ -1,5 +1,5 @@
-ARG OPENCODE_VERSION=v1.19.5
-ARG NODE_VERSION=24.22.2
+ARG OPENCODE_VERSION=v1.19.6
+ARG NODE_VERSION=24.22.3
 ARG GOTESTSUM_VERSION=1.13.0
 
 # Every outside image comes from the factory's store by the digest
@@ -18,11 +18,11 @@ FROM scratch AS downloads
 ARG OPENCODE_VERSION
 ARG NODE_VERSION
 ARG GOTESTSUM_VERSION
-ADD --checksum=sha256:588310a336fa3b9df36b3f0225b26f679d453efaad0cf3d66c3651ef3ec1647a https://git.aisoftwarefactory.world/api/packages/upstream/generic/opencode/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /opencode.tar.gz
-ADD --checksum=sha256:48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75 https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+ADD --checksum=sha256:47734e08968b30cc22a0bffb6d9feeed76ad4aa743213a12122040392d09a057 https://git.aisoftwarefactory.world/api/packages/upstream/generic/opencode/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /opencode.tar.gz
+ADD --checksum=sha256:4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
 ADD --checksum=sha256:11ccddeaf708ef228889f9fe2f68291a75b27013ddfc3b18156e094f5f40e8ee https://git.aisoftwarefactory.world/api/packages/upstream/generic/gotestsum/v${GOTESTSUM_VERSION}/gotestsum_${GOTESTSUM_VERSION}_linux_amd64.tar.gz /gotestsum.tar.gz
 
-FROM ${UPSTREAM}docker.io/library/golang:1.26.10-alpine@sha256:2173d702003b1a8d17b844191acaeb36e94de46f6cabf2cb27370e151bbce5aa AS build
+FROM ${UPSTREAM}docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38 AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
 # --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
 # builds the same digest at any wall-clock time. The stage builds offline
@@ -66,7 +66,7 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/ag
 # blip failed the build outright: main run 1620's image-sandbox went red
 # on sandbox inputs identical to the green run before it (2ef3c97c changed
 # k8s pins only), the class of fault five bounded retries rule out.
-FROM ${UPSTREAM}docker.io/library/golang:1.26.10-alpine@sha256:2173d702003b1a8d17b844191acaeb36e94de46f6cabf2cb27370e151bbce5aa AS npm-cache
+FROM ${UPSTREAM}docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38 AS npm-cache
 COPY opencode-plugin/package-lock.json /tmp/package-lock.json
 RUN sum=$(sha256sum /tmp/package-lock.json | awk '{print $1}') \
       && i=0 && until wget -T 60 -O /tmp/npm-cache.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/npm-cache/$sum/npm-cache.tar.gz"; do \
@@ -88,7 +88,7 @@ RUN sum=$(sha256sum /tmp/package-lock.json | awk '{print $1}') \
 # itself, pinned at build time rather than resolved by a session. The cache
 # comes from the store, and npm ci runs --offline against it (roadmap 203,
 # step 2): a missing or wrong store copy fails the install.
-FROM ${UPSTREAM}docker.io/library/node:22-bookworm-slim@sha256:aaa4b5baf1ecff3b283486bb1f90405cdda225a3e6f79660d2c559fa510a7292 AS opencode-plugin
+FROM ${UPSTREAM}docker.io/library/node:22-bookworm-slim@sha256:d20a7b8b4184bf74fe77499b5460a3d69e582bc733d50287e40c3fe791764851 AS opencode-plugin
 ARG OPENCODE_VERSION
 WORKDIR /opencode-home/.config/opencode
 COPY opencode-plugin/package.json opencode-plugin/package-lock.json ./
@@ -98,15 +98,15 @@ RUN npm ci --offline --cache /npm-cache --no-audit --no-fund \
 
 # The sandbox without the harness and the stack, pushed as sf/sandbox-base:
 # project images build FROM it and apt-get install from its sources.
-FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018 AS base
+FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:311f7a192fd9a92b165a86b32fa3aae9005b11849bfb1db2d4fd784559ee464f AS base
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 # useradd dates the worker's /etc/shadow entry by SOURCE_DATE_EPOCH, else
 # by the build's day.
 ARG SOURCE_DATE_EPOCH
-ARG DEBIAN_SNAPSHOT=20261108T000000Z
-ARG POSTGRESQL_VERSION=17.11-1.pgdg12+2
-ARG LIBPQ_VERSION=18.6-1.pgdg12+2
-ARG POSTGRESQL_COMMON_VERSION=293.pgdg12+1
+ARG DEBIAN_SNAPSHOT=20261122T000000Z
+ARG POSTGRESQL_VERSION=17.12-1.pgdg12+1
+ARG LIBPQ_VERSION=18.7-1.pgdg12+2
+ARG POSTGRESQL_COMMON_VERSION=297.pgdg12+1
 # Debian's packages come from snapshot.debian.org at DEBIAN_SNAPSHOT, and
 # PostgreSQL 17's server for scripts/pg-test.sh from the PGDG archive at the
 # versions named, as in Dockerfile.runner, which says why. The install

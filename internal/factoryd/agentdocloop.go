@@ -38,7 +38,7 @@ func AgentDocLoopIDs() []string {
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
 // ran on; it is the provenance of every wire part that is opencode's own.
 // It is the sandbox image's OPENCODE_VERSION, the harness the agents run.
-const AgentDocOpencodeVersion = "opencode 1.19.5"
+const AgentDocOpencodeVersion = "opencode 1.19.6"
 
 // agentDocLoopRepo is the fixture task's repository: a project that is
 // no factory repository — no source names one — and says so, so the
