@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -37,8 +38,9 @@ func AgentDocLoopIDs() []string {
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
 // ran on; it is the provenance of every wire part that is opencode's own.
-// It is the sandbox image's OPENCODE_VERSION, the harness the agents run.
-const AgentDocOpencodeVersion = "opencode 1.19.6"
+// It is upstream-files.txt's opencode line, the harness the sandbox image
+// runs.
+var AgentDocOpencodeVersion = "opencode " + strings.TrimPrefix(pins.FileOf("opencode").Version, "v")
 
 // agentDocLoopRepo is the fixture task's repository: a project that is
 // no factory repository — no source names one — and says so, so the

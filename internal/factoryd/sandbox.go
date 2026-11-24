@@ -1,9 +1,11 @@
 package factoryd
 
 import (
+	"maps"
 	"slices"
 	"strings"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -29,23 +31,33 @@ var sandboxTools = []struct {
 var factoryTools = []string{"Go 1.26", "Node 24 with npm"}
 
 // FactoryStack is what the factory's image adds to the sandbox base as an
-// image of factory/images.yaml: Go at the version Dockerfile.sandbox's
-// golang base pins, Node at upstream-files.txt's line, the Go env and PATH
-// of the image's final stage, and its registries. A test holds it to both
-// files.
+// image of factory/images.yaml: Go as the factory repository's own
+// factory/images.yaml pins go.dev/dl's tarball, Node at upstream-files.txt's
+// line, the Go env and PATH of the image's final stage, and its
+// registries. A test holds it to Dockerfile.sandbox.
 func FactoryStack() policy.ImageSpec {
+	node := pins.FileOf("node")
 	return policy.ImageSpec{
 		Upstream: []policy.UpstreamLine{
-			// go.dev/dl's sha256 of the file (its JSON index, mode=json&include=all)
-			{Name: "go", URL: "https://go.dev/dl/go1.26.11.linux-amd64.tar.gz", SHA256: "9849f4e04ee35303714e34fbc3ac8ab44ea3e448a95aa182f91e3b9b79c710ec",
-				To: "/usr/local/go", Strip: 1},
-			{Name: "node", URL: "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz", SHA256: "4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb",
-				To: "/usr/local", Strip: 1},
+			factoryGo(),
+			{Name: "node", URL: node.URL, SHA256: node.SHA256, To: "/usr/local", Strip: 1},
 		},
 		Env:    map[string]string{"GOTOOLCHAIN": "local", "GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org"},
 		Path:   []string{"/usr/local/go/bin", "/home/worker/go/bin"},
 		Egress: slices.Clone(sandboxRegistries),
 	}
+}
+
+// factoryGo is the go line of the factory repository's factory/images.yaml,
+// its images in name order; a line named go without a URL when none has one.
+func factoryGo() policy.UpstreamLine {
+	images := pins.ImagesFile().Images
+	for _, name := range slices.Sorted(maps.Keys(images)) {
+		if i := slices.IndexFunc(images[name].Upstream, func(u policy.UpstreamLine) bool { return u.Name == "go" }); i >= 0 {
+			return images[name].Upstream[i]
+		}
+	}
+	return policy.UpstreamLine{Name: "go"}
 }
 
 // sandboxIncidental are the image's packages that are no tool the agent

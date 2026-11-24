@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 )
@@ -91,11 +92,15 @@ func TestBuildVMUserData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	buildkit := pins.FileOf("buildkit")
+	if buildkit.SHA256 == "" {
+		t.Fatal("upstream-files.txt has no buildkit line for the VM to install")
+	}
 	for _, want := range []string{
-		"echo \"" + buildkitSHA256 + "  buildkit.tar.gz\" | sha256sum -c -",
-		// the store's copy of the buildkit release, not its upstream
-		// (roadmap 203, step 2)
-		"https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v0.35.1/buildkit-v0.35.1.linux-amd64.tar.gz",
+		"echo \"" + buildkit.SHA256 + "  buildkit.tar.gz\" | sha256sum -c -",
+		// the store's copy of the list's buildkit release, not its
+		// upstream (roadmap 203, step 2)
+		"curl -fsSL --retry 5 -o buildkit.tar.gz " + pins.StoreGeneric + "buildkit/" + buildkit.Version + "/" + buildkit.Name + "\n",
 		"--addr tcp://0.0.0.0:1234 --tlscacert /etc/buildkit/ca.pem --tlscert /etc/buildkit/server-cert.pem --tlskey /etc/buildkit/server-key.pem --oci-worker-snapshotter=overlayfs",
 		"bin/buildkit-runc",
 		// the VM's own rules deny every upstream the store fronts

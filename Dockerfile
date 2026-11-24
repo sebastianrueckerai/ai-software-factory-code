@@ -31,6 +31,9 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
       && go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
+# the root package (pins.go) compiles the lists in
+COPY pins.go upstream-files.txt upstream-images.txt ./
+COPY factory/images.yaml factory/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \
  && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factoryd ./cmd/factoryd
 

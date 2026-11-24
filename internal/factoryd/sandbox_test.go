@@ -17,6 +17,7 @@ import (
 
 	"go.temporal.io/sdk/temporal"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -60,10 +61,12 @@ func TestSandboxToolsAreTheImages(t *testing.T) {
 }
 
 // FactoryStack is the factory image's stack as an images.yaml image: Go
-// at the version Dockerfile.sandbox's golang base pins, Node at the line
-// upstream-files.txt pins with its sha256, the final stage's Go env and
-// PATH, and the factory image's registries; it passes the file's checks.
-// A bump of either file fails here until the stack follows.
+// at the version Dockerfile.sandbox's golang base pins, from the factory
+// repository's factory/images.yaml, Node at the line upstream-files.txt
+// pins with its sha256 and Dockerfile.sandbox's NODE_VERSION names, the
+// final stage's Go env and PATH, and the factory image's registries; it
+// passes the file's checks. A bump that moves one of the files and not
+// the other fails here.
 func TestFactoryStackIsTheFactoryImage(t *testing.T) {
 	dockerfile := sandboxDockerfile(t)
 	golang := regexp.MustCompile(`golang:(\d+\.\d+\.\d+)-alpine@`).FindStringSubmatch(dockerfile)
@@ -71,26 +74,17 @@ func TestFactoryStackIsTheFactoryImage(t *testing.T) {
 	if golang == nil || node == nil {
 		t.Fatal("Dockerfile.sandbox pins no golang base or no NODE_VERSION")
 	}
-	files, err := os.ReadFile("../../upstream-files.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var nodeLine []string
-	for _, line := range strings.Split(string(files), "\n") {
-		if f := strings.Fields(line); len(f) == 5 && f[0] == "node" && f[1] == "v"+node[1] {
-			nodeLine = f
-		}
-	}
-	if nodeLine == nil {
-		t.Fatalf("upstream-files.txt has no node v%s line", node[1])
+	nodeLine := pins.FileOf("node")
+	if nodeLine.Version != "v"+node[1] {
+		t.Fatalf("upstream-files.txt's node line %q, Dockerfile.sandbox's NODE_VERSION %s", nodeLine, node[1])
 	}
 	s := FactoryStack()
 	want := []policy.UpstreamLine{
 		{Name: "go", URL: "https://go.dev/dl/go" + golang[1] + ".linux-amd64.tar.gz", SHA256: s.Upstream[0].SHA256, To: "/usr/local/go", Strip: 1},
-		{Name: "node", URL: nodeLine[3], SHA256: nodeLine[4], To: "/usr/local", Strip: 1},
+		{Name: "node", URL: nodeLine.URL, SHA256: nodeLine.SHA256, To: "/usr/local", Strip: 1},
 	}
 	if !reflect.DeepEqual(s.Upstream, want) {
-		t.Fatalf("upstream = %+v, want %+v", s.Upstream, want)
+		t.Fatalf("upstream = %+v, want %+v: factory/images.yaml's go line follows Dockerfile.sandbox's golang base", s.Upstream, want)
 	}
 	for k, v := range s.Env {
 		if !strings.Contains(dockerfile, k+"="+v) {
