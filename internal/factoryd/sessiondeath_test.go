@@ -125,20 +125,24 @@ func stoppedResultLine(summary string) string {
 var modelCall = envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n"
 
 // placeSpy keeps the live row as each write of the pod's place left it,
-// and the owners of the stops written to it.
+// the owners of the stops written to it and the row's stop after each.
 type placeSpy struct {
 	Store
-	mu    sync.Mutex
-	puts  []LiveSession
-	rows  []LiveSession
-	stops []string
+	mu       sync.Mutex
+	puts     []LiveSession
+	rows     []LiveSession
+	stops    []string
+	stopping []*time.Time
 }
 
 func (s *placeSpy) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
+	err := s.Store.SetLiveSessionStopping(ctx, taskID, owner, at)
+	l, _, _ := s.Store.LiveSession(ctx, taskID)
 	s.mu.Lock()
 	s.stops = append(s.stops, owner)
+	s.stopping = append(s.stopping, l.StoppingAt)
 	s.mu.Unlock()
-	return s.Store.SetLiveSessionStopping(ctx, taskID, owner, at)
+	return err
 }
 
 func (s *placeSpy) PutLiveSession(ctx context.Context, l LiveSession) error {
@@ -566,6 +570,66 @@ func TestTheFactorysStopIsNoPlatformDeath(t *testing.T) {
 	defer spy.mu.Unlock()
 	if len(spy.stops) != 1 || spy.stops[0] != "own" {
 		t.Fatalf("stops written %q, want the stop on the session's row, for its owner", spy.stops)
+	}
+}
+
+// A human's hold stops the session through factoryd's own stop, by the
+// live ask and by the hold the session reads as it registers: the stop is
+// written to the session's row for its owner before the pod is deleted,
+// so the deleting pod, ended 143 on a Ready node with no kill line, is no
+// platform death. The session ends held, its record of no cluster cause.
+func TestAHeldStopIsTheFactorysOwnStop(t *testing.T) {
+	const reason = "held by sebastian: out of the way"
+	for name, press := range map[string]func(g deathRig){
+		"the live ask": func(g deathRig) {
+			go func() {
+				for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+					err := g.r.EscalateSession(context.Background(), g.taskID, AgentAsk{Kind: AskHold, Reason: reason})
+					if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
+						return
+					}
+				}
+			}()
+		},
+		"the stop at registration": func(g deathRig) {
+			card := g.store.tasks[g.taskID]
+			card.Kind, card.Hold = "agent", &CardHold{Reason: "out of the way", By: "sebastian", At: time.Now()}
+			g.store.tasks[g.taskID] = card
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t5h", func(p *fakePod) {
+				p.containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "terminated", Reason: "Error", ExitCode: 143}}
+			})
+			g.kube.keepDeleted = true
+			g.r.stopWait = 5 * time.Second
+			spy := &placeSpy{Store: g.store}
+			g.r.store = spy
+			press(g)
+			res, err := runSession(t, nil, g.r, SessionInput{TaskID: g.taskID, Attempt: 1, Model: "m", HoldStop: true}, nil, modelCall+sigtermLogs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != OutcomeHeld || res.Trip != string(TripHold) || res.Reason != reason {
+				t.Fatalf("result = %+v, want the held stop", res)
+			}
+			if d := res.Death; d == nil || d.Class != DeathUnknown || d.Rule != RuleNone || len(d.Lines) != 0 {
+				t.Fatalf("death = %+v, want no cluster cause and no line", d)
+			}
+			if rec := g.stored(t, g.taskID, res.SessionID); rec.Class != DeathUnknown || rec.Rule != RuleNone {
+				t.Fatalf("stored = %+v, want no cluster cause", rec)
+			}
+			spy.mu.Lock()
+			defer spy.mu.Unlock()
+			if !slices.Equal(spy.stops, []string{"own"}) || len(spy.stopping) != 1 || spy.stopping[0] == nil {
+				t.Fatalf("stops written %q, the row's stop after each %v; want one stop on the session's row, for its owner", spy.stops, spy.stopping)
+			}
+			g.kube.mu.Lock()
+			defer g.kube.mu.Unlock()
+			if len(g.kube.deletedPods) != 1 {
+				t.Fatalf("deleted pods %q, want the session's pod once", g.kube.deletedPods)
+			}
+		})
 	}
 }
 
