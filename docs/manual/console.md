@@ -526,8 +526,8 @@ resources page, a period that recurs and no instant.
   plan of the project, not a plan itself and not one that waits on the
   held card, and `release_hold` ends a hold; both run only on a
   line the human typed in that turn, or on their press, and "Put on hold"
-  and "Release the hold", among the opened card's other actions, do the
-  same. On a running card the press stops its session, which keeps its
+  and "Release the hold", under the opened card's head and outside its
+  folds, do the same. On a running card the press stops its session, which keeps its
   work: the answer is "#N stops its session, keeps its work and waits in
   Queued until a human releases it", and where the card has no live
   session, "#N waits in Queued before its next session until a human

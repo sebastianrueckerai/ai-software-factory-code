@@ -1568,6 +1568,24 @@ async function text(page) {
       else await findAsYouType(nm, "", "costs", "find without moveBefore", fails);
       if (nm.errors.length) fails.push("find without moveBefore: " + nm.errors.join("; "));
       await nm.ctx.close();
+      // on the phone the drawer's bar holds ‹ Board and ✕ above the tabs, so no tab sits under
+      // the ✕, and ‹ Board closes the drawer
+      const bar = await open(browser, { width: 390, height: 844 });
+      await bar.page.goto(base + "/#card=" + drawer + ":overview", { waitUntil: "load" });
+      await bar.page.waitForTimeout(800);
+      const covered = await bar.page.evaluate(() => {
+        const x = document.getElementById("drawer-close").getBoundingClientRect();
+        return [...document.querySelectorAll("#drawer .tabs button")].filter((t) => {
+          const r = t.getBoundingClientRect();
+          return r.left < x.right && r.right > x.left && r.top < x.bottom && r.bottom > x.top;
+        }).map((t) => t.textContent);
+      });
+      if (covered.length) fails.push("drawer phone: the ✕ covers the tabs " + JSON.stringify(covered));
+      await bar.page.locator("#drawer .drawer-back").click();
+      await bar.page.waitForTimeout(400);
+      if (await bar.page.locator("#drawer").isVisible()) fails.push("drawer phone: ‹ Board does not close the drawer");
+      if (bar.errors.length) fails.push("drawer phone: " + bar.errors[0]);
+      await bar.ctx.close();
       // a find keeps the open drawer's hash in the URL it writes, so the drawer's ✕ still closes it;
       // the drawer at its Overview, as its Chat, read again when the stream moves, writes its hash anew
       await p.page.goto(base + "/#card=" + drawer + ":overview", { waitUntil: "load" });

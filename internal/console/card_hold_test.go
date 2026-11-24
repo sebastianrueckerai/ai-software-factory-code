@@ -424,6 +424,31 @@ func TestTheDrawerOffersTheStartedVariants(t *testing.T) {
 	}
 }
 
+// The hold's acts stand under the opened card's head, outside the closed
+// folds, and the Other actions fold no longer holds or counts them.
+func TestTheOpenedCardShowsTheHoldOutsideTheFolds(t *testing.T) {
+	r, _ := newWritesRig(t)
+	withPlan(r)
+	startedCards(r)
+	ck, _ := r.loggedIn(t)
+	for id, want := range map[string][]string{
+		"t-run": {`data-answer="hold_card/started"`},
+		"t-res": {`data-answer="release_hold/started"`, `data-answer="hold_card/started"`},
+	} {
+		page := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
+		_, hold, ok := strings.Cut(page, `<section class="o-hold o-answers" aria-label="The hold">`)
+		hold, folds, _ := strings.Cut(hold, `<div class="o-folds">`)
+		if !ok || !strings.Contains(hold, "Put on hold") && !strings.Contains(hold, "Release the hold") {
+			t.Fatalf("%s's opened card has no hold section before its folds:\n%s", id, page)
+		}
+		for _, w := range want {
+			if !strings.Contains(hold, w) || strings.Contains(folds, w) {
+				t.Errorf("%s: %s stands in the folds, want it before them:\n%s", id, w, page)
+			}
+		}
+	}
+}
+
 // rereadFails is the task store whose second read of card id fails: the
 // hold's first read finds it, its read after a refused hold does not.
 type rereadFails struct {
