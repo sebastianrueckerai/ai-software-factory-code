@@ -16,19 +16,23 @@
 # from their upstreams when it does not. An image's
 # copy is tagged twice: its tag and the digest's first 12 hex digits, which
 # never moves, and its upstream tag, which names the pinned digest for a
-# pull by tag through the mirror. The weekly upstream card bumps these
-# lines.
+# pull by tag through the mirror. The weekly bump's program
+# (cmd/upstream-bump) moves each line to the newest stable release of its
+# major, and a tag that is no version (bookworm-slim, 22-bookworm-slim) to
+# its digest now. A word after the reference and its kind refines the
+# line: patch keeps it in its minor, hold never moves it, and with <name>
+# gives it the version of the one line of that image name.
 
 # the images' builds
-docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38
-docker.io/library/golang:1.26.11@sha256:6327cb290853a5d13091c436b88259b4f35ff70e49b1f8d9e5d1dd1757e9c6ba
+docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38 patch
+docker.io/library/golang:1.26.11@sha256:6327cb290853a5d13091c436b88259b4f35ff70e49b1f8d9e5d1dd1757e9c6ba patch
 docker.io/library/node:22-bookworm-slim@sha256:d20a7b8b4184bf74fe77499b5460a3d69e582bc733d50287e40c3fe791764851
 docker.io/library/debian:bookworm-slim@sha256:311f7a192fd9a92b165a86b32fa3aae9005b11849bfb1db2d4fd784559ee464f
 docker.io/moby/buildkit:v0.35.1@sha256:7583a0667093d941826bcd1d2878d6a360dfd08a82c93e6d6a6f6cce78801e12
 
 # the ts-go template's builds (the infra repository's factory/templates)
 docker.io/library/node:24-bookworm-slim@sha256:e0e989b967dacc279681ed81774b2ce9eeebbb0efb8e0c427573235bebf1eda1
-docker.io/library/golang:1.25-bookworm@sha256:c268a04d59aea0b180ed9946a658cfab9e7b3391dc90eed6e4969ccff98c851f
+docker.io/library/golang:1.25-bookworm@sha256:c268a04d59aea0b180ed9946a658cfab9e7b3391dc90eed6e4969ccff98c851f patch
 
 # main CI's job image and runner
 docker.io/catthehacker/ubuntu:act-22.04@sha256:77e3edc9c794c1207f8e86a9bafe634391e93829eaaf15814c5efcc7300825ec
@@ -37,65 +41,71 @@ docker.io/library/docker:29.10.0-dind@sha256:4eea5f48923988bc80515bf582ffec1eece
 
 # the platform
 docker.io/library/registry:3@sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8
-docker.io/alpine/kubectl:1.36.4@sha256:8c43e5a81f279abdcb795516afd0c4f6012fdf41e92568b04fa2b08b14be00e5
-docker.io/alpine/k8s:1.36.6@sha256:2b33c17a9e7fa4a7bc25b3194fefbc3363c863e6c073a5a81bf07fb00b99d92b
+# kubectl and the k8s tools stay in the cluster's minor
+docker.io/alpine/kubectl:1.36.4@sha256:8c43e5a81f279abdcb795516afd0c4f6012fdf41e92568b04fa2b08b14be00e5 patch
+docker.io/alpine/k8s:1.36.6@sha256:2b33c17a9e7fa4a7bc25b3194fefbc3363c863e6c073a5a81bf07fb00b99d92b patch
 docker.io/amazon/aws-cli:2.42.2@sha256:1f09692d3f91a0f41f76c286329fd5ca424b41b586b1853b4206414fb9ca4ac3
 quay.io/openbao/openbao:2.7.3@sha256:b9418c63e2185157d8ee8689a8a93265d5aadad677d6320156172bd42ad3b10b
-ghcr.io/berriai/litellm:1.108.16@sha256:939fdfa5b682c60204e8cbb8dfb035ee67d96250ddb158b1a7728d7ff6505cc9
+# LiteLLM keeps a line for each recent minor: the gateway stays in its own
+ghcr.io/berriai/litellm:1.108.16@sha256:939fdfa5b682c60204e8cbb8dfb035ee67d96250ddb158b1a7728d7ff6505cc9 patch
 docker.io/temporalio/server:1.32.2@sha256:3e11544607762c3187c12a63e289e03beddf46c21ebb52b47ccb77db179d6313
-docker.io/temporalio/admin-tools:1.32.2@sha256:d6655e288364110b61204fbae5f103232b2c5c78e647a27bc11603d274145809
+docker.io/temporalio/admin-tools:1.32.2@sha256:d6655e288364110b61204fbae5f103232b2c5c78e647a27bc11603d274145809 with docker.io/temporalio/server
 docker.io/temporalio/ui:2.58.1@sha256:0e2c36ce783ac7aa8918d093035d69be8ce231dd49514ed1d1465a760b535336
 docker.io/signoz/signoz:v0.151.0@sha256:ae235f94c4aa702dc2f249afc4d3beb737cd918ffbeed64c116efd9d8559d158
 docker.io/signoz/signoz-otel-collector:v0.144.18@sha256:32182c132fe82894659b9c2164ab90fb6a7c229857e995fdcc46b76069457fba
-docker.io/signoz/zookeeper:3.7.2@sha256:9f9c93aab277486a21d3dd839daa4aa90a5daf131ceaf84dd696b6d035875ddd
-docker.io/clickhouse/clickhouse-server:25.12.11.4@sha256:8ecb92fa564142a2bad5fef7b39f89af7265ddbfd782693b15f002ca0f70be14
-docker.io/library/alpine:3.18.12@sha256:fd032399cd767f310a1d1274e81cab9f0fd8a49b3589eba2c3420228cd45b6a7
+# the SigNoz and k8s-infra charts pin these: they hold, and move with
+# their chart
+docker.io/signoz/zookeeper:3.7.2@sha256:9f9c93aab277486a21d3dd839daa4aa90a5daf131ceaf84dd696b6d035875ddd hold
+docker.io/clickhouse/clickhouse-server:25.12.11.4@sha256:8ecb92fa564142a2bad5fef7b39f89af7265ddbfd782693b15f002ca0f70be14 hold
+docker.io/library/alpine:3.18.12@sha256:fd032399cd767f310a1d1274e81cab9f0fd8a49b3589eba2c3420228cd45b6a7 hold
 https://github.com/SigNoz/signoz/releases/download/histogram-quantile%2Fv0.0.1/histogram-quantile_linux_amd64.tar.gz@sha256:33997073eb6d82b7be4f27f9fc8ec9e28a395e0f20674d5d54bb2fa28a75488d onto docker.io/library/alpine:3.18.12
-docker.io/altinity/clickhouse-operator:0.21.3@sha256:b3b66096c36a43c8a4ac8ed93a51a655720139de41e770639dff6f3478dc6c42
-docker.io/altinity/metrics-exporter:0.21.3@sha256:77f88910dbe26a061cc9a1c75163be5046c1158384eb79eaa64b97587c53c928
-docker.io/otel/opentelemetry-collector-contrib:0.139.0@sha256:87b591b18a0a330b6246f6d4f53d4867d1b238d1b85a69145e0f4eb38f92154c
+docker.io/altinity/clickhouse-operator:0.21.3@sha256:b3b66096c36a43c8a4ac8ed93a51a655720139de41e770639dff6f3478dc6c42 hold
+docker.io/altinity/metrics-exporter:0.21.3@sha256:77f88910dbe26a061cc9a1c75163be5046c1158384eb79eaa64b97587c53c928 hold
+docker.io/otel/opentelemetry-collector-contrib:0.139.0@sha256:87b591b18a0a330b6246f6d4f53d4867d1b238d1b85a69145e0f4eb38f92154c hold
 
 # the platform's charts: an OCI chart is copied as the images are, an HTTP
 # chart repository's archive uploaded to the store's Helm repository
-quay.io/jetstack/charts/cert-manager:v1.21.3@sha256:e482675aec32862d323a9218293ff7de81192337998615e4378c56498473f240
+quay.io/jetstack/charts/cert-manager:v1.21.3@sha256:e482675aec32862d323a9218293ff7de81192337998615e4378c56498473f240 with quay.io/jetstack/cert-manager-controller
 ghcr.io/openbao/charts/openbao:0.30.8@sha256:91ec229677b4b6bf14cbb45ddbb6a04dd15afd504459fca33f44646287269c66
-ghcr.io/berriai/litellm-helm:1.108.16@sha256:42b82addc0587dd24e63875a7f54569de90c9b8b3b5a242cb5d534e6d70dc674
+ghcr.io/berriai/litellm-helm:1.108.16@sha256:42b82addc0587dd24e63875a7f54569de90c9b8b3b5a242cb5d534e6d70dc674 with ghcr.io/berriai/litellm
 code.forgejo.org/forgejo-helm/forgejo:17.3.3@sha256:420f4ece79befff4c7b58afff86eda5632eede333a583571f274ddad409c6eb8
 https://github.com/temporalio/helm-charts/releases/download/temporal-1.8.0/temporal-1.8.0.tgz@sha256:e65b454d620129f3d7da2c16611a7f754e2d89b20b7a135dc5f0916a062f3a9e helm
 https://github.com/SigNoz/charts/releases/download/signoz-0.151.0/signoz-0.151.0.tgz@sha256:c09021f5c095eba3d273b3484a154ebc8ddf668f07a775ba4f357ba93ea87004 helm
 https://github.com/SigNoz/charts/releases/download/k8s-infra-0.17.1/k8s-infra-0.17.1.tgz@sha256:59723bea05092dc85cdeef64154701d3a0cb072b162455abcf11e104ffadf28a helm
 
 # a project's own manifests name these at their upstreams: demo-app's load
-# generator by the digest of its index, copied whole; the nodes' registry
-# mirror serves them
+# generator by its digest; the nodes' registry mirror serves them
 docker.io/curlimages/curl:8.23.0@sha256:3b8fde20978e330b401837f24b871ebe2c8d14ff7f07b87990bcd832588a1a75 bootstrap
 
 # the nodes' own: Talos's Kubernetes, the installer of its node image, and
 # Cilium, installed by its CLI; the nodes pull them through their registry
 # mirror (infra talos/patches.yaml), mostly by tag
-registry.k8s.io/kube-apiserver:v1.37.2@sha256:f3916d65eddfe52b6d21ff4a17abdf4c52589c8ef62ec7e0c17204f276cd8db6 bootstrap
-registry.k8s.io/kube-controller-manager:v1.37.2@sha256:07fccf8e84f4cdc72c8e59f1a50da68f15acf1299e455004a944610aecac60c4 bootstrap
-registry.k8s.io/kube-scheduler:v1.37.2@sha256:e5438c1bb8c569c41ad556d8a1e8eba44fc5b3cfe4da3adf2a17168102434074 bootstrap
-registry.k8s.io/coredns/coredns:v1.14.7@sha256:2329f5f0e7e79fbe56dcdf11ecc4337ee2476bb251095bc275fe9461cb88a55b bootstrap
-registry.k8s.io/etcd:3.7.1@sha256:acf78d83ed1eb6263a0b972fdf4f1e5a3ca536545f8b54947486e22abfe14a11 bootstrap
-registry.k8s.io/pause:3.10.2@sha256:412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17 bootstrap
-ghcr.io/siderolabs/kubelet:v1.37.2@sha256:dc451819e4be23e6fdb47d8e195692629baea6c08b8461449da9ed9027fd7ad1 bootstrap
-factory.talos.dev/installer/d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5:v1.14.6@sha256:de8b18179eabb75a5844e446ef64f46b7976870a6c90f71359b9902977615170 bootstrap
-quay.io/cilium/cilium:v1.20.5@sha256:a54ced05354670afb7fecd075e91130dff5cca16518da7ff3d1ef093c5c2d0ae bootstrap
-quay.io/cilium/cilium-envoy:v1.39.6-1794557904-dee711ff0e84b106edd0abcdd71961af1b870359@sha256:32d2f9dd9981d92b11c8a37abac32f1c9397b3601af17b45b9403ad2bccc7dab bootstrap
-quay.io/cilium/operator-generic:v1.20.5@sha256:3362404f43b6a01cf6e370fb637dac427b7b0259ff2629faa9e5b665121a3a76 bootstrap
+# A Talos release names its own coredns, etcd and pause, which hold, and
+# cilium-envoy's tag is the one Cilium's chart pins: it moves by hand with
+# Cilium.
+registry.k8s.io/kube-apiserver:v1.37.2@sha256:f3916d65eddfe52b6d21ff4a17abdf4c52589c8ef62ec7e0c17204f276cd8db6 bootstrap patch
+registry.k8s.io/kube-controller-manager:v1.37.2@sha256:07fccf8e84f4cdc72c8e59f1a50da68f15acf1299e455004a944610aecac60c4 bootstrap with registry.k8s.io/kube-apiserver
+registry.k8s.io/kube-scheduler:v1.37.2@sha256:e5438c1bb8c569c41ad556d8a1e8eba44fc5b3cfe4da3adf2a17168102434074 bootstrap with registry.k8s.io/kube-apiserver
+registry.k8s.io/coredns/coredns:v1.14.7@sha256:2329f5f0e7e79fbe56dcdf11ecc4337ee2476bb251095bc275fe9461cb88a55b bootstrap hold
+registry.k8s.io/etcd:3.7.1@sha256:acf78d83ed1eb6263a0b972fdf4f1e5a3ca536545f8b54947486e22abfe14a11 bootstrap hold
+registry.k8s.io/pause:3.10.2@sha256:412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17 bootstrap hold
+ghcr.io/siderolabs/kubelet:v1.37.2@sha256:dc451819e4be23e6fdb47d8e195692629baea6c08b8461449da9ed9027fd7ad1 bootstrap with registry.k8s.io/kube-apiserver
+factory.talos.dev/installer/d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5:v1.14.6@sha256:de8b18179eabb75a5844e446ef64f46b7976870a6c90f71359b9902977615170 bootstrap patch
+quay.io/cilium/cilium:v1.20.5@sha256:a54ced05354670afb7fecd075e91130dff5cca16518da7ff3d1ef093c5c2d0ae bootstrap patch
+quay.io/cilium/cilium-envoy:v1.39.6-1794557904-dee711ff0e84b106edd0abcdd71961af1b870359@sha256:32d2f9dd9981d92b11c8a37abac32f1c9397b3601af17b45b9403ad2bccc7dab bootstrap hold
+quay.io/cilium/operator-generic:v1.20.5@sha256:3362404f43b6a01cf6e370fb637dac427b7b0259ff2629faa9e5b665121a3a76 bootstrap with quay.io/cilium/cilium
 
 # Forgejo's path, referenced at the upstream
 code.forgejo.org/forgejo/forgejo:17.0.2-rootless@sha256:020d7e5ed6228f147c9681a9c4a3bff485a07c59108e4731a2e94672f0f2202a bootstrap
 ghcr.io/cloudnative-pg/cloudnative-pg:1.30.2@sha256:7172ea6acc90b0af204e513ee7b5f05fb04a44dcf96a8666655de88511758d7f bootstrap
 ghcr.io/cloudnative-pg/postgresql:18.7-system-trixie@sha256:6ebbabac7feb9da3490278b77cbbe2c412ebcf1ecde8278a156e1b86d554feb5 bootstrap
 ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.1@sha256:e982a3b8813703e5c0e58c49aef7e15fe41bbe396c949c480627bda6a3a067b9 bootstrap
-ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1@sha256:eb61ec74fddfcadc956fa49d99306daf9d6ec84b59594b183614037e2b5a5785 bootstrap
+ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1@sha256:eb61ec74fddfcadc956fa49d99306daf9d6ec84b59594b183614037e2b5a5785 bootstrap with ghcr.io/cloudnative-pg/plugin-barman-cloud
 quay.io/jetstack/cert-manager-controller:v1.21.3@sha256:9b262e9493ab3e0daebc2c9cfbddc6df68b9ac91afc036a759584f3d49d607e5 bootstrap
-quay.io/jetstack/cert-manager-cainjector:v1.21.3@sha256:165691f631d61931a27e4fbbb82bbed8205431d0446b3c14d170081aeff75f0a bootstrap
-quay.io/jetstack/cert-manager-webhook:v1.21.3@sha256:fc2845cc042ab57c8b98c5ff62462d50dcd5d8d3302f9e6875cd05042ce1020b bootstrap
-quay.io/jetstack/cert-manager-acmesolver:v1.21.3@sha256:5d9c98380d108c34fba252ce675857a9b63e00271ecb64ecfa7f58626723dac0 bootstrap
-quay.io/jetstack/cert-manager-startupapicheck:v1.21.3@sha256:6b9e17adc075c80c0c5cb1f901654f0efa4c5d4b1a8b369985ac67f5bbb0b8d2 bootstrap
+quay.io/jetstack/cert-manager-cainjector:v1.21.3@sha256:165691f631d61931a27e4fbbb82bbed8205431d0446b3c14d170081aeff75f0a bootstrap with quay.io/jetstack/cert-manager-controller
+quay.io/jetstack/cert-manager-webhook:v1.21.3@sha256:fc2845cc042ab57c8b98c5ff62462d50dcd5d8d3302f9e6875cd05042ce1020b bootstrap with quay.io/jetstack/cert-manager-controller
+quay.io/jetstack/cert-manager-acmesolver:v1.21.3@sha256:5d9c98380d108c34fba252ce675857a9b63e00271ecb64ecfa7f58626723dac0 bootstrap with quay.io/jetstack/cert-manager-controller
+quay.io/jetstack/cert-manager-startupapicheck:v1.21.3@sha256:6b9e17adc075c80c0c5cb1f901654f0efa4c5d4b1a8b369985ac67f5bbb0b8d2 bootstrap with quay.io/jetstack/cert-manager-controller
 docker.io/rancher/local-path-provisioner:v0.0.37@sha256:c3f2c60ee2490eb83ac00101d7e239fd8c20a5b8b4038e2dfc36a7e66fe99c08 bootstrap
 docker.io/library/busybox:1.38.0@sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4 bootstrap
 ghcr.io/fluxcd/source-controller:v1.10.2@sha256:4492b6e4503f955048c88f28516c99bc43257aedfb22d1a3ffcbdcea4bccce5c bootstrap

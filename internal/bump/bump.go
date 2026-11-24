@@ -104,35 +104,35 @@ func (p *pass) failed(format string, a ...any) {
 // lead's first, then the with lines after the line they follow.
 func (p *pass) imageList() {
 	const list = "upstream-images.txt"
-	var lines []imageLine
+	var lines []ImageLine
 	names := map[string]int{}
 	for _, raw := range strings.Split(p.files[list], "\n") {
 		if !pinLine(raw) {
 			continue
 		}
-		l, err := parseImageLine(raw)
+		l, err := ParseImageLine(raw)
 		if err != nil {
 			p.failed("%s: %v", list, err)
 			continue
 		}
 		lines = append(lines, l)
-		if name, _, _, ok := splitImage(l.ref); ok && !strings.HasPrefix(l.ref, "https://") {
+		if name, _, _, ok := splitImage(l.Ref); ok && !strings.HasPrefix(l.Ref, "https://") {
 			names[name]++
 		}
 	}
 	leads := map[string]string{}
 	for _, follow := range []bool{false, true} {
 		for _, l := range lines {
-			if (l.rule == RuleWith) != follow || l.rule == RuleHold {
+			if (l.Rule == RuleWith) != follow || l.Rule == RuleHold {
 				continue
 			}
 			now, err := p.imageLine(l, leads, names)
 			if err != nil {
-				p.failed("%s: %v", strings.Fields(l.ref)[0], err)
+				p.failed("%s: %v", strings.Fields(l.Ref)[0], err)
 				continue
 			}
-			if now != l.ref {
-				p.images[l.ref] = now
+			if now != l.Ref {
+				p.images[l.Ref] = now
 			}
 		}
 	}
@@ -140,9 +140,9 @@ func (p *pass) imageList() {
 }
 
 // imageLine is the line's reference moved to the newest of its line.
-func (p *pass) imageLine(l imageLine, leads map[string]string, names map[string]int) (string, error) {
-	if strings.HasPrefix(l.ref, "https://") {
-		u, sum, _ := strings.Cut(l.ref, "@sha256:")
+func (p *pass) imageLine(l ImageLine, leads map[string]string, names map[string]int) (string, error) {
+	if strings.HasPrefix(l.Ref, "https://") {
+		u, sum, _ := strings.Cut(l.Ref, "@sha256:")
 		d, err := p.download(u, sum, "")
 		if err != nil {
 			return "", err
@@ -152,21 +152,21 @@ func (p *pass) imageLine(l imageLine, leads map[string]string, names map[string]
 		}
 		return d.newURL + "@sha256:" + d.newSum, nil
 	}
-	name, tag, digest, ok := splitImage(l.ref)
+	name, tag, digest, ok := splitImage(l.Ref)
 	if !ok {
 		return "", fmt.Errorf("not name:tag@sha256:<digest>")
 	}
 	pick := tag
-	switch l.rule {
+	switch l.Rule {
 	case RuleWith:
-		lead, ok := leads[l.lead]
+		lead, ok := leads[l.Lead]
 		if !ok {
-			return "", fmt.Errorf("with %s: no line of that name leads it (one, not held, in the list)", l.lead)
+			return "", fmt.Errorf("with %s: no line of that name leads it (one, not held, in the list)", l.Lead)
 		}
 		v, ok := parseVersion(tag, false)
 		lv, lok := parseVersion(lead, false)
 		if !ok || !lok || len(v.nums) != len(lv.nums) {
-			return "", fmt.Errorf("with %s: its tag %s and the lead's %s are not versions of the same parts", l.lead, tag, lead)
+			return "", fmt.Errorf("with %s: its tag %s and the lead's %s are not versions of the same parts", l.Lead, tag, lead)
 		}
 		pick = v.prefix + joinNums(lv.nums) + v.suffix
 	default:
@@ -175,7 +175,7 @@ func (p *pass) imageLine(l imageLine, leads map[string]string, names map[string]
 			return "", err
 		}
 		var newer string
-		pick, newer = Newest(tag, tags, false, l.rule == RulePatch)
+		pick, newer = Newest(tag, tags, false, l.Rule == RulePatch)
 		if newer != "" {
 			p.report.Newer = append(p.report.Newer, name+" "+newer)
 		}
@@ -360,9 +360,10 @@ func (p *pass) debianSnapshot() {
 }
 
 // postgresql moves the PostgreSQL ARGs to the newest version their PGDG
-// dist serves: the server within its major, as its package's name holds.
+// dist serves: the server within its major, as its package's name holds,
+// and libpq within its major too, a newer one named.
 func (p *pass) postgresql() {
-	served := map[string]map[string]string{}
+	served := map[string]map[string][]string{}
 	for _, df := range dockerfiles {
 		s := p.files[df]
 		dist := pgdgDist.FindStringSubmatch(s)
@@ -370,28 +371,44 @@ func (p *pass) postgresql() {
 		if dist == nil || args == nil {
 			continue
 		}
-		newest, ok := served[dist[1]]
+		versions, ok := served[dist[1]]
 		if !ok {
 			var err error
-			if newest, err = pgdgNewest(p.ctx, p.w, dist[1]); err != nil {
+			if versions, err = pgdgVersions(p.ctx, p.w, dist[1]); err != nil {
 				p.failed("%s: PostgreSQL: %v", df, err)
 			}
-			served[dist[1]] = newest
+			served[dist[1]] = versions
 		}
 		for _, a := range args {
-			pkg := map[string]string{"LIBPQ_VERSION": "libpq5", "POSTGRESQL_COMMON_VERSION": "postgresql-common"}[a[1]]
-			if a[1] == "POSTGRESQL_VERSION" {
-				major, _, _ := strings.Cut(a[2], ".")
-				pkg = "postgresql-" + major
+			major, _, _ := strings.Cut(a[2], ".")
+			pkg := map[string]string{"POSTGRESQL_VERSION": "postgresql-" + major, "LIBPQ_VERSION": "libpq5", "POSTGRESQL_COMMON_VERSION": "postgresql-common"}[a[1]]
+			now, newer := a[2], ""
+			for _, v := range versions[pkg] {
+				switch {
+				case a[1] == "LIBPQ_VERSION" && !strings.HasPrefix(v, major+"."):
+					if debianLess(now, v) {
+						newer = v
+					}
+				case debianLess(now, v):
+					now = v
+				}
 			}
-			now := newest[pkg]
-			if now == "" || now == a[2] {
+			if newer != "" {
+				p.newerOnce(pkg + " " + newer)
+			}
+			if now == a[2] {
 				continue
 			}
 			s = strings.Replace(s, a[0], "ARG "+a[1]+"="+now, 1)
 			p.movedOnce("%s %s → %s", pkg, a[2], now)
 		}
 		p.files[df] = s
+	}
+}
+
+func (p *pass) newerOnce(line string) {
+	if !slices.Contains(p.report.Newer, line) {
+		p.report.Newer = append(p.report.Newer, line)
 	}
 }
 

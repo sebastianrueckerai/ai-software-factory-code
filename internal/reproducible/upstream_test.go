@@ -13,19 +13,23 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/bump"
 )
 
 const store = "git.aisoftwarefactory.world/upstream/"
 
-// upstreamLine is one line of upstream-images.txt: an image or OCI chart
-// (ref name:tag@sha256:<digest>, kind "" or bootstrap), or a file (ref
-// https URL@sha256:<sha256>, kind helm, or onto and the base image's
-// name:tag).
+// upstreamLine is one line of upstream-images.txt, as the bump reads it:
+// an image or OCI chart (ref name:tag@sha256:<digest>, kind "" or
+// bootstrap), or a file (ref https URL@sha256:<sha256>, kind helm, or onto
+// and the base image's name:tag).
 type upstreamLine struct {
 	ref       string
 	bootstrap bool
 	kind      string
 	base      string
+	// the bump's word for the line: patch, hold or with lead
+	rule, lead string
 }
 
 // upstreamRef is a line's reference: a name Forgejo's registry takes
@@ -48,20 +52,12 @@ func readUpstreamImages(t *testing.T) []upstreamLine {
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
-		l := upstreamLine{ref: fields[0]}
-		if len(fields) > 1 {
-			l.kind = fields[1]
+		p, err := bump.ParseImageLine(sc.Text())
+		if err != nil {
+			t.Errorf("upstream-images.txt: %v", err)
+			continue
 		}
-		switch {
-		case len(fields) == 2 && l.kind == "bootstrap":
-			l.bootstrap = true
-		case len(fields) == 2 && l.kind == "helm":
-		case len(fields) == 3 && l.kind == "onto":
-			l.base = fields[2]
-		case len(fields) != 1:
-			t.Errorf("upstream-images.txt: %q: want a reference, then nothing, bootstrap, helm or onto <name>:<tag>", sc.Text())
-		}
-		lines = append(lines, l)
+		lines = append(lines, upstreamLine{ref: p.Ref, bootstrap: p.Kind == "bootstrap", kind: p.Kind, base: p.Base, rule: p.Rule, lead: p.Lead})
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
@@ -95,6 +91,11 @@ func TestUpstreamImagesPinEachImageByDigest(t *testing.T) {
 			t.Errorf("upstream-images.txt: %s twice: one digest per tag", image)
 		}
 		seen[image] = true
+		if l.rule == "with" && len(slices.DeleteFunc(slices.Clone(lines), func(o upstreamLine) bool {
+			return o.rule == "hold" || !strings.HasPrefix(o.ref, l.lead+":")
+		})) != 1 {
+			t.Errorf("upstream-images.txt: %s goes with %s, which is not the name of one line the bump moves", l.ref, l.lead)
+		}
 	}
 }
 
@@ -348,15 +349,16 @@ func TestUpstreamCopyUploadsChartArchives(t *testing.T) {
 
 // A file a pod needs becomes the one added layer of an image on the
 // store's copy of its base line, under upstream/files/<its name>, unless
-// the store holds that image: a stub curl serves the file, a stub crane
-// the store, which has the first file's image only.
+// the store holds that image, whatever word of the bump follows the base:
+// a stub curl serves the file, a stub crane the store, which has the
+// first file's image only.
 func TestUpstreamCopyPutsFilesOntoTheirBase(t *testing.T) {
 	dir := t.TempDir()
 	sum := fmt.Sprintf("%x", sha256.Sum256([]byte("udf bytes")))
 	const base = "docker.io/library/alpine:3.18.2@sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	body := base + "\n" +
 		"https://example.org/x%2Fv1/held.tar.gz@sha256:" + sum + " onto docker.io/library/alpine:3.18.2\n" +
-		"https://example.org/x%2Fv1/udf.tar.gz@sha256:" + sum + " onto docker.io/library/alpine:3.18.2\n"
+		"https://example.org/x%2Fv1/udf.tar.gz@sha256:" + sum + " onto docker.io/library/alpine:3.18.2 hold\n"
 	list := filepath.Join(dir, "list")
 	if err := os.WriteFile(list, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

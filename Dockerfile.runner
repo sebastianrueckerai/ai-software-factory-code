@@ -166,14 +166,15 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # package by the files' mtimes, and a checkout dates them by its own
 # clock: the build reads a copy dated at the commit's time and removes
 # it, so no layer holds the source. go.mod's tools (govulncheck) install
-# into $GOPATH/bin.
+# into $GOPATH/bin, and so does upstream-bump, the weekly bump's lookup,
+# which factoryd's bump pod runs in this image.
 # Each action entry (*-a) ends in the time it was written, in a 20-wide
 # field, and trim.txt holds the last trim's time: both take the commit's
 # clock. Go reads an entry's time only to expire cached test results after
 # `go clean -testcache`, and -count=1 caches none.
-# govulncheck moves to /usr/local/bin below: a CI pod mounts an emptyDir
-# over /home/runner and its PATH override drops the image's $GOPATH/bin,
-# so a tool left there is unreachable in pull-request jobs.
+# Both move to /usr/local/bin below: a CI pod mounts an emptyDir over
+# /home/runner and its PATH override drops the image's $GOPATH/bin, so a
+# tool left there is unreachable in pull-request jobs and the bump pod.
 RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
       cd /tmp/warm && sum=$(sha256sum go.sum | awk '{print $1}') \
       && curl -fsSL -o /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
@@ -189,11 +190,12 @@ RUN --mount=type=bind,source=go.mod,target=/tmp/src/go.mod --mount=type=bind,sou
       && cp -r /tmp/src /tmp/warm && find /tmp/warm -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} + \
       && cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
       && go install -trimpath tool \
+      && go build -trimpath -o "$(go env GOPATH)/bin/upstream-bump" ./cmd/upstream-bump \
       && cd / && rm -r /tmp/warm \
       && cache=$(go env GOCACHE) \
       && find "$cache" -name '*-a' -exec sed -i -E "s/.{20}\$/$(printf '%20d' "${SOURCE_DATE_EPOCH}000000000")/" {} + \
       && printf %s "$SOURCE_DATE_EPOCH" > "$cache/trim.txt"
 USER root
-RUN cp /home/runner/go/bin/govulncheck /usr/local/bin/govulncheck
+RUN cp /home/runner/go/bin/govulncheck /home/runner/go/bin/upstream-bump /usr/local/bin/
 USER 1000:1000
 ENTRYPOINT ["forgejo-runner"]

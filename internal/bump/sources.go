@@ -243,9 +243,9 @@ func debianSnapshot(ctx context.Context, w *Web, name, tag string) (string, erro
 	return "", fmt.Errorf("no dated tag of %s:%s names its image %s", name, tag, want)
 }
 
-// pgdgNewest is the newest version of each package the PGDG archive's
-// dist serves now (bookworm-pgdg).
-func pgdgNewest(ctx context.Context, w *Web, dist string) (map[string]string, error) {
+// pgdgVersions are the versions of each package the PGDG archive's dist
+// serves now (bookworm-pgdg), oldest first.
+func pgdgVersions(ctx context.Context, w *Web, dist string) (map[string][]string, error) {
 	u := "https://apt.postgresql.org/pub/repos/apt/dists/" + dist + "/main/binary-amd64/Packages.gz"
 	b, _, err := w.get(ctx, u)
 	if err != nil {
@@ -255,21 +255,29 @@ func pgdgNewest(ctx context.Context, w *Web, dist string) (map[string]string, er
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", u, err)
 	}
-	newest := map[string]string{}
+	served := map[string][]string{}
 	sc := bufio.NewScanner(io.LimitReader(z, maxAnswer))
 	sc.Buffer(nil, 1<<20)
 	pkg := ""
 	for sc.Scan() {
 		if p, ok := strings.CutPrefix(sc.Text(), "Package: "); ok {
 			pkg = p
-		} else if v, ok := strings.CutPrefix(sc.Text(), "Version: "); ok && (newest[pkg] == "" || debianLess(newest[pkg], v)) {
-			newest[pkg] = v
+		} else if v, ok := strings.CutPrefix(sc.Text(), "Version: "); ok {
+			served[pkg] = append(served[pkg], v)
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", u, err)
 	}
-	return newest, nil
+	for _, vs := range served {
+		slices.SortFunc(vs, func(a, b string) int {
+			if debianLess(a, b) {
+				return -1
+			}
+			return 1
+		})
+	}
+	return served, nil
 }
 
 // vulnDB is the Go vulnerability database's version, its modified time

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const hubChallenge = `Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/golang:pull"`
@@ -115,14 +116,18 @@ func TestDebianSnapshotIsTheDateOfTheSameImage(t *testing.T) {
 	}
 }
 
-func TestPGDGServesTheNewestOfEachPackage(t *testing.T) {
+func TestPGDGServesEachPackagesVersionsInOrder(t *testing.T) {
 	w, _ := newWeb(map[string]answer{
 		"GET https://apt.postgresql.org/pub/repos/apt/dists/bookworm-pgdg/main/binary-amd64/Packages.gz": {body: gzipped(t, recorded(t, "pgdg-Packages"))},
 	})
-	got, err := pgdgNewest(context.Background(), w, "bookworm-pgdg")
-	want := map[string]string{"libpq5": "19.0-2.pgdg12+1", "postgresql-17": "17.12-1.pgdg12+1", "postgresql-common": "297.pgdg12+1"}
+	got, err := pgdgVersions(context.Background(), w, "bookworm-pgdg")
+	want := map[string][]string{
+		"libpq5":            {"18.7-1.pgdg12+2", "19.0-1.pgdg12+1", "19.0-2.pgdg12+1"},
+		"postgresql-17":     {"17.10-1.pgdg12+1", "17.11-1.pgdg12+2", "17.12-1.pgdg12+1"},
+		"postgresql-common": {"294.pgdg12+2", "295.pgdg12+1", "297.pgdg12+1"},
+	}
 	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Errorf("pgdgNewest = %v, %v; want %v", got, err, want)
+		t.Errorf("pgdgVersions = %v, %v; want %v", got, err, want)
 	}
 }
 
@@ -148,5 +153,26 @@ func TestVulnDBPinsTheZipOfOneModifiedTime(t *testing.T) {
 	}}
 	if version, _, err := vulnDB(ctx, w); err != nil || version != "20261124T171700Z" {
 		t.Errorf("a database that moved during the download: vulnDB = %q %v, want the second time", version, err)
+	}
+}
+
+// A burst of tag pages meets ghcr.io's 429: the page is asked again after
+// a pause, and a token taken after the pause still counts.
+func TestATooManyRequestsAnswerIsAskedAgain(t *testing.T) {
+	const tags = "GET https://ghcr.io/v2/cloudnative-pg/postgresql/tags/list?n=1000"
+	challenge := `Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:cloudnative-pg/postgresql:pull"`
+	w, f := newWeb(map[string]answer{
+		"GET https://ghcr.io/token?scope=repository%3Acloudnative-pg%2Fpostgresql%3Apull&service=ghcr.io": {body: `{"token":"g1"}`},
+	})
+	f.seq = map[string][]answer{tags: {
+		{status: 429, body: `{"errors":[{"code":"TOOMANYREQUESTS"}]}`},
+		{token: "g1", challenge: challenge},
+		{token: "g1", challenge: challenge, body: `{"tags":["18.7-system-trixie"]}`},
+	}}
+	var pauses []int
+	w.Pause = func(n int) time.Duration { pauses = append(pauses, n); return 0 }
+	got, err := registryTags{"ghcr.io/cloudnative-pg/postgresql"}.tags(context.Background(), w)
+	if err != nil || !reflect.DeepEqual(got, []string{"18.7-system-trixie"}) || !reflect.DeepEqual(pauses, []int{0}) {
+		t.Errorf("tags %v, %v, pauses %v", got, err, pauses)
 	}
 }

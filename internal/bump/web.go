@@ -13,12 +13,16 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Web reaches the makers' hosts, anonymously: one client, and the bearer
 // tokens of the registries' repositories it has read.
 type Web struct {
 	Client *http.Client
+	// Pause is the wait before try n+1 after a 429; nil is a second,
+	// doubled each time.
+	Pause  func(n int) time.Duration
 	mu     sync.Mutex
 	tokens map[string]string
 }
@@ -68,6 +72,7 @@ func (w *Web) sum(ctx context.Context, u string) (string, error) {
 
 func (w *Web) do(ctx context.Context, method, u string, accept []string) (*http.Response, error) {
 	key := tokenKey(u)
+	loggedIn := false
 	for try := 0; ; try++ {
 		req, err := http.NewRequestWithContext(ctx, method, u, nil)
 		if err != nil {
@@ -87,7 +92,18 @@ func (w *Web) do(ctx context.Context, method, u string, accept []string) (*http.
 		if err != nil {
 			return nil, fmt.Errorf("%s %s: %w", method, u, err)
 		}
-		if res.StatusCode == http.StatusUnauthorized && try == 0 {
+		if res.StatusCode == http.StatusTooManyRequests && try < 6 {
+			res.Body.Close()
+			// ghcr.io limits bursts of its tag pages for a moment
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(w.pause(try)):
+			}
+			continue
+		}
+		if res.StatusCode == http.StatusUnauthorized && !loggedIn {
+			loggedIn = true
 			challenge := res.Header.Get("Www-Authenticate")
 			res.Body.Close()
 			if err := w.login(ctx, key, challenge); err != nil {
@@ -102,6 +118,15 @@ func (w *Web) do(ctx context.Context, method, u string, accept []string) (*http.
 		}
 		return res, nil
 	}
+}
+
+// pause is the wait before the next try after a 429: a second, doubled
+// each time.
+func (w *Web) pause(try int) time.Duration {
+	if w.Pause != nil {
+		return w.Pause(try)
+	}
+	return time.Second << try
 }
 
 // tokenKey is the registry repository a /v2/ URL reads, which its bearer

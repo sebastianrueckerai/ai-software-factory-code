@@ -59,7 +59,8 @@ const (
 
 // The answers the makers gave for the bump of 2026-11-24 (pull request
 // #2309), cut to the lines of testdata/pass: the digests are the ones
-// #2309 pinned, a download's body stands for its file.
+// #2309 pinned, a download's body stands for its file, and the PGDG
+// archive serves libpq5 19.0 as it did that evening.
 func answersOf2309(t *testing.T) map[string]answer {
 	return map[string]answer{
 		hub + "library/golang/tags/list?n=1000":                                                tagList("1.25-bookworm", "1.26.10", "1.26.10-alpine", "1.26.11", "1.26.11-alpine", "1.27.4", "1.27.4-alpine", "1.27rc2"),
@@ -87,7 +88,7 @@ func answersOf2309(t *testing.T) map[string]answer {
 		"GET https://nodejs.org/dist/index.json":                                               {body: recorded(t, "nodejs-index.json")},
 		"GET https://vuln.go.dev/index/db.json.gz":                                             {body: gzipped(t, `{"modified":"2026-11-24T15:56:00Z"}`)},
 		"GET https://apt.postgresql.org/pub/repos/apt/dists/bookworm-pgdg/main/binary-amd64/Packages.gz": {body: gzipped(t,
-			"Package: libpq5\nVersion: 18.7-1.pgdg12+2\n\nPackage: libpq5\nVersion: 18.6-1.pgdg12+2\n\n"+
+			"Package: libpq5\nVersion: 18.7-1.pgdg12+2\n\nPackage: libpq5\nVersion: 19.0-2.pgdg12+1\n\nPackage: libpq5\nVersion: 19.0-1.pgdg12+1\n\nPackage: libpq5\nVersion: 18.6-1.pgdg12+2\n\n"+
 				"Package: postgresql-17\nVersion: 17.11-1.pgdg12+2\n\nPackage: postgresql-17\nVersion: 17.12-1.pgdg12+1\n\n"+
 				"Package: postgresql-18\nVersion: 18.7-1.pgdg12+2\n\nPackage: postgresql-common\nVersion: 297.pgdg12+1\n")},
 		// the downloads: each body's sha256 stands in testdata/pass/after
@@ -139,7 +140,7 @@ func TestABumpTurnsLastWeeksPinsIntoThisWeeks(t *testing.T) {
 			"libpq5 18.6-1.pgdg12+2 → 18.7-1.pgdg12+2",
 			"postgresql-common 293.pgdg12+1 → 297.pgdg12+1",
 		},
-		Newer: []string{"docker.io/library/golang 1.27.4-alpine", "docker.io/library/golang 1.27.4", "opencode v2.4.1", "node v26.13.1"},
+		Newer: []string{"docker.io/library/golang 1.27.4-alpine", "docker.io/library/golang 1.27.4", "opencode v2.4.1", "node v26.13.1", "libpq5 19.0-2.pgdg12+1"},
 	}
 	if !reflect.DeepEqual(report, want) {
 		t.Errorf("report\n%#v\nwant\n%#v", report, want)

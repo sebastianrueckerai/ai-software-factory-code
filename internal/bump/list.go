@@ -14,35 +14,36 @@ const (
 	RuleWith  = "with"
 )
 
-// imageLine is a line of upstream-images.txt: a reference, name:tag@digest
+// ImageLine is a line of upstream-images.txt: a reference, name:tag@digest
 // or an https URL@sha256:<sum>, what the store makes of it, and its rule.
-type imageLine struct {
-	ref  string
-	kind string // "", bootstrap, helm or onto
-	base string // onto's image, name:tag
-	rule string // "", patch, hold or with
-	lead string // with's image name
+type ImageLine struct {
+	Ref  string
+	Kind string // "", bootstrap, helm or onto
+	Base string // onto's image, name:tag
+	Rule string // "", patch, hold or with
+	Lead string // with's image name
 }
 
-// parseImageLine reads a pin line of upstream-images.txt.
-func parseImageLine(line string) (imageLine, error) {
+// ParseImageLine reads a pin line of upstream-images.txt: the one parser
+// of its words, which internal/reproducible's checks read the list with.
+func ParseImageLine(line string) (ImageLine, error) {
 	f := strings.Fields(line)
-	l := imageLine{ref: f[0]}
+	l := ImageLine{Ref: f[0]}
 	f = f[1:]
 	bad := fmt.Errorf("%q: want a reference, then bootstrap, helm or onto <name>:<tag>, then patch, hold or with <name>", line)
 	switch {
 	case len(f) > 0 && (f[0] == "bootstrap" || f[0] == "helm"):
-		l.kind, f = f[0], f[1:]
+		l.Kind, f = f[0], f[1:]
 	case len(f) > 1 && f[0] == "onto":
-		l.kind, l.base, f = f[0], f[1], f[2:]
+		l.Kind, l.Base, f = f[0], f[1], f[2:]
 	}
 	switch {
 	case len(f) == 1 && (f[0] == RulePatch || f[0] == RuleHold):
-		l.rule = f[0]
+		l.Rule = f[0]
 	case len(f) == 2 && f[0] == RuleWith:
-		l.rule, l.lead = f[0], f[1]
+		l.Rule, l.Lead = f[0], f[1]
 	case len(f) != 0:
-		return imageLine{}, bad
+		return ImageLine{}, bad
 	}
 	return l, nil
 }

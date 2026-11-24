@@ -14,6 +14,7 @@ import (
 
 // answer is a recorded answer of a maker's host.
 type answer struct {
+	status int // 200 when 0
 	header map[string]string
 	body   string
 	// token: the host answers 401 with challenge to a request without
@@ -47,6 +48,9 @@ func (f *fakeWeb) RoundTrip(r *http.Request) (*http.Response, error) {
 		res.StatusCode, res.Status, a.body = http.StatusUnauthorized, "401 Unauthorized", ""
 		res.Header.Set("Www-Authenticate", a.challenge)
 		a.header = nil
+	}
+	if a.status != 0 {
+		res.StatusCode, res.Status = a.status, http.StatusText(a.status)
 	}
 	for k, v := range a.header {
 		res.Header.Set(k, v)
