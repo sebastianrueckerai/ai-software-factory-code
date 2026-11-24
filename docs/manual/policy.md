@@ -25,7 +25,13 @@ its schema (`# yaml-language-server: $schema=schema/policy.schema.json`,
 linting in an editor. `factoryd config check <dir>` decodes a tree as
 the loader does and compares its `schema/` with the generated one: exit
 0 ok, 1 refused with every reason, 2 usage; the infra repository's CI
-runs it on every push to `main`. `factoryd config explain [--tree <dir>]
+runs it on every push to `main`. When `main`'s copies differ from its
+build's, factoryd opens one pull request at boot from the bot's fork that
+writes the build's copies and `commit`, and merges it itself as the bot once
+Forgejo reports it mergeable, no check of its head fails or runs, and it
+changes only those files, each to the build's bytes. A pull request it does
+not merge gets a card that names why and asks a human to merge it.
+`factoryd config explain [--tree <dir>]
 <process> <card kind>` prints the path of a card kind (`direct`, `plan`,
 `child`) through a process, generated from the
 same graph whose check refuses a dead end or an uncapped cycle.

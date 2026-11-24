@@ -741,7 +741,7 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	}
 	t, _, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, r.Budget(), p, b, nil, Task{
 		ID: taskID, RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: pause.SHA, Source: SourceRevert, Moments: said,
-	}, pr.Number)
+	}, pr.Number, "")
 	if err != nil {
 		if unfiled(ctx, r.Store, taskID) {
 			closeOpened(ctx, r.Forgejo, r.Repo, opened)

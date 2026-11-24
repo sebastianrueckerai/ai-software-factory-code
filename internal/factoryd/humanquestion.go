@@ -66,13 +66,17 @@ func RepairQuestion(repository, sha string, findings []string, runURL string, ca
 // FactoryPRQuestion is the human card of pull request number at url, of
 // brief b, which factoryd opened on a project without agents: no card's
 // gates carry it, so a human merges it or closes it, on the card or in
-// Forgejo, and either ends the card.
-func FactoryPRQuestion(b BriefText, number int64, url string) HumanQuestion {
+// Forgejo, and either ends the card. refusal is why factoryd did not merge
+// it itself, "" for a pull request it never merges.
+func FactoryPRQuestion(b BriefText, number int64, url, refusal string) HumanQuestion {
+	lead := "The factory opened the pull request, and the project runs no agents: no card's gates check it, so a human merges it. "
+	if refusal != "" {
+		lead = "The factory opened the pull request and did not merge it itself: " + refusal + ". A human merges it. "
+	}
 	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: "The factory opened the pull request, and the project runs no agents: no card's gates check it, so a human merges it. " +
-			"The pull request: " + url + "\n\nRead its change, then merge it or close it, on the card or in Forgejo: either ends this card.",
+		Ask:      b.Title,
+		Why:      b.Why,
+		Info:     lead + "The pull request: " + url + "\n\nRead its change, then merge it or close it, on the card or in Forgejo: either ends this card.",
 		Choices:  choices(ActApproveMerge, ActDenyMerge+"/reject"),
 		Happened: fmt.Sprintf("The factory opened pull request #%d, and with no agents on the project, no gate checks it.", number),
 	}

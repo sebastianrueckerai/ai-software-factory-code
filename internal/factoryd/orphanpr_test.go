@@ -30,7 +30,7 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
 	got, ref, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "Schema copies for abc123", Body: "body"}, []string{"improvement"},
-		Task{ID: "t-schema", Source: SourceSchemaCopy}, 9)
+		Task{ID: "t-schema", Source: SourceSchemaCopy}, 9, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestFactoryPRCardFundsItsGates(t *testing.T) {
 			t.Fatal(err)
 		}
 		card, _, err := FileFactoryPRTask(ctx, s, f, &fakeWorkflows{}, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, nil,
-			Task{ID: "t-gates", Source: source}, 9)
+			Task{ID: "t-gates", Source: source}, 9, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,18 +108,18 @@ func TestFileFactoryPRTaskInsertsThePullRequestWithTheRow(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, nil, Task{ID: "t0", Source: SourceSchemaCopy}, 0); err == nil ||
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, nil, Task{ID: "t0", Source: SourceSchemaCopy}, 0, ""); err == nil ||
 		err.Error() != "a schema-copy card needs its pull request" || *labels != nil {
 		t.Fatalf("err %v, labels %v: want the refusal before any issue", err, *labels)
 	}
 	store.createFails = 1
-	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err == nil {
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9, ""); err == nil {
 		t.Fatal("want the refused insert's error")
 	}
 	if len(store.tasks) != 0 || len(wf.started) != 0 {
 		t.Fatalf("tasks %v, started %v: a refused insert leaves no card", store.tasks, wf.started)
 	}
-	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err != nil {
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9, ""); err != nil {
 		t.Fatal(err)
 	}
 	if store.createCalls != 2 || store.tasks["t1"].PRNumber != 9 || !slices.Equal(wf.started, []string{"t1"}) {
@@ -142,7 +142,7 @@ func TestFactoryPRSourcesEnterLikeARoll(t *testing.T) {
 			f, labels := fileStub(t)
 			store, wf := newFakeStore(), &fakeWorkflows{}
 			got, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), BriefText{Title: "title", Body: "body"}, []string{"improvement"},
-				Task{ID: "t1", Source: source}, 9)
+				Task{ID: "t1", Source: source}, 9, "")
 			if err != nil {
 				t.Fatal(err)
 			}

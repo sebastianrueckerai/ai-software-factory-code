@@ -349,7 +349,7 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 		}
 		_, ref, err = FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, r.cfg.Policy().Document.Budget, project, b, nil, Task{
 			ID: id, RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: main, Source: SourceRevert,
-		}, pr.Number)
+		}, pr.Number, "")
 	} else {
 		_, ref, err = r.fileRevertAgent(ctx, p, project, merges, RevertConflict(conflict), id, main)
 	}

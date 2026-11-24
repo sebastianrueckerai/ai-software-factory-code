@@ -552,7 +552,7 @@ func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr i
 	}
 	b := GitHubSyncCard(p.Repository, sha, by, pr)
 	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, b, nil,
-		Task{ID: id, Kind: "agent", Objective: IssueObjective(b.Title, b.Body), Author: by, Source: SourceGitHubSync}, pr); err != nil {
+		Task{ID: id, Kind: "agent", Objective: IssueObjective(b.Title, b.Body), Author: by, Source: SourceGitHubSync}, pr, ""); err != nil {
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
 	} else {
 		log.Printf("project %s: sync pull request %d filed as issue #%d", p.Name, pr, ref.Number)

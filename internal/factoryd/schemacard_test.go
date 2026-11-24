@@ -35,7 +35,19 @@ type cardForgejo struct {
 	// posted, "number: body"
 	closedIssues []int64
 	comments     []string
+	// mergeable is Forgejo's verdict on every pull request, statuses the
+	// checks of its head h1, and refuse, when set, the message Forgejo
+	// refuses a merge with (405). merges are the merges made,
+	// "#number at head: message"; a merge brings main to the branch.
+	mergeable bool
+	statuses  []CommitStatus
+	refuse    string
+	merges    []string
 }
+
+// schemaHead is the head of every schema pull request the stub holds: the
+// branch of build 0123456789ab at commit h1.
+const schemaHead = "factory/schema-0123456789ab"
 
 const (
 	cardUpstream = "sf/ai-software-factory-infra"
@@ -58,13 +70,32 @@ func (s *cardForgejo) server(t *testing.T) *httptest.Server {
 		switch {
 		case p == cardUpPath+"/branches/main":
 			fmt.Fprint(w, `{"commit":{"id":"c1"}}`)
-		case strings.HasPrefix(p, cardUpPath+"/raw/") && q.Get("ref") == "c1":
-			c, ok := s.main[strings.TrimPrefix(p, cardUpPath+"/raw/")]
+		case strings.HasPrefix(p, cardUpPath+"/raw/") && (q.Get("ref") == "c1" || q.Get("ref") == "h1"):
+			tree := s.main
+			if q.Get("ref") == "h1" {
+				tree = s.branches[schemaHead]
+			}
+			c, ok := tree[strings.TrimPrefix(p, cardUpPath+"/raw/")]
 			if !ok {
 				http.NotFound(w, r)
 				return
 			}
 			fmt.Fprint(w, c)
+		case strings.HasPrefix(p, cardUpPath+"/pulls/") && strings.HasSuffix(p, "/files"):
+			out := []map[string]string{}
+			if q.Get("page") == "1" {
+				for _, name := range changed(s.main, s.branches[schemaHead]) {
+					out = append(out, map[string]string{"filename": name})
+				}
+			}
+			json.NewEncoder(w).Encode(out)
+		case strings.HasPrefix(p, cardUpPath+"/pulls/"):
+			var number int64
+			fmt.Sscanf(strings.TrimPrefix(p, cardUpPath+"/pulls/"), "%d", &number)
+			json.NewEncoder(w).Encode(map[string]any{"number": number, "state": "open", "mergeable": s.mergeable, "base": map[string]string{"ref": "main"},
+				"head": map[string]any{"ref": schemaHead, "sha": "h1", "repo": map[string]string{"full_name": "factory-agent/ai-software-factory-infra"}}})
+		case p == cardUpPath+"/commits/h1/status":
+			json.NewEncoder(w).Encode(map[string]any{"state": "", "statuses": s.statuses})
 		case strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/comments"):
 			prefix := strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/comments") + ": "
 			out := []map[string]any{}
@@ -199,6 +230,18 @@ func (s *cardForgejo) write(t *testing.T, w http.ResponseWriter, r *http.Request
 			s.labels[number] = append(s.labels[number], name.(string))
 		}
 		io.WriteString(w, `[]`)
+	case r.Method == http.MethodPost && strings.HasPrefix(p, cardUpPath+"/pulls/") && strings.HasSuffix(p, "/merge"):
+		var number int64
+		fmt.Sscanf(strings.TrimPrefix(p, cardUpPath+"/pulls/"), "%d", &number)
+		if s.refuse != "" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			fmt.Fprintf(w, `{"message":%q}`, s.refuse)
+			return
+		}
+		s.merges = append(s.merges, fmt.Sprintf("#%d at %v: %v", number, body["head_commit_id"], body["MergeMessageField"]))
+		s.main = maps.Clone(s.branches[schemaHead])
+		s.prs = slices.DeleteFunc(s.prs, func(n int64) bool { return n == number })
+		io.WriteString(w, `{}`)
 	case r.Method == http.MethodPatch && strings.HasPrefix(p, cardUpPath+"/pulls/"):
 		var number int64
 		fmt.Sscanf(strings.TrimPrefix(p, cardUpPath+"/pulls/"), "%d", &number)
@@ -235,9 +278,12 @@ func (s *cardForgejo) snapshot() ([]issueBody, map[int64][]string, []string, []i
 // cardRig is the schema copier of build 0123456789ab as factoryd wires it,
 // on one stale copy of policy.schema.json, with the store, workflows and
 // timeline a card needs. The configuration repository's project moves
-// ready by writers, so a card enters ready and starts.
+// ready by writers, so a card enters ready and starts. Forgejo reports no
+// pull request mergeable until a test says so, so the factory's own merge
+// is refused and the pass files the card.
 func cardRig(t *testing.T) (*cardForgejo, *SchemaCopier, *fakeStore, *fakeWorkflows) {
 	t.Helper()
+	quickMergeWaits(t)
 	schemas, err := policy.Schemas()
 	if err != nil {
 		t.Fatal(err)
@@ -629,5 +675,98 @@ func TestSchemaCopierIdempotent(t *testing.T) {
 	}
 	if len(wf.started) != 1 {
 		t.Fatalf("started %v, want the card's workflow once", wf.started)
+	}
+}
+
+// A schema pull request the factory can merge lands with no card: Forgejo
+// reports it mergeable, its head has no check, and it changes the build's
+// copies alone, each to the build's bytes. The bot merges it at the head it
+// checked, and the next boot finds main's copies equal to the build's: it
+// opens nothing and files nothing.
+func TestSchemaCopierMergesItsOwnPullRequest(t *testing.T) {
+	ctx := context.Background()
+	fj, c, store, wf := cardRig(t)
+	store.projects = []Project{noAgents(cardUpstream)}
+	fj.mergeable = true
+	for range 2 {
+		if err := c.SyncOnce(ctx, 1, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issues, _, writes, prs := fj.snapshot()
+	if cards := schemaCards(store); len(cards) != 0 || store.createCalls != 0 || len(issues) != 0 || len(wf.started) != 0 {
+		t.Fatalf("cards %+v, CreateTask %d times, issues %+v, started %v; want none", cards, store.createCalls, issues, wf.started)
+	}
+	schemas, _ := policy.Schemas()
+	fj.mu.Lock()
+	defer fj.mu.Unlock()
+	if want := []string{"#1 at h1: Schema copies for 0123456789ab\n\nFactory-Role: schema-copy\n"}; !slices.Equal(fj.merges, want) ||
+		len(prs) != 0 || countOf(writes, "POST "+cardUpPath+"/pulls") != 1 {
+		t.Fatalf("merges %q, open pull requests %v, writes %q; want %q, none, one pull request opened", fj.merges, prs, writes, want)
+	}
+	if fj.main["factory/schema/policy.schema.json"] != string(schemas["policy.schema.json"]) {
+		t.Fatal("main's copy of policy.schema.json is not the build's after the merge")
+	}
+}
+
+// The factory merges its schema pull request only where every check holds.
+// Each refusal leaves the pull request to a human, as before: the human card
+// is filed, its info names the refusal, and the bot merges nothing unless
+// Forgejo itself refused the merge. A pull request a former pass left that
+// changes a file besides the copies, or a copy to other bytes, is not merged.
+func TestSchemaCopierLeavesARefusedMergeToAHuman(t *testing.T) {
+	foreign := func(change func(b map[string]string)) func(fj *cardForgejo) {
+		return func(fj *cardForgejo) {
+			schemas, _ := policy.Schemas()
+			b := maps.Clone(fj.main)
+			b["factory/schema/policy.schema.json"], b["factory/schema/commit"] = string(schemas["policy.schema.json"]), "\n"
+			change(b)
+			fj.fork, fj.branches[schemaHead], fj.prs = maps.Clone(fj.main), b, []int64{1}
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		set     func(fj *cardForgejo)
+		tried   bool
+		refusal string
+	}{
+		{"not mergeable", func(fj *cardForgejo) { fj.mergeable = false }, false,
+			"Forgejo still reported pull request #1 as not mergeable after 5ms"},
+		{"a failing check", func(fj *cardForgejo) { fj.statuses = []CommitStatus{{State: "failure", Context: "config-check"}} }, false,
+			"the check “config-check” of its head h1 has the state failure"},
+		{"a pending check", func(fj *cardForgejo) {
+			fj.statuses = []CommitStatus{{State: "success", Context: "lint"}, {State: "pending", Context: "config-check"}}
+		}, false, "the check “config-check” of its head h1 has the state pending"},
+		{"Forgejo's refusal", func(fj *cardForgejo) { fj.refuse = "Not allowed to merge" }, true,
+			`the bot's merge failed: forgejo POST /api/v1/repos/sf/ai-software-factory-infra/pulls/1/merge: forgejo: refused: status 405: {"message":"Not allowed to merge"}`},
+		{"a foreign file", foreign(func(b map[string]string) { b["factory/policy.yaml"] = "version: 2\n" }), false,
+			"it changes factory/policy.yaml besides the copies of build 0123456789ab"},
+		{"a copy of other bytes", foreign(func(b map[string]string) { b["factory/schema/policy.schema.json"] = "{\"x\": 1}\n" }), false,
+			"factory/schema/policy.schema.json at its head h1 is not the copy of build 0123456789ab"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			fj, c, store, _ := cardRig(t)
+			store.projects = []Project{noAgents(cardUpstream)}
+			fj.mergeable = true
+			tc.set(fj)
+			if err := c.SyncOnce(ctx, 1, 0); err != nil {
+				t.Fatal(err)
+			}
+			cards := schemaCards(store)
+			if len(cards) != 1 || cards[0].Kind != "human" || cards[0].PRNumber != 1 {
+				t.Fatalf("cards %+v, want the human card of pull request #1", cards)
+			}
+			want := "The factory opened the pull request and did not merge it itself: " + tc.refusal + ". A human merges it. " +
+				"The pull request: https://git.example/sf/ai-software-factory-infra/pulls/1\n\n" +
+				"Read its change, then merge it or close it, on the card or in Forgejo: either ends this card."
+			if q := askedQuestion(t, store, cards[0].ID); q.Info != want {
+				t.Fatalf("info %q,\nwant %q", q.Info, want)
+			}
+			_, _, writes, prs := fj.snapshot()
+			if tried := countOf(writes, "POST "+cardUpPath+"/pulls/1/merge"); tried != map[bool]int{true: 1}[tc.tried] || len(prs) != 1 || len(fj.merges) != 0 {
+				t.Fatalf("merge tried %d times, merges %q, open pull requests %v; want tried %v, none made, #1 open", tried, fj.merges, prs, tc.tried)
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,10 +22,10 @@ const schemaBranchPrefix = "factory/schema-"
 // SchemaCopier brings the configuration repository's copies of the
 // generated schemas to this build: once per process it compares main's
 // with its own and opens one pull request for the difference, as the bot
-// from its fork, the way a roll does. The pull request gets a
-// card of its own through FileFactoryPRTask (roadmap 187), so the chat, the
-// board and the merge rule cover it; an approver merges through that card.
-// Nothing else merges.
+// from its fork, the way a roll does, and merges it as the bot once land's
+// checks hold. A pull request it does not merge gets a card of its own
+// through FileFactoryPRTask (roadmap 187), so the chat, the board and the
+// merge rule cover it; an approver merges through that card.
 type SchemaCopier struct {
 	Forgejo *Forgejo       // the bot
 	Config  *ForgejoConfig // reads main's tree
@@ -164,34 +165,135 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 		}
 		log.Printf("schema copies: closed pull request #%d: %s", pr.Number, why)
 	}
-	// the pull request becomes a card of its own (roadmap 187), so the
-	// chat, the board and the merge rule cover it; the pass files one per
-	// build at most, while no other build's card stands open. The link is
-	// the pull request's own: a card whose filing died linking gets the
-	// number this pass has, so no second card ever stands.
+	// the copies are the build's own output, so the factory merges them
+	// itself; a pull request it does not merge becomes a card of its own
+	// (roadmap 187), so the chat, the board and the merge rule cover it.
+	// The pass files one per build at most, while no other build's card
+	// stands open. The link is the pull request's own: a card whose filing
+	// died linking gets the number this pass has, so no second card ever
+	// stands.
 	if len(diffs) > 0 {
-		c.card(ctx, *own, pathsOf(diffs, c.Config.Dir))
+		if refusal := c.land(ctx, own.Number, schemas); refusal != "" {
+			c.card(ctx, *own, pathsOf(diffs, c.Config.Dir), refusal)
+		}
 	}
 	return nil
 }
 
+// land merges the schema pull request number as the bot, which merges the
+// imager's pins on the configuration repository too, at the head it
+// checked: Forgejo reports it mergeable, no check of that head fails or
+// runs, and it changes this build's copies alone (foreign). Forgejo checks
+// the mergeability of a new head for a moment, so land reads the pull
+// request again for up to mergeWaitBound. It answers why a human merges
+// it, "" when no human needs to: it merged, or it closed.
+func (c *SchemaCopier) land(ctx context.Context, number int64, schemas map[string][]byte) string {
+	repo := c.Config.Repo
+	pr, err := c.Forgejo.PullRequestState(ctx, repo.Owner, repo.Name, number)
+	for waits := 0; err == nil && pr.State == "open" && !pr.Mergeable && waits < maxMergeWaits; waits++ {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-time.After(mergeWaitBound / maxMergeWaits):
+			pr, err = c.Forgejo.PullRequestState(ctx, repo.Owner, repo.Name, number)
+		}
+	}
+	switch {
+	case err != nil:
+		return fmt.Sprintf("pull request #%d did not read: %v", number, err)
+	case pr.State != "open":
+		log.Printf("schema copies: pull request #%d is no longer open (merged: %v)", number, pr.Merged)
+		return ""
+	case !pr.Mergeable:
+		return fmt.Sprintf("Forgejo still reported pull request #%d as not mergeable after %s", number, mergeWaitBound)
+	}
+	switch why, err := c.foreign(ctx, pr, schemas); {
+	case err != nil:
+		return fmt.Sprintf("the files of pull request #%d did not read: %v", number, err)
+	case why != "":
+		return why
+	}
+	st, err := c.Forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, pr.HeadSHA)
+	if err != nil {
+		return fmt.Sprintf("the checks of its head %s did not read: %v", ShortSHA(pr.HeadSHA), err)
+	}
+	for _, s := range st.Statuses {
+		if s.State == "pending" || s.State == "failure" || s.State == "error" {
+			return fmt.Sprintf("the check “%s” of its head %s has the state %s", s.Context, ShortSHA(pr.HeadSHA), s.State)
+		}
+	}
+	if err := c.Forgejo.MergePullRequestAsBot(ctx, repo.Owner, repo.Name, number, pr.HeadSHA, Attribution{Role: "schema-copy"}, c.title()); err != nil {
+		return "the bot's merge failed: " + err.Error()
+	}
+	log.Printf("schema copies: merged pull request #%d at %s", number, ShortSHA(pr.HeadSHA))
+	return ""
+}
+
+// foreign names what pull request pr changes besides this build's copies:
+// a file that is neither a copy of one of schemas nor the commit file, or
+// one whose bytes at pr's head are not this build's. "" when it changes the
+// copies alone.
+func (c *SchemaCopier) foreign(ctx context.Context, pr PullRequestRef, schemas map[string][]byte) (string, error) {
+	dir := c.Config.Dir + "/" + policy.DirSchema + "/"
+	want := map[string][]byte{dir + policy.SchemaCommit: []byte(c.Commit + "\n")}
+	for name, b := range schemas {
+		want[dir+name] = b
+	}
+	files, err := c.Forgejo.PullRequestFiles(ctx, c.Config.Repo.Owner, c.Config.Repo.Name, pr.Number)
+	if err != nil {
+		return "", err
+	}
+	var names, other []string
+	for _, f := range files {
+		names = append(names, f.Filename)
+		if f.PreviousFilename != "" && f.PreviousFilename != f.Filename {
+			names = append(names, f.PreviousFilename)
+		}
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	for _, name := range names {
+		if _, ok := want[name]; !ok {
+			other = append(other, name)
+		}
+	}
+	if len(other) > 0 {
+		return fmt.Sprintf("it changes %s besides the copies of build %s", strings.Join(other, ", "), c.Build), nil
+	}
+	for _, name := range names {
+		b, err := c.Config.File(ctx, pr.HeadSHA, strings.TrimPrefix(name, c.Config.Dir+"/"))
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return "", err
+		}
+		if !bytes.Equal(b, want[name]) {
+			return fmt.Sprintf("%s at its head %s is not the copy of build %s", name, ShortSHA(pr.HeadSHA), c.Build), nil
+		}
+	}
+	return "", nil
+}
+
+// title is the title of the schema pull request and the subject of its
+// merge.
+func (c *SchemaCopier) title() string { return "Schema copies for " + c.Build }
+
 // SchemaCopyCard is the brief of the card of pull request pr, which copies
-// the schemas build generates to paths of repo: its text tells what the
-// card carries and how it ends.
-func SchemaCopyCard(pr PullRequestRef, repo, build string, paths []string) BriefText {
+// the schemas build generates to paths of repo and which factoryd did not
+// merge for refusal: its text tells what the card carries and how it ends.
+func SchemaCopyCard(pr PullRequestRef, repo, build string, paths []string, refusal string) BriefText {
 	b := SourceBriefs[SourceSchemaCopy](BriefFacts{Name: repo})
-	b.Body = fmt.Sprintf("The factory opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
-		pr.Number, pr.URL, repo, build, strings.Join(paths, ", "))
+	b.Body = fmt.Sprintf("The factory opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe factory did not merge it itself: %s.\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card.\n",
+		pr.Number, pr.URL, repo, build, strings.Join(paths, ", "), refusal)
 	return b
 }
 
-// card files the card of the schema pull request ref (roadmap 187) through
-// FileFactoryPRTask, as the roller files its roll task: source
-// schema-copy, small's budget, the open pull request linked to the row. An
-// unfinished card of this build covers the pull request already: the pass
-// files none twice. A failure costs only the log: the pull request stands,
-// and the next pass files the card again.
-func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []string) {
+// card files the card of the schema pull request ref (roadmap 187), which
+// factoryd did not merge for refusal, through FileFactoryPRTask, as the
+// roller files its roll task: source schema-copy, small's budget, the open
+// pull request linked to the row. An unfinished card of this build covers
+// the pull request already: the pass files none twice. A failure costs
+// only the log: the pull request stands, and the next pass files the card
+// again.
+func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []string, refusal string) {
 	if !c.filing() {
 		return
 	}
@@ -211,9 +313,9 @@ func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []str
 		log.Printf("schema copies: no project has the repository %s: pull request #%d stays uncarded", repo, ref.Number)
 		return
 	}
-	b := SchemaCopyCard(ref, repo, c.Build, paths)
+	b := SchemaCopyCard(ref, repo, c.Build, paths, refusal)
 	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, c.budget(), p, b, nil,
-		Task{ID: NewTaskID(), RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
+		Task{ID: NewTaskID(), RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: c.Build, Source: SourceSchemaCopy}, ref.Number, refusal); err != nil {
 		log.Printf("schema copies: file the card of pull request #%d: %v", ref.Number, err)
 	} else {
 		log.Printf("schema copies: filed the card of pull request #%d on %s", ref.Number, repo)
@@ -319,7 +421,7 @@ func pathsOf(diffs []policy.SchemaDifference, dir string) []string {
 // from main with the files of diffs: a branch a closed pull request left
 // may hold other content, or none once main took it.
 func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs []policy.SchemaDifference) (*PullRequestRef, error) {
-	repo, title := c.Config.Repo, "Schema copies for "+c.Build
+	repo, title := c.Config.Repo, c.title()
 	want, why := map[string][]byte{}, map[string]string{}
 	for _, d := range diffs {
 		path := c.Config.Dir + "/" + d.Path
@@ -342,7 +444,8 @@ func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs
 		fmt.Fprintf(&body, "- `%s`: %s\n", path, why[path])
 	}
 	fmt.Fprintf(&body, "\n`%s` names the build's commit %s: a later build writes over these copies, an older one leaves them.\n", stamp, c.Commit)
-	body.WriteString("\nThe factory opens it when it starts and never merges it: a human does. `factoryd config check` only warns about a stale copy.\n")
+	body.WriteString("\nThe factory merges it itself once Forgejo reports it mergeable, no check of its head fails or runs, and it changes only these files, each to the build's bytes. " +
+		"Otherwise a card asks a human to merge it. `factoryd config check` only warns about a stale copy.\n")
 	ref, err := c.Forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, "main", title, body.String())
 	if err != nil {
 		return nil, err

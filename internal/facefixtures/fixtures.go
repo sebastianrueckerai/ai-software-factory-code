@@ -582,7 +582,8 @@ var agentSources = []agentSource{
 	}, factoryd.BriefFacts{Name: "acme/app"}},
 	{factoryd.SourceSchemaCopy, func(b *builder, n int64, status string) factoryd.Task {
 		return b.briefed(n, status, factoryd.SourceSchemaCopy, 3*time.Hour, factoryd.SchemaCopyCard(factoryd.PullRequestRef{Number: 2071,
-			URL: "https://git.example/sf/infra/pulls/2071"}, "sf/infra", "ea6d0655f05a", []string{"factory/schema/policy.schema.json"}))
+			URL: "https://git.example/sf/infra/pulls/2071"}, "sf/infra", "ea6d0655f05a", []string{"factory/schema/policy.schema.json"},
+			"Forgejo still reported pull request #2071 as not mergeable after 10s"))
 	}, factoryd.BriefFacts{Name: "sf/infra"}},
 	{factoryd.SourceTemplateUpdate, func(b *builder, n int64, status string) factoryd.Task {
 		return b.briefed(n, status, factoryd.SourceTemplateUpdate, 3*time.Hour, factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"))
@@ -1664,7 +1665,7 @@ func (b *builder) cards() {
 	movedTitle, movedBody := "Board export: keep the nightly snapshots", "Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."
 	b.out = append(b.out, b.humanIssue(GroupCard, "card moved to a human", b.next(), movedTitle, movedBody, factoryd.MovedQuestion(movedTitle, movedBody, "sebastian"), 2*time.Hour))
 	pr := b.filedHuman(GroupCard, "factory pull request on a project without agents", b.next(), factoryd.SourceTemplateUpdate, "",
-		factoryd.FactoryPRQuestion(factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"), 14, "https://git.example/sf/code/pulls/14"), 2*time.Hour)
+		factoryd.FactoryPRQuestion(factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"), 14, "https://git.example/sf/code/pulls/14", ""), 2*time.Hour)
 	pr.Task.PRNumber = 14
 	b.out = append(b.out, pr)
 	b.out = append(b.out, humanSourceOf(factoryd.SourceChat).file(b, GroupCard, "chat escalation", b.next()))
