@@ -161,6 +161,45 @@ func TestJudgmentBudgetSpentBelowOneCall(t *testing.T) {
 	}
 }
 
+// A month cap of 0.01 EUR leaves no room for one call of the factory agent,
+// whose cheapest call on big costs about 0.015 EUR: a month cap case on
+// card t1 goes to the human at once, marked not judged by rung 0's step
+// that names the cap's refusal, with no rung 1 or rung 2 step, no
+// conversation and no stop of the chat's own budget. With 10 EUR of the
+// month free, rung 2 takes the case.
+func TestRungsSkipACaseWhileTheMonthCapRefusesTheirCall(t *testing.T) {
+	for _, monthEUR := range []float64{0.01, 10} {
+		g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+		v := g.r.PgCfg().Policy()
+		v.Document.Budget.MonthEUR = monthEUR
+		g.r.PgSetPolicy(func() policy.Version { return v })
+		out := g.trip(t, monthCapReached+" for 2026-11")
+		g.settle()
+		c := caseByID(t, g.s, out.CaseID)
+		two := g.stepsOfRung(t, c.ID, 2)
+		if monthEUR == 10 {
+			if out.Rung != 2 || len(two) != 1 {
+				t.Fatalf("10 EUR free: outcome %+v, rung 2 steps %+v; want rung 2 at work", out, two)
+			}
+			continue
+		}
+		if out.Rung != 3 || c.Status != CaseAtHuman || len(two) != 0 || len(g.stepsOfRung(t, c.ID, 1)) != 0 || g.chat.calls != 0 {
+			t.Fatalf("0.01 EUR: outcome %+v, case %s, rung 2 steps %+v, %d conversations; want the human asked at once", out, c.Status, two, g.chat.calls)
+		}
+		const mark = "not judged: a cap refuses the rungs' calls: "
+		if !slices.ContainsFunc(g.steps(t, c.ID), func(s CaseStep) bool { return s.Rung == 0 && strings.HasPrefix(s.Found, mark) }) {
+			t.Fatalf("steps %+v; want rung 0's step found %q…", g.steps(t, c.ID), mark)
+		}
+		if info := g.infoOf(t, c.ID); !strings.Contains(info, "The factory agent did not judge it: the month cap refuses its model calls too.") {
+			t.Fatalf("the info = %q, want the factory agent's line", info)
+		}
+		var stops int
+		if err := g.s.PgDB().QueryRowContext(context.Background(), `SELECT count(*) FROM events WHERE kind = $1`, EventChatBudgetSpent).Scan(&stops); err != nil || stops != 0 {
+			t.Fatalf("%d chat_budget_spent rows (%v), want none", stops, err)
+		}
+	}
+}
+
 // A case rung 1 judged already, climbing at a spent budget, is not marked
 // unjudged: its problem stays as it was, the face keeps rung 1's
 // recommendation and adds the line that the factory agent did not judge it,

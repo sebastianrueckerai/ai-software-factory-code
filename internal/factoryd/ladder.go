@@ -432,7 +432,7 @@ func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 	if res, err := r.causeGone(ctx, live); err != nil || res != nil {
 		return TripOutcome{CaseID: c.ID, Resolution: res}, err
 	}
-	if from < 2 && (unjudged == nil || unjudged.Mark != markJudgmentSpent) {
+	if from < 2 && (unjudged == nil || unjudged.Mark != markJudgmentSpent && unjudged.Mark != markCapRefused) {
 		started, spent, err := r.startRung2(ctx, t, live)
 		if err != nil || started {
 			return TripOutcome{CaseID: c.ID, Rung: 2}, err
@@ -571,7 +571,7 @@ func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string
 	}
 	left := chat.BudgetEUR - chat.EnforcedSpent()
 	if left > 0 && left >= need.eur {
-		return nil, nil
+		return r.capRefusesJudgment(ctx, c, steps, chat, model)
 	}
 	r.FileJudgmentCard(ctx, t, chat)
 	if slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp && s.Decision != "" }) {
@@ -581,6 +581,42 @@ func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string
 	found := fmt.Sprintf("%s: the chat task %s has %s of %s EUR left", markJudgmentSpent, chat.ID, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
 	seen := fmt.Sprintf("%s The project's judgment budget has %s of %s EUR left this month.", noJudgmentLine, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
 	return r.notJudged(ctx, c, steps, markJudgmentSpent, found, seen)
+}
+
+// capRefusesJudgment is the hand-up of case c when a cap refuses the
+// cheapest call a rung would make on model for chat task chat, as the
+// gateway holds the call: against the day's, the month's and the
+// project's month headroom. A case no rung judged is marked; one rung 1
+// judged carries the line instead. Nil when the caps leave the call room,
+// or no price or headroom is read: the rung then runs, and its own call
+// meets the caps at the gateway.
+func (r *Runner) capRefusesJudgment(ctx context.Context, c Case, steps []CaseStep, chat Task, model string) (*HandUp, error) {
+	if r.cfg.Prices == nil {
+		return nil, nil
+	}
+	n, err := r.needOf(ctx, r.cfg.Policy(), chat, model, false)
+	if err != nil || n.unread != "" {
+		return nil, err
+	}
+	_, free, err := r.store.Free(ctx, n.req)
+	if err != nil {
+		log.Printf("case %d: the caps of the rungs' call on %s: %s", c.ID, chat.ID, r.scrub(err.Error()))
+		return nil, nil
+	}
+	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: chat.ID, Kind: policy.KindModel, Ref: n.req.Ref, Project: n.req.Project, EUR: n.eur})
+	var refused *policy.Refusal
+	if !errors.As(err, &refused) {
+		return nil, err
+	}
+	o, capped := capOpenings[refused.Decision]
+	if !capped {
+		return nil, nil
+	}
+	line := "The factory agent did not judge it: the " + o.name + " refuses its model calls too."
+	if slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp && s.Decision != "" }) {
+		return &HandUp{Note: line}, r.stepOnce(ctx, c, steps, line, line+" "+r.scrub(refused.Reason))
+	}
+	return r.notJudged(ctx, c, steps, markCapRefused, markCapRefused+": "+r.scrub(refused.Reason), line)
 }
 
 // stepOnce appends found as a step of rung 0 on case c unless one of steps
@@ -643,6 +679,7 @@ func (r *Runner) CountReached(ctx context.Context, c Case, limit int) (*HandUp, 
 
 const (
 	markJudgmentSpent   = "not judged, judgment budget spent"
+	markCapRefused      = "not judged: a cap refuses the rungs' calls"
 	markJudgmentUnread  = "not judged, judgment budget unreadable"
 	markProviderRefused = "not judged: the model provider refused"
 )

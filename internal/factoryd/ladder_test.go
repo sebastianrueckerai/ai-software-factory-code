@@ -466,6 +466,18 @@ func TestABudgetFloorSaysWhenTheWorkIsLost(t *testing.T) {
 	}
 }
 
+// A cap's case says that a human lifts the cap, by a reset of its count in
+// the status panel or a raise by a commit: no rung lifts it, and rung 2 only
+// analyses it.
+func TestTheCapRowsSayAHumanLiftsTheCap(t *testing.T) {
+	for kind, name := range map[CaseKind]string{CaseDayCap: "the day cap", CaseMonthCap: "the month cap", CaseProjectCap: "the project's month cap"} {
+		want := "only a human lifts " + name + ": a reset of its count in the status panel or a raise by a commit"
+		if row := kindRow(kind); row.NoRung1 != want || row.Rung2Why != want || row.Rung2 != rung2Analyses {
+			t.Errorf("kind %s: NoRung1 %q, Rung2 %s for %q; want both %q, rung 2 analysing", kind, row.NoRung1, row.Rung2, row.Rung2Why, want)
+		}
+	}
+}
+
 // Every case kind has its one row in the kind table, every row is a kind's,
 // and the table says why wherever rung 2 does no more than analyse a kind,
 // or nothing; its rung 0 rows are rows the ladder holds. The kinds are read

@@ -110,6 +110,9 @@ const (
 	limitHoldsRungs  = "the provider's limit holds a model class, the rungs' own calls among its waiters, so no rung is sure to run"
 	platformNoRung1  = "the check-in cannot judge the platform"
 	nodesNeedAdmin   = "a fix of the nodes needs their admin key, which no agent holds"
+	dayCapLift       = "only a human lifts the day cap: a reset of its count in the status panel or a raise by a commit"
+	monthCapLift     = "only a human lifts the month cap: a reset of its count in the status panel or a raise by a commit"
+	projectCapLift   = "only a human lifts the project's month cap: a reset of its count in the status panel or a raise by a commit"
 )
 
 // headRows are rung 0's rows for a stop at the card's head.
@@ -123,14 +126,11 @@ var caseKinds = []caseKindRow{
 	{Kind: CaseSessionCap, Words: "session cap", Rung0: headRows, Rung2: rung2Decides},
 	{Kind: CaseAgentTimeCap, Words: "agent time cap", Rung0: headRows, Rung2: rung2Decides},
 	{Kind: CaseBudgetFloor, Words: "budget floor", Rung0: headRows, Rung2: rung2Decides},
-	{Kind: CaseDayCap, Words: "day cap", Rung0: []string{"cap_wait"}, NoRung1: "only a commit raises the day cap",
-		Rung2: rung2Analyses, Rung2Why: "only a commit raises the day cap"},
-	{Kind: CaseMonthCap, Words: "month cap", Rung0: []string{"cap_wait"}, NoRung1: "only a commit raises the month cap",
-		Rung2: rung2Analyses, Rung2Why: "only a commit raises the month cap"},
+	{Kind: CaseDayCap, Words: "day cap", Rung0: []string{"cap_wait"}, NoRung1: dayCapLift, Rung2: rung2Analyses, Rung2Why: dayCapLift},
+	{Kind: CaseMonthCap, Words: "month cap", Rung0: []string{"cap_wait"}, NoRung1: monthCapLift, Rung2: rung2Analyses, Rung2Why: monthCapLift},
 	{Kind: CaseFactoryMonthCap, Words: "factory's month cap", NoRung1: noRungRunsCap, Rung2: rung2Nothing, Rung2Why: noRungRunsCap,
 		Choices: true, Exception: noRungRunsCap},
-	{Kind: CaseProjectCap, Words: "project cap", Rung0: []string{"cap_wait"}, NoRung1: "only a commit raises the project cap",
-		Rung2: rung2Analyses, Rung2Why: "only a commit raises the project cap"},
+	{Kind: CaseProjectCap, Words: "project cap", Rung0: []string{"cap_wait"}, NoRung1: projectCapLift, Rung2: rung2Analyses, Rung2Why: projectCapLift},
 	{Kind: CaseCheckinHuman, Words: "check-in with a human", Rung0: []string{"wait_on_ask"}, NoRung1: checkinJudged, Rung2: rung2Decides},
 	{Kind: CaseCheckinShare, Words: "check-in spend", Rung0: headRows, Rung2: rung2Decides},
 	{Kind: CaseCheckinFailed, Words: "failed check-in", Rung0: headRows, Rung2: rung2Decides},
@@ -495,7 +495,7 @@ func doorRefusal(c Case, climbed bool) error {
 }
 
 // notJudgedMarks lead rung 0's step on a case no rung could judge.
-var notJudgedMarks = []string{markJudgmentSpent, markJudgmentUnread, markProviderRefused}
+var notJudgedMarks = []string{markJudgmentSpent, markJudgmentUnread, markProviderRefused, markCapRefused}
 
 // climbed says a step among steps lets its case through the door: one of
 // rung 1 or rung 2, or rung 0's that marks the case not judged.
