@@ -751,3 +751,33 @@ func TestGateWatchTellKeepsTheExtendedDeadline(t *testing.T) {
 		t.Fatalf("trips = %+v, want the one at 100 ms", trips)
 	}
 }
+
+// A call asked once more (SupervisorModel.Chat) moves the run's end out by
+// its timeout: one wave of 200 ms, a call of 200 ms asked again at 50 ms,
+// and a run to 300 ms is not tripped at 200 ms.
+func TestGateWatchCallAskedOnceMoreMovesTheEndOut(t *testing.T) {
+	trips, _ := watchRun(t, 200*time.Millisecond, 0, func(ctx context.Context) {
+		boundByParts(ctx, 1)
+		time.Sleep(50 * time.Millisecond)
+		oneMoreCall(ctx, 200*time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
+	})
+	if len(trips) != 0 {
+		t.Fatalf("trips = %+v, want none: the call once more moved the end to 400 ms", trips)
+	}
+}
+
+// After a wait the call once more moves the extended end out: one wave
+// trips at 200 ms, the wait extends it to 400 ms, a call of 200 ms asked
+// again at 300 ms moves it to 600 ms, and a run to 520 ms trips once.
+func TestGateWatchCallAskedOnceMoreMovesTheExtendedEndOut(t *testing.T) {
+	trips, _ := watchRun(t, 200*time.Millisecond, 0, func(ctx context.Context) {
+		boundByParts(ctx, 1)
+		time.Sleep(300 * time.Millisecond)
+		oneMoreCall(ctx, 200*time.Millisecond)
+		time.Sleep(220 * time.Millisecond)
+	})
+	if len(trips) != 1 {
+		t.Fatalf("trips = %+v, want the one at 200 ms and none at 400 ms", trips)
+	}
+}

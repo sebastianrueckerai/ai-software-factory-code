@@ -82,7 +82,7 @@ to a person), and its project's month budget has headroom. Otherwise it
 stays queued, holding no slot.
 
 A human holds a queued, `waiting-deps` or running card with "Put on
-hold", among the opened card's other actions, or the chat's `hold_card`: a
+hold", under the opened card's head, or the chat's `hold_card`: a
 reason the board shows, and an optional release card, any card of the
 same repository of any plan but not a plan itself, which is `done` once
 it files its cards, before their work lands. A release card that already

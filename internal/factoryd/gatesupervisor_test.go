@@ -128,7 +128,7 @@ func TestSuperviseGateTakesThePinnedTimeout(t *testing.T) {
 		Trip:  GateTrip{Activity: ActivityWaitChecks, ActivityID: "7", Attempt: 1, AlertID: c.alert, Started: time.Now().Add(-45 * time.Second), Bound: 30 * time.Second},
 		Input: []any{"t1", "c1"}, CanWait: true, CanRetry: true})
 	d := getInto[GateDecision](t, val, err)
-	if d.Action != ActionEscalate || !strings.Contains(d.Diagnosis+d.Recommendation, "deadline exceeded") || time.Since(began) > 10*time.Second {
+	if d.Action != ActionEscalate || !strings.Contains(d.Diagnosis, "the gate supervisor could not be asked: the model did not answer within 50ms") || time.Since(began) > 10*time.Second {
 		t.Fatalf("decision = %+v after %s, want an escalation at 50ms", d, time.Since(began))
 	}
 }

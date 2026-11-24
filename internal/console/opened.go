@@ -47,8 +47,10 @@ type openedView struct {
 	// AgentView is the exact text the card's agent gets, "" when it could
 	// not be read.
 	AgentView string
-	More      []answerView
-	Glosses   []gloss
+	// Hold holds the hold's acts, which stand outside the folds; More the
+	// card's other actions.
+	Hold, More []answerView
+	Glosses    []gloss
 	// SessionsHint and MoreHint are the hints of their folds.
 	SessionsHint, MoreHint string
 }
@@ -438,6 +440,16 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		}
 	}
 	o.Glosses = glosses(seen)
+	holds := func(a answerView) bool {
+		action, _, _ := strings.Cut(a.Action, "/")
+		return action == factoryd.AnswerHold || action == factoryd.AnswerRelease
+	}
+	for _, a := range o.More {
+		if holds(a) {
+			o.Hold = append(o.Hold, a)
+		}
+	}
+	o.More = slices.DeleteFunc(o.More, holds)
 	o.SessionsHint, o.MoreHint = sessionsHint(k, o.Sessions), moreHint(o.More)
 	return o
 }

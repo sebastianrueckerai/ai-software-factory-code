@@ -912,6 +912,39 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
+			// the gates' call once more at low thinking depth: LiteLLM's
+			// provider config for z.ai drops reasoning_effort unless the
+			// call lists it
+			name:            "allowed_openai_params naming reasoning_effort alone passes",
+			task:            &runningTask,
+			reqBody:         `{"allowed_openai_params":["reasoning_effort"],"max_tokens":100,"messages":[],"model":"small","reasoning_effort":"low"}`,
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0005"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantSpent:       ptr(2.0005),
+			wantUpstreamHit: 1,
+		},
+		{
+			name:         "allowed_openai_params naming another field is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"allowed_openai_params":["reasoning_effort","fallbacks"],"messages":[],"model":"small"}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantReason:   `allowed_openai_params must be exactly ["reasoning_effort"], is ["reasoning_effort","fallbacks"]`,
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "allowed_openai_params that is no list is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"allowed_openai_params":"reasoning_effort","messages":[],"model":"small"}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantReason:   `allowed_openai_params must be exactly ["reasoning_effort"], is "reasoning_effort"`,
+			wantErrType:  "invalid_request_error",
+		},
+		{
 			name:         "n above 1 is refused",
 			wantNoMint:   true,
 			task:         &runningTask,
@@ -1529,9 +1562,9 @@ func TestAgentCallsOnlyItsSessionAlias(t *testing.T) {
 
 // A call that asks for no output limit is held and forwarded at its
 // alias's: prices.max_output_tokens, lowered by a smaller one its
-// deployments publish, never raised by a larger; an alias the policy
-// names no limit for is refused like an unpriced one, whatever its
-// deployments publish. Hand-derived at 1e-6 in, 4e-6 out per token, the
+// deployments publish, never raised by a larger, and its answer names the
+// limit; an alias the policy names no limit for is refused like an
+// unpriced one, whatever its deployments publish. Hand-derived at 1e-6 in, 4e-6 out per token, the
 // body's 38 bytes plus 64 at most its 102 prompt tokens (0.000102).
 func TestCallAskingNoLimitTakesTheAliasLimit(t *testing.T) {
 	for _, tc := range []struct {
@@ -1573,6 +1606,9 @@ func TestCallAskingNoLimitTakesTheAliasLimit(t *testing.T) {
 			if rr.Code != http.StatusOK || last.Decision != "allowed" || len(bodies) != 1 ||
 				bodies[0] != withMaxTokens(t, body, tc.wantLimit) || *last.OutputLimit != tc.wantLimit || math.Abs(*last.HoldEUR-tc.wantEUR) > 1e-12 {
 				t.Fatalf("%d %s, audit %+v, upstream %q; want max_tokens %d held at %g EUR", rr.Code, rr.Body.String(), last, bodies, tc.wantLimit, tc.wantEUR)
+			}
+			if got := rr.Header().Get(HeaderOutputLimit); got != fmt.Sprint(tc.wantLimit) {
+				t.Fatalf("output limit header %q, want %d: the caller reads the limit its call got", got, tc.wantLimit)
 			}
 		})
 	}

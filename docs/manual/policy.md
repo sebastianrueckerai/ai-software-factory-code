@@ -179,7 +179,7 @@ tool-cap and envelope matrices one row per block.
 | limits.agent_time | the agent's working time across all sessions of a task. Waiting on checks or on a reviewer does not count. A class, process or project may set its own, the most specific wins | 0 is refused: "policy: limits.agent_time must lie between 1m and 72h0m0s, is %s" | the session stops on "the task's wall-clock cap is reached" and the card reads "the agent time is used up: the ladder judges this stop before a human is asked" |
 | limits.check_in | how long a session runs before it must check in with the supervisor, at least 10m | 0 and absent read the same: no check-in. This is one of the caps a missing key reads as zero | the session stops into a check-in conversation (trip kind check_in) whose own caps can send its ask to a human |
 | limits.supervisor_calls | how many supervisor model calls one session may make. The next trip escalates without one | 0 is refused: "policy: limits.supervisor_calls must be positive, is %d" | nothing today: no code reads the key, so it decides nothing. The schema still requires it |
-| limits.supervisor_timeout | one supervisor or review model call, 30s to 15m | 0 is refused: "policy: limits.supervisor_timeout must lie between 30s and 15m0s, is %s" | the call is cut at the bound. No line names it to the agent. It also bounds the gate activity SuperviseGate at the timeout plus two minutes |
+| limits.supervisor_timeout | one supervisor or review model call, 30s to 15m | 0 is refused: "policy: limits.supervisor_timeout must lie between 30s and 15m0s, is %s" | the call is cut at the bound, and the gate's reason reads "the model did not answer within %s". No line names it to the agent. It also bounds the gate activity SuperviseGate at the timeout plus two minutes |
 | limits.stronger_after | how many returns from the same stage a task takes on its model before the next return climbs to the stronger rung | 0 and absent read the same: the first return climbs | "factoryd: this session continues on the stronger model, %s: %s. Carry on from where you are." |
 | limits.steps | one agent session's model turns (opencode's agent steps) | 0 and absent read DefaultSteps 200 | "CRITICAL - MAXIMUM STEPS REACHED" opens the message the harness appends at the cap, which the model's next call reads. The worker pod gets the cap as its STEPS env |
 | limits.nudge_after | how many identical tool calls in a row (same tool, same input) earn the running session a message to change approach, at least 2 | 0 and absent read DefaultNudgeAfter 3 | "You repeated the same call %s (%s). Change approach, then continue." |
@@ -309,7 +309,17 @@ Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking
 does not, so the Qwen vision deployment runs with thinking off, and the
-gateway refuses a client's `thinking` field. `holds` has kinds `model`,
+gateway refuses a client's `thinking` field. It forwards LiteLLM's
+`allowed_openai_params` only as exactly `["reasoning_effort"]`: LiteLLM's
+z.ai provider drops `reasoning_effort` unless the call lists it. An
+admitted call's answer names the output limit the call got in
+`X-Gateway-Output-Limit`. A reasoning model can think a whole limit
+away, so factoryd's JSON-mode calls read why the answer stopped: an
+answer cut at its limit is asked once more at the same limit with
+`reasoning_effort` `low`, a second hold and a second booking, and the
+second cut is no answer with the reason "the model used its whole answer
+limit of <n> tokens before it answered". The check-in asks no limit; its
+cut answer gets the conversation's one repair round with that reason. `holds` has kinds `model`,
 `tool` (see "Tools") and `resource`. During a superseded key's grace (the
 calls still in flight on it when a new run or policy version mints its
 replacement), a task briefly has two live keys; the holds cap both. LiteLLM's
