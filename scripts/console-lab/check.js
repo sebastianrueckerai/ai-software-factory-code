@@ -148,11 +148,12 @@ async function openInbox(page) {
   await page.waitForTimeout(600);
 }
 
-// open is a fresh page at viewport in the dark theme; its thread table is
-// unfolded, as for a member who unfolded it once, unless folded is set,
-// which leaves the table at its default (folded to its marks).
-async function open(browser, viewport, folded) {
-  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+// open is a fresh page at viewport in the dark theme, its browser in
+// Europe/Berlin unless zone names another; its thread table is unfolded,
+// as for a member who unfolded it once, unless folded is set, which
+// leaves the table at its default (folded to its marks).
+async function open(browser, viewport, folded, zone = "Europe/Berlin") {
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, timezoneId: zone });
   await ctx.addCookies([{ name, value, domain: new URL(base).hostname, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }]);
   await ctx.addInitScript(() => localStorage.setItem("theme", "dark"));
   if (!folded) await ctx.addInitScript(() => { if (localStorage.getItem("chat-fold:sebastian") === null) localStorage.setItem("chat-fold:sebastian", "0"); });
@@ -1367,7 +1368,8 @@ async function text(page) {
         await p.page.waitForFunction(() => document.querySelector("#doc-facts .doc-refused"), null, { timeout: 5000 })
           .catch(() => fails.push("outside: the save over the same lines refuses nothing"));
         const clash = (await p.page.locator("#doc-facts .doc-refused").innerText().catch(() => "")).trim();
-        if (clash !== "not saved: Sebastian changed the same lines (14:08)") fails.push('outside: the refusal reads "' + clash + '"');
+        // the clash's commit, 14:08 UTC on 15 October, read in Europe/Berlin
+        if (clash !== "not saved: Sebastian changed the same lines (16:08)") fails.push('outside: the refusal reads "' + clash + '"');
         const clashRow = (await p.page.locator("#doc-facts").innerText()).replace(/\s+/g, " ");
         for (const w of ["show theirs", "load theirs"]) if (!clashRow.includes(w)) fails.push('outside: the refused row lacks "' + w + '" (' + clashRow + ")");
         // a clash met the door's judgement: no retry, it would refuse again
@@ -2180,7 +2182,7 @@ async function text(page) {
     if (presses !== "Reset today's count | Reset the project's month count | Reset this month's premium count") fails.push(label + ": the panel's Resets are " + presses + ", want the day's, the project's month's and the premium's");
     const rows = await rp.page.evaluate(() => Array.from(document.querySelectorAll("#status-panel .sp-g")).map((g) => {
       const s = g.querySelector(":scope > .rst > summary"), m = g.querySelector(":scope > .gauge").getBoundingClientRect(), p = s && s.getBoundingClientRect();
-      return { label: g.querySelector(".lbl").textContent.trim(), turn: /^\(resets \d+ \w+ at \d\d:\d\d UTC\)$/.test((g.querySelector(".lbl .turn") || {}).textContent || ""),
+      return { label: g.querySelector(".lbl").textContent.trim(), turn: /^\(resets \d+ \w+ at \d\d:\d\d CES?T\)$/.test((g.querySelector(".lbl .turn") || {}).textContent || ""),
         apart: !!s && !(p.right <= m.left && m.left - p.right <= 12 && m.top >= p.top && m.bottom <= p.bottom), fits: g.scrollWidth <= g.clientWidth + 1 };
     }));
     const apart = rows.filter((r) => r.apart);
@@ -2197,6 +2199,61 @@ async function text(page) {
       await premium.locator("button[data-cancel]").click();
     }
     await rp.ctx.close();
+  }
+  // every time a screen shows is a <time> the browser reads in its own
+  // zone (time.js): in Europe/Berlin each reads as the server wrote it, so
+  // nothing changes once the page runs; in America/New_York the day's count
+  // resets at the UTC day's turn, 19:00 EST (20:00 EDT in summer), the
+  // chat's turns read EST too, and both stay so once a swap of the board,
+  // or the stream's counters after it, bring the status line again; in
+  // Asia/Kolkata, whose zone reads by its
+  // offset (GMT+5:30), the widest name, every Spend row still fits the
+  // panel at 390
+  await seed("busy");
+  {
+    const pattern = /<time datetime="([^"]+)" data-layout="([^"]+)"(?: title="([^"]*)")?>([^<]*)<\/time>/g;
+    for (const at of ["/", "/tasks/" + labID(606) + "/timeline", "/costs", "/resources"]) {
+      const html = await (await fetch(base + at, { headers: { cookie: name + "=" + value } })).text();
+      const wrote = new Map([...html.matchAll(pattern)].map((m) => [m[1] + " " + m[2], m[3] !== undefined ? m[3] : m[4]]));
+      const bp = await open(browser, { width: 1440, height: 900 });
+      await bp.page.goto(base + at, { waitUntil: "load" });
+      await bp.page.waitForTimeout(300);
+      const read = await bp.page.evaluate(() => Array.from(document.querySelectorAll("time[data-layout]")).map((t) => [t.dateTime + " " + t.dataset.layout, t.title || t.textContent]));
+      const moved = read.filter(([k, v]) => wrote.has(k) && wrote.get(k) !== v).map(([k, v]) => k + ": " + wrote.get(k) + " became " + v);
+      if (at === "/" && !wrote.size) fails.push("local time: the board writes no <time data-layout>");
+      if (moved.length) fails.push("local time: in Europe/Berlin " + at + " changes a time the server wrote: " + moved.join(" | "));
+      await bp.ctx.close();
+    }
+    const ny = await open(browser, { width: 1440, height: 900 }, false, "America/New_York");
+    await ny.page.goto(base + "/", { waitUntil: "load" });
+    await ny.page.waitForTimeout(600);
+    const turn = () => ny.page.evaluate(() => {
+      const t = document.querySelector("#status-panel .sp-g .lbl .turn time");
+      if (!t) return null;
+      const fresh = !t.dataset.seen;
+      t.dataset.seen = "1";
+      return { text: t.textContent, fresh, chat: Array.from(document.querySelectorAll("#chat .msg .who time")).map((c) => c.textContent) };
+    });
+    const before = await turn();
+    const nyTurn = /^\d+ \w+ at (19:00 EST|20:00 EDT)$/;
+    if (!before || !nyTurn.test(before.text)) fails.push("local time: in America/New_York the day's turn reads " + JSON.stringify(before && before.text));
+    if (!before || !before.chat.length || before.chat.some((c) => !/ E[SD]T$/.test(c))) fails.push("local time: in America/New_York the chat's turns read " + JSON.stringify(before && before.chat));
+    await ny.page.evaluate(() => htmx.ajax("GET", "/board" + document.getElementById("board").dataset.query, { source: "#board", target: "#board", swap: "outerHTML" }));
+    await ny.page.waitForTimeout(2500);
+    const after = await turn();
+    if (!after || !after.fresh || !nyTurn.test(after.text)) fails.push("local time: after a swap of the board the day's turn reads " + JSON.stringify(after));
+    await ny.ctx.close();
+    const kol = await open(browser, { width: 390, height: 844 }, false, "Asia/Kolkata");
+    await kol.page.goto(base + "/", { waitUntil: "load" });
+    await kol.page.waitForTimeout(600);
+    await kol.page.locator("#status-line > summary > .cell.state").click();
+    await kol.page.waitForTimeout(300);
+    const rows = await kol.page.evaluate(() => Array.from(document.querySelectorAll("#status-panel .sp-g")).map((g) => ({
+      label: g.querySelector(".lbl").textContent.trim(), fits: g.scrollWidth <= g.clientWidth + 1 })));
+    if (!rows.length || rows.some((r) => !/GMT\+5:30/.test(r.label) && /resets/.test(r.label))) fails.push("local time: in Asia/Kolkata the Spend rows read " + rows.map((r) => r.label).join(" | "));
+    const wide = rows.filter((r) => !r.fits);
+    if (wide.length) fails.push("local time: in Asia/Kolkata at 390 a Spend row runs wider than the panel: " + wide.map((r) => r.label).join(" | "));
+    await kol.ctx.close();
   }
   // a narrow desk at 960: the strip's cells wrap where they do not fit, the
   // board's head fits its row, the documents' head wraps in its panel

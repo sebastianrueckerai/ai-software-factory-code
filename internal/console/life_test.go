@@ -54,8 +54,8 @@ func TestRunsOfACardsLife(t *testing.T) {
 	}
 	for i, w := range want {
 		r := runs[i]
-		if r.Kind != w.kind || r.At() != w.at || r.Duration() != w.dur || r.Note() != w.note || r.EUR != w.eur {
-			t.Errorf("run %d: %s at %s for %s, %q, €%.2f; want %s at %s for %s, %q, €%.2f", i, r.Kind, r.At(), r.Duration(), r.Note(), r.EUR, w.kind, w.at, w.dur, w.note, w.eur)
+		if r.Kind != w.kind || r.Start.UTC().Format("15:04") != w.at || r.Duration() != w.dur || r.Note() != w.note || r.EUR != w.eur {
+			t.Errorf("run %d: %s at %s for %s, %q, €%.2f; want %s at %s for %s, %q, €%.2f", i, r.Kind, r.Start.UTC().Format("15:04"), r.Duration(), r.Note(), r.EUR, w.kind, w.at, w.dur, w.note, w.eur)
 		}
 	}
 	if runs[1].Attempt != 1 || runs[1].Model != "small" || runs[3].Attempt != 2 || runs[3].Model != "big" {
@@ -102,8 +102,8 @@ func TestRunsOfACardsLifeNoteAWithdrawnQuestion(t *testing.T) {
 		t.Fatalf("%d runs, want %d: %+v", len(runs), len(want), runs)
 	}
 	for i, w := range want {
-		if r := runs[i]; r.Kind != w.kind || r.At() != w.at || r.Note() != w.note {
-			t.Errorf("run %d: %s at %s, %q; want %s at %s, %q", i, r.Kind, r.At(), r.Note(), w.kind, w.at, w.note)
+		if r := runs[i]; r.Kind != w.kind || r.Start.UTC().Format("15:04") != w.at || r.Note() != w.note {
+			t.Errorf("run %d: %s at %s, %q; want %s at %s, %q", i, r.Kind, r.Start.UTC().Format("15:04"), r.Note(), w.kind, w.at, w.note)
 		}
 	}
 }
@@ -135,7 +135,7 @@ func TestRunsOfACardsLifeNotesTheSizing(t *testing.T) {
 		tc.step["step"] = factoryd.StepSizing
 		tc.step["time"] = at(10, 3).Format(time.RFC3339)
 		runs := runsOf(task, events, []map[string]any{tc.step}, nil, at(10, 30))
-		if len(runs) == 0 || runs[0].Kind != "queued" || runs[0].At() != "10:00" || runs[0].Duration() != "4 min" || runs[0].Note() != tc.want {
+		if len(runs) == 0 || runs[0].Kind != "queued" || runs[0].Start.UTC().Format("15:04") != "10:00" || runs[0].Duration() != "4 min" || runs[0].Note() != tc.want {
 			t.Errorf("step %v: runs %+v, want queued 10:00 for 4 min with note %q", tc.step, runs, tc.want)
 		}
 	}

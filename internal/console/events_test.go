@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -1061,7 +1062,8 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // nothing, a reconnect for the board once and the drawer's Chat it shows,
 // and no timer for anything; counters set the status line and the
 // columns' counts; the agent's text and a steer reach the drawer's Chat
-// once each, and another session's text and the card's new status load
+// once each, their time read in the browser's zone (Europe/Berlin here:
+// 10:05 UTC on 11 October is 12:05 CEST), and another session's text and the card's new status load
 // the tab again; event board swaps the board,
 // and a swap the open drawer holds back runs once it closes, or once the
 // focus lands elsewhere, not while it moves on to another field. The
@@ -1154,7 +1156,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
     createElement: function () { return el(); },
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
-require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8") + require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 listeners.DOMContentLoaded.forEach(function (fn) { fn(); });
 // settle answers every read in flight, and what their answers start runs
 function settle() {
@@ -1390,6 +1392,7 @@ await settle();
 console.log(JSON.stringify(out));
 })();`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
+	cmd.Env = append(os.Environ(), "TZ=Europe/Berlin")
 	got, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("node: %v", err)
@@ -1398,7 +1401,7 @@ console.log(JSON.stringify(out));
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
 		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
 		`"held":["GET /board?project=code","GET /board?project=code"],"moved":["GET /board?project=code","GET /board?project=code"],"focused":["GET /board?project=code","GET /board?project=code"],"released":["GET /board?project=code"],` +
-		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],` +
+		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 12:05 CEST | Tests pass.","msg you | e7 | sebastian · 10-11 12:06 CEST | Merge it."],` +
 		`"typing":["GET /board?project=code"],"finding":[],"found":["GET /board?project=code","GET /board?project=code"],` +
 		`"failing":[],"failed":["GET /board?project=code"],"reads":[1,2,2],"unsettled":["GET /board?project=code","GET /board?project=code"],` +
 		`"rerun":["GET /board?project=code","GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /board?project=code"],` +

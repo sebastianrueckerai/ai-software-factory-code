@@ -14,7 +14,7 @@
 <td>{{.ID}} {{.Kind}}{{if .Purpose}}<br><span class="meta">{{.Purpose}}</span>{{end}}</td>
 <td>{{.Size}}</td>
 <td>{{.Address}}</td>
-{{if eq .Lifetime "standing"}}<td>none: standing (made standing by {{.PromotedBy}})</td>{{else}}<td title="{{utc .LeaseExpires}}{{if .ReleasedBy}} · released by {{.ReleasedBy}}{{end}}">{{until .LeaseExpires}}</td>{{end}}
+{{if eq .Lifetime "standing"}}<td>none: standing (made standing by {{.PromotedBy}})</td>{{else}}<td>{{momentTitle .LeaseExpires "2006-01-02 15:04 MST" (until .LeaseExpires)}}{{with .ReleasedBy}} · released by {{.}}{{end}}</td>{{end}}
 <td class="num">{{rate .PricePerHourEUR}}</td>
 <td class="num">{{eur .AccruedEUR}}</td>
 <td><i class="lamp{{if eq .State "live"}} on{{end}}" aria-hidden="true"></i>{{.State}}</td>
@@ -39,4 +39,4 @@
 {{end}}
 </div>
 {{template "foot"}}
-{{define "age"}}{{if .IsZero}}<td>never</td>{{else}}<td title="{{utc .}}">{{ago .}}</td>{{end}}{{end}}
+{{define "age"}}{{if .IsZero}}<td>never</td>{{else}}<td>{{momentTitle . "2006-01-02 15:04 MST" (ago .)}}</td>{{end}}{{end}}

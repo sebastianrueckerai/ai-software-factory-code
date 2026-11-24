@@ -22,9 +22,9 @@
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>
 {{end}}{{with .Resets}}<div class="tscroll"><table>
 <caption>Resets</caption>
-<thead><tr><th scope="col">when (UTC)</th><th scope="col">cap</th><th scope="col">project</th><th scope="col">by</th><th scope="col" class="num">count before EUR</th></tr></thead>
+<thead><tr><th scope="col">when</th><th scope="col">cap</th><th scope="col">project</th><th scope="col">by</th><th scope="col" class="num">count before EUR</th></tr></thead>
 <tbody>
-{{range .}}<tr><th scope="row">{{.When}}</th><td>{{.Cap}}</td><td>{{.Project}}</td><td>{{.By}}</td><td class="num">{{eur .Before}}</td></tr>
+{{range .}}<tr><th scope="row">{{moment .At "2006-01-02 15:04 MST"}}</th><td>{{.Cap}}</td><td>{{.Project}}</td><td>{{.By}}</td><td class="num">{{eur .Before}}</td></tr>
 {{end}}</tbody>
 </table></div>
 {{end}}</div>

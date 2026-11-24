@@ -29,8 +29,9 @@ type costRow struct {
 // project's name for a project's cap (its repository once no file names
 // it), "" for the factory's.
 type resetRow struct {
-	When, Cap, Project, By string
-	Before                 float64
+	At               time.Time
+	Cap, Project, By string
+	Before           float64
 }
 
 // costs shows the ledger per day and per task over a window of UTC days,
@@ -120,7 +121,7 @@ func (c *Console) capResets(ctx context.Context, v policy.Version, from, to time
 			name, _, _ := v.ProjectOf(x.Repository)
 			project = cmp.Or(name, x.Repository)
 		}
-		out = append(out, resetRow{When: x.At.UTC().Format("2006-01-02 15:04"), Cap: x.Cap, Project: project, By: x.Login, Before: x.BeforeEUR})
+		out = append(out, resetRow{At: x.At, Cap: x.Cap, Project: project, By: x.Login, Before: x.BeforeEUR})
 	}
 	return out, err
 }
@@ -158,8 +159,8 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 	}
 	s := current(r)
 	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Version": v, "Projects": projects,
-		"LoadedAt":    v.LoadedAt.UTC().Format(time.RFC3339),
-		"ActivatedAt": v.ActivatedAt.UTC().Format(time.RFC3339), "Document": string(doc), "Dir": c.cfg.ConfigDir,
+		"LoadedAt":    moment(v.LoadedAt, momentStamp),
+		"ActivatedAt": moment(v.ActivatedAt, momentStamp), "Document": string(doc), "Dir": c.cfg.ConfigDir,
 		"At":   c.configTree(v.Commit),
 		"Main": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir})
 }

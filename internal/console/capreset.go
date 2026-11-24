@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -79,8 +78,7 @@ func (c *Console) resetCap(w http.ResponseWriter, r *http.Request, cap, reposito
 	var stale *policy.StaleResetError
 	if errors.As(err, &stale) {
 		n := stale.Newest
-		c.stalePanel(w, r, n.Login+" reset "+capCounts[cap]+" at "+factoryd.ResetStamp(n.At, c.clock())+
-			"; the panel now shows it. Press Reset again to reset it once more.")
+		c.stalePanel(w, r, n.Login+" reset "+capCounts[cap]+"; the panel now shows it. Press Reset again to reset it once more.")
 		return
 	}
 	if err != nil {

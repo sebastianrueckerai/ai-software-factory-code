@@ -12,7 +12,7 @@
 {{template "chain" .}}
 {{end}}{{else if eq .Tab "chat"}}{{with .Session}}<p class="meta">Session {{.N}} · {{.Model}} · {{.Outcome}}</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session {{.N}}" data-task="{{$.Card.ID}}" data-session="{{.ID}}">{{range $.Said}}
-<div class="msg {{if .Agent}}agent{{else}}you{{end}}" data-key="{{.Key}}"><span class="av" aria-hidden="true">{{if not .Agent}}{{initial .Who}}{{end}}</span><p class="who"><span class="name">{{.Who}}</span> <time>{{.At.UTC.Format "01-02 15:04Z"}}</time></p><p class="said">{{.Text}}</p></div>{{end}}
+<div class="msg {{if .Agent}}agent{{else}}you{{end}}" data-key="{{.Key}}"><span class="av" aria-hidden="true">{{if not .Agent}}{{initial .Who}}{{end}}</span><p class="who"><span class="name">{{.Who}}</span> {{moment .At "01-02 15:04 MST"}}</p><p class="said">{{.Text}}</p></div>{{end}}
 </div>
 {{else}}{{if not $.Problem}}<p class="meta">No session yet</p>
 {{end}}{{end}}{{else if eq .Tab "receipt"}}{{with .Receipt}}<dl class="top-block">
@@ -31,7 +31,7 @@
 {{end}}</tbody>
 </table>{{end}}
 {{if .Decisions}}<h4>The human decisions</h4>
-<ul class="related">{{range .Decisions}}<li><span class="why">{{.Label}}</span> {{.Words}} by {{.By}}{{with .Note}}: {{.}}{{end}}{{with .Draw}} · drew {{.}}{{end}}{{with .At}} <time>{{.}}</time>{{end}}</li>{{end}}</ul>{{end}}
+<ul class="related">{{range .Decisions}}<li><span class="why">{{.Label}}</span> {{.Words}} by {{.By}}{{with .Note}}: {{.}}{{end}}{{with .Draw}} · drew {{.}}{{end}}{{with .When}} {{.}}{{end}}</li>{{end}}</ul>{{end}}
 <h4>The model's assessments</h4>
 {{if .Assessments}}<ul class="related">{{range .Assessments}}<li><span class="why">{{.Label}}</span> {{.Words}}{{with .Note}}: {{.}}{{end}}{{with .At}} · evidence: {{.}}{{end}}</li>{{end}}</ul>
 {{else}}<p class="meta">No assessment recorded.</p>{{end}}
@@ -46,7 +46,7 @@
 {{end}}{{end}}</div>
 </div>
 
-{{define "card-life"}}<ol class="life-log">{{range .Life}}<li><time>{{.At.UTC.Format "2 Jan 15:04"}}</time> {{.Text}}{{with .Quote}} <span class="quote">{{.}}</span>{{end}}</li>{{end}}</ol>
+{{define "card-life"}}<ol class="life-log">{{range .Life}}<li>{{moment .At "2 Jan 15:04"}} {{.Text}}{{with .Quote}} <span class="quote">{{.}}</span>{{end}}</li>{{end}}</ol>
 {{range .Asks}}<h4>The open ask: {{.Ask}}</h4>{{with .Steps}}<ul>{{range .}}<li>{{.Lead}}{{with .Found}}<span class="quote">{{.}}</span>{{end}}</li>{{end}}</ul>{{else}}<p class="meta">Nobody has weighed this ask yet.</p>{{end}}
 {{end}}{{end}}
 

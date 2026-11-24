@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,13 +14,15 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// A step's time reads as the gates table's start: seconds in UTC. A
-// stamp that does not parse keeps the wire's string, so the cell never
-// goes blank; the raw stamp stays for the cell's title.
+// A step's time reads as the gates table's start: to the second, in
+// Europe/Berlin until the browser reads it in its own zone, 12:41:47 UTC
+// on 17 October 14:41:47 CEST. A stamp that does not parse keeps the
+// wire's string, so the cell never goes blank; the raw stamp stays for
+// the cell's title.
 func TestEntryFormatsTheTimeLikeTheGates(t *testing.T) {
 	e := entry(map[string]any{"step": "checks", "time": "2026-10-17T12:41:47.048126987Z"})
-	if e.Time != "2026-10-17 12:41:47" || e.Raw != "2026-10-17T12:41:47.048126987Z" {
-		t.Errorf("entry = %q (raw %q), want 2026-10-17 12:41:47 with the raw stamp kept", e.Time, e.Raw)
+	if want := `<time datetime="2026-10-17T12:41:47Z" data-layout="2006-01-02 15:04:05 MST">2026-10-17 14:41:47 CEST</time>`; e.Time != template.HTML(want) || e.Raw != "2026-10-17T12:41:47.048126987Z" {
+		t.Errorf("entry = %q (raw %q), want %s with the raw stamp kept", e.Time, e.Raw, want)
 	}
 	e = entry(map[string]any{"step": "checks", "time": "later"})
 	if e.Time != "later" || e.Raw != "" {

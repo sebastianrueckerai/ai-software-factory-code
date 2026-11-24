@@ -612,7 +612,7 @@ func TestDocsSaveRefusesConflict(t *testing.T) {
 			Base: factoryd.ContentHash(docsPlan), Commit: versionSHA(0)})
 	equal(t, "the status", code, http.StatusConflict)
 	equal(t, "the clash answer", []any{ans.Reason, ans.Who, ans.At, ans.Lines},
-		[]any{"Sebastian changed the same lines (14:08)", "Sebastian", "2026-10-15T14:08:00Z", [][2]int{{4, 4}}})
+		[]any{"Sebastian changed the same lines", "Sebastian", "2026-10-15T14:08:00Z", [][2]int{{4, 4}}})
 	equal(t, "the current text", []any{ans.SHA256, ans.Current}, []any{factoryd.ContentHash(outside), outside})
 	equal(t, "the clash committed nothing", []any{len(f.commits), r.events.count()}, []any{0, before})
 }

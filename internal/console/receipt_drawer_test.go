@@ -70,7 +70,7 @@ func TestCardDrawerReceiptTab(t *testing.T) {
 		`<tr><td>check</td><td><code>bash check changed</code></td><td class="mono">0</td><td>pass</td></tr>`,
 		`<tr><td>policy</td><td><code>—</code></td><td class="mono">—</td><td>allow</td></tr>`,
 		`<tr><td>review</td><td><code>the model review</code></td><td class="mono">1</td><td>concerns</td></tr>`,
-		`<li><span class="why">merge</span> approve by sebastian: adds the column safely · drew 2 sessions and 40 minutes of agent time <time>11-12 14:04Z</time></li>`,
+		`<li><span class="why">merge</span> approve by sebastian: adds the column safely · drew 2 sessions and 40 minutes of agent time <time datetime="2026-11-12T14:04:00Z" data-layout="01-02 15:04 MST">11-12 15:04 CET</time></li>`,
 		// the assessments follow the facts, each under its source label
 		`<h4>The model's assessments</h4>`,
 		`<li><span class="why">review</span> approve</li>`,

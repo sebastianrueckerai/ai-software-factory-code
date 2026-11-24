@@ -12,7 +12,9 @@ import (
 )
 
 // The fold of a card's life answers a writer of the card's project with
-// the card's digest as a human reads it, a line per step with a count for
+// the card's digest as a human reads it, a line per step, its time in
+// Europe/Berlin until the browser reads it in its own zone (10:00 UTC on
+// 18 November is 11:00 CET), with a count for
 // the finding ids and a writer's words apart, then each open case under
 // its ask, with who weighed it and what came of it in plain words, oldest
 // first, and refuses anyone else with 404.
@@ -38,7 +40,7 @@ func TestCardLifeFoldReadsTheDigestAndTheOpenCases(t *testing.T) {
 	}
 	ak, _ := memberLogin(t, r, "alice")
 	rec := getPage(r, ak, "/tasks/t-c/digest")
-	want := `<ol class="life-log"><li><time>18 Nov 10:00</time> Filed by webhook: direct card.</li><li><time>18 Nov 11:00</time> The model review: concerns, 2 findings.</li><li><time>18 Nov 12:00</time> Handed over: <span class="quote">Fix the vet finding first.</span></li></ol>
+	want := `<ol class="life-log"><li><time datetime="2026-11-18T10:00:00Z" data-layout="2 Jan 15:04">18 Nov 11:00</time> Filed by webhook: direct card.</li><li><time datetime="2026-11-18T11:00:00Z" data-layout="2 Jan 15:04">18 Nov 12:00</time> The model review: concerns, 2 findings.</li><li><time datetime="2026-11-18T12:00:00Z" data-layout="2 Jan 15:04">18 Nov 13:00</time> Handed over: <span class="quote">Fix the vet finding first.</span></li></ol>
 <h4>The open ask: A step of the work ran past its time limit. How should the card go on?</h4><ul><li>The check-in passed it to the factory agent, and found: <span class="quote">the review &amp; the tests disagree</span></li></ul>
 <h4>The open ask: The card used all 0 sessions. How should it go on?</h4><ul><li>The factory agent passed it to a human.</li><li>sebastian is weighing it.</li></ul>
 <h4>The open ask: The card&#39;s money left does not pay its next session. How should it go on?</h4><p class="meta">Nobody has weighed this ask yet.</p>

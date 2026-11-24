@@ -8,7 +8,11 @@ gateway's `https-console` listener (https://console.aisoftwarefactory.world);
 the webhook and intake API on `:8080` stay in-cluster. Server-rendered
 `html/template` with htmx 2.0.11 vendored in `internal/console/static`
 (sha256 pinned by a test), no build step. Every EUR amount shows four
-decimals: a task's model calls cost fractions of a cent.
+decimals: a task's model calls cost fractions of a cent. Every time a
+screen shows is a `<time datetime>` of the instant in UTC whose text the
+server writes in Europe/Berlin (CET, CEST) and `static/time.js` writes
+again in the browser's own zone, on load and after every swap; the
+periods the caps and the ledger count still turn at 00:00 UTC.
 
 - Login: Forgejo OAuth2 authorization code with PKCE (S256), confidential
   client `factory-console` (secret `console-oauth`: `client_id`,
@@ -92,7 +96,7 @@ decimals: a task's model calls cost fractions of a cent.
   whose count a reset restarted (who, when, the count before and the
   period's whole), LiteLLM's backstop as its own row and the escalation
   pool's words. Each row's label says when its count resets by itself,
-  "(resets 1 December at 00:00 UTC)": the day's and the month's at the
+  "(resets 1 December at 01:00 CET)": the day's and the month's at the
   turn of their UTC period, the backstop's at LiteLLM's `budget_reset_at`,
   none when LiteLLM names none. Reset, left of a row's gauge on its line,
   restarts that cap's count, never the cap: the day's, the factory

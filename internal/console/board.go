@@ -68,7 +68,8 @@ var funcs = template.FuncMap{
 		}
 		return fmt.Sprintf("%d min", minutes)
 	},
-	"utc": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	"moment":      moment,
+	"momentTitle": momentTitle,
 	// ago and schedule word a cluster job's last runs and cron
 	"ago":      jobAge,
 	"schedule": jobSchedule,
@@ -1130,10 +1131,9 @@ type statusLine struct {
 	// reset it.
 	DayPress, MonthPress, PremiumPress *capPress
 	// DayTurn, MonthTurn, PremiumTurn and BackstopTurn are when each
-	// count resets by itself, as a cap's ask says it (factoryd.TimeWords):
-	// its period's turn, and LiteLLM's own reset of its spend, "" when
-	// LiteLLM names none.
-	DayTurn, MonthTurn, PremiumTurn, BackstopTurn string
+	// count resets by itself: its period's turn, and LiteLLM's own reset
+	// of its spend, "" when LiteLLM names none.
+	DayTurn, MonthTurn, PremiumTurn, BackstopTurn template.HTML
 	// Backstop is LiteLLM's own budget, nil when unread; BackstopHit says
 	// its spend reached its max.
 	Backstop    *factoryd.Backstop
@@ -1174,17 +1174,20 @@ type statusLine struct {
 
 // resetLine is a reset in force of a cap: the clause its strip cell's
 // title appends and the trace line under its row in the panel.
-type resetLine struct{ Title, Trace string }
+type resetLine struct {
+	Title string
+	Trace template.HTML
+}
 
 // resetLineOf is reset r of the cap counted in period ("today", "this
-// month"), whose whole is all, as read at now; nil for no reset.
-func resetLineOf(r *policy.CapReset, all float64, period string, now time.Time) *resetLine {
+// month"), whose whole is all; nil for no reset.
+func resetLineOf(r *policy.CapReset, all float64, period string) *resetLine {
 	if r == nil {
 		return nil
 	}
-	at, before := factoryd.ResetStamp(r.At, now), textutil.EUR(r.BeforeEUR)
-	return &resetLine{Title: fmt.Sprintf("; %s reset its count at %s, %s EUR before", r.Login, at, before),
-		Trace: fmt.Sprintf("counted since %s, when %s reset %s · %s EUR before · %s EUR in all %s", at, r.Login, period, before, textutil.EUR(all), period)}
+	before := textutil.EUR(r.BeforeEUR)
+	return &resetLine{Title: fmt.Sprintf("; %s reset its count, %s EUR before", r.Login, before),
+		Trace: "counted since " + moment(r.At, momentDay) + escaped(fmt.Sprintf(", when %s reset %s · %s EUR before · %s EUR in all %s", r.Login, period, before, textutil.EUR(all), period))}
 }
 
 // capPress is a cap's Reset under its row in the panel: the route its
@@ -1192,12 +1195,13 @@ func resetLineOf(r *policy.CapReset, all float64, period string, now time.Time) 
 // they name, its row's hit, the form's CSRF and filter, and Seen, the id
 // of the cap's newest reset of the period the panel shows, 0 for none.
 type capPress struct {
-	Action, Label, Words string
-	CapEUR               float64
-	Hit                  bool
-	CSRF                 string
-	Filter               boardFilter
-	Seen                 int64
+	Action, Label string
+	Words         template.HTML
+	CapEUR        float64
+	Hit           bool
+	CSRF          string
+	Filter        boardFilter
+	Seen          int64
 }
 
 // holdLine is the hold as the strip and the panel show it.
@@ -2408,15 +2412,15 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		}
 	}
 	s.TodayEUR, s.DayHit = e.Day, policy.CapHit(e.Day, s.DayCapEUR, e.DayHit)
-	s.DayReset, s.MonthReset = resetLineOf(e.DayReset, e.DayAll, "today", now), resetLineOf(s.Spend.Reset, s.Spend.AllEUR, "this month", now)
-	turn := func(decision string) string { return factoryd.TimeWords(factoryd.CapTurn(decision, now)) }
+	s.DayReset, s.MonthReset = resetLineOf(e.DayReset, e.DayAll, "today"), resetLineOf(s.Spend.Reset, s.Spend.AllEUR, "this month")
+	turn := func(decision string) template.HTML { return moment(factoryd.CapTurn(decision, now), momentWords) }
 	s.DayTurn, s.MonthTurn = turn(policy.RefusedDayCap), turn(policy.RefusedMonthCap)
 	if !s.FactoryCap {
 		s.MonthTurn = turn(policy.RefusedProjectCap)
 	}
 	if s.PremiumCapEUR > 0 {
 		s.PremiumEUR, s.PremiumHit = e.Premium, policy.CapHit(e.Premium, s.PremiumCapEUR, e.PremiumHit)
-		s.PremiumReset, s.PremiumTurn = resetLineOf(e.PremiumReset, e.PremiumAll, "premium this month", now), turn(policy.RefusedPremiumCap)
+		s.PremiumReset, s.PremiumTurn = resetLineOf(e.PremiumReset, e.PremiumAll, "premium this month"), turn(policy.RefusedPremiumCap)
 	}
 	s.Approver = v.approves(p.Repository)
 	if c.cfg.Backstop != nil {
@@ -2429,7 +2433,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		} else {
 			s.Backstop, s.BackstopHit = &b, b.SpendUSD >= b.MaxUSD
 			if !b.ResetAt.IsZero() {
-				s.BackstopTurn = factoryd.TimeWords(b.ResetAt)
+				s.BackstopTurn = moment(b.ResetAt, momentWords)
 			}
 		}
 	}
@@ -2687,30 +2691,28 @@ func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool, now t
 // resetWords is the confirm of a Reset of cap at now, capEUR the cap: what
 // its count becomes, the most that may still run before its period turns
 // and what stays, and LiteLLM's backstop, b, when it leaves less.
-func resetWords(cap string, capEUR float64, now time.Time, b *factoryd.Backstop) string {
+func resetWords(cap string, capEUR float64, now time.Time, b *factoryd.Backstop) template.HTML {
 	eur := textutil.EUR(capEUR)
-	decision, count, on, before, stays := policy.RefusedMonthCap, "This month's count", "", "", "The month cap stays "+eur+" EUR; the day cap still holds."
+	decision, count, on, layout, stays := policy.RefusedMonthCap, "This month's count", "", momentWords, "The month cap stays "+eur+" EUR; the day cap still holds."
 	switch cap {
 	case policy.CapDay:
-		decision, count, before, stays = policy.RefusedDayCap, "Today's count", "00:00 UTC", "The day cap stays "+eur+" EUR; the month cap still holds."
+		decision, count, layout, stays = policy.RefusedDayCap, "Today's count", momentClock, "The day cap stays "+eur+" EUR; the month cap still holds."
 	case policy.CapProject:
 		decision, count, stays = policy.RefusedProjectCap, "The project's month count", "The project's month cap stays "+eur+" EUR; the factory's caps still hold."
 	case policy.CapPremium:
 		decision, count, on, stays = policy.RefusedPremiumCap, "This month's premium count", " on premium", "The premium cap stays "+eur+" EUR; the day cap and the month cap still hold."
 	}
 	turn := factoryd.CapTurn(decision, now)
-	if before == "" {
-		before = turn.Format("2 January") + " 00:00 UTC"
-	}
-	w := fmt.Sprintf("%s starts again from 0.00 EUR. Up to %s EUR more may be spent%s before %s, in %s. %s", count, eur, on, before, minutes(turn.Sub(now)), stays)
+	w := fmt.Sprintf(", in %s. %s", minutes(turn.Sub(now)), stays)
 	if b != nil && b.MaxUSD-b.SpendUSD < capEUR {
 		w += fmt.Sprintf(" LiteLLM's backstop leaves %s USD this month.", textutil.EUR(max(b.MaxUSD-b.SpendUSD, 0)))
 	}
-	return w
+	head := fmt.Sprintf("%s starts again from 0.00 EUR. Up to %s EUR more may be spent%s before ", count, eur, on)
+	return escaped(head) + moment(turn, layout) + escaped(w)
 }
 
 type timelineEntry struct {
-	Time       string
+	Time       template.HTML
 	Raw        string // Time as the timeline wrote it, the cell's title
 	Step       string
 	Detail     string
@@ -2738,9 +2740,10 @@ func (c *Console) readTimeline(ctx context.Context, taskID string) ([]map[string
 
 func entry(m map[string]any) timelineEntry {
 	e := timelineEntry{}
-	e.Time, _ = m["time"].(string)
-	if at, err := time.Parse(time.RFC3339, e.Time); err == nil {
-		e.Raw, e.Time = e.Time, at.UTC().Format("2006-01-02 15:04:05")
+	raw, _ := m["time"].(string)
+	e.Time = escaped(raw)
+	if at, err := time.Parse(time.RFC3339, raw); err == nil {
+		e.Raw, e.Time = raw, moment(at, momentSecond)
 	}
 	e.Step, _ = m["step"].(string)
 	e.Reason, _ = m["reason"].(string)
@@ -2771,8 +2774,9 @@ func entry(m map[string]any) timelineEntry {
 
 // gateRow is one row of the timeline page's durations table.
 type gateRow struct {
-	Gate, Attempt, Start, Duration, Outcome string
-	Seconds                                 int
+	Gate, Attempt, Duration, Outcome string
+	Start                            template.HTML
+	Seconds                          int
 }
 
 // gateRows are the task's gates from its timeline, each from its start to
@@ -2802,7 +2806,7 @@ func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []ga
 		if open && gate == t.Gate && !end.Before(*t.GateSince) {
 			open = false
 		}
-		row := gateRow{Gate: gate, Start: start.UTC().Format("2006-01-02 15:04:05"), Outcome: stepOutcome(step, m),
+		row := gateRow{Gate: gate, Start: moment(start, momentSecond), Outcome: stepOutcome(step, m),
 			Seconds: int(end.Sub(start).Seconds())}
 		if gate != factoryd.GateIntake {
 			row.Attempt = attempt
@@ -2815,7 +2819,7 @@ func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []ga
 	}
 	if open {
 		d := now.Sub(*t.GateSince)
-		rows = append(rows, gateRow{Gate: t.Gate, Attempt: attempt, Start: t.GateSince.UTC().Format("2006-01-02 15:04:05"),
+		rows = append(rows, gateRow{Gate: t.Gate, Attempt: attempt, Start: moment(*t.GateSince, momentSecond),
 			Duration: "open for " + minutes(d), Outcome: "open", Seconds: int(d.Seconds())})
 	}
 	for _, r := range rows {
@@ -3302,6 +3306,7 @@ type receiptView struct {
 // words the drawer shows for it.
 type receiptRow struct {
 	Label, By, Command, Exit, Words, Note, Draw, At string
+	When                                            template.HTML
 }
 
 // receiptViewOf is the drawer's view of the task's stored receipt: its
@@ -3322,11 +3327,11 @@ func receiptViewOf(r factoryd.MergeReceipt) *receiptView {
 		v.Gates = append(v.Gates, receiptRow{Label: g.Gate, Command: command, Exit: exit, Words: g.Verdict})
 	}
 	for _, d := range r.Facts.Decisions {
-		at := ""
+		row := receiptRow{Label: d.Kind, By: d.By, Words: d.Decision, Note: d.Note, Draw: d.Draw}
 		if d.At != nil {
-			at = d.At.UTC().Format("01-02 15:04Z")
+			row.When = moment(*d.At, momentShort)
 		}
-		v.Decisions = append(v.Decisions, receiptRow{Label: d.Kind, By: d.By, Words: d.Decision, Note: d.Note, Draw: d.Draw, At: at})
+		v.Decisions = append(v.Decisions, row)
 	}
 	for _, a := range r.Assessments {
 		label := a.Source
@@ -3351,15 +3356,16 @@ type chainReadout struct {
 // chainRow is one row of the Chain readout: its fact with its clock and
 // its age, its verdict, and the action that acts on it.
 type chainRow struct {
-	Why     string // the row's label: carry run, required, head of main
-	Ref     string // the row's fact: a run's number, a context's name
-	RefURL  string // the fact's link: a run on the forge, a card's id
-	Card    bool   // the fact's link opens a card of this board
-	At, Age string // the fact's clock and its age, "" to leave them out
-	Verdict string // the fact's verdict word
-	Hue     string // the verdict's colour class
-	Act     string // the action that acts on the row, a card of this board
-	ActID   string // the action card's id
+	Why     string        // the row's label: carry run, required, head of main
+	Ref     string        // the row's fact: a run's number, a context's name
+	RefURL  string        // the fact's link: a run on the forge, a card's id
+	Card    bool          // the fact's link opens a card of this board
+	At      template.HTML // the fact's clock, "" to leave it out
+	Age     string        // the fact's age, "" to leave it out
+	Verdict string        // the fact's verdict word
+	Hue     string        // the verdict's colour class
+	Act     string        // the action that acts on the row, a card of this board
+	ActID   string        // the action card's id
 }
 
 // chainVerdict is a chain row's verdict word and hue: green for a
@@ -3405,7 +3411,7 @@ func (c *Console) chainOf(ctx context.Context, bt factoryd.BoardTask, force poli
 	if f.CarryRun == 0 {
 		return nil, nil // the chain has not picked the change up
 	}
-	clock, age := func(t time.Time) string { return t.UTC().Format("15:04") }, func(t time.Time) string { return minutes(max(now.Sub(t), 0)) }
+	clock, age := func(t time.Time) template.HTML { return moment(t, "15:04") }, func(t time.Time) string { return minutes(max(now.Sub(t), 0)) }
 	word, hue := chainVerdict(f.CarryStatus)
 	carry := chainRow{Why: "carry run", Ref: fmt.Sprintf("run %d", f.CarryRun), RefURL: c.runURL(bt.Repository, f.CarryRun),
 		At: clock(f.CarryAt), Age: age(f.CarryAt), Verdict: word, Hue: hue}
