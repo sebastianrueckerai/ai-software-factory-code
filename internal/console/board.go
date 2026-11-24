@@ -455,6 +455,9 @@ type card struct {
 	// MayReplan send it back to the planner, MayRetry file the failed plan
 	// card again; each an approver's action.
 	MayExtend, MayReplan, MayRetry bool
+	// Closed is the factory's close of the card's ask at the human when that
+	// is the card's newest ask or answer, the zero value otherwise.
+	Closed factoryd.ClosedAsk
 	// Total is the task's time so far, or in all once it finished.
 	Total string
 	// Cover is a done card's cover clause (C38): the run that ran its
@@ -1924,6 +1927,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	if err != nil {
 		log.Printf("console: newest events: %v", err)
 	}
+	closed, err := c.cfg.Events.ClosedAsks(ctx, ids)
+	if err != nil {
+		log.Printf("console: closed asks: %v", err)
+	}
+	each(func(k *card) { k.Closed = closed[k.ID] })
 	// The stale ring — one whose newest activity is older than the stale
 	// window wears it, the newest of its newest event and its newest
 	// timeline step (its own session's last report), one that never had

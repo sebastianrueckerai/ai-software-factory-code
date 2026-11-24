@@ -153,6 +153,37 @@ func (f *fakeEvents) NewestTaskEvents(_ context.Context, tasks []string) (map[st
 	return out, nil
 }
 
+// ClosedAsks reads the rows as the store's query does.
+func (f *fakeEvents) ClosedAsks(_ context.Context, tasks []string) (map[string]factoryd.ClosedAsk, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]factoryd.ClosedAsk{}
+	for _, id := range tasks {
+		w := -1
+		for i := len(f.rows) - 1; i >= 0 && w < 0; i-- {
+			if e := f.rows[i]; e.TaskID == id && factoryd.AskOrAnswer(e.Kind) {
+				w = i
+			}
+		}
+		if w < 0 {
+			continue
+		}
+		e := f.rows[w]
+		reason, _ := e.Detail["reason"].(string)
+		if e.Kind != factoryd.EventQuestionWithdrawn || e.Actor != factoryd.FactoryDecider || reason == "" {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, later := range f.rows[w+1:] {
+			if later.TaskID == id && later.Kind == factoryd.EventTaskStatus {
+				seen[fmt.Sprint(later.Detail["status"])] = true
+			}
+		}
+		out[id] = factoryd.ClosedAsk{At: e.At, Reason: reason, Moments: factoryd.MomentsOf(e.Detail), Statuses: len(seen)}
+	}
+	return out, nil
+}
+
 func (f *fakeEvents) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -2,6 +2,7 @@
 <header class="o-head">
 <h2 class="o-title" tabindex="-1">{{.Face.Title}}{{.Face.Stop}}</h2>
 {{with .Face.Why}}<p class="o-why">{{.}}</p>
+{{end}}{{with .Face.Gone}}<p class="o-gone">{{.}}</p>
 {{end}}<p class="o-line">{{if .Face.Final}}<span class="it st">{{.Face.State}}</span>{{else}}<span class="it"><span class="st {{.Face.Hue}}"><i class="dot" aria-hidden="true"></i>{{.Face.State}}</span></span>{{end}}{{with .Face.Clock}} <span class="it">{{.}}</span>{{end}}{{range .Face.Marks}} <span class="it{{with .Class}} {{.}}{{end}}">{{.Words}}</span>{{end}}{{with .Face.Place}} <span class="it place">{{.}}</span>{{end}}{{with .Face.Ref}} <span class="it ref">{{if $.Issue}}<a href="{{$.Issue}}" target="_blank" rel="noopener">{{.}}</a>{{else}}{{.}}{{end}}</span>{{end}}{{with .Face.Waits}} <span class="it waits">{{.}}</span>{{end}}{{with .PR}} <span class="it"><a href="{{.}}" target="_blank" rel="noopener">pull request #{{$.PRNumber}}</a></span>{{end}}{{if .Face.Unchecked}} <span class="it unchecked">brief not checked</span>{{end}}{{with .Face.Accent}} <span class="it accent"><i class="dot acc-{{.}}" aria-hidden="true"></i>{{.}}</span>{{end}}</p>
 </header>
 {{if .Pending}}<p class="o-sent liveness" role="status">This card holds answers its run has not taken. The run may be gone, and the factory's heal pass will chase it. Hold further answers.</p>

@@ -1597,6 +1597,10 @@ func (a *AcceptanceRig) TaskEventsOfKind(_ context.Context, id, kind string, lim
 	return out, nil
 }
 
+func (a *AcceptanceRig) ClosedAsks(context.Context, []string) (map[string]factoryd.ClosedAsk, error) {
+	return map[string]factoryd.ClosedAsk{}, nil
+}
+
 func (a *AcceptanceRig) NewestTaskEvents(_ context.Context, tasks []string) (map[string]factoryd.Event, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

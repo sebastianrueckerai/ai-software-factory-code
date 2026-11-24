@@ -19,6 +19,12 @@ import (
 var answerKinds = []string{EventQuestionAnswered, EventSessionGranted, EventMergeApproved, EventMergeDenied,
 	EventPlanChangesRequested, EventCardClosed, EventQuestionWithdrawn, EventPlanClosed}
 
+// AskOrAnswer reports whether kind is an ask at the human or one of
+// answerKinds: the events whose newest one tells whether a card is asking.
+func AskOrAnswer(kind string) bool {
+	return kind == EventQuestionAsked || slices.Contains(answerKinds, kind)
+}
+
 // PokeSettle is an ask row's derived state: open, or settled with the
 // word, actor and time of the event that settled it (the
 // notification-settling concept).

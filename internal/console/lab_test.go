@@ -444,7 +444,7 @@ var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
 	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene,
 	"human": humanScene, "document": documentScene, "cases": casesScene, "planslots": planSlotsScene,
-	"room-ahead": roomAheadScene, "room-money": roomMoneyScene, "room-chat": roomChatScene}
+	"closed-asks": closedAsksScene, "room-ahead": roomAheadScene, "room-money": roomMoneyScene, "room-chat": roomChatScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -2194,6 +2194,49 @@ func casesScene(now time.Time) labScene {
 			"recommendation": "handover: a fresh session with the two findings as its brief fixes both", "recommended_by": "the factory agent"}},
 		104: {At: ago(28 * time.Minute), Detail: map[string]any{"info": "The card has spent 0.64 EUR of its 2.00 EUR budget."}},
 	}
+	return s
+}
+
+// closedAsksScene is the threads scene with four cards whose ask at a
+// human the factory closed: #640 runs on and says why until its next step,
+// its ask in the inbox settled with the reason, #641 is the month cap's
+// human card the watcher closed, #642 a human card a human's answer
+// closed, #643 an agent card that moved on through two statuses before it
+// finished.
+func closedAsksScene(now time.Time) labScene {
+	s := threadsScene(now)
+	s.inbox, s.open = 5, 4
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	var said factoryd.Moments
+	reason := "the month cap's count was reset at " + said.Say(ago(30*time.Minute), factoryd.LayoutClock) + " by sebastian"
+	withdrawn := func(issue int64, d time.Duration) factoryd.Event {
+		return labEvent(issue, factoryd.EventQuestionWithdrawn, factoryd.FactoryDecider, factoryd.ViaFactoryd, ago(d),
+			map[string]any{"reason": reason, "moments": said})
+	}
+	since := ago(28 * time.Minute)
+	run := labCard(now, 640, "running", "direct", 3*time.Hour, "Costs page: a from and a to date",
+		"Give the costs page a from and a to date, both UTC days, both included.")
+	run.Gate, run.GateSince, run.SpentEUR = factoryd.GateSession, &since, 0.92
+	capCard := finished(labCard(now, 641, "done", "direct", 4*time.Hour, "The month cap cannot fund a call",
+		"Reset the month's count, or raise the cap."), now, 20*time.Minute, 0)
+	capCard.Kind, capCard.Source, capCard.BudgetEUR, capCard.ModelAlias = "human", factoryd.SourceMonthCap, 0, ""
+	answered := finished(labCard(now, 642, "done", "direct", 5*time.Hour, "Which store keeps the nightly snapshots?",
+		"Pick the store."), now, time.Hour, 0)
+	answered.Kind, answered.BudgetEUR, answered.ModelAlias = "human", 0, ""
+	moved := finished(labCard(now, 643, "done", "direct", 6*time.Hour, "Board export: document the snapshot format",
+		"Describe the snapshot's JSON in docs/export.md."), now, 10*time.Minute, 0.61)
+	s.tasks = append(s.tasks, factoryd.BoardTask{Task: run}, factoryd.BoardTask{Task: capCard}, factoryd.BoardTask{Task: answered}, factoryd.BoardTask{Task: moved})
+	asked := map[string]any{"question": "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?",
+		"why": "Reset the month's count in the status panel to resume it sooner, or it resumes when the month turns."}
+	s.chat = append(s.chat, s.poke(640, ago(90*time.Minute), factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: asked}))
+	s.seen[5] = int64(len(s.chat))
+	s.events = append(s.events, labEvent(640, factoryd.EventQuestionAsked, factoryd.FactoryDecider, factoryd.ViaFactoryd, ago(90*time.Minute), asked),
+		withdrawn(640, 29*time.Minute), labStatus(640, "running", factoryd.GateSession, ago(28*time.Minute)),
+		withdrawn(641, 29*time.Minute), labStatus(641, "done", "", ago(20*time.Minute)),
+		labEvent(642, factoryd.EventQuestionAnswered, "sebastian", factoryd.ViaButton, ago(70*time.Minute), map[string]any{"answer": "Postgres"}),
+		labStatus(642, "done", "", ago(time.Hour)),
+		withdrawn(643, 50*time.Minute), labStatus(643, "running", factoryd.GateSession, ago(49*time.Minute)),
+		labStatus(643, "done", "", ago(10*time.Minute)))
 	return s
 }
 

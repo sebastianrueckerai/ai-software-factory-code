@@ -2434,6 +2434,50 @@ async function text(page) {
     if (!ask || /\bUTC\b/.test(ask.text)) fails.push("local time: #611's ask still names UTC: " + JSON.stringify(ask && ask.text));
     await ny.ctx.close();
   }
+  // the factory's close of an ask: #640 runs on and says why in the
+  // browser's zone, New York's EST or EDT, with no UTC words;
+  // the month cap's human card #641 says it in its state, the human card #642
+  // a human answered and the agent card #643 that moved on read done. A
+  // finished human card holds no place on the board, so #641 and #642 are
+  // read on their opened cards.
+  await seed("closed-asks");
+  {
+    const ny = await open(browser, { width: 1440, height: 900 }, false, "America/New_York");
+    await ny.page.goto(base + "/", { waitUntil: "load" });
+    await ny.page.waitForTimeout(900);
+    const gone = await ny.page.evaluate((id) => {
+      const line = document.querySelector('#board [data-card="' + id + '"] .gone');
+      return line && { text: line.innerText, times: Array.from(line.querySelectorAll("time")).map((t) => t.textContent) };
+    }, labID(640));
+    if (!gone || !gone.text.startsWith("Needed you no more:")) fails.push("closed ask: #640's face does not say it needed you no more: " + JSON.stringify(gone));
+    else if (!gone.times.some((t) => /^\d\d:\d\d (EST|EDT)$/.test(t)) || /\bUTC\b/.test(gone.text)) fails.push("closed ask: #640's line is not in New York's zone: " + JSON.stringify(gone));
+    const state = await ny.page.evaluate((id) => {
+      const st = document.querySelector('#board [data-card="' + id + '"] .foot .st');
+      return st && st.innerText.trim();
+    }, labID(643));
+    if (state !== "done") fails.push("closed ask: agent card #643 reads " + JSON.stringify(state) + ", want done");
+    for (const [issue, want] of [[641, /^needed you no more: .*\d\d:\d\d (EST|EDT)/], [642, /^done$/]]) {
+      await ny.page.goto(base + "/#card=" + labID(issue), { waitUntil: "load" });
+      await ny.page.waitForTimeout(900);
+      await ny.page.locator("#drawer").getByRole("tab", { name: "Overview", exact: true }).click();
+      await ny.page.waitForTimeout(900);
+      const head = await ny.page.evaluate(() => { const st = document.querySelector("#drawer .o-line .st"); return st && st.innerText.trim(); });
+      if (!head || !want.test(head) || /\bUTC\b/.test(head)) fails.push("closed ask: #" + issue + "'s state reads " + JSON.stringify(head));
+    }
+    // #640's ask in the inbox reads settled with its reason, both times
+    // in New York's zone
+    await ny.page.goto(base + "/", { waitUntil: "load" });
+    await ny.page.waitForTimeout(900);
+    await ny.page.locator("#thread-rows .trow.inbox").click();
+    await ny.page.waitForTimeout(900);
+    const settled = await ny.page.evaluate((id) => {
+      const fw = document.querySelector('#chat-log .msg.settled[data-card="' + id + '"] .fw');
+      return fw && fw.innerText.trim();
+    }, labID(640));
+    if (!settled || !/^withdrawn: the month cap's count was reset at \d\d:\d\d (EST|EDT) by sebastian · \d\d:\d\d (EST|EDT)$/.test(settled))
+      fails.push("closed ask: #640's settled ask in the inbox reads " + JSON.stringify(settled));
+    await ny.ctx.close();
+  }
   // a narrow desk at 960: the strip's cells wrap where they do not fit, the
   // board's head fits its row, the documents' head wraps in its panel
   for (const sc of ["busy", "fire"]) {

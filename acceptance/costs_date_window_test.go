@@ -490,6 +490,10 @@ func (f *acceptEvents) TaskEventsOfKind(_ context.Context, id, kind string, limi
 	return out, nil
 }
 
+func (f *acceptEvents) ClosedAsks(context.Context, []string) (map[string]factoryd.ClosedAsk, error) {
+	return map[string]factoryd.ClosedAsk{}, nil
+}
+
 func (f *acceptEvents) NewestTaskEvents(_ context.Context, tasks []string) (map[string]factoryd.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

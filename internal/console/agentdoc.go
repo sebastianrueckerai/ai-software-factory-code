@@ -346,6 +346,10 @@ func (agentDocEvents) NewestTaskEvents(context.Context, []string) (map[string]fa
 	return nil, nil
 }
 
+func (agentDocEvents) ClosedAsks(context.Context, []string) (map[string]factoryd.ClosedAsk, error) {
+	return nil, nil
+}
+
 // agentDocCosts seats the cost stores on zeros; the Costs interface
 // carries a method of its own name, so it cannot be embedded.
 type agentDocCosts struct{}

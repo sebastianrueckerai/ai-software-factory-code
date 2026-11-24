@@ -27,6 +27,9 @@ type faceView struct {
 	// issue), Key where the board puts it, which a swap compares.
 	ID, Ref, Key string
 	Title, Why   template.HTML
+	// Gone says why the card needed a human no more, on a card that runs
+	// on after the factory closed its ask, until its next step.
+	Gone template.HTML
 	// Stop is the full stop a title without an end mark takes.
 	Stop  string
 	Place template.HTML
@@ -71,7 +74,7 @@ type routineFoot struct {
 // text is what face f says, in words: a card in Needs you its band, its
 // paragraph and its answer row, any other its paragraph and its foot.
 func (f faceView) text() string {
-	w := []string{f.Ref, htmlText(f.Place), htmlText(f.Title) + f.Stop, htmlText(f.Why)}
+	w := []string{f.Ref, htmlText(f.Place), htmlText(f.Title) + f.Stop, htmlText(f.Why), htmlText(f.Gone)}
 	for _, m := range f.Marks {
 		w = append(w, htmlText(m.Words))
 	}
@@ -158,6 +161,9 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 		f.Why = c.linkRefs(ctx, v, k.Repository, k.Why)
 	}
 	f.Place = c.placeOf(ctx, v, k, needs)
+	if !needs && !f.Final && k.Closed.Reason != "" && k.Closed.Statuses <= 1 {
+		f.Gone = timed(escaped("Needed you no more: "+k.Closed.Reason+"."), k.Closed.Moments)
+	}
 	if needs {
 		if k.NearBudget {
 			f.Marks = append(f.Marks, fine{"⚠ near its budget", "flag"})
@@ -439,6 +445,9 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 		} else {
 			word += ": " + why
 		}
+	}
+	if k.Kind == "human" && k.Closed.Reason != "" && (k.Status == "done" || k.Status == "closed") {
+		word = timed(escaped("needed you no more: "+k.Closed.Reason), k.Closed.Moments)
 	}
 	f.State = word
 	switch {

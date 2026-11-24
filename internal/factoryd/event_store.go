@@ -237,6 +237,9 @@ type Events interface {
 	// id: what the board's cards read their failure and stale ring from. A
 	// task with no event gets no entry.
 	NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error)
+	// ClosedAsks lists the cards of tasks whose newest ask or answer is the
+	// factory's withdrawal of an ask with a reason, keyed by task id.
+	ClosedAsks(ctx context.Context, tasks []string) (map[string]ClosedAsk, error)
 }
 
 func (s *PGStore) Record(ctx context.Context, e Event) (int64, error) {
@@ -474,6 +477,53 @@ func (s *PGStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[str
 			return nil, err
 		}
 		out[e.TaskID] = e
+	}
+	return out, rows.Err()
+}
+
+// A ClosedAsk is the factory's close of a card's ask at the human: when it
+// closed it, its reason, the moments the reason names and how many distinct
+// statuses the card's task_status rows have named since.
+type ClosedAsk struct {
+	At       time.Time
+	Reason   string
+	Moments  Moments
+	Statuses int
+}
+
+// ClosedAsks is read as the Events interface says: a card is in the map
+// when its newest question_asked or settling event is a question_withdrawn
+// by factoryd with a reason.
+func (s *PGStore) ClosedAsks(ctx context.Context, tasks []string) (map[string]ClosedAsk, error) {
+	out := map[string]ClosedAsk{}
+	if len(tasks) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT t.id, w.at, w.detail,
+		(SELECT count(DISTINCT s.detail->>'status') FROM events s WHERE s.task_id = t.id AND s.kind = $4 AND s.id > w.id)
+		FROM unnest($1::text[]) AS t(id)
+		CROSS JOIN LATERAL (SELECT id, at, kind, actor, detail FROM events
+			WHERE task_id = t.id AND kind = ANY($2) ORDER BY id DESC LIMIT 1) w
+		WHERE w.kind = $3 AND w.actor = $5 AND COALESCE(w.detail->>'reason', '') <> ''`,
+		tasks, append([]string{EventQuestionAsked}, answerKinds...), EventQuestionWithdrawn, EventTaskStatus, FactoryDecider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var c ClosedAsk
+		var raw []byte
+		if err := rows.Scan(&id, &c.At, &raw, &c.Statuses); err != nil {
+			return nil, err
+		}
+		var detail map[string]any
+		if err := json.Unmarshal(raw, &detail); err != nil {
+			return nil, err
+		}
+		c.Reason, _ = detail["reason"].(string)
+		c.Moments = MomentsOf(detail)
+		out[id] = c
 	}
 	return out, rows.Err()
 }

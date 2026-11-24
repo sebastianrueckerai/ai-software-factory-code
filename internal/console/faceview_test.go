@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"html/template"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -474,6 +475,97 @@ func TestAFailedCardNamesItsSuccessorByItsIssue(t *testing.T) {
 	for name, face := range map[string]string{"the board": board, "the swap": swap} {
 		if !strings.Contains(face, want) || strings.Contains(face, succ+"<") || strings.Contains(face, "successor t-") {
 			t.Errorf("%s: the failed card does not name #41 by its link:\n%s", name, face)
+		}
+	}
+}
+
+// closeAsk records the factory's withdrawal of an ask of card id with its
+// reason and moments, then a task_status row of each status.
+func closeAsk(t *testing.T, r *rig, id, reason string, moments factoryd.Moments, statuses ...string) {
+	t.Helper()
+	rows := []factoryd.Event{
+		{Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Detail: map[string]any{"question": "q"}},
+		{Kind: factoryd.EventQuestionWithdrawn, Actor: factoryd.FactoryDecider, Detail: map[string]any{"reason": reason, "moments": moments}},
+	}
+	for _, s := range statuses {
+		rows = append(rows, factoryd.Event{Kind: factoryd.EventTaskStatus, Actor: factoryd.FactoryDecider, Detail: map[string]any{"status": s}})
+	}
+	for _, e := range rows {
+		e.TaskID, e.Repository, e.Via = id, "sf/code", factoryd.ViaFactoryd
+		if _, err := r.events.Record(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A card that runs on after the factory closed its ask at the human says
+// why, in the zone of the reader, until its next step: a second status, or
+// the card's own ask in Needs you.
+func TestARunningCardSaysWhyItNeededYouNoMore(t *testing.T) {
+	const reason = "the month cap's count was reset at 07:30 UTC by sebastian"
+	moments := factoryd.Moments{{At: time.Date(2026, 11, 24, 7, 30, 32, 0, time.UTC), Layout: factoryd.LayoutClock}}
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	running := func(id string, n int64) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: n,
+			Source: factoryd.SourceWebhook, CreatedAt: now, Objective: "Export the board\n\nExport it."}}
+	}
+	r.tasks.tasks = []factoryd.BoardTask{running("t-one", 1), running("t-two", 2), running("t-ask", 3)}
+	closeAsk(t, r, "t-one", reason, moments, "running")
+	closeAsk(t, r, "t-two", reason, moments, "running", "in-review")
+	closeAsk(t, r, "t-ask", reason, moments, "running")
+	r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 6, TaskID: "t-ask", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, Problem: "The monitor flagged this card."}}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck).Body.String()
+	// Berlin reads 07:30 UTC as 08:30 CET until the browser's script says its own zone
+	line := "Needed you no more: the month cap's count was reset at 08:30 CET by sebastian."
+	one := faceOf(t, body, "t-one")
+	if text := nodeText(smallItems(t, one, "data-card", "t-one")[0]); !strings.Contains(text, line) {
+		t.Errorf("the running card's face does not say %q:\n%s", line, one)
+	}
+	if !strings.Contains(one, `<time datetime="2026-11-24T07:30:32Z"`) {
+		t.Errorf("the line's time is not a <time> of its instant:\n%s", one)
+	}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-one/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, `<p class="o-gone">Needed you no more: the month cap`) {
+		t.Errorf("the opened card's head does not say it:\n%s", drawer)
+	}
+	for _, id := range []string{"t-two", "t-ask"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "Needed you no more") {
+			t.Errorf("%s says it needed you no more after its next step:\n%s", id, face)
+		}
+	}
+}
+
+// A human card the factory closed by closing its ask reads why in place of
+// "done" or "closed: <reason>"; an agent card keeps its state word.
+func TestAFactoryCardInDoneSaysWhyItClosed(t *testing.T) {
+	const reason = "sebastian reset the month's count at 07:30 UTC, so the cap card closes"
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	card := func(id, kind, status string, n int64) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: kind, Status: status, Repository: "sf/code", IssueNumber: n, Source: factoryd.SourceWebhook,
+			CreatedAt: now, FinishedAt: &now, ClosingReason: "closed by sebastian", Objective: "Raise the month cap\n\nRaise it."}}
+	}
+	r.tasks.tasks = []factoryd.BoardTask{card("t-human", "human", "done", 1), card("t-bare", "human", "done", 2),
+		card("t-agent", "agent", "done", 3), card("t-shut", "human", "closed", 4)}
+	for _, id := range []string{"t-human", "t-agent", "t-shut"} {
+		closeAsk(t, r, id, reason, nil, "done")
+	}
+	state := func(id string) string {
+		face := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id, nil), ck).Body.String()
+		_, st, _ := strings.Cut(face, `<span class="it st">`)
+		st, _, _ = strings.Cut(st, "</span>")
+		return htmlText(template.HTML(st))
+	}
+	for id, want := range map[string]string{
+		"t-human": "needed you no more: " + reason,
+		"t-bare":  "done",
+		"t-agent": "done",
+		"t-shut":  "needed you no more: " + reason,
+	} {
+		if got := state(id); got != want {
+			t.Errorf("%s reads %q, want %q", id, got, want)
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -708,5 +709,71 @@ func TestTheBoardsReadsPutHelperTasksOnTheirParent(t *testing.T) {
 	}
 	if finished, _, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: now.Add(-7 * 24 * time.Hour)}); err != nil || len(finished) != 0 {
 		t.Fatalf("FinishedTasks once the prover ended = %v, %v; want none: the plan ended past the window, and a helper is no card", ids(finished), err)
+	}
+}
+
+// A card is closed at the human when its newest ask or settling event is
+// the factory's withdrawal with a reason; its Statuses count the distinct
+// statuses its task_status rows name after that row. A new ask, an answer
+// or a human's withdrawal leaves the card out. Requires a disposable
+// Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestClosedAsksNamesTheFactorysNewestClose(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.PgDB().Close() })
+	if _, err := s.PgDB().ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, cases, events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	at := time.Date(2026, 11, 24, 7, 30, 32, 0, time.UTC)
+	reason := "the month cap's count was reset at 07:30 UTC by sebastian"
+	moments := factoryd.Moments{{At: at, Layout: factoryd.LayoutClock}}
+	row := func(task, kind, actor string, detail map[string]any) {
+		t.Helper()
+		if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: task, Kind: kind, Actor: actor, Via: ViaFactoryd, Detail: detail}); err != nil {
+			t.Fatalf("Record %s %s: %v", task, kind, err)
+		}
+	}
+	status := func(task, st, gate string) {
+		row(task, EventTaskStatus, FactoryDecider, map[string]any{"status": st, "gate": gate})
+	}
+	withdrawn := func(task, actor string) {
+		row(task, EventQuestionWithdrawn, actor, map[string]any{"reason": reason, "moments": moments})
+	}
+	closed := func(task string) {
+		row(task, EventQuestionAsked, FactoryDecider, map[string]any{"question": "q"})
+		status(task, "waiting-human", "ask")
+		status(task, "in-review", "resume")
+		withdrawn(task, FactoryDecider)
+	}
+	closed("t-a")
+	status("t-a", "running", "intake")
+	status("t-a", "running", "session")
+	closed("t-b")
+	status("t-b", "running", "intake")
+	status("t-b", "in-review", "checks")
+	withdrawn("t-c", FactoryDecider)
+	row("t-c", EventQuestionAsked, FactoryDecider, map[string]any{"question": "q"})
+	withdrawn("t-d", FactoryDecider)
+	row("t-d", EventQuestionAnswered, "sebastian", map[string]any{"answer": "a"})
+	withdrawn("t-e", "sebastian")
+
+	got, err := s.ClosedAsks(ctx, []string{"t-a", "t-b", "t-c", "t-d", "t-e", "t-none"})
+	if err != nil {
+		t.Fatalf("ClosedAsks: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ClosedAsks named %d cards, want t-a and t-b: %+v", len(got), got)
+	}
+	for id, statuses := range map[string]int{"t-a": 1, "t-b": 2} {
+		c, ok := got[id]
+		if !ok || c.Reason != reason || c.Statuses != statuses || len(c.Moments) != 1 || !c.Moments[0].At.Equal(at) || c.Moments[0].Layout != factoryd.LayoutClock || c.At.IsZero() {
+			t.Errorf("ClosedAsks[%s] = %+v, want the reason, its moment and %d statuses", id, c, statuses)
+		}
+	}
+	if none, err := s.ClosedAsks(ctx, nil); err != nil || len(none) != 0 {
+		t.Errorf("ClosedAsks(nil) = %v, %v, want none", none, err)
 	}
 }
