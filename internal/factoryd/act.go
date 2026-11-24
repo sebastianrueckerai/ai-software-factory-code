@@ -445,9 +445,8 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 	detail := map[string]any{"action": res.Action, "case_id": c.ID, "answer": said}
 	switch {
 	case taken:
-		question, _ := faceOf(c)
-		kind, detail = EventQuestionWithdrawn, map[string]any{"action": res.Action, "case_id": c.ID, "case_kind": string(c.Kind), "reason": said,
-			"question": textutil.Truncate(EscalationQuestion(question), 300)}
+		kind, detail = EventQuestionWithdrawn, WithdrawnRow(c, said, res.Moments)
+		detail["action"] = res.Action
 		if id, err := r.postWithdrawal(ctx, t, c, said); err != nil {
 			log.Printf("task %s: the withdrawal comment of case %d: %v", t.ID, c.ID, err)
 		} else if id != 0 {
@@ -455,6 +454,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 		}
 	case draw != nil && draw.Extend.Sessions > 0:
 		kind = EventSessionGranted
+	}
+	if kind != EventQuestionWithdrawn {
+		if m := res.Moments.In(said); len(m) > 0 {
+			detail["moments"] = m
+		}
 	}
 	if out.Comment != 0 {
 		detail["comment"] = out.Comment
@@ -597,7 +601,7 @@ func (r *Runner) withdrawReplaced(ctx context.Context, t Task, cases []Case) []C
 			return false
 		}
 		defer unlock()
-		if err := r.EndCase(ctx, c.ID, "a newer ask on the card replaced it"); err != nil {
+		if err := r.EndCase(ctx, c.ID, "a newer ask on the card replaced it", nil); err != nil {
 			log.Printf("offers pass: task %s: case %d: %v", t.ID, c.ID, err)
 			return false
 		}
@@ -929,11 +933,13 @@ func (r *Runner) settleSignal(ctx context.Context, caseID int64, name string) {
 
 // EndCase withdraws case caseID for reason: the run's end of a wait that
 // ended with no answer of its case (a cap turned, an image came, the run
-// moved on). A face posted on the issue, which the run may not have known
-// of, is withdrawn as WithdrawQuestion withdraws a question, before the
-// case ends, so a retry after a failure posts the note the first try did
-// not. A case that ended already, and no case (0), are no error.
-func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string) error {
+// moved on). A case at the human, or one whose face posted on the issue
+// (which the run may not have known of), is withdrawn as WithdrawQuestion
+// withdraws a question, before the case ends: a row with the reason and
+// the moments said holds for it, and a comment, so a retry after a
+// failure posts the note the first try did not. A case still open ends
+// with no row. A case that ended already, and no case (0), are no error.
+func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string, said Moments) error {
 	if caseID == 0 {
 		return nil
 	}
@@ -942,9 +948,8 @@ func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string) error
 	if err != nil || c.Status != CaseOpen && c.Status != CaseAtHuman {
 		return caseEnded(err)
 	}
-	if c.CommentID != 0 {
-		question, _ := faceOf(c)
-		if _, err := r.withdrawQuestion(ctx, c.TaskID, question, c.CommentID, reason, c); err != nil {
+	if c.Status == CaseAtHuman || c.CommentID != 0 {
+		if _, err := r.withdrawQuestion(ctx, c.TaskID, c.CommentID, reason, said, c); err != nil {
 			return err
 		}
 	}

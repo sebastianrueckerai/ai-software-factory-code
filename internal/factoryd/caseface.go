@@ -88,9 +88,9 @@ func momentsJSON(m Moments) any {
 	return b
 }
 
-// momentsOf are the moments a row stores under its key "moments", none for
+// MomentsOf are the moments a row stores under its key "moments", none for
 // a row that stores none or a malformed one.
-func momentsOf(row map[string]any) Moments {
+func MomentsOf(row map[string]any) Moments {
 	var m Moments
 	if b, err := json.Marshal(row["moments"]); err == nil {
 		_ = json.Unmarshal(b, &m)
@@ -144,7 +144,7 @@ func storedFace(detail map[string]any) (AskFace, bool) {
 	if err != nil || json.Unmarshal(b, &row) != nil {
 		return AskFace{}, false
 	}
-	face := AskFace{Ask: row.Ask, Why: row.Why, Story: row.Story, Findings: row.Findings, Moments: momentsOf(detail)}
+	face := AskFace{Ask: row.Ask, Why: row.Why, Story: row.Story, Findings: row.Findings, Moments: MomentsOf(detail)}
 	for _, o := range row.Offers {
 		a, _ := AnswerOf(o.Value)
 		a.Label, a.Effect = o.Label, o.Effect
@@ -287,6 +287,6 @@ func questionOfAsk(detail map[string]any) *HumanQuestion {
 	q.Waits, _ = detail["waits"].(string)
 	q.Check, _ = detail["check"].(string)
 	q.Act, _ = detail["act"].(string)
-	q.Moments = momentsOf(detail)
+	q.Moments = MomentsOf(detail)
 	return q
 }

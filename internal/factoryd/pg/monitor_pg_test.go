@@ -1078,8 +1078,9 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	}
 	rows := (actRig{s: g.s}).rows(t, EventQuestionWithdrawn)
 	if len(rows) != 2 || rows[0].Detail["case_id"] != float64(stale.ID) || rows[0].Detail["reason"] != "the flag no longer holds" || rows[0].Detail["withdrawal"] != nil ||
-		rows[1].Detail["case_id"] != float64(queue.ID) || rows[1].Detail["reason"] != "the wait ended" || rows[1].Detail["withdrawal"] != float64(502) {
-		t.Fatalf("withdrawal rows = %+v, want one naming case %d as the flag no longer holds, then case %d as the wait ended", rows, stale.ID, queue.ID)
+		rows[1].Detail["case_id"] != float64(queue.ID) || rows[1].Detail["reason"] != "the wait ended" || rows[1].Detail["withdrawal"] != float64(502) ||
+		rows[1].Detail["question"] != queuedLine {
+		t.Fatalf("withdrawal rows = %+v, want one naming case %d as the flag no longer holds, then case %d as the wait ended, asked as %q", rows, stale.ID, queue.ID, queuedLine)
 	}
 	if got := caseByID(t, g.s, run.ID); got.Status != CaseAtHuman {
 		t.Fatalf("the run's own case = %s, want it at the human", got.Status)

@@ -17,6 +17,7 @@ import (
 
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -58,6 +59,7 @@ type actForge struct {
 	closed     bool
 	closes     int  // the closes of issue 12 that went through
 	closeFails bool // the close of issue 12 answers 500
+	labels     []string
 }
 
 func (f *actForge) serve(t *testing.T) *httptest.Server {
@@ -77,6 +79,18 @@ func (f *actForge) serve(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodGet && r.URL.Path == issue:
 			fmt.Fprint(w, `{"state":"open"}`)
+		case r.Method == http.MethodGet && r.URL.Path == issue+"/labels":
+			names := []map[string]string{}
+			for _, l := range f.labels {
+				names = append(names, map[string]string{"name": l})
+			}
+			_ = json.NewEncoder(w).Encode(names)
+		case r.Method == http.MethodPut && r.URL.Path == issue+"/labels":
+			var put struct{ Labels []string }
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &put)
+			f.labels = put.Labels
+			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodGet && r.URL.Path == issue+"/dependencies":
 			w.WriteHeader(http.StatusNotFound)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/demo-app/branches/"):
@@ -346,24 +360,81 @@ func TestActNoteKeepsTheCaseOpen(t *testing.T) {
 	}
 }
 
-// The run's end of a wait withdraws the case with its reason. A case that
-// ended already, and no case at all, are no error.
+// The run's end of a wait withdraws the case at the human with its reason,
+// and the card goes back to review on the board and on its issue. A case
+// that ended already, and no case at all, are no error.
 func TestEndCaseWithdrawsWithTheReason(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
 	const why = "the wait ended on its own: the month cap turned"
-	if err := g.r.EndCase(ctx, g.c.ID, why); err != nil {
+	if err := g.r.EndCase(ctx, g.c.ID, why, nil); err != nil {
 		t.Fatal(err)
 	}
 	c := caseByID(t, g.s, g.c.ID)
 	if c.Status != CaseWithdrawn || c.Resolution == nil || c.Resolution.Reason != why || c.Resolution.By != FactoryDecider {
 		t.Fatalf("case = %s, %+v; want withdrawn by factoryd for %q", c.Status, c.Resolution, why)
 	}
-	if err := g.r.EndCase(ctx, g.c.ID, "again"); err != nil {
+	if got := g.card(t).Status; got != "in-review" || !slices.Equal(g.forge.labels, []string{"state/in-review"}) {
+		t.Fatalf("card is %s with labels %q, want in-review on both", got, g.forge.labels)
+	}
+	if err := g.r.EndCase(ctx, g.c.ID, "again", nil); err != nil {
 		t.Fatalf("a second end = %v, want none", err)
 	}
-	if err := g.r.EndCase(ctx, 0, why); err != nil {
+	if err := g.r.EndCase(ctx, 0, why, nil); err != nil {
 		t.Fatalf("no case = %v, want none", err)
+	}
+}
+
+// The run's end of a wait on an ask at the human of a card with no issue,
+// as the sizing helper of #2286 waited on 2026-11-24, writes the one row
+// that records the close: by the factory, naming the case, with the
+// reason and the moment the reason names. The events writer withdraws the
+// case by that row, and the card leaves waiting-human.
+func TestEndCaseOfAnAskOnACardWithNoIssueWritesItsRow(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if _, err := g.s.DB().ExecContext(ctx, `UPDATE tasks SET issue_number = 0 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	const why = "the month cap's count was reset at 07:30 UTC by sebastian"
+	said := factoryd.Moments{{At: time.Date(2026, 11, 24, 7, 30, 32, 0, time.UTC), Layout: factoryd.LayoutClock}}
+	if err := g.r.EndCase(ctx, g.c.ID, why, said); err != nil {
+		t.Fatal(err)
+	}
+	rows := g.rows(t, EventQuestionWithdrawn)
+	if len(rows) != 1 {
+		t.Fatalf("question_withdrawn rows = %+v, want one", rows)
+	}
+	id, _ := toInt(rows[0].Detail["case_id"])
+	if rows[0].Actor != FactoryDecider || int64(id) != g.c.ID || rows[0].Detail["reason"] != why || !reflect.DeepEqual(factoryd.MomentsOf(rows[0].Detail), said) {
+		t.Fatalf("row = %+v; want factoryd's, naming case %d, for %q with %+v", rows[0], g.c.ID, why, said)
+	}
+	c := caseByID(t, g.s, g.c.ID)
+	if c.Status != CaseWithdrawn || c.Resolution == nil || c.Resolution.Reason != why {
+		t.Fatalf("case = %s, %+v; want withdrawn for %q", c.Status, c.Resolution, why)
+	}
+	if got := g.card(t).Status; got != "in-review" {
+		t.Fatalf("card is %s, want in-review", got)
+	}
+}
+
+// A case still open, which no face put to anyone, ends with no row: no
+// human was asked.
+func TestEndCaseOfAnOpenCaseWritesNoRow(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	open, opened, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, StateKey: "h2", Problem: "checks wait"})
+	if err != nil || !opened {
+		t.Fatalf("OpenCase = %+v, %v, %v", open, opened, err)
+	}
+	if err := g.r.EndCase(ctx, open.ID, "the run left the wait", nil); err != nil {
+		t.Fatal(err)
+	}
+	if c := caseByID(t, g.s, open.ID); c.Status != CaseWithdrawn {
+		t.Fatalf("case = %s, want withdrawn", c.Status)
+	}
+	if rows := g.rows(t, EventQuestionWithdrawn); len(rows) != 0 {
+		t.Fatalf("question_withdrawn rows = %+v, want none", rows)
 	}
 }
 

@@ -270,7 +270,7 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 	if err != nil {
 		return 0, err
 	}
-	return r.withdrawQuestion(ctx, taskID, reason, comment, why, c)
+	return r.withdrawQuestion(ctx, taskID, comment, why, nil, c)
 }
 
 // withdrawQuestion is WithdrawQuestion of the question case c's face asked:
@@ -278,7 +278,7 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 // withdraws with it and the inbox settles by. A card that holds another
 // live ask an answer on the card ends still waits on it and stays where
 // it is; a flag beside it holds no card.
-func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, c Case) (int64, error) {
+func (r *Runner) withdrawQuestion(ctx context.Context, taskID string, comment int64, why string, said Moments, c Case) (int64, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
@@ -297,12 +297,10 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 	if err != nil {
 		return 0, err
 	}
-	detail := map[string]any{"question": textutil.Truncate(EscalationQuestion(reason), 300), "comment": comment, "reason": why}
+	detail := WithdrawnRow(c, why, said)
+	detail["comment"] = comment
 	if id != 0 {
 		detail["withdrawal"] = id
-	}
-	if c.ID != 0 {
-		detail["case_id"], detail["case_kind"] = c.ID, string(c.Kind)
 	}
 	r.record(ctx, taskID, "question_withdrawn", detail)
 	r.timeline.RecordRow(ctx, taskID, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, detail)

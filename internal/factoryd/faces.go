@@ -318,7 +318,7 @@ func ownAsk(c Case, t Task) string {
 // action is there; a request's and a plan's ask offer only their own.
 func FaceOf(c Case, f Facts) AskFace {
 	question := cmp.Or(f.Kind, c.Kind)
-	said := momentsOf(c.Facts)
+	said := MomentsOf(c.Facts)
 	f.said = &said
 	c, f = facing(c, f)
 	spec := faceSpecOf(c, f)

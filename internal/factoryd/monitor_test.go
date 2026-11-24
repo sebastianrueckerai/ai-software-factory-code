@@ -129,6 +129,7 @@ func TestRetakeTakesAGreenChecksWaitOnFactsReadWhole(t *testing.T) {
 			card.IssueNumber = 0
 			g.store.tasks["t1"] = card
 			g.store.cases = append(g.store.cases, stop)
+			g.r.timeline = &Timeline{Objects: g.r.objects, Events: g.store, Store: g.store}
 			tc.setup(g)
 			events := len(g.store.events)
 			m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
@@ -146,6 +147,11 @@ func TestRetakeTakesAGreenChecksWaitOnFactsReadWhole(t *testing.T) {
 			}
 			if c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, tc.want) || !slices.Equal(signals, []string{"t1 case_resolved factoryd #0: "}) {
 				t.Fatalf("case %s by %+v, signals %q; want it resolved by %+v and the run told", c.Status, c.Resolution, signals, tc.want)
+			}
+			row := WithdrawnRow(stop, tc.want.Reason, nil)
+			row["action"] = ActWaitChecks
+			if i := slices.IndexFunc(g.store.events, func(e Event) bool { return e.Kind == EventQuestionWithdrawn && e.TaskID == "t1" }); i < 0 || !reflect.DeepEqual(g.store.events[i].Detail, row) {
+				t.Fatalf("events %+v; want one question_withdrawn row %+v", g.store.events, row)
 			}
 		})
 	}
