@@ -331,7 +331,7 @@ func (s *acceptanceStore) CountAdmitted(_ context.Context, repository string) (i
 	return n, nil
 }
 
-func (s *acceptanceStore) SetResumeWait(context.Context, string, string, time.Time) error {
+func (s *acceptanceStore) SetResumeWait(context.Context, string, string, time.Time) (bool, error) {
 	panic("unused")
 }
 
@@ -737,6 +737,14 @@ func (s *acceptanceStore) PutLiveSession(context.Context, factoryd.LiveSession) 
 func (s *acceptanceStore) SetLiveSessionLines(context.Context, string, int) error { return nil }
 
 func (s *acceptanceStore) SetLiveSessionDeadline(context.Context, string, string, time.Time, time.Duration, float64) error {
+	return nil
+}
+
+func (s *acceptanceStore) SetLiveSessionPod(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) SetLiveSessionStopping(context.Context, string, string, time.Time) error {
 	return nil
 }
 

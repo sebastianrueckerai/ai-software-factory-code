@@ -461,7 +461,7 @@ func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (i
 	return s.tasks.CountAdmitted(ctx, repository)
 }
 
-func (s *accBatchStore) SetResumeWait(context.Context, string, string, time.Time) error {
+func (s *accBatchStore) SetResumeWait(context.Context, string, string, time.Time) (bool, error) {
 	panic("unused")
 }
 
@@ -714,6 +714,12 @@ func (s *accBatchStore) SetLiveSessionLines(ctx context.Context, taskID string, 
 	panic("unused")
 }
 func (s *accBatchStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner string, deadline time.Time, added time.Duration, budget float64) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetLiveSessionPod(ctx context.Context, taskID, owner, uid, node, boot string) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
 	panic("unused")
 }
 func (s *accBatchStore) LiveSession(ctx context.Context, taskID string) (factoryd.LiveSession, bool, error) {

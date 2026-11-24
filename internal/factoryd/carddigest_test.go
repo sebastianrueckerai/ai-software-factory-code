@@ -1885,3 +1885,45 @@ func TestDigestFlagsARefusedCheckin(t *testing.T) {
 		t.Fatalf("flags = %+v, want none once a check-in ran after the refused one", d.Flags)
 	}
 }
+
+// The hold owns a card's wait only while the card is parked: a held card
+// that still runs or is in review holds a slot and can hang, so its run
+// quiet past its bound and its gate past its bound flag as an unheld
+// card's do (TestOwnedWaitTakesTheFirstRowThatHolds), and a card parked
+// queued three hours flags nothing.
+func TestTheMonitorWatchesAHeldCardUntilItParks(t *testing.T) {
+	since := digestAt(60)
+	hold := &CardHold{Reason: "after the split", By: "sebastian", At: digestAt(0)}
+	for _, c := range []struct {
+		name   string
+		change func(*Task)
+		seed   func(t *testing.T, g digestRig)
+		at     int
+		want   ownedWait
+		held   bool
+		flags  []DigestFlag
+	}{
+		{"running", func(c *Task) { c.Hold = hold }, func(t *testing.T, g digestRig) {
+			g.line(t, 20, "session_start", map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1})
+		}, 51, ownedWait{"run_quiet", 0, digestAt(20)}, true, []DigestFlag{{"wait_over_bound", "run_quiet since +0:20"}}},
+		{"in review", func(c *Task) { c.Status, c.Gate, c.Hold = "in-review", GateReview, hold }, func(t *testing.T, g digestRig) {
+			g.event(30, EventTaskStatus, FactoryDecider, map[string]any{"status": "in-review", "gate": GateReview})
+		}, 6*60 + 31, ownedWait{"gate", 0, digestAt(30)}, true, []DigestFlag{{"wait_over_bound", "gate since +0:30"}}},
+		{"parked", func(c *Task) {
+			c.Status, c.QueueReason, c.QueueSince, c.Hold = "queued", "on hold: after the split", &since, hold
+		}, func(t *testing.T, g digestRig) {
+			g.line(t, 20, "session_start", map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1})
+		}, 4 * 60, ownedWait{}, false, nil},
+	} {
+		g := newDigestRig(c.change)
+		c.seed(t, g)
+		g.at(c.at)
+		d := g.digest(t)
+		if w, ok := d.ownedWait(); ok != c.held || w != c.want {
+			t.Errorf("%s: ownedWait = %+v, %t; want %+v, %t", c.name, w, ok, c.want, c.held)
+		}
+		if !slices.Equal(d.Flags, c.flags) {
+			t.Errorf("%s: Flags = %v, want %v", c.name, d.Flags, c.flags)
+		}
+	}
+}

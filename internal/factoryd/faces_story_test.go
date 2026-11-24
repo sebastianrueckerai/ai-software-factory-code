@@ -62,6 +62,8 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 			Happened: one + " 6 starts in a row failed.", Left: noPrice},
 		factoryd.CaseNoAnswer: {Planned: "This card builds “Alerts: group a flapping rule's alerts”.",
 			Happened: one + " 3 starts in a row failed.", Left: noPrice},
+		factoryd.CasePlatformFault: {Planned: "This card builds “Board export: compress the nightly snapshot”.",
+			Happened: one + " The platform ended 3 sessions in a row; in the last one, the node's memory guard killed the pod.", Left: green},
 		factoryd.CaseContentFilter: {Planned: "This card builds “Docs: the threat model's attack list”.",
 			Happened: one + " The provider's content filter refused the request of the last session.", Left: green},
 		factoryd.CaseImageWait: {Planned: "This card builds “Search: find a card by its words”.",

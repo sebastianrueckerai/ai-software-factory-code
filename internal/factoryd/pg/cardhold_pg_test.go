@@ -70,8 +70,8 @@ func TestPGStoreCardHold(t *testing.T) {
 			took = append(took, id)
 		}
 	}
-	if !slices.Equal(took, []string{"t-q", "t-noissue", "t-wd"}) {
-		t.Fatalf("held = %v, want t-q, the half-filed t-noissue and t-wd", took)
+	if !slices.Equal(took, []string{"t-q", "t-res", "t-run", "t-noissue", "t-wd"}) {
+		t.Fatalf("held = %v, want t-q, the resumed t-res, the running t-run, the half-filed t-noissue and t-wd", took)
 	}
 	read := func(id string) Task {
 		t.Helper()
@@ -85,7 +85,10 @@ func TestPGStoreCardHold(t *testing.T) {
 		t.Fatalf("the stored hold = %+v, want %+v", h, hold)
 	}
 	if h := read("t-adm").Hold; h != nil {
-		t.Fatalf("an admitted card holds %+v, want none", h)
+		t.Fatalf("an admitted card that never ran holds %+v, want none", h)
+	}
+	if h := read("t-run").Hold; h == nil {
+		t.Fatal("a running card took no hold")
 	}
 	if err := s.SetAdmitted(ctx, "t-q"); !errors.Is(err, errHeld) {
 		t.Fatalf("SetAdmitted on a held card = %v, want errHeld", err)
@@ -147,9 +150,6 @@ func TestPGStoreCardHold(t *testing.T) {
 	if err := s.CloseTask(ctx, "t-q2", []string{"queued"}, "closed", "the human closed it"); err != nil {
 		t.Fatal(err)
 	}
-	if ended, err := s.EndCardHold(ctx, "t-q2", ""); err != nil || ended {
-		t.Fatalf("the release of a closing card = %v, %v; want nothing ended", ended, err)
-	}
 	if err := s.EndClosed(ctx, "t-q2", []string{"closing"}, "the human closed it"); err != nil {
 		t.Fatal(err)
 	}
@@ -180,4 +180,139 @@ func TestPGStoreCardHold(t *testing.T) {
 	if want := []string{"t-q2 factoryd after #2063 closed", "t-noissue factoryd needs the finished pg split waiting-agent"}; !slices.Equal(ends, want) {
 		t.Fatalf("the hold-end rows = %q, want %q", ends, want)
 	}
+}
+
+func TestPGStoreHoldsARunningCard(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_hold_running"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, tk := range []Task{
+		{ID: "t-run", Status: "running", IssueNumber: 1},
+		{ID: "t-rev", Status: "in-review", IssueNumber: 2},
+		{ID: "t-rel", Status: "running", IssueNumber: 3},
+		{ID: "t-clo", Status: "closing", IssueNumber: 4},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind, tk.Track, tk.Source = 1, "sf/r", "agent", policy.TrackDirect, "webhook"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	if ok, err := s.SetCardHold(ctx, "t-run", CardHold{Reason: "after the split", Release: "t-rel", By: "sebastian", At: at}); err != nil || !ok {
+		t.Fatalf("SetCardHold on a running card = %v, %v; want true", ok, err)
+	}
+	if h := readTask(t, s, "t-run").Hold; h == nil || h.Reason != "after the split" || h.By != "sebastian" || h.Release != "t-rel" || !h.At.Equal(at) {
+		t.Fatalf("the stored hold = %+v", h)
+	}
+	if on, err := s.HeldOn(ctx, "t-rel"); err != nil || len(on) != 1 || on[0].ID != "t-run" {
+		t.Fatalf("HeldOn = %+v, %v; want the running card", on, err)
+	}
+	if ok, err := s.SetCardHold(ctx, "t-rev", CardHold{Reason: "x", By: "sebastian", At: at}); err != nil || ok {
+		t.Fatalf("SetCardHold on an in-review card = %v, %v; want false", ok, err)
+	}
+	if h := readTask(t, s, "t-rev").Hold; h != nil {
+		t.Fatalf("an in-review card stored %+v", h)
+	}
+	if ok, err := s.EndCardHold(ctx, "t-run", ""); err != nil || !ok {
+		t.Fatalf("EndCardHold = %v, %v; want true", ok, err)
+	}
+	if n := holdColumnsSet(t, s, "t-run"); n != 0 {
+		t.Fatalf("%d hold columns still set", n)
+	}
+
+	// a hold stored before a card reached review or closing stands there, and a release ends it
+	if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET hold_at = $1, hold_by = 'sebastian', hold_reason = 'x', hold_release = 't-rel' WHERE id IN ('t-rev', 't-clo')`, at); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := s.HeldOn(ctx, "t-rel"); err != nil || len(on) != 2 || on[0].ID != "t-clo" || on[1].ID != "t-rev" {
+		t.Fatalf("HeldOn = %+v, %v; want the closing and the in-review card", on, err)
+	}
+	for _, id := range []string{"t-rev", "t-clo"} {
+		if ok, err := s.EndCardHold(ctx, id, ""); err != nil || !ok {
+			t.Fatalf("EndCardHold(%s) = %v, %v; want true", id, ok, err)
+		}
+		if n := holdColumnsSet(t, s, id); n != 0 {
+			t.Fatalf("%s: %d hold columns still set", id, n)
+		}
+	}
+}
+
+func TestPGStoreParksAHeldRunningCard(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_park_held"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i, id := range []string{"t-held", "t-free"} {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "running", IssueNumber: int64(i + 1), BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: policy.TrackDirect, Source: "webhook"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t0 := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	if ok, err := s.SetCardHold(ctx, "t-held", CardHold{Reason: "x", By: "sebastian", At: t0}); err != nil || !ok {
+		t.Fatalf("SetCardHold = %v, %v", ok, err)
+	}
+	for id, want := range map[string]bool{"t-held": true, "t-free": false} {
+		if moved, err := s.SetResumeWait(ctx, id, "on hold: x", t0); err != nil || moved != want {
+			t.Fatalf("SetResumeWait(%s) = %v, %v; want %v", id, moved, err, want)
+		}
+	}
+	k := readTask(t, s, "t-held")
+	if k.Status != "queued" || k.ResumedAt == nil || !k.ResumedAt.Equal(t0) || k.QueueReason != "on hold: x" {
+		t.Fatalf("the held card = %s, resumed %v, reason %q; want queued, resumed at t0, the reason", k.Status, k.ResumedAt, k.QueueReason)
+	}
+	if k := readTask(t, s, "t-free"); k.Status != "running" || k.ResumedAt != nil || k.QueueReason != "" {
+		t.Fatalf("the unheld running card = %s, resumed %v, reason %q; want it unchanged", k.Status, k.ResumedAt, k.QueueReason)
+	}
+}
+
+func TestPGStoreEndClearsAHeldParkedCard(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_end_parked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateTask(ctx, Task{ID: "t-p", Status: "running", IssueNumber: 1, BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: policy.TrackDirect, Source: "webhook"}); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	if ok, err := s.SetCardHold(ctx, "t-p", CardHold{Reason: "x", Release: "", By: "sebastian", At: t0}); err != nil || !ok {
+		t.Fatalf("SetCardHold = %v, %v", ok, err)
+	}
+	if moved, err := s.SetResumeWait(ctx, "t-p", "on hold: x", t0); err != nil || !moved {
+		t.Fatalf("SetResumeWait = %v, %v; want the card parked", moved, err)
+	}
+	if err := s.EndClosed(ctx, "t-p", []string{"queued"}, "the human closed it"); err != nil {
+		t.Fatal(err)
+	}
+	if k := readTask(t, s, "t-p"); k.Status != "closed" {
+		t.Fatalf("the card is %s, want closed", k.Status)
+	}
+	if n := holdColumnsSet(t, s, "t-p"); n != 0 {
+		t.Fatalf("%d hold columns still set on the closed card", n)
+	}
+}
+
+func readTask(t *testing.T, s *PGStore, id string) Task {
+	t.Helper()
+	k, _, err := s.Task(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+func holdColumnsSet(t *testing.T, s *PGStore, id string) int {
+	t.Helper()
+	var n int
+	if err := s.DB().QueryRowContext(context.Background(), `SELECT count(*) FROM tasks WHERE id = $1
+		AND (hold_at IS NOT NULL OR hold_by <> '' OR hold_reason <> '' OR hold_release IS NOT NULL)`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

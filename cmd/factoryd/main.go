@@ -166,8 +166,9 @@ func main() {
 	// queued card goes through the project's work_in_progress (roadmap 225)
 	workflows := factoryd.BoundedWorkflows{Workflows: &inner, Store: store,
 		Policy: func() policy.Tree { return policyLoader.Current().Tree }}
-	// SigNoz's firing alerts: the project endpoint and the alert card's
-	// pre-check (roadmap 181, Stage 18 item 3.12). Its root password is
+	// SigNoz's firing alerts (the project endpoint and the alert card's
+	// pre-check, roadmap 181, Stage 18 item 3.12) and the nodes' kernel
+	// kill lines (the incident pass). Its root password is
 	// read here so the boot's secret scrubber knows it.
 	signozPassword := secrets["SIGNOZ_PASSWORD"]
 	signoz := &factoryd.SigNoz{
@@ -216,6 +217,10 @@ func main() {
 		// table the gateway's hold math prices a call with
 		Prices:       &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
 		ProjectsUser: projectsUser(),
+		// a session's pod's death reads the incident log and the nodes'
+		// kernel kill lines
+		Cluster: store,
+		Kernel:  signoz,
 	}, store, kube, forgejo, completion, objects, supervisorModel(gatewayURL, gatewayToken))
 	if err != nil {
 		log.Fatalf("runner: %v", err)
@@ -249,20 +254,6 @@ func main() {
 		log.Fatalf("build vms: %v", err)
 	}
 	ciCollector.Deleted = buildVMs.Deleted
-	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
-		FactoryNamespace: kube.Namespace(),
-		Repos:            factoryd.CIReposOf(forgejo, store),
-		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
-		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
-		GitBaseURL:       gitBase,
-		RegistryHost:     registryHost,
-		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
-		JobTimeout:       ciJobTimeout,
-		Queue:            ciQueue,
-	}, forgejo, kube, buildVMs)
-	if err != nil {
-		log.Fatalf("ci spawner: %v", err)
-	}
 
 	temporal, err := client.Dial(client.Options{
 		HostPort:  daemonURL("TEMPORAL_ADDRESS"),
@@ -303,6 +294,23 @@ func main() {
 	docsToken := secrets["FORGEJO_DOCS_TOKEN"]
 	scrub := redact.New(bootSecrets...)
 	runner.Scrub = scrub
+	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
+		FactoryNamespace: kube.Namespace(),
+		Repos:            factoryd.CIReposOf(forgejo, store),
+		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
+		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
+		GitBaseURL:       gitBase,
+		RegistryHost:     registryHost,
+		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
+		JobTimeout:       ciJobTimeout,
+		Queue:            ciQueue,
+		Cluster:          store,
+		Kernel:           signoz,
+		Scrub:            scrub,
+	}, forgejo, kube, buildVMs)
+	if err != nil {
+		log.Fatalf("ci spawner: %v", err)
+	}
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
@@ -463,6 +471,10 @@ func main() {
 	passes.Run(ctx, "signoz", time.Minute, 2*time.Minute, func(ctx context.Context) error {
 		return alertIntake.SweepSigNoz(ctx, time.Now())
 	})
+	sweep := &factoryd.IncidentSweep{Store: store, Kube: kube, Kernel: signoz}
+	passes.Run(ctx, "platform_incidents", time.Minute, 2*time.Minute, sweep.Run)
+	platformCard := &factoryd.PlatformCard{Store: store, Forgejo: forgejo, Repo: configRepo, Timeline: runner.Timeline(), Kube: kube, Now: time.Now}
+	passes.Run(ctx, "platform_card", time.Minute, 2*time.Minute, platformCard.Check)
 	passes.Run(ctx, "cleared_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCleared)
 	passes.Run(ctx, "completed_job_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCompletedJobs)
 	// a rollout not settled at its window's cap raises its own alert
@@ -704,6 +716,9 @@ func main() {
 		Alerts:       store,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
 			return factoryd.DeploymentHealthText(ctx, kube, p, deployment, namespace, time.Now())
+		},
+		ClusterFacts: func(ctx context.Context, taskID, sessionID string, since, until time.Time, hideCommand bool) (string, error) {
+			return factoryd.ClusterFactsReader{Store: store, Live: store, Kube: kube}.Text(ctx, taskID, sessionID, since, until, time.Now(), hideCommand)
 		},
 		Projects:           store,
 		Events:             store,

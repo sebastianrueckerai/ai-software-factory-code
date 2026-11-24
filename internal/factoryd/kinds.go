@@ -16,7 +16,7 @@ func CaseKinds() []CaseKind {
 		CaseNoAnswer, CaseContentFilter, CaseImageWait, CaseScreeningSuspect, CaseAgentEscalate,
 		CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation, CaseMergeApproval, CaseHumanCard,
 		CaseOther, CaseMonitorFlag, CaseJudgmentBudget, CasePolicyClass, CaseRedMain, CaseRollHeld,
-		CaseConfigRefused, CasePlanCriteria, CasePlanHeld, CaseProviderFreeze,
+		CaseConfigRefused, CasePlanCriteria, CasePlanHeld, CaseProviderFreeze, CasePlatformFault, CasePlatformDeaths,
 	}
 }
 
@@ -29,7 +29,7 @@ func CardSources() []string {
 		SourceRoll, SourceRollRefused, SourceRollFailed, SourceMainFix, SourceRerun, SourceRevert, SourceStillRed,
 		SourceGroupRevert, SourceChainRepair, SourceChainStall, SourceAlert,
 		SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceImageRemoval,
-		SourceChat, SourceChatBudget, SourceMonthCap, SourceFreezeCard, SourceConfig, SourceProductionHeld,
+		SourceChat, SourceChatBudget, SourceMonthCap, SourceFreezeCard, SourceConfig, SourceProductionHeld, SourcePlatformDeaths,
 	}
 }
 

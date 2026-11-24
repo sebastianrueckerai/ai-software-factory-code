@@ -344,6 +344,81 @@ func TestHealPassStartsAndWakesAResumedWaiter(t *testing.T) {
 	}
 }
 
+// The heal pass restarts every held waiter whose run died, as any waiter,
+// but wakes one only once its hold no longer stands: its release card ended
+// done. A held card with no release card, or one whose release card still
+// runs, gets no slot_free: a wake a minute would grow its run's history to
+// Temporal's limit within days.
+func TestHealPassWakesAHeldWaiterOnlyOnceItsReleaseCardEnded(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	for i, id := range []string{"t-rel", "t-open"} {
+		status := map[string]string{"t-rel": "done", "t-open": "running"}[id]
+		if err := store.CreateTask(ctx, Task{ID: id, Status: status, Kind: "agent", Track: "direct", Repository: "sf/ai-software-factory-code", IssueNumber: int64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, c := range []struct{ id, release string }{{"tw-held", ""}, {"tw-held-open", "t-open"}, {"tw-released", "t-rel"}} {
+		if err := store.CreateTask(ctx, Task{ID: c.id, Status: "queued", Kind: "agent", Track: "direct", Repository: "sf/ai-software-factory-code",
+			IssueNumber: int64(30 + i), AdmittedAt: &at, ResumedAt: &at, Hold: &CardHold{Reason: "out of the way", Release: c.release, By: "sebastian", At: at}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wf := &fakeWorkflows{}
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, nil, noneCompleted, nil)
+	started := slices.Sorted(slices.Values(wf.started))
+	if want := []string{"t-open", "tw-held", "tw-held-open", "tw-released"}; !slices.Equal(started, want) {
+		t.Fatalf("starts %v, want %v: every open card's run restarted", started, want)
+	}
+	var woken []string
+	for _, s := range wf.signals {
+		if f := strings.Fields(s); f[1] == SignalSlotFree {
+			woken = append(woken, f[0])
+		}
+	}
+	if !slices.Equal(woken, []string{"tw-released"}) {
+		t.Fatalf("%s to %v, want tw-released alone", SignalSlotFree, woken)
+	}
+}
+
+// The run the heal pass starts for a held card parked queued, whose run
+// died, asks for its slot before any session: the hold parks the card again
+// where it waits, no session starts, and no one is woken. The run waits
+// until the issue's close ends it.
+func TestARestartedRunOfAParkedHeldCardParksAgain(t *testing.T) {
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	held := heldCard("t1", "queued", at)
+	held.AdmittedAt, held.ResumedAt, held.QueueSince, held.QueueReason = &at, &at, &at, "on hold: out of the way"
+	store.tasks["t1"] = held
+	r := surgeRunner(store, surgeTree(1, nil))
+	h := newWorkflowHarness(t)
+	var asks []ResumeSlot
+	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+			s, err := r.AdmitResume(ctx, taskID, since)
+			asks = append(asks, s)
+			return s, err
+		})
+	h.onSessions(pushed("s1", "c1"))
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 0 || !slices.Equal(asks, []ResumeSlot{{}}) {
+		t.Fatalf("%d sessions, slot asks %+v; want none and one ask, not granted", len(h.sessions), asks)
+	}
+	if k := store.tasks["t1"]; k.Status != "queued" || !k.Held() || k.QueueReason != "on hold: out of the way" || !k.ResumedAt.Equal(at) {
+		t.Fatalf("t1 = %s, hold %+v, reason %q, resumed %v; want parked queued under its hold since %v", k.Status, k.Hold, k.QueueReason, k.ResumedAt, at)
+	}
+	if rec := r.cfg.Workflows.(*recordingWorkflows); len(rec.starts) != 0 || len(rec.signals) != 0 {
+		t.Fatalf("starts %v, signals %v; want none", rec.starts, rec.signals)
+	}
+}
+
 // The planner's session after a plan answer starts through the surge
 // bound: the card asks AdmitResume at each session start and the second
 // session waits until the ask is granted. A run from before the change
@@ -522,5 +597,130 @@ func TestSwitchFromWaitBeforeTheChangeAsksNothing(t *testing.T) {
 	}
 	if len(p.at) != 0 {
 		t.Fatalf("asks = %d, want none", len(p.at))
+	}
+}
+
+func heldCard(id, status string, since time.Time) Task {
+	t := parkedCard(id, status)
+	t.Hold = &CardHold{Reason: "out of the way", By: "sebastian", At: since}
+	return t
+}
+
+func TestTheBoardCountsNoHeldCardAhead(t *testing.T) {
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	held := heldCard("held", "queued", at)
+	held.ResumedAt = &at
+	fresh := parkedCard("fresh", "queued")
+	fresh.QueueReason = WorkBoundReason + "1 of 1"
+	tasks := []BoardTask{{Task: parkedCard("run", "running")}, {Task: held}, {Task: fresh}}
+	setSlotWaits(tasks)
+	if tasks[1].SlotWait != "" {
+		t.Errorf("the held card waits %q, want no slot wait", tasks[1].SlotWait)
+	}
+	if want := "waits for its turn to start, 0 ahead (1 running)"; tasks[2].SlotWait != want {
+		t.Errorf("the fresh card waits %q, want %q", tasks[2].SlotWait, want)
+	}
+}
+
+func TestReleasingAParkedHoldWakesTheCard(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	held := heldCard("a", "queued", at)
+	held.ResumedAt = &at
+	store.tasks["a"] = held
+	r := surgeRunner(store, surgeTree(1, nil))
+	if ok, err := r.ReleaseCardHold(ctx, "a"); err != nil || !ok {
+		t.Fatalf("ReleaseCardHold = %v, %v", ok, err)
+	}
+	if a, _, _ := store.Task(ctx, "a"); a.Hold != nil {
+		t.Fatalf("the hold stands: %+v", a.Hold)
+	}
+	if got := r.cfg.Workflows.(*recordingWorkflows).signals; fmt.Sprint(got) != "[a]" {
+		t.Fatalf("signals = %v, want one to a", got)
+	}
+}
+
+// releasedInThePark is a store whose park finds no hold: a human released
+// the card between AdmitResume's read of its hold and its park.
+type releasedInThePark struct{ *fakeStore }
+
+func (s releasedInThePark) SetResumeWait(ctx context.Context, id, reason string, now time.Time) (bool, error) {
+	if _, err := s.EndCardHold(ctx, id, ""); err != nil {
+		return false, err
+	}
+	return s.fakeStore.SetResumeWait(ctx, id, reason, now)
+}
+
+// A release between AdmitResume's read of the hold and its park leaves the
+// running card nothing to park for: the park moves nothing, and the card,
+// read again, passes today's admission and runs on in its slot. No card
+// takes the slot and no wake goes out.
+func TestAReleaseInsideTheParkLetsTheCardRunOn(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	store.tasks["a"] = heldCard("a", "running", at)
+	fresh := parkedCard("b", "queued")
+	fresh.IssueNumber = 2
+	store.tasks["b"] = fresh
+	r := surgeRunner(store, surgeTree(1, nil))
+	r.store = releasedInThePark{store}
+	if s, err := r.AdmitResume(ctx, "a", at); err != nil || !s.Granted {
+		t.Fatalf("AdmitResume = %+v, %v; want granted", s, err)
+	}
+	if a := store.tasks["a"]; a.Status != "running" || a.Hold != nil || a.ResumedAt != nil || a.QueueReason != "" {
+		t.Fatalf("a = %s, hold %+v, resumed %v, reason %q; want running with no hold and no wait", a.Status, a.Hold, a.ResumedAt, a.QueueReason)
+	}
+	if rec := r.cfg.Workflows.(*recordingWorkflows); len(rec.starts) != 0 || len(rec.signals) != 0 {
+		t.Fatalf("starts %v, signals %v; want none", rec.starts, rec.signals)
+	}
+}
+
+// A held card back from a human, an image or the approval gate held no
+// slot: it parks queued under its hold's line, and its issue's label
+// turns to state/queued.
+func TestAHeldCardBackFromAWaitParksWithItsLabel(t *testing.T) {
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct{ status, gate string }{{"waiting-human", ""}, {"waiting-image", ""}, {"in-review", GateApproval}} {
+		t.Run(c.status, func(t *testing.T) {
+			ctx := context.Background()
+			card := Task{ID: "t-c", Kind: "agent", Status: c.status, Gate: c.gate, Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7,
+				Hold: &CardHold{Reason: "out of the way", By: "sebastian", At: at}}
+			fj := &prForgejo{labels: map[int64][]string{7: {"agent", "state/" + c.status}}}
+			r, store, _ := newActivityRunner(t, card, fj)
+			if s, err := r.AdmitResume(ctx, "t-c", at); err != nil || s.Granted {
+				t.Fatalf("AdmitResume = %+v, %v; want not granted", s, err)
+			}
+			if k := store.tasks["t-c"]; k.Status != "queued" || k.QueueReason != "on hold: out of the way" || k.ResumedAt == nil || !k.ResumedAt.Equal(at) {
+				t.Fatalf("t-c = %s, reason %q, resumed %v; want queued under its hold since %v", k.Status, k.QueueReason, k.ResumedAt, at)
+			}
+			if got := fj.labels[7]; !slices.Equal(got, []string{"agent", "state/queued"}) {
+				t.Fatalf("labels = %v, want agent and state/queued", got)
+			}
+		})
+	}
+}
+
+func TestARecheckOfAParkedHoldWakesNoOne(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	store := newFakeStore()
+	held := heldCard("a", "queued", at)
+	held.ResumedAt = &at
+	held.AdmittedAt = &at
+	store.tasks["a"] = held
+	store.tasks["b"] = parkedCard("b", "queued")
+	r := surgeRunner(store, surgeTree(1, nil))
+	s, err := r.AdmitResume(ctx, "a", at)
+	if err != nil || s.Granted {
+		t.Fatalf("AdmitResume = %+v, %v; want not granted", s, err)
+	}
+	rec := r.cfg.Workflows.(*recordingWorkflows)
+	if len(rec.signals) != 0 || len(rec.starts) != 0 {
+		t.Fatalf("signals %v, starts %v; want none", rec.signals, rec.starts)
+	}
+	if a, _, _ := store.Task(ctx, "a"); a.QueueReason != "on hold: out of the way" {
+		t.Fatalf("reason = %q", a.QueueReason)
 	}
 }

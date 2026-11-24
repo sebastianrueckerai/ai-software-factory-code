@@ -1761,8 +1761,8 @@ func (s *PGStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment st
 	return owed, nil
 }
 
-// freezeFaceSQL writes face $2 on freeze card $1.
-const freezeFaceSQL = `UPDATE tasks SET objective = $2 WHERE id = $1 AND source = $3`
+// sourceFaceSQL writes face $2 on card $1 of source $3.
+const sourceFaceSQL = `UPDATE tasks SET objective = $2 WHERE id = $1 AND source = $3`
 
 // FaceFreezeCard writes face on freeze card taskID and info on the card's
 // newest ask of its own, the question_asked row the opened card reads, in
@@ -1773,7 +1773,7 @@ func (s *PGStore) FaceFreezeCard(ctx context.Context, taskID, face, info string)
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, freezeFaceSQL, taskID, face, SourceFreezeCard)
+	res, err := tx.ExecContext(ctx, sourceFaceSQL, taskID, face, SourceFreezeCard)
 	if err := oneRow(res, err, "freeze card "+taskID); err != nil {
 		return err
 	}
@@ -1791,7 +1791,7 @@ func (s *PGStore) AskFreezeCard(ctx context.Context, t Task, face string, ask Hu
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, freezeFaceSQL, t.ID, face, SourceFreezeCard)
+	res, err := tx.ExecContext(ctx, sourceFaceSQL, t.ID, face, SourceFreezeCard)
 	if err := oneRow(res, err, "freeze card "+t.ID); err != nil {
 		return err
 	}

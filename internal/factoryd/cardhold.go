@@ -12,12 +12,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// CardHold is a human's hold on a card that has not started: it gets no
-// work slot until a human releases it, or until its release card, any
-// card of its repository, ends done or merged. A release card that ends
-// failed or closed releases nothing, and the board warns of it. The
-// release card follows its work into a retry or a successor, as a
-// dependency edge does (takeOverEdges).
+// CardHold is a human's hold on a card: it gets no work slot until a
+// human releases it, or until its release card, any card of its
+// repository, ends done or merged. A release card that ends failed or
+// closed releases nothing, and the board warns of it. The release card
+// follows its work into a retry or a successor, as a dependency edge does
+// (takeOverEdges).
 type CardHold struct {
 	Reason  string
 	Release string // the release card's task id, "" for none
@@ -26,17 +26,28 @@ type CardHold struct {
 }
 
 // Held reports whether t's hold holds it: one stands and the card has not
-// started.
+// ended.
 func (t Task) Held() bool {
-	return t.Hold != nil && (t.Status == "queued" || t.Status == "waiting-deps")
+	return t.Hold != nil && !Final(t.Status)
 }
 
 // Holdable reports whether t may take a hold, as SetCardHold judges it
-// but for its dependencies: a bound agent card queued and never admitted
-// or resumed, or in waiting-deps.
+// but for its dependencies: a bound agent card queued, in waiting-deps or
+// running. A queued card that was admitted and never ran is not, and a
+// plan's own planning run takes none.
 func (t Task) Holdable() bool {
-	return t.Kind == "agent" && !t.Unbound() &&
-		(t.Status == "queued" && t.AdmittedAt == nil && t.ResumedAt == nil || t.Status == "waiting-deps")
+	if t.Kind != "agent" || t.Unbound() {
+		return false
+	}
+	switch t.Status {
+	case "waiting-deps":
+		return true
+	case "queued":
+		return t.AdmittedAt == nil && t.ResumedAt == nil || t.ResumedAt != nil && t.Track != policy.TrackPlan
+	case "running":
+		return t.Track != policy.TrackPlan
+	}
+	return false
 }
 
 // errHeld is SetAdmitted's refusal of a card a hold took after admit read
@@ -234,11 +245,52 @@ func cardHoldWait(ctx context.Context, store Store, t Task) (string, error) {
 	return "", nil
 }
 
+// HoldResult is a press of "Put on hold": Held, the card took the hold;
+// Stopped, its live session took the ask to stop.
+type HoldResult struct{ Held, Stopped bool }
+
+// HoldAskWait bounds how long a press waits for the live session to take
+// its ask: a session reads none while it pushes.
+const HoldAskWait = 10 * time.Minute
+
 // HoldCard puts card id on hold for by, a human, for reason, until a
-// human releases it or release ("" for none) ends done or merged. False:
-// the card has started or holds a work slot already.
-func (r *Runner) HoldCard(ctx context.Context, id, release, reason, by string) (bool, error) {
-	return r.store.SetCardHold(ctx, id, CardHold{Reason: reason, Release: release, By: by, At: r.Clock()})
+// human releases it or release ("" for none) ends done or merged. A
+// running card's live session is asked to stop, for up to HoldAskWait
+// however the press's own request ends; one between sessions, or one that
+// took no ask by then, is signalled (SignalHeld), so a wait that holds its
+// slot ends. Held false: the card is in no state to take a hold.
+func (r *Runner) HoldCard(ctx context.Context, id, release, reason, by string) (HoldResult, error) {
+	t, ok, err := r.store.Task(ctx, id)
+	if err != nil || !ok {
+		return HoldResult{}, err
+	}
+	h := CardHold{Reason: reason, Release: release, By: by, At: r.Clock()}
+	if held, err := r.store.SetCardHold(ctx, id, h); err != nil || !held {
+		return HoldResult{}, err
+	}
+	if t.Status != "running" {
+		return HoldResult{Held: true}, nil
+	}
+	ctx = context.WithoutCancel(ctx)
+	ask, cancel := context.WithTimeout(ctx, HoldAskWait)
+	defer cancel()
+	switch err := r.EscalateSession(ask, id, holdAsk(h)); {
+	case err == nil:
+		return HoldResult{Held: true, Stopped: true}, nil
+	case !errors.Is(err, ErrNoLiveSession) && !errors.Is(err, context.DeadlineExceeded):
+		return HoldResult{Held: true}, err
+	}
+	if r.cfg.Workflows != nil {
+		if err := r.cfg.Workflows.Signal(ctx, id, SignalHeld, TaskSignal{Author: by}); err != nil {
+			log.Printf("task %s: signal %s after its hold: %s", id, SignalHeld, maskedErr(err))
+		}
+	}
+	return HoldResult{Held: true}, nil
+}
+
+// holdAsk is the ask that stops the live session of a card held by h.
+func holdAsk(h CardHold) AgentAsk {
+	return AgentAsk{Kind: AskHold, Reason: "held by " + h.By + ": " + h.Reason}
 }
 
 // ReleaseCardHold ends card id's hold for a human and wakes the card: a
@@ -266,8 +318,8 @@ func (r *Runner) ReleaseCardHold(ctx context.Context, id string) (bool, error) {
 // heldFindings refuses revision next of the plan st judges when it drops
 // the key of a card a human holds, whoever asked for the replan: the
 // revision's restart would close the card, and only a human closes a held
-// card, on the opened card. A kept key holds the card, which never started, and
-// gives it the revision's entry for that key. Once the human closed it,
+// card, on the opened card. A kept key keeps the card, started or not, held,
+// and gives it the revision's entry for that key. Once the human closed it,
 // replanFindings asks for its key to be left out.
 func (r *Runner) heldFindings(ctx context.Context, st replanState, next Plan) ([]string, error) {
 	var found []string

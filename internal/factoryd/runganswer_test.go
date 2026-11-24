@@ -29,7 +29,7 @@ var wantReasonKinds = []string{
 	"agent_request_info", "plan_question", "plan_confirmation", "merge_approval",
 	"human_card", "other", "monitor_flag", "judgment_budget",
 	"policy_class", "red_main", "roll_held", "config_refused", "plan_criteria", "plan_held", "provider_freeze",
-	"goal_conflict", "spend_above_policy", "access_factory_lacks",
+	"platform_fault", "platform_deaths", "goal_conflict", "spend_above_policy", "access_factory_lacks",
 }
 
 // answerPart is schema's part named part, failing the test when the

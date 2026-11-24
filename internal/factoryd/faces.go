@@ -563,7 +563,7 @@ func openFindingTexts(f CaseFacts) []string {
 // live card's replan, more room, a word to its running session and its
 // end; a failed card's retry and its close; a plan at rest its
 // close, whose note waives the promises it leaves open; a held card's
-// release first, and the hold of a card that has not started, held or not; and on every
+// release first, and the hold of a card that takes one, held or not, with the words of a started card for one that runs or ran; and on every
 // card its brief, its colour and a thread.
 // The card's own replan says why it goes back, and a plan's card may take
 // the plan's merged cards off main first. Who may press which is the
@@ -579,11 +579,17 @@ func MoreOf(t Task, f Facts) []Answer {
 	case !Final(t.Status):
 		keys = []string{ActReplan, ActExtend, AnswerSteer, ActClose}
 	}
+	// a card that has run: every status but queued before its first
+	// session and waiting-deps, which a card leaves before it
+	started := ""
+	if t.Status == "queued" && t.ResumedAt != nil || slices.Contains([]string{"running", "in-review", "closing", "merged", "waiting-human", "waiting-poster", "waiting-image"}, t.Status) {
+		started = "/" + variantStarted
+	}
 	if t.Held() {
-		keys = append([]string{AnswerRelease}, keys...)
+		keys = append([]string{AnswerRelease + started}, keys...)
 	}
 	if t.Holdable() {
-		keys = append(keys, AnswerHold)
+		keys = append(keys, AnswerHold+started)
 	}
 	var out []Answer
 	for _, key := range append(keys, AnswerEditBrief, AnswerAccent, AnswerThread) {

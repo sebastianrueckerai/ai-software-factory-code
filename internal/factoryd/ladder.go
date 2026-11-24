@@ -45,9 +45,9 @@ type TripInput struct {
 	Kind     CaseKind
 	StateKey string
 	Extra    map[string]any
-	// Killed is the memory kill that ended the session before the stop,
-	// nil for none: the case's facts carry it.
-	Killed *SessionKill `json:",omitempty"`
+	// Death is the death record of the session before the stop, nil for
+	// none: the case's facts carry it.
+	Death *DeathRecord `json:",omitempty"`
 	// Model is the model the run's next session opens on, whose opening
 	// floor the facts weigh; "" from a run that reads no floor (the plan
 	// loop) or from before versionTripModel.
@@ -283,7 +283,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	f.Killed = in.Killed
+	f.Death = in.Death
 	c, cases, err := r.tripCase(ctx, t, f, in)
 	if err != nil {
 		return TripOutcome{}, err
@@ -1601,7 +1601,7 @@ func tripNext(c Case, reason string) string {
 		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
-	case CaseCheckinHuman, CasePolicyClass, CasePodNeverStarted, CaseProviderRefused,
+	case CaseCheckinHuman, CasePolicyClass, CasePodNeverStarted, CaseProviderRefused, CasePlatformFault,
 		CaseContentFilter, CaseAgentEscalate, CaseOther:
 		if no := noRoom(c, false, false); no != "" {
 			return no

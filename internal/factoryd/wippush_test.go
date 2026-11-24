@@ -120,6 +120,9 @@ func TestPushRuleRefusesAWorkflowDirChangeWithTheAction(t *testing.T) {
 		{name: "edit-under-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
 			os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte("gate: changed\n"), 0o644)
 		}},
+		{name: "the-gosec-script", wantRefuse: ".forgejo", agent: func(dir string) {
+			os.WriteFile(filepath.Join(dir, ".forgejo", "gosec.sh"), []byte("exit 0\n"), 0o644)
+		}},
 		{name: "case-variant-beside-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
 			os.MkdirAll(filepath.Join(dir, ".FORGEJO"), 0o755)
 			os.WriteFile(filepath.Join(dir, ".FORGEJO", "x.yml"), []byte("gate: true\n"), 0o644)

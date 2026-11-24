@@ -1,0 +1,166 @@
+package factoryd
+
+import (
+	"cmp"
+	"context"
+	"maps"
+	"slices"
+	"sync"
+	"time"
+)
+
+// fakeClusterStore is the ClusterStore in memory, with the semantics of
+// the Postgres one.
+type fakeClusterStore struct {
+	mu        sync.Mutex
+	nextID    int64
+	incidents []PlatformIncident
+	deaths    map[string]PodDeath
+}
+
+var _ ClusterStore = (*fakeClusterStore)(nil)
+
+func newFakeClusterStore() *fakeClusterStore {
+	return &fakeClusterStore{deaths: map[string]PodDeath{}}
+}
+
+func (f *fakeClusterStore) AddPlatformIncidents(_ context.Context, in []PlatformIncident) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	added := 0
+	for _, p := range in {
+		if i := slices.IndexFunc(f.incidents, func(q PlatformIncident) bool { return q.Key == p.Key }); i >= 0 {
+			if f.incidents[i].Until == nil && p.Until != nil {
+				until := *p.Until
+				f.incidents[i].Until = &until
+				added++
+			}
+			continue
+		}
+		f.nextID++
+		p.ID = f.nextID
+		f.incidents = append(f.incidents, cloneIncident(p))
+		added++
+	}
+	return added, nil
+}
+
+func (f *fakeClusterStore) matching(keep func(PlatformIncident) bool) []PlatformIncident {
+	var out []PlatformIncident
+	for _, p := range f.incidents {
+		if keep(p) {
+			out = append(out, p)
+		}
+	}
+	slices.SortFunc(out, func(a, b PlatformIncident) int {
+		return cmp.Or(a.At.Compare(b.At), cmp.Compare(a.ID, b.ID))
+	})
+	for i := range out {
+		out[i] = cloneIncident(out[i])
+	}
+	return out
+}
+
+func (f *fakeClusterStore) PlatformIncidents(_ context.Context, from, to time.Time, limit int) ([]PlatformIncident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.matching(func(p PlatformIncident) bool {
+		end := p.At
+		if p.Until != nil {
+			end = *p.Until
+		}
+		return !p.At.After(to) && !end.Before(from)
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeClusterStore) PodIncidents(_ context.Context, podUID string) ([]PlatformIncident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if podUID == "" {
+		return nil, nil
+	}
+	return f.matching(func(p PlatformIncident) bool { return p.PodUID == podUID }), nil
+}
+
+func (f *fakeClusterStore) PruneClusterFacts(_ context.Context, age time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cutoff := time.Now().Add(-age)
+	all := slices.Clone(f.incidents)
+	f.incidents = slices.DeleteFunc(f.incidents, func(p PlatformIncident) bool {
+		if p.Kind == IncidentNodeBoot && !slices.ContainsFunc(all, func(q PlatformIncident) bool {
+			return q.Kind == IncidentNodeBoot && q.Subject == p.Subject && (q.At.After(p.At) || q.At.Equal(p.At) && q.ID > p.ID)
+		}) {
+			return false
+		}
+		end := p.At
+		if p.Until != nil {
+			end = *p.Until
+		}
+		return end.Before(cutoff)
+	})
+	maps.DeleteFunc(f.deaths, func(_ string, d PodDeath) bool { return d.Kind != "session" && d.Record.At.Before(cutoff) })
+	return nil
+}
+
+func (f *fakeClusterStore) PutPodDeath(_ context.Context, d PodDeath) error {
+	key, err := d.Key()
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d.Record = cloneRecord(d.Record)
+	f.deaths[key] = d
+	return nil
+}
+
+func (f *fakeClusterStore) death(key string) (DeathRecord, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.deaths[key]
+	return cloneRecord(d.Record), ok, nil
+}
+
+func (f *fakeClusterStore) SessionDeath(_ context.Context, taskID, sessionID string) (DeathRecord, bool, error) {
+	return f.death("session/" + taskID + "/" + sessionID)
+}
+
+func (f *fakeClusterStore) CIDeath(_ context.Context, runner string) (DeathRecord, bool, error) {
+	return f.death("ci/" + runner)
+}
+
+func (f *fakeClusterStore) PlatformDeaths(_ context.Context, since time.Time) ([]PodDeath, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []PodDeath
+	for _, key := range slices.Sorted(maps.Keys(f.deaths)) {
+		d := f.deaths[key]
+		if d.Record.Class == DeathPlatform && !d.Record.At.Before(since) {
+			d.Record = cloneRecord(d.Record)
+			out = append(out, d)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b PodDeath) int { return b.Record.At.Compare(a.Record.At) })
+	return out, nil
+}
+
+// cloneIncident gives Detail the shape Postgres reads back: never nil.
+func cloneIncident(p PlatformIncident) PlatformIncident {
+	p.Detail = maps.Clone(p.Detail)
+	if p.Detail == nil {
+		p.Detail = map[string]any{}
+	}
+	return p
+}
+
+func cloneRecord(r DeathRecord) DeathRecord {
+	r.Restarts = slices.Clone(r.Restarts)
+	r.Events = slices.Clone(r.Events)
+	r.Lines = slices.Clone(r.Lines)
+	return r
+}

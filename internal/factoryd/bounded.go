@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -136,6 +137,7 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 		if err != nil {
 			return false, err
 		}
+		waiters = unheld(waiters)
 		if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound || len(waiters) > 0 {
 			reason := fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound)
 			if len(waiters) > 0 {
@@ -165,8 +167,17 @@ func (w BoundedWorkflows) surgeRoom(ctx context.Context, taskID string) (bool, e
 	return n < v.WorkInProgressOf(t.Repository)+v.SurgeOf(t.Repository), err
 }
 
+// unheld is the cards of ts that no hold holds: a held card waits for a
+// human or its release card, so it is ahead of no one.
+func unheld(ts []Task) []Task {
+	return slices.DeleteFunc(slices.Clone(ts), Task.Held)
+}
+
 // wakeResumed tells every card waiting queued to resume in repository that
 // a slot may be free; each asks AdmitResume again, which keeps their order.
+// A held card is woken only once its release card ended done or merged, so
+// that its AdmitResume ends the hold: a wake that changes nothing would
+// grow its run's history every heal pass.
 func wakeResumed(ctx context.Context, store Store, wf Workflows, repository string) {
 	if wf == nil {
 		return
@@ -177,6 +188,15 @@ func wakeResumed(ctx context.Context, store Store, wf Workflows, repository stri
 		return
 	}
 	for _, c := range waiters {
+		if c.Held() {
+			v, err := holdView(ctx, store, c)
+			if err != nil {
+				log.Printf("wake %s: the hold of %s: %s", repository, c.ID, maskedErr(err))
+			}
+			if err != nil || !v.Released {
+				continue
+			}
+		}
 		if err := wf.Signal(ctx, c.ID, SignalSlotFree, TaskSignal{}); err != nil {
 			log.Printf("wake %s: signal %s: %v", repository, c.ID, err)
 		}

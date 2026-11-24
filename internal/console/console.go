@@ -228,7 +228,12 @@ type Config struct {
 	// (factoryd.DeploymentHealthText); its refusals are
 	// *factoryd.HealthRefusal.
 	DeploymentHealth func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error)
-	Projects         Projects
+	// ClusterFacts reads what the cluster did to a session of card taskID,
+	// or, with no session, the incidents between since and until
+	// (factoryd.ClusterFactsReader.Text), leaving out the session's last command
+	// and its lines for the next session when hideCommand; its refusals are *factoryd.FactsRefusal.
+	ClusterFacts func(ctx context.Context, taskID, sessionID string, since, until time.Time, hideCommand bool) (string, error)
+	Projects     Projects
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).
 	Events Events
@@ -275,12 +280,12 @@ type Config struct {
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
 	GoCard func(ctx context.Context, taskID, by string) (int64, error)
-	// HoldCard puts card taskID, which has not started, on hold for by
-	// until a human releases it or release ("" for none) ends done or
-	// merged; ReleaseCardHold ends its hold and wakes it (factoryd's
-	// Runner.HoldCard and Runner.ReleaseCardHold). False: the card is in no
-	// state to take a hold, or holds none.
-	HoldCard        func(ctx context.Context, taskID, release, reason, by string) (bool, error)
+	// HoldCard puts card taskID on hold for by until a human releases it or
+	// release ("" for none) ends done or merged, and stops a running card's
+	// live session; ReleaseCardHold ends its hold and wakes it (factoryd's
+	// Runner.HoldCard and Runner.ReleaseCardHold). Not held, or false: the
+	// card is in no state to take a hold, or holds none.
+	HoldCard        func(ctx context.Context, taskID, release, reason, by string) (factoryd.HoldResult, error)
 	ReleaseCardHold func(ctx context.Context, taskID string) (bool, error)
 	// RequestImage puts by's ask in the chat of repository for tool, for
 	// need, on the tool card of image, else of one named after the tool
@@ -502,7 +507,8 @@ type Console struct {
 	// stops holds each chat thread's running turn that a member may stop
 	// (the chat-stop plan): the turn's cancel and who stopped it.
 	stops *stopGate
-	// clock is the status line's and the costs' time, which a test pins
+	// clock is the status line's, the costs' and the cards' clocks' time, which
+	// a test pins
 	clock func() time.Time
 	// refreshMu serializes token refreshes across requests: two concurrent
 	// requests presenting the same refresh token would both try to use it,
@@ -711,6 +717,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no Writes")
 	case cfg.DeploymentHealth == nil:
 		return nil, errors.New("console: no DeploymentHealth")
+	case cfg.ClusterFacts == nil:
+		return nil, errors.New("console: no ClusterFacts")
 	case cfg.AnswerPlan == nil:
 		return nil, errors.New("console: no AnswerPlan")
 	case cfg.AnswerPlanQuestions == nil:

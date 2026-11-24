@@ -81,16 +81,20 @@ card it depends on is done (or one ended closed, which its workflow takes
 to a person), and its project's month budget has headroom. Otherwise it
 stays queued, holding no slot.
 
-A human holds a card that has not started (queued and never admitted, or
-in `waiting-deps`) with "Put on hold", among the opened card's other
-actions, or the chat's `hold_card`: a
+A human holds a queued, `waiting-deps` or running card with "Put on
+hold", among the opened card's other actions, or the chat's `hold_card`: a
 reason the board shows, and an optional release card, any card of the
 same repository of any plan but not a plan itself, which is `done` once
 it files its cards, before their work lands. A release card that already
 waits on the held card, through its dependencies or another hold, is
 refused: both would wait for ever. The held card gets no work slot, and
 its dependency wait asks nothing, until the human releases it ("Release the hold",
-`release_hold`) or its release card is `merged` or `done`. The hold
+`release_hold`) or its release card is `merged` or `done`. On a running
+card the session stops now and keeps its work, and the card waits in
+Queued; after the release it goes on from its saved work, ahead of the
+cards that have not started. A card in review, closing or merged, and one
+that waits for an answer, takes no hold: it is refused with its state and
+the action that fits. The hold
 follows the release card's work into a retry or a successor, as a
 dependency edge does. A release card that ends `failed` or `closed`, or
 that a cut turns into a plan, releases nothing: the card stays held and
@@ -116,8 +120,10 @@ ask in a question of the revision that the human close it or press
 its key to be left out. The planner's record of the plan's cards shows
 each held card's hold.
 
-A held card owns no wait, so no queue or dependency flag opens a case on
-it. Rungs 0 to 2 neither start nor close it: the hold is a fact of its
+A held card parked in Queued or `waiting-deps` owns no wait, so no queue
+or dependency flag opens a case on it. A held card that still runs or is
+in review keeps every monitor flag, since it holds a slot and can hang.
+Rungs 0 to 2 neither start nor close a held card: the hold is a fact of its
 cases (`hold`, and `plan_hold` for a held card of the plan, read through
 the successors its cards were cut into), and the action table refuses
 their resume, continue, handover, successor, close and replan of the card
@@ -201,12 +207,14 @@ agent, may take one of the card's choices, though it may end the card
 condition gone, and never park it out of sight. A card rung 2 decides
 ends with no issue. Otherwise its face files the issue (a card that has
 one gets a comment), moves the card to `waiting-human` and pokes. The
-chat's escalation, the month cap's card, the judgment budget's card and
-the provider freeze's card ask a human at once: the escalation's filing is
-rung 2's step, and the cases of the two caps and of the freeze
-(`factory_month_cap`, `judgment_budget`, `provider_freeze`) are the kind
-table's exceptions, since no rung can run while a cap stands, and a
-provider's limit can hold the rungs' own model calls. The table names two
+chat's escalation, the month cap's card, the judgment budget's card, the
+provider freeze's card and the platform deaths' card ask a human at once:
+the escalation's filing is rung 2's step, and the cases of the two caps,
+of the freeze and of the platform deaths (`factory_month_cap`,
+`judgment_budget`, `provider_freeze`, `platform_deaths`) are the kind
+table's exceptions, since no rung can run while a cap stands, a
+provider's limit can hold the rungs' own model calls, and a fix of the
+nodes needs their admin key, which no agent holds. The table names two
 more exceptions: an agent's request to its issue's author
 (`agent_request_info`), whose answer alone the card's wait takes, and the
 ask of a plan whose card a human closed with promises open (`plan_held`),
@@ -217,6 +225,26 @@ not judged, and refuses any other, naming the case, its kind and that it
 climbs first. The monitor flags a case at the human that the door
 would refuse (`faced_unjudged`), and that flag's case is the human's,
 since only a commit fixes the door.
+
+The platform deaths' card (source `platform_deaths`) is factoryd's own,
+filed by a pass each minute when the platform ends 3 sessions, CI jobs or
+gate pods within 24 hours, across every card, by their death records
+(class `platform`). A start of the whole cluster, every node booting
+within 10 minutes of the others by the incident log's boots, as after
+factory-off and factory-on, explains the node restarts and the pods gone
+after factoryd's restart in the lives it spans: those deaths stay free
+for their cards and count no more toward this one. Its title is always the same, so a filing whose card
+row failed takes on its open issue at the next pass, on whichever of the
+deaths' repositories or the configuration repository holds it. Otherwise
+it files on the repository of the newest death that hit a card, or on the
+configuration repository when none did; a repository whose search fails
+is passed over. Its face counts the deaths and
+lists the newest 10, each with its day and time, the card or CI job it
+hit, its cause and its node. One card is open at a time: its face holds
+every death since 24 hours before its filing, a new death rewrites it
+wherever the card stands, and a death at or before the end of the last
+closed card counts no more. Its answers are Noted, which ends it, and Not
+now; no agent works it.
 
 ## Task workflow
 

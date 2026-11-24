@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/mock"
@@ -222,7 +223,7 @@ func TestAHoldWithNoReleaseCardEndsOnlyByAHumansRelease(t *testing.T) {
 
 // A hold lands on a card that has not started, and only there: queued and
 // never admitted, or in waiting-deps on a dependency that has not ended.
-func TestSetCardHoldTakesOnlyACardThatHasNotStarted(t *testing.T) {
+func TestSetCardHoldTakesAStartedCardButNotAnAdmittedOne(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	store := newFakeStore()
@@ -251,8 +252,8 @@ func TestSetCardHoldTakesOnlyACardThatHasNotStarted(t *testing.T) {
 			took = append(took, id)
 		}
 	}
-	if !slices.Equal(took, []string{"t-q", "t-noissue", "t-wd"}) {
-		t.Fatalf("held = %v, want the never-admitted queued cards, a half-filed one among them, and the one waiting on a live dependency", took)
+	if !slices.Equal(took, []string{"t-q", "t-res", "t-run", "t-noissue", "t-wd"}) {
+		t.Fatalf("held = %v, want the queued cards but the admitted one, the running card, a half-filed one among them, and the one waiting on a live dependency", took)
 	}
 }
 
@@ -579,9 +580,9 @@ func TestARestartIsRefusedOverAHeldSuccessor(t *testing.T) {
 	}
 }
 
-// heldPlanRig is fileRig with revision 1 filed and card redirects held,
-// the plan done.
-func heldPlanRig(t *testing.T) (*Runner, *fakeStore, Task, CardHold) {
+// heldPlanRig is fileRig with revision 1 filed and card redirects held
+// in status, the plan done.
+func heldPlanRig(t *testing.T, status string) (*Runner, *fakeStore, Task, CardHold) {
 	t.Helper()
 	ctx := context.Background()
 	r, store, _, _, _ := fileRig(t, testPlan())
@@ -591,6 +592,7 @@ func heldPlanRig(t *testing.T) (*Runner, *fakeStore, Task, CardHold) {
 		t.Fatalf("the children: %+v", ref)
 	}
 	cards := cardsByKey(t, store)
+	setStatus(store, cards["redirects"].ID, status)
 	hold := CardHold{Reason: "after the pg split", By: "sebastian"}
 	if ok, err := store.SetCardHold(ctx, cards["redirects"].ID, hold); err != nil || !ok {
 		t.Fatalf("SetCardHold = %v, %v", ok, err)
@@ -612,7 +614,7 @@ const dropsRedirects = "card redirects (#4) is on hold: after the pg split. Only
 // card keeps its hold under the entry the revision gives it.
 func TestARungsReplanKeepsAHeldCardsKey(t *testing.T) {
 	ctx := context.Background()
-	r, store, held, hold := heldPlanRig(t)
+	r, store, held, hold := heldPlanRig(t, "queued")
 	sibling := cardsByKey(t, store)["links-api"]
 	if _, err := r.Act(ctx, ActInput{TaskID: sibling.ID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan, Note: "links-api is too wide"}}); err != nil {
 		t.Fatalf("rung 2's replan of links-api: %v", err)
@@ -661,7 +663,7 @@ func TestARungsReplanKeepsAHeldCardsKey(t *testing.T) {
 // be left out; the revision that leaves it out files.
 func TestTheHumansReplanKeepsAHeldCardsKeyUntilTheyCloseIt(t *testing.T) {
 	ctx := context.Background()
-	r, store, held, _ := heldPlanRig(t)
+	r, store, held, _ := heldPlanRig(t, "queued")
 	if _, err := r.Replan(ctx, cardsByKey(t, store)["links-api"].ID, ReplanAsk{By: "sebastian", Comment: "links-api is too wide"}); err != nil {
 		t.Fatalf("the human's replan: %v", err)
 	}
@@ -691,6 +693,26 @@ func TestTheHumansReplanKeepsAHeldCardsKeyUntilTheyCloseIt(t *testing.T) {
 	}
 	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, dropped)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the revision that leaves the closed card out: %+v, %v", res, err)
+	}
+}
+
+// A hold stands on a card that runs: a revision that drops the key of a
+// held running card is refused as one that drops a queued held card's
+// key, and the card runs on, held.
+func TestARevisionThatDropsAHeldRunningCardsKeyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	r, store, held, hold := heldPlanRig(t, "running")
+	if _, err := r.Replan(ctx, cardsByKey(t, store)["links-api"].ID, ReplanAsk{By: "sebastian", Comment: "links-api is too wide"}); err != nil {
+		t.Fatalf("the human's replan: %v", err)
+	}
+	setStatus(store, "t-plan", "running")
+	dropped := testPlan()
+	dropped.Cards[2].Key, dropped.Cards[2].From = "redirects-2", "redirects"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, dropped)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
+		t.Fatalf("a revision that drops redirects: %+v, %v; want refused with %q", res, err, dropsRedirects)
+	}
+	if k := store.tasks[held.ID]; k.Status != "running" || !k.Held() || *k.Hold != hold {
+		t.Fatalf("redirects is %s with hold %+v, want running and held with %+v", k.Status, k.Hold, hold)
 	}
 }
 
@@ -731,4 +753,237 @@ func TestAPlanWhoseOnlyOpenCardIsHeldStaysOpen(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHoldableTakesStartedCards(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct {
+		name string
+		task Task
+		want bool
+	}{
+		{"running", Task{Status: "running"}, true},
+		{"queued and resumed", Task{Status: "queued", ResumedAt: &now}, true},
+		{"queued, never admitted", Task{Status: "queued"}, true},
+		{"queued, admitted and never run", Task{Status: "queued", AdmittedAt: &now}, false},
+		{"waiting-deps", Task{Status: "waiting-deps"}, true},
+		{"in-review", Task{Status: "in-review"}, false},
+		{"closing", Task{Status: "closing"}, false},
+		{"merged", Task{Status: "merged"}, false},
+		{"waiting-human", Task{Status: "waiting-human"}, false},
+		{"waiting-poster", Task{Status: "waiting-poster"}, false},
+		{"waiting-image", Task{Status: "waiting-image"}, false},
+		{"a plan's planning run", Task{Status: "running", Track: policy.TrackPlan}, false},
+		{"a plan's resumed wait", Task{Status: "queued", ResumedAt: &now, Track: policy.TrackPlan}, false},
+		{"an unbound running card", Task{Status: "running", Source: SourceRoll}, false},
+	} {
+		c.task.Kind, c.task.IssueNumber = "agent", 7
+		if c.task.Track == "" {
+			c.task.Track = policy.TrackDirect
+		}
+		if got := c.task.Holdable(); got != c.want {
+			t.Errorf("%s: Holdable = %t, want %t", c.name, got, c.want)
+		}
+	}
+}
+
+func TestHeldReadsEveryStatusThatIsNotFinal(t *testing.T) {
+	for status, want := range map[string]bool{"running": true, "in-review": true, "waiting-human": true, "closing": true, "done": false, "failed": false, "closed": false} {
+		if got := (Task{Status: status, Hold: &CardHold{Reason: "x"}}).Held(); got != want {
+			t.Errorf("%s: Held = %t, want %t", status, got, want)
+		}
+	}
+	if (Task{Status: "running"}).Held() {
+		t.Error("a card with no hold is held")
+	}
+}
+
+func TestNoRungStopsAHeldRunningCard(t *testing.T) {
+	ctx := context.Background()
+	r, _, _, _, _ := newRetryRig(t)
+	k := Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, IssueNumber: 9, Hold: &CardHold{Reason: "wait for the split", By: "sebastian"}}
+	hold, err := r.holdFact(ctx, k)
+	if err != nil || hold != "card #9 is on hold: wait for the split" {
+		t.Fatalf("holdFact = %q, %v; want the hold's line", hold, err)
+	}
+	f := CaseFacts{Hold: hold}
+	for rung := 0; rung <= 2; rung++ {
+		for _, action := range []string{ActResume, ActContinue, ActClose, ActReplan} {
+			if got := holdRefusal(f, rung, action, nil); !strings.HasPrefix(got, hold+". Only a human releases a held card") {
+				t.Errorf("rung %d's %s = %q, want the hold's refusal", rung, action, got)
+			}
+		}
+	}
+	for _, action := range []string{ActResume, ActContinue, ActClose, ActReplan} {
+		if got := holdRefusal(f, 3, action, nil); got != "" {
+			t.Errorf("rung 3's %s = %q, want none", action, got)
+		}
+	}
+}
+
+// Two presses a second apart while the session stops ask it once: the
+// second replaces the stored reason, and both answer that the session
+// stops.
+func TestASecondHoldPressSendsNoSecondAsk(t *testing.T) {
+	store := newFakeStore()
+	store.tasks["t-run"] = Task{ID: "t-run", Kind: "agent", Repository: "demo/app", Track: policy.TrackDirect, Status: "running", IssueNumber: 2062}
+	wf := &fakeWorkflows{}
+	at := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	r := &Runner{store: store, now: func() time.Time { return at }}
+	r.cfg.Workflows = wf
+	asks, end := r.liveSession("t-run", sessionWorker{session: "s1", holdStop: true})
+	var took []AgentAsk
+	stop, read := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(read)
+		for {
+			select {
+			case a := <-asks:
+				took = append(took, a)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	for _, reason := range []string{"out of the way", "out of the way until the split lands"} {
+		if got, err := r.HoldCard(t.Context(), "t-run", "", reason, "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
+			t.Fatalf("the press for %q = %+v, %v; want held and stopped", reason, got, err)
+		}
+		at = at.Add(time.Second)
+	}
+	end()
+	close(stop)
+	<-read
+	if want := []AgentAsk{{Kind: AskHold, Reason: "held by sebastian: out of the way"}}; !reflect.DeepEqual(took, want) {
+		t.Fatalf("the session took %+v, want the first press's ask alone", took)
+	}
+	if h := store.tasks["t-run"].Hold; h == nil || h.Reason != "out of the way until the split lands" || !h.At.Equal(time.Date(2026, 11, 21, 10, 0, 1, 0, time.UTC)) {
+		t.Fatalf("hold = %+v, want the second press's", h)
+	}
+	if len(wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none: the session stops", wf.signals)
+	}
+}
+
+// A running card with no live session is between sessions: the press
+// stores the hold and signals the card's run once, so a wait that holds
+// its slot ends. A card that is not running takes the hold alone, and a
+// card the store refuses takes nothing.
+func TestHoldCardBetweenSessionsSignalsHeld(t *testing.T) {
+	store := newFakeStore()
+	for _, k := range []Task{
+		{ID: "t-run", Status: "running", IssueNumber: 1},
+		{ID: "t-q", Status: "queued", IssueNumber: 2},
+		{ID: "t-rev", Status: "in-review", IssueNumber: 3},
+	} {
+		k.Kind, k.Repository, k.Track = "agent", "demo/app", policy.TrackDirect
+		store.tasks[k.ID] = k
+	}
+	wf := &fakeWorkflows{}
+	r := &Runner{store: store}
+	r.cfg.Workflows = wf
+	for _, c := range []struct {
+		id   string
+		want HoldResult
+	}{{"t-run", HoldResult{Held: true}}, {"t-q", HoldResult{Held: true}}, {"t-rev", HoldResult{}}} {
+		if got, err := r.HoldCard(t.Context(), c.id, "", "out of the way", "sebastian"); err != nil || got != c.want {
+			t.Errorf("the press on %s = %+v, %v; want %+v", c.id, got, err, c.want)
+		}
+	}
+	if want := []string{"t-run held sebastian #0: "}; !slices.Equal(wf.signals, want) {
+		t.Fatalf("signals = %q, want %q", wf.signals, want)
+	}
+}
+
+// A press outlives its request: a human who reloads the page while the
+// session pushes, reading no ask, does not take the stop back, and the
+// session takes the ask 5 minutes on. A session that reads no ask in 10
+// minutes is asked no more: the press frees the session's one hold ask,
+// so the next press asks again, and signals the card as one between
+// sessions. The session ends at 11 minutes, so a press with no bound
+// answers then.
+func TestAHoldPressOutlivesItsRequestForTenMinutes(t *testing.T) {
+	rig := func() (*Runner, *fakeWorkflows, <-chan AgentAsk, func()) {
+		store := newFakeStore()
+		store.tasks["t-run"] = Task{ID: "t-run", Kind: "agent", Repository: "demo/app", Track: policy.TrackDirect, Status: "running", IssueNumber: 2062}
+		wf := &fakeWorkflows{}
+		r := &Runner{store: store}
+		r.cfg.Workflows = wf
+		asks, end := r.liveSession("t-run", sessionWorker{session: "s1", holdStop: true})
+		return r, wf, asks, end
+	}
+	// read is the session's next ask, taken after wait; nothing once stop
+	// closes
+	read := func(asks <-chan AgentAsk, wait time.Duration, stop <-chan struct{}) <-chan AgentAsk {
+		took := make(chan AgentAsk, 1)
+		go func() {
+			select {
+			case <-time.After(wait):
+			case <-stop:
+				return
+			}
+			select {
+			case a := <-asks:
+				took <- a
+			case <-stop:
+			}
+		}()
+		return took
+	}
+	t.Run("a cancelled press", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r, wf, asks, end := rig()
+			stop := make(chan struct{})
+			defer close(stop)
+			defer end()
+			took := read(asks, 5*time.Minute, stop)
+			gone, cancel := context.WithCancel(t.Context())
+			cancel()
+			start := time.Now()
+			if got, err := r.HoldCard(gone, "t-run", "", "out of the way", "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
+				t.Fatalf("the cancelled press = %+v, %v; want held and stopped", got, err)
+			}
+			if waited := time.Since(start); waited != 5*time.Minute {
+				t.Fatalf("the press waited %v, want the session's 5 minutes", waited)
+			}
+			if a, want := <-took, (AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way"}); !reflect.DeepEqual(a, want) {
+				t.Fatalf("the session took %+v, want %+v", a, want)
+			}
+			if len(wf.signals) != 0 {
+				t.Fatalf("signals = %q, want none: the session stops", wf.signals)
+			}
+		})
+	})
+	t.Run("a session that reads no ask", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r, wf, asks, end := rig()
+			stop := make(chan struct{})
+			defer close(stop)
+			defer end()
+			go func() {
+				select {
+				case <-time.After(11 * time.Minute):
+					end()
+				case <-stop:
+				}
+			}()
+			start := time.Now()
+			if got, err := r.HoldCard(t.Context(), "t-run", "", "out of the way", "sebastian"); err != nil || got != (HoldResult{Held: true}) {
+				t.Fatalf("the press = %+v, %v; want held, not stopped", got, err)
+			}
+			if waited := time.Since(start); waited != 10*time.Minute {
+				t.Fatalf("the press waited %v, want 10 minutes", waited)
+			}
+			if want := []string{"t-run held sebastian #0: "}; !slices.Equal(wf.signals, want) {
+				t.Fatalf("signals = %q, want %q", wf.signals, want)
+			}
+			took := read(asks, 0, stop)
+			if got, err := r.HoldCard(t.Context(), "t-run", "", "out of the way until the split lands", "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
+				t.Fatalf("the next press = %+v, %v; want held and stopped", got, err)
+			}
+			if a, want := <-took, (AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way until the split lands"}); !reflect.DeepEqual(a, want) {
+				t.Fatalf("the session took %+v, want %+v", a, want)
+			}
+		})
+	})
 }

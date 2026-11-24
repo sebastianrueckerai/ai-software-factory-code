@@ -106,6 +106,11 @@ type RunnerConfig struct {
 	// all. nil = every attempt is funded; the per-call hold still guards
 	// the money.
 	Prices Pricer
+	// Cluster holds the platform's incidents and the pods' death records,
+	// Kernel reads the nodes' kernel kill lines: the death of a session's
+	// pod reads both. nil skips its reads.
+	Cluster ClusterStore
+	Kernel  KernelSource
 }
 
 // Pricer is an alias's worst-case price, the figure the gateway's hold
@@ -179,6 +184,9 @@ type Runner struct {
 	// its poll with the checks timeout
 	checksMargin time.Duration
 	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
+	deathWait    time.Duration // deathWait; a test shortens it
+	ciDeathWait  time.Duration // ciRecordWait; a test shortens it
+	ciDeathPoll  time.Duration // ciRecordPoll; a test shortens it
 	tick         time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
 	// container may wait with a configuration error (configErrorGrace);
@@ -261,17 +269,18 @@ type liveSession struct {
 	// basics records that the session was given the factory basics on its
 	// first human-sourced message.
 	basics bool
-	// replan: a replan ask is on its way to the session or was taken.
-	replan bool
+	// replan, hold: an ask of that kind is on its way to the session or
+	// was taken.
+	replan, hold bool
 }
 
 // sessionWorker is a running session's pod and the bearer of its worker's
 // message endpoint; report marks a report session, whose card restarts on
-// no image, and cuttable a session whose card the planner can cut
-// (cuttable).
+// no image, cuttable a session whose card the planner can cut (cuttable),
+// and holdStop one whose run takes a held stop (SessionInput.HoldStop).
 type sessionWorker struct {
-	session, ns, pod, token string
-	report, cuttable        bool
+	session, ns, pod, token    string
+	report, cuttable, holdStop bool
 }
 
 // ErrNoLiveSession: the task has no session running in this factoryd.
@@ -310,19 +319,32 @@ var ErrNoCut = errors.New("this card cannot be cut: finish it as it is, or escal
 // answers ErrNoLiveSession, a report session's request_tool
 // ErrNoImageWait, and a cut of a session that cannot be cut ErrNoCut. A
 // session takes one replan ask: a later one answers errReplanAsked at
-// once.
+// once. It takes one hold ask, and only when its run takes a held stop
+// (SessionInput.HoldStop): a later one answers nil at once, as the session
+// stops for the first, and a session without it answers ErrNoLiveSession,
+// as a card between sessions does.
 func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error {
-	replan := ask.Kind == AskReplan
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
-	asked := ok && replan && ls.replan
-	if ok && replan {
-		ls.replan = true
+	ok = ok && (ask.Kind != AskHold || ls.worker.holdStop)
+	// once is the session's flag of its one ask of this kind
+	var once *bool
+	switch {
+	case ok && ask.Kind == AskReplan:
+		once = &ls.replan
+	case ok && ask.Kind == AskHold:
+		once = &ls.hold
+	}
+	asked := once != nil && *once
+	if once != nil {
+		*once = true
 	}
 	r.liveMu.Unlock()
 	switch {
 	case !ok:
 		return ErrNoLiveSession
+	case asked && ask.Kind == AskHold:
+		return nil
 	case asked:
 		return errReplanAsked
 	case ask.Kind == AskTool && ls.worker.report:
@@ -336,13 +358,42 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 	case <-ls.done:
 		return ErrNoLiveSession
 	case <-ctx.Done():
-		if replan {
+		if once != nil {
 			r.liveMu.Lock()
-			ls.replan = false
+			*once = false
 			r.liveMu.Unlock()
 		}
 		return ctx.Err()
 	}
+}
+
+// heldAtStart is the hold ask of card t's session s as it registers for
+// asks: a press during its start check-in found no session to ask. It
+// takes the session's one hold ask, so a press that races it asks
+// nothing; false when s takes no held stop, no hold stands, or a press's
+// ask is on its way.
+func (r *Runner) heldAtStart(ctx context.Context, t Task, s sessionSpec) (AgentAsk, bool) {
+	if !s.holdStop {
+		return AgentAsk{}, false
+	}
+	cur, ok, err := r.store.Task(ctx, t.ID)
+	line := ""
+	if err == nil && ok {
+		line, err = cardHoldWait(ctx, r.store, cur)
+	}
+	if err != nil {
+		log.Printf("task %s: session %s: read the card's hold: %s", t.ID, s.id, r.scrub(err.Error()))
+	}
+	if line == "" {
+		return AgentAsk{}, false
+	}
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	if ls, ok := r.live[t.ID]; ok && ls.worker.session == s.id && !ls.hold {
+		ls.hold = true
+		return holdAsk(*cur.Hold), true
+	}
+	return AgentAsk{}, false
 }
 
 // AdmitAsk passes an agent's escalation on card t through the filing
@@ -511,7 +562,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		Checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
-		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
+		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap, deathWait: deathWait, ciDeathWait: ciRecordWait, ciDeathPoll: ciRecordPoll,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
@@ -692,6 +743,8 @@ type sessionSpec struct {
 	// clone, each file the row's code: an integration or delta card's
 	// alone
 	proofs []harness.ProofFile
+	// holdStop is SessionInput.HoldStop
+	holdStop bool
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -716,34 +769,13 @@ type sessionOutcome struct {
 	overHold *OverHoldCall   // the session's newest call booked beyond its hold
 	reads    []string        // the paths a report session read
 	checkIn  *CheckInOutcome // the check-in that ran at the session's start
-	killed   *SessionKill    // the sandbox killed the worker for its memory
+	death    *DeathRecord    // how the pod ended: read when it ended without a result or on a stop factoryd did not send
 	// superseded: another attempt holds the session's row, so this one's
 	// cleanup left the pod, the namespace and the tokens alone
 	superseded bool
 	// overBound names where finished work an end push the line bound
 	// refused was shipped, for the next session
 	overBound string
-}
-
-// SessionKill is a session the sandbox killed for its memory: the kill as
-// the kubelet reported it and the last command the session ran, the one it
-// was most likely killed in.
-type SessionKill struct {
-	Reason    string `json:"reason"`
-	ExitCode  int32  `json:"exit_code"`
-	Container string `json:"container"`
-	Command   string `json:"command,omitempty"`
-}
-
-// killOf is the memory kill d reports, nil for a pod that ended another way.
-// command is the last command the session ran.
-func killOf(d PodDiagnosis, command string) *SessionKill {
-	for _, c := range d.Containers {
-		if c.State == "terminated" && c.Reason == "OOMKilled" {
-			return &SessionKill{Reason: c.Reason, ExitCode: c.ExitCode, Container: c.Name, Command: command}
-		}
-	}
-	return nil
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -846,6 +878,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, err
 		}
 	}
+	// the session's start, its pod's place and whether a factoryd before
+	// this one sent the pod its stop, which the pod's death reads
+	started, uid, node, boot, stoppedBefore := row.StartedAt, "", "", "", false
+	if live != nil {
+		started, uid, node, boot, stoppedBefore = live.StartedAt, live.PodUID, live.Node, live.BootID, live.StoppingAt != nil
+	}
 	defer r.trackPod(t.ID, ns, podName)()
 	// detached: factoryd is stopping and the pod runs on for the next
 	// factoryd's retry of the activity; every other end deletes the pod
@@ -884,7 +922,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// The pod must leave Pending before its log endpoint is useful; a first
 	// image pull can take minutes, but never past the session deadline.
 	wait := min(10*time.Minute, time.Until(deadline))
-	if err := r.awaitPodStart(ctx, ns, podName, wait, workerStop); err != nil {
+	pod, err := r.awaitPodStart(ctx, ns, podName, wait, workerStop)
+	if err != nil {
 		if errors.Is(err, errWorkerStop) {
 			detached = true
 			return out, err
@@ -894,6 +933,22 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			errors.As(err, &out.pending)
 		}
 		return out, nil
+	}
+	// the pod's UID and node are known once it is scheduled: a row a
+	// factoryd that detached from a Pending pod left names neither
+	if uid == "" {
+		uid, node = pod.UID, pod.Node
+		if node != "" {
+			if n, err := r.kube.NodeState(ctx, node); err != nil {
+				log.Printf("task %s: session %s: read the boot of node %s: %v", t.ID, s.id, node, err)
+			} else {
+				boot = n.BootID
+			}
+		}
+		if err := r.store.SetLiveSessionPod(ctx, t.ID, s.owner, uid, node, boot); err != nil {
+			log.Printf("task %s: session %s: record the pod's place: %s", t.ID, s.id, r.scrub(err.Error()))
+		}
+		row.PodUID, row.Node, row.BootID = uid, node, boot
 	}
 	progress(0)
 
@@ -963,6 +1018,32 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// podStopped is when stop() asked the pod to end: the grace the worker
 	// has to ship its work runs from then
 	var podStopped atomic.Int64
+	// factoryStopped: this factoryd or the one before it sent the pod its
+	// stop
+	factoryStopped := func() bool { return stoppedBefore || podStopped.Load() != 0 }
+	digest := newDigestBuilder(time.Now())
+	// deathNow reads how the pod ended, or is ending when live. A result
+	// the worker sent, but a stop factoryd did not send, is its own end; a
+	// stop this factoryd sent is for a decision it holds.
+	deathNow := func(live bool) DeathRecord {
+		stopped := factoryStopped()
+		reported := out.result != nil && (!out.result.Stopped || stopped)
+		return r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
+			stoppedByFactory: stopped, live: live, reported: reported, decided: podStopped.Load() != 0, lastCommand: r.scrub(digest.lastCommand())})
+	}
+	keepDeath := func(death DeathRecord) {
+		out.death = &death
+		log.Printf("task %s: session %s: the pod ended: %s (%s, %s)", t.ID, s.id, death.Short(), death.Class, death.Rule)
+	}
+	// every other end that delivers neither a push nor a report reads the
+	// pod's death before the pod goes, from the end's evidence alone, once
+	// the over-bound push settled the last push its line names
+	defer func() {
+		delivered := out.commit != "" || s.report != "" && out.result != nil && out.result.Success
+		if err == nil && out.death == nil && !delivered {
+			keepDeath(deathNow(true))
+		}
+	}()
 	defer func() {
 		out.model, out.reads = s.model, sup.Reads()
 		// an over-bound push under way ends before the outcome is read, at
@@ -1000,7 +1081,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	watch.added, watch.budget = s.added, s.budget
-	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
 	var messages []string
 
@@ -1095,16 +1175,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	lines := followed.lines
 	// ended says why the log ended without a result, plain the generic
 	// words: how the pod ended when its diagnosis says, else the log's
-	// own error
+	// own error. A failed container's own message goes to factoryd's log
+	// alone, scrubbed, for the human.
 	ended := func(plain string) string {
+		how := ""
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
-			last := r.scrub(digest.lastCommand())
-			if out.killed = killOf(d, last); out.killed != nil {
-				log.Printf("task %s: session %s: the sandbox killed %s for its memory in %q", t.ID, s.id, out.killed.Container, last)
+			how = exitedHow(plain, d)
+			for _, c := range d.Containers {
+				if c.failed() && c.Message != "" {
+					log.Printf("task %s: session %s: container %s: %s", t.ID, s.id, c.Name, oneLine(r.scrub(c.Message)))
+				}
 			}
-			if how := exitedHow(plain, d); how != "" {
-				return how
-			}
+		}
+		keepDeath(deathNow(false))
+		if how != "" {
+			return how
 		}
 		if err := followed.err(); err != nil {
 			return err.Error()
@@ -1158,24 +1243,38 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		events++
 		return env.Event, false
 	}
-	// stop asks the worker to end (SIGTERM through the pod's deletion) and
-	// reads on until it has pushed its work in progress and reported, or
-	// its grace period is over.
 	// the agent's escalate reaches the session here until it stops
-	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s)})
+	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s), holdStop: s.holdStop})
 	defer unregister()
-	stop := func(trip *Trip) {
+	// halt is the stop without its wait: the stop written to the session's
+	// row, the trip abandoned and the pod deleted; false when the session
+	// is another attempt's
+	halt := func(trip *Trip) bool {
 		// a stopping session takes no escalation: the gateway tells the
 		// agent it did not arrive
 		unregister()
 		if !r.holds(ctx, t.ID, s.owner) {
 			out.superseded = true
-			return
+			return false
 		}
-		podStopped.CompareAndSwap(0, time.Now().UnixNano())
+		if now := time.Now(); podStopped.CompareAndSwap(0, now.UnixNano()) {
+			// a factoryd that dies inside the stop leaves it to the next one
+			if err := r.store.SetLiveSessionStopping(ctx, t.ID, s.owner, now); err != nil {
+				log.Printf("task %s: session %s: record the stop: %s", t.ID, s.id, r.scrub(err.Error()))
+			}
+		}
 		out.trip = r.abandon(recorder, trip)
 		if err := r.kube.DeletePod(ctx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: stop pod %s: %v", t.ID, podName, err)
+		}
+		return true
+	}
+	// stop asks the worker to end (SIGTERM through the pod's deletion) and
+	// reads on until it has pushed its work in progress and reported, or
+	// its grace period is over.
+	stop := func(trip *Trip) {
+		if !halt(trip) {
+			return
 		}
 		grace := r.stopWait
 		if !stopAt.IsZero() {
@@ -1243,6 +1342,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return true, errSuperseded
 			}
 			return true, ctx.Err()
+		}
+		if trip.Kind == TripNoProgress {
+			// a session the platform ended makes no progress: it ends at
+			// once, with no check-in, and without the stop's wait for a log
+			// a lost node may never close
+			if death := deathNow(true); death.Class == DeathPlatform {
+				if !halt(trip) {
+					return true, errSuperseded
+				}
+				out.noResult = "no progress: " + death.Short()
+				keepDeath(death)
+				return true, ctx.Err()
+			}
 		}
 		// the agent's cut during the conversation does not cut it: the
 		// answer stands, and the cut is the next trip of a session that runs
@@ -1446,6 +1558,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return true, ctx.Err()
 	}
 
+	if ask, held := r.heldAtStart(ctx, t, s); held {
+		if end, err := onTrip(sup.AgentAsk(ask)); end {
+			return out, err
+		}
+	}
 	tick := time.NewTicker(r.supervisionTick(supCfg))
 	defer tick.Stop()
 	for {
@@ -1493,6 +1610,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			ev, done := read(line)
 			if done {
+				// a stop factoryd did not send is the cluster's SIGTERM
+				if out.result.Stopped && !factoryStopped() {
+					keepDeath(deathNow(false))
+				}
 				return out, retry
 			}
 			if ev == nil {
@@ -2035,6 +2156,11 @@ type runnerTools struct {
 	ask            *CheckInAsk
 }
 
+// clusterFacts is the reader of cluster_facts over the runner's stores.
+func (r *Runner) clusterFacts() ClusterFactsReader {
+	return ClusterFactsReader{Store: r.cfg.Cluster, Live: r.store, Kube: r.kube}
+}
+
 func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	switch name {
 	case "transcript_search":
@@ -2101,6 +2227,13 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 			return "", false, err
 		}
 		out, cut := cutToolOutput(string(b))
+		return out, cut, nil
+	case "cluster_facts":
+		out, err := cardClusterFacts(ctx, p.r.clusterFacts(), p.taskID, p.ask.ParentSession, args, p.r.Clock())
+		if err != nil {
+			return "", false, err
+		}
+		out, cut := cutToolOutput(out)
 		return out, cut, nil
 	}
 	return p.post(ctx, name, args)
@@ -2262,8 +2395,8 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 		detail["session"] = s.id
 		r.record(ctx, t.ID, "checkin", detail)
 	}
-	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripAgentCut || trip.Kind == TripCheckIn || trip.Kind == TripReplan {
-		return // the agent's ask (its case is its record; an information request has its alert), a person's replan, or no detector
+	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripAgentCut || trip.Kind == TripCheckIn || trip.Kind == TripReplan || trip.Kind == TripHold {
+		return // the agent's ask (its case is its record; an information request has its alert), a person's replan, a human's hold, or no detector
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "checkin",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}
@@ -2308,14 +2441,14 @@ func (r *Runner) abandon(recorder *SessionRecorder, trip *Trip) *Trip {
 	return trip
 }
 
-// awaitPodStart waits for the pod to leave Pending. A container waiting
-// on a cause no wait removes ends it with a *startFailure: at once, or,
-// for a configuration error, once the same container has waited with it
-// for r.configGrace, since the kubelet's view of a secret written just
-// before the pod can lag. factoryd stopping ends it with errWorkerStop
-// (the retry creates the pod anew); a timeout is a *podPending, which says
-// what the pod waits on.
-func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) error {
+// awaitPodStart waits for the pod to leave Pending and returns the pod as
+// it read it then. A container waiting on a cause no wait removes ends it
+// with a *startFailure: at once, or, for a configuration error, once the
+// same container has waited with it for r.configGrace, since the kubelet's
+// view of a secret written just before the pod can lag. factoryd stopping
+// ends it with errWorkerStop (the retry creates the pod anew); a timeout is
+// a *podPending, which says what the pod waits on.
+func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) (PodDiagnosis, error) {
 	deadline := time.Now().Add(timeout)
 	// configSince is when each container's configuration error began
 	configSince := map[string]time.Time{}
@@ -2323,10 +2456,10 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 	for now := time.Now(); now.Before(deadline); now = time.Now() {
 		d, err := r.kube.PodDiagnosis(ctx, ns, podName)
 		if err == nil && d.Phase != "" && d.Phase != "Pending" {
-			return nil
+			return d, nil
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
+			return PodDiagnosis{}, err
 		}
 		if err == nil {
 			last = d
@@ -2345,18 +2478,18 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 				delete(configSince, c.Name)
 			}
 			if step != "" {
-				return &startFailure{step: step, text: "start failed: " + step + ": " + c.waiting()}
+				return PodDiagnosis{}, &startFailure{step: step, text: "start failed: " + step + ": " + c.waiting()}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return PodDiagnosis{}, ctx.Err()
 		case <-workerStop:
-			return errWorkerStop
+			return PodDiagnosis{}, errWorkerStop
 		case <-time.After(min(r.startPoll, time.Until(deadline))):
 		}
 	}
-	return &podPending{pod: podName, after: timeout, on: waitsOn(last)}
+	return PodDiagnosis{}, &podPending{pod: podName, after: timeout, on: waitsOn(last)}
 }
 
 // podPending is a pod still Pending when its start's wait ran out: on is
@@ -2402,17 +2535,15 @@ func waitsOn(d PodDiagnosis) string {
 // exitedHow says how a pod ended without a result, plain the generic
 // words: its eviction, or plain and the first container that ended in
 // failure, init containers first; "" when its diagnosis says no more.
+// No message is quoted: a container's is the tail of its log, and the
+// death record's class line names an eviction's resource and limit.
 func exitedHow(plain string, d PodDiagnosis) string {
 	if d.Reason == "Evicted" {
-		return "evicted: " + d.Message
+		return "evicted"
 	}
 	for _, c := range d.Containers {
-		if c.State == "terminated" && (c.ExitCode != 0 || c.Reason != "Completed") {
-			s := fmt.Sprintf("%s: container %s terminated with %s (exit code %d)", plain, c.Name, c.Reason, c.ExitCode)
-			if c.Message != "" {
-				s += ": " + c.Message
-			}
-			return s
+		if c.failed() {
+			return fmt.Sprintf("%s: container %s terminated with %s (exit code %d)", plain, c.Name, c.Reason, c.ExitCode)
 		}
 	}
 	return ""

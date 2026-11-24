@@ -496,7 +496,7 @@ var (
 	// are every tool the policy names.
 	readTools = []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
 		"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
-		"alerts", "deployment_health", "resources", "settings", "policy", "project_images", "read_doc", "show_doc", "routines",
+		"alerts", "deployment_health", "cluster_facts", "resources", "settings", "policy", "project_images", "read_doc", "show_doc", "routines",
 		"notes_read", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card",
 		"set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}
 	removedTools = []string{"move_card", "start_plan", "accept_plan", "reject_plan"}

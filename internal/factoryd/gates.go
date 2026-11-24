@@ -977,25 +977,31 @@ func (r *Runner) reproSandbox(ctx context.Context, t *Task, repo Repo) (done fun
 // history (the base) when given. A sandbox that cannot start is a
 // *startFailure.
 func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, at string) (harness.Repro, error) {
-	var rep harness.Repro
-	err := r.runnerPod(ctx, t, r.reproPodSpec(t, repo, ref, commit, at), func(ns, podName string) error {
-		var err error
-		rep, err = r.readRepro(ctx, ns, podName, t.ID)
-		return err
-	})
-	return rep, err
+	return r.reproPod(ctx, t, r.reproPodSpec(t, repo, ref, commit, at))
 }
 
 // runArgv runs argv, no shell, in one sandbox pod of the task's namespace
 // as runRepro runs the reproduction command.
 func (r *Runner) runArgv(ctx context.Context, t Task, repo Repo, ref, commit, at string, argv []string, overlay string) (harness.Repro, error) {
+	return r.reproPod(ctx, t, r.argvPodSpec(t, repo, ref, commit, at, argv, overlay))
+}
+
+// reproPod runs the reproduction pod of spec to its report. A pod that
+// ended before it says so, naming the platform when it ended the pod.
+func (r *Runner) reproPod(ctx context.Context, t Task, spec map[string]any) (harness.Repro, error) {
 	var rep harness.Repro
-	err := r.runnerPod(ctx, t, r.argvPodSpec(t, repo, ref, commit, at, argv, overlay), func(ns, podName string) error {
+	err := r.runnerPod(ctx, t, spec, func(ns, podName string) error {
 		var err error
 		rep, err = r.readRepro(ctx, ns, podName, t.ID)
 		return err
 	})
-	return rep, err
+	if !errors.Is(err, errLogEnded) {
+		return rep, err
+	}
+	if cause := endCause(err); cause != "" {
+		return rep, errors.New("the platform ended the reproduction pod (" + cause + ") before it reported")
+	}
+	return rep, errors.New("the reproduction pod exited without a report")
 }
 
 // proofsBudget is the proofs pod's run budget, from the worker's start
@@ -1056,6 +1062,9 @@ func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, 
 	}
 	if ended {
 		runErr = proofsEndedEarly
+		if cause := endCause(err); cause != "" {
+			runErr = "the platform ended the proofs pod (" + cause + ") before it reported this entry"
+		}
 	}
 	out := make(map[string]proofOutcome, len(entries))
 	var unreached []string
@@ -1161,17 +1170,58 @@ func wavesSince(began time.Time, call time.Duration) int {
 const podStartWait = 10 * time.Minute
 
 // runnerPod creates the runner pod of spec in the task's namespace, awaits
-// its start and hands it to read.
+// its start and hands it to read. A pod whose log ended before its report
+// has its death read and stored; a platform death wraps read's error in a
+// *platformEnd.
 func (r *Runner) runnerPod(ctx context.Context, t Task, spec map[string]any, read func(ns, podName string) error) error {
 	ns, podName := r.agentNamespace(t.ID), "repro-"+strings.TrimPrefix(newID("s-"), "s-")
+	created := time.Now()
 	if err := r.kube.CreatePod(ctx, ns, podName, spec); err != nil {
 		return fmt.Errorf("create pod: %w", err)
 	}
 	defer r.trackPod(t.ID, ns, podName)()
-	if err := r.awaitPodStart(ctx, ns, podName, podStartWait, nil); err != nil {
+	pod, err := r.awaitPodStart(ctx, ns, podName, podStartWait, nil)
+	if err != nil {
 		return err
 	}
-	return read(ns, podName)
+	err = read(ns, podName)
+	if !errors.Is(err, errLogEnded) || ctx.Err() != nil {
+		return err
+	}
+	started := pod.StartedAt
+	if started.IsZero() {
+		started = created
+	}
+	death := deathReader{kube: r.kube, cluster: r.cfg.Cluster, kernel: r.cfg.Kernel, margin: deathMargin, scrub: r.Scrub}.read(ctx,
+		deathInput{ns: ns, pod: podName, uid: pod.UID, node: pod.Node, started: started, ended: time.Now()})
+	if r.cfg.Cluster != nil {
+		if err := r.cfg.Cluster.PutPodDeath(ctx, PodDeath{Kind: "gate", TaskID: t.ID, Record: death}); err != nil {
+			log.Printf("task %s: store the death of gate pod %s: %s", t.ID, podName, r.Scrub.String(err.Error()))
+		}
+	}
+	if death.Class == DeathPlatform {
+		return &platformEnd{error: err, cause: death.Short()}
+	}
+	return err
+}
+
+// platformEnd is a runner pod's early end that its death lays on the
+// platform: cause is the death's phrase.
+type platformEnd struct {
+	error
+	cause string
+}
+
+func (e *platformEnd) Unwrap() error { return e.error }
+
+// endCause is the phrase of the platform death behind err, "" when
+// none is.
+func endCause(err error) string {
+	var e *platformEnd
+	if errors.As(err, &e) {
+		return e.cause
+	}
+	return ""
 }
 
 // commentOnce posts body on the pull request unless it is there already:
@@ -1240,9 +1290,6 @@ func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (har
 		rep = env.Repro
 		return rep != nil, rep != nil
 	})
-	if errors.Is(err, errLogEnded) {
-		return harness.Repro{}, errors.New("the reproduction pod exited without a report")
-	}
 	if err != nil {
 		return harness.Repro{}, err
 	}

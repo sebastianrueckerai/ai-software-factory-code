@@ -436,6 +436,46 @@ func TestRunReportNamesACostHoldCrossing(t *testing.T) {
 	}
 }
 
+// A report session that ends without its report stores its death, as
+// every session does; one that reported stores none.
+func TestRunReportStoresItsDeath(t *testing.T) {
+	for name, tc := range map[string]struct {
+		result string
+		stored bool
+	}{
+		"no report": {resultLine(false, "the model call failed"), true},
+		"reported":  {resultLine(true, "the slug breaks on uppercase input"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+				Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+			kube := newFakeKube()
+			runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+			store.CreateTask(context.Background(), parentTask())
+			cluster := newFakeClusterStore()
+			runner.cfg.Cluster = cluster
+			done := make(chan error)
+			go func() {
+				_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
+				done <- err
+			}()
+			awaitPod(t, kube, done)
+			kube.scriptPods(0, tc.result)
+			<-done
+			cluster.mu.Lock()
+			defer cluster.mu.Unlock()
+			if len(cluster.deaths) != map[bool]int{true: 1, false: 0}[tc.stored] {
+				t.Fatalf("deaths stored = %+v, want %v", cluster.deaths, tc.stored)
+			}
+			for key, d := range cluster.deaths {
+				if !strings.HasPrefix(key, "session/t1/") || d.Record.Class != DeathUnknown {
+					t.Fatalf("stored %s = %+v, want the report session's unknown death", key, d)
+				}
+			}
+		})
+	}
+}
+
 // A report session the gateway refused at a cap answers the refusal
 // instead of failing the report task (roadmap 240): its model call's row,
 // not a tool call's, and whether a call of it was allowed before.

@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -177,11 +178,16 @@ func checkRun(t *testing.T, args ...string) (log string, err error) {
 	if rerr != nil {
 		t.Fatal(rerr)
 	}
+	gosec, rerr := os.ReadFile("../.forgejo/gosec.sh")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
 	dir, bin, logFile := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "log")
 	write(t, dir, module)
 	write(t, dir, map[string]string{
 		"check":                        string(check),
 		"scripts/affected-packages.sh": string(script),
+		".forgejo/gosec.sh":            string(gosec),
 		"scripts/pg-test.sh":           "echo \"pg-test.sh $*\" >>\"$LOG\"\n",
 		"Dockerfile.runner":            "ARG GOSEC_VERSION=0\n",
 		"Dockerfile.sandbox":           "ARG GOTESTSUM_VERSION=1.13.0\n",
@@ -190,7 +196,7 @@ func checkRun(t *testing.T, args ...string) (log string, err error) {
 		"go":   "[ \"$1\" = list ] && exec " + realGo + " \"$@\"\necho \"go $1\" >>\"$LOG\"\n",
 		"make": "echo \"make $*\" >>\"$LOG\"\n",
 	})
-	for _, f := range []string{"scripts/affected-packages.sh", "scripts/pg-test.sh"} {
+	for _, f := range []string{"scripts/affected-packages.sh", ".forgejo/gosec.sh", "scripts/pg-test.sh"} {
 		os.Chmod(filepath.Join(dir, f), 0o755)
 	}
 	os.Chmod(filepath.Join(bin, "go"), 0o755)
@@ -273,6 +279,106 @@ func TestCheckChangedNeedsMain(t *testing.T) {
 	}
 	if strings.Contains(log, "pg-test.sh") {
 		t.Errorf("bash check changed tested without a base: %q", log)
+	}
+}
+
+// gosecRun runs .forgejo/gosec.sh in a fresh copy of the module, with
+// extra files beside it, and a gosec stub that logs where it ran and its
+// arguments, prints a line per checked file and one more to stderr, and
+// exits with code. It answers the log, the script's stderr and its error.
+func gosecRun(t *testing.T, code int, extra map[string]string) (log, stderr string, err error) {
+	t.Helper()
+	script, aerr := filepath.Abs("../.forgejo/gosec.sh")
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	dir, bin, logFile := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "log")
+	write(t, dir, module)
+	write(t, dir, extra)
+	write(t, bin, map[string]string{"gosec": fmt.Sprintf("echo \"$PWD $*\" >>\"$LOG\"\n"+
+		"echo '[gosec] 2026/11/24 05:00:00 Checking file: '\"$PWD\"'/a/a.go' >&2\n"+
+		"echo '[gosec] 2026/11/24 05:00:00 Import directory: '\"$PWD\"'/a' >&2\nexit %d\n", code)})
+	if err := os.Chmod(filepath.Join(bin, "gosec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", script, filepath.Join(bin, "gosec"))
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "LOG="+logFile)
+	var errOut strings.Builder
+	cmd.Stderr = &errOut
+	err = cmd.Run()
+	raw, _ := os.ReadFile(logFile)
+	return string(raw), errOut.String(), err
+}
+
+// gosec runs from a short link to the checkout, inside a directory made for
+// the run and removed when it ends, so go/packages never splits a
+// package's file list into parts. It checks the packages go list names,
+// each by its directory through the link, and no directory go list leaves
+// out, as a worktree under .worktrees. Its line per checked file is left
+// out of the output, its other lines and its exit code are kept.
+func TestGosecRunsFromAShortLink(t *testing.T) {
+	log, stderr, err := gosecRun(t, 0, map[string]string{".worktrees/w/w.go": "package w\n"})
+	if err != nil {
+		t.Fatalf("gosec.sh: %v\n%s", err, stderr)
+	}
+	m := regexp.MustCompile(`^(/tmp/gosec\.[A-Za-z0-9]{6})/s (.*)\n$`).FindStringSubmatch(log)
+	if m == nil {
+		t.Fatalf("gosec ran as %q, want from /tmp/gosec.XXXXXX/s", log)
+	}
+	tmp, link := m[1], m[1]+"/s"
+	if want := link + "/a " + link + "/b " + link + "/c " + link + "/d"; m[2] != want {
+		t.Errorf("gosec checked %q, want the packages' directories %q", m[2], want)
+	}
+	if _, lerr := os.Lstat(tmp); !errors.Is(lerr, os.ErrNotExist) {
+		t.Errorf("%s left behind: %v", tmp, lerr)
+	}
+	if strings.Contains(stderr, "Checking file") || !strings.Contains(stderr, "Import directory: "+link+"/a") {
+		t.Errorf("stderr = %q, want the import line of the link and no line per file", stderr)
+	}
+	if _, _, err := gosecRun(t, 1, nil); err == nil {
+		t.Error("gosec.sh passed where gosec failed")
+	}
+}
+
+// A package whose file list from the link passes go/packages' 16383
+// characters is refused before gosec runs: 70 files of 230-character
+// names list more than that. The refusal names the package, its size and
+// the action.
+func TestGosecRefusesAPackagePastTheLimit(t *testing.T) {
+	long := map[string]string{}
+	for i := range 70 {
+		long[fmt.Sprintf("p/%03d%s.go", i, strings.Repeat("x", 227))] = "package p\n"
+	}
+	log, stderr, err := gosecRun(t, 0, long)
+	if err == nil {
+		t.Fatal("gosec.sh passed with a package past the limit")
+	}
+	if log != "" {
+		t.Errorf("gosec ran: %q", log)
+	}
+	if !regexp.MustCompile(`^package example\.com/m/p lists 1[0-9]{4} characters of file paths from /tmp/gosec\.[A-Za-z0-9]{6}/s, past go/packages' 16383: ` +
+		`gosec would type-check it in parts\. Split the package\.\n$`).MatchString(stderr) {
+		t.Errorf("stderr = %q, want the refusal of package example.com/m/p alone, with its size and the action", stderr)
+	}
+}
+
+// Every gosec run goes through .forgejo/gosec.sh, which no agent branch may
+// change, from the checkout: bash check, pr.yml's security job and main's
+// CI.
+func TestEveryGosecRunGoesThroughTheScript(t *testing.T) {
+	for _, f := range []string{"../check", "../.forgejo/workflows/pr.yml", "../.forgejo/workflows/ci.yml"} {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := string(raw); !strings.Contains(body, ".forgejo/gosec.sh ") || strings.Contains(body, "scripts/gosec.sh") ||
+			regexp.MustCompile(`gosec(@v\S+"?)? +(-\S+ +)*\./\.\.\.`).MatchString(body) {
+			t.Errorf("%s runs gosec past .forgejo/gosec.sh", f)
+		}
+	}
+	if _, err := os.Stat("gosec.sh"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("scripts/gosec.sh exists: %v", err)
 	}
 }
 

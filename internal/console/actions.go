@@ -1344,7 +1344,10 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 		return "", refuse(http.StatusServiceUnavailable, "The card's facts could not be read, so nothing was pressed. Try again.")
 	}
 	more := factoryd.MoreOf(t, factoryd.Facts{CaseFacts: facts})
-	i := slices.IndexFunc(more, func(m factoryd.Answer) bool { return m.Key() == key })
+	// the hold's started variant follows the card's state, which moves under an open drawer
+	action, _, _ := strings.Cut(key, "/")
+	holds := action == factoryd.AnswerHold || action == factoryd.AnswerRelease
+	i := slices.IndexFunc(more, func(m factoryd.Answer) bool { return m.Key() == key || holds && m.Action == action })
 	if i < 0 {
 		return "", refuse(http.StatusBadRequest, "This answer names no question of the card. Reload the board and press the answer again.")
 	}
@@ -2770,11 +2773,11 @@ func (c *Console) crossGroup(ctx context.Context, t, d factoryd.Task) string {
 // maxHoldReason bounds a hold's reason: the board shows it on the card.
 const maxHoldReason = 300
 
-// doHoldCard puts card id, which has not started, on hold for a: it gets no
+// doHoldCard puts card id, queued or running, on hold for a: it gets no
 // work slot until a human releases it, or until release, any card of its
-// project by task id or issue number ("" for none), is merged or done.
-// reason is what the board shows, on one line. A hold it holds already is
-// replaced.
+// project by task id or issue number ("" for none), is merged or done. A
+// running card's session stops and keeps its work. reason is what the
+// board shows, on one line. A hold it holds already is replaced.
 func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason string) (string, error) {
 	reason = strings.Join(strings.Fields(reason), " ")
 	if reason == "" || utf8.RuneCountInString(reason) > maxHoldReason {
@@ -2793,12 +2796,14 @@ func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason s
 			return "", err
 		}
 	}
-	ok, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.approver())
+	held, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.approver())
 	if err != nil {
 		log.Printf("console: %s holds %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The hold could not be stored. Hold the card again.")
+		if !held.Held {
+			return "", refuse(http.StatusInternalServerError, "The hold could not be stored. Hold the card again.")
+		}
 	}
-	if !ok {
+	if !held.Held {
 		fresh, found, err := c.cfg.Tasks.Task(ctx, t.ID)
 		if err != nil || !found {
 			log.Printf("console: card %s after its refused hold: %v", t.ID, err)
@@ -2807,20 +2812,28 @@ func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason s
 		if err := unholdable(fresh, c.capFactsOf(ctx, fresh)); err != nil {
 			return "", err
 		}
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's dependencies have all ended, so it starts or asks the human now: a hold comes too late. Close it, or steer it once it runs.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's dependencies have all ended, so it starts or asks the human now: a hold comes too late. Close it, or hold it once it runs.", t.IssueNumber))
 	}
 	detail := map[string]any{"reason": reason}
-	said := fmt.Sprintf("#%d is on hold until a human releases it.", t.IssueNumber)
+	until := "until a human releases it."
 	if rel.ID != "" {
 		detail["release"] = rel.IssueNumber
-		said = fmt.Sprintf("#%d is on hold until #%d is merged or done, or a human releases it.", t.IssueNumber, rel.IssueNumber)
+		until = fmt.Sprintf("until #%d is merged or done, or a human releases it.", rel.IssueNumber)
+	}
+	said := fmt.Sprintf("#%d is on hold %s", t.IssueNumber, until)
+	switch {
+	case held.Stopped:
+		detail["stopped"] = true
+		said = fmt.Sprintf("#%d stops its session, keeps its work and waits in Queued %s", t.IssueNumber, until)
+	case t.Status == "running":
+		said = fmt.Sprintf("#%d waits in Queued before its next session %s", t.IssueNumber, until)
 	}
 	log.Printf("console: %s held %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardHeld, detail)
 	return said, nil
 }
 
-// unholdable refuses a hold on t unless it has not started (Holdable),
+// unholdable refuses a hold on t unless it is queued or running (Holdable),
 // naming its state and what fits it.
 func unholdable(t factoryd.Task, f capFacts) error {
 	switch {
@@ -2830,12 +2843,17 @@ func unholdable(t factoryd.Task, f capFacts) error {
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is a human card: no agent starts it, so a hold keeps nothing. Close it, or leave it to its person.", t.IssueNumber))
 	case t.Unbound():
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs outside the work bound and starts at once, so a hold keeps nothing: close it if it must not run.", t.IssueNumber))
-	case t.Status == "queued" && t.ResumedAt != nil:
-		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d has run and waits for its turn to go on, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+	case (t.Status == "queued" || t.Status == "running") && t.Track == policy.TrackPlan:
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is a plan's planning run: it takes no hold, so a hold keeps nothing. Close it, or leave it to plan.", t.IssueNumber))
 	case t.Status == "queued":
-		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took its turn and starts now, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took its turn and starts now: close it, or hold it once it runs.", t.IssueNumber))
+	case t.Status == "in-review", t.Status == "closing", t.Status == "merged":
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is %s: its checks decide it now, and it ends or goes back to work without you. Hold it once it runs again, or end it.",
+			t.IssueNumber, strings.ReplaceAll(t.Status, "-", " ")))
+	case t.Status == "waiting-human", t.Status == "waiting-poster", t.Status == "waiting-image":
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d waits for an answer and holds no work slot, so a hold frees nothing: answer it, or end it.", t.IssueNumber))
 	}
-	return wrongState(t, f, "a card that has not started")
+	return wrongState(t, f, "a queued or running card")
 }
 
 // releaseCard is the release card name names for a hold on card t: a card
@@ -2904,7 +2922,7 @@ func (c *Console) doReleaseHold(ctx context.Context, a actor, id string) (string
 		return "", err
 	}
 	if !t.Held() {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold, so there is nothing to release: `hold_card` puts a card that has not started on hold.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold, so there is nothing to release: `hold_card` puts a queued or running card on hold.", t.IssueNumber))
 	}
 	ok, err := c.cfg.ReleaseCardHold(ctx, t.ID)
 	if err != nil {

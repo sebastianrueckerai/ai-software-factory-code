@@ -1071,3 +1071,78 @@ func TestRoomOpensAtTheProposal(t *testing.T) {
 		t.Errorf("a press with the box ticked = %+v, want the money", res)
 	}
 }
+
+// A card that has started, running or queued to resume, gets the hold's
+// started lines; a card that has not started keeps its own.
+func TestMoreOfPicksTheHoldsVariantByWhetherTheCardStarted(t *testing.T) {
+	then := time.Now().Add(-time.Hour)
+	hold := &factoryd.CardHold{Reason: "wait", By: "sebastian"}
+	effects := func(task factoryd.Task) map[string]string {
+		out := map[string]string{}
+		for _, a := range factoryd.MoreOf(task, factoryd.Facts{}) {
+			out[a.Action] = a.Effect
+		}
+		return out
+	}
+	base := factoryd.Task{ID: "t", Kind: "agent", Track: policy.TrackDirect, Process: "spec", IssueNumber: 5}
+	const (
+		holdStarted    = "The session stops now and keeps its work. The card waits in Queued until you release it, or until the card you name is merged or done."
+		releaseStarted = "The card goes on from its saved work, ahead of the cards that have not started."
+	)
+	running, resumed, fresh := base, base, base
+	running.Status = "running"
+	resumed.Status, resumed.ResumedAt, resumed.AdmittedAt, resumed.Hold = "queued", &then, &then, hold
+	fresh.Status, fresh.Hold = "queued", hold
+	if got := effects(running)[factoryd.AnswerHold]; got != holdStarted {
+		t.Errorf("a running card's hold says %q, want %q", got, holdStarted)
+	}
+	if got := effects(resumed)[factoryd.AnswerRelease]; got != releaseStarted {
+		t.Errorf("a held parked card's release says %q, want %q", got, releaseStarted)
+	}
+	if got, want := effects(fresh)[factoryd.AnswerRelease], "The card takes its turn to start again."; got != want {
+		t.Errorf("a held card that has not started: release says %q, want %q", got, want)
+	}
+	// a card held while it ran keeps its hold through review and a wait on
+	// a human, the poster or an image, and goes on from its saved work
+	for _, status := range []string{"running", "in-review", "closing", "waiting-human", "waiting-poster", "waiting-image"} {
+		ran := base
+		ran.Status, ran.Hold = status, hold
+		if got := effects(ran)[factoryd.AnswerRelease]; got != releaseStarted {
+			t.Errorf("a held card %s: release says %q, want %q", status, got, releaseStarted)
+		}
+	}
+	waiting := base
+	waiting.Status, waiting.Hold = "waiting-deps", hold
+	if got, want := effects(waiting)[factoryd.AnswerRelease], "The card takes its turn to start again."; got != want {
+		t.Errorf("a held card waiting on its dependencies: release says %q, want %q", got, want)
+	}
+	fresh.Hold = nil
+	if got, want := effects(fresh)[factoryd.AnswerHold], "The card does not start until you release it, or until the card you name is merged or done."; got != want {
+		t.Errorf("a card that has not started: hold says %q, want %q", got, want)
+	}
+}
+
+func TestDeathLinesReadPlainly(t *testing.T) {
+	at := time.Date(2026, 11, 23, 14, 2, 0, 0, time.UTC)
+	var records []factoryd.DeathRecord
+	for _, rule := range []factoryd.DeathRule{factoryd.RuleGuardKill, factoryd.RuleNodeOOM, factoryd.RuleNodePressure, factoryd.RuleNodeRebooted,
+		factoryd.RuleNodeNotReady, factoryd.RuleGoneAfterRestart, factoryd.RuleDeleted} {
+		records = append(records, factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: rule, At: at, Node: "sf-2", Resource: "memory"})
+	}
+	for _, reason := range []string{"PreemptionByScheduler", "DeletionByTaintManager", "EvictionByEvictionAPI", "DeletionByPodGC", "TerminationByKubelet", "SomeNewReason"} {
+		records = append(records, factoryd.DeathRecord{Class: factoryd.DeathPlatform, Rule: factoryd.RuleDisruption, At: at, Condition: reason})
+	}
+	for _, r := range records {
+		for _, l := range factoryd.GateLines(r, "abc1234def", true) {
+			if faults := facefixtures.TextFaults(l); len(faults) > 0 {
+				t.Errorf("%q: %v", l, faults)
+			}
+		}
+		if faults := facefixtures.HumanFaults(r.Short()); len(faults) > 0 {
+			t.Errorf("%q: %v", r.Short(), faults)
+		}
+	}
+	if ask := factoryd.PlatformEndedReason(records[:3]); len(facefixtures.HumanFaults(ask)) > 0 {
+		t.Errorf("%q: %v", ask, facefixtures.HumanFaults(ask))
+	}
+}

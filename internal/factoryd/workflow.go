@@ -88,6 +88,10 @@ const (
 	// and ignores the signal. TaskSignal's Case carries the case id and the
 	// comment (versionCaseFaced).
 	SignalCaseFaced = "case_faced"
+	// SignalHeld is a human's hold of a running card that has no live
+	// session: a wait that holds the card's slot ends, and the card parks
+	// before its next session.
+	SignalHeld = "held"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -334,6 +338,12 @@ const (
 	// card's replan (Replan carries the text for the planner); its work is
 	// pushed and kept.
 	OutcomeReplan SessionOutcome = "replan"
+	// OutcomeHeld: a human's hold stopped the session (Reason says whose
+	// and why); its work is pushed and kept, Commit its head.
+	OutcomeHeld SessionOutcome = "held"
+	// OutcomePlatformKilled: the cluster ended the session (Death names
+	// how): no session's own fault.
+	OutcomePlatformKilled SessionOutcome = "platform_killed"
 )
 
 // StepProviderRefused is the timeline step of a task waiting on the model
@@ -422,6 +432,10 @@ type SessionInput struct {
 	// scheduled, set with CheckinExtra or RoomExtra: the session's own time
 	// ends there, and the check-in's time and the raises come after it.
 	Remaining time.Duration `json:",omitempty"`
+	// HoldStop: the run handles OutcomeHeld, so a human's hold stops the
+	// session (versionHoldStop); a run from before it leaves the session
+	// to its end.
+	HoldStop bool `json:",omitempty"`
 }
 
 type SessionResult struct {
@@ -471,8 +485,9 @@ type SessionResult struct {
 	Need string `json:",omitempty"`
 	// Replan is a replan session's text for the planner (replanText).
 	Replan string `json:",omitempty"`
-	// Killed is the memory kill that ended the session, nil for none.
-	Killed *SessionKill `json:",omitempty"`
+	// Death is how the session's pod ended when it ended without a push or
+	// on a stop factoryd did not send, nil for none.
+	Death *DeathRecord `json:"death,omitempty"`
 }
 
 type PullRequest struct {
@@ -644,6 +659,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.retryPressDrop = workflow.GetVersion(ctx, "retry-press-drop", workflow.DefaultVersion, versionRetryPressDrop)
 	run.humanWaitQueue = workflow.GetVersion(ctx, "human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue)
 	run.roomWindow = workflow.GetVersion(ctx, "room-window", workflow.DefaultVersion, versionRoomWindow)
+	run.holdStop = workflow.GetVersion(ctx, "hold-stop", workflow.DefaultVersion, versionHoldStop)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -687,7 +703,8 @@ func (t *taskRun) isReport() bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved, SignalCaseFaced} {
+		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved, SignalCaseFaced,
+		SignalHeld, SignalProviderRetry, SignalStaleNudge} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -745,10 +762,9 @@ const (
 	// is counted and its activity is scheduled. A run from before counts
 	// the check-in's time and gives the session no more.
 	versionCheckinClock workflow.Version = 1
-	// versionSessionKill (change id "session-kill"): a session the sandbox
-	// killed for its memory leaves its kill and last command on the card's
-	// next stops, as a fact of their cases. Read where a session's result
-	// is taken. A run from before carries none.
+	// versionSessionKill (change id "session-kill"): a session's death
+	// record rides the card's next stops, as a fact of their cases. Read
+	// where a session's result is taken. A run from before carries none.
 	versionSessionKill workflow.Version = 1
 	// versionAuditDraw (change id "audit-draw"): the audit's gap verdict
 	// at a cap — the hold-out settlement's findings, which name no writer —
@@ -985,6 +1001,15 @@ const (
 	// session with its time left alone, and grants an attempt at the
 	// session cap, else agent time, up to a quarter of the card's.
 	versionRoomWindow workflow.Version = 1
+	// versionHoldStop (change id "hold-stop"): a session carries HoldStop,
+	// so a human's hold stops it (OutcomeHeld), which runs no gate: the
+	// run gives the session's room back (refund), its push is the next
+	// start, and the loop's top parks the card (awaitSlot). The waits a
+	// running card holds its slot in, the provider's backoff and its
+	// freeze, end on the hold's SignalHeld, and awaitSlot drops the presses
+	// no wait read. A held stop counts toward no ask of sessions with no
+	// model answer. A run from before runs each session to its end.
+	versionHoldStop workflow.Version = 1
 )
 
 // keysCard tells whether the run's card is its key's card in its plan: a
@@ -1081,8 +1106,8 @@ type taskRun struct {
 	// checks ran
 	checkedHead  string
 	checkinClock workflow.Version // a session's check-in is no agent time (versionCheckinClock)
-	sessionKill  workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
-	killed       *SessionKill     // the last session's memory kill (versionSessionKill)
+	sessionKill  workflow.Version // a death record rides the next stops as a fact (versionSessionKill)
+	death        *DeathRecord     // the last session's death record (versionSessionKill)
 	floorModel   *string          // the model the next session opens on, whose floor the run reads and a trip carries (versionTripModel)
 	// lastCheckinStop is the last check-in stop's mark, what a repeat
 	// compares against; zero keeps a run from before
@@ -1110,6 +1135,7 @@ type taskRun struct {
 	gateRuns          map[string]int   // the long gates' runs so far, by activity
 	agentTimeBase     time.Duration    // the class's agent time, which the size scales (sizeAgentTime)
 	pendingPods       int              // sessions in a row whose pod never started
+	platformDeaths    []DeathRecord    // the deaths of the sessions in a row the platform ended
 	pr                PullRequest
 	approvalRequested time.Time      // the current approval request's time
 	answers           []string       // the human's answers, newest first
@@ -1195,6 +1221,9 @@ type taskRun struct {
 	// roomWindow: a session's window holds raise headroom, and a grant is
 	// a session's worth at the card's average (versionRoomWindow)
 	roomWindow workflow.Version
+	// holdStop: a human's hold stops the session and ends the waits a
+	// running card holds its slot in (versionHoldStop)
+	holdStop workflow.Version
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -1356,7 +1385,8 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// refund is an attempt, or agent time alone after a session that took
 	// no number (u.LastUncounted): what a park on an image gives back for
-	// the session that asked for its tool
+	// the session that asked for its tool, and a hold for the session it
+	// stopped
 	refund := func() {
 		if u.LastUncounted {
 			t.grantTime(&u)
@@ -1640,7 +1670,8 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the loop's top takes the head through the gates
 		case AtSessionCap(st.Question):
 		case floorRefused(st.Question), strings.HasPrefix(st.Question, floorUnread),
-			strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
+			strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused),
+			strings.HasPrefix(st.Question, platformEnded):
 			// the live loop answers these waits with the next
 			// session alone
 		case atCheckinSpend(st.Question):
@@ -1880,7 +1911,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
-			PolicyVersion: t.cfg.PolicyVersion, AgentTime: agentTime, CheckIn: t.cfg.Task.CheckIn,
+			PolicyVersion: t.cfg.PolicyVersion, AgentTime: agentTime, CheckIn: t.cfg.Task.CheckIn, HoldStop: t.holdStop >= versionHoldStop,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults
@@ -1932,11 +1963,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		t.pendingPods = 0
+		platformKilled := err == nil && !decided && res.Outcome == OutcomePlatformKilled
+		if !platformKilled {
+			t.platformDeaths = nil
+		}
 		if t.wipStart >= versionWipStart && err == nil && !decided && res.Commit != "" {
 			switch res.Outcome {
-			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap, OutcomeWallClock:
+			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomePlatformKilled, OutcomeDayCap, OutcomeWallClock, OutcomeHeld:
 				startRef = res.Commit
-				if res.Outcome == OutcomeProviderRefused {
+				if res.Outcome == OutcomeProviderRefused || res.Outcome == OutcomePlatformKilled {
 					parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
 				}
 			}
@@ -1946,6 +1981,30 @@ func (t *taskRun) lifecycle() (string, error) {
 				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
 				}
+			}
+			continue
+		}
+		if platformKilled {
+			// the platform ended the session: no attempt, no agent time, no
+			// step to the stronger model; the next starts at once on the
+			// session's model, told what ended this one. A check-in that ran
+			// in it is recorded, though the platform's end wins.
+			t.providerAnswered(&refusals, nil)
+			if res.Model != "" {
+				model = res.Model
+			}
+			if t.sessionKill >= versionSessionKill {
+				t.death = res.Death
+			}
+			t.takeCheckin(res)
+			if ask := t.platformDied(res.Death); ask != "" {
+				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
+					return t.finish(final, why)
+				}
+			}
+			own = nil
+			if res.Death != nil {
+				own = res.Death.Lines
 			}
 			continue
 		}
@@ -1965,10 +2024,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			u.AgentTime += workflow.Now(t.ctx).Sub(began) - t.checkinTime(res)
 		}
 		u.LastUncounted = !t.sessionAnswered(res, began, attempt, model)
-		if u.LastUncounted {
-			unanswered++
-		} else {
+		switch {
+		case !u.LastUncounted:
 			u.Attempts, unanswered = attempt, 0
+		case res.Outcome != OutcomeHeld:
+			// a hold's stop is a human's, not the model's silence
+			unanswered++
 		}
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
@@ -2010,17 +2071,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		reason = res.Summary
 		if t.sessionKill >= versionSessionKill {
-			t.killed = res.Killed
+			t.death = res.Death
 		}
-		if res.CheckIn != nil {
-			t.recordCheckin(res)
-			if len(res.CheckIn.Verdicts) > 0 {
-				t.checkinVerdicts = append(t.checkinVerdicts, res.CheckIn.Verdicts)
-				if len(t.reviews) > 0 {
-					t.reviews[len(t.reviews)-1].Verdicts = res.CheckIn.Verdicts
-				}
-			}
-		}
+		t.takeCheckin(res)
 		// a session that ends without a push hands on the findings it was
 		// given with its own lines: the next one may be the first to act on
 		// them, and an earlier session's lines are stale. One that never
@@ -2032,6 +2085,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			if !checkinPending && !midNote {
 				// the check-in read these; its judgment replaces them
 				own = slices.Concat(own, t.handoverLines(res))
+			}
+			if res.Death != nil {
+				// the pod's end came after any check-in: its lines always pass
+				own = slices.Concat(own, res.Death.Lines)
 			}
 			if res.CheckIn == nil {
 				// the check-in did not run: the round ended dead, and its
@@ -2188,6 +2245,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			buy()
 			continue
+		case OutcomeHeld:
+			refund()
+			continue
 		}
 		startRef = res.Commit
 		if final, why, ok := t.decided(); ok {
@@ -2256,6 +2316,29 @@ const (
 
 // podNeverStarted opens the question of a card whose pods never started.
 const podNeverStarted = "No node started the session's pod: "
+
+// platformDeathsAsk is how many sessions in a row the platform may end
+// before the card asks, with platformEnded opening the question.
+const (
+	platformDeathsAsk = 3
+	platformEnded     = "The platform ended the card's last sessions: "
+)
+
+// PlatformEndedReason is the ask of a card whose last sessions the platform
+// ended, deaths their records in order: when, on which node and how each
+// ended.
+func PlatformEndedReason(deaths []DeathRecord) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, platformEnded+"%d in a row.", len(deaths))
+	for _, d := range deaths {
+		on := ""
+		if d.Node != "" {
+			on = " on " + d.Node
+		}
+		fmt.Fprintf(&b, " At %s UTC%s, %s.", clock(d.At), on, d.Short())
+	}
+	return b.String()
+}
 
 // handoverLines are what the next session is told beside a session's stop
 // lines when that ended without a push: the commit its branch holds and
@@ -2389,6 +2472,21 @@ func (t *taskRun) deadAsk(stop string, gates *GateResults) *CheckInAsk {
 	return &CheckInAsk{Moment: CheckInDead, ParentSession: t.deadFrom, Stop: stop, Gates: gates}
 }
 
+// takeCheckin records the check-in a session ran, if any, and keeps its
+// verdicts for the rounds after.
+func (t *taskRun) takeCheckin(res SessionResult) {
+	if res.CheckIn == nil {
+		return
+	}
+	t.recordCheckin(res)
+	if len(res.CheckIn.Verdicts) > 0 {
+		t.checkinVerdicts = append(t.checkinVerdicts, res.CheckIn.Verdicts)
+		if len(t.reviews) > 0 {
+			t.reviews[len(t.reviews)-1].Verdicts = res.CheckIn.Verdicts
+		}
+	}
+}
+
 // recordCheckin keeps a check-in on the timeline beside the review it
 // judged, and its handover note as its own step: a new run rebuilds the
 // reviews' verdicts from the checkin steps (Reconcile).
@@ -2451,6 +2549,24 @@ func (t *taskRun) notStarted(why string) (ask string) {
 	return PodNeverStartedReason(podWaits, why)
 }
 
+// platformDied keeps the record of a session the platform ended: at the
+// platformDeathsAsk-th in a row ask is what to ask a human, naming each,
+// and the row starts again.
+func (t *taskRun) platformDied(death *DeathRecord) (ask string) {
+	var d DeathRecord
+	if death != nil {
+		d = *death
+	}
+	t.platformDeaths = append(t.platformDeaths, d)
+	workflow.GetLogger(t.ctx).Info("the platform ended a session; the next starts at once", "task", t.taskID, "in_a_row", len(t.platformDeaths), "how", d.Short())
+	if len(t.platformDeaths) < platformDeathsAsk {
+		return ""
+	}
+	ask = PlatformEndedReason(t.platformDeaths)
+	t.platformDeaths = nil
+	return ask
+}
+
 // PodNeverStartedReason is the ask of a card whose pod never started in n
 // sessions in a row, the last wait why.
 func PodNeverStartedReason(n int, why string) string {
@@ -2468,7 +2584,7 @@ func (t *taskRun) providerAnswered(refusals *int, err error) {
 }
 
 // waitOnProvider records the wait, which puts the task in gate provider,
-// and waits it out unless a terminal signal comes first.
+// and waits it out unless a terminal signal or a human's hold comes first.
 func (t *taskRun) waitOnProvider(w ProviderWait) {
 	if err := workflow.ExecuteActivity(t.short, ActivityProviderWait, t.taskID, w).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record the provider wait", "task", t.taskID, "error", err)
@@ -2480,7 +2596,19 @@ func (t *taskRun) waitOnProvider(w ProviderWait) {
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 	}
 	sel.AddFuture(workflow.NewTimer(timerCtx, w.Backoff), func(workflow.Future) {})
+	if t.holdStop >= versionHoldStop {
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHeld), func(workflow.ReceiveChannel, bool) { t.dropHolds() })
+	}
 	sel.Select(t.ctx)
+}
+
+// dropHolds drops the hold presses signalled so far (versionHoldStop).
+func (t *taskRun) dropHolds() {
+	if t.holdStop < versionHoldStop {
+		return
+	}
+	for workflow.GetSignalChannel(t.ctx, SignalHeld).ReceiveAsync(nil) {
+	}
 }
 
 // dropRetryPresses drops the retry switch's presses signalled before a
@@ -2493,18 +2621,19 @@ func (t *taskRun) dropRetryPresses() {
 	}
 }
 
-// waitOnLimit holds the card to a named limit's reset (versionProviderFreeze)
-// in awaitCapWait's shape: the provider_refused event carries the reset as
-// BackoffS, the seconds from the event to the reset, so the digest reads
-// the card's retry due; a Temporal timer to the reset races the policy
-// load wake, which ends the hold early only when the version in force
-// moved the class's model off it (LimitResume), and a later wake that did
-// not keeps the timer to the reset; the retry switch's wake
-// (SignalProviderRetry) ends the hold at once, and so does an answer on
-// the card — a human comment, which the next session carries as its note
-// (takeHoldComments) — and the signals that decide the task, which the
-// loop takes after the hold. At the reset the next session starts, and
-// its first call is the probe.
+// waitOnLimit freezes the card to a named limit's reset
+// (versionProviderFreeze) in awaitCapWait's shape: the provider_refused
+// event carries the reset as BackoffS, the seconds from the event to the
+// reset, so the digest reads the card's retry due; a Temporal timer to the
+// reset races the policy load wake, which ends the freeze early only when
+// the version in force moved the class's model off it (LimitResume), and a
+// later wake that did not keeps the timer to the reset; the retry switch's
+// wake (SignalProviderRetry) ends the freeze at once, and so do an answer
+// on the card — a human comment, which the next session carries as its
+// note (takeHoldComments) — the human's hold of the card (SignalHeld),
+// which the loop's top parks, and the signals that decide the task, which
+// the loop takes after the freeze. At the reset the next session starts,
+// and its first call is the probe.
 func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 	w.Backoff = w.Until.Sub(workflow.Now(t.ctx))
 	if err := workflow.ExecuteActivity(t.short, ActivityProviderWait, t.taskID, w).Get(t.ctx, nil); err != nil {
@@ -2529,6 +2658,12 @@ func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHumanComment), func(workflow.ReceiveChannel, bool) {
 			woken = t.takeHoldComments(w.Words) || woken
 		})
+		if t.holdStop >= versionHoldStop {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHeld), func(workflow.ReceiveChannel, bool) {
+				t.dropHolds()
+				woken = true
+			})
+		}
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded), func(workflow.ReceiveChannel, bool) {
 			// the wake ends the wait only when the class's model moved;
 			// drop the loads signalled while the check ran
@@ -2546,12 +2681,12 @@ func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 	}
 }
 
-// takeHoldComments takes the human comments a provider-limit hold woke on,
-// in awaitAnswer's shape, and reports whether one is the hold's answer,
+// takeHoldComments takes the human comments a provider freeze woke on, in
+// awaitAnswer's shape, and reports whether one is the freeze's answer,
 // which ends it: a comment that answers a question the card asked files
 // under it (fileAnswer); a comment the last ask stands over answers
 // nothing here until it is newer (counted); a newer one — any, when no
-// ask stands — is the hold's answer, tagged with the provider's words,
+// ask stands — is the freeze's answer, tagged with the provider's words,
 // which the next session carries.
 func (t *taskRun) takeHoldComments(words string) (heard bool) {
 	var sig TaskSignal
@@ -4130,7 +4265,7 @@ type queuedCase struct {
 func (t *taskRun) ask(reason, question string, choices []string) error {
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
-	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Killed: t.killed}
+	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Death: t.death}
 	if t.floorModel != nil && workflow.GetVersion(t.ctx, "trip-model", workflow.DefaultVersion, versionTripModel) >= versionTripModel {
 		in.Model = *t.floorModel
 	}

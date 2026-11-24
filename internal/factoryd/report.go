@@ -287,6 +287,9 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 		return reportEnd{}, err
 	}
 	end.reads = out.reads
+	if out.death != nil {
+		r.putDeath(ctx, t.ID, s.id, *out.death)
+	}
 	switch {
 	case out.result != nil && out.result.Success:
 		end.report = out.result.Summary

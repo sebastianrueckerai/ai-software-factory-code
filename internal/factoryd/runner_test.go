@@ -79,6 +79,10 @@ type fakeKube struct {
 	cronJobs    map[string][]CronJobState // namespace → its CronJobs and ScheduledBackups
 	deployments map[string]string         // ns/name → Deployment JSON
 	events      map[string]string         // ns/pod → its newest event
+	podEvents   map[string][]PodEvent     // ns/pod → its events, oldest first
+	nodeStates  map[string]NodeState      // node name → its state; a missing one is ErrNotFound
+	stateReads  int                       // NodeState calls
+	servicePods map[string][]ServicePod   // ns/selector → its pods
 	cronJobsErr map[string]error          // "<kind> <namespace>" → injected failure of its read
 	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
 	takeToken   sync.Once
@@ -114,6 +118,8 @@ type fakePod struct {
 	term            chan struct{} // closed at the deletion: the worker's SIGTERM
 	conditions      []PodCondition
 	containers      []ContainerState // init containers first, as PodDiagnosis reads them
+	uid, node       string           // metadata.uid, spec.nodeName
+	started         time.Time        // status.startTime
 }
 
 func newFakeKube() *fakeKube {
@@ -392,7 +398,8 @@ func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (Po
 	if !ok {
 		return PodDiagnosis{}, ErrNotFound
 	}
-	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions, Containers: p.containers}, nil
+	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions, Containers: p.containers,
+		UID: p.uid, Node: p.node, StartedAt: p.started, Deleting: p.deleted}, nil
 }
 
 // PodLogTail serves the scripted body's last lines.
@@ -414,6 +421,35 @@ func (k *fakeKube) NewestPodEvent(ctx context.Context, namespace, name string) (
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.events[namespace+"/"+name], nil
+}
+
+func (k *fakeKube) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.podEvents[namespace+"/"+pod]), nil
+}
+
+func (k *fakeKube) NodeState(ctx context.Context, name string) (NodeState, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.stateReads++
+	n, ok := k.nodeStates[name]
+	if !ok {
+		return NodeState{}, ErrNotFound
+	}
+	return n, nil
+}
+
+func (k *fakeKube) Nodes(ctx context.Context) ([]NodeState, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.SortedFunc(maps.Values(k.nodeStates), func(a, b NodeState) int { return strings.Compare(a.Name, b.Name) }), nil
+}
+
+func (k *fakeKube) ServicePods(ctx context.Context, namespace, selector string) ([]ServicePod, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.servicePods[namespace+"/"+selector]), nil
 }
 
 // PodLog serves the scripted body; reading it to the end means the
@@ -1817,6 +1853,114 @@ func TestRunSessionLiveCheckinOpensWithThePolicysCalls(t *testing.T) {
 	}
 }
 
+// stalled is a live session on node sf-1 whose log hangs, so the
+// no_progress detector trips after a second; asks are the worker's /wip
+// asks so far, the interim push's.
+type stalled struct {
+	runner *Runner
+	kube   *fakeKube
+	worker *fakeWorkerEndpoint
+	chat   *scriptedChat
+	spy    *placeSpy
+}
+
+func stalledOn(t *testing.T, node NodeState, answers ...CheckinResponse) stalled {
+	runner, _, kube, worker, chat, store, _ := liveRig(t, answers...)
+	kube.nodeStates = map[string]NodeState{"sf-1": node}
+	kube.onCreatePod = func() {
+		p := kube.podOrder[len(kube.podOrder)-1]
+		p.uid, p.node = deathUID, "sf-1"
+	}
+	spy := &placeSpy{Store: store}
+	runner.store, runner.tick = spy, 100*time.Millisecond
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 1})
+	return stalled{runner, kube, worker, chat, spy}
+}
+
+// stallInput starts at a commit of the branch, so an interim push asks the
+// pod for its work.
+var stallInput = SessionInput{TaskID: "t2", Attempt: 1, Model: "m", StartRef: strings.Repeat("a", 40)}
+
+func (g stalled) asks() int {
+	g.worker.mu.Lock()
+	defer g.worker.mu.Unlock()
+	return len(slices.DeleteFunc(slices.Clone(g.worker.texts), func(s string) bool { return !strings.HasPrefix(s, "POST /wip") }))
+}
+
+// A session that stops making progress on a node gone NotReady is the
+// platform's death: it ends at once as platform_killed on the trip, with
+// no check-in call, no interim push and no wait of the stop's minute of
+// grace for a log the lost node never closes; its stop is written to its
+// row for its owner, and its pod is deleted.
+func TestNoProgressOnALostNodeEndsWithoutACheckin(t *testing.T) {
+	g := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: false}, CheckinResponse{Text: `{"decision":"continue"}`})
+	g.runner.stopWait = time.Minute
+	began := time.Now()
+	res, err := runSession(t, nil, g.runner, stallInput, nil, hangLogs)
+	if err != nil || res.Outcome != OutcomePlatformKilled || res.Trip != string(TripNoProgress) || res.Death == nil || res.Death.Rule != RuleNodeNotReady ||
+		len(res.Death.Lines) != 1 || !strings.HasSuffix(res.Death.Lines[0], "That session does not count against the card.") {
+		t.Fatalf("result = (%+v, %v), death %+v; want platform_killed on the no_progress trip, by the node gone NotReady, with its class line", res, err, res.Death)
+	}
+	if g.chat.calls != 0 || g.asks() != 0 {
+		t.Fatalf("check-in calls %d, interim push asks %d; want none of either", g.chat.calls, g.asks())
+	}
+	if took := time.Since(began); took > 30*time.Second {
+		t.Fatalf("the session took %s, want its end without the stop's grace", took)
+	}
+	g.kube.mu.Lock()
+	deleted := slices.Clone(g.kube.deletedPods)
+	g.kube.mu.Unlock()
+	if len(deleted) != 1 || !strings.HasPrefix(deleted[0], "factory-agents-t2/") {
+		t.Fatalf("deleted pods %q, want the session's pod once", deleted)
+	}
+	g.spy.mu.Lock()
+	defer g.spy.mu.Unlock()
+	if !slices.Equal(g.spy.stops, []string{"own"}) {
+		t.Fatalf("stops written %q, want the stop on the session's row, for its owner", g.spy.stops)
+	}
+}
+
+// On a node that stays Ready the stall is the session's own: the interim
+// push runs and the check-in judges it as before, its handover stops the
+// pod, and the worker exits without a result, a death of no cluster cause
+// that keeps the handover. So does a node that went NotReady during the
+// session and is Ready again: the trip's read of the live pod and the
+// read after factoryd's own stop count the end's evidence alone.
+func TestNoProgressOnAHealthyNodeStillAsksTheCheckin(t *testing.T) {
+	for name, flipped := range map[string]bool{"Ready throughout": false, "Ready again": true} {
+		t.Run(name, func(t *testing.T) {
+			g := stalledOn(t, NodeState{Name: "sf-1", BootID: "b-1", Ready: true}, CheckinResponse{Text: `{"decision":"handover","handover":"stop here"}`})
+			// the stopped worker ends on its SIGTERM, and the log's follower
+			// reads the exited pod once more, a second on
+			g.kube.keepDeleted, g.runner.stopWait = true, 5*time.Second
+			placed := g.kube.onCreatePod
+			g.kube.onCreatePod = func() {
+				placed()
+				g.kube.podOrder[len(g.kube.podOrder)-1].containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+					{Name: "worker", State: "terminated", Reason: "Error", ExitCode: 143}}
+			}
+			if flipped {
+				cluster := newFakeClusterStore()
+				g.runner.cfg.Cluster = cluster
+				// the node goes NotReady and back after the session's start
+				time.AfterFunc(300*time.Millisecond, func() {
+					now := time.Now()
+					back := now.Add(100 * time.Millisecond)
+					cluster.AddPlatformIncidents(context.Background(), []PlatformIncident{{Key: "notready/sf-1", At: now, Until: &back, Kind: IncidentNodeNotReady, Subject: "sf-1", Node: "sf-1"}})
+				})
+			}
+			res, err := runSession(t, nil, g.runner, stallInput, nil, sigtermLogs)
+			if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripNoProgress) || res.CheckIn == nil || res.CheckIn.Handover != "stop here" ||
+				res.Death == nil || res.Death.Class != DeathUnknown {
+				t.Fatalf("result = (%+v, %v), death %+v; want the check-in's handover on the no_progress trip, of no cluster cause", res, err, res.Death)
+			}
+			if g.chat.calls != 1 || g.asks() == 0 {
+				t.Fatalf("check-in calls %d, interim push asks %d; want the trip's one check-in after its push", g.chat.calls, g.asks())
+			}
+		})
+	}
+}
+
 // The check-in's provider refusing every call is not a stop: the session
 // continues on the refusal's deterministic continue, the timeline and the
 // record say why, and the next trip asks again.
@@ -1986,7 +2130,7 @@ func TestRunSessionLiveToolsRefuseRunInConversation(t *testing.T) {
 	if err != nil || res.Outcome != OutcomePushed {
 		t.Fatalf("result = (%+v, %v), want the conversation carried past the refusal", res, err)
 	}
-	if chat.calls != 2 || !strings.Contains(chat.gots[1].Input, "run is not a tool of this conversation; its tools are transcript_search, transcript_read, card_facts, card_step, gates, read_file, grep, git_log and answer") {
+	if chat.calls != 2 || !strings.Contains(chat.gots[1].Input, "run is not a tool of this conversation; its tools are transcript_search, transcript_read, card_facts, card_step, gates, read_file, grep, git_log, cluster_facts and answer") {
 		t.Fatalf("chat = %d calls, second statement %q, want the refusal fed back as the tool error", chat.calls, chat.gots[1].Input)
 	}
 	worker.mu.Lock()
@@ -2207,7 +2351,8 @@ func TestRunSessionPodDeathIsNoPush(t *testing.T) {
 
 // The pod's own diagnosis, read before its deletion, tells an eviction
 // apart from any other death: the next session's findings name the cause
-// instead of the generic "pod exited without a result".
+// instead of the generic "pod exited without a result". The node's
+// pressure evicted it: the platform ended the session.
 func TestEvictionRecorded(t *testing.T) {
 	task := Task{ID: "t4e", Status: "running", Objective: "flaky", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
@@ -2219,7 +2364,7 @@ func TestEvictionRecorded(t *testing.T) {
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4e", Attempt: 1, Model: "m"}, nil,
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
-	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "evicted: The node was low on resource: ephemeral-storage." {
+	if err != nil || res.Outcome != OutcomePlatformKilled || res.Summary != "evicted" {
 		t.Fatalf("result = (%+v, %v)", res, err)
 	}
 }
@@ -2434,7 +2579,7 @@ func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
 			stop := make(chan struct{})
 			close(stop)
-			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, stop)
+			_, err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, stop)
 			var f *startFailure
 			switch {
 			case tc.want == "" && !errors.Is(err, errWorkerStop):
@@ -2487,7 +2632,7 @@ func TestAwaitPodStartGivesAConfigErrorItsGrace(t *testing.T) {
 					pod.phase = "Running"
 				}
 			}
-			err := startRunner(kube, 600*time.Millisecond).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, nil)
+			_, err := startRunner(kube, 600*time.Millisecond).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, nil)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("awaitPodStart = %v after %v, want the pod started", err, time.Since(began))
@@ -2519,7 +2664,7 @@ func TestAwaitPodStartTimeoutSaysWhatThePodWaitsOn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			kube := newFakeKube()
 			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
-			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", 30*time.Millisecond, nil)
+			_, err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", 30*time.Millisecond, nil)
 			var p *podPending
 			if !errors.As(err, &p) || err.Error() != tc.want {
 				t.Fatalf("awaitPodStart = %v, want the pending pod %q", err, tc.want)
@@ -2602,7 +2747,7 @@ func TestRunSessionNamesHowThePodEndedWithoutAResult(t *testing.T) {
 			want: "pod exited without a result: container worker terminated with OOMKilled (exit code 137)"},
 		{name: "clone error", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Error", ExitCode: 1, Message: "agent-worker: prctl PR_SET_DUMPABLE: operation not permitted"},
 			{Name: "worker", State: "waiting", Reason: "PodInitializing"}},
-			want: "pod exited without a result: container clone terminated with Error (exit code 1): agent-worker: prctl PR_SET_DUMPABLE: operation not permitted"},
+			want: "pod exited without a result: container clone terminated with Error (exit code 1)"},
 		{name: "worker exited 0", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "terminated", Reason: "Completed"}},
 			want: "pod exited without a result"},
 	} {
@@ -5212,6 +5357,201 @@ func TestRunSessionOfAPersonsReplanSkipsTheCheckin(t *testing.T) {
 	defer hub.mu.Unlock()
 	if len(hub.comments) != 0 {
 		t.Fatalf("comments = %q, want none: a person's decision is recorded, not commented", hub.comments)
+	}
+}
+
+// A human's hold stops the running session as a person's replan does: no
+// check-in is asked and no detector's alert raised, the pod is deleted,
+// and the worker's end push is the held stop's commit.
+func TestAHeldStopEndsHeldWithItsPush(t *testing.T) {
+	runner, hub, kube, _, chat, store, objects := liveRig(t)
+	runner.stopWait = 10 * time.Second
+	kube.onDeletePod = func() { go kube.scriptPods(0, stoppedWorkerAt("t2", "abc123")) }
+	ask := AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way"}
+	delivered := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := runner.EscalateSession(t.Context(), "t2", ask)
+			if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
+				delivered <- err
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small", HoldStop: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("EscalateSession = %v", err)
+	}
+	if res.Outcome != OutcomeHeld || res.Reason != "held by sebastian: out of the way" || res.Trip != string(TripHold) || res.Commit != "abc123" {
+		t.Fatalf("result = %+v, want the held stop with the end push abc123", res)
+	}
+	if chat.calls != 0 {
+		t.Fatalf("check-in conversations = %d, want none", chat.calls)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the worker was not stopped")
+	}
+	if tl := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"detector":"hold"`) {
+		t.Fatalf("timeline = %s, want the hold's step", tl)
+	}
+	if alerts := store.alertRows(); len(alerts) != 0 {
+		t.Fatalf("alerts = %+v, want none: a hold trips no detector", alerts)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments = %q, want none: a human's hold is recorded, not commented", hub.comments)
+	}
+}
+
+// A session of a run from before the held stop has no outcome for it: it
+// answers the hold's ask as a card between sessions does, and runs on to
+// its own end.
+func TestAnOldSessionRefusesTheHoldAsk(t *testing.T) {
+	runner, _, kube, _, _, _, objects := liveRig(t)
+	registered := func() bool {
+		runner.liveMu.Lock()
+		defer runner.liveMu.Unlock()
+		_, ok := runner.live["t2"]
+		return ok
+	}
+	refused := make(chan error, 1)
+	go func() {
+		for deadline := time.Now().Add(5 * time.Second); !registered() && time.Now().Before(deadline); {
+			time.Sleep(5 * time.Millisecond)
+		}
+		refused <- runner.EscalateSession(t.Context(), "t2", AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way"})
+		kube.scriptPods(0, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	}()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-refused; !errors.Is(err, ErrNoLiveSession) {
+		t.Fatalf("the hold's ask = %v, want ErrNoLiveSession", err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.Trip != "" {
+		t.Fatalf("result = %+v, want the session's own push", res)
+	}
+	if rec := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")); strings.Contains(rec, `"detector"`) {
+		t.Fatalf("record = %s, want no stop", rec)
+	}
+}
+
+// A press during the session's start check-in finds no session to ask:
+// the session reads the hold when it registers for asks and stops on it
+// at once, its record holding the stop before the agent's first step.
+func TestASessionRegisteringOnAHeldCardStopsAtOnce(t *testing.T) {
+	finding := "no test covers the handler"
+	runner, _, kube, _, chat, store, objects := checkinRig(t,
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"handover","handover":"fix the handler test first"}`)
+	card := store.tasks["t2"]
+	card.Kind = "agent"
+	store.tasks["t2"] = card
+	var press HoldResult
+	chat.onCall = func() {
+		var err error
+		if press, err = runner.HoldCard(context.Background(), "t2", "", "out of the way", "sebastian"); err != nil {
+			t.Error(err)
+		}
+	}
+	first := envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(), Detail: map[string]any{"tool": "read", "status": "completed", "args": map[string]any{"filePath": "README.md"}}})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", AgentTime: 5 * time.Second, HoldStop: true,
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil,
+		first+"\n"+sigtermLogs+resultLine(false, "stopped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if press != (HoldResult{Held: true}) {
+		t.Fatalf("the press during the check-in = %+v, want held with no session to stop", press)
+	}
+	if signals := runner.cfg.Workflows.(*fakeWorkflows).signals; !slices.Equal(signals, []string{"t2 held sebastian #0: "}) {
+		t.Fatalf("signals = %q, want the press's one held signal", signals)
+	}
+	if res.Outcome != OutcomeHeld || res.Trip != string(TripHold) || res.Reason != "held by sebastian: out of the way" {
+		t.Fatalf("result = %+v, want the held stop", res)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("check-in conversations = %d, want the start check-in's alone", chat.calls)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the worker was not stopped")
+	}
+	rec := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
+	if stop, step := strings.Index(rec, `"detector":"hold"`), strings.Index(rec, `"filePath":"README.md"`); stop < 0 || step < stop {
+		t.Fatalf("record = %s, want the hold's stop before the agent's first step", rec)
+	}
+}
+
+// pressingStore runs press at each take of a live session's row: the
+// session's first is its trip's, before the stop.
+type pressingStore struct {
+	Store
+	press func()
+}
+
+func (s *pressingStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
+	s.press()
+	return s.Store.TakeLiveSession(ctx, taskID, from, to)
+}
+
+// A press that lands once the registration read took the session's hold
+// ask sends no second ask: the session stops once, on its own read, and
+// the press answers that it stops. A press after the session ended finds
+// none and signals the card's run.
+func TestAPressRacingTheRegistrationReadSendsNoSecondAsk(t *testing.T) {
+	runner, _, kube, _, _, store, objects := liveRig(t)
+	card := store.tasks["t2"]
+	card.Kind, card.Hold = "agent", &CardHold{Reason: "out of the way", By: "sebastian", At: time.Now()}
+	store.tasks["t2"] = card
+	var pressed []HoldResult
+	runner.store = &pressingStore{Store: store, press: func() {
+		runner.liveMu.Lock()
+		ls, ok := runner.live["t2"]
+		claimed := ok && ls.hold
+		runner.liveMu.Unlock()
+		if !claimed || len(pressed) > 0 {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		got, err := runner.HoldCard(ctx, "t2", "", "out of the way for good", "sebastian")
+		if err != nil {
+			t.Errorf("the press during the stop: %v", err)
+		}
+		pressed = append(pressed, got)
+	}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small", HoldStop: true}, nil,
+		sigtermLogs+resultLine(false, "stopped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pressed, []HoldResult{{Held: true, Stopped: true}}) {
+		t.Fatalf("presses during the stop = %+v, want one that answers the session stops", pressed)
+	}
+	if res.Outcome != OutcomeHeld || res.Reason != "held by sebastian: out of the way" {
+		t.Fatalf("result = %+v, want the stop on the registration read's hold", res)
+	}
+	if rec := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")); strings.Count(rec, `"detector":"hold"`) != 1 {
+		t.Fatalf("record = %s, want one hold stop", rec)
+	}
+	if len(kube.deletedPods) != 1 {
+		t.Fatalf("deleted pods = %q, want the one stop", kube.deletedPods)
+	}
+	wf := runner.cfg.Workflows.(*fakeWorkflows)
+	if len(wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none while the session stops", wf.signals)
+	}
+	if got, err := runner.HoldCard(t.Context(), "t2", "", "out of the way for good", "sebastian"); err != nil || got != (HoldResult{Held: true}) {
+		t.Fatalf("the press after the end = %+v, %v; want held with no session", got, err)
+	}
+	if !slices.Equal(wf.signals, []string{"t2 held sebastian #0: "}) {
+		t.Fatalf("signals = %q, want one held signal", wf.signals)
 	}
 }
 

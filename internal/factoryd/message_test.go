@@ -931,9 +931,12 @@ func TestWorkerContainerCarriesNoForgejoToken(t *testing.T) {
 
 // stoppedWorker is what a worker prints after its SIGTERM: it commits its
 // work in progress, asks for the push token, pushes and reports.
-func stoppedWorker(task string) string {
-	return sigtermLogs + pushRequestLine("c-wip") + "\n" + tokenLogs + pushedLine("c-wip") + "\n" +
-		resultLine(false, "stopped; work in progress pushed to factory/"+task+" at c-wip") + "\n"
+func stoppedWorker(task string) string { return stoppedWorkerAt(task, "c-wip") }
+
+// stoppedWorkerAt is stoppedWorker with its work in progress at commit.
+func stoppedWorkerAt(task, commit string) string {
+	return sigtermLogs + pushRequestLine(commit) + "\n" + tokenLogs + pushedLine(commit) + "\n" +
+		resultLine(false, "stopped; work in progress pushed to factory/"+task+" at "+commit) + "\n"
 }
 
 // watchStop serves a worker endpoint that takes the token and records, in

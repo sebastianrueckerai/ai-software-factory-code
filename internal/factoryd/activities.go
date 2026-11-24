@@ -1084,7 +1084,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	info := activity.GetInfo(ctx)
 	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), activity: info.WorkflowExecution.RunID + "/" + info.ActivityID, parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
 		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
-		lastGates: in.LastGates, handover: in.Handover}
+		lastGates: in.LastGates, handover: in.Handover, holdStop: in.HoldStop}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("policy", err)
 	}
@@ -1220,6 +1220,19 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			// pod runs, so it is no dead pod either
 			return SessionResult{}, named("pod status", fmt.Errorf("pod %s is in phase %q", l.Pod, phase))
 		default:
+			if errors.Is(perr, ErrNotFound) && l.Activity == s.activity {
+				// the pod this activity ran went while factoryd was away
+				last := ""
+				if s.startRef != s.base {
+					last = s.startRef
+				}
+				death := r.deathOf(ctx, deathInput{ns: l.Namespace, pod: l.Pod, uid: l.PodUID, node: l.Node, boot: l.BootID,
+					started: l.StartedAt, ended: time.Now(), stoppedByFactory: l.StoppingAt != nil, afterRestart: true})
+				// a fresh session replaces it: its end went free
+				death.Lines = GateLines(death, last, true)
+				r.putDeath(ctx, t.ID, l.SessionID, death)
+				s.findings = slices.Concat(s.findings, death.Lines)
+			}
 			if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
 				return SessionResult{}, named("live session", err)
 			}
@@ -1376,8 +1389,23 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		res.Outcome, res.Reason = OutcomeEscalate, overBoundAgain(t, res, out.overBound)
 	}
 	events := r.sessionTranscript(ctx, t.ID, s.id)
-	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
-		"outcome": res.Outcome, "summary": res.Summary, "started": began})
+	end := map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
+		"outcome": res.Outcome, "summary": res.Summary, "started": began}
+	cause := ""
+	if res.Death != nil {
+		res.Death.Lines = GateLines(*res.Death, lastPushOf(s, out), res.Outcome == OutcomePlatformKilled)
+		r.putDeath(ctx, t.ID, s.id, *res.Death)
+		// the pod's events stay on the stored record: the result rides the
+		// card's stops into the case facts, which a model reads
+		death := *res.Death
+		death.Events = nil
+		res.Death = &death
+		if death.Class != DeathUnknown {
+			cause = death.Short()
+			end["cause"] = cause
+		}
+	}
+	r.record(ctx, t.ID, "session_end", end)
 	if res.Outcome != OutcomeNotStarted && !res.StartFailed {
 		// the end's fact row beside its timeline line (roadmap 336): no
 		// summary, which the line alone keeps; a session the worker never
@@ -1385,8 +1413,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		// is the session's error, not a log line: the retry runs a new
 		// session whose own end is the fact the identity keeps single.
 		ended := time.Now()
-		end := SessionEndFact{Session: s.id, Attempt: in.Attempt, Outcome: string(res.Outcome), Started: startedAt}
-		if err := r.timeline.RecordFactRow(ctx, end.Event(t.ID, t.Repository, t.IssueNumber, ended)); err != nil {
+		fact := SessionEndFact{Session: s.id, Attempt: in.Attempt, Outcome: string(res.Outcome), Cause: cause, Started: startedAt}
+		if err := r.timeline.RecordFactRow(ctx, fact.Event(t.ID, t.Repository, t.IssueNumber, ended)); err != nil {
 			return SessionResult{}, named("session end fact", err)
 		}
 		// where the session's time went, from its transcript; a transcript
@@ -1572,6 +1600,16 @@ func (r *Runner) interimStart(ctx context.Context, repo Repo, start, base string
 	return wip, head == base, nil
 }
 
+// lastPushOf is the session's last push: its own, else its interim one,
+// else the branch's at its start.
+func lastPushOf(s sessionSpec, out sessionOutcome) string {
+	last := cmp.Or(out.commit, out.wip)
+	if last == "" && s.startRef != s.base {
+		last = s.startRef
+	}
+	return last
+}
+
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 // Where the over-bound work went leads the findings on every path.
 func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
@@ -1579,8 +1617,13 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if out.overBound != "" {
 			res.Findings = slices.Insert(res.Findings, 0, out.overBound)
 		}
+		// the cluster ended a session this factoryd had not stopped for a
+		// decision: a stop it sent keeps its decision
+		if d := out.death; d != nil && d.Class == DeathPlatform && !d.Decided && res.Outcome == OutcomeNoPush {
+			res.Outcome = OutcomePlatformKilled
+		}
 	}()
-	res = SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn, Killed: out.killed}
+	res = SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn, Death: out.death}
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session
@@ -1621,8 +1664,9 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 			return res
 		case CheckHandover:
 			// a mid-session handover is not the escalate a stop would read;
-			// a start-moment one falls through to the result's own shape
-			if out.trip != nil {
+			// a start-moment one falls through to the result's own shape,
+			// as does a later stop of its session
+			if out.trip != nil && out.checkIn.Record != nil && out.checkIn.Record.Moment == CheckInSession {
 				res.Summary = fmt.Sprintf("check-in: handover after %s", out.trip.Kind)
 				return res
 			}
@@ -1652,6 +1696,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 			res.Outcome, res.DeadEnd = OutcomeRetryStronger, d.Judged
 		case d.Action == ActionReplan:
 			res.Outcome, res.Reason, res.Replan = OutcomeReplan, d.Reason, replanText(out.trip, *d)
+		case d.Action == ActionHold:
+			res.Outcome, res.Reason, res.Commit = OutcomeHeld, d.Reason, cmp.Or(out.commit, out.wip)
 		default:
 			res.Outcome, res.Choices = OutcomeEscalate, d.Choices
 			res.Reason = fmt.Sprintf("%s\n\nDetector: %s (%s)\nProgress: %s", d.Reason, out.trip.Kind, out.trip.Detail, out.digest)
@@ -2673,8 +2719,8 @@ func FirstLine(s string) string {
 // WaitChecks polls the combined commit status of sha (Forgejo Actions is the
 // first verification gate, architecture 7) until it settles or the checks
 // timeout passes. Forgejo combines worst-state-wins, so a failed job
-// settles the verdict while slower jobs still run, except that a job killed
-// by a signal is re-run once first (killedChecks) and its re-run awaited.
+// settles the verdict while slower jobs still run, except that a killed job
+// is re-run first as its cause allows (killedChecks) and its re-run awaited.
 func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2685,6 +2731,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 	}
 	deadline := activity.GetInfo(ctx).Deadline.Add(-r.checksMargin)
 	var reran []rerunNote
+	waited := map[[2]int64]bool{}
 	for {
 		cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
 		if err != nil {
@@ -2694,7 +2741,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		logOf := r.jobLogOf(ctx, t, repo)
 		res := checksResult(cs, r.forgejo.PublicURL, logOf)
 		if res.State == ChecksFailure {
-			if unsettled, notes := r.killedChecks(ctx, t, repo, cs, logOf, &reran); unsettled {
+			if unsettled, notes := r.killedChecks(ctx, t, repo, cs, logOf, &reran, waited); unsettled {
 				res.State = ""
 			} else {
 				res.Findings = append(res.Findings, notes...)

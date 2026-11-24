@@ -195,6 +195,25 @@ func TestAgentDocLoopFactsFollowTheMode(t *testing.T) {
 	}
 }
 
+// The coding page shows what a session reads after one the platform ended:
+// its findings hold the platform's line, which GateLines claims, and no
+// report mode's brief holds a finding.
+func TestAgentDocLoopCodingShowsThePlatformsLine(t *testing.T) {
+	v := agentDocLoopPolicy()
+	want := "Your previous session did not fail on its own. The node's memory guard killed its pod on sf-2 at 14:02 UTC. " +
+		"Work after the last push, commit abc1234, is lost. That session does not count against the card."
+	b := agentDocLoopBrief("coding", v)
+	if !slices.Equal(b.Findings, []string{want}) {
+		t.Fatalf("the coding brief's findings = %q, want the platform's line", b.Findings)
+	}
+	if !slices.ContainsFunc(agentDocLoopSpans("coding", b, agentDocLoopTag), func(s agentdoc.Span) bool { return s.Symbol == "GateLines" && s.Text == want }) {
+		t.Fatal("no span of GateLines claims the platform's line")
+	}
+	if f := agentDocLoopBrief("screening", v).Findings; len(f) != 0 {
+		t.Fatalf("the screening brief's findings = %q, want none", f)
+	}
+}
+
 // sessionMessage is the one composer of a writer's message into a running
 // session: the first one carries the basics, later ones do not, and the
 // project agent's names the project agent, never a writer.

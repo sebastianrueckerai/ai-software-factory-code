@@ -366,6 +366,7 @@ func setSlotWaits(tasks []BoardTask) {
 		switch {
 		case HoldsSlot(b.Task):
 			live++
+		case b.Held():
 		case b.Status == "queued" && b.ResumedAt != nil:
 			resumed = append(resumed, i)
 		case waitsForSlot(b.Task) && strings.HasPrefix(b.QueueReason, WorkBoundReason):

@@ -174,8 +174,8 @@ func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
 				at     time.Time
 				reason string
 			}{{"t-b", at, "resumed: first"}, {"t-a", at.Add(time.Minute), "resumed: second"}, {"t-b", at.Add(2 * time.Minute), "resumed: refreshed"}} {
-				if err := s.SetResumeWait(ctx, w.id, w.reason, w.at); err != nil {
-					t.Fatal(err)
+				if moved, err := s.SetResumeWait(ctx, w.id, w.reason, w.at); err != nil || !moved {
+					t.Fatalf("SetResumeWait(%s) = %v, %v; want the card parked", w.id, moved, err)
 				}
 			}
 			waiters, err := s.ResumeWaiters(ctx, "sf/r")
@@ -192,14 +192,14 @@ func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
 			if queued, err := s.ListQueuedByRepository(ctx, "sf/r"); err != nil || len(queued) != 1 || queued[0].ID != "t-new" {
 				t.Fatalf("queued = %+v (err %v), want only the never-started t-new", queued, err)
 			}
-			if err := s.SetResumeWait(ctx, "t-new", "resumed: no", at); err != nil {
-				t.Fatal(err)
+			if moved, err := s.SetResumeWait(ctx, "t-new", "resumed: no", at); err != nil || moved {
+				t.Fatalf("SetResumeWait(t-new) = %v, %v; want nothing moved", moved, err)
 			}
 			if n, _ := s.ResumeWaiters(ctx, "sf/r"); len(n) != 2 {
 				t.Fatalf("a never-started card became a resumed waiter: %+v", n)
 			}
-			if err := s.SetResumeWait(ctx, "t-run", "resumed: no", at); err != nil {
-				t.Fatal(err)
+			if moved, err := s.SetResumeWait(ctx, "t-run", "resumed: no", at); err != nil || moved {
+				t.Fatalf("SetResumeWait(t-run) = %v, %v; want nothing moved", moved, err)
 			}
 			if run, _, _ := s.Task(ctx, "t-run"); run.Status != "running" || run.ResumedAt != nil {
 				t.Fatalf("a running card became a waiter: %s, %v", run.Status, run.ResumedAt)

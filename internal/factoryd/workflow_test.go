@@ -3160,6 +3160,221 @@ func TestWorkflowPodsThatNeverStartAskAHumanAtTheBound(t *testing.T) {
 	}
 }
 
+// guardLine is the class line of a session the node's memory guard killed.
+const guardLine = "Your previous session did not fail on its own. The node's memory guard killed its pod on sf-2 at 14:02 UTC. " +
+	"Work it did not push is lost. That session does not count against the card."
+
+// platformDeath is a session the node's memory guard killed at 14:02 UTC,
+// as sessionResult ends it.
+func platformDeath(session string) SessionResult {
+	return SessionResult{Outcome: OutcomePlatformKilled, SessionID: session, Summary: "pod exited without a result",
+		Findings: []string{"previous session ended without a pushed commit: pod exited without a result"},
+		Death: &DeathRecord{Class: DeathPlatform, Rule: RuleGuardKill, Node: "sf-2", At: time.Date(2026, 11, 21, 14, 2, 0, 0, time.UTC),
+			Lines: []string{guardLine}}}
+}
+
+// A session the platform ended is no attempt, no agent time and no step
+// toward the stronger model: two of 10 minutes each, then one that pushes
+// after 5, are one attempt of 5 minutes on the start model, where two
+// sessions of the card's own without a push would have climbed. The
+// first death's pushed work is the next start, under its session, and
+// each next session is told what ended the one before, and nothing else.
+func TestWorkflowPlatformDeathIsNoAttempt(t *testing.T) {
+	first := platformDeath("s1")
+	first.Commit = "w1"
+	h := newWorkflowHarness(t)
+	deaths := []SessionResult{first, platformDeath("s2")}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return deaths[len(h.sessions)-1], nil
+		}).Times(2)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return pushed("s3", "c1"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 || len(h.escalated) != 0 {
+		t.Fatalf("final = %q after %d sessions, escalations %q; want done after 3, none asked", final, len(h.sessions), h.escalated)
+	}
+	for i, in := range h.sessions {
+		if in.Attempt != 1 || in.Model != "factory/small" {
+			t.Fatalf("session %d = attempt %d on %s, want attempt 1 on factory/small", i+1, in.Attempt, in.Model)
+		}
+	}
+	for i, in := range h.sessions[1:] {
+		if in.StartRef != "w1" || in.ParentSessionID != "s1" || !slices.Equal(in.Findings, []string{guardLine}) {
+			t.Fatalf("session %d starts at %q under %q with findings %q; want w1 under s1, told the death's line alone", i+2, in.StartRef, in.ParentSessionID, in.Findings)
+		}
+	}
+	if want := (TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}); len(h.usage) == 0 || h.usage[len(h.usage)-1] != want {
+		t.Fatalf("usage = %+v, want %+v", h.usage, want)
+	}
+}
+
+// Three sessions in a row the platform ended ask once, from source platform
+// as a platform_fault case that names each of the three deaths, and whose
+// trip carries the last; the answer starts the fourth, still attempt 1.
+// The ask starts the count again: two more deaths after it ask nothing.
+// Two, then a pushed session, then two more ask nothing: the push ends the
+// row.
+func TestWorkflowThreePlatformDeathsOpenACase(t *testing.T) {
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 21, h, m, 0, 0, time.UTC) }
+	second, last := platformDeath("s2"), platformDeath("s3")
+	second.Death.Rule, second.Death.At = RuleNodeNotReady, at(14, 31)
+	last.Death = &DeathRecord{Class: DeathPlatform, Rule: RuleDisruption, Condition: "PreemptionByScheduler", At: at(15, 5)}
+	h := newWorkflowHarness(t)
+	deadSessions(h, platformDeath("s1"), second, last, platformDeath("s4"), platformDeath("s5"), pushed("s6", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the node is back", Comment: 700})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 6 {
+		t.Fatalf("final = %q after %d sessions, want done after 6", final, len(h.sessions))
+	}
+	want := "The platform ended the card's last sessions: 3 in a row. At 14:02 UTC on sf-2, the node's memory guard killed the pod. " +
+		"At 14:31 UTC on sf-2, the node stopped answering. At 15:05 UTC, Kubernetes stopped the pod."
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "platform" {
+		t.Fatalf("escalations = %q, want %q from source platform", h.escalated, want)
+	}
+	if kind, _ := CaseKindOf(EscalationSource(want), want); kind != CasePlatformFault || !reflect.DeepEqual(h.trips[0].Death, last.Death) {
+		t.Fatalf("kind %s, trip's death %+v; want platform_fault carrying %+v", kind, h.trips[0].Death, last.Death)
+	}
+	if in := h.sessions[3]; in.Attempt != 1 || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the node is back") {
+		t.Fatalf("fourth session = %+v, want attempt 1 with the answer", in)
+	}
+
+	h = newWorkflowHarness(t)
+	deadSessions(h, platformDeath("s1"), platformDeath("s2"), pushed("s3", "c1"), platformDeath("s4"), platformDeath("s5"), pushed("s6", "c2"))
+	h.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red"}}, ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 6 || len(h.escalated) != 0 {
+		t.Fatalf("final = %q after %d sessions, escalations %q; want done after 6, none asked", final, len(h.sessions), h.escalated)
+	}
+	if in := h.sessions[5]; in.Attempt != 2 {
+		t.Fatalf("sixth session = attempt %d, want 2: only the pushed sessions count", in.Attempt)
+	}
+}
+
+// A check-in that ran during a session the platform then ended is recorded
+// with its verdicts and its handover, though the platform's end wins: the
+// next session gets no note of the check-in, which a session's own end
+// would hand on, and is told the death's line alone.
+func TestWorkflowPlatformDeathKeepsItsCheckin(t *testing.T) {
+	died := platformDeath("s1")
+	verdicts := map[string]CheckVerdict{"the test is red": {State: CheckConfirmed}}
+	died.CheckIn = &CheckInOutcome{Decision: CheckHandover, Handover: "finish the migration", Verdicts: verdicts,
+		Record: &CheckInRecord{Moment: CheckInSession, Session: "s1"}}
+	h := newWorkflowHarness(t)
+	deadSessions(h, died, pushed("s2", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, want done after 2", final, len(h.sessions))
+	}
+	var checkin, handover *recordedStep
+	for i, r := range h.recorded {
+		switch r.step {
+		case "checkin":
+			checkin = &h.recorded[i]
+		case "handover":
+			handover = &h.recorded[i]
+		}
+	}
+	// the step's detail crosses the activity as JSON
+	recorded := map[string]any{"the test is red": map[string]any{"state": CheckConfirmed}}
+	if checkin == nil || !reflect.DeepEqual(checkin.detail["verdicts"], recorded) || handover == nil || handover.detail["session"] != "s1" {
+		t.Fatalf("steps = %+v, want s1's check-in with its verdicts and its handover", h.recorded)
+	}
+	if in := h.sessions[1]; in.Handover != "" || !slices.Equal(in.Findings, []string{guardLine}) {
+		t.Fatalf("second session = handover %q, findings %q; want no note and the death's line alone", in.Handover, in.Findings)
+	}
+}
+
+// A session the check-in moved to the stronger model keeps it past the
+// platform's end, and a platform death after answered calls ends a run of
+// provider refusals: five refusals, a death and five more ask nothing,
+// where six in a row would.
+func TestWorkflowPlatformDeathKeepsTheModelAndAnswersTheProvider(t *testing.T) {
+	climbed := platformDeath("s1")
+	climbed.Model = "factory/big"
+	h := newWorkflowHarness(t)
+	deadSessions(h, climbed, pushed("s2", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 || h.sessions[1].Model != "factory/big" {
+		t.Fatalf("final = %q after %d sessions, second on %q; want done after 2, the second on factory/big", final, len(h.sessions), h.sessions[len(h.sessions)-1].Model)
+	}
+
+	results := slices.Concat(slices.Repeat([]SessionResult{refusedSession}, 5), []SessionResult{platformDeath("s6")},
+		slices.Repeat([]SessionResult{refusedSession}, 5), []SessionResult{pushed("s12", "c1")})
+	h, _, _ = providerHarness(t, results...)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(10*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 12 || len(h.escalated) != 0 {
+		t.Fatalf("final = %q after %d sessions, escalations %q; want done after 12, none asked", final, len(h.sessions), h.escalated)
+	}
+}
+
+// A death's lines reach the next session whatever its class and though a
+// check-in judged the session's start: an own pod's limit by its class
+// line, and a death of no cluster cause by the restart of a service its
+// errors came from. The check-in ran before the death, so its judgment
+// replaces the handover lines, not the death's.
+func TestWorkflowDeathLinesPassAPendingCheckin(t *testing.T) {
+	limit := "Your previous session's pod reached its 4 GiB memory limit while it ran `go test -race ./...`, and the kernel killed it."
+	restart := "Forgejo restarted from 14:02 to 14:04 UTC during your previous session. Git errors in that window came from the restart."
+	for name, death := range map[string]*DeathRecord{
+		"own limit": {Class: DeathOwnLimit, Rule: RuleMemoryLimit, Limit: "4Gi", LastCommand: "go test -race ./...", Lines: []string{limit}},
+		"unknown":   {Class: DeathUnknown, Rule: RuleNone, Lines: []string{restart}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = askTaskConfig()
+			stop := "previous session ended without a pushed commit: pod exited without a result"
+			deadSessions(h,
+				SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped", Findings: []string{"previous session ended without a pushed commit: stopped"}},
+				SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "pod exited without a result", Findings: []string{stop}, LastMessage: "the tests ran out of memory",
+					CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: "run the tests one package at a time",
+						Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}},
+					Death: death},
+				pushed("s3", "c3"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+			if final := h.run(t); final != "done" || len(h.sessions) != 3 {
+				t.Fatalf("final = %q after %d sessions, want done after 3", final, len(h.sessions))
+			}
+			if h.sessions[1].CheckInAsk == nil {
+				t.Fatal("the second session had no check-in ask: the test needs one pending")
+			}
+			if want := slices.Concat([]string{stop}, death.Lines); !slices.Equal(h.sessions[2].Findings, want) {
+				t.Fatalf("third session's findings = %q, want %q: the stop line and the death's", h.sessions[2].Findings, want)
+			}
+		})
+	}
+}
+
+// A session that reached its own pod's limit is an attempt as before, and
+// its death's line rides the next session's findings after its own stop.
+func TestWorkflowOwnLimitDeathHandsOverItsLine(t *testing.T) {
+	line := "Your previous session's pod reached its 4 GiB memory limit while it ran `go test -race ./...`, and the kernel killed it."
+	stop := "previous session ended without a pushed commit: pod exited without a result"
+	h := newWorkflowHarness(t)
+	deadSessions(h, SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "pod exited without a result", Findings: []string{stop},
+		Death: &DeathRecord{Class: DeathOwnLimit, Rule: RuleMemoryLimit, Limit: "4Gi", LastCommand: "go test -race ./...", Lines: []string{line}}},
+		pushed("s2", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, want done after 2", final, len(h.sessions))
+	}
+	if in := h.sessions[1]; in.Attempt != 2 || !slices.Equal(in.Findings, []string{stop, line}) {
+		t.Fatalf("second session = attempt %d with findings %q; want attempt 2 told %q", in.Attempt, in.Findings, []string{stop, line})
+	}
+}
+
 // A report session whose pod never started fails no report task: it runs
 // again at once.
 func TestWorkflowReportRunsAgainWhenItsPodNeverStarted(t *testing.T) {
@@ -5243,5 +5458,351 @@ func TestAnOldRunKeepsItsWindowAndItsGrant(t *testing.T) {
 	}
 	if got := roomGrantRun(t, 4, 44*time.Minute, true); !slices.Equal(got, []policy.Draw{{AgentTime: 9 * time.Minute}}) {
 		t.Fatalf("grants at the agent-time cap = %+v, want the old slice's 9 minutes", got)
+	}
+}
+
+// heldSession is a session a human's hold stopped, its work pushed as commit
+// ("" for none).
+func heldSession(session, commit string) SessionResult {
+	return SessionResult{Outcome: OutcomeHeld, SessionID: session, Commit: commit, Trip: string(TripHold),
+		Reason: "held by sebastian: out of the way", Summary: "supervision trip: hold"}
+}
+
+// verifyActivities are the activities a verification of a push runs.
+var verifyActivities = []string{ActivityOpenPullRequest, ActivityGatePolicy, ActivityGateReproduction, ActivityWaitChecks,
+	ActivityModelReview, ActivityGateAudit, ActivityGateCriteria}
+
+// betweenSessions is order's activities between its first two sessions.
+func betweenSessions(t *testing.T, order []string) []string {
+	t.Helper()
+	first := slices.Index(order, ActivityRunSession)
+	next := slices.Index(order[first+1:], ActivityRunSession)
+	if first < 0 || next < 0 {
+		t.Fatalf("activities %v, want two sessions", order)
+	}
+	return order[first+1 : first+1+next]
+}
+
+// A session a human's hold stopped runs no gate: the card asks for its slot
+// at once, waits parked until the release wakes it, and its next session
+// starts from the held session's push with the starts it had before the
+// held one: 3 of 3 then, 4 - 1 = 3 after the held one's refund.
+func TestAHeldStopRunsNoGateAndResumesFromItsPush(t *testing.T) {
+	h := newWorkflowHarness(t)
+	order := h.activityOrder()
+	p := newSlotProbe(h, 2)
+	h.onSessions(heldSession("s1", "abc123"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	p.wake(time.Hour)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 || !h.sessions[0].HoldStop || h.sessions[1].StartRef != "abc123" {
+		t.Fatalf("sessions = %+v, want two, the first with HoldStop and the second from abc123", h.sessions)
+	}
+	left := func(in SessionInput) int { return in.Sessions - in.Attempt + 1 }
+	if h.sessions[1].Attempt != 2 || left(h.sessions[1]) != left(h.sessions[0]) {
+		t.Fatalf("the second session = attempt %d with %d starts left, want attempt 2 with %d as before the held one",
+			h.sessions[1].Attempt, left(h.sessions[1]), left(h.sessions[0]))
+	}
+	gap := betweenSessions(t, *order)
+	for _, a := range verifyActivities {
+		if slices.Contains(gap, a) {
+			t.Fatalf("between the sessions %v, want no %s", gap, a)
+		}
+	}
+	if len(h.trips) != 0 || len(h.states) < 2 || !slices.Equal(h.states[:2], []string{"running", "running"}) {
+		t.Fatalf("asks %+v, states %v; want no ask and no move to review between the sessions", h.trips, h.states)
+	}
+	if len(p.at) != 3 {
+		t.Fatalf("slot asks at %v, want the first session's, the park and the release's", p.at)
+	}
+	p.mustWaitFor(t, 3)
+}
+
+// A hold that stops the card's last session, its third of 3 with 2 of its
+// 20 minutes left, gives the session's room back: one start, and the
+// 6 - 2 = 4 minutes that make one session's worth at its average of
+// 18 / 3 = 6. After the release the fourth session starts with its 6
+// minutes, and no cap and no room is asked.
+func TestAHeldStopInTheLastSessionAsksNoRoom(t *testing.T) {
+	h := newWorkflowHarness(t)
+	p := newSlotProbe(h, 4)
+	noPush := func(session string) SessionResult {
+		return SessionResult{Outcome: OutcomeNoPush, SessionID: session, Summary: "the session pushed nothing"}
+	}
+	h.onTimedSessions(timedSession{6 * time.Minute, noPush("s1")}, timedSession{6 * time.Minute, noPush("s2")},
+		timedSession{6 * time.Minute, heldSession("s3", "c3")}, timedSession{time.Minute, pushed("s4", "c4")})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	p.wake(time.Hour)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v, asks %q", final, h.finals, h.escalated)
+	}
+	var attempts []int
+	for _, in := range h.sessions {
+		attempts = append(attempts, in.Attempt)
+	}
+	if !slices.Equal(attempts, []int{1, 2, 3, 4}) {
+		t.Fatalf("attempts = %v, want 1 2 3 4", attempts)
+	}
+	if in := h.sessions[3]; in.Sessions != 4 || in.Remaining != 6*time.Minute || in.StartRef != "c3" {
+		t.Fatalf("the fourth session = %d sessions, %v left, from %q; want 4, 6m and c3", in.Sessions, in.Remaining, in.StartRef)
+	}
+	if len(h.trips) != 0 {
+		t.Fatalf("asks = %q, want none", h.escalated)
+	}
+	if want := (TaskUsage{AgentTime: 18 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 4 * time.Minute}); !slices.Contains(h.usage, want) {
+		t.Fatalf("usage = %+v, want the refund %+v", h.usage, want)
+	}
+	p.mustWaitFor(t, 5)
+}
+
+// A hold released while its session stops, before the park, leaves the
+// card nothing to wait for: the slot's ask reads no hold and is granted
+// at once, with no wake, and the next session starts from the held
+// session's push. The same stop with the hold still standing parks the
+// card, and no session starts.
+func TestAReleaseDuringTheStopStartsTheNextSession(t *testing.T) {
+	for name, released := range map[string]bool{"released": true, "still held": false} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			order := h.activityOrder()
+			held := false
+			var asks []bool
+			h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(
+				func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+					asks = append(asks, held)
+					return ResumeSlot{Granted: !held}, nil
+				})
+			h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionInput) (SessionResult, error) {
+					h.sessions = append(h.sessions, in)
+					if len(h.sessions) > 1 {
+						return pushed("s2", "c2"), nil
+					}
+					// the press stops the session, and the release may come
+					// before the stop ends
+					held = !released
+					return heldSession("s1", "abc123"), nil
+				})
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+			if final := h.run(t); final != "closed" {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			if !released {
+				if len(h.sessions) != 1 || !slices.Equal(asks, []bool{false, true}) {
+					t.Fatalf("%d sessions, slot asks on a held card %v; want one session and the park", len(h.sessions), asks)
+				}
+				return
+			}
+			if len(h.sessions) != 2 || h.sessions[1].StartRef != "abc123" || !slices.Equal(asks, []bool{false, false}) {
+				t.Fatalf("sessions %+v, slot asks on a held card %v; want the second from abc123 after an ask with no hold", h.sessions, asks)
+			}
+			gap := betweenSessions(t, *order)
+			for _, a := range verifyActivities {
+				if slices.Contains(gap, a) {
+					t.Fatalf("between the sessions %v, want no %s", gap, a)
+				}
+			}
+			if i := slices.Index(gap, ActivityAdmitResume); i < 0 || slices.Contains(gap[i+1:], ActivityAdmitResume) {
+				t.Fatalf("between the sessions %v, want one slot ask", gap)
+			}
+		})
+	}
+}
+
+// A hold that lands as the session ends with its push misses the stop: the
+// press finds no live session and signals the card, which goes through its
+// gates with the hold stored. The review sends it back, and before any
+// session the card asks for its slot, which the hold parks; the signal no
+// wait took is dropped.
+func TestAHoldThatMissedTheStopParksAfterReview(t *testing.T) {
+	h := newWorkflowHarness(t)
+	order := h.activityOrder()
+	held := false
+	var asks []bool
+	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+			asks = append(asks, held)
+			return ResumeSlot{Granted: !held}, nil
+		})
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			held = true
+			return pushed("s1", "c1"), nil
+		})
+	h.checksDelay = 10 * time.Minute
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.onReviews("c1")
+	h.signalAfter(time.Minute, SignalHeld, TaskSignal{Author: "sebastian"})
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 1 || !slices.Equal(asks, []bool{false, true}) {
+		t.Fatalf("sessions %d, slot asks on a held card %v; want one session and the park after review", len(h.sessions), asks)
+	}
+	review := slices.Index(*order, ActivityModelReview)
+	if review < 0 || !slices.Contains((*order)[review+1:], ActivityAdmitResume) || slices.Contains((*order)[review+1:], ActivityRunSession) {
+		t.Fatalf("activities %v, want the review, then the slot's ask and no session", *order)
+	}
+	if strings.Contains(h.logs.String(), "unhandled signals") {
+		t.Fatalf("log:\n%s\nwant the press dropped", h.logs.String())
+	}
+}
+
+// A card frozen to its provider's reset two hours ahead takes a human's
+// hold: the wait ends at the press at 09:10, the loop's top reads only the
+// raises and the funding before it asks for the slot, which parks the card,
+// and after the release at 09:30 its next session starts then, not at the
+// 11:00 reset.
+func TestAFrozenCardTakesTheHold(t *testing.T) {
+	h, began, waits := providerLimitHarness(t, scripted(limitRefused(oct(14, 11, 0), "rate limit exceeded"), pushed("s2", "c1"))...)
+	order := h.activityOrder()
+	p := newSlotProbe(h, 2)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(10*time.Minute, SignalHeld, TaskSignal{Author: "sebastian"})
+	p.wake(30 * time.Minute)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(*waits) != 1 || !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 9, 30)}) {
+		t.Fatalf("waits %+v, sessions began at %v; want one freeze and the second session at the release", *waits, *began)
+	}
+	if !sameTimes(p.at, []time.Time{oct(14, 9, 0), oct(14, 9, 10), oct(14, 9, 30)}) {
+		t.Fatalf("slot asks at %v, want 09:00, the press at 09:10 and the release at 09:30", p.at)
+	}
+	after := (*order)[slices.Index(*order, ActivityProviderWait)+1:]
+	ask := slices.Index(after, ActivityAdmitResume)
+	if ask < 0 || slices.ContainsFunc(after[:ask], func(a string) bool { return a != ActivityReadUsage && a != ActivitySessionFunded }) {
+		t.Fatalf("after the freeze %v, want only the reads of the raises and the funding before the slot's ask", after)
+	}
+}
+
+// A card in the provider's backoff after a refusal with no named reset
+// takes a human's hold: the 2-minute wait ends at the press a minute in,
+// and the card asks for its slot and parks until the release.
+func TestAProviderBackoffTakesTheHold(t *testing.T) {
+	h, began, _ := providerHarness(t, refusedSession, pushed("s2", "c1"))
+	p := newSlotProbe(h, 2)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Minute, SignalHeld, TaskSignal{Author: "sebastian"})
+	p.wake(time.Hour)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if !sameTimes(p.at, []time.Time{oct(14, 9, 0), oct(14, 9, 1), oct(14, 10, 0)}) || !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 10, 0)}) {
+		t.Fatalf("slot asks at %v, sessions at %v; want the park at the press 09:01 and the session at the release 10:00", p.at, *began)
+	}
+}
+
+// A press during the session's start check-in finds no live session and
+// signals the card; the session stops held when it registers. The press
+// no wait took ends no later wait: after the release at 10:00 the next
+// session's freeze holds to its reset at 12:00.
+func TestAPressLeftUnreadEndsNoLaterFreeze(t *testing.T) {
+	h := newWorkflowHarness(t)
+	p := newSlotProbe(h, 2)
+	h.onTimedSessions(timedSession{10 * time.Minute, heldSession("s1", "abc123")},
+		timedSession{0, limitRefused(oct(14, 12, 0), "rate limit exceeded")}, timedSession{0, pushed("s3", "c3")})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Minute, SignalHeld, TaskSignal{Author: "sebastian"})
+	p.wake(time.Hour)
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []time.Time{oct(14, 9, 0), oct(14, 9, 10), oct(14, 10, 0), oct(14, 12, 0)}; len(h.sessions) != 3 || !sameTimes(p.at, want) {
+		t.Fatalf("%d sessions, slot asks at %v; want 3 and asks at %v", len(h.sessions), p.at, want)
+	}
+}
+
+// A run from before the hold's stop sets no HoldStop on its sessions, so a
+// press leaves its session running. A SignalHeld ends none of its waits:
+// the freeze holds to its reset, and the run drops the signal at its end,
+// as it drops a retry press and a stale nudge that came while it waited
+// for the merge.
+func TestAnOldRunSetsNoHoldStop(t *testing.T) {
+	h, began, _ := providerLimitHarness(t, scripted(limitRefused(oct(14, 11, 0), "rate limit exceeded"), pushed("s2", "c1"))...)
+	h.env.OnGetVersion("hold-stop", workflow.DefaultVersion, versionHoldStop).Return(workflow.DefaultVersion)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(10*time.Minute, SignalHeld, TaskSignal{Author: "sebastian"})
+	h.signalAfter(150*time.Minute, SignalProviderRetry, TaskSignal{Author: "sebastian"})
+	h.signalAfter(150*time.Minute, SignalStaleNudge, TaskSignal{Author: "factoryd"})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 || h.sessions[0].HoldStop || h.sessions[1].HoldStop {
+		t.Fatalf("sessions = %+v, want two with no HoldStop", h.sessions)
+	}
+	if !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 11, 0)}) {
+		t.Fatalf("sessions began at %v, want the second at the 11:00 reset", *began)
+	}
+	if strings.Contains(h.logs.String(), "unhandled signals") {
+		t.Fatalf("log:\n%s\nwant every pending signal dropped", h.logs.String())
+	}
+}
+
+// A held stop that got no model answer is a human's stop, not the model's
+// silence: it counts toward no ask for sessions in a row with no answer. s1
+// and s3 get none around the held s2, which makes 2 in a row, not 3, and
+// s4 runs with no ask. The held stop took no number, so its refund is
+// agent time alone, and only when less than a session's worth is left:
+// after 8 + 9 = 17 of 20 minutes, the 5-minute slice of a card with no
+// counted session less the 3 left, 2; with no time spent, nothing. Every
+// session runs as attempt 1 of 3.
+func TestAHeldStopCountsTowardNoUnansweredAsk(t *testing.T) {
+	silent := func(session string) SessionResult {
+		return SessionResult{Outcome: OutcomeNoPush, SessionID: session, Summary: "no model answer"}
+	}
+	for name, tc := range map[string]struct {
+		s1, s2 time.Duration
+		refund TaskUsage // the usage the refund records
+	}{
+		"short of time": {8 * time.Minute, 9 * time.Minute, TaskUsage{AgentTime: 17 * time.Minute, ExtraTime: 2 * time.Minute, LastUncounted: true}},
+		"time to spare": {0, 0, TaskUsage{LastUncounted: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			p := newSlotProbe(h, 3)
+			h.onTimedSessions(timedSession{tc.s1, silent("s1")}, timedSession{tc.s2, heldSession("s2", "")},
+				timedSession{0, silent("s3")}, timedSession{0, pushed("s4", "c4")})
+			h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID == "s4", nil })
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			p.wake(time.Hour)
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v, asks %q", final, h.finals, h.escalated)
+			}
+			if len(h.sessions) != 4 || len(h.trips) != 0 {
+				t.Fatalf("%d sessions, asks %q; want 4 and no ask", len(h.sessions), h.escalated)
+			}
+			for i, in := range h.sessions {
+				if in.Attempt != 1 || in.Sessions != 3 {
+					t.Fatalf("session %d = attempt %d of %d, want 1 of 3", i+1, in.Attempt, in.Sessions)
+				}
+			}
+			if len(h.usage) < 3 || h.usage[2] != tc.refund {
+				t.Fatalf("usage = %+v, want the refund %+v after the held session's record", h.usage, tc.refund)
+			}
+			p.mustWaitFor(t, 4)
+		})
 	}
 }

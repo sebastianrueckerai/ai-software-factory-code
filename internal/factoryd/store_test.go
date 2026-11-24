@@ -1297,9 +1297,8 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetCardHold mirrors Postgres: a bound agent card queued and never
-// admitted or resumed, or in waiting-deps on a dependency that has not
-// ended, takes the hold.
+// SetCardHold mirrors Postgres: a holdable card, one in waiting-deps only
+// on a dependency that has not ended, takes the hold.
 func (s *fakeStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool, error) {
 	t, ok := s.tasks[id]
 	live := slices.ContainsFunc(s.deps[id], func(d string) bool { return !Final(s.tasks[d].Status) })
@@ -1353,14 +1352,14 @@ func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now t
 
 // SetResumeWait mirrors Postgres: a parked card goes queued with its
 // resumption's first time kept.
-func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) error {
+func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) (bool, error) {
 	t, ok := s.tasks[id]
 	if !ok {
-		return nil
+		return false, nil
 	}
 	parked := slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
-	if !parked && !(t.Status == "queued" && t.ResumedAt != nil) {
-		return nil
+	if !parked && !(t.Status == "queued" && t.ResumedAt != nil) && !(t.Status == "running" && t.Hold != nil) {
+		return false, nil
 	}
 	if t.ResumedAt == nil {
 		t.ResumedAt = &now
@@ -1368,7 +1367,7 @@ func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now ti
 	t.QueueSince = t.ResumedAt
 	t.Status, t.QueueReason = "queued", reason
 	s.tasks[id] = t
-	return nil
+	return true, nil
 }
 
 func (s *fakeStore) ResumeWaiters(ctx context.Context, repository string) ([]Task, error) {
@@ -3035,6 +3034,26 @@ func (s *fakeStore) SetLiveSessionDeadline(ctx context.Context, taskID, owner st
 	defer s.liveMu.Unlock()
 	if l, ok := s.liveSessions[taskID]; ok && l.Owner == owner {
 		l.Deadline, l.TimeAdded, l.BudgetEUR = deadline, &added, &budget
+		s.liveSessions[taskID] = l
+	}
+	return nil
+}
+
+func (s *fakeStore) SetLiveSessionPod(ctx context.Context, taskID, owner, uid, node, boot string) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if l, ok := s.liveSessions[taskID]; ok && l.Owner == owner {
+		l.PodUID, l.Node, l.BootID = uid, node, boot
+		s.liveSessions[taskID] = l
+	}
+	return nil
+}
+
+func (s *fakeStore) SetLiveSessionStopping(ctx context.Context, taskID, owner string, at time.Time) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if l, ok := s.liveSessions[taskID]; ok && l.Owner == owner {
+		l.StoppingAt = &at
 		s.liveSessions[taskID] = l
 	}
 	return nil

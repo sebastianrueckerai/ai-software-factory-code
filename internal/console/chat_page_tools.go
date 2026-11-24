@@ -513,3 +513,56 @@ func (c *Console) deploymentHealthText(ctx context.Context, p factoryd.Project, 
 	}
 	return text, nil
 }
+
+// clusterFactsText is what the cluster did to a session of the card in, by
+// the session's number, or the platform's incidents of a window; a refusal
+// keeps its sentence.
+func (t *turn) clusterFactsText(in toolInput) (string, error) {
+	text, err := t.clusterFacts(in)
+	if err != nil {
+		return "", factsRefusal(err)
+	}
+	return text, nil
+}
+
+// factsRefusal is err as the refusal the chat shows: factoryd's with its
+// status, a card read's as it is, anything else a logged 500.
+func factsRefusal(err error) error {
+	var no *factoryd.FactsRefusal
+	switch {
+	case errors.As(err, &no):
+		return refuse(no.Status, no.Msg)
+	case errors.As(err, new(*refusal)):
+		return err
+	}
+	log.Printf("console: cluster facts: %v", err)
+	return refuse(http.StatusInternalServerError, "cannot read what the cluster did")
+}
+
+func (t *turn) clusterFacts(in toolInput) (string, error) {
+	if in.TaskID == "" {
+		// the window reads the whole platform's incident log: the factory's
+		// access, as alerts takes
+		if err := t.c.admit(t.r.Context(), accessTable["alerts"], t.a, t.c.writersOwn(), ""); err != nil {
+			var no *refusal
+			if errors.As(err, &no) && no.status == http.StatusForbidden {
+				return "", refuse(http.StatusForbidden, "Only the writers of the factory's own code read the platform's incident log: ask about a session of one of this project's cards instead.")
+			}
+			return "", err
+		}
+	}
+	since, until, err := factoryd.ParseFactsTimes(strings.TrimSpace(in.Since), strings.TrimSpace(in.Until))
+	if err != nil {
+		return "", err
+	}
+	var taskID, session string
+	var prover bool // a prover's last command can name its blind proofs, which its transcript read refuses
+	if in.TaskID != "" {
+		k, _, all, err := t.sessions(in)
+		if err != nil {
+			return "", err
+		}
+		taskID, session, prover = k.ID, sessionAt(all, in.N).ID, k.Source == factoryd.SourceProver
+	}
+	return t.c.cfg.ClusterFacts(t.r.Context(), taskID, session, since, until, prover)
+}

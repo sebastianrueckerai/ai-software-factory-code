@@ -418,3 +418,109 @@ func TestDeploymentHealthIsRefusedToAProjectWithoutNamespaces(t *testing.T) {
 	equal(t, "the answer's role", got["role"], "tool")
 	equal(t, "the answer", got["content"], "Refused: project demo lists no namespaces: it runs nothing in the cluster for deployment_health to read")
 }
+
+// cluster_facts reads a card's session by the number the session tool
+// takes, and refuses what the factory kept no record of.
+func TestChatClusterFactsReadsACardsSession(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.deaths = map[[2]string]factoryd.DeathRecord{{"t-r", "s-1"}: {Class: factoryd.DeathPlatform, Rule: factoryd.RuleGuardKill,
+		At: time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC), Node: "n1", KillSource: "guard"}}
+	equal(t, "the reads", reads(t, r, g, "cluster_facts", `{"task_id":"t-r","n":1}`, "cluster_facts", `{"task_id":"t-r"}`,
+		"cluster_facts", `{"task_id":"t-r","n":2}`, "cluster_facts", `{"since":"2026-10-22T10:00:00Z","until":"2026-10-22T09:00:00Z"}`,
+		"cluster_facts", `{"since":"yesterday","until":"today"}`), []string{
+		"class: platform\nrule: guard_kill\nat: 2026-10-11T09:40:00Z\nnode: n1\nkill: memory guard",
+		"class: platform\nrule: guard_kill\nat: 2026-10-11T09:40:00Z\nnode: n1\nkill: memory guard",
+		"Refused: Card #11 has no session 2. It has had 1 session.",
+		"Refused: until comes before since: ask with since before until.",
+		"Refused: since must be RFC 3339, like 2026-11-20T14:00:00Z: ask again with that form.",
+	})
+}
+
+// The window form reads the whole platform's incident log: a human
+// without the factory's access reads a session of their project's card,
+// and the window is refused with that way to ask.
+func TestChatClusterFactsWindowNeedsTheFactorysAccess(t *testing.T) {
+	r, _, g := newChatRig(t)
+	members(r)
+	r.ledger.files = map[string]policy.ProjectConfig{"demo": {Repository: "demo/demo", MergeRule: "human", Objects: "factory",
+		Agents: "coder", Process: "maintenance"}}
+	r.tasks.set("", factoryd.Task{ID: "t-dm", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "maintenance",
+		Repository: "demo/demo", IssueNumber: 3, Objective: "Fix the login."})
+	r.objects["sessions/t-dm/timeline.jsonl"] = []byte(readsTimeline)
+	r.deaths = map[[2]string]factoryd.DeathRecord{{"t-dm", "s-1"}: {Class: factoryd.DeathPlatform, Rule: factoryd.RuleGuardKill,
+		At: time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC), Node: "n1", KillSource: "guard"}}
+	g.project = "demo"
+	ck, s := memberLogin(t, r, "bob")
+	g.replies = [][]string{{call(1, "cluster_facts", `{"task_id":"t-dm","n":1}`,
+		"cluster_facts", `{"since":"2026-10-22T09:00:00Z","until":"2026-10-22T10:00:00Z"}`)}, {say("ok")}}
+	chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"what did the cluster do?"}})
+	calls := g.calls()
+	msgs := messages(t, calls[len(calls)-1])
+	var got []string
+	for _, m := range msgs[len(msgs)-2:] {
+		got = append(got, m["content"].(string))
+	}
+	equal(t, "the reads", got, []string{
+		"class: platform\nrule: guard_kill\nat: 2026-10-11T09:40:00Z\nnode: n1\nkill: memory guard",
+		"Refused: Only the writers of the factory's own code read the platform's incident log: ask about a session of one of this project's cards instead.",
+	})
+}
+
+func TestChatClusterFactsRefusesAnotherProjectsCard(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ls", Kind: "agent", Status: "queued", Repository: "sf/other", IssueNumber: 5}})
+	equal(t, "the reads", reads(t, r, g, "cluster_facts", `{"task_id":"t-ls"}`), []string{"Refused: There is no card t-ls in this project."})
+}
+
+// The chat's refusals carry the status of the factoryd refusal, as
+// deployment_health's do.
+func TestChatClusterFactsRefusalStatuses(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want int
+	}{
+		{&factoryd.FactsRefusal{Status: http.StatusNotFound, Msg: "none"}, 404},
+		{&factoryd.FactsRefusal{Status: http.StatusBadRequest, Msg: "bad"}, 400},
+		{&factoryd.FactsRefusal{Status: http.StatusConflict, Msg: "now"}, 409},
+		{errors.New("db down"), 500},
+		{refuse(http.StatusNotFound, "There is no card"), 404},
+	} {
+		if got := refusalCode(factsRefusal(c.err)); got != c.want {
+			t.Errorf("%v: status %d, want %d", c.err, got, c.want)
+		}
+	}
+}
+
+// A running session of the card reads live in the chat, through the
+// session's number.
+func TestChatClusterFactsReadsARunningSession(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.lives = map[string]factoryd.LiveSession{"t-r": {TaskID: "t-r", SessionID: "s-1", StartedAt: time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)}}
+	equal(t, "the read", reads(t, r, g, "cluster_facts", `{"task_id":"t-r","n":1}`), []string{"session s-1 is running"})
+}
+
+// A prover's session holds the plan's blind proofs: the chat's read leaves
+// out the last command and the lines whose class line quotes it, as the
+// chat refuses its transcript.
+func TestChatClusterFactsOmitsAProversLastCommand(t *testing.T) {
+	r, g := newSessionsRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-prove", Kind: "agent", Status: "running",
+		Source: factoryd.SourceProver, Parent: "t-plan", Track: policy.TrackDirect, Repository: "sf/code"}})
+	r.tasks.mu.Unlock()
+	r.objects["sessions/t-prove/timeline.jsonl"] = []byte(sessionsTimeline)
+	rec := factoryd.DeathRecord{Class: factoryd.DeathOwnLimit, Rule: factoryd.RuleMemoryLimit, At: time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC),
+		LastCommand: "go test ./proofs/key_log"}
+	rec.Lines = factoryd.GateLines(rec, "", true)
+	if len(rec.Lines) == 0 || !strings.Contains(strings.Join(rec.Lines, "\n"), "proofs/key_log") {
+		t.Fatalf("lines = %q, want a class line that quotes the command", rec.Lines)
+	}
+	r.deaths = map[[2]string]factoryd.DeathRecord{{"t-prove", "s1"}: rec, {"t-r", "s1"}: rec}
+	got := reads(t, r, g, "cluster_facts", `{"task_id":"t-prove","n":1}`, "cluster_facts", `{"task_id":"t-r","n":1}`)
+	if strings.Contains(got[0], "key_log") || strings.Contains(got[0], "lines given") || !strings.HasPrefix(got[0], "class: own_limit\nrule: memory_limit\n") {
+		t.Errorf("the prover's read = %q, want no command and no lines", got[0])
+	}
+	if !strings.Contains(got[1], "last command: go test ./proofs/key_log") || !strings.Contains(got[1], "lines given to the next session:\n") {
+		t.Errorf("the other card's read = %q, want the command and the lines", got[1])
+	}
+}

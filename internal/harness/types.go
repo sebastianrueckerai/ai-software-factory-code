@@ -178,12 +178,14 @@ type Event struct {
 // Result is the adapter's final verdict, or the worker's when its start
 // failed before the harness ran: Step names the step that failed, and
 // Transient says a later start may not meet its fault (a service the
-// sandbox needs that did not answer, as while it restarts).
+// sandbox needs that did not answer, as while it restarts). Stopped says
+// the worker ended on a SIGTERM.
 type Result struct {
 	Success   bool   `json:"success"`
 	Summary   string `json:"summary"`
 	Step      string `json:"step,omitempty"`
 	Transient bool   `json:"transient,omitempty"`
+	Stopped   bool   `json:"stopped,omitempty"`
 }
 
 // SandboxEnv names where a task runs.

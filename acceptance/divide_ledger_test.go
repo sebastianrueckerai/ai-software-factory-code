@@ -455,6 +455,16 @@ func (accKube) PodLogTail(context.Context, string, string, int) (string, error) 
 func (accKube) NewestPodEvent(context.Context, string, string) (string, error) {
 	return "", factoryd.ErrNotFound
 }
+func (accKube) PodEvents(context.Context, string, string) ([]factoryd.PodEvent, error) {
+	return nil, nil
+}
+func (accKube) NodeState(context.Context, string) (factoryd.NodeState, error) {
+	return factoryd.NodeState{}, factoryd.ErrNotFound
+}
+func (accKube) Nodes(context.Context) ([]factoryd.NodeState, error) { return nil, nil }
+func (accKube) ServicePods(context.Context, string, string) ([]factoryd.ServicePod, error) {
+	return nil, nil
+}
 func (accKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolume, error) {
 	return nil, nil
 }

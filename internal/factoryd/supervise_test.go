@@ -2190,6 +2190,18 @@ func TestAPersonsReplanIsDecided(t *testing.T) {
 	}
 }
 
+// A human's hold is decided as a person's replan is: the session stops on
+// it without a check-in, with the human's reason.
+func TestAgentAskHoldTripsHold(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	trip := s.AgentAsk(AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way"})
+	if trip.Kind != TripHold || trip.Stuck != "" || trip.decided == nil ||
+		trip.decided.Action != ActionHold || trip.decided.Reason != "held by sebastian: out of the way" {
+		t.Fatalf("trip = %+v (decided %+v), want the human's decided hold", trip, trip.decided)
+	}
+}
+
 // The agent's cut is no decision: it trips for the check-in, its detail the
 // reason and the numbered parts, and it is never the stuck rule's. A long
 // reason is cut at 1000 bytes so the parts always follow it.

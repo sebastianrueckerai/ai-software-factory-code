@@ -41,9 +41,10 @@ const (
 	TripLoop TripKind = "loop"
 	// TripSize: the card's diff passed the line bound its size plans, once a session
 	TripSize TripKind = "size"
-	// TripReplan: a person asked for the card's replan; decided already,
-	// no supervisor call
+	// TripReplan: a person asked for the card's replan, TripHold a human
+	// put the card on hold; decided already, no supervisor call
 	TripReplan TripKind = "replan"
+	TripHold   TripKind = "hold"
 )
 
 // loopNudges delivered nudges with no new file content in between end
@@ -450,9 +451,10 @@ const (
 
 // AgentAsk trips on the agent's own escalate, request_info or
 // request_tool: an escalation with its question, the information request,
-// or the tool request with its tool and need; or on a person's replan with
-// its reason. The supervisor model is not asked. The agent's request_cut
-// trips undecided, for the check-in, with its reason and parts.
+// or the tool request with its tool and need; or on a person's replan or a
+// human's hold with its reason. The supervisor model is not asked. The
+// agent's request_cut trips undecided, for the check-in, with its reason
+// and parts.
 func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if s.tripped != nil {
 		return s.tripped
@@ -465,6 +467,8 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 		kind, detail = TripAgentToolRequest, "the agent asked for a tool"
 	case AskReplan:
 		kind, detail, action = TripReplan, "a person asked for the replan", ActionReplan
+	case AskHold:
+		kind, detail, action = TripHold, "a human put the card on hold", ActionHold
 	case AskCut:
 		parts := make([]string, len(a.Parts))
 		for i, p := range a.Parts {

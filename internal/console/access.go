@@ -159,7 +159,7 @@ var accessTable = map[string]accessRule{
 	"read_doc": rMember, "show_doc": rMember, "notes_read": rMember, "active_threads": rMember, "chat_search": rMember, "inbox": rMember, "routines": rMember,
 	"board_view": rMember, "board_view_reset": rMember,
 	"watch_card": rMember, "unwatch_card": rMember, "set_timer": rMember, "analyze_image": rMember, "read_attachment": rMember, "summarize_attachment": rMember,
-	"costs": rFactory, "alerts": rFactory, "deployment_health": rMember, "resources": rFactory, "settings": rFactory, "policy": rFactory,
+	"costs": rFactory, "alerts": rFactory, "deployment_health": rMember, "cluster_facts": rMember, "resources": rFactory, "settings": rFactory, "policy": rFactory,
 	"project_images": rMember,
 
 	// chat tools: writes

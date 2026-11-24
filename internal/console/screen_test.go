@@ -1702,9 +1702,11 @@ func TestNoWideView(t *testing.T) {
 func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	// the stage's start lands on a minute, so the face's whole minutes
-	// hold however long the render takes
-	admitted := time.Now().Truncate(time.Minute).Add(-10 * time.Hour)
+	// the console's clock is pinned, so the face's minutes hold however
+	// long the render takes
+	now := time.Date(2026, 11, 20, 14, 30, 45, 0, time.UTC)
+	r.c.clock = func() time.Time { return now }
+	admitted := now.Add(-10 * time.Hour)
 	r.tasks.set("", factoryd.Task{ID: "t-frozen", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/code",
 		Objective: "t-frozen", CreatedAt: admitted, AdmittedAt: &admitted})
 	refused := admitted.Add(192 * time.Minute) // 3 h 12 m into the stage

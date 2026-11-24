@@ -327,7 +327,19 @@ decimals: a task's model calls cost fractions of a cent.
   line each, steps in full, a search of the transcripts and, with no step
   matching, of the sessions' ends; transcripts over 8 MiB are only
   searched), `ci` (a commit's combined CI status with each job's, main's
-  head unless a ref or sha names another, through the human's token) and
+  head unless a ref or sha names another, through the human's token),
+  `cluster_facts` (what the cluster did to a card's session, by the number
+  `session` takes: the death record kept at its end with its class, rule,
+  kill, service restarts, the pod's events as time, type, reason and count
+  without their text, its node's state now and the incidents on that node in the
+  session's life (a prover's last command is left out); for the card's running session, a live read of its pod,
+  containers, node and the node's incidents since it started; or, with
+  `since` and `until` as RFC 3339 and for the writers of the factory's own
+  code alone, as `alerts`, the platform's incidents of a window of at most
+  24 hours inside the 30 days the log keeps; cut at 12 KiB. A refusal
+  carries 400 for a bad ask, 403 for a window asked without the factory's
+  access, naming the session form, 404 for a session with no record and
+  409 when the factory keeps no cluster facts) and
   `project_images` (the project's pins in force with their tools, egress,
   short digest and key, its open tool cards, and its cards in
   `waiting-image` with the image each waits for), and
@@ -474,13 +486,19 @@ decimals: a task's model calls cost fractions of a cent.
   the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
   one, and the refusal of an edge across two names the fitting action: a
-  hold with the other card as its release card. `hold_card` holds a card
-  that has not started, with a reason and an optional release card of any
+  hold with the other card as its release card. `hold_card` holds a
+  queued or running card, with a reason and an optional release card of any
   plan of the project, not a plan itself and not one that waits on the
   held card, and `release_hold` ends a hold; both run only on a
   line the human typed in that turn, or on their press, and "Put on hold"
   and "Release the hold", among the opened card's other actions, do the
-  same. A held card's face carries its hold in its waits line, which says
+  same. On a running card the press stops its session, which keeps its
+  work: the answer is "#N stops its session, keeps its work and waits in
+  Queued until a human releases it", and where the card has no live
+  session, "#N waits in Queued before its next session until a human
+  releases it". A card in review, closing or merged, and one that waits
+  for an answer, is refused with its state and the action that fits. A
+  held card's face carries its hold in its waits line, which says
   so once its release card ended failed or closed or became a plan. `set_pool` sets the money
   of the project's escalation pool, or tops up the money its project file
   already sets, as `escalation.pool.eur` written through a pull request on
