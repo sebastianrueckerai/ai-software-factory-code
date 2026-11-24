@@ -1144,6 +1144,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
     locked = true;
     return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });
   }, swap: function () {}, process: function () {}},
+  getSelection: function () { return {isCollapsed: true}; },
   window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }},
   document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
     getElementById: function (id) { return byID[id] || null; },
@@ -1457,6 +1458,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
   CustomEvent: function (type, init) { this.type = type; this.detail = init && init.detail; },
   fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
   htmx: {ajax: function (verb, url) { requests.push(verb + " " + url); return new Promise(function (ok) { pending.push(ok); }); }, swap: function () {}, process: function () {}},
+  getSelection: function () { return {isCollapsed: true}; },
   window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }}};
 require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 function fire(type, e) { (listeners[type] || []).forEach(function (fn) { fn(e || {}); }); }
@@ -1656,6 +1658,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
     locked = true;
     return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });
   }, swap: function () {}, process: function () {}},
+  getSelection: function () { return {isCollapsed: true}; },
   window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }},
   document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
     getElementById: function (id) { return byID[id] || null; },

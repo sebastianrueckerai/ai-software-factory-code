@@ -1632,7 +1632,7 @@ async function text(page) {
       const routine779 = (await p.page.locator('#board [data-card="' + labID(779) + '"] .foot .place').allInnerTexts()).map((t) => t.trim());
       if (routine779.join() !== "↻ dependency-update") fails.push("routines: #779's place in Done reads " + JSON.stringify(routine779) + ", want ↻ dependency-update");
       const d = p.page.locator("#drawer");
-      await p.page.locator('#board [data-routine="ai-software-factory-code/weekly-bump"]').click();
+      await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"] .title').click();
       await p.page.waitForTimeout(600);
       if (!(await d.isVisible())) fails.push("routines: a click on the ghost does not open the drawer");
       else {

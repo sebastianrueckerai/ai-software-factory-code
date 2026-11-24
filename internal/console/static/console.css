@@ -239,12 +239,12 @@ footer#live:empty { display: none; }
    into its why line, then one mono foot line of the state with its one
    time, the place, the number and what it waits for, each item's
    separator trailing it so a wrapped line never opens on one. A press
-   anywhere on the card opens it: the open link lies over the whole card
-   and every control of the card over that. */
+   anywhere on the card opens it (console.js), and a drag selects its
+   text: the open link lies over the whole card for the keyboard's focus
+   ring and lets every pointer through. */
 .card.face { padding: 8px 10px 9px; }
-.card.face > .open { position: absolute; inset: 0; z-index: 0; }
+.card.face > .open { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .card.face > .open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.card.face :is(a:not(.open), button:not(.open), form, .carousel) { position: relative; z-index: 1; }
 .card.face:has(> .open) { cursor: pointer; }
 .para { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .para .title { color: var(--text); font-weight: 600; }
