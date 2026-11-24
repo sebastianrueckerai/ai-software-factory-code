@@ -25,7 +25,7 @@ func TestConfigPageRendersTheAgentBlock(t *testing.T) {
 		"opencode-internal task and explore delegation · runs:",
 		"`deadbeef`",
 		"`policyhash`",
-		"opencode 1.19.5",
+		"opencode 1.19.6",
 		"`buildOpencodeConfig`",
 		"blob/deadbeef/internal/fixture/a.go#L",
 		"\"factory/small\"",

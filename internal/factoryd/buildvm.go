@@ -38,8 +38,8 @@ const (
 	// is unknown when the certificate is minted, so clients pass it as
 	// --tlsservername.
 	buildVMServerName = "buildkitd"
-	buildkitVersion   = "v0.34.2"
-	buildkitSHA256    = "b9f18b8e37eb450e9e5df03117045237cdd12d3c4a0034ffeeaa857852a15e13"
+	buildkitVersion   = "v0.35.1"
+	buildkitSHA256    = "b248c2b91698aafef11818fe8b681dc5e341581f7d5676709ff45ca1f29b0408"
 
 	// buildTLSSecret holds the CA and client pair in the job's namespace,
 	// mounted at buildTLSDir under buildctl's --tlsdir file names.

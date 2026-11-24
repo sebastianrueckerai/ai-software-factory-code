@@ -14,7 +14,7 @@ import (
 )
 
 // forgejoImage is the Forgejo image the chart pins, by the same digest.
-const forgejoImage = "code.forgejo.org/forgejo/forgejo:17.0.1-rootless@sha256:b76f32add7267b2a791ea04014a441cf9d086050e7c0250feec9fb7066e9828f"
+const forgejoImage = "code.forgejo.org/forgejo/forgejo:17.0.2-rootless@sha256:020d7e5ed6228f147c9681a9c4a3bff485a07c59108e4731a2e94672f0f2202a"
 
 // containerRuntime is docker or podman, whichever answers; it skips the
 // test when neither does (main CI's dind cannot pull and port-map images).
