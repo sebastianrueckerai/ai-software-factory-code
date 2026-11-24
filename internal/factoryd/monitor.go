@@ -196,7 +196,8 @@ func (m *Monitor) Retake(ctx context.Context) error {
 func (m *Monitor) retake(ctx context.Context, c Case) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.Runner.retake(ctx, c)
+	_, err := m.Runner.retake(ctx, c)
+	return err
 }
 
 // logged runs card on card taskID and logs what fails. It answers only the

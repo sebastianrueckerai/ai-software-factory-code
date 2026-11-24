@@ -249,11 +249,80 @@ func TestARetakeAfterTheRunsOwnEndWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := len(g.store.events)
-	if err := g.r.retake(ctx, c); err != nil {
-		t.Fatal(err)
+	if res, err := g.r.retake(ctx, c); err != nil || res != nil {
+		t.Fatalf("retake = %+v, %v; want nothing taken", res, err)
 	}
 	if len(g.store.events) != events || len(g.r.cfg.Workflows.(*fakeWorkflows).signals) != 0 {
 		t.Fatalf("%d new events, signals %q; want none", len(g.store.events)-events, g.r.cfg.Workflows.(*fakeWorkflows).signals)
+	}
+}
+
+// The night of 2026-11-24, on the rig's day: a month cap case opened at
+// 11:03:25 went to rung 2, due at 11:38:26, and rung 2 never answered;
+// sebastian reset the month's count at 11:30:32. The wake at 11:38:27
+// expires the step, and the climb from rung 2 checks the cause before the
+// face: the case resolves on rung 0 with resume for the reset, nobody is
+// asked, and the run hears it. With the month still spent and no reset,
+// the climb asks the human as before.
+func TestClimbAfterAnExpiredRungTakesALiftedCap(t *testing.T) {
+	ctx := context.Background()
+	for _, reset := range []bool{true, false} {
+		g, c := capRetakeRig(t, 0)
+		card := g.store.tasks["t1"]
+		card.Status = "running"
+		g.store.tasks["t1"] = card
+		g.store.cases[len(g.store.cases)-1].Status = CaseOpen
+		due := factsAt(11, 38).Add(26 * time.Second)
+		if _, err := g.store.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, DueAt: &due}); err != nil {
+			t.Fatal(err)
+		}
+		if reset {
+			g.store.capResets = []policy.CapReset{{ID: 1, Cap: policy.CapMonth, At: factsAt(11, 30).Add(32 * time.Second), Login: "sebastian", BeforeEUR: 800}}
+			g.store.capsFree.Month = 800
+		}
+		at := due.Add(time.Second)
+		g.r.now = func() time.Time { return at }
+		m := &Monitor{Store: g.store, Runner: g.r, Now: func() time.Time { return at }, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+		if err := m.WakeCases(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := g.store.CaseByID(ctx, c.ID)
+		asked := slices.ContainsFunc(g.store.events, func(e Event) bool { return e.Kind == EventQuestionAsked && e.TaskID == "t1" })
+		if !reset {
+			if got.Status != CaseAtHuman || !asked {
+				t.Fatalf("the month spent: case %s, asked %v; want it at the human", got.Status, asked)
+			}
+			continue
+		}
+		const why = "the month cap's count was reset at 11:30 UTC by sebastian"
+		if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Rung != 0 || got.Resolution.Action != ActResume || got.Resolution.Reason != why || asked {
+			t.Fatalf("case %s by %+v, asked %v; want it resolved on rung 0 with resume for %q and nobody asked", got.Status, got.Resolution, asked, why)
+		}
+		if signals := g.r.cfg.Workflows.(*fakeWorkflows).signals; len(signals) != 1 || !strings.HasPrefix(signals[0], "t1 case_resolved factoryd") {
+			t.Fatalf("signals %q; want the run told", signals)
+		}
+	}
+}
+
+// A case Act holds while rung 2's proposal climbs it skips the check: the
+// climb runs under that lock, which the check would wait on, and the
+// retake pass checks the case once it is at the human.
+func TestClimbUnderTheCasesLockSkipsTheCheck(t *testing.T) {
+	ctx := context.Background()
+	g, c := capRetakeRig(t, 0)
+	g.r.now = func() time.Time { return factsAt(11, 31) }
+	g.store.capsFree.Month = 800
+	unlock, ok := g.r.TryLockCase(c.ID)
+	if !ok {
+		t.Fatal("the case's lock is held")
+	}
+	res, err := g.r.causeGone(ctx, c)
+	unlock()
+	if err != nil || res != nil {
+		t.Fatalf("causeGone under the lock = %+v, %v; want nothing", res, err)
+	}
+	if res, err = g.r.causeGone(ctx, c); err != nil || res == nil || res.Action != ActResume {
+		t.Fatalf("causeGone = %+v, %v; want the resume once the lock is free", res, err)
 	}
 }
 
