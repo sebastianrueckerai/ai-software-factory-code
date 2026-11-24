@@ -1142,7 +1142,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
 			how = exitedHow(plain, d)
 			for _, c := range d.Containers {
-				if c.State == "terminated" && c.Message != "" && (c.ExitCode != 0 || c.Reason != "Completed") {
+				if c.failed() && c.Message != "" {
 					log.Printf("task %s: session %s: container %s: %s", t.ID, s.id, c.Name, oneLine(r.scrub(c.Message)))
 				}
 			}
@@ -2497,7 +2497,7 @@ func exitedHow(plain string, d PodDiagnosis) string {
 		return "evicted"
 	}
 	for _, c := range d.Containers {
-		if c.State == "terminated" && (c.ExitCode != 0 || c.Reason != "Completed") {
+		if c.failed() {
 			return fmt.Sprintf("%s: container %s terminated with %s (exit code %d)", plain, c.Name, c.Reason, c.ExitCode)
 		}
 	}

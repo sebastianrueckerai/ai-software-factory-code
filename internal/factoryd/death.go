@@ -117,9 +117,7 @@ var (
 // worker that reported its own end ended it: no rule applies.
 func Classify(f DeathFacts) DeathRecord {
 	r := DeathRecord{Class: DeathUnknown, Rule: RuleNone, At: f.Ended, Node: f.Pod.Node, PodUID: f.Pod.UID, LastCommand: f.LastCommand}
-	failed := slices.IndexFunc(f.Pod.Containers, func(c ContainerState) bool {
-		return c.State == "terminated" && (c.ExitCode != 0 || c.Reason != "Completed")
-	})
+	failed := slices.IndexFunc(f.Pod.Containers, ContainerState.failed)
 	if failed >= 0 {
 		c := f.Pod.Containers[failed]
 		r.Container, r.Reason, r.ExitCode = c.Name, c.Reason, c.ExitCode

@@ -167,6 +167,12 @@ type ContainerState struct {
 	MemoryLimit string `json:"memory_limit,omitempty"`
 }
 
+// failed says whether the container ended in failure: a non-zero exit, or
+// any reason but Completed.
+func (c ContainerState) failed() bool {
+	return c.State == "terminated" && (c.ExitCode != 0 || c.Reason != "Completed")
+}
+
 // waiting says what the container waits with: the kubelet's reason and
 // message. A pod still Pending names its hold through it (waitsOn) and
 // a start failure its waiting step (awaitPodStart).
