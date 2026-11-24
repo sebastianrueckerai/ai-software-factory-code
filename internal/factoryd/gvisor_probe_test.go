@@ -133,21 +133,36 @@ func TestTheLiveGVisorEndsClassify(t *testing.T) {
 	}
 }
 
-// gVisor ends a container whose sandbox a SIGKILL took with exit code 128,
-// as the live memory kill shows, where runc ends it 137. A pod that ended
-// 128 with no cause yet waits for a kill line as one that ended 137 does,
-// so a memory guard's line that reaches SigNoz late still names the kill.
+// gVisor reports 128 for a container whose sandbox it lost, as the live
+// memory kill shows, where runc reports a kill 137. A pod that ended 128
+// with no cause yet waits for a kill line as one that ended 137 does, so a
+// memory guard's line that reaches SigNoz late still names the kill.
+// containerd also ends a container it could not start 128, with reason
+// StartError, in any runtime: nothing killed it, so it reads the kernel
+// once and waits for no line.
 func TestASandboxKilledUnderGVisorWaitsForItsKillLine(t *testing.T) {
-	kube, in := deadPod()
-	kube.pods["ns/worker-s1"].containers = []ContainerState{{Name: "worker", State: "terminated", Reason: "Error", ExitCode: 128}}
-	kernel := &scriptedKernel{kills: func(call int) []KernelKill {
-		if call < 2 {
-			return nil
-		}
-		return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: in.ended.Add(-time.Second), Seq: 9}}
-	}}
-	r := deathReader{kube: kube, kernel: kernel, wait: time.Hour, poll: 100 * time.Millisecond, margin: deathMargin}.read(context.Background(), in)
-	if r.Class != DeathPlatform || r.Rule != RuleGuardKill || r.ExitCode != 128 || kernel.called() != 2 {
-		t.Fatalf("%s %s, exit %d after %d kernel reads; want the guard kill the second read names", r.Class, r.Rule, r.ExitCode, kernel.called())
+	for name, tc := range map[string]struct {
+		reason string
+		class  DeathClass
+		rule   DeathRule
+		reads  int
+	}{
+		"a lost sandbox":    {reason: "Error", class: DeathPlatform, rule: RuleGuardKill, reads: 2},
+		"a container start": {reason: "StartError", class: DeathUnknown, rule: RuleNone, reads: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube, in := deadPod()
+			kube.pods["ns/worker-s1"].containers = []ContainerState{{Name: "worker", State: "terminated", Reason: tc.reason, ExitCode: 128}}
+			kernel := &scriptedKernel{kills: func(call int) []KernelKill {
+				if call < 2 {
+					return nil
+				}
+				return []KernelKill{{Source: "guard", Node: "sf-1", PodUID: deathUID, At: in.ended.Add(-time.Second), Seq: 9}}
+			}}
+			r := deathReader{kube: kube, kernel: kernel, wait: time.Hour, poll: 100 * time.Millisecond, margin: deathMargin}.read(context.Background(), in)
+			if r.Class != tc.class || r.Rule != tc.rule || r.ExitCode != 128 || kernel.called() != tc.reads {
+				t.Fatalf("%s %s, exit %d after %d kernel reads; want %s %s after %d", r.Class, r.Rule, r.ExitCode, kernel.called(), tc.class, tc.rule, tc.reads)
+			}
+		})
 	}
 }
