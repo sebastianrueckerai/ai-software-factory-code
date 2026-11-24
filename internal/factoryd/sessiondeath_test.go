@@ -357,6 +357,141 @@ func TestAReportedFailureGetsItsDeath(t *testing.T) {
 	}
 }
 
+// A worker that reported its own end ended the session itself, whatever
+// its node does at the read: a reported failure stays no_push and the
+// agent's request after factoryd's stop stays needs_info, though the node
+// is NotReady or gone, and the record keeps the platform class the node
+// gives it.
+func TestAReportedEndStaysTheWorkers(t *testing.T) {
+	notReady := map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1"}}
+	for name, tc := range map[string]struct {
+		nodes   map[string]NodeState
+		ask     bool
+		logs    string
+		outcome SessionOutcome
+	}{
+		"a failure on a NotReady node": {nodes: notReady, logs: modelCall + resultLine(false, "git push failed: connection refused"), outcome: OutcomeNoPush},
+		"a failure on a gone node":     {nodes: map[string]NodeState{}, logs: modelCall + resultLine(false, "git push failed: connection refused"), outcome: OutcomeNoPush},
+		"a request on a NotReady node": {nodes: notReady, ask: true, logs: modelCall + sigtermLogs + stoppedResultLine("stopped; no work in progress to push"),
+			outcome: OutcomeNeedsInfo},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t5w", nil)
+			g.kube.nodeStates = tc.nodes
+			g.kube.keepDeleted = true
+			g.r.stopWait = 5 * time.Second
+			if tc.ask {
+				go func() {
+					ask := AgentAsk{Kind: AskInfo, Question: "Which browser?", Tried: "the steps on Go 1.26", Needs: "the browser and its version"}
+					for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+						if err := g.r.EscalateSession(context.Background(), "t5w", ask); !errors.Is(err, ErrNoLiveSession) {
+							return
+						}
+					}
+				}()
+			}
+			res := g.run(t, tc.logs)
+			if res.Outcome != tc.outcome || res.Death == nil || res.Death.Class != DeathPlatform || res.Death.Rule != RuleNodeNotReady {
+				t.Fatalf("result = %q, death %+v; want %q with the node's platform record", res.Outcome, res.Death, tc.outcome)
+			}
+			if rec := g.stored(t, "t5w", res.SessionID); rec.Class != DeathPlatform {
+				t.Fatalf("stored = %+v, want the platform class for the tool", rec)
+			}
+		})
+	}
+}
+
+// takenStore answers the live row as a newer attempt's.
+type takenStore struct{ Store }
+
+func (s takenStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
+	l, ok, err := s.Store.LiveSession(ctx, taskID)
+	if ok {
+		l.Owner = "newer"
+	}
+	return l, ok, err
+}
+
+// A session that ends with an error reads no death: a cancel is the
+// workflow's decision, a detach leaves the pod to the next factoryd's
+// retry, and a supersede leaves it to the newer attempt.
+func TestAnEndWithAnErrorReadsNoDeath(t *testing.T) {
+	for name, end := range map[string]func(t *testing.T, g deathRig) error{
+		"cancelled": func(t *testing.T, g deathRig) error {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			create := g.kube.onCreatePod
+			g.kube.onCreatePod = func() {
+				create()
+				go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+			}
+			_, err := runSession(t, ctx, g.r, SessionInput{TaskID: g.taskID, Attempt: 1, Model: "m"}, nil, hangLogs)
+			return err
+		},
+		"detached": func(t *testing.T, g deathRig) error {
+			g.detach(t, hangLogs)
+			return errWorkerStop
+		},
+		"superseded": func(t *testing.T, g deathRig) error {
+			g.r.store, g.r.tick = takenStore{g.store}, 20*time.Millisecond
+			_, err := runSession(t, nil, g.r, SessionInput{TaskID: g.taskID, Attempt: 1, Model: "m"}, nil, hangLogs)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t5e", nil)
+			if err := end(t, g); err == nil {
+				t.Fatal("the session ended without an error")
+			}
+			if n := g.kernel.called(); n != 0 {
+				t.Fatalf("kernel reads %d, want none: no death read", n)
+			}
+		})
+	}
+}
+
+// notReadyAtEnd is a cluster store whose incident log holds node sf-1
+// going NotReady at the end of every window it is asked for.
+type notReadyAtEnd struct{ *fakeClusterStore }
+
+func (c notReadyAtEnd) PlatformIncidents(ctx context.Context, from, to time.Time, limit int) ([]PlatformIncident, error) {
+	in, err := c.fakeClusterStore.PlatformIncidents(ctx, from, to, limit)
+	return append(in, PlatformIncident{Key: "notready/sf-1", At: to, Kind: IncidentNodeNotReady, Subject: "sf-1", Node: "sf-1"}), err
+}
+
+// A reported end is read from the end's evidence alone: its node answers
+// at the read, so a NotReady in its last minutes ended nothing, and the
+// record names no cluster cause.
+func TestAReportedEndReadsNoNotReadyWindow(t *testing.T) {
+	g := newDeathRig(t, "t5y", nil)
+	g.r.cfg.Cluster = notReadyAtEnd{g.cluster}
+	res := g.run(t, modelCall+resultLine(false, "the model call failed"))
+	if res.Outcome != OutcomeNoPush || res.Death == nil || res.Death.Class != DeathUnknown {
+		t.Fatalf("result = %q, death %+v; want no_push with no cluster cause", res.Outcome, res.Death)
+	}
+}
+
+// A failed container's own message reaches the human through factoryd's
+// log, scrubbed, and no prompt: the summary and the findings name the
+// container, its reason and its exit code alone.
+func TestAFailedContainersMessageIsLoggedScrubbed(t *testing.T) {
+	const secret = "clone-token-7c41e9b2"
+	g := newDeathRig(t, "t5l", func(p *fakePod) {
+		p.containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Error", ExitCode: 1,
+			Message: "agent-worker: prctl PR_SET_DUMPABLE: operation not permitted, token " + secret},
+			{Name: "worker", State: "waiting", Reason: "PodInitializing"}}
+	})
+	g.r.Scrub = redact.New(secret)
+	logged := captureLog(t)
+	res := g.run(t, "")
+	if out := logged.String(); !strings.Contains(out, "container clone: agent-worker: prctl PR_SET_DUMPABLE: operation not permitted") || strings.Contains(out, secret) {
+		t.Fatalf("log:\n%s\nwant the clone's message without the secret", out)
+	}
+	if told := strings.Join(slices.Concat([]string{res.Summary}, res.Findings), "\n"); strings.Contains(told, "prctl") {
+		t.Fatalf("summary and findings = %q, want no word of the container's message", told)
+	}
+}
+
 // A worker that reports a stop factoryd did not send got its SIGTERM from
 // the cluster: a pod a preemption took is the platform's death. One with no
 // cluster cause keeps its outcome, its record unknown.

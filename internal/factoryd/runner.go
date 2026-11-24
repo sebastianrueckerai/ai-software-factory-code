@@ -994,7 +994,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// the over-bound push settled the last push its line names
 	defer func() {
 		delivered := out.commit != "" || s.report != "" && out.result != nil && out.result.Success
-		if err == nil && !detached && !out.superseded && out.death == nil && !delivered {
+		if err == nil && out.death == nil && !delivered {
 			keepDeath(deathNow(true))
 		}
 	}()
@@ -1129,11 +1129,17 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	lines := followed.lines
 	// ended says why the log ended without a result, plain the generic
 	// words: how the pod ended when its diagnosis says, else the log's
-	// own error
+	// own error. A failed container's own message goes to factoryd's log
+	// alone, scrubbed, for the human.
 	ended := func(plain string) string {
 		how := ""
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
 			how = exitedHow(plain, d)
+			for _, c := range d.Containers {
+				if c.State == "terminated" && c.Message != "" && (c.ExitCode != 0 || c.Reason != "Completed") {
+					log.Printf("task %s: session %s: container %s: %s", t.ID, s.id, c.Name, oneLine(r.scrub(c.Message)))
+				}
+			}
 		}
 		keepDeath(deathNow(false))
 		if how != "" {
