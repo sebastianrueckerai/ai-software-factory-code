@@ -226,6 +226,23 @@ climbs first. The monitor flags a case at the human that the door
 would refuse (`faced_unjudged`), and that flag's case is the human's,
 since only a commit fixes the door.
 
+The chat's escalation names the card or plan it is about (`task_id`),
+which its ask row and its case keep as the fact `about`. A turn whose
+wake's first line names a card, or that answers in a card's own thread,
+files none without it: the refusal names those cards. An escalation may
+carry an act, the exact command or press a human does outside the
+factory, which the issue shows as its own fenced block after the
+recommendation and the opened card as its own part. A card's stop that
+would ask a human for a reason of its own (the agent's escalation, the
+check-in's hand-up) asks no second time while such an ask about the card,
+its plan or another card of its plan waits in Needs you: rung 0 holds the
+case, and the card waits on that human card as on a dependency, in
+`waiting-deps` with the edge to it and on the issues, holding no slot, its
+face saying it waits for that card. The case-wake pass reads the ask each
+minute. Once the ask ended, the edge goes and rung 0 resumes the card with
+the answer, who gave it and their words, as the session's note; a resume
+the action table refuses hands the case up with that answer and why.
+
 The platform deaths' card (source `platform_deaths`) is factoryd's own,
 filed by a pass each minute when the platform ends 3 sessions, CI jobs or
 gate pods within 24 hours, across every card, by their death records

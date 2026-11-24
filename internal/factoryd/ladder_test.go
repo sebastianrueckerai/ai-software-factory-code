@@ -620,3 +620,120 @@ func TestFaceOnACaseTheDoorRefusesPostsNothing(t *testing.T) {
 		t.Fatalf("comments %q, case %+v; want one face and the case at the human on rung 3 with no wake", fj.comments, got)
 	}
 }
+
+// askRig is tripRig's card t1 as card store-fill of plan t-p (#30), whose
+// card t-s1 (#31) closed, and the chat's human card t-h (#40), which asks
+// a human about the card about names, in Needs you at once.
+func askRig(t *testing.T, about string) tripRig {
+	t.Helper()
+	ctx := context.Background()
+	g := newTripRig(t, "success")
+	for _, c := range []Task{
+		{ID: "t-p", Kind: "agent", Status: "running", Objective: "Land the weekly bump", Repository: "demo-app/demo-app", IssueNumber: 30, Track: policy.TrackPlan, BudgetEUR: 3},
+		{ID: "t-s1", Kind: "agent", Status: "running", Objective: "Land the bump", Repository: "demo-app/demo-app", IssueNumber: 31, Track: policy.TrackDirect,
+			Source: SourcePlan, Parent: "t-p", PlanKey: "land", BudgetEUR: 3},
+		{ID: "t-q", Kind: "agent", Status: "running", Objective: "Another plan", Repository: "demo-app/demo-app", IssueNumber: 32, Track: policy.TrackPlan, BudgetEUR: 3},
+	} {
+		if err := g.s.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = 't-s1';
+		UPDATE tasks SET source = 'plan', parent_task = 't-p', plan_key = 'store-fill' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	q := HumanQuestion{Ask: "Fill the file store?", Why: "The bump's build reads its new files from the store.", Info: "The store answers 404 for four files.",
+		Act:     "REGISTRY_USER=… REGISTRY_PASSWORD=… scripts/upstream-files",
+		Choices: []QuestionChoice{{Value: "say:Filled", Label: "Filled"}, {Value: "say:Not now", Label: "Not now"}}}
+	h := Task{ID: "t-h", Source: SourceChat, Repository: "demo-app/demo-app", IssueNumber: 40, Author: "factory-agent", RiskClass: "standard",
+		Objective: IssueObjective(q.Ask, "the body")}
+	if _, created, err := g.s.CreateHumanCard(ctx, h, HumanAsk{Q: q, By: "sebastian", Asker: "agent", Via: ViaChat, Facts: map[string]any{FactAbout: about}}); err != nil || !created {
+		t.Fatalf("CreateHumanCard: %v, %v", created, err)
+	}
+	return g
+}
+
+// A stop on which card t1 would ask a human, while the chat's human card
+// about a card of its plan waits, asks no second time: rung 0 holds the
+// case, and the card waits on that card in waiting-deps with its edge to
+// it, holding no slot, no comment and no ask row of its own. The case-wake
+// pass reads the ask again while it waits; once a human answered it, the
+// edge goes and rung 0 resumes the card with the answer as its note, which
+// the run hears. The agent's escalation and the check-in's hand-up wait
+// alike.
+func TestAStopWaitsOnTheChatsAskAboutItsPlan(t *testing.T) {
+	for _, reason := range []string{AgentAsks + "Fill the file store?\nWhy: the build reads it\nRecommendation: run the copy",
+		CheckinReason("session", "the store lacks the week's files", nil, nil)} {
+		t.Run(reason[:12], func(t *testing.T) {
+			ctx := context.Background()
+			g := askRig(t, "t-s1")
+			at := time.Date(2026, 11, 24, 15, 55, 0, 0, time.UTC)
+			g.r.now = func() time.Time { return at }
+			out := g.trip(t, reason)
+			if out.Resolution != nil || out.Rung != 0 || out.Comment != 0 {
+				t.Fatalf("the trip = %+v, want the case held at rung 0 with no face", out)
+			}
+			c := caseByID(t, g.s, out.CaseID)
+			card, _, _ := g.s.Task(ctx, "t1")
+			deps, _ := g.s.OpenDependencies(ctx, "t1")
+			if c.Status != CaseOpen || c.OwnerRung != 0 || c.Facts[factWaitsOn] != "t-h" || c.NextWakeAt == nil || !c.NextWakeAt.Equal(at.Add(time.Minute)) ||
+				card.Status != "waiting-deps" || card.Gate != GateDependencies || len(deps) != 1 || deps[0].TaskID != "t-h" {
+				t.Fatalf("case %+v, card %s in %s, deps %+v: want the case held on t-h and the card waiting on it", c, card.Status, card.Gate, deps)
+			}
+			if asks := (actRig{g.s}).rows(t, EventQuestionAsked); len(asks) != 0 || len(g.forge.comments) != 0 {
+				t.Fatalf("ask rows %+v, comments %q: want no second ask", asks, g.forge.comments)
+			}
+			m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+			wake := func(minutes int) Case {
+				t.Helper()
+				at = at.Add(time.Duration(minutes) * time.Minute)
+				m.Now = func() time.Time { return at }
+				if err := m.WakeCases(ctx); err != nil {
+					t.Fatalf("WakeCases: %v", err)
+				}
+				return caseByID(t, g.s, out.CaseID)
+			}
+			if c = wake(2); c.Status != CaseOpen || c.NextWakeAt == nil || !c.NextWakeAt.Equal(at.Add(time.Minute)) {
+				t.Fatalf("the case while t-h waits = %+v, want it held, its wake a minute on", c)
+			}
+			hc, err := g.s.NewestAskCase(ctx, "t-h")
+			if err != nil || hc.Status != CaseAtHuman {
+				t.Fatalf("t-h's case = %+v, %v", hc, err)
+			}
+			if _, err := g.r.Act(ctx, ActInput{TaskID: "t-h", CaseID: hc.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
+				Res: Resolution{Action: "say:Filled", Note: "Filled"}}); err != nil {
+				t.Fatalf("the answer on t-h: %v", err)
+			}
+			c = wake(2)
+			const note = "sebastian answered #40 “Fill the file store?”, which this card waited on: Filled"
+			if c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Rung != 0 || c.Resolution.Action != ActResume || c.Resolution.Reason != note || c.Facts[factWaitsOn] != nil {
+				t.Fatalf("the case after the answer = %+v (%+v), want rung 0's resume with the answer", c, c.Resolution)
+			}
+			if deps, _ := g.s.OpenDependencies(ctx, "t1"); len(deps) != 0 {
+				t.Fatalf("t1's dependencies after the answer = %+v, want none", deps)
+			}
+			heard := slices.ContainsFunc(g.signals.got, func(s reopenCall) bool {
+				return s.taskID == "t1" && s.signal == SignalCaseResolved && s.sig.Case != nil && s.sig.Case.CaseID == c.ID && s.sig.Case.Res.Note == note
+			})
+			if !heard {
+				t.Fatalf("signals = %+v, want t1's case_resolved with the answer", g.signals.got)
+			}
+		})
+	}
+}
+
+// A stop asks the human as before while no chat ask about its card or its
+// plan waits: one about a card of another plan, or about no card, holds
+// nothing.
+func TestAStopAsksWhenNoChatAskIsAboutItsPlan(t *testing.T) {
+	for _, about := range []string{"t-q", ""} {
+		ctx := context.Background()
+		g := askRig(t, about)
+		out := g.trip(t, AgentAsks+"Fill the file store?\nWhy: the build reads it\nRecommendation: run the copy")
+		c := caseByID(t, g.s, out.CaseID)
+		card, _, _ := g.s.Task(ctx, "t1")
+		if _, held := c.Facts[factWaitsOn]; held || card.Status == "waiting-deps" {
+			t.Errorf("an ask about %q held the stop: case %+v, card %s", about, c, card.Status)
+		}
+	}
+}

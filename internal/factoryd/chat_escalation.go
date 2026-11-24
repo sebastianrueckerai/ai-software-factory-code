@@ -4,10 +4,13 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"log"
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -321,3 +324,151 @@ const (
 
 // AnswerRetryRoll is the failed-roll card's retry, whose work is RetryRoll.
 const AnswerRetryRoll = "retry"
+
+// factWaitsOn is the fact of a card's case that waits on the human card
+// whose task id it holds (waitOnAsk).
+const factWaitsOn = "waits_on"
+
+// askRecheck is how often rung 0 reads again the ask a held case waits on.
+const askRecheck = time.Minute
+
+// waitOnAsk is rung 0's hold of case c, a stop on which its card would ask
+// a human: while a human card the chat filed about the card or its plan
+// asks a human (openAskAbout), the card asks no second time. It waits on
+// that card as on a dependency: in waiting-deps with its edge to it, on
+// the issues too, holding no slot, and the case keeps a wake at rung 0.
+// Once that card's ask ended, the edge goes and rung 0 resumes the card,
+// the answer its note (askEnd), within the case's hold, so a resume Act
+// refuses hands the case up with why. A card that does not run takes no
+// wait.
+func (r *Runner) waitOnAsk(ctx context.Context, c Case) (bool, error) {
+	t, repo, err := r.task(ctx, c.TaskID)
+	if err != nil {
+		return false, err
+	}
+	hold := func() (bool, error) {
+		until := r.Clock().Add(askRecheck)
+		return true, r.store.SetCaseWake(ctx, c.ID, 0, c.WakeOn, &until)
+	}
+	if id, _ := c.Facts[factWaitsOn].(string); id != "" {
+		h, _, err := r.task(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		note, over, err := r.askEnd(ctx, h)
+		switch {
+		case err != nil:
+			return false, err
+		case !over:
+			return hold()
+		}
+		if err := r.store.RemoveTaskDeps(ctx, t.ID, []string{h.ID}); err != nil {
+			return false, err
+		}
+		if err := r.store.SetCaseFact(ctx, c.ID, factWaitsOn, ""); err != nil {
+			return false, err
+		}
+		if err := r.forgejo.SetIssueDependency(ctx, repo, t.IssueNumber, h.IssueNumber, true); err != nil {
+			log.Printf("task %s: issue #%d no longer on #%d: %s", t.ID, t.IssueNumber, h.IssueNumber, maskedErr(err))
+		}
+		r.record(ctx, t.ID, "dependencies_done", gateEnd(t, GateDependencies, map[string]any{"case": c.ID}))
+		if _, err := r.Act(ctx, ActInput{TaskID: t.ID, CaseID: c.ID, By: FactoryDecider, Via: ViaFactoryd, Rung: 0,
+			Res: Resolution{Action: ActResume, Note: note}}); err != nil {
+			return false, fmt.Errorf("%s, and the factory's resume was refused: %w", note, err)
+		}
+		return true, nil
+	}
+	if t.Status != "running" {
+		return false, nil
+	}
+	h, ok, err := r.openAskAbout(ctx, t)
+	if err != nil || !ok {
+		return false, err
+	}
+	if err := r.store.TransitionTask(ctx, t.ID, []string{"running"}, "waiting-deps"); err != nil {
+		return false, err
+	}
+	if err := r.store.AddTaskDeps(ctx, t.ID, []string{h.ID}); err != nil {
+		return false, err
+	}
+	if err := r.store.SetCaseFact(ctx, c.ID, factWaitsOn, h.ID); err != nil {
+		return false, err
+	}
+	if err := r.store.SetGate(ctx, t.ID, GateDependencies, r.Clock()); err != nil {
+		return false, err
+	}
+	mirrorTaskState(ctx, r.forgejo, t, "waiting-deps")
+	if err := r.forgejo.SetIssueDependency(ctx, repo, t.IssueNumber, h.IssueNumber, false); err != nil {
+		log.Printf("task %s: issue #%d on #%d: %s", t.ID, t.IssueNumber, h.IssueNumber, maskedErr(err))
+	}
+	r.record(ctx, t.ID, "dependencies_wait", map[string]any{"on": []int64{h.IssueNumber}, "case": c.ID})
+	pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
+	return hold()
+}
+
+// openAskAbout is the oldest human card the chat filed about card t, about
+// its plan or about another card of its plan, whose ask waits on a human.
+func (r *Runner) openAskAbout(ctx context.Context, t Task) (Task, bool, error) {
+	plan := ""
+	switch {
+	case t.PlanCard():
+		plan = t.Parent
+	case t.Track == policy.TrackPlan:
+		plan = t.ID
+	}
+	cases, err := r.store.OpenCasesIn(ctx, t.Repository)
+	if err != nil {
+		return Task{}, false, err
+	}
+	for _, c := range cases {
+		about, _ := c.Facts[FactAbout].(string)
+		if c.Kind != CaseHumanCard || c.Status != CaseAtHuman || about == "" {
+			continue
+		}
+		same := about == t.ID || plan != "" && about == plan
+		if !same && plan != "" {
+			a, ok, err := r.store.Task(ctx, about)
+			if err != nil {
+				return Task{}, false, err
+			}
+			same = ok && a.PlanCard() && a.Parent == plan
+		}
+		if !same {
+			continue
+		}
+		h, ok, err := r.store.Task(ctx, c.TaskID)
+		if err != nil {
+			return Task{}, false, err
+		}
+		if ok && h.Source == SourceChat && h.Status == "waiting-human" {
+			return h, true, nil
+		}
+	}
+	return Task{}, false, nil
+}
+
+// askEnd says whether the ask of human card h ended, and the note a card
+// that waited on it goes on with: who answered it and their words, or that
+// it ended with no answer.
+func (r *Runner) askEnd(ctx context.Context, h Task) (note string, over bool, err error) {
+	cases, err := r.store.CasesOf(ctx, h.ID)
+	if err != nil {
+		return "", false, err
+	}
+	var ask Case
+	for _, c := range cases {
+		if c.Kind == CaseHumanCard && c.ID > ask.ID {
+			ask = c
+		}
+	}
+	if (ask.Status == CaseOpen || ask.Status == CaseAtHuman) && !Final(h.Status) {
+		return "", false, nil
+	}
+	name := fmt.Sprintf("#%d “%s”", h.IssueNumber, CardTitle(h))
+	if res := ask.Resolution; res != nil {
+		if words := cmp.Or(strings.TrimSpace(res.Reason), LabelOf(res.Action)); words != "" {
+			return fmt.Sprintf("%s answered %s, which this card waited on: %s", DeciderWords(res.By), name, words), true, nil
+		}
+	}
+	return name + ", which this card waited on, ended with no answer.", true, nil
+}
