@@ -104,6 +104,7 @@ type fakeStore struct {
 	// fake reads as error_upstream
 	providerDecisions map[string]string
 	answered          map[string]bool // ModelAnswered's answer by task
+	answeredCalls     []fakeCall      // the allowed calls ModelAnsweredSince reads
 	// chatErr is EnsureChatTask's error
 	chatErr error
 	// chatSpent is the spend EnsureChatTask's task shows
@@ -2706,6 +2707,22 @@ func (s *fakeStore) BudgetRefused(ctx context.Context, taskID string, since time
 
 func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
 	return s.answered[taskID], nil
+}
+
+// fakeCall is one model call the gateway allowed: its alias and time.
+type fakeCall struct {
+	alias string
+	at    time.Time
+}
+
+func (s *fakeStore) ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error) {
+	var first time.Time
+	for _, c := range s.answeredCalls {
+		if c.alias == alias && c.at.After(since) && (first.IsZero() || c.at.Before(first)) {
+			first = c.at
+		}
+	}
+	return first, nil
 }
 
 // fakeSpend is one gateway audit row of a task: its time and its call's
@@ -5513,6 +5530,42 @@ func TestPGStoreModelAnswered(t *testing.T) {
 	} {
 		if got, err := s.ModelAnswered(ctx, tc.task, tc.since); err != nil || got != tc.want {
 			t.Errorf("ModelAnswered(%s, %v) = (%v, %v), want %v", tc.task, tc.since, got, err, tc.want)
+		}
+	}
+}
+
+// The provider answers a model again from the first call on its alias the
+// gateway allowed after since, whichever card or purpose made it: a
+// refused call, a tool's call, a call on another alias and one before
+// since count not.
+func TestPGStoreModelAnsweredSince(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_answered_since"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, kind, model_alias, tool, ts) VALUES
+		('a', 'allowed', '', 'agent', 'big', '', '2026-11-18 04:59:00Z'),
+		('b', 'error_upstream', 'status 429', 'agent', 'big', '', '2026-11-18 05:10:00Z'),
+		('c', 'allowed', '', 'agent', 'big', 'web_search', '2026-11-18 05:20:00Z'),
+		('d', 'allowed', '', 'agent', 'small', '', '2026-11-18 05:30:00Z'),
+		('e', 'allowed', '', 'review', 'big', '', '2026-11-18 05:43:10Z'),
+		('f', 'allowed', '', 'agent', 'big', '', '2026-11-18 05:50:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	at := func(h, m, sec int) time.Time { return time.Date(2026, 11, 18, h, m, sec, 0, time.UTC) }
+	for _, tc := range []struct {
+		alias string
+		since time.Time
+		want  time.Time
+	}{
+		{"big", at(5, 0, 0), at(5, 43, 10)}, {"big", at(5, 45, 0), at(5, 50, 0)}, {"big", at(5, 50, 0), time.Time{}},
+		{"small", at(5, 0, 0), at(5, 30, 0)}, {"premium", at(4, 0, 0), time.Time{}},
+	} {
+		if got, err := s.ModelAnsweredSince(ctx, tc.alias, tc.since); err != nil || !got.Equal(tc.want) {
+			t.Errorf("ModelAnsweredSince(%s, %v) = (%v, %v), want %v", tc.alias, tc.since, got, err, tc.want)
 		}
 	}
 }

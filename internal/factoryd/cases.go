@@ -140,7 +140,7 @@ var caseKinds = []caseKindRow{
 	{Kind: CaseDependencyFailed, Words: "failed dependency", Rung0: []string{"retry_dependency", "impasse"}, NoRung1: aboutTheBoard, Rung2: rung2Decides},
 	{Kind: CaseWaitExpired, Words: "expired wait", Rung2: rung2Decides},
 	{Kind: CasePodNeverStarted, Words: "pod that never started", Rung2: rung2Decides},
-	{Kind: CaseProviderRefused, Words: "provider refusal", Rung2: rung2Decides},
+	{Kind: CaseProviderRefused, Words: "provider refusal", Rung0: []string{"provider_answers"}, Rung2: rung2Decides},
 	{Kind: CaseNoAnswer, Words: "missing answer", Rung2: rung2Decides},
 	{Kind: CaseContentFilter, Words: "content filter stop", Rung2: rung2Decides},
 	{Kind: CaseImageWait, Words: "image wait", Rung2: rung2Decides},

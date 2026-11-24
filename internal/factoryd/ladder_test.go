@@ -196,6 +196,18 @@ func TestTripKeyByKind(t *testing.T) {
 	}
 }
 
+// A provider stop's state key is its model: the refusals of 429 and of 503
+// on big are one stop, which rung 0 resumes once, and big's and small's
+// are two.
+func TestTripKeyOfAProviderStopIsItsModel(t *testing.T) {
+	key := func(model, status string) string {
+		return tripKey(CaseProviderRefused, "the model provider refused the first call of 6 sessions in a row (status "+status+"): slow down", "", CaseFacts{Model: model})
+	}
+	if key("big", "429") != key("big", "503") || key("big", "429") == key("small", "429") {
+		t.Fatalf("keys big/429 %q, big/503 %q, small/429 %q; want big's two equal and small's apart", key("big", "429"), key("big", "503"), key("small", "429"))
+	}
+}
+
 // A trip names the case's own question as its problem: the agent's
 // question tripped in the card's last session is the question, though the
 // human's face is the session cap's until a session can run.

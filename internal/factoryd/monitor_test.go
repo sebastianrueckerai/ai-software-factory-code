@@ -257,6 +257,88 @@ func TestARetakeAfterTheRunsOwnEndWritesNothing(t *testing.T) {
 	}
 }
 
+// providerRig is the facts rig with card t1 funded (20 EUR, none spent, no
+// session yet) and its provider stop on big at the human, opened at 05:00
+// with state key k, the clock at 05:44.
+func providerRig(t *testing.T) (factsRig, Case) {
+	t.Helper()
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.IssueNumber, card.BudgetEUR, card.SpentEUR, card.HeldEUR, card.Usage = 0, 20, 0, 0, TaskUsage{}
+	g.store.tasks["t1"] = card
+	g.r.timeline = &Timeline{Objects: g.r.objects, Events: g.store, Store: g.store}
+	g.r.now = func() time.Time { return factsAt(5, 44) }
+	c := Case{ID: 9, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseProviderRefused, StateKey: "k", Status: CaseAtHuman,
+		OpenedAt: factsAt(5, 0), Facts: map[string]any{"model": "big", "head": "h2"}}
+	g.store.cases = append(g.store.cases, c)
+	return g, c
+}
+
+// A provider stop on big resumes once a call on big answers after the stop
+// opened, whichever card made it: another card's call at 05:43:10 resolves
+// the case on rung 0 with resume, naming the call and its moment, and the
+// run hears it. A call on small alone, or one on big before the stop, takes
+// nothing.
+func TestRetakeResumesAProviderStopOnceItsModelAnswers(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		calls []fakeCall
+		took  bool
+	}{
+		{"big answered after the stop", []fakeCall{{alias: "big", at: factsAt(5, 43).Add(10 * time.Second)}}, true},
+		{"small alone answered", []fakeCall{{alias: "small", at: factsAt(5, 30)}}, false},
+		{"big answered before the stop", []fakeCall{{alias: "big", at: factsAt(4, 59)}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, c := providerRig(t)
+			g.store.answeredCalls = tc.calls
+			events := len(g.store.events)
+			m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+			if err := m.Retake(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := g.store.CaseByID(ctx, c.ID)
+			if !tc.took {
+				if got.Status != CaseAtHuman || len(g.store.events) != events {
+					t.Fatalf("case %s, %d new events; want it at the human and nothing written", got.Status, len(g.store.events)-events)
+				}
+				return
+			}
+			const why = "a call on big answered at 05:43 UTC, so the provider answers again"
+			said := Moments{{At: factsAt(5, 43).Add(10 * time.Second), Layout: LayoutClock}}
+			if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Rung != 0 || got.Resolution.Action != ActResume || got.Resolution.Reason != why {
+				t.Fatalf("case %s by %+v; want it resolved on rung 0 with resume for %q", got.Status, got.Resolution, why)
+			}
+			i := slices.IndexFunc(g.store.events, func(e Event) bool { return e.Kind == EventQuestionWithdrawn && e.TaskID == "t1" })
+			if i < 0 || !reflect.DeepEqual(MomentsOf(g.store.events[i].Detail), said) {
+				t.Fatalf("events %+v; want the withdrawal with %+v", g.store.events[events:], said)
+			}
+			if signals := g.r.cfg.Workflows.(*fakeWorkflows).signals; len(signals) != 1 || !strings.HasPrefix(signals[0], "t1 case_resolved factoryd") {
+				t.Fatalf("signals %q; want the run told", signals)
+			}
+		})
+	}
+}
+
+// A provider stop that came back after rung 0 resumed the card once stays
+// with the human, though its model answers again.
+func TestAProviderStopThatCameBackStaysWithTheHuman(t *testing.T) {
+	ctx := context.Background()
+	g, c := providerRig(t)
+	g.store.answeredCalls = []fakeCall{{alias: "big", at: factsAt(5, 43)}}
+	g.store.cases = append(g.store.cases, Case{ID: 4, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseProviderRefused, StateKey: "k",
+		Status: CaseResolved, Resolution: &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActResume, Reason: "a call on big answered at 03:10 UTC, so the provider answers again"}})
+	events := len(g.store.events)
+	m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+	if err := m.Retake(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := g.store.CaseByID(ctx, c.ID); got.Status != CaseAtHuman || len(g.store.events) != events {
+		t.Fatalf("case %s, %d new events; want it at the human and nothing written", got.Status, len(g.store.events)-events)
+	}
+}
+
 // The night of 2026-11-24, on the rig's day: a month cap case opened at
 // 11:03:25 went to rung 2, due at 11:38:26, and rung 2 never answered;
 // sebastian reset the month's count at 11:30:32. The wake at 11:38:27

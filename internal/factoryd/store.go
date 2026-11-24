@@ -529,6 +529,10 @@ type Store interface {
 	// ModelAnswered reports whether the task's agent got a model answer
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
+	// ModelAnsweredSince is when the first model call on alias after since
+	// was allowed, whichever card or purpose made it: the provider answers
+	// the alias again. Zero for none.
+	ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error)
 	// SpendAndCallsBetween is the call costs and the count of the task's
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.
@@ -1994,6 +1998,16 @@ func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.T
 		`SELECT EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND decision = 'allowed' AND ts >= $3)`,
 		taskID, gateway.AuditKindAgent, since).Scan(&answered)
 	return answered, err
+}
+
+// ModelAnsweredSince is when the gateway first allowed a model call on
+// alias after since, whichever card or purpose made it; zero for none.
+func (s *PGStore) ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error) {
+	var at sql.NullTime
+	err := s.db.QueryRowContext(ctx,
+		`SELECT min(ts) FROM audit WHERE model_alias = $1 AND tool = '' AND decision = 'allowed' AND ts > $2`,
+		alias, since).Scan(&at)
+	return at.Time, err
 }
 
 // SpendAndCallsBetween is the call costs and the count of the task's

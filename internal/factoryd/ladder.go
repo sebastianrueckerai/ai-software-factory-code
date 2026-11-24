@@ -156,6 +156,23 @@ func init() {
 			}
 			return rungZeroTakes(f, Resolution{Action: ActResume, Note: lift.Why, Moments: lift.Moments}), nil
 		}, Took: func(_ Case, _ CaseFacts, res Resolution) string { return res.Note }},
+		// a provider's refusal of the card's model: a call on the model the
+		// gateway allowed since the stop opened, whichever card made it,
+		// says the provider answers again, and the card resumes; a stop that
+		// came back after that stays with the human (firing)
+		{Name: "provider_answers", Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error) {
+			model, _ := c.Facts["model"].(string)
+			if model == "" {
+				return nil, nil
+			}
+			at, err := r.store.ModelAnsweredSince(ctx, model, c.OpenedAt)
+			if err != nil || at.IsZero() {
+				return nil, err
+			}
+			var said Moments
+			note := "a call on " + model + " answered at " + said.Say(at, resetLayout(at, r.Clock())) + ", so the provider answers again"
+			return rungZeroTakes(f, Resolution{Action: ActResume, Note: note, Moments: said}), nil
+		}, Took: func(_ Case, _ CaseFacts, res Resolution) string { return res.Note }},
 		// a failed dependency outside a plan is filed again once, and a retry
 		// that failed in turn goes to the human
 		{Name: "retry_dependency", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
@@ -1501,7 +1518,8 @@ func TripCase(t Task, f CaseFacts, in TripInput, scrub func(string) string) (Cas
 }
 
 // tripKey is the state key of a trip's case of kind at reason: head for a
-// stop at the head, the dependency's task id for a dependency's, else the
+// stop at the head, the dependency's task id for a dependency's, the model
+// for a provider's refusal, else the
 // first line of the stop's reason (caseStateKey), never the face's words,
 // so a change of the register's copy opens no second case.
 func tripKey(kind CaseKind, reason, head string, f CaseFacts) string {
@@ -1512,6 +1530,8 @@ func tripKey(kind CaseKind, reason, head string, f CaseFacts) string {
 		if d := tripDep(kind, f); d != nil {
 			return d.TaskID
 		}
+	case kind == CaseProviderRefused && f.Model != "":
+		return caseStateKey(kind, "model "+f.Model, "")
 	}
 	return caseStateKey(kind, EscalationQuestion(reason), "")
 }

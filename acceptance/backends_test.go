@@ -1640,6 +1640,10 @@ func (s *acceptanceStore) ProjectMonthSpend(context.Context, string, time.Time) 
 	return factoryd.ProjectSpend{}, nil
 }
 
+func (s *acceptanceStore) ModelAnsweredSince(context.Context, string, time.Time) (time.Time, error) {
+	return time.Time{}, nil
+}
+
 func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
 // The holds: no acceptance run holds a card.

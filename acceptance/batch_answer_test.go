@@ -833,6 +833,9 @@ func (s *accBatchStore) OpenCasesOf(ctx context.Context, taskID string) ([]facto
 func (s *accBatchStore) NewestAskCase(ctx context.Context, taskID string) (factoryd.Case, error) {
 	panic("unused")
 }
+func (s *accBatchStore) ModelAnsweredSince(context.Context, string, time.Time) (time.Time, error) {
+	panic("unused")
+}
 func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	panic("unused")
 }
