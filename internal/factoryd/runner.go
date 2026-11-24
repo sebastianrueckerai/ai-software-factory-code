@@ -973,6 +973,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// podStopped is when stop() asked the pod to end: the grace the worker
 	// has to ship its work runs from then
 	var podStopped atomic.Int64
+	// factoryStopped: this factoryd or the one before it sent the pod its
+	// stop
+	factoryStopped := func() bool { return stoppedBefore || podStopped.Load() != 0 }
 	digest := newDigestBuilder(time.Now())
 	// deathNow reads how the pod ended, or is ending when live; the last
 	// push is the session's own, else its interim one, else the branch's at
@@ -983,9 +986,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if last == "" && s.startRef != s.base {
 			last = s.startRef
 		}
-		reported := out.result != nil && (!out.result.Stopped || out.trip != nil)
+		stopped := factoryStopped()
+		reported := out.result != nil && (!out.result.Stopped || stopped)
 		return r.deathOf(ctx, deathInput{ns: ns, pod: podName, uid: uid, node: node, boot: boot, started: started, ended: time.Now(),
-			stoppedByFactory: stoppedBefore || podStopped.Load() != 0, live: live, reported: reported, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
+			stoppedByFactory: stopped, live: live, reported: reported, lastCommand: r.scrub(digest.lastCommand()), lastPush: last})
 	}
 	keepDeath := func(death DeathRecord) {
 		out.death = &death
@@ -1562,7 +1566,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			ev, done := read(line)
 			if done {
 				// a stop factoryd did not send is the cluster's SIGTERM
-				if out.result.Stopped && out.trip == nil {
+				if out.result.Stopped && !factoryStopped() {
 					keepDeath(deathNow(false))
 				}
 				return out, retry

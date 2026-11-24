@@ -174,12 +174,16 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 		}
 		return true
 	}
-	readStored()
-	asked := readKernel(firstEnd)
+	// no kill line names an end the worker reported
+	asked := false
+	if !in.reported {
+		readStored()
+		asked = readKernel(firstEnd)
+	}
 	r := Classify(f)
 	// after factoryd's own stop a 137 is the kubelet's kill at the grace's end
 	killed137 := slices.ContainsFunc(f.Pod.Containers, func(c ContainerState) bool { return c.State == "terminated" && c.ExitCode == 137 })
-	if asked && !in.stoppedByFactory && !in.reported && r.Rule == RuleNone && killed137 {
+	if asked && !in.stoppedByFactory && r.Rule == RuleNone && killed137 {
 	wait:
 		for time.Now().Before(waitEnd) {
 			select {

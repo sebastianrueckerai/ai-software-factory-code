@@ -359,9 +359,10 @@ func TestAReportedFailureGetsItsDeath(t *testing.T) {
 
 // A worker that reported its own end, a success, a failure or its stop
 // after factoryd's, was not killed, whatever its node does at the read: its
-// record is unknown, its outcome stays, and the next session's lines hold
-// Forgejo's restart and no class sentence. A stop factoryd did not send on
-// a node gone at the read is still the platform's.
+// record is unknown, its outcome stays, the next session's lines hold
+// Forgejo's restart and no class sentence, and no kill line is asked for.
+// A stop factoryd did not send on a node gone at the read is still the
+// platform's.
 func TestAReportedEndStaysTheWorkers(t *testing.T) {
 	ctx := context.Background()
 	notReady := map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1"}}
@@ -418,6 +419,9 @@ func TestAReportedEndStaysTheWorkers(t *testing.T) {
 			}
 			if !slices.Equal(lines, []string{forgejo}) {
 				t.Fatalf("lines = %q, want Forgejo's restart alone: %q", lines, forgejo)
+			}
+			if n := g.kernel.called(); n != 0 {
+				t.Fatalf("kernel reads %d, want none: no kill line names a reported end", n)
 			}
 		})
 	}
@@ -848,23 +852,29 @@ func TestReattachRecordsThePlaceTheRowLacks(t *testing.T) {
 }
 
 // A factoryd that died inside its own stop leaves the pod deleting: the
-// next one reattaches, reads the worker's stopped result, and the stop the
-// row records is factoryd's own, so the deletion is no platform death.
+// next one reattaches and reads the worker's stopped result. The stop the
+// row records is factoryd's own, so the worker reported its end: the
+// deletion, and a node NotReady at the read, are no platform death.
 func TestReattachToAPodFactorydWasStopping(t *testing.T) {
-	g := newDeathRig(t, "t2", nil)
-	g.kube.keepDeleted = true
-	first := g.detach(t, modelCall+cutLogs+stoppedResultLine("stopped; no work in progress to push")+"\n")
-	if err := g.store.SetLiveSessionStopping(context.Background(), "t2", first.Owner, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	g.kube.mu.Lock()
-	g.kube.pods[first.Namespace+"/"+first.Pod].deleted = true
-	g.kube.mu.Unlock()
-	res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
-		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
-	})
-	if err != nil || res.SessionID != first.SessionID || res.Outcome != OutcomeNoPush || res.Death == nil || res.Death.Class != DeathUnknown {
-		t.Fatalf("result = (%+v, %v), death %+v; want the reattached session's no_push with no cluster cause", res, err, res.Death)
+	for name, ready := range map[string]bool{"node ready": true, "node not ready": false} {
+		t.Run(name, func(t *testing.T) {
+			g := newDeathRig(t, "t2", nil)
+			g.kube.keepDeleted = true
+			first := g.detach(t, modelCall+cutLogs+stoppedResultLine("stopped; no work in progress to push")+"\n")
+			if err := g.store.SetLiveSessionStopping(context.Background(), "t2", first.Owner, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			g.kube.mu.Lock()
+			g.kube.pods[first.Namespace+"/"+first.Pod].deleted = true
+			g.kube.nodeStates["sf-1"] = NodeState{Name: "sf-1", BootID: "b-1", Ready: ready}
+			g.kube.mu.Unlock()
+			res, err := runSessionIn(t, g.r, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+				env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+			})
+			if err != nil || res.SessionID != first.SessionID || res.Outcome != OutcomeNoPush || res.Death == nil || res.Death.Class != DeathUnknown || len(res.Death.Lines) != 0 {
+				t.Fatalf("result = (%+v, %v), death %+v; want the reattached session's no_push with no cluster cause and no line", res, err, res.Death)
+			}
+		})
 	}
 }
 
