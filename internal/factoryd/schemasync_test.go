@@ -22,7 +22,9 @@ import (
 // pull requests and their comments. It answers each credential as Forgejo
 // does: factory-config's token reads sf's repository, the bot (a reader of
 // it) opens pull requests, closes its own and comments, and owns its
-// fork; any other credential sees neither, org sf being private.
+// fork; any other credential sees neither, org sf being private. Forgejo's
+// check of a pull request never ends, so it reports none mergeable and the
+// pass merges none.
 type schemaForgejo struct {
 	mu       sync.Mutex
 	main     map[string]string
@@ -103,6 +105,8 @@ func (s *schemaForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			fmt.Fprint(w, c)
+		case r.Method == http.MethodGet && strings.HasPrefix(p, schemaUp+"/pulls/"):
+			fmt.Fprintf(w, `{"number":%d,"state":"open","mergeable":false}`, pr().number)
 		case r.Method == http.MethodGet && p == schemaUp+"/pulls" && q.Get("state") == "open":
 			out := []map[string]any{}
 			for _, pr := range s.prs {
@@ -193,6 +197,7 @@ func (s *schemaForgejo) server(t *testing.T) *httptest.Server {
 // this binary's schemas, changed by change, and the copier of build
 // 0123456789ab as factoryd wires it.
 func schemaRig(t *testing.T, change func(main map[string]string)) (*schemaForgejo, *SchemaCopier) {
+	quickMergeWaits(t)
 	schemas, err := policy.Schemas()
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +261,8 @@ func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 		"- `factory/schema/policy.schema.json`: differs\n" +
 		"- `factory/schema/process.schema.json`: missing\n\n" +
 		"`factory/schema/commit` names the build's commit " + codeMine + ": a later build writes over these copies, an older one leaves them.\n\n" +
-		"The factory opens it when it starts and never merges it: a human does. `factoryd config check` only warns about a stale copy.\n"
+		"The factory merges it itself once Forgejo reports it mergeable, no check of its head fails or runs, and it changes only these files, each to the build's bytes. " +
+		"Otherwise a card asks a human to merge it. `factoryd config check` only warns about a stale copy.\n"
 	want := []schemaPR{{number: 1, head: "factory/schema-0123456789ab", headRepo: "factory-agent/ai-software-factory-infra",
 		title: "Schema copies for 0123456789ab", body: body, poster: "bot", state: "open"}}
 	writes := []string{"POST " + schemaUp + "/forks by bot", "POST " + schemaFork + "/contents by bot", "POST " + schemaUp + "/pulls by bot"}

@@ -307,7 +307,7 @@ func humanCardRig(t *testing.T) factsRig {
 		caseID int
 	}{
 		{h, PlanHumanAsk(Task{ID: "p", IssueNumber: 12}, "Change two lines in the runner's build files"), 9},
-		{pr, HumanAsk{Q: FactoryPRQuestion(BriefText{Title: "Update the project from its template go-service"}, 21, "https://git.example/pulls/21")}, 10},
+		{pr, HumanAsk{Q: FactoryPRQuestion(BriefText{Title: "Update the project from its template go-service"}, 21, "https://git.example/pulls/21", "")}, 10},
 	} {
 		e := a.ask.Event(a.t)
 		e.Detail["case_id"] = a.caseID

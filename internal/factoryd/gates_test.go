@@ -256,11 +256,17 @@ func withoutReceipt(comments []string) []string {
 	})
 }
 
-func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
-	t.Helper()
+// quickMergeWaits bounds the wait for Forgejo's mergeability check at 5ms
+// for the test.
+func quickMergeWaits(t *testing.T) {
 	prev := mergeWaitBound
 	mergeWaitBound = 5 * time.Millisecond
 	t.Cleanup(func() { mergeWaitBound = prev })
+}
+
+func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
+	t.Helper()
+	quickMergeWaits(t)
 	r, store, objects := newActivityRunner(t, task, &prForgejo{})
 	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
 	return r, store, objects

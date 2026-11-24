@@ -178,7 +178,7 @@ func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int6
 		return Task{}, IssueRef{}, nil
 	}
 	t, ref, err := FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, TemplateUpdateCard(p.Template, number, files), []string{"improvement"},
-		Task{ID: NewTaskID(), Source: SourceTemplateUpdate}, number)
+		Task{ID: NewTaskID(), Source: SourceTemplateUpdate}, number, "")
 	if err == nil {
 		r.templateCards++
 	}

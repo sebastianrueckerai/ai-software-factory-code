@@ -1500,12 +1500,13 @@ func FileAgentTask(ctx context.Context, store interface {
 // default, at most p's card maximum and the task maximum (CardBudget).
 // On a project without agents no workflow runs: the card is a human card
 // through fileHumanTask, linked to the pull request, whose question asks a
-// human to merge it or close it, on the card or in Forgejo.
+// human to merge it or close it, on the card or in Forgejo, and names
+// refusal, why factoryd did not merge it itself ("" where it never does).
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, b BriefText, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, b BriefText, labels []string, t Task, prNumber int64, refusal string) (Task, IssueRef, error) {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
@@ -1513,7 +1514,7 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	if p.Agents == policy.AgentsNone {
 		t.Kind, t.RiskClass, t.Author = "human", "standard", cmp.Or(t.Author, forgejo.BotUser)
 		url := fmt.Sprintf("%s/%s/pulls/%d", forgejo.PublicURL, p.Repository, prNumber)
-		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(b, prNumber, url), labels, t, "")
+		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(b, prNumber, url, refusal), labels, t, "")
 		return t, IssueRef{Number: number}, err
 	}
 	t.BudgetEUR = policy.CardBudget(budget, p.Budget, "", false, 0)

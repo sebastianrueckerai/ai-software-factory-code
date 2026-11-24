@@ -559,8 +559,10 @@ func TestTheWakePassClimbsADueOpenCaseOnce(t *testing.T) {
 // closed card t1's open issue closes with factoryd's comment, and done card
 // t2's closed issue is left alone. Where Finish leaves it open, the monitor
 // opens no case: failed t3, whose issue waits for its retry, and done t4
-// after its merge. Another event on t1 opens no second case: the flag's
-// case for that state ended, and one is all.
+// after its merge. Closed t5 has no issue, as a held human card that ended
+// before its face, so no issue is open and no case opens. Another event on
+// t1 opens no second case: the flag's case for that state ended, and one is
+// all.
 func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
@@ -568,7 +570,7 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 		id     string
 		issue  int64
 		status string
-	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}} {
+	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}, {"t5", 0, "closed"}} {
 		g.card(t, c.id, c.issue, c.status)
 		capCase, _, err := openAtHuman(ctx, g.s, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
 			Problem: "Card used its sessions"})
@@ -586,7 +588,7 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 		id    string
 		issue int64
 		state string
-	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}} {
+	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}, {"t5", 0, "closed"}} {
 		g.event(t, c.id, c.issue, EventTaskEnded, map[string]any{"state": c.state}, monitorAt.Add(-time.Minute))
 	}
 	g.pass(t)
@@ -604,7 +606,7 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 			t.Fatalf("%s's steps = %+v, want rung 0's close: %q", id, steps, result)
 		}
 	}
-	for id, issue := range map[string]int64{"t3": 14, "t4": 15} {
+	for id, issue := range map[string]int64{"t3": 14, "t4": 15, "t5": 0} {
 		if cases := g.flagCases(t, id); len(cases) != 0 || len(g.forge.comments[issue]) != 0 {
 			t.Fatalf("%s's flag cases = %v, comments on #%d %q; want none", id, cases, issue, g.forge.comments[issue])
 		}
@@ -621,6 +623,47 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 	g.pass(t)
 	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.closes) != 1 {
 		t.Fatalf("t1's flag cases = %v, closes %v; want the one case and the one close", cases, g.forge.closes)
+	}
+}
+
+// A held human card that ended before its face has no issue. The issue
+// flag's former condition opened its case anyway, which rung 2 handed up
+// and which sits at the human asking to close an issue that does not exist. The sweep reads the ended
+// card, finds that the flag does not hold on a card with no issue, and
+// withdraws the case by a row that names it, with no forge call; a second
+// sweep opens nothing.
+func TestMonitorSweepWithdrawsTheIssueFlagOfACardWithNoIssue(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	g.card(t, "t1", 0, "closed")
+	flag, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|",
+		Problem: "Monitor flag: issue_open_after_end(human_card)", Facts: map[string]any{"flag": "issue_open_after_end"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: flag.ID, Rung: 2, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := g.m.Sweep(ctx); err != nil {
+			t.Fatalf("Sweep: %v", err)
+		}
+	}
+	got := caseByID(t, g.s, flag.ID)
+	if got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: "the flag no longer holds"}) {
+		t.Fatalf("the case = %s, %+v; want withdrawn by factoryd as the flag no longer holds", got.Status, got.Resolution)
+	}
+	rows := (actRig{s: g.s}).rows(t, EventQuestionWithdrawn)
+	if len(rows) != 1 || rows[0].Detail["case_id"] != float64(flag.ID) || rows[0].Detail["reason"] != "the flag no longer holds" {
+		t.Fatalf("withdrawal rows = %+v, want one naming case %d as the flag no longer holds", rows, flag.ID)
+	}
+	if cases := g.flagCases(t, "t1"); len(cases) != 1 {
+		t.Fatalf("t1's flag cases = %v, want the one withdrawn", cases)
+	}
+	g.forge.mu.Lock()
+	defer g.forge.mu.Unlock()
+	if len(g.forge.closes) != 0 || len(g.forge.comments) != 0 {
+		t.Fatalf("closes %v, comments %v; want no forge call", g.forge.closes, g.forge.comments)
 	}
 }
 
