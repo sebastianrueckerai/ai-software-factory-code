@@ -154,24 +154,30 @@ func seedCheckinRepo(t *testing.T) string {
 }
 
 // The four tools read this workspace: grep finds the line at the head,
-// git_log takes its few allowed arguments, and run answers a command's
-// combined output.
+// under a first line naming the head's commit, git_log takes its few
+// allowed arguments, and run answers a command's combined output.
 func TestToolExecutes(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	h := checkinHandler(t, newCheckinServe(seedCheckinRepo(t), nolog))
+	ws := seedCheckinRepo(t)
+	head, err := exec.Command("git", "-C", filepath.Join(ws, "repo"), "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	atHead := "at HEAD " + string(head[:7]) + ":\n"
+	h := checkinHandler(t, newCheckinServe(ws, nolog))
 	code, out := postTool(t, h, "Bearer session-secret", toolBody("grep", `"pattern":"SessionInput"`))
 	if code != http.StatusOK {
 		t.Fatalf("grep: status %d, body %q", code, out)
 	}
-	if got := decodeTool(t, out); !strings.Contains(got.Output, "main.go:3:") || !strings.Contains(got.Output, "SessionInput") || got.Cut {
-		t.Fatalf("grep output = %q cut %v, want main.go's line 3", got.Output, got.Cut)
+	if got := decodeTool(t, out); !strings.HasPrefix(got.Output, atHead) || !strings.Contains(got.Output, "main.go:3:") || !strings.Contains(got.Output, "SessionInput") || got.Cut {
+		t.Fatalf("grep output = %q cut %v, want main.go's line 3 under %q", got.Output, got.Cut, atHead)
 	}
 	// a regex finds nothing in a fixed-string grep, and the miss is said
 	code, out = postTool(t, h, "Bearer session-secret", toolBody("grep", `"pattern":"Session.*"`))
-	if got := decodeTool(t, out); code != http.StatusOK || got.Output != `no line matches the fixed string "Session.*" as a whole word at HEAD` {
-		t.Fatalf("grep miss: status %d, output %q, want the miss said", code, got.Output)
+	if got := decodeTool(t, out); code != http.StatusOK || got.Output != atHead+`no line matches the fixed string "Session.*" as a whole word` {
+		t.Fatalf("grep miss: status %d, output %q, want the miss said under the head's commit", code, got.Output)
 	}
 	// read_file takes the path grep printed
 	code, out = postTool(t, h, "Bearer session-secret", toolBody("read_file", `"path":"main.go"`))

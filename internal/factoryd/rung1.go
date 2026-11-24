@@ -365,7 +365,7 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 
 const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
 
-const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head), grep (git grep at head or main for a fixed string as a whole word), cluster_facts (what the cluster did to a session of the card, the newest by default, or the platform's incidents of a window)."
+const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head, under a first line naming the path and the commit it read), grep (git grep at head or main for a fixed string as a whole word, under a first line naming the commit of each ref it searched), cluster_facts (what the cluster did to a session of the card, the newest by default, or the platform's incidents of a window)."
 
 // rungPrompt is rung 1's system prompt: the check-in on a case, its
 // tools, and the guide's forms of its grounds and its reason to hand up.
@@ -394,6 +394,7 @@ type CaseTools struct {
 		once    sync.Once
 		dir     string
 		refs    []namedRef
+		commits map[string]string // each ref's short commit, by its name
 		cleanup func()
 		err     error
 	}
@@ -498,8 +499,9 @@ func (p *CaseTools) read(ctx context.Context, name string, args map[string]any) 
 	return "", fmt.Errorf("%s is not a tool of this conversation", name)
 }
 
-// readFile reads a file of the repository at the case's head, at main when
-// the case has none.
+// readFile reads a file of the repository at the case's head, at main's
+// head commit when the case has none, under a first line that names the
+// path and the commit it read.
 func (p *CaseTools) readFile(ctx context.Context, args map[string]any) (string, error) {
 	raw, _ := args["path"].(string)
 	path := pathpkg.Clean(strings.TrimPrefix(raw, "/workspace/"))
@@ -510,19 +512,24 @@ func (p *CaseTools) readFile(ctx context.Context, args map[string]any) (string, 
 	for i, s := range segments {
 		segments[i] = url.PathEscape(s)
 	}
-	ref := prBase
-	if p.f.Head != "" {
-		ref = p.f.Head
+	name, ref := "head", p.f.Head
+	if ref == "" {
+		main, err := p.r.forgejo.BranchHeadSHA(ctx, p.repo.Owner, p.repo.Name, prBase)
+		if err != nil {
+			return "", fmt.Errorf("read the head of %s: %w", prBase, err)
+		}
+		name, ref = prBase, main
 	}
 	b, err := p.r.forgejo.FileAt(ctx, p.repo.Owner, p.repo.Name, ref, strings.Join(segments, "/"))
 	if err != nil {
 		return "", fmt.Errorf("read %s at %s: %w", path, ref, err)
 	}
-	return string(b), nil
+	return fmt.Sprintf("%s at %s %s:\n%s", path, name, ShortSHA(ref), b), nil
 }
 
 // grep searches the checkout of the head and main, or of main alone for a
-// case with no pull request, for a fixed string as a whole word.
+// case with no pull request, for a fixed string as a whole word, under a
+// first line that names the commit of each ref it searched.
 func (p *CaseTools) grep(ctx context.Context, args map[string]any) (string, error) {
 	pattern, _ := args["pattern"].(string)
 	if pattern == "" {
@@ -536,6 +543,15 @@ func (p *CaseTools) grep(ctx context.Context, args map[string]any) (string, erro
 			pr = p.f.PR
 		}
 		p.checkout.dir, p.checkout.refs, p.checkout.cleanup, p.checkout.err = CheckoutRefs(ctx, p.r.forgejo, p.repo, pr, p.f.Head)
+		p.checkout.commits = map[string]string{}
+		for _, n := range p.checkout.refs {
+			if p.checkout.err != nil {
+				return
+			}
+			var sha string
+			sha, p.checkout.err = gitRun(ctx, p.checkout.dir, "", nil, grepLimits, "rev-parse", n.Rev)
+			p.checkout.commits[n.Name] = ShortSHA(strings.TrimSpace(sha))
+		}
 	})
 	if p.checkout.err != nil {
 		return "", fmt.Errorf("the repository could not be fetched: %w", p.checkout.err)
@@ -546,21 +562,22 @@ func (p *CaseTools) grep(ctx context.Context, args map[string]any) (string, erro
 			return "", fmt.Errorf("ref %q is not searched here: use head or main", ref)
 		}
 	}
-	hits, err := gitGrep(ctx, p.checkout.dir, refs, pattern)
-	if errors.Is(err, errNoMatch) {
-		return "no match", nil
+	at := make([]string, len(refs))
+	for i, n := range refs {
+		at[i] = n.Name + " " + p.checkout.commits[n.Name]
 	}
-	if err != nil {
+	lines := []string{"at " + textutil.AndList(at) + ":"}
+	hits, err := gitGrep(ctx, p.checkout.dir, refs, pattern)
+	if err != nil && !errors.Is(err, errNoMatch) {
 		return "", err
 	}
-	var lines []string
 	for _, h := range hits {
 		if strings.HasPrefix(h.Path, prefix) {
 			lines = append(lines, fmt.Sprintf("%s:%s:%d:%s", h.Ref, h.Path, h.Line, h.Text))
 		}
 	}
-	if len(lines) == 0 {
-		return "no match", nil
+	if len(lines) == 1 {
+		lines = append(lines, "no match")
 	}
 	return strings.Join(lines, "\n"), nil
 }

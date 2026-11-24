@@ -568,8 +568,9 @@ A stop that rung 0 cannot resolve opens a case, and rung 1 judges it: the
 check-in's model (`checkin_model`, purpose `checkin`) runs on the case, not
 in a session, with read tools only: `transcript_search` and `transcript_read`
 over the card's newest session record, `card_facts`, `card_step`, `gates`,
-`read_file` at the case's head (at main when it has none), `grep` at the
-head and at main, and `cluster_facts` (what the cluster did to a session of
+`read_file` at the case's head (at main's head commit when it has none),
+`grep` at the head and at main, each under a first line that names the
+commit it read, and `cluster_facts` (what the cluster did to a session of
 the card, the newest by default, a running one read live from its pod, or
 the platform's incidents of a window). The monitor opens a flag's case on
 the head of the card's branch, which its pull request shows before any

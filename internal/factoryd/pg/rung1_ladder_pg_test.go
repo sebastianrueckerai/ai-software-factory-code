@@ -443,23 +443,29 @@ func TestRung1NoAliasGoesToRung2(t *testing.T) {
 }
 
 // Rung 1's tools are the check-in's read tools without run and git_log.
-// read_file reads the case's head through Forgejo, main when the case has
-// none; a path outside the repository is refused.
+// read_file reads the case's head through Forgejo, main's head commit when
+// the case has none, and its first line names the path and the commit it
+// read, so no answer can pass one commit's file off as another's; a path
+// outside the repository is refused.
 func TestRung1ToolsAreReadOnlyAndReadTheHead(t *testing.T) {
 	names := toolNames(CaseEvidence())
 	if !slices.Contains(names, "read_file") || !slices.Contains(names, "grep") || slices.Contains(names, "run") || slices.Contains(names, "git_log") {
 		t.Fatalf("tools = %v, want read_file and grep and no run or git_log", names)
 	}
 	g := newRungRig(t, "success")
-	g.forge.files = map[string]string{"h2:src/tasks.go": "package tasks // at the head", "main:src/tasks.go": "package tasks // at main"}
+	const head, main = "37d4701901bb8520153741a65219593cbfbec244", "9e1f0c2d3b4a5968778695a4b3c2d1e0f9a8b7c6"
+	g.forge.mainHead = main
+	g.forge.files = map[string]string{head + ":src/tasks.go": "package tasks // at the head", main + ":src/tasks.go": "package tasks // at main"}
 	repo := Repo{Owner: "demo-app", Name: "demo-app"}
-	tools := factoryd.PgCaseTools(g.r, Task{ID: "t1"}, CaseFacts{Head: "h2"}, repo)
-	if out, _, err := tools.Tool(context.Background(), "read_file", map[string]any{"path": "/workspace/src/tasks.go"}); err != nil || out != "package tasks // at the head" {
+	tools := factoryd.PgCaseTools(g.r, Task{ID: "t1"}, CaseFacts{Head: head}, repo)
+	if out, _, err := tools.Tool(context.Background(), "read_file", map[string]any{"path": "/workspace/src/tasks.go"}); err != nil ||
+		out != "src/tasks.go at head 37d4701:\npackage tasks // at the head" {
 		t.Fatalf("read_file at the head = %q, %v", out, err)
 	}
 	tools.PgSetFacts(CaseFacts{})
-	if out, _, err := tools.Tool(context.Background(), "read_file", map[string]any{"path": "src/tasks.go"}); err != nil || out != "package tasks // at main" {
-		t.Fatalf("read_file with no head = %q, %v, want main's", out, err)
+	if out, _, err := tools.Tool(context.Background(), "read_file", map[string]any{"path": "src/tasks.go"}); err != nil ||
+		out != "src/tasks.go at main 9e1f0c2:\npackage tasks // at main" {
+		t.Fatalf("read_file with no head = %q, %v, want main's under its commit", out, err)
 	}
 	if _, _, err := tools.Tool(context.Background(), "read_file", map[string]any{"path": "../../etc/passwd"}); err == nil {
 		t.Fatal("a path outside the repository was read")
@@ -470,9 +476,18 @@ func TestRung1ToolsAreReadOnlyAndReadTheHead(t *testing.T) {
 }
 
 // grep goes through the checkout of the head and main, or of main alone
-// for a case with no pull request; every output is cut and scrubbed.
+// for a case with no pull request; every output is cut and scrubbed, and
+// its first line names the commit of each ref it searched.
 func TestRung1GrepSearchesTheHeadAndMain(t *testing.T) {
 	dir := gitFixture(t)
+	commit := func(ref string) string {
+		out, err := factoryd.PgGit(context.Background(), dir, "", "rev-parse", ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(out)[:7]
+	}
+	atMain, atBoth := "at main "+commit("main")+":\n", "at head "+commit("head")+" and main "+commit("main")+":\n"
 	old := factoryd.CheckoutRefs
 	var gotPR int64
 	factoryd.CheckoutRefs = func(_ context.Context, _ *Forgejo, _ Repo, pr int64, _ string) (string, []namedRef, func(), error) {
@@ -487,19 +502,19 @@ func TestRung1GrepSearchesTheHeadAndMain(t *testing.T) {
 	tools := factoryd.PgCaseTools(g.r, Task{ID: "t1"}, CaseFacts{Head: "c1", PR: 9}, Repo{Owner: "demo-app", Name: "demo-app"})
 	defer tools.PgClose()
 	out, _, err := tools.Tool(context.Background(), "grep", map[string]any{"pattern": "Sym", "ref": "main"})
-	if err != nil || out != "main:a.go:3:func Sym() {}" || gotPR != 9 {
+	if err != nil || out != atMain+"main:a.go:3:func Sym() {}" || gotPR != 9 {
 		t.Fatalf("grep main = %q, %v (pr %d), want main's one hit through the pull request's checkout", out, err, gotPR)
 	}
 	both, _, err := tools.Tool(context.Background(), "grep", map[string]any{"pattern": "Sym"})
-	if err != nil || !strings.Contains(both, "head:b.go:2:var _ = Sym") || !strings.Contains(both, "main:a.go:3:func Sym() {}") {
+	if err != nil || !strings.HasPrefix(both, atBoth) || !strings.Contains(both, "\nhead:b.go:2:var _ = Sym") || !strings.Contains(both, "\nmain:a.go:3:func Sym() {}") {
 		t.Fatalf("grep both = %q, %v", both, err)
 	}
-	if none, _, err := tools.Tool(context.Background(), "grep", map[string]any{"pattern": "Absent"}); err != nil || none != "no match" {
+	if none, _, err := tools.Tool(context.Background(), "grep", map[string]any{"pattern": "Absent"}); err != nil || none != atBoth+"no match" {
 		t.Fatalf("grep no match = %q, %v", none, err)
 	}
 	bare := factoryd.PgCaseTools(g.r, Task{ID: "t1"}, CaseFacts{}, Repo{Owner: "demo-app", Name: "demo-app"})
 	defer bare.PgClose()
-	if out, _, err := bare.Tool(context.Background(), "grep", map[string]any{"pattern": "Sym"}); err != nil || out != "main:a.go:3:func Sym() {}" || gotPR != 0 {
+	if out, _, err := bare.Tool(context.Background(), "grep", map[string]any{"pattern": "Sym"}); err != nil || out != atMain+"main:a.go:3:func Sym() {}" || gotPR != 0 {
 		t.Fatalf("grep with no pull request = %q, %v (pr %d), want main alone", out, err, gotPR)
 	}
 }
