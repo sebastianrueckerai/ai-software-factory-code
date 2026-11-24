@@ -802,7 +802,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 		{"ready despite an old error", func(s *statusRig) { s.force.load("linkshort"); s.row(ready); s.main = true; s.reconcileErr = "old" },
 			[]string{"done", "done", "done", "done"}, nil, []string{"old"}},
 		{"ready", func(s *statusRig) { s.force.load("linkshort"); s.row(ready); s.main = true }, []string{"done", "done", "done", "done"},
-			[]string{`<a href="/board?project=linkshort">Ready since 2026-10-02 09:30 UTC: open the board</a>`}, []string{`type="password"`, "hx-trigger"}},
+			[]string{`<a href="/board?project=linkshort">Ready since <time datetime="2026-10-02T09:30:00Z" data-layout="2006-01-02 15:04 MST">2026-10-02 11:30 CEST</time>: open the board</a>`}, []string{`type="password"`, "hx-trigger"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := newStatusRig(t)

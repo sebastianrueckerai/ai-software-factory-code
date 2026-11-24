@@ -383,6 +383,7 @@ document.addEventListener("change", function (e) {
     // that panel waits for the next
     if (line && !line.contains(document.activeElement) && !confirming(line)) {
       line.innerHTML = d.status;
+      localTimes(line);
     }
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].innerHTML = n; });
   }
@@ -411,10 +412,12 @@ document.addEventListener("change", function (e) {
     av.setAttribute("aria-hidden", "true");
     av.textContent = agent ? "" : String(e.actor || "").charAt(0).toUpperCase();
     who.className = "who";
-    var name = who.appendChild(document.createElement("span")), when = who.appendChild(document.createElement("time"));
+    var name = who.appendChild(document.createElement("span")), when = who.appendChild(document.createElement("time")), at = new Date(e.at);
     name.className = "name";
     name.textContent = agent ? "agent" : e.actor;
-    when.textContent = new Date(e.at).toISOString().slice(5, 16).replace("T", " ") + "Z";
+    when.dateTime = at.toISOString();
+    when.dataset.layout = "01-02 15:04 MST";
+    when.textContent = localTime(at, when.dataset.layout);
     text.className = "said";
     text.textContent = d.text || "";
     if (end) box.scrollTop = box.scrollHeight;
@@ -1227,7 +1230,7 @@ document.addEventListener("keydown", function (e) {
         // save — a clash would refuse again
         var why = facts.appendChild(document.createElement("span"));
         why.className = "doc-refused";
-        why.textContent = "not saved: " + s.err.why;
+        why.textContent = "not saved: " + s.err.why + (s.err.at ? " (" + timeOfDay(s.err.at) + ")" : "");
         if (s.err.current != null && s.err.who) {
           facts.appendChild(document.createTextNode(" · "));
           var show = facts.appendChild(noteLink("theirs", theirs.path === path && theirs.open ? "hide theirs" : "show theirs"));
@@ -1846,3 +1849,15 @@ function confirming(line) {
 document.addEventListener("htmx:oobBeforeSwap", function (e) {
   if (e.detail.target.id === "status-line" && confirming(e.detail.target)) e.preventDefault();
 });
+
+// A screen's times read in the browser's zone (time.js). A <time> with a
+// title is an age, its moment the title.
+function localTimes(root) {
+  root.querySelectorAll("time[data-layout]").forEach(function (el) {
+    var text = localTime(new Date(el.dateTime), el.dataset.layout);
+    if (el.title) el.title = text;
+    else el.textContent = text;
+  });
+}
+localTimes(document);
+document.addEventListener("htmx:load", function (e) { localTimes(e.target); });

@@ -64,17 +64,25 @@ func TestResourcesPageListsTheClustersJobs(t *testing.T) {
 	if jobs == "" || strings.Index(page, "Jobs of the cluster") < strings.LastIndex(page, `<section class="project"`) {
 		t.Fatalf("no jobs section after the projects:\n%s", page)
 	}
-	utc := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") }
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a run's age carries its moment in its title, in Europe/Berlin until
+	// the browser reads it in its own zone
+	aged := func(t time.Time, age string) string {
+		return `<td><time datetime="` + t.UTC().Format(time.RFC3339) + `" data-layout="2006-01-02 15:04 MST" title="` + t.In(berlin).Format("2006-01-02 15:04 MST") + `">` + age + `</time></td>`
+	}
 	for _, want := range []string{
 		`<h3 id="jobs">Jobs of the cluster</h3>`,
 		`<table aria-label="The cluster's scheduled jobs by namespace">`,
 		`<th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th>` +
 			`<th scope="col">Last run</th><th scope="col">Last ok</th><th scope="col">Suspended</th>`,
 		`<tr><td>sf-cluster-daily</td><td>ScheduledBackup</td><td>platform</td><td title="0 0 2 * * *">daily 02:00 UTC</td>` +
-			`<td title="` + utc(ran) + `">3 h ago</td><td>not reported</td><td>no</td></tr>`,
+			aged(ran, "3 h ago") + `<td>not reported</td><td>no</td></tr>`,
 		`<tr><td>openbao-config</td><td>CronJob</td><td>platform</td><td title="*/10 * * * *">*/10 * * * * UTC</td><td>never</td><td>never</td><td>no</td></tr>`,
 		`<tr><td>forgejo-dump</td><td>CronJob</td><td>forgejo</td><td title="30 2 * * *">daily 02:30 UTC</td>` +
-			`<td title="` + utc(ran) + `">3 h ago</td><td title="` + utc(dumped) + `">2 d ago</td><td>yes</td></tr>`,
+			aged(ran, "3 h ago") + aged(dumped, "2 d ago") + `<td>yes</td></tr>`,
 	} {
 		if !strings.Contains(jobs, want) {
 			t.Errorf("the jobs section lacks %q:\n%s", want, jobs)

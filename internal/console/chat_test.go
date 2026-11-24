@@ -4601,6 +4601,7 @@ func TestChatSteerAndComment(t *testing.T) {
 		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCommentDeleted, Detail: map[string]any{"comment": int64(1)}})
 	equal(t, "deleted", r.fg.deleted, []string{"/api/v1/repos/sf/code/issues/comments/1"})
 
+	r.c.clock = steerClock
 	for err, want := range steerRefusals() {
 		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
 		before := r.events.count()

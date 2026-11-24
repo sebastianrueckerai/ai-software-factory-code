@@ -81,6 +81,7 @@ var sandbox = {document: doc, window: {addEventListener: function (t, f) { (winL
   navigator: {userAgent: "node"}, matchMedia: function () { return {matches: false, addEventListener: function () {}}; },
   htmx: {ajax: function () { return Promise.resolve(); }, process: function () {}, swap: function () {}}};
 vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8"), sandbox);
 vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
 vm.runInNewContext(fs.readFileSync(process.argv[2], "utf8"), sandbox);
 (listeners.DOMContentLoaded || []).forEach(function (f) { f({}); });

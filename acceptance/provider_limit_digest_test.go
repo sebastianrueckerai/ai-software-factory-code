@@ -98,7 +98,7 @@ func plFlagCases(t *testing.T, r *parkRig, id string) []string {
 // holds a flag and the monitor's sweep opens no case. Ten hours in, the
 // face splits the clocks — "3 h 12 min, frozen 6 h 48 min", Total the same
 // — and its chip shows the words and the reset; the life records the
-// frozen interval. [digest_quiet_in_freeze]
+// frozen interval by its length, the 7 h backoff. [digest_quiet_in_freeze]
 func TestDigestQuietInsideFreeze(t *testing.T) {
 	r := newParkRig(t)
 	ctx := context.Background()
@@ -156,7 +156,7 @@ func TestDigestQuietInsideFreeze(t *testing.T) {
 	drawer := r.get(t, "/cards/t-frozen-600/drawer?tab=overview", ck).Body.String()
 	for _, want := range []string{
 		`<span class="it">3 h 12 min, frozen 6 h 48 min</span>`,
-		"frozen on the provider limit until " + reset.UTC().Format("15:04 UTC") + ": " + plFrozenWords,
+		"frozen on the provider limit for 7 h 0 min: " + plFrozenWords,
 	} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the drawer lacks %s", want)

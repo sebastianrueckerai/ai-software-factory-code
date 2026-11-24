@@ -437,7 +437,7 @@ func TestDocumentsConflictEndToEnd(t *testing.T) {
 		docSaveBody{Text: mine, Base: factoryd.ContentHash(documentsRoadmap), Commit: "c0ffee"})
 	equal(t, "the refusal's status", code, http.StatusConflict)
 	equal(t, "the clash", []any{refused.Reason, refused.Who, refused.At, refused.Lines},
-		[]any{"sebastian changed the same lines (14:00)", "sebastian", "2026-10-15T14:00:00Z", [][2]int{{4, 4}}})
+		[]any{"sebastian changed the same lines", "sebastian", "2026-10-15T14:00:00Z", [][2]int{{4, 4}}})
 	equal(t, "the current text and hash", []any{refused.SHA256, refused.Current},
 		[]any{factoryd.ContentHash(theirs), theirs})
 	equal(t, "the refusal committed nothing", len(docs.Commits()), 1)

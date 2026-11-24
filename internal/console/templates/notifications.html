@@ -58,9 +58,9 @@
 <thead><tr><th scope="col">Name</th><th scope="col">Project</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">Act</th></tr></thead>
 <tbody>
 {{range .Tokens}}<tr><th scope="row"><span class="cut" title="{{.Name}}">{{.Name}}</span></th><td data-l="project">{{$r := .Repository}}{{$p := $r}}{{range $.Projects}}{{if eq .Repository $r}}{{$p = .Name}}{{end}}{{end}}<span class="cut" title="{{$r}}">{{$p}}</span></td>
-<td data-l="created">{{.Created.Format "2006-01-02"}}</td>
-<td data-l="expires">{{if .Expires.Before $now}}<span class="dim">expired</span>{{else}}{{.Expires.Format "2006-01-02"}}{{end}}</td>
-<td data-l="last used">{{if .LastUsed.IsZero}}<i class="lamp" aria-hidden="true"></i><span class="dim">never</span>{{else}}<i class="lamp{{if not (.Expires.Before $now)}} on{{end}}" aria-hidden="true"></i>{{.LastUsed.Format "2006-01-02 15:04"}}{{end}}</td>
+<td data-l="created">{{moment .Created "2006-01-02"}}</td>
+<td data-l="expires">{{if .Expires.Before $now}}<span class="dim">expired</span>{{else}}{{moment .Expires "2006-01-02"}}{{end}}</td>
+<td data-l="last used">{{if .LastUsed.IsZero}}<i class="lamp" aria-hidden="true"></i><span class="dim">never</span>{{else}}<i class="lamp{{if not (.Expires.Before $now)}} on{{end}}" aria-hidden="true"></i>{{moment .LastUsed "2006-01-02 15:04"}}{{end}}</td>
 <td class="act"><form method="post" action="/notifications/tokens/revoke" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit">Revoke</button></form></td></tr>
 {{else}}<tr><td colspan="6"><span class="dim">No chat token.</span></td></tr>{{end}}
 </tbody>

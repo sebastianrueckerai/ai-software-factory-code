@@ -3072,8 +3072,8 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 	var starting *factoryd.SessionStartingError
 	switch err := c.cfg.Steer(ctx, t.ID, a.approver(), text); {
 	case errors.As(err, &starting):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is in its start check-in since %s, which decides whether the agent starts. Send it once the agent starts, or comment on the card.",
-			t.IssueNumber, starting.Since.UTC().Format("15:04")))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is in its start check-in, which decides whether the agent starts; it began %s ago. Send it once the agent starts, or comment on the card.",
+			t.IssueNumber, minutes(c.clock().Sub(starting.Since))))
 	case errors.Is(err, factoryd.ErrNoLiveSession):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is between sessions. Comment on the card, and the next session reads it.", t.IssueNumber))
 	case errors.Is(err, harness.ErrNotRunning):

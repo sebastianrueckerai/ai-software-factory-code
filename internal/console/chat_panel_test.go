@@ -136,14 +136,15 @@ func TestChatPanel(t *testing.T) {
 // factory's stop row. Every choice, a poke's or an ask's, is a press
 // through /answer; an inbox's answer row offers no words of one's own,
 // and its head names it the factory's thread, whoever's inbox it is. A
-// press posts its choice alone, no field beside it. Run under node, which
-// the test needs.
+// press posts its choice alone, no field beside it. Each row's time is a
+// <time> of its instant read in the browser's zone, UTC under this test.
+// Run under node, which the test needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("no node")
 	}
-	const driver = `var chatView = require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8") + "\nchatView",
+	const driver = `var chatView = require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8") + require("fs").readFileSync(process.argv[1], "utf8") + "\nchatView",
   {document: {getElementById: function () { return null; }}});
 var args = '{"title":"Cache metrics","track":"direct"}';
 var msgs = [{role: "user", content: "file a card", at: "2026-10-11T09:30:01Z"},
@@ -252,8 +253,8 @@ console.log(JSON.stringify({
 		t.Fatalf("node said %s: %v", out, err)
 	}
 	const (
-		you      = `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">file a card</p></div>`
-		agent    = `<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p>`
+		you      = `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">file a card</p></div>`
+		agent    = `<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time datetime="2026-10-11T09:30:02.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>`
 		args     = `{&quot;title&quot;:&quot;Cache metrics&quot;,&quot;track&quot;:&quot;direct&quot;}`
 		result   = `Proposed to sebastian: File a card, title Cache metrics, track direct. Nothing runs until they press Do it.`
 		proposal = `<div class="proposal" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, track direct</li></ul>` +
@@ -308,49 +309,49 @@ console.log(JSON.stringify({
 			`<h2 id="dlg-title">Delete “world”?</h2><p>Its 4 messages go for good: a hard delete, no archive. One event will name you, the thread and the count. ` +
 			`What the chat did stays in the events, the audit and git, so no decision and no merged card goes with it.</p>` +
 			`<div class="acts"><button type="button" class="danger" data-dlg="delete">Delete the thread</button><button type="button" data-dlg="keep">Keep it</button></div></div></div>`},
-		{"poke", `<div class="msg agent poke" data-message="7"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:12Z</time></p>` +
+		{"poke", `<div class="msg agent poke" data-message="7"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:12:00.000Z" data-layout="01-02 15:04 MST">10-11 09:12 UTC</time></p>` +
 			`<div class="said"><p>Started the login card.</p></div><p class="decider"><span class="visually-hidden">Decided by: </span>assisted level · started by the agent</p>` +
 			`<p class="choices"><button type="button" data-answer="Open the card">Open the card</button></p></div>`},
 		{"compacted", `<details class="compacted"><summary>2 earlier messages, compacted</summary>` +
-			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">a1</p></div>` +
-			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p><div class="said"><p>a2</p></div></div></details>` +
-			`<div class="msg sum"><span class="av" aria-hidden="true">≡</span><p class="who"><span class="name">summary</span> <time>10-11 09:30Z</time></p><div class="said"><p>the cache was fixed</p></div></div>` +
-			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">a1</p></div>` +
+			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time datetime="2026-10-11T09:30:02.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><div class="said"><p>a2</p></div></div></details>` +
+			`<div class="msg sum"><span class="av" aria-hidden="true">≡</span><p class="who"><span class="name">summary</span> <time datetime="2026-10-11T09:30:02.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><div class="said"><p>the cache was fixed</p></div></div>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:31:00.000Z" data-layout="01-02 15:04 MST">10-11 09:31 UTC</time></p><p class="said">b1</p></div>`},
 		{"cleared", `<p class="meta chat-cleared">cleared: 2 older messages out of view</p>` +
-			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:31:00.000Z" data-layout="01-02 15:04 MST">10-11 09:31 UTC</time></p><p class="said">b1</p></div>`},
 		{"clearedOne", `<p class="meta chat-cleared">cleared: 1 older message out of view</p>` +
-			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
-		{"escalation", `<div class="msg agent poke esc" data-message="8"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:13Z</time> <span class="esc-l">needs you</span></p>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:31:00.000Z" data-layout="01-02 15:04 MST">10-11 09:31 UTC</time></p><p class="said">b1</p></div>`},
+		{"escalation", `<div class="msg agent poke esc" data-message="8"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:13:00.000Z" data-layout="01-02 15:04 MST">10-11 09:13 UTC</time> <span class="esc-l">needs you</span></p>` +
 			`<div class="esc-b"><div class="said"><p>Which store?</p></div></div></div>`},
 		{"palette", `[["compact","new","standup"],["compact"],[],null,null]`},
 		{"paletteHTML", `<button type="button" role="option" id="cmd-compact" aria-selected="false" data-cmd="compact"><b>/compact</b><span>the older turns of this thread become a summary</span></button>` +
 			`<button type="button" role="option" id="cmd-new" aria-selected="true" data-cmd="new"><b>/new</b><span>a new thread</span></button>`},
 		{"expand", `What moved since yesterday?|/compact|/standup now`},
-		{"repeated", `<div class="msg agent poke" data-message="9"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:14Z</time> <span class="rep">3 times</span></p>` +
+		{"repeated", `<div class="msg agent poke" data-message="9"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:14:00.000Z" data-layout="01-02 15:04 MST">10-11 09:14 UTC</time> <span class="rep">3 times</span></p>` +
 			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div></div>`},
-		{"settledEscalation", `<div class="msg agent poke esc settled" data-message="10"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:15Z</time></p>` +
+		{"settledEscalation", `<div class="msg agent poke esc settled" data-message="10"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:15:00.000Z" data-layout="01-02 15:04 MST">10-11 09:15 UTC</time></p>` +
 			`<div class="esc-b"><div class="said"><p>Which store?</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>answered by sebastian · 09:14</p></div><p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">answered by sebastian · 09:14</span><span class="ft">Which store?</span></p></div>`},
-		{"settledPoke", `<div class="msg agent poke settled" data-message="11"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:16Z</time></p>` +
+		{"settledPoke", `<div class="msg agent poke settled" data-message="11"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:16:00.000Z" data-layout="01-02 15:04 MST">10-11 09:16 UTC</time></p>` +
 			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>moved on · 09:16</p><p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">moved on · 09:16</span><span class="ft">#7 failed.</span></p></div>`},
-		{"calls", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">look</p></div>` +
+		{"calls", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">look</p></div>` +
 			agent + `<details class="calls"><summary>2 earlier calls</summary>` +
 			`<details class="tool"><summary>🔧 board · 3 cards</summary><pre>{}` + "\n\n" + `3 cards</pre></details>` +
 			`<p class="refused"><code>card</code> Refused: no card 9</p></details>` +
 			`<details class="tool"><summary>🔧 ci · green</summary><pre>{}` + "\n\n" + `green</pre></details>` +
 			`<div class="said"><p>All green.</p></div></div>`},
-		{"trail", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">which files?</p></div>` +
+		{"trail", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">which files?</p></div>` +
 			agent + `<details class="tool"><summary>🔧 research · Findings:</summary><pre>{&quot;ask&quot;:&quot;which files?&quot;}` + "\n\n" +
 			`Findings:` + "\n" + `main holds README.md.</pre><details class="trail"><summary>the researcher's steps</summary><pre>` +
 			"\n" + `tree {&quot;ref&quot;:&quot;main&quot;}` + "\n" + `README.md 1200` + "\n" + `</pre></details></details>` +
 			`<div class="said"><p>Done.</p></div></div>`},
-		{"queuedRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
+		{"queuedRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:05.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>` +
 			`<p class="said">also this</p><p class="meta chat-queued">not read yet: the agent reads it after its current step</p></div>`},
 		{"tokenThread", `<div class="msg you tok"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span>` +
-			` <span class="via" title="sent by the chat token claude-&lt;b&gt;">via claude-&lt;b&gt;</span> <time>10-11 09:30Z</time></p>` +
+			` <span class="via" title="sent by the chat token claude-&lt;b&gt;">via claude-&lt;b&gt;</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>` +
 			`<p class="said">what waits?</p></div>` +
-			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:31:01.000Z" data-layout="01-02 15:04 MST">10-11 09:31 UTC</time></p>` +
 			`<p class="said">and now</p></div>`},
-		{"imgRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
+		{"imgRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>` +
 			`<p class="said">look at the run</p><div class="chat-thumbs">` +
 			`<a class="thumb" href="/projects/ai-software-factory-code/chat/attachments/901" target="_blank" rel="noopener">` +
 			`<img loading="lazy" src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></a></div></div>`},
@@ -360,22 +361,22 @@ console.log(JSON.stringify({
 			`<button type="button" class="thinking" data-stop aria-label="Stop" title="Stop">thinking</button><div class="tfold" hidden></div></span>`},
 		{"stoppedMark", `<span class="thinking stopped" aria-hidden="true">stopped</span>`},
 		{"stopRow", `<div class="msg agent poke" data-message="13"><span class="av" aria-hidden="true"></span>` +
-			`<p class="who"><span class="name">the factory</span> <time>10-11 09:20Z</time></p>` +
+			`<p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:20:00.000Z" data-layout="01-02 15:04 MST">10-11 09:20 UTC</time></p>` +
 			`<div class="said"><p>Stopped by sebastian.</p></div></div>`},
-		{"stoppedThread", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">what is open?</p></div>` +
-			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p>` +
+		{"stoppedThread", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T09:30:01.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p><p class="said">what is open?</p></div>` +
+			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time datetime="2026-10-11T09:30:02.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>` +
 			`<div class="said"><p>Partial</p></div><span class="thinking stopped" aria-hidden="true">stopped</span></div>` +
-			`<div class="msg agent poke" data-message="3"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:30Z</time></p>` +
+			`<div class="msg agent poke" data-message="3"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-11T09:30:03.000Z" data-layout="01-02 15:04 MST">10-11 09:30 UTC</time></p>` +
 			`<div class="said"><p>Stopped by sebastian.</p></div></div>`},
 		{"noFoldInHistory", `false`},
 		{"readRow", `<p class="meta chat-read">✓ read by the agent</p>`},
 		{"openQ", `<p class="meta chat-open">question that may be open: Can you do that? &lt;b&gt;</p>|`},
 		{"share", `[384,384,720,500.25]`},
-		{"budgetRow", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
+		{"budgetRow", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-28T22:20:00.000Z" data-layout="01-02 15:04 MST">10-28 22:20 UTC</time></p>` +
 			`<div class="said"><p>The chat's budget for October is used up: 14.96 of 15.00 EUR spent, and the next call does not fit what is left.<br>free headroom 0.04 EUR</p></div>` +
 			`<form class="choices fund" data-fund><label>Raise the judgment budget by, EUR <input type="number" name="eur" step="0.01" min="0.01" required value="3"></label> ` +
 			`<button type="submit">Fund and go on</button></form></div>`},
-		{"budgetRowWriter", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
+		{"budgetRowWriter", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time datetime="2026-10-28T22:20:00.000Z" data-layout="01-02 15:04 MST">10-28 22:20 UTC</time></p>` +
 			`<div class="said"><p>The chat's budget is used up.</p></div><p class="settled-why">Only an approver of the project funds the chat.</p></div>`},
 		{"fundOnNewest", `[1,true,-1]`},
 	} {
@@ -424,7 +425,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var drain = function () { return new Promise(function (res) { setImmediate(res); }).then(function () {
   return new Promise(function (res) { setImmediate(res); }); }); };
 var sawList = function () { return fetched.some(function (u) { return u.indexOf("/conversations", u.length - 14) !== -1; }); };
@@ -564,7 +565,7 @@ sandbox.window = sandbox;
 sandbox.window.innerHeight = 800;
 sandbox.window.matchMedia = function () { return {matches: false}; };
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var grow = function () {
   input.value = "line\n".repeat(40) + "send me";
   input.scrollHeight = 920;
@@ -668,7 +669,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var fire = function (kind, e) { (listeners[kind] || []).forEach(function (fn) { fn(e); }); };
 var click = function (target) {
   var prevented = false;
@@ -777,7 +778,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
 var stopButton = function () { return {closest: function (sel) { return sel === "[data-stop]" ? this : null; }}; };
 var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
@@ -915,7 +916,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
 var give = function (text) { chunks.push(text); waiting.splice(0).forEach(function (res) { res({done: false, value: chunks.shift()}); }); };
 var finish = function () { ended = true; waiting.splice(0).forEach(function (res) { res({done: true}); }); };
@@ -1043,7 +1044,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var out = {};
 Promise.resolve().then(function () {
   input.scrollHeight = 440; input.clientHeight = 66;
@@ -1167,7 +1168,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
 var chatView = sandbox.chatView;
 var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
@@ -1341,7 +1342,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
 var chatView = sandbox.chatView;
 var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
@@ -1507,7 +1508,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
   getComputedStyle: function () { return {fontSize: "16px"}; }};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInNewContext(fs.readFileSync("static/time.js", "utf8") + fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
 var chatView = sandbox.chatView;
 var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
@@ -1589,7 +1590,7 @@ func TestChatPanelDocrefs(t *testing.T) {
 	if err != nil {
 		t.Skip("no node")
 	}
-	const driver = `var chatView = require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8") + "\nchatView",
+	const driver = `var chatView = require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8") + require("fs").readFileSync(process.argv[1], "utf8") + "\nchatView",
   {document: {getElementById: function () { return null; }}});
 console.log(JSON.stringify([
   chatView.md("The backlog plan is docs/plans/2026-09-24-build-plan.md."),
@@ -1678,6 +1679,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     removeEventListener: function (type, fn) { listeners[type] = (listeners[type] || []).filter(function (f) { return f !== fn; }); },
     dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
+require("vm").runInNewContext(require("fs").readFileSync("static/time.js", "utf8"), sandbox);
 require("vm").runInNewContext(require("fs").readFileSync("static/console.js", "utf8"), sandbox);
 require("vm").runInNewContext(require("fs").readFileSync("static/chat.js", "utf8"), sandbox);
 (listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); });

@@ -30,9 +30,6 @@ type run struct {
 	Notes   []string
 }
 
-// At is the run's start as the drawer shows it.
-func (r run) At() string { return r.Start.UTC().Format("15:04") }
-
 // Duration is the run's length in minutes, or hours and minutes.
 func (r run) Duration() string { return minutes(time.Duration(r.Minutes) * time.Minute) }
 
@@ -162,7 +159,7 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 			// the reset, so a later reader knows why the stage took hours;
 			// the ladder's short backoff stays a stall
 			if backoff := time.Duration(numAt(m, "backoff_s")) * time.Second; backoff > frozenLimit {
-				note := "frozen on the provider limit until " + at.Add(backoff).UTC().Format("15:04 UTC")
+				note := "frozen on the provider limit for " + minutes(backoff)
 				if words := strings.TrimSpace(textAt(m, "words")); words != "" {
 					note += ": " + textutil.Truncate(words, 200)
 				}

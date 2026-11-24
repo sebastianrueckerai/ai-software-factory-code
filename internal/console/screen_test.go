@@ -234,7 +234,7 @@ func TestStatusLineFigures(t *testing.T) {
 	gauge := func(pct int) string {
 		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span>`, pct, pct)
 	}
-	day := `<span class="cell spend" title="spend this UTC day, 0 percent of the day cap, holds included; it resets at 00:00 UTC"><span><span class="of">today</span> <b class="n">0.00</b> <span class="of">/ 20.00 EUR</span></span>` +
+	day := `<span class="cell spend" title="spend this UTC day, 0 percent of the day cap, holds included"><span><span class="of">today</span> <b class="n">0.00</b> <span class="of">/ 20.00 EUR</span></span>` +
 		`<span class="gauge"><meter min="0" max="100" value="0" aria-label="Spend of the day cap">0 percent</meter></span></span>` + "\n"
 	code := `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
@@ -670,10 +670,10 @@ func TestDrawerActivity(t *testing.T) {
 		t.Errorf("the activity's tables are not the timeline page's:\n%s\nwant\n%s", got, tables(page))
 	}
 	for _, want := range []string{
-		`<tr><td>session</td><td>1</td><td><time>2026-10-11 10:00:00</time></td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
-		`<tr><td title="2026-10-11T10:05:00Z"><time>2026-10-11 10:05:00</time></td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
-		`<tr><td title="2026-10-11T10:04:00Z"><time>2026-10-11 10:04:00</time></td><td>checkin</td><td><strong>redirect</strong>: run the failing acceptance test</td><td><code>{&#34;called&#34;:true,&#34;decision&#34;:&#34;redirect&#34;,&#34;detector&#34;:&#34;no_write&#34;,&#34;digest&#34;:&#34;read console.css twice&#34;,&#34;guidance&#34;:&#34;run the failing acceptance test&#34;,&#34;reason&#34;:&#34;&#34;,&#34;session&#34;:&#34;s-1&#34;,&#34;trip&#34;:&#34;no write in 8 min&#34;}</code></td></tr>`,
-		`<tr><td title="2026-10-11T10:06:00Z"><time>2026-10-11 10:06:00</time></td><td>checkin</td><td></td><td><code>{&#34;decision&#34;:&#34;reverify&#34;,&#34;reason&#34;:&#34;&#34;,&#34;round&#34;:1,&#34;verdicts&#34;:{&#34;a.go: x is missing&#34;:{&#34;evidence&#34;:&#34;the test never ran&#34;,&#34;round&#34;:1,&#34;state&#34;:&#34;dropped&#34;}}}</code></td></tr>`,
+		`<tr><td>session</td><td>1</td><td><time datetime="2026-10-11T10:00:00Z" data-layout="2006-01-02 15:04:05 MST">2026-10-11 12:00:00 CEST</time></td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
+		`<tr><td title="2026-10-11T10:05:00Z"><time datetime="2026-10-11T10:05:00Z" data-layout="2006-01-02 15:04:05 MST">2026-10-11 12:05:00 CEST</time></td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
+		`<tr><td title="2026-10-11T10:04:00Z"><time datetime="2026-10-11T10:04:00Z" data-layout="2006-01-02 15:04:05 MST">2026-10-11 12:04:00 CEST</time></td><td>checkin</td><td><strong>redirect</strong>: run the failing acceptance test</td><td><code>{&#34;called&#34;:true,&#34;decision&#34;:&#34;redirect&#34;,&#34;detector&#34;:&#34;no_write&#34;,&#34;digest&#34;:&#34;read console.css twice&#34;,&#34;guidance&#34;:&#34;run the failing acceptance test&#34;,&#34;reason&#34;:&#34;&#34;,&#34;session&#34;:&#34;s-1&#34;,&#34;trip&#34;:&#34;no write in 8 min&#34;}</code></td></tr>`,
+		`<tr><td title="2026-10-11T10:06:00Z"><time datetime="2026-10-11T10:06:00Z" data-layout="2006-01-02 15:04:05 MST">2026-10-11 12:06:00 CEST</time></td><td>checkin</td><td></td><td><code>{&#34;decision&#34;:&#34;reverify&#34;,&#34;reason&#34;:&#34;&#34;,&#34;round&#34;:1,&#34;verdicts&#34;:{&#34;a.go: x is missing&#34;:{&#34;evidence&#34;:&#34;the test never ran&#34;,&#34;round&#34;:1,&#34;state&#34;:&#34;dropped&#34;}}}</code></td></tr>`,
 	} {
 		if !strings.Contains(activity, want) {
 			t.Errorf("the activity lacks %s", want)
@@ -793,9 +793,9 @@ func TestDrawerChat(t *testing.T) {
 <h2 class="dr-title" tabindex="-1">fix the cache</h2>
 <p class="meta">Session 2 · big · running</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 2" data-task="t-run" data-session="s-2">
-<div class="msg agent" data-key="s-2@2026-10-11T10:01:00.5Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 10:01Z</time></p><p class="said">Reading the cache first.</p></div>
-<div class="msg you" data-key="e2"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 10:03Z</time></p><p class="said">Rebase first.</p></div>
-<div class="msg agent" data-key="s-2@2026-10-11T10:04:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 10:04Z</time></p><p class="said">Done &lt;b&gt;here&lt;/b&gt;.
+<div class="msg agent" data-key="s-2@2026-10-11T10:01:00.5Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time datetime="2026-10-11T10:01:00Z" data-layout="01-02 15:04 MST">10-11 12:01 CEST</time></p><p class="said">Reading the cache first.</p></div>
+<div class="msg you" data-key="e2"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T10:03:00Z" data-layout="01-02 15:04 MST">10-11 12:03 CEST</time></p><p class="said">Rebase first.</p></div>
+<div class="msg agent" data-key="s-2@2026-10-11T10:04:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time datetime="2026-10-11T10:04:00Z" data-layout="01-02 15:04 MST">10-11 12:04 CEST</time></p><p class="said">Done &lt;b&gt;here&lt;/b&gt;.
 Next: the tests.</p></div>
 </div>
 </div>`,
@@ -809,8 +809,8 @@ Next: the tests.</p></div>
 	}
 	if got, want := drawer(t, r, ck, "t-pr", "chat"), `<p class="meta">Session 1 · small · pushed</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 1" data-task="t-pr" data-session="s-9">
-<div class="msg agent" data-key="s-9@2026-10-11T08:10:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 08:10Z</time></p><p class="said">Drawing it.</p></div>
-<div class="msg you" data-key="e4"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 08:20Z</time></p><p class="said">Use the grid.</p></div>
+<div class="msg agent" data-key="s-9@2026-10-11T08:10:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time datetime="2026-10-11T08:10:00Z" data-layout="01-02 15:04 MST">10-11 10:10 CEST</time></p><p class="said">Drawing it.</p></div>
+<div class="msg you" data-key="e4"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time datetime="2026-10-11T08:20:00Z" data-layout="01-02 15:04 MST">10-11 10:20 CEST</time></p><p class="said">Use the grid.</p></div>
 </div>
 </div>`; !strings.Contains(got, want) {
 		t.Errorf("the ended session's chat lacks\n%s\nin\n%s", want, got)
@@ -905,6 +905,7 @@ func TestTellTheRunningSession(t *testing.T) {
 	if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusNotFound || len(steered) != 2 {
 		t.Errorf("the Session tab's old door = %d, steered %q", rec.Code, steered)
 	}
+	r.c.clock = steerClock
 	for err, want := range steerRefusals() {
 		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
 		before = r.events.count()
@@ -915,12 +916,15 @@ func TestTellTheRunningSession(t *testing.T) {
 	}
 }
 
+// steerClock is the console's clock while steerRefusals meet a steer.
+func steerClock() time.Time { return time.Date(2026, 11, 17, 17, 34, 30, 0, time.UTC) }
+
 // steerRefusals are the session states a steer to card #11 meets, each
-// with the refusal that names it: a start check-in since 17:31 UTC, no
-// session, a session that ended.
+// with the refusal that names it: a start check-in begun at 17:31:24 UTC,
+// 3 min before steerClock, no session, a session that ended.
 func steerRefusals() map[error]string {
 	return map[error]string{
-		&factoryd.SessionStartingError{Since: time.Date(2026, 11, 17, 17, 31, 24, 0, time.UTC)}: "Card #11 is in its start check-in since 17:31, which decides whether the agent starts. Send it once the agent starts, or comment on the card.",
+		&factoryd.SessionStartingError{Since: time.Date(2026, 11, 17, 17, 31, 24, 0, time.UTC)}: "Card #11 is in its start check-in, which decides whether the agent starts; it began 3 min ago. Send it once the agent starts, or comment on the card.",
 		factoryd.ErrNoLiveSession: "Card #11 is between sessions. Comment on the card, and the next session reads it.",
 		harness.ErrNotRunning:     "Card #11's session just ended. Comment on the card, and the next session reads it.",
 	}
@@ -1725,11 +1729,12 @@ func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
 		t.Errorf("the face lacks %s:\n%s", want, face)
 	}
 	// the opened card's clock splits the same way, and its life records
-	// the frozen interval with the provider's words and the reset
+	// the frozen interval with the provider's words and its length, the
+	// 25200 s backoff
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-frozen/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
 		`<span class="it">3 h 12 min, frozen 6 h 48 min</span> ` + until,
-		`<span class="tnote">frozen on the provider limit until ` + reset.UTC().Format("15:04 UTC") + `: rate limit exceeded</span>`,
+		`<span class="tnote">frozen on the provider limit for 7 h 0 min: rate limit exceeded</span>`,
 	} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the drawer lacks %s", want)
@@ -1772,17 +1777,19 @@ func statusOf(t *testing.T, body string) (strip, spend string) {
 // The strip always shows the day cell under a day cap (20 EUR), slim: one
 // EUR, a gauge and its percent in the title. 2 EUR is 10 percent, plain;
 // 17 EUR is 85, amber; 10 EUR with a refusal today is red and says the cap
-// refuses calls. The panel's notes name the reset beside the period's
-// turn.
+// refuses calls until its count resets. The panel's notes name the reset
+// beside the period's turn: at 22:00 UTC on 24 November the day's is 25
+// November at 01:00 CET, read again in the browser's zone.
 func TestStripDayAlways(t *testing.T) {
 	r, ck := screenRig(t)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 24, 22, 0, 0, 0, time.UTC) }
 	board := func(e policy.Enforced) (string, string) {
 		t.Helper()
 		r.ledger.enforced = e
 		return statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
 	}
 	cell := func(class, eur string, pct int, more string) string {
-		return fmt.Sprintf(`<span class="cell spend%s" title="spend this UTC day, %d percent of the day cap, holds included; it resets at 00:00 UTC%s"><span><span class="of">today</span> <b class="n">%s</b> <span class="of">/ 20.00 EUR</span></span>`+
+		return fmt.Sprintf(`<span class="cell spend%s" title="spend this UTC day, %d percent of the day cap, holds included%s"><span><span class="of">today</span> <b class="n">%s</b> <span class="of">/ 20.00 EUR</span></span>`+
 			`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the day cap">%d percent</meter></span></span>`, class, pct, more, eur, pct, pct)
 	}
 	for _, tc := range []struct {
@@ -1791,13 +1798,13 @@ func TestStripDayAlways(t *testing.T) {
 	}{
 		{policy.Enforced{Day: 2}, cell("", "2.00", 10, "")},
 		{policy.Enforced{Day: 17}, cell(" warn", "17.00", 85, "")},
-		{policy.Enforced{Day: 10, DayHit: true}, cell(" over", "10.00", 50, "; the day cap refuses calls until then")},
+		{policy.Enforced{Day: 10, DayHit: true}, cell(" over", "10.00", 50, "; the day cap refuses calls until its count resets")},
 	} {
 		if strip, _ := board(tc.e); !strings.Contains(strip, tc.want) {
 			t.Errorf("day %.2f, hit %v: the strip\n%s\nlacks\n%s", tc.e.Day, tc.e.DayHit, strip, tc.want)
 		}
 	}
-	if _, spend := board(policy.Enforced{Day: 10, DayHit: true}); !strings.Contains(spend, `<p class="sp-note">the day cap is hit: sessions wait until 00:00 UTC or a reset</p>`) {
+	if _, spend := board(policy.Enforced{Day: 10, DayHit: true}); !strings.Contains(spend, `<p class="sp-note">the day cap is hit: sessions wait until <time datetime="2026-11-25T00:00:00Z" data-layout="2 January at 15:04 MST">25 November at 01:00 CET</time> or a reset</p>`) {
 		t.Errorf("a hit day cap: the panel lacks the day's note:\n%s", spend)
 	}
 	if _, spend := board(policy.Enforced{Month: 50}); !strings.Contains(spend, `<p class="sp-note">the month cap is hit: sessions wait until the month turns or a reset</p>`) {
@@ -1819,7 +1826,7 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 	}
 	r.ledger.premiumCap, r.ledger.premium = 50, 45
 	strip, spend := status()
-	if strings.Contains(strip, "premium") || !strings.Contains(spend, `<span class="lbl">premium this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span><span class="fig">45.00 of 50.00 EUR</span>`) {
+	if strings.Contains(strip, "premium") || !strings.Contains(spend, `<span class="lbl">premium this month <span class="turn">(resets <time datetime="2026-12-01T00:00:00Z" data-layout="2 January at 15:04 MST">1 December at 01:00 CET</time>)</span></span><span class="fig">45.00 of 50.00 EUR</span>`) {
 		t.Errorf("premium at 90 percent: want no strip cell and the panel's row\n%s\n%s", strip, spend)
 	}
 	if strings.Contains(strip, "pool") || !strings.Contains(spend, `<p class="trace">escalation pool: `+noDraws+`</p>`) {
@@ -1859,11 +1866,13 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 // A reset in force marks its cell with ↺ and its title names it; the
 // panel's row then counts since the reset, and a trace line under it says
 // who reset it, when, the count it ended and the period's whole: 0.40 EUR
-// since sebastian's reset at 14:02 UTC after 19.62 make 20.02 today; under
+// since sebastian's reset at 14:02 UTC, 20 Nov 15:02 CET, after 19.62 make
+// 20.02 today; under
 // the factory's month cap 12 since a reset after 48 make 60; under the
 // project's own cap, 10 booked after its reset and 30 before make 40;
 // under the premium cap of 50, its count of 50 since a reset after 44
-// makes 94 and hits the cap, whose strip cell names the reset. The board
+// makes 94 and hits the cap, whose strip cell names the reset, its moment
+// left to the panel's trace, which the browser reads in its zone. The board
 // reads one pinned clock, 16:00 UTC on the reset's day. Each cap's Reset
 // names the reset it shows, the one a press saw.
 func TestStripShowsReset(t *testing.T) {
@@ -1885,11 +1894,12 @@ func TestStripShowsReset(t *testing.T) {
 		Month: 12, MonthReset: &policy.CapReset{ID: 4, Cap: policy.CapMonth, At: at, Login: "sebastian", BeforeEUR: 48},
 		PremiumReset: &policy.CapReset{ID: 6, Cap: policy.CapPremium, At: at, Login: "sebastian", BeforeEUR: 44}}
 	r.ledger.premiumCap, r.ledger.premium = 50, 50
+	since := `<time datetime="2026-11-20T14:02:00Z" data-layout="2 Jan 15:04 MST">20 Nov 15:02 CET</time>`
 	strip, spend := statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
 	for _, want := range []string{
-		`; sebastian reset its count at 14:02 UTC, 19.62 EUR before"><span><span class="of">↺ today</span> <b class="n">0.40</b>`,
-		`; sebastian reset its count at 14:02 UTC, 48.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">12.00</b>`,
-		`<span class="cell hit" title="spend on the premium model this UTC month, 50.00 of 50.00 EUR, against its cap; past it, premium calls run on big; sebastian reset its count at 14:02 UTC, 44.00 EUR before">premium cap hit</span>`,
+		`; sebastian reset its count, 19.62 EUR before"><span><span class="of">↺ today</span> <b class="n">0.40</b>`,
+		`; sebastian reset its count, 48.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">12.00</b>`,
+		`<span class="cell hit" title="spend on the premium model this UTC month, 50.00 of 50.00 EUR, against its cap; past it, premium calls run on big; sebastian reset its count, 44.00 EUR before">premium cap hit</span>`,
 	} {
 		if !strings.Contains(strip, want) {
 			t.Errorf("the strip lacks %s:\n%s", want, strip)
@@ -1897,11 +1907,11 @@ func TestStripShowsReset(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<span class="fig">0.40 of 20.00 EUR day cap</span>`,
-		`<p class="trace">counted since 14:02 UTC, when sebastian reset today · 19.62 EUR before · 20.02 EUR in all today</p>`,
+		`<p class="trace">counted since ` + since + `, when sebastian reset today · 19.62 EUR before · 20.02 EUR in all today</p>`,
 		`<span class="fig">12.00 of 50.00 EUR</span>`,
-		`<p class="trace">counted since 14:02 UTC, when sebastian reset this month · 48.00 EUR before · 60.00 EUR in all this month</p>`,
+		`<p class="trace">counted since ` + since + `, when sebastian reset this month · 48.00 EUR before · 60.00 EUR in all this month</p>`,
 		`<span class="fig">50.00 of 50.00 EUR</span>`,
-		`<p class="trace">counted since 14:02 UTC, when sebastian reset premium this month · 44.00 EUR before · 94.00 EUR in all premium this month</p>`,
+		`<p class="trace">counted since ` + since + `, when sebastian reset premium this month · 44.00 EUR before · 94.00 EUR in all premium this month</p>`,
 		`<p class="sp-note">the premium cap is spent: premium calls run on big until it is raised, the month turns or a reset</p>`,
 	} {
 		if !strings.Contains(spend, want) {
@@ -1917,10 +1927,10 @@ func TestStripShowsReset(t *testing.T) {
 	r.chat.spend = []spendRow{{"sf/code", at.Add(-time.Hour), 30, false}, {"sf/code", at.Add(time.Minute), 10, false}}
 	r.chat.resets = map[string]*policy.CapReset{"sf/code": {ID: 5, Cap: policy.CapProject, Repository: "sf/code", At: at, Login: "sebastian", BeforeEUR: 30}}
 	strip, spend = statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
-	if want := `; sebastian reset its count at 14:02 UTC, 30.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">10.00</b>`; !strings.Contains(strip, want) {
+	if want := `; sebastian reset its count, 30.00 EUR before"><a href="/costs"><span><span class="of">↺</span> <b class="n">10.00</b>`; !strings.Contains(strip, want) {
 		t.Errorf("under the project's cap, the strip lacks %s:\n%s", want, strip)
 	}
-	if want := `<p class="trace">counted since 14:02 UTC, when sebastian reset this month · 30.00 EUR before · 40.00 EUR in all this month</p>`; !strings.Contains(spend, want) {
+	if want := `<p class="trace">counted since ` + since + `, when sebastian reset this month · 30.00 EUR before · 40.00 EUR in all this month</p>`; !strings.Contains(spend, want) {
 		t.Errorf("under the project's cap, the panel lacks %s:\n%s", want, spend)
 	}
 	seen(spend, "/caps/day/reset", "3")
@@ -1928,12 +1938,15 @@ func TestStripShowsReset(t *testing.T) {
 	seen(spend, "/caps/premium/reset", "6")
 }
 
-// Each Spend row's label says when its count resets by itself, in the
-// words of the cap's ask: at 16:00 UTC on 20 November the day's on 21
-// November at 00:00 UTC; the month's, under the factory's cap and under a
-// project's own, and the premium's on 1 December at 00:00 UTC; LiteLLM's
-// backstop when LiteLLM resets its spend, 07:31:20 UTC on 26 November, to
-// the minute, and nothing without that moment.
+// Each Spend row's label says when its count resets by itself, read in
+// Europe/Berlin until the browser reads it in its own zone: at 16:00 UTC
+// on 20 November the day's at the UTC day's turn, 21 November at 01:00
+// CET; the month's, under the factory's cap and under a project's own,
+// and the premium's on 1 December at 01:00 CET; LiteLLM's backstop when
+// LiteLLM resets its spend, 07:31:20 UTC on 26 November, 08:31 CET to the
+// minute, and nothing without that moment. At 22:00 UTC on 24 November
+// the day turns on 25 November at 01:00 CET; at 10:00 UTC on 15 July,
+// in summer, on 16 July at 02:00 CEST and the month on 1 August.
 func TestSpendRowsSayWhenTheirCountsReset(t *testing.T) {
 	r, ck := screenRig(t)
 	r.c.clock = func() time.Time { return time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC) }
@@ -1953,17 +1966,26 @@ func TestSpendRowsSayWhenTheirCountsReset(t *testing.T) {
 			}
 		}
 	}
+	turn := func(datetime, text string) string {
+		return `<span class="turn">(resets <time datetime="` + datetime + `" data-layout="2 January at 15:04 MST">` + text + `</time>)</span>`
+	}
 	has(spendNow(),
-		`<span class="lbl">today <span class="turn">(resets 21 November at 00:00 UTC)</span></span>`,
-		`<span class="lbl">this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span><span class="fig">0.00 of 50.00 EUR</span>`,
-		`<span class="lbl">premium this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span>`,
-		`<span class="lbl">LiteLLM backstop <span class="turn">(resets 26 November at 07:31 UTC)</span></span>`)
+		`<span class="lbl">today `+turn("2026-11-21T00:00:00Z", "21 November at 01:00 CET")+`</span>`,
+		`<span class="lbl">this month `+turn("2026-12-01T00:00:00Z", "1 December at 01:00 CET")+`</span><span class="fig">0.00 of 50.00 EUR</span>`,
+		`<span class="lbl">premium this month `+turn("2026-12-01T00:00:00Z", "1 December at 01:00 CET")+`</span>`,
+		`<span class="lbl">LiteLLM backstop `+turn("2026-11-26T07:31:20Z", "26 November at 08:31 CET")+`</span>`)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code"}}
 	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 60}
 	backstop.ResetAt = time.Time{}
 	has(spendNow(),
-		`<span class="lbl">this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span><span class="fig">0.00 of 60.00 EUR</span>`,
+		`<span class="lbl">this month `+turn("2026-12-01T00:00:00Z", "1 December at 01:00 CET")+`</span><span class="fig">0.00 of 60.00 EUR</span>`,
 		`<span class="lbl">LiteLLM backstop</span>`)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 24, 22, 0, 0, 0, time.UTC) }
+	has(spendNow(), `<span class="lbl">today `+turn("2026-11-25T00:00:00Z", "25 November at 01:00 CET")+`</span>`)
+	r.c.clock = func() time.Time { return time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC) }
+	has(spendNow(),
+		`<span class="lbl">today `+turn("2026-07-16T00:00:00Z", "16 July at 02:00 CEST")+`</span>`,
+		`<span class="lbl">this month `+turn("2026-08-01T00:00:00Z", "1 August at 02:00 CEST")+`</span>`)
 }
 
 // Reset stands on a cap's row for who may reset it: a writer of the

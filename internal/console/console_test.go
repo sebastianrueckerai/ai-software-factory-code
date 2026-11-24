@@ -2482,7 +2482,11 @@ func TestCardChainReadout(t *testing.T) {
 		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "merged", Repository: "sf/code",
 			PRNumber: pr, Objective: id + " change"}, ChainRun: run}
 	}
-	finished, greenAt := at(15), at(10)
+	finished, greenAt, carried := at(15), at(10), at(14)
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		name  string
 		tasks []factoryd.BoardTask
@@ -2494,12 +2498,12 @@ func TestCardChainReadout(t *testing.T) {
 		{
 			name:  "quiet",
 			tasks: []factoryd.BoardTask{merged("t-quiet", 9, 3251)},
-			chain: map[string]factoryd.ChainFacts{"sf/code 9": {CarryRun: 3251, CarryStatus: "pending", CarryAt: at(14),
+			chain: map[string]factoryd.ChainFacts{"sf/code 9": {CarryRun: 3251, CarryStatus: "pending", CarryAt: carried,
 				HeadRun: 3260, HeadStatus: "success", HeadAt: at(10)}},
 			wants: []string{
 				"run 3251 pending · 14 min",
 				`https://git.example/sf/code/actions/runs/3251" target="_blank" rel="noopener">run 3251</a>`,
-				`<span class="mono num">` + at(14).UTC().Format("15:04") + `</span> <span class="mono num">14 min</span> <span class="st-waiting">pending</span>`,
+				`<span class="mono num"><time datetime="` + carried.UTC().Format(time.RFC3339) + `" data-layout="15:04">` + carried.In(berlin).Format("15:04") + `</time></span> <span class="mono num">14 min</span> <span class="st-waiting">pending</span>`,
 				`<span class="why">required</span> <span class="mono">factory/roll</span>`,
 				`https://git.example/sf/code/actions/runs/3260" target="_blank" rel="noopener">run 3260</a>`,
 				`<span class="st-merged">green</span>`,
@@ -2970,8 +2974,9 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 // The costs page lists the cap resets of its window, newest first, a
 // project's by the project's name: the window ends on the console's
 // clock's day, 10 March 2026, and starts 25 February, so of three, the
-// one a minute before that day starts is left out. The costs tool reads the same
-// two after its ledger. A failed read of the resets leaves the page and
+// one a minute before that day starts is left out. Each reads in
+// Europe/Berlin until the browser reads it in its own zone: 14:02 UTC is
+// 15:02 CET. The costs tool reads the same two after its ledger, in UTC. A failed read of the resets leaves the page and
 // the tool their ledger and says so in one line.
 func TestCostsListsResets(t *testing.T) {
 	r := newRig(t)
@@ -2989,8 +2994,8 @@ func TestCostsListsResets(t *testing.T) {
 		{ID: 1, Cap: policy.CapMonth, At: first.Add(-time.Minute), Login: "sebastian", BeforeEUR: 800},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck).Body.String()
-	rows := `<tr><th scope="row">` + today.Format("2006-01-02") + ` 14:02</th><td>day</td><td></td><td>sebastian</td><td class="num">19.62</td></tr>
-<tr><th scope="row">` + first.Format("2006-01-02") + ` 00:00</th><td>project</td><td>demo-app</td><td>alice</td><td class="num">30.00</td></tr>
+	rows := `<tr><th scope="row"><time datetime="2026-03-10T14:02:00Z" data-layout="2006-01-02 15:04 MST">2026-03-10 15:02 CET</time></th><td>day</td><td></td><td>sebastian</td><td class="num">19.62</td></tr>
+<tr><th scope="row"><time datetime="2026-02-25T00:00:00Z" data-layout="2006-01-02 15:04 MST">2026-02-25 01:00 CET</time></th><td>project</td><td>demo-app</td><td>alice</td><td class="num">30.00</td></tr>
 </tbody>`
 	if !strings.Contains(body, "<caption>Resets</caption>") || !strings.Contains(body, rows) || strings.Contains(body, "800.00") {
 		t.Errorf("/costs lacks the window's two resets\n%s\nin\n%s", rows, body)
@@ -3577,10 +3582,17 @@ func TestResourceApproveForTheTaskAndDeny(t *testing.T) {
 func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a lease's end reads in its title, in Europe/Berlin until the browser
+	// reads it in its own zone
+	titled := func(t time.Time, text string) string {
+		return `<time datetime="` + t.Format(time.RFC3339) + `" data-layout="2006-01-02 15:04 MST" title="` + t.In(berlin).Format("2006-01-02 15:04 MST") + `">` + text + `</time>`
+	}
 	lease := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Minute)
-	at := lease.Format("2006-01-02 15:04 UTC")
 	ended := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Minute)
-	atEnded := ended.Format("2006-01-02 15:04 UTC")
 	r.resources.rows = []cloudres.Resource{
 		{ID: 10, Kind: "firewall", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", LeaseExpires: lease},
 		{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "cx33", Address: "203.0.113.9",
@@ -3599,8 +3611,8 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-demo-app/demo-app">demo-app/demo-app</h3>`, `<h3 id="project-sf/infra">sf/infra</h3>`,
-		"<td>cx33</td>", "<td>203.0.113.9</td>", `<td title="` + at + `">in 1 h</td>`, `<tr class="closed">`, `<tr class="standing">`,
-		`<td title="` + atEnded + ` · released by sebastian">2 h ago</td>`, "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.03</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
+		"<td>cx33</td>", "<td>203.0.113.9</td>", `<td>` + titled(lease, "in 1 h") + `</td>`, `<tr class="closed">`, `<tr class="standing">`,
+		`<td>` + titled(ended, "2 h ago") + ` · released by sebastian</td>`, "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.03</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
 		"none: standing (made standing by alice)", "released by sebastian", "<td><i class=\"lamp\" aria-hidden=\"true\"></i>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
 		`<span id="promote-11" class="meta">standing, about 10.13 EUR a month against the standing block&#39;s 0.00 EUR (0.00 EUR standing now)</span>`,
@@ -3919,7 +3931,8 @@ func TestMergedCardClaimsNoQueuePlace(t *testing.T) {
 // The timeline page opens with a table of the gates: each step that ended
 // a gate is a row from its start, the task's open gate a row "open for N
 // min", CI jobs rows under their checks, and every bar is scaled to the
-// longest gate.
+// longest gate. A start reads in Europe/Berlin until the browser reads it
+// in its own zone: 10:00:00 UTC on 28 September is 12:00:00 CEST.
 func TestTimelineDurationsTable(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -3950,16 +3963,23 @@ func TestTimelineDurationsTable(t *testing.T) {
 		}
 		rows = append(rows, strings.Join(row, " | "))
 	}
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func(datetime, text string) string {
+		return `<time datetime="` + datetime + `" data-layout="2006-01-02 15:04:05 MST">` + text + `</time>`
+	}
 	// the longest is the first session: 20 min, 1200 s
 	want := []string{
-		`intake |  | <time>2026-09-28 10:00:00</time> | 30 s | webhook | <meter min="0" max="1200" value="30">30 s</meter>`,
-		`session | 1 | <time>2026-09-28 10:01:00</time> | 20 min | no_push | <meter min="0" max="1200" value="1200">20 min</meter>`,
-		`session | 2 | <time>2026-09-28 10:22:00</time> | 8 min | pushed | <meter min="0" max="1200" value="480">8 min</meter>`,
-		`checks | 2 | <time>2026-09-28 10:30:05</time> | 6 min 55 s | success | <meter min="0" max="1200" value="415">6 min 55 s</meter>`,
+		`intake |  | ` + start("2026-09-28T10:00:00Z", "2026-09-28 12:00:00 CEST") + ` | 30 s | webhook | <meter min="0" max="1200" value="30">30 s</meter>`,
+		`session | 1 | ` + start("2026-09-28T10:01:00Z", "2026-09-28 12:01:00 CEST") + ` | 20 min | no_push | <meter min="0" max="1200" value="1200">20 min</meter>`,
+		`session | 2 | ` + start("2026-09-28T10:22:00Z", "2026-09-28 12:22:00 CEST") + ` | 8 min | pushed | <meter min="0" max="1200" value="480">8 min</meter>`,
+		`checks | 2 | ` + start("2026-09-28T10:30:05Z", "2026-09-28 12:30:05 CEST") + ` | 6 min 55 s | success | <meter min="0" max="1200" value="415">6 min 55 s</meter>`,
 		`job test | 2 |  | 4 min 18 s | success, queued 30 s | <meter min="0" max="1200" value="258">4 min 18 s</meter>`,
 		`job vet | 2 |  | 2 min 26 s | success | <meter min="0" max="1200" value="146">2 min 26 s</meter>`,
-		`reproduction | 2 | <time>2026-09-28 10:37:10</time> | 1 min 50 s | failed (exit 1) | <meter min="0" max="1200" value="110">1 min 50 s</meter>`,
-		`approval | 2 | <time>` + since.UTC().Format("2006-01-02 15:04:05") + `</time> | open for 12 min | open | <meter min="0" max="1200" value="740">open for 12 min</meter>`,
+		`reproduction | 2 | ` + start("2026-09-28T10:37:10Z", "2026-09-28 12:37:10 CEST") + ` | 1 min 50 s | failed (exit 1) | <meter min="0" max="1200" value="110">1 min 50 s</meter>`,
+		`approval | 2 | ` + start(since.UTC().Format(time.RFC3339), since.In(berlin).Format("2006-01-02 15:04:05 MST")) + ` | open for 12 min | open | <meter min="0" max="1200" value="740">open for 12 min</meter>`,
 	}
 	if !slices.Equal(rows, want) {
 		t.Fatalf("gate rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
@@ -4007,7 +4027,7 @@ func TestTimelineCommissioningEndsAtLive(t *testing.T) {
 	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"commissioned","time":"2026-09-28T10:01:44Z","started":"2026-09-28T10:00:00Z","live":"2026-09-28T10:01:35Z","server_type":"cx23"}
 `)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
-	if !strings.Contains(body, "<td>commissioning</td><td></td><td><time>2026-09-28 10:00:00</time></td><td>1 min 35 s</td><td>cx23</td>") {
+	if !strings.Contains(body, `<td>commissioning</td><td></td><td><time datetime="2026-09-28T10:00:00Z" data-layout="2006-01-02 15:04:05 MST">2026-09-28 12:00:00 CEST</time></td><td>1 min 35 s</td><td>cx23</td>`) {
 		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
 	}
 }
@@ -4098,9 +4118,10 @@ func TestTimelineShowsTheSupervisorsAction(t *testing.T) {
 	}
 }
 
-// The steps table reads its time as the gates table reads its start,
-// seconds in UTC, with the raw stamp as the cell's title; a stamp that
-// does not parse stays as it is on the wire.
+// The steps table reads its time as the gates table reads its start, to
+// the second in Europe/Berlin until the browser reads it in its own zone,
+// with the raw stamp as the cell's title; a stamp that does not parse
+// stays as it is on the wire.
 func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -4110,7 +4131,7 @@ func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
 `)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
 	for _, want := range []string{
-		`<td title="2026-10-17T12:41:47.048126987Z"><time>2026-10-17 12:41:47</time></td>`,
+		`<td title="2026-10-17T12:41:47.048126987Z"><time datetime="2026-10-17T12:41:47Z" data-layout="2006-01-02 15:04:05 MST">2026-10-17 14:41:47 CEST</time></td>`,
 		`<td>not a time</td>`,
 	} {
 		if !strings.Contains(body, want) {

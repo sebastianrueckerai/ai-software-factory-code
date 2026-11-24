@@ -63,15 +63,16 @@ var chatView = (function () {
     flush();
     return out.join("");
   }
+  // stamp is the <time> of a turn as the drawer shows a session's (time.js)
   function stamp(at) {
     var d = new Date(at);
-    return isNaN(d) ? "" : d.toISOString().slice(5, 16).replace("T", " ") + "Z";
+    return isNaN(d) ? "<time></time>" : timeHTML(d, "01-02 15:04 MST");
   }
   // a turn: a 22 px avatar at the left (the agent a cyan ring with a dot,
   // the member a filled circle with their initial), the name and the time
   // on one line above the text, the text at the full width
   function whoHTML(name, at, via) {
-    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span>" + (via || "") + " <time>" + stamp(at) + "</time></p>";
+    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span>" + (via || "") + " " + stamp(at) + "</p>";
   }
   // a row a chat token sent carries the token's name (C43): its avatar a
   // dashed ring, "via" and the name after the human's in the who line
@@ -115,7 +116,7 @@ var chatView = (function () {
       return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
     }
     var esc1 = m.kind === "escalation";
-    var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" +
+    var meta = "<p class=\"who\"><span class=\"name\">the factory</span> " + stamp(m.at) +
       (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") +
       (m.thread ? " <button type=\"button\" class=\"chip linkbtn\" data-open-thread=\"" + esc(m.thread) + "\"" +
         (m.thread_owner ? " data-thread-owner=\"" + esc(m.thread_owner) + "\"" : "") + ">thread ↗</button>" : "") + "</p>";
@@ -1190,7 +1191,8 @@ var chatView = (function () {
           by.className = "intake-by";
           intakeBtn.after(by);
         }
-        by.textContent = "set by " + login + ", " + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC";
+        by.textContent = "set by " + login + ", ";
+        by.insertAdjacentHTML("beforeend", timeHTML(new Date(), "2006-01-02 15:04 MST"));
       }).catch(failed);
     });
   }

@@ -119,7 +119,7 @@ func TestCapResetPremium(t *testing.T) {
 	}
 	equal(t, "the resets", caps.calls, []capCall{{"premium", "", "alice", 0}})
 	equal(t, "the wakes", *wakes, []string{"console: alice reset the premium cap's count (reset 1)"})
-	const line = "alice reset this month's premium count at 14:02 UTC; the panel now shows it. Press Reset again to reset it once more.\n"
+	const line = "alice reset this month's premium count; the panel now shows it. Press Reset again to reset it once more.\n"
 	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != line {
 		t.Fatalf("a second press on the same view = %d %q, want 409 %q", rec.Code, rec.Body, line)
 	}
@@ -227,7 +227,7 @@ func TestCapResetOnANewerReset(t *testing.T) {
 	if rec := press("/caps/day/reset", "0", true, ck, s.csrf); !pressRefreshes(rec) {
 		t.Fatalf("the first press = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
 	}
-	const line = "alice reset today's count at 14:02 UTC; the panel now shows it. Press Reset again to reset it once more.\n"
+	const line = "alice reset today's count; the panel now shows it. Press Reset again to reset it once more.\n"
 	rec := press("/caps/day/reset", "0", true, ck, s.csrf)
 	if rec.Code != http.StatusConflict || rec.Body.String() != line || rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("the second press on the same view = %d %q, trigger %q; want 409 %q with board-refresh", rec.Code, rec.Body, rec.Header().Get("HX-Trigger"), line)
@@ -247,7 +247,7 @@ func TestCapResetOnANewerReset(t *testing.T) {
 	caps.resets = append(caps.resets, policy.CapReset{ID: 9, Cap: policy.CapProject, Repository: "demo/demo", At: time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC), Login: "alice"})
 	bk, bs := memberLogin(t, r, "bob")
 	if rec := press("/projects/demo/cap/reset", "0", true, bk, bs.csrf); rec.Code != http.StatusConflict ||
-		rec.Body.String() != "alice reset the project's month count at 3 Nov 09:00 UTC; the panel now shows it. Press Reset again to reset it once more.\n" {
+		rec.Body.String() != "alice reset the project's month count; the panel now shows it. Press Reset again to reset it once more.\n" {
 		t.Fatalf("bob's press on demo's older count = %d %q, want 409 naming alice's reset of 3 Nov", rec.Code, rec.Body)
 	}
 	for _, seen := range []string{"", "x", "-"} {

@@ -193,7 +193,7 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 			return nil, refuse(http.StatusBadGateway, "the save's merge did not run: "+errText(err)+". Try again in a moment.")
 		case len(clashes) > 0:
 			return nil, &docRefusal{refusal{http.StatusConflict,
-				fmt.Sprintf("%s changed the same lines (%s)", who, at.Format("15:04"))}, hash, current, who, at, clashes}
+				who + " changed the same lines"}, hash, current, who, at, clashes}
 		}
 		save.Text, merged = text, fmt.Sprintf("merged with %s's change", who)
 	case !present && save.Base != "":

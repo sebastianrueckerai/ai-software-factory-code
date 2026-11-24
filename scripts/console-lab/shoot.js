@@ -33,7 +33,7 @@ async function seed(s) {
 // which stays open, has run for 500 ms, then 600 ms more; failures are
 // the console's answers of 400 and above.
 async function open(browser, viewport, theme) {
-  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, timezoneId: "Europe/Berlin" });
   await ctx.addCookies([{ name, value, domain: new URL(base).hostname, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }]);
   await ctx.addInitScript((t) => localStorage.setItem("theme", t), theme);
   const page = await ctx.newPage();

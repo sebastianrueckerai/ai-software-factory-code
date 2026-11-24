@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,7 +31,7 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 		t.Errorf("premium %.2f of %.2f, want 12.50 of 50", d.Status.PremiumEUR, d.Status.PremiumCapEUR)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`aria-label="premium this month">25 percent</meter>`, `<span class="lbl">premium this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span>`} {
+	for _, want := range []string{`aria-label="premium this month">25 percent</meter>`, `<span class="lbl">premium this month <span class="turn">(resets <time datetime="2026-12-01T00:00:00Z" data-layout="2 January at 15:04 MST">1 December at 01:00 CET</time>)</span></span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
@@ -130,29 +131,51 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 
 // The confirm of a Reset says what the count becomes, the most that may
 // run before the cap's period turns and what stays: at 14:02 UTC on 20
-// November the day turns in 9 h 58 min and the month in 10 d 9 h 58 min.
-// LiteLLM's backstop, 1875.00 - 1238.59 = 636.41 USD left, joins the
-// sentence only under a cap above what it leaves. The premium's names the
-// class its money is spent on.
+// November the day turns in 9 h 58 min, at 00:00 UTC, 01:00 CET, and the
+// month in 10 d 9 h 58 min, on 1 December at 01:00 CET, each moment a
+// <time> the browser reads again in its own zone. LiteLLM's backstop,
+// 1875.00 - 1238.59 = 636.41 USD left, joins the sentence only under a cap
+// above what it leaves. The premium's names the class its money is spent
+// on. At 10:00 UTC on 15 July the day turns at 02:00 CEST in 14 h 0 min
+// and the month on 1 August in 16 d 14 h.
 func TestResetConfirmWords(t *testing.T) {
 	now := time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC)
+	summer := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
 	backstop := &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875}
-	const day = "Today's count starts again from 0.00 EUR. Up to 100.00 EUR more may be spent before 00:00 UTC, in 9 h 58 min. The day cap stays 100.00 EUR; the month cap still holds."
+	esc := template.HTMLEscapeString
+	clock := func(datetime, text string) string {
+		return `<time datetime="` + datetime + `" data-layout="15:04 MST">` + text + `</time>`
+	}
+	words := func(datetime, text string) string {
+		return `<time datetime="` + datetime + `" data-layout="2 January at 15:04 MST">` + text + `</time>`
+	}
+	december := words("2026-12-01T00:00:00Z", "1 December at 01:00 CET")
+	day := esc("Today's count starts again from 0.00 EUR. Up to 100.00 EUR more may be spent before ") + clock("2026-11-21T00:00:00Z", "01:00 CET") +
+		esc(", in 9 h 58 min. The day cap stays 100.00 EUR; the month cap still holds.")
 	for _, tc := range []struct {
 		cap      string
 		eur      float64
+		now      time.Time
 		backstop *factoryd.Backstop
 		want     string
 	}{
-		{policy.CapDay, 100, nil, day},
-		{policy.CapDay, 100, backstop, day},
-		{policy.CapMonth, 800, nil, "This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds."},
-		{policy.CapMonth, 800, backstop, "This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds. LiteLLM's backstop leaves 636.41 USD this month."},
-		{policy.CapProject, 30, backstop, "The project's month count starts again from 0.00 EUR. Up to 30.00 EUR more may be spent before 1 December 00:00 UTC, in 10 d 9 h. The project's month cap stays 30.00 EUR; the factory's caps still hold."},
-		{policy.CapPremium, 50, backstop, "This month's premium count starts again from 0.00 EUR. Up to 50.00 EUR more may be spent on premium before 1 December 00:00 UTC, in 10 d 9 h. The premium cap stays 50.00 EUR; the day cap and the month cap still hold."},
+		{policy.CapDay, 100, now, nil, day},
+		{policy.CapDay, 100, now, backstop, day},
+		{policy.CapMonth, 800, now, nil, esc("This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before ") + december +
+			esc(", in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds.")},
+		{policy.CapMonth, 800, now, backstop, esc("This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before ") + december +
+			esc(", in 10 d 9 h. The month cap stays 800.00 EUR; the day cap still holds. LiteLLM's backstop leaves 636.41 USD this month.")},
+		{policy.CapProject, 30, now, backstop, esc("The project's month count starts again from 0.00 EUR. Up to 30.00 EUR more may be spent before ") + december +
+			esc(", in 10 d 9 h. The project's month cap stays 30.00 EUR; the factory's caps still hold.")},
+		{policy.CapPremium, 50, now, backstop, esc("This month's premium count starts again from 0.00 EUR. Up to 50.00 EUR more may be spent on premium before ") + december +
+			esc(", in 10 d 9 h. The premium cap stays 50.00 EUR; the day cap and the month cap still hold.")},
+		{policy.CapDay, 100, summer, nil, esc("Today's count starts again from 0.00 EUR. Up to 100.00 EUR more may be spent before ") + clock("2026-07-16T00:00:00Z", "02:00 CEST") +
+			esc(", in 14 h 0 min. The day cap stays 100.00 EUR; the month cap still holds.")},
+		{policy.CapMonth, 800, summer, nil, esc("This month's count starts again from 0.00 EUR. Up to 800.00 EUR more may be spent before ") + words("2026-08-01T00:00:00Z", "1 August at 02:00 CEST") +
+			esc(", in 16 d 14 h. The month cap stays 800.00 EUR; the day cap still holds.")},
 	} {
-		if got := resetWords(tc.cap, tc.eur, now, tc.backstop); got != tc.want {
-			t.Errorf("resetWords(%s, %.2f, backstop %v) =\n%s\nwant\n%s", tc.cap, tc.eur, tc.backstop != nil, got, tc.want)
+		if got := resetWords(tc.cap, tc.eur, tc.now, tc.backstop); string(got) != tc.want {
+			t.Errorf("resetWords(%s, %.2f, %s, backstop %v) =\n%s\nwant\n%s", tc.cap, tc.eur, tc.now, tc.backstop != nil, got, tc.want)
 		}
 	}
 }

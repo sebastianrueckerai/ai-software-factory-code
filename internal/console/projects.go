@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"html/template"
 	"log"
 	"maps"
 	"net/http"
@@ -550,6 +551,7 @@ const (
 
 type step struct {
 	Name, Tip, State, Detail, Link string
+	Since                          template.HTML // the board ready step's moment, before its Detail
 }
 
 type statusPanel struct {
@@ -652,8 +654,7 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 		}
 		switch {
 		case !row.ReadyAt.IsZero():
-			ready.State, ready.Detail, ready.Link = stepDone,
-				"Ready since "+row.ReadyAt.UTC().Format("2006-01-02 15:04")+" UTC: open the board", "/board?project="+url.QueryEscape(name)
+			ready.State, ready.Since, ready.Detail, ready.Link = stepDone, moment(row.ReadyAt, momentStamp), "open the board", "/board?project="+url.QueryEscape(name)
 		case created.State != stepDone:
 		case reconcileErr != "":
 			ready.State, ready.Detail = stepFailed, failed

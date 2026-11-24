@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -37,8 +38,8 @@ func TestChatHeaderShowsTheIntakeSwitchForAnApprover(t *testing.T) {
 		!strings.Contains(body, `<span class="intake-name">closed</span>`) {
 		t.Errorf("the closed intake does not name itself on the button")
 	}
-	if !strings.Contains(body, `set by sebastian, `) || !strings.Contains(body, ` UTC</span>`) {
-		t.Errorf("the flipped switch names no setter with a time: %s", body)
+	if !regexp.MustCompile(`set by sebastian, <time datetime="[^"]+Z" data-layout="2006-01-02 15:04 MST">\d{4}-\d\d-\d\d \d\d:\d\d CES?T</time></span>`).MatchString(body) {
+		t.Errorf("the flipped switch names no setter with a time read in Europe/Berlin: %s", body)
 	}
 	rows := r.events.all()
 	if len(rows) == 0 || rows[len(rows)-1].Kind != factoryd.EventIntakeChanged ||

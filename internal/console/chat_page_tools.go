@@ -406,7 +406,7 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 		after = "\n" + resetsUnread
 	}
 	for _, x := range resets {
-		after += fmt.Sprintf("\n  %s UTC %s by %s, %s EUR before", x.When, strings.TrimSpace(x.Cap+" "+x.Project), x.By, textutil.EUR(x.Before))
+		after += fmt.Sprintf("\n  %s UTC %s by %s, %s EUR before", x.At.UTC().Format("2006-01-02 15:04"), strings.TrimSpace(x.Cap+" "+x.Project), x.By, textutil.EUR(x.Before))
 	}
 	if len(resets) > 0 {
 		after = "\nResets of the caps' counts:" + after
