@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -62,6 +64,13 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	}
 	if k.Accent != "" {
 		b.WriteString(", accent " + k.Accent)
+	}
+	next, continues, err := t.c.continuation(ctx, k)
+	if err != nil {
+		return "", err
+	}
+	if continues {
+		fmt.Fprintf(&b, "\ncontinues as #%d, %s", next.IssueNumber, next.Status)
 	}
 	base := strings.TrimSuffix(t.c.cfg.ForgejoPublicURL, "/") + "/" + k.Repository
 	if k.IssueNumber > 0 {
@@ -184,12 +193,80 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if n := len(every(steps, "session_start")); n > 0 {
 		fmt.Fprintf(&b, "\nsessions: %d: see session", n)
 	}
+	refs := &cardRefs{ctx: ctx, c: t.c, a: t.a, t: k}
+	for _, n := range namedNumbers(k.Objective, k.IssueNumber, k.PRNumber) {
+		b.WriteString("\n" + refLine(n, refs.resolve(n)))
+	}
+	if refs.err != nil {
+		return "", refs.err
+	}
 	for _, f := range []struct{ name, v string }{{"objective", k.Objective}, {"the agent's summary", k.AgentSummary}} {
 		if f.v != "" {
 			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
 		}
 	}
 	return b.String(), nil
+}
+
+// maxRefs bounds the cards and pull requests a card's read names.
+const maxRefs = 8
+
+// namedNumbers are the first maxRefs distinct numbers text names as #N,
+// bar the card's own issue and pull request.
+func namedNumbers(text string, own ...int64) []int {
+	var out []int
+	for _, m := range factoryd.RefPattern.FindAllStringSubmatch(text, -1) {
+		n, err := strconv.Atoi(m[2])
+		if err == nil && !slices.Contains(own, int64(n)) && !slices.Contains(out, n) && len(out) < maxRefs {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// refLine says what #n is: a card, an issue or a pull request with its
+// state and title, or neither.
+func refLine(n int, i resolvedIssue) string {
+	kind, state := "card", i.state
+	switch {
+	case !i.ok:
+		return fmt.Sprintf("names #%d: no card or pull request", n)
+	case i.card.ID == "" && i.pull:
+		kind, state = "pull request", cmp.Or(map[bool]string{true: "merged"}[i.merged], i.state)
+	case i.card.ID == "":
+		kind = "issue"
+	}
+	return fmt.Sprintf("names #%d: %s, %s, %q", n, kind, state, textutil.Truncate(i.title, refTitle))
+}
+
+const refTitle = 60
+
+// continuation is the live card that goes on with ended card k's work: the
+// end of its successor and retry chain, else the live card of its plan
+// with its key or whose text names it. ok is false for a card that is not
+// ended without a delivery or has none.
+func (c *Console) continuation(ctx context.Context, k factoryd.Task) (next factoryd.Task, ok bool, err error) {
+	if !factoryd.Final(k.Status) || k.Status == "done" || k.Status == "merged" {
+		return next, false, nil
+	}
+	end, found, err := factoryd.ThroughSuccessors(ctx, c.cfg.Tasks, k)
+	if err != nil || found && end.ID != k.ID {
+		return end, found && err == nil, err
+	}
+	if !k.PlanCard() {
+		return next, false, nil
+	}
+	cards, err := c.cfg.Tasks.PlanCards(ctx, k.Parent)
+	if err != nil {
+		return next, false, err
+	}
+	i := slices.IndexFunc(cards, func(s factoryd.Task) bool {
+		return s.ID != k.ID && !factoryd.Final(s.Status) && (s.PlanKey == k.PlanKey || slices.Contains(namedNumbers(s.Objective, s.IssueNumber), int(k.IssueNumber)))
+	})
+	if i < 0 {
+		return next, false, nil
+	}
+	return cards[i], true, nil
 }
 
 // every are the steps named step, oldest first.
@@ -549,7 +626,11 @@ func (t *turn) fileText(in toolInput) (string, error) {
 	var raw []byte
 	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, route, nil, http.StatusOK, &raw)
 	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
-		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no %s at %s.", p, in.Ref))
+		sentence := fmt.Sprintf("There is no %s at %s.", p, in.Ref)
+		if near := t.nearFiles(in.Ref, p); len(near) > 0 {
+			sentence += " Near: " + strings.Join(near, ", ")
+		}
+		return "", refuse(http.StatusNotFound, sentence)
 	}
 	if err != nil {
 		return "", &forgejoRefusal{what: "read the file", err: err}
@@ -658,6 +739,48 @@ func subPrefix(in toolInput) (string, error) {
 // count line naming the rest.
 const treeCut = 500
 
+// gitTreeRead is Forgejo's recursive tree answer.
+type gitTreeRead struct {
+	Truncated bool `json:"truncated"`
+	Tree      []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+		Size int64  `json:"size"`
+	} `json:"tree"`
+}
+
+// gitTree is the recursive tree of the project's repository at ref.
+func (t *turn) gitTree(ref string) (tree gitTreeRead, err error) {
+	repo, err := factoryd.SplitRepo(t.p.Repository)
+	if err != nil {
+		return tree, err
+	}
+	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/trees/%s?recursive=true",
+		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(ref)), nil, http.StatusOK, &tree)
+	return tree, err
+}
+
+// nearFiles are the files at ref in p's directory whose names start with
+// p's stem, the first maxNear, from one tree read; none when the read fails.
+func (t *turn) nearFiles(ref, p string) []string {
+	tree, err := t.gitTree(ref)
+	if err != nil {
+		return nil
+	}
+	dir, name := path.Split(p)
+	stem := strings.TrimSuffix(name, path.Ext(name))
+	var near []string
+	for _, e := range tree.Tree {
+		d, n := path.Split(e.Path)
+		if e.Type == "blob" && d == dir && strings.HasPrefix(n, stem) {
+			near = append(near, e.Path)
+		}
+	}
+	return near[:min(len(near), maxNear)]
+}
+
+const maxNear = 5
+
 // treeText is the tree tool's answer: the project repository's whole
 // tree at a ref, one line a file with its size, the first treeCut of
 // them, the count line naming the rest and Forgejo's own truncation.
@@ -669,20 +792,7 @@ func (t *turn) treeText(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	repo, err := factoryd.SplitRepo(t.p.Repository)
-	if err != nil {
-		return "", err
-	}
-	var tree struct {
-		Truncated bool `json:"truncated"`
-		Tree      []struct {
-			Path string `json:"path"`
-			Type string `json:"type"`
-			Size int64  `json:"size"`
-		} `json:"tree"`
-	}
-	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/trees/%s?recursive=true",
-		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(in.Ref)), nil, http.StatusOK, &tree)
+	tree, err := t.gitTree(in.Ref)
 	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no tree at %s.", in.Ref))
 	}
@@ -777,7 +887,8 @@ func (t *turn) grepText(in toolInput) (string, error) {
 		if hd.Typeflag != tar.TypeReg {
 			continue
 		}
-		name := strings.TrimPrefix(hd.Name, "./")
+		// Forgejo puts every entry under a directory named for the repository
+		_, name, _ := strings.Cut(hd.Name, "/")
 		if prefix != "" && !strings.HasPrefix(name, prefix) {
 			continue
 		}

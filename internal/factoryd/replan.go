@@ -1125,7 +1125,7 @@ func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (strin
 
 // oldCards are plan p's record of cards a revision keeps, changes or
 // drops: its cards, then the end of each one's chain of successors and
-// retries (throughSuccessors) that is another card, under the same key, so
+// retries (ThroughSuccessors) that is another card, under the same key, so
 // the key is judged by its last card and a from of it goes on from that
 // card's branch, and p itself while its pending replan is its own (a
 // direct card's replan or cut), whose work the findings name by issue.
@@ -1144,7 +1144,7 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 		return nil, err
 	}
 	for _, c := range cards {
-		end, ok, err := throughSuccessors(ctx, r.store, c)
+		end, ok, err := ThroughSuccessors(ctx, r.store, c)
 		if err != nil {
 			return nil, err
 		}

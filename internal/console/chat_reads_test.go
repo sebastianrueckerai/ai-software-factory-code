@@ -361,6 +361,59 @@ func TestCardMergeLineNamesTheReviewAndHead(t *testing.T) {
 	}
 }
 
+// A card that ended into a successor, a retry or a replan says which live
+// card goes on with its work; a card whose text names #N cards or pull
+// requests gets one line for each, at most 8, with its kind, state and
+// title, and a number that is neither says so.
+func TestChatCardNamesWhatItLeadsTo(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.fg.issueReads = map[string]map[string]any{
+		"/api/v1/repos/sf/code/issues/9": {"title": "Speed up the board " + strings.Repeat("x", 80), "state": "closed", "pull_request": map[string]any{"merged": true}},
+		"/api/v1/repos/sf/code/issues/8": {"title": "Draft", "state": "open", "pull_request": map[string]any{"merged": false}},
+		"/api/v1/repos/sf/code/issues/7": {"title": "A plain issue", "state": "open"}}
+	r.tasks.mu.Lock()
+	for _, k := range []factoryd.Task{
+		{ID: "t-old", Status: "closed", IssueNumber: 30, Source: factoryd.SourcePlan, Parent: "t-p", PlanKey: "old", Objective: "Old work."},
+		{ID: "t-near", Status: "waiting-human", IssueNumber: 32, Source: factoryd.SourcePlan, Parent: "t-p", PlanKey: "near", Objective: "Not about #300."},
+		{ID: "t-new", Status: "waiting-human", IssueNumber: 31, Source: factoryd.SourcePlan, Parent: "t-p", PlanKey: "new", Objective: "New.\n\nStarts from the work of #30 (old), on this card's branch."},
+		{ID: "t-rt", Status: "failed", IssueNumber: 40, Objective: "Retried."},
+		{ID: factoryd.RetryID("t-rt"), Status: "running", IssueNumber: 41, Objective: "Retry."},
+		{ID: "t-cut", Status: "closed", IssueNumber: 42, Objective: "Cut."},
+		{ID: factoryd.SuccessorID("t-cut"), Status: "queued", IssueNumber: 43, Objective: "Successor."},
+		{ID: "t-text", Status: "waiting-human", IssueNumber: 50, Objective: "Chat card.\n\n#21 and #19 wait on #8, #9 is merged, #7 is plain, #977 is gone, #50 is this card, #21 again."},
+		{ID: "t-many", Status: "waiting-human", IssueNumber: 51, Objective: "#21 #22 #19 #20 #11 #8 #9 #977 #978 #979"},
+	} {
+		k.Kind, k.Repository = "agent", "sf/code"
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: k})
+	}
+	r.tasks.mu.Unlock()
+	got := reads(t, r, g, "card", `{"task_id":"t-old"}`, "card", `{"task_id":"t-rt"}`, "card", `{"task_id":"t-cut"}`,
+		"card", `{"task_id":"t-text"}`, "card", `{"task_id":"t-many"}`, "card", `{"task_id":"t-new"}`)
+	for i, want := range []string{
+		`#30 t-old "Old work." closed (` + factoryd.StatusMeaning("closed") + ")\ncontinues as #31, waiting-human\nissue",
+		`#40 t-rt "Retried." failed (` + factoryd.StatusMeaning("failed") + ")\ncontinues as #41, running\n",
+		`#42 t-cut "Cut." closed (` + factoryd.StatusMeaning("closed") + ")\ncontinues as #43, queued\n",
+		"\nobjective: Chat card.",
+	} {
+		if !strings.Contains(got[i], want) {
+			t.Errorf("card %d reads\n%s\nwant it to contain\n%s", i, got[i], want)
+		}
+	}
+	long := "Speed up the board " + strings.Repeat("x", 80)
+	wantRefs := "\nnames #21: card, running, \"Build the API.\"\nnames #19: card, done, \"Add the schema.\"\n" +
+		"names #8: pull request, open, \"Draft\"\nnames #9: pull request, merged, \"" + long[:60] + "…\"\n" +
+		"names #7: issue, open, \"A plain issue\"\nnames #977: no card or pull request\n"
+	if !strings.Contains(got[3], wantRefs+"objective: Chat card.") {
+		t.Errorf("the chat card reads\n%s\nwant it to contain\n%s", got[3], wantRefs)
+	}
+	if n := strings.Count(got[4], "\nnames #"); n != 8 || !strings.Contains(got[4], "names #977:") || strings.Contains(got[4], "names #978") {
+		t.Errorf("the card naming ten numbers reads\n%s\nwant 8 lines, #977 the last", got[4])
+	}
+	if strings.Contains(got[5], "continues as") || strings.Contains(got[0], "names #") {
+		t.Errorf("a live card or a card naming none reads a successor or references:\n%s\n%s", got[5], got[0])
+	}
+}
+
 // A group revert's agent card reads its own cap of 2 sessions, not the
 // policy's 3, in its sessions and at its cap.
 func TestChatCardReadsAGroupRevertsCap(t *testing.T) {
@@ -502,14 +555,16 @@ const treeJSON = `{"truncated":false,"tree":[
 {"path":"docs/a.md","type":"blob","size":20},
 {"path":"README.md","type":"blob","size":1200}]}`
 
-// tgz is the tarball the archive endpoint answers: name and body a file.
+// tgz is the tarball the archive endpoint answers: name and body a file,
+// each under the leading directory named for the repository, as Forgejo
+// writes it.
 func tgz(t *testing.T, files ...[2]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	for _, f := range files {
-		if err := tw.WriteHeader(&tar.Header{Name: f[0], Mode: 0o644, Size: int64(len(f[1]))}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Name: "code/" + f[0], Mode: 0o644, Size: int64(len(f[1]))}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tw.Write([]byte(f[1])); err != nil {
@@ -578,16 +633,19 @@ func TestChatGrepRead(t *testing.T) {
 		[2]string{"a.go", "the cache leaks\nplain\ncache hits\n"},
 		[2]string{"b.bin", "\x00cache\n"},
 		[2]string{"docs/d.md", "cache in docs\n"},
+		[2]string{".forgejo/workflows/ci.yml", "on: push\n# cache\n"},
 		[2]string{"long.txt", long + "\n"},
 		[2]string{"late.txt", strings.Repeat("n\n", 32<<10) + "cache\n"},
 	)}
 	equal(t, "the greps", reads(t, r, g,
 		"grep", `{"pattern":"cache","ref":"main"}`,
 		"grep", `{"pattern":"c.che in","ref":"main","path":"docs"}`,
+		"grep", `{"pattern":"cache","ref":"main","path":".forgejo/workflows"}`,
 	), []string{
-		"a.go:1:the cache leaks\na.go:3:cache hits\ndocs/d.md:1:cache in docs\nlong.txt:1:" + long[:200] +
-			"\n(scanned 5 of 5 files, 4 matches)\n",
+		"a.go:1:the cache leaks\na.go:3:cache hits\ndocs/d.md:1:cache in docs\n.forgejo/workflows/ci.yml:2:# cache\nlong.txt:1:" + long[:200] +
+			"\n(scanned 6 of 6 files, 5 matches)\n",
 		"docs/d.md:1:cache in docs\n(scanned 1 of 1 file, 1 match)\n",
+		".forgejo/workflows/ci.yml:2:# cache\n(scanned 1 of 1 file, 1 match)\n",
 	})
 	// 51 matches: the 50 shown, the count line naming the cut
 	r.fg.archives["many"] = tgz(t, [2]string{"hits.txt", strings.Repeat("cache\n", 51)})
@@ -712,6 +770,23 @@ func repeatLines(path, text string, count int) string {
 
 func TestChatFileRead(t *testing.T) {
 	r, g := newReadsRig(t)
+	r.fg.trees = map[string]string{"main": `{"tree":[
+{"path":"lib/x1.go","type":"blob"},{"path":"lib/x2.go","type":"blob"},{"path":"lib/x3.go","type":"blob"},
+{"path":"lib/x4.go","type":"blob"},{"path":"lib/x5.go","type":"blob"},{"path":"lib/x6.go","type":"blob"},
+{"path":"lib/xdir","type":"tree"},{"path":"lib/sub/x7.go","type":"blob"},{"path":"lib/y.go","type":"blob"},
+{"path":"scripts/other","type":"blob"},{"path":"scripts/upstream-files","type":"blob"},{"path":"scripts/upstream-files.bak","type":"blob"}]}`}
+	equal(t, "the near files", reads(t, r, g,
+		"file", `{"ref":"main","path":"scripts/upstream-files.sh"}`,
+		"file", `{"ref":"main","path":"lib/x.go"}`,
+		"file", `{"ref":"main","path":"lib/z.go"}`,
+		"file", `{"ref":"main","path":"scripts/upstream-files.sh","ask":"what?"}`,
+	), []string{
+		"Refused: There is no scripts/upstream-files.sh at main. Near: scripts/upstream-files, scripts/upstream-files.bak",
+		"Refused: There is no lib/x.go at main. Near: lib/x1.go, lib/x2.go, lib/x3.go, lib/x4.go, lib/x5.go",
+		"Refused: There is no lib/z.go at main.",
+		"Refused: There is no scripts/upstream-files.sh at main. Near: scripts/upstream-files, scripts/upstream-files.bak",
+	})
+	delete(r.fg.trees, "main")
 	equal(t, "the file reads", reads(t, r, g,
 		"file", `{"ref":"main","path":"README.md"}`,
 		"file", `{"ref":"main","path":"bin/x"}`,
