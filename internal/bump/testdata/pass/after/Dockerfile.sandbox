@@ -1,0 +1,11 @@
+ARG OPENCODE_VERSION=v1.19.6
+ARG NODE_VERSION=24.22.3
+FROM scratch AS downloads
+ADD --checksum=sha256:6404632e7454318b31943f7a5c12409f03e3c18aab29898399e875db3f6b49d8 https://git.aisoftwarefactory.world/api/packages/upstream/generic/opencode/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /opencode.tar.gz
+ADD --checksum=sha256:2cbb271ce5b451c1623134c6ac679a6138f9758fc8088918d1eb8167f06fae58 https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+FROM ${UPSTREAM}docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38 AS build
+FROM ${UPSTREAM}docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38 AS npm-cache
+FROM ${UPSTREAM}docker.io/library/node:22-bookworm-slim@sha256:d20a7b8b4184bf74fe77499b5460a3d69e582bc733d50287e40c3fe791764851 AS opencode-plugin
+FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:311f7a192fd9a92b165a86b32fa3aae9005b11849bfb1db2d4fd784559ee464f AS base
+ARG DEBIAN_SNAPSHOT=20261123T000000Z
+FROM base

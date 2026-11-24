@@ -1,0 +1,7 @@
+buildkit v0.35.1 buildkit-v0.35.1.linux-amd64.tar.gz https://github.com/moby/buildkit/releases/download/v0.35.1/buildkit-v0.35.1.linux-amd64.tar.gz 1c778f2d33a800a8ffc10f62a74f405c0bf63e49f7b222082edc8ed69640294b
+crane v0.22.1 go-containerregistry_Linux_x86_64.tar.gz https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
+forgejo-runner v13.2.2 forgejo-runner-13.2.2-linux-amd64 https://code.forgejo.org/forgejo/runner/releases/download/v13.2.2/forgejo-runner-13.2.2-linux-amd64 3a5e79aa97fd74abc335fab234cd192af6a781015cd44b5585c4775963de346a
+govulndb 20261124T155600Z vulndb.zip https://vuln.go.dev/vulndb.zip 81d8260d407a8604e6f1c43d911c2b0cb4842e8931990bcda9bf11c3269c22aa
+opencode v1.19.6 opencode-linux-x64.tar.gz https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-linux-x64.tar.gz 6404632e7454318b31943f7a5c12409f03e3c18aab29898399e875db3f6b49d8
+node v24.22.3 node-v24.22.3-linux-x64.tar.xz https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz 2cbb271ce5b451c1623134c6ac679a6138f9758fc8088918d1eb8167f06fae58
+pgdg-key ACCC4CF8 ACCC4CF8.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc 0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76

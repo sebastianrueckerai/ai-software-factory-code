@@ -1,0 +1,42 @@
+[
+  {
+    "tag_name": "v13.2.2",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v13.2.1",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v13.2.0",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v13.1.0",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v13.0.0",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v12.13.2",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v12.13.1",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v12.13.0",
+    "draft": false,
+    "prerelease": false
+  }
+]

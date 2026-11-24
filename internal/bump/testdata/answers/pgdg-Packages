@@ -1,0 +1,39 @@
+Package: libpq5
+Source: postgresql-19
+Version: 19.0-2.pgdg12+1
+Architecture: amd64
+
+Package: libpq5
+Source: postgresql-19
+Version: 19.0-1.pgdg12+1
+Architecture: amd64
+
+Package: libpq5
+Source: postgresql-18
+Version: 18.7-1.pgdg12+2
+Architecture: amd64
+
+Package: postgresql-17
+Version: 17.12-1.pgdg12+1
+Architecture: amd64
+
+Package: postgresql-17
+Version: 17.11-1.pgdg12+2
+Architecture: amd64
+
+Package: postgresql-17
+Version: 17.10-1.pgdg12+1
+Architecture: amd64
+
+Package: postgresql-common
+Version: 297.pgdg12+1
+Architecture: all
+
+Package: postgresql-common
+Version: 295.pgdg12+1
+Architecture: all
+
+Package: postgresql-common
+Version: 294.pgdg12+2
+Architecture: all
+

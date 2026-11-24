@@ -1,0 +1,20 @@
+ARG FORGEJO_RUNNER_VERSION=13.2.1
+ARG BUILDKIT_VERSION=0.34.2
+ARG NODE_VERSION=24.22.2
+ARG CRANE_VERSION=0.22.1
+ARG GOVULNDB_VERSION=20261105T234957Z
+FROM ${UPSTREAM}docker.io/library/golang:1.26.10@sha256:78773c59d6d4ecedc0845b1a8e5379e7bf0e0be62f4ea796e689bbc97dab3ceb AS go-toolchain
+FROM scratch AS downloads
+ADD --checksum=sha256:b9f18b8e37eb450e9e5df03117045237cdd12d3c4a0034ffeeaa857852a15e13 https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /buildkit.tar.gz
+ADD --checksum=sha256:0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 https://git.aisoftwarefactory.world/api/packages/upstream/generic/crane/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /crane.tar.gz
+ADD --checksum=sha256:48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75 https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+ADD --checksum=sha256:0a54b7eb56bf031dc214fc4f29ca6db71073ab324595c3de9485f97a334e9e22 https://git.aisoftwarefactory.world/api/packages/upstream/generic/govulndb/${GOVULNDB_VERSION}/vulndb.zip /vulndb.zip
+FROM scratch AS cosign
+FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018
+ARG DEBIAN_SNAPSHOT=20261108T000000Z
+ARG POSTGRESQL_VERSION=17.11-1.pgdg12+2
+ARG LIBPQ_VERSION=18.6-1.pgdg12+2
+ARG POSTGRESQL_COMMON_VERSION=293.pgdg12+1
+ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://git.aisoftwarefactory.world/api/packages/upstream/generic/pgdg-key/ACCC4CF8/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
+      && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] https://apt-archive.postgresql.org/pub/repos/apt bookworm-pgdg-archive main" \
+ADD --checksum=sha256:bb369fe1ecb50fdc983c0b1d993f19b0920df6e5864511892b3cdbf16d858b34 --chmod=0755 https://git.aisoftwarefactory.world/api/packages/upstream/generic/forgejo-runner/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner

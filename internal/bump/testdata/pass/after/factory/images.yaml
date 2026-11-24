@@ -1,0 +1,14 @@
+images:
+  chromium:
+    apt: [chromium, fonts-liberation]
+    upstream:
+      - name: go
+        url: https://go.dev/dl/go1.26.11.linux-amd64.tar.gz
+        sha256: 14010ad50483875b1b7e2a0bad2721ed71bfe1ec91af7c936f2935ffb03311aa
+        to: /usr/local/go
+        strip: 1
+      - name: node
+        url: https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz
+        sha256: 2cbb271ce5b451c1623134c6ac679a6138f9758fc8088918d1eb8167f06fae58
+        to: /usr/local
+        strip: 1

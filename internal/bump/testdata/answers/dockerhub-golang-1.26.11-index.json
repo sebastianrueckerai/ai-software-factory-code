@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "amd64",
+        "org.opencontainers.image.base.digest": "sha256:7a8e8efa733d02ed2cf13e2bcc9c249941bf3dd750e043043c734b770404b341",
+        "org.opencontainers.image.base.name": "buildpack-deps:trixie-scm",
+        "org.opencontainers.image.created": "2026-11-24T06:14:43Z",
+        "org.opencontainers.image.revision": "f66ba4e64dfbab452b77f8ae045428aacadc24a2",
+        "org.opencontainers.image.source": "https://github.com/docker-library/golang.git#f66ba4e64dfbab452b77f8ae045428aacadc24a2:1.26/trixie",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/golang",
+        "org.opencontainers.image.version": "1.26.11-trixie"
+      },
+      "digest": "sha256:e38b9d87c900de416a12351135e18daa9e477a79faa60fcb108f9b8279b85f8c",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      },
+      "size": 2318
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "amd64",
+        "vnd.docker.reference.digest": "sha256:e38b9d87c900de416a12351135e18daa9e477a79faa60fcb108f9b8279b85f8c",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:f2f78569955abcecbebdd30ffd9349ac2821580d3d6e3af83b50e5d7cff13591",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 842
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm32v7",
+        "vnd.docker.reference.digest": "sha256:eb4f4795d6a1ba0d3cecf193617e590443e7a8777a082cfee3e1f92f3f511f34",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:56be3849e6a90676bfd33cc7b93044fc7267769e0b41a47a31e9fdff51125f29",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 842
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm64v8",
+        "org.opencontainers.image.base.digest": "sha256:d1add053e30bd462538b1d608d977209d75d85df7af98d591c9b8fcd928455bf",
+        "org.opencontainers.image.base.name": "buildpack-deps:trixie-scm",
+        "org.opencontainers.image.created": "2026-11-24T06:13:10Z",
+        "org.opencontainers.image.revision": "f66ba4e64dfbab452b77f8ae045428aacadc24a2",
+        "org.opencontainers.image.source": "https://github.com/docker-library/golang.git#f66ba4e64dfbab452b77f8ae045428aacadc24a2:1.26/trixie",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/golang",
+        "org.opencontainers.image.version": "1.26.11-trixie"
+      },
+      "digest": "sha256:6ebf789e07a5d5d4cd7f8e3991a2b0d6298c74735d864ff3c037abbdd8c504c6",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux",
+        "variant": "v8"
+      },
+      "size": 2319
+    }
+  ]
+}
