@@ -631,10 +631,12 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .sp-note.warn { color: var(--need-text); }
 /* a quiet line under a Spend row: a reset's trace, the pool's words */
 .trace { margin: -4px 0 8px; color: var(--text-muted); font: 11.5px/1.5 var(--font-mono); }
-/* a cap's Reset: a quiet 24 px press under its row, red on a hit row; its
-   confirm opens inline under it and names the money on its press */
-.rst { margin: -4px 0 10px; }
-.rst > summary { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border: 1px solid var(--btn-line); border-radius: 3px; color: var(--text); font-size: 12px; font-weight: 500; list-style: none; cursor: pointer; }
+/* a cap's Reset: a quiet 56 x 24 px press at the start of its row's gauge
+   line, the gauge beside it, red on a hit row; its confirm opens under
+   both and names the money on its press */
+.sp-g > .rst { grid-row: 2; grid-column: 1 / -1; }
+.sp-g:has(> .rst) > .gauge { grid-row: 2; align-self: start; width: auto; margin: 10px 0 0 64px; }
+.rst > summary { display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 24px; border: 1px solid var(--btn-line); border-radius: 3px; color: var(--text); font-size: 12px; font-weight: 500; list-style: none; cursor: pointer; }
 .rst > summary::-webkit-details-marker { display: none; }
 .rst > summary:hover, .rst[open] > summary { background: var(--bg-hover); }
 .rst.hit > summary { color: var(--st-failed); border-color: var(--st-failed); }
@@ -957,6 +959,7 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .cell.spend > a { flex: 1; }
   .cell.spend .gauge { flex: 1; width: auto; }
   .rst > summary, .rst button { height: 44px; }
+  .sp-g:has(> .rst) > .gauge { margin-top: 20px; }
   .sp { grid-template-columns: 1fr; }
   .sp > section { border-left: 0; border-top: 1px solid var(--line); }
   .sp > section:first-child { border-top: 0; }

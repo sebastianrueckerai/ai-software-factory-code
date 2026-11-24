@@ -2138,9 +2138,10 @@ async function text(page) {
   // day, its reset's ↺, and the month;
   // the panel's Reset opens its confirm, which names the money and stays
   // open through the board's refreshes, and Cancel closes it; on the
-  // phone the press is 44 px high. The panel holds the day's, the
-  // project month's and the premium's Reset, and the premium's confirm
-  // names its count
+  // phone the press is 44 px high. The day's, the project month's and
+  // the premium's Reset each stand on their gauge's line, left of the gauge,
+  // and the premium's confirm names its count; no row runs wider than the
+  // panel
   await seed("busy");
   for (const vp of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     const label = "reset at " + vp.width;
@@ -2177,6 +2178,15 @@ async function text(page) {
     if (await form.isVisible()) fails.push(label + ": Cancel leaves the confirm open");
     const presses = await rp.page.locator("#status-panel details.rst > summary").evaluateAll((ss) => ss.map((x) => x.getAttribute("aria-label")).join(" | "));
     if (presses !== "Reset today's count | Reset the project's month count | Reset this month's premium count") fails.push(label + ": the panel's Resets are " + presses + ", want the day's, the project's month's and the premium's");
+    const rows = await rp.page.evaluate(() => Array.from(document.querySelectorAll("#status-panel .sp-g")).map((g) => {
+      const s = g.querySelector(":scope > .rst > summary"), m = g.querySelector(":scope > .gauge").getBoundingClientRect(), p = s && s.getBoundingClientRect();
+      return { label: g.querySelector(".lbl").textContent.trim(),
+        apart: !!s && !(p.right <= m.left && m.left - p.right <= 12 && m.top >= p.top && m.bottom <= p.bottom), fits: g.scrollWidth <= g.clientWidth + 1 };
+    }));
+    const apart = rows.filter((r) => r.apart);
+    if (apart.length) fails.push(label + ": a Reset stands off its gauge's line: " + apart.map((r) => r.label).join(" | "));
+    const wide = rows.filter((r) => !r.fits);
+    if (wide.length) fails.push(label + ": a row runs wider than the panel: " + wide.map((r) => r.label).join(" | "));
     const premium = rp.page.locator("#status-panel details.rst").nth(2);
     if (await premium.count()) {
       await premium.locator("summary").click();
