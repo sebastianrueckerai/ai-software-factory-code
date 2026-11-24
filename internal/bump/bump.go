@@ -1,6 +1,7 @@
 package bump
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -25,6 +26,9 @@ var dockerfiles = []string{"Dockerfile", "Dockerfile.runner", "Dockerfile.sandbo
 type Report struct {
 	// Moved names each pin that moved: its line, from and to.
 	Moved []string `json:"moved,omitempty"`
+	// Held names each line hold keeps, with its tag, and says so when the
+	// line it names to move with moved.
+	Held []string `json:"held,omitempty"`
 	// Newer names the newer lines a rule left: a newer major, or a newer
 	// minor of a patch line.
 	Newer []string `json:"newer,omitempty"`
@@ -42,6 +46,7 @@ func (r Report) Text() string {
 		lines []string
 	}{
 		{"Moved", r.Moved},
+		{"Held by rule (hold in upstream-images.txt), not moved", r.Held},
 		{"Newer lines exist, which the rules of upstream-images.txt or a pin's major leave", r.Newer},
 		{"Not resolved, kept as they were", r.Failed},
 	} {
@@ -64,6 +69,8 @@ type pass struct {
 	report Report
 	// images: each image line's reference that moved, old to new
 	images map[string]string
+	// tags: each image name whose tag moved, to its new tag
+	tags map[string]string
 	// downloads: each file line that moved
 	downloads []download
 }
@@ -79,7 +86,7 @@ type download struct {
 // It returns the files it changed. A pin it cannot resolve stays as it is
 // and stands in the report with why.
 func Bump(ctx context.Context, w *Web, files map[string]string) (map[string]string, Report) {
-	p := &pass{ctx: ctx, w: w, files: maps.Clone(files), images: map[string]string{}}
+	p := &pass{ctx: ctx, w: w, files: maps.Clone(files), images: map[string]string{}, tags: map[string]string{}}
 	p.imageList()
 	p.fileList()
 	p.dockerfiles()
@@ -134,7 +141,27 @@ func (p *pass) imageList() {
 			}
 		}
 	}
+	for _, l := range lines {
+		if l.Rule == pins.RuleHold {
+			p.held(l)
+		}
+	}
 	p.files[list] = rewriteImages(p.files[list], p.images)
+}
+
+// held names held line l with its tag, and the move of the line it names
+// to move with by hand, when that line moved.
+func (p *pass) held(l pins.Image) {
+	ref, _, _ := strings.Cut(l.Ref, "@")
+	name, tag, _, ok := splitImage(l.Ref)
+	line := ref
+	if ok {
+		line = name + " " + tag
+	}
+	if to, moved := p.tags[l.Lead]; moved && l.Lead != "" {
+		line += fmt.Sprintf(": %s moved to %s; %s is held and moves by hand with it", l.Lead, to, cmp.Or(name, ref))
+	}
+	p.report.Held = append(p.report.Held, line)
 }
 
 // imageLine is the line's reference moved to the newest of its line.
@@ -187,6 +214,7 @@ func (p *pass) imageLine(l pins.Image, leads map[string]string, names map[string
 	}
 	switch {
 	case pick != tag:
+		p.tags[name] = pick
 		p.moved("%s %s → %s", name, tag, pick)
 	case now != digest:
 		p.moved("%s %s: a new digest", name, tag)

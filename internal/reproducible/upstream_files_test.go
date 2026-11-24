@@ -188,6 +188,8 @@ func TestPinsParseTheLists(t *testing.T) {
 		"example.org/h:5" + digest + " bootstrap with example.org/g\n" +
 		"https://example.org/i.bin" + digest + " onto example.org/a:1 hold\n" +
 		"example.org/j:6" + digest + " hold patch\n" +
+		"example.org/l:8" + digest + " bootstrap hold with example.org/g\n" +
+		"example.org/m:9" + digest + " hold with\n" +
 		"example.org/k:7" + digest + " bootstrap with\n")
 	wantImages := []pins.Image{
 		{Ref: "example.org/a:1" + digest},
@@ -197,14 +199,16 @@ func TestPinsParseTheLists(t *testing.T) {
 		{Ref: "example.org/g:4" + digest, Rule: "patch"},
 		{Ref: "example.org/h:5" + digest, Kind: "bootstrap", Rule: "with", Lead: "example.org/g"},
 		{Ref: "https://example.org/i.bin" + digest, Kind: "onto", Onto: "example.org/a:1", Rule: "hold"},
+		{Ref: "example.org/l:8" + digest, Kind: "bootstrap", Rule: "hold", Lead: "example.org/g"},
 	}
 	if !slices.Equal(images, wantImages) {
 		t.Errorf("images %+v, want %+v", images, wantImages)
 	}
-	kinds := "want a reference, then nothing, bootstrap, helm or onto <name>:<tag>, then nothing, patch, hold or with <name>"
+	kinds := "want a reference, then nothing, bootstrap, helm or onto <name>:<tag>, then nothing, patch, hold, with <name> or hold with <name>"
 	if got, wantErr := fmt.Sprint(err), `"example.org/e:3`+digest+` later": `+kinds+"\n"+
 		`"https://example.org/f.bin`+digest+` onto": `+kinds+"\n"+
 		`"example.org/j:6`+digest+` hold patch": `+kinds+"\n"+
+		`"example.org/m:9`+digest+` hold with": `+kinds+"\n"+
 		`"example.org/k:7`+digest+` bootstrap with": `+kinds; got != wantErr {
 		t.Errorf("images error\n%s\nwant\n%s", got, wantErr)
 	}

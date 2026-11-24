@@ -50,7 +50,7 @@ func TestUpstreamImagesPinEachImageByDigest(t *testing.T) {
 			t.Errorf("upstream-images.txt: %s twice: one digest per tag", image)
 		}
 		seen[image] = true
-		if l.Rule == "with" && len(slices.DeleteFunc(slices.Clone(lines), func(o pins.Image) bool {
+		if l.Lead != "" && len(slices.DeleteFunc(slices.Clone(lines), func(o pins.Image) bool {
 			return o.Rule == "hold" || !strings.HasPrefix(o.Ref, l.Lead+":")
 		})) != 1 {
 			t.Errorf("upstream-images.txt: %s goes with %s, which is not the name of one line the bump moves", l.Ref, l.Lead)

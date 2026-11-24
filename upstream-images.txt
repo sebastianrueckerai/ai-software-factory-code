@@ -21,7 +21,8 @@
 # major, and a tag that is no version (bookworm-slim, 22-bookworm-slim) to
 # its digest now. A word after the reference and its kind refines the
 # line: patch keeps it in its minor, hold never moves it, and with <name>
-# gives it the version of the one line of that image name.
+# gives it the version of the one line of that image name; hold with <name>
+# never moves it, and the bump's text says so when that line moves.
 
 # the images' builds
 docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38 patch
@@ -81,8 +82,8 @@ docker.io/curlimages/curl:8.23.0@sha256:3b8fde20978e330b401837f24b871ebe2c8d14ff
 # Cilium, installed by its CLI; the nodes pull them through their registry
 # mirror (infra talos/patches.yaml), mostly by tag
 # A Talos release names its own coredns, etcd and pause, which hold, and
-# cilium-envoy's tag is the one Cilium's chart pins: it moves by hand with
-# Cilium.
+# cilium-envoy's tag is the one Cilium's chart pins: it holds, and moves by
+# hand with Cilium.
 registry.k8s.io/kube-apiserver:v1.37.2@sha256:f3916d65eddfe52b6d21ff4a17abdf4c52589c8ef62ec7e0c17204f276cd8db6 bootstrap patch
 registry.k8s.io/kube-controller-manager:v1.37.2@sha256:07fccf8e84f4cdc72c8e59f1a50da68f15acf1299e455004a944610aecac60c4 bootstrap with registry.k8s.io/kube-apiserver
 registry.k8s.io/kube-scheduler:v1.37.2@sha256:e5438c1bb8c569c41ad556d8a1e8eba44fc5b3cfe4da3adf2a17168102434074 bootstrap with registry.k8s.io/kube-apiserver
@@ -92,7 +93,7 @@ registry.k8s.io/pause:3.10.2@sha256:412c4a7219cb8a299a37337f3d87810c5340095322e1
 ghcr.io/siderolabs/kubelet:v1.37.2@sha256:dc451819e4be23e6fdb47d8e195692629baea6c08b8461449da9ed9027fd7ad1 bootstrap with registry.k8s.io/kube-apiserver
 factory.talos.dev/installer/d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5:v1.14.6@sha256:de8b18179eabb75a5844e446ef64f46b7976870a6c90f71359b9902977615170 bootstrap patch
 quay.io/cilium/cilium:v1.20.5@sha256:a54ced05354670afb7fecd075e91130dff5cca16518da7ff3d1ef093c5c2d0ae bootstrap patch
-quay.io/cilium/cilium-envoy:v1.39.6-1794557904-dee711ff0e84b106edd0abcdd71961af1b870359@sha256:32d2f9dd9981d92b11c8a37abac32f1c9397b3601af17b45b9403ad2bccc7dab bootstrap hold
+quay.io/cilium/cilium-envoy:v1.39.6-1794557904-dee711ff0e84b106edd0abcdd71961af1b870359@sha256:32d2f9dd9981d92b11c8a37abac32f1c9397b3601af17b45b9403ad2bccc7dab bootstrap hold with quay.io/cilium/cilium
 quay.io/cilium/operator-generic:v1.20.5@sha256:3362404f43b6a01cf6e370fb637dac427b7b0259ff2629faa9e5b665121a3a76 bootstrap with quay.io/cilium/cilium
 
 # Forgejo's path, referenced at the upstream

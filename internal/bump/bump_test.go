@@ -105,8 +105,9 @@ func answersOf2309(t *testing.T) map[string]answer {
 // Last week's files of testdata/pass/before become this week's of
 // testdata/pass/after, which are #2309's but where the rule differs:
 // DEBIAN_SNAPSHOT is the date of the Debian image (bookworm-20261123-slim)
-// where #2309 wrote 20261122T000000Z by hand, and a download's sha256 is
-// its recorded body's.
+// where #2309 wrote 20261122T000000Z by hand, cilium-envoy holds where
+// #2309 moved it with Cilium's chart, and a download's sha256 is its
+// recorded body's.
 func TestABumpTurnsLastWeeksPinsIntoThisWeeks(t *testing.T) {
 	w, f := newWeb(answersOf2309(t))
 	before, after := readTree(t, filepath.Join("testdata", "pass", "before")), readTree(t, filepath.Join("testdata", "pass", "after"))
@@ -140,13 +141,17 @@ func TestABumpTurnsLastWeeksPinsIntoThisWeeks(t *testing.T) {
 			"libpq5 18.6-1.pgdg12+2 → 18.7-1.pgdg12+2",
 			"postgresql-common 293.pgdg12+1 → 297.pgdg12+1",
 		},
+		Held: []string{
+			"docker.io/library/alpine 3.18.12",
+			"quay.io/cilium/cilium-envoy v1.37.7-1791291218-293ab4c1e2b1fec84de8fc5a2e3017889aaeac4d: quay.io/cilium/cilium moved to v1.20.5; quay.io/cilium/cilium-envoy is held and moves by hand with it",
+		},
 		Newer: []string{"docker.io/library/golang 1.27.4-alpine", "docker.io/library/golang 1.27.4", "opencode v2.4.1", "node v26.13.1", "libpq5 19.0-2.pgdg12+1"},
 	}
 	if !reflect.DeepEqual(report, want) {
 		t.Errorf("report\n%#v\nwant\n%#v", report, want)
 	}
 	for _, a := range f.asked {
-		if strings.Contains(a, "alpine/manifests") || strings.Contains(a, "alpine/tags") || strings.Contains(a, "admin-tools/tags") || strings.Contains(a, "operator-generic/tags") {
+		if strings.Contains(a, "alpine/manifests") || strings.Contains(a, "alpine/tags") || strings.Contains(a, "cilium-envoy") || strings.Contains(a, "admin-tools/tags") || strings.Contains(a, "operator-generic/tags") {
 			t.Errorf("asked %s: a held line asks nothing, a with line no tags", a)
 		}
 	}
@@ -190,5 +195,22 @@ func TestAWithLineNeedsOneLeadThatMoves(t *testing.T) {
 	want := []string{"docker.io/library/golang:1.26.10-alpine@sha256:bb: with docker.io/library/golang: no line of that name leads it (one, not held, in the list)"}
 	if len(changed) != 0 || !reflect.DeepEqual(report.Failed, want) {
 		t.Errorf("changed %v, failed %q; want nothing changed and %q", changed, report.Failed, want)
+	}
+}
+
+// The text lists what moved, then each held line with its tag, a held line
+// whose lead moved saying so, then the newer lines and what failed.
+func TestTheReportReadsInItsOrder(t *testing.T) {
+	r := Report{Moved: []string{"quay.io/cilium/cilium v1.20.5 → v1.20.6"},
+		Held:   []string{"quay.io/cilium/cilium-envoy v1.39.6-1: quay.io/cilium/cilium moved to v1.20.6; quay.io/cilium/cilium-envoy is held and moves by hand with it"},
+		Newer:  []string{"opencode v2.4.1"},
+		Failed: []string{"node v24.22.3: GET https://nodejs.org/dist/index.json: 503 Service Unavailable"}}
+	want := "The factory's lookup moved the pins below to the newest release of their lines: upstream-bump, run in the bump pod.\n" +
+		"\nMoved:\n- quay.io/cilium/cilium v1.20.5 → v1.20.6\n" +
+		"\nHeld by rule (hold in upstream-images.txt), not moved:\n- quay.io/cilium/cilium-envoy v1.39.6-1: quay.io/cilium/cilium moved to v1.20.6; quay.io/cilium/cilium-envoy is held and moves by hand with it\n" +
+		"\nNewer lines exist, which the rules of upstream-images.txt or a pin's major leave:\n- opencode v2.4.1\n" +
+		"\nNot resolved, kept as they were:\n- node v24.22.3: GET https://nodejs.org/dist/index.json: 503 Service Unavailable\n"
+	if got := r.Text(); got != want {
+		t.Errorf("Text =\n%s\nwant\n%s", got, want)
 	}
 }

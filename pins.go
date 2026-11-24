@@ -52,14 +52,16 @@ func (f File) String() string {
 // "", "bootstrap", "helm" or "onto"; Onto is an onto line's base image,
 // name:tag. Rule is the weekly bump's word for the line (cmd/upstream-bump):
 // "", RulePatch, RuleHold, or RuleWith and the image name of the line it
-// takes its version from, Lead.
+// takes its version from, Lead. A held line may name a Lead too: the line it
+// moves with by hand, which the bump's text names when that line moves.
 type Image struct {
 	Ref, Kind, Onto, Rule, Lead string
 }
 
 // The words after a line's reference and its kind that refine how the
 // weekly bump moves it: patch keeps it in its minor, hold never moves it,
-// and with <name> gives it the version of the one line of that image name.
+// and with <name> gives it the version of the one line of that image name;
+// hold with <name> never moves it and says so when that line moves.
 const (
 	RulePatch = "patch"
 	RuleHold  = "hold"
@@ -107,8 +109,10 @@ func ParseImages(list string) ([]Image, error) {
 			l.Rule = rest[0]
 		case len(rest) == 2 && rest[0] == RuleWith:
 			l.Rule, l.Lead = rest[0], rest[1]
+		case len(rest) == 3 && rest[0] == RuleHold && rest[1] == RuleWith:
+			l.Rule, l.Lead = rest[0], rest[2]
 		default:
-			errs = append(errs, fmt.Errorf("%q: want a reference, then nothing, bootstrap, helm or onto <name>:<tag>, then nothing, patch, hold or with <name>", line))
+			errs = append(errs, fmt.Errorf("%q: want a reference, then nothing, bootstrap, helm or onto <name>:<tag>, then nothing, patch, hold, with <name> or hold with <name>", line))
 			continue
 		}
 		out = append(out, l)

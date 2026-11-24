@@ -9,4 +9,5 @@ docker.io/temporalio/admin-tools:1.32.2@sha256:d6655e288364110b61204fbae5f103232
 docker.io/library/alpine:3.18.12@sha256:fd032399cd767f310a1d1274e81cab9f0fd8a49b3589eba2c3420228cd45b6a7 hold
 https://github.com/SigNoz/charts/releases/download/signoz-0.151.0/signoz-0.151.0.tgz@sha256:eb405e8b05dce417bb1c5b2ef1ffcacc97db09971655e83cadc4dd14647beb88 helm
 quay.io/cilium/cilium:v1.20.5@sha256:a54ced05354670afb7fecd075e91130dff5cca16518da7ff3d1ef093c5c2d0ae bootstrap patch
+quay.io/cilium/cilium-envoy:v1.37.7-1791291218-293ab4c1e2b1fec84de8fc5a2e3017889aaeac4d@sha256:89ff955a65dab89b2c54806d97cbfc65a0cbfa9b9095e1469e5745e95ff0bd03 bootstrap hold with quay.io/cilium/cilium
 quay.io/cilium/operator-generic:v1.20.5@sha256:3362404f43b6a01cf6e370fb637dac427b7b0259ff2629faa9e5b665121a3a76 bootstrap with quay.io/cilium/cilium
