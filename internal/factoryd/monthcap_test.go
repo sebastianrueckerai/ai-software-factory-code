@@ -230,39 +230,59 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 	}
 }
 
-// capWaitStore is a store of waiting-human cards by id with the escalation
-// each one's last: a month wait (m1), a day wait (d1), an agent's ask (a1)
-// and a month wait followed by an ask (l1); a card done (x1) is not
-// waiting.
+// capWaitStore is a store of cards by id with their cases: a month wait at
+// the human (m1), a day wait at the human (d1), an agent's ask at the human
+// (a1), a month wait rung 2 holds on a running card (r1), a month wait a
+// human answered before the agent asked (l1), a month wait withdrawn when
+// it ended on its own (w1), a card with two live cap waits, the
+// project's rung 0 holds and the month's at the human (b1), and a done
+// card whose month wait is still live (x1).
 func capWaitStore(t *testing.T) *fakeStore {
 	t.Helper()
 	store, ctx := newFakeStore(), context.Background()
 	month := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
 	day := CapWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
-	var next int64
-	esc := func(id, body string, at time.Time) {
-		next++
-		store.face(id, next, CaseMonthCap, 100+next, body, at)
-	}
-	for id, status := range map[string]string{"m1": "waiting-human", "d1": "waiting-human", "a1": "waiting-human", "l1": "waiting-human", "x1": "done"} {
+	for id, status := range map[string]string{"m1": "waiting-human", "d1": "waiting-human", "a1": "waiting-human", "r1": "running",
+		"l1": "waiting-human", "w1": "running", "b1": "waiting-human", "x1": "done"} {
 		if err := store.CreateTask(ctx, Task{ID: id, Status: status, Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	esc("m1", month, oct31(21, 0, 0))
-	esc("d1", day, oct(14, 20, 43))
-	esc("a1", "The agent asks: which one?", oct31(21, 0, 0))
-	esc("l1", month, oct31(21, 0, 0))
-	esc("l1", "The agent asks: which one?", oct31(22, 0, 0))
-	esc("x1", month, oct31(21, 0, 0))
+	open := func(id string, kind CaseKind) int64 {
+		c, opened, err := store.OpenCase(ctx, Case{TaskID: id, Kind: kind, StateKey: "k", Problem: "p"})
+		if err != nil || !opened {
+			t.Fatalf("OpenCase %s %s = %v, %v", id, kind, opened, err)
+		}
+		return c.ID
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.face("m1", 1, CaseMonthCap, 101, month, oct31(21, 0, 0))
+	store.face("d1", 2, CaseDayCap, 102, day, oct(14, 20, 43))
+	store.face("a1", 3, CaseAgentEscalate, 103, "The agent asks: which one?", oct31(21, 0, 0))
+	due := oct31(21, 35, 0)
+	_, err := store.StartRungStep(ctx, CaseStep{CaseID: open("r1", CaseMonthCap), Rung: 2, Actor: FactoryDecider, DueAt: &due})
+	must(err)
+	store.face("l1", 5, CaseMonthCap, 105, month, oct31(21, 0, 0))
+	must(store.ResolveCase(ctx, 5, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil))
+	store.face("l1", 6, CaseAgentEscalate, 106, "The agent asks: which one?", oct31(22, 0, 0))
+	must(store.WithdrawCase(ctx, open("w1", CaseMonthCap), "the wait ended on its own: the cap no longer binds a session"))
+	open("b1", CaseProjectCap)
+	store.face("b1", 9, CaseMonthCap, 109, month, oct31(21, 0, 0))
+	store.face("x1", 10, CaseMonthCap, 110, month, oct31(21, 0, 0))
 	return store
 }
 
-// A wake signals the waiting cards whose last escalation is a cap wait,
-// the month's (m1) and the day's (d1), and no other: not an agent's ask
-// (a1), not a cap wait a later ask followed (l1), not a done card (x1),
-// and its log line says what it ran for. A signal that fails leaves the
-// others signalled and Wake failing.
+// A wake signals every card a live cap wait holds, whatever rung holds
+// it, oldest case first and each card once: the month's (m1) and the
+// day's (d1) at the human, the month's that rung 2 holds (r1), and the
+// card with two (b1). It signals no agent's ask (a1), no answered wait
+// (l1), no withdrawn one (w1) and no ended card (x1), and its log line
+// says what it ran for. A signal that fails leaves the others signalled and Wake failing.
 func TestCapWaitsWake(t *testing.T) {
 	var sent []string
 	var broken string
@@ -274,16 +294,19 @@ func TestCapWaitsWake(t *testing.T) {
 		return nil
 	}}
 	lines := logs(t)
-	if err := w.Wake(context.Background(), "console: alice reset the day cap's count (reset 4)"); err != nil || !slices.Equal(sent, []string{"d1", "m1"}) {
-		t.Fatalf("Wake = %v, signalled %v; want d1 and m1", err, sent)
+	if err := w.Wake(context.Background(), "console: alice reset the month cap's count (reset 4)"); err != nil || !slices.Equal(sent, []string{"m1", "d1", "r1", "b1"}) {
+		t.Fatalf("Wake = %v, signalled %v; want m1, d1, r1 and b1", err, sent)
 	}
-	if want := "console: alice reset the day cap's count (reset 4), 2 cap waits woken\n"; !strings.HasSuffix(lines.String(), want) {
+	if want := "console: alice reset the month cap's count (reset 4), 4 cap waits woken\n"; !strings.HasSuffix(lines.String(), want) {
 		t.Fatalf("Wake logged %q, want it to end %q", lines.String(), want)
 	}
-	sent, broken = nil, "d1"
+	sent, broken = nil, "r1"
 	err := w.Wake(context.Background(), "config: version 8 loaded")
-	if err == nil || !strings.Contains(err.Error(), "task d1") || !slices.Equal(sent, []string{"m1"}) {
-		t.Fatalf("Wake with d1 failing = %v, signalled %v; want m1 signalled and d1 named", err, sent)
+	if err == nil || !strings.Contains(err.Error(), "task r1") || !slices.Equal(sent, []string{"m1", "d1", "b1"}) {
+		t.Fatalf("Wake with r1 failing = %v, signalled %v; want m1, d1 and b1 signalled and r1 named", err, sent)
+	}
+	if want := "config: version 8 loaded, 3 cap waits woken\n"; !strings.HasSuffix(lines.String(), want) {
+		t.Fatalf("Wake logged %q, want it to end %q", lines.String(), want)
 	}
 }
 
@@ -297,7 +320,9 @@ func TestPolicyLoadWakesCapWaitsPastAnEndedWorkflow(t *testing.T) {
 	c := &mocks.Client{}
 	c.On("SignalWorkflow", mock.Anything, "task-d1", "", SignalPolicyLoaded, TaskSignal{Author: "factoryd"}).
 		Return(serviceerror.NewNotFound("workflow execution not found")).Once()
-	c.On("SignalWorkflow", mock.Anything, "task-m1", "", SignalPolicyLoaded, TaskSignal{Author: "factoryd"}).Return(nil).Once()
+	for _, id := range []string{"task-m1", "task-r1", "task-b1"} {
+		c.On("SignalWorkflow", mock.Anything, id, "", SignalPolicyLoaded, TaskSignal{Author: "factoryd"}).Return(nil).Once()
+	}
 	inner := TemporalWorkflows{Client: c}
 	waits := &CapWaits{Store: capWaitStore(t), Signal: func(ctx context.Context, id string) error {
 		return inner.SignalRunning(ctx, id, SignalPolicyLoaded)
@@ -311,7 +336,7 @@ func TestPolicyLoadWakesCapWaitsPastAnEndedWorkflow(t *testing.T) {
 	if err := l.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
-	c.AssertNumberOfCalls(t, "SignalWorkflow", 2)
+	c.AssertNumberOfCalls(t, "SignalWorkflow", 4)
 	c.AssertNotCalled(t, "SignalWithStartWorkflow", mock.Anything)
 
 	down := &mocks.Client{}

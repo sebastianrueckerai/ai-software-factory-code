@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
@@ -243,6 +244,50 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 	inB, err := s.OpenCasesIn(ctx, "sf/b")
 	if err != nil || !slices.Equal(caseIDs(inB), []int64{b.ID}) || inB[0].Status != CaseAtHuman {
 		t.Fatalf("OpenCasesIn sf/b = %+v, %v; want [%d] at_human", inB, err, b.ID)
+	}
+}
+
+// A wake on Postgres signals each card a live cap wait's case belongs to,
+// in any repository and whichever rung holds it, once: the month wait
+// rung 2 holds (t1), the day wait at the human (t2) and the card with a
+// project wait and a month wait (t3). It signals no resolved or withdrawn
+// wait (t4, t5), no live case of another kind (t6) and no done card's live
+// month wait (t7).
+func TestCapWaitsWakeSignalsEveryLiveCapWait(t *testing.T) {
+	ctx := context.Background()
+	s := caseStore(t)
+	open := func(task, repository string, kind CaseKind) int64 {
+		t.Helper()
+		c, opened, err := s.OpenCase(ctx, Case{TaskID: task, Repository: repository, Kind: kind, StateKey: "k", Problem: "p"})
+		if err != nil || !opened {
+			t.Fatalf("OpenCase %s %s = %v, %v", task, kind, opened, err)
+		}
+		return c.ID
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, status := range map[string]string{"t1": "running", "t7": "done"} {
+		must(s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: status, Objective: "x", Repository: "sf/a", Track: policy.TrackDirect}))
+	}
+	due := time.Now().Add(35 * time.Minute)
+	_, err := s.StartRungStep(ctx, CaseStep{CaseID: open("t1", "sf/a", CaseMonthCap), Rung: 2, Actor: FactoryDecider, DueAt: &due})
+	must(err)
+	_, _, err = openAtHuman(ctx, s, Case{TaskID: "t2", Repository: "sf/b", Kind: CaseDayCap, StateKey: "k", Problem: "p"})
+	must(err)
+	open("t3", "sf/a", CaseProjectCap)
+	open("t3", "sf/a", CaseMonthCap)
+	must(s.ResolveCase(ctx, open("t4", "sf/a", CaseMonthCap), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil))
+	must(s.WithdrawCase(ctx, open("t5", "sf/b", CaseProjectCap), "the wait ended on its own: the cap no longer binds a session"))
+	open("t6", "sf/a", CaseAgentEscalate)
+	open("t7", "sf/a", CaseMonthCap)
+	var sent []string
+	w := &CapWaits{Store: s, Signal: func(_ context.Context, id string) error { sent = append(sent, id); return nil }}
+	if err := w.Wake(ctx, "console: alice reset the month cap's count (reset 1)"); err != nil || !slices.Equal(sent, []string{"t1", "t2", "t3"}) {
+		t.Fatalf("Wake = %v, signalled %v; want t1, t2 and t3", err, sent)
 	}
 }
 
