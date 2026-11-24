@@ -145,7 +145,7 @@ func PlanCardRefs(ctx context.Context, s BriefReads, plan Task, p Plan) ([]CardR
 	for _, c := range p.FilingOrder() {
 		ref := CardRef{Title: c.Title}
 		if row := slices.IndexFunc(rows, func(r Task) bool { return r.PlanKey == c.Key }); row >= 0 {
-			end, ok, err := throughSuccessors(ctx, s, rows[row])
+			end, ok, err := ThroughSuccessors(ctx, s, rows[row])
 			if err != nil {
 				return nil, err
 			}

@@ -768,12 +768,12 @@ func firstUndelivered(cards []Task) (Task, bool) {
 	return cards[i], true
 }
 
-// throughSuccessors is card c read through the successors it was cut
+// ThroughSuccessors is card c read through the successors it was cut
 // into and the replacements its retries filed: while a card of the chain
 // is neither done nor merged and has a successor, else a replacement
 // (RetryID), that card stands for it. A chain that loops into itself
 // reads as no end: ok false.
-func throughSuccessors(ctx context.Context, store interface {
+func ThroughSuccessors(ctx context.Context, store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 }, c Task) (end Task, ok bool, err error) {
 	seen := map[string]bool{}
@@ -801,7 +801,7 @@ func throughSuccessors(ctx context.Context, store interface {
 
 // PlanWaits are plan's cards, each key read as its live card: each one cut
 // into a successor, or retried, stands as its chain's end
-// (throughSuccessors) under its own key, so whatever waits on, counts or
+// (ThroughSuccessors) under its own key, so whatever waits on, counts or
 // shows the plan's cards sees the work, not the card that handed it on.
 func PlanWaits(ctx context.Context, store interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
@@ -812,7 +812,7 @@ func PlanWaits(ctx context.Context, store interface {
 		return nil, err
 	}
 	for i, c := range cards {
-		end, ok, err := throughSuccessors(ctx, store, c)
+		end, ok, err := ThroughSuccessors(ctx, store, c)
 		if err != nil {
 			return nil, err
 		}

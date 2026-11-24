@@ -4164,7 +4164,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			if !read {
 				k := cards[d]
 				dep = Dependency{TaskID: k.ID, Issue: k.IssueNumber, Key: d}
-				end, ok, err := throughSuccessors(ctx, r.store, k)
+				end, ok, err := ThroughSuccessors(ctx, r.store, k)
 				if err != nil {
 					return nil, err
 				}
