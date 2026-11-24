@@ -4369,6 +4369,19 @@ func TestSessionResultPushBeatsCheckin(t *testing.T) {
 	if res.Outcome != OutcomeWallClock || res.Trip != string(TripWallClock) || res.CheckIn != start {
 		t.Fatalf("a later stop of a session its start check-in handed over to: %+v, want the stop's own outcome with the record riding", res)
 	}
+	esc := &Trip{Kind: TripAgentEscalation, Detail: "the agent called escalate",
+		decided: &Decision{Action: ActionEscalate, Reason: "The agent asks: Which license?\nWhy: none named\nRecommendation: MIT", Choices: []string{"MIT", "Apache-2.0"}}}
+	res = sessionResult(sessionSpec{id: "s3"}, sessionOutcome{trip: esc, decision: esc.decided, checkIn: start})
+	if res.Outcome != OutcomeEscalate || res.Trip != string(TripAgentEscalation) || !slices.Equal(res.Choices, []string{"MIT", "Apache-2.0"}) ||
+		res.Reason != "The agent asks: Which license?\nWhy: none named\nRecommendation: MIT\n\nDetector: agent_escalation (the agent called escalate)\nProgress: " || res.CheckIn != start {
+		t.Fatalf("the agent's escalation after a start check-in's handover: %+v, want the escalation with the record riding", res)
+	}
+	person := &Trip{Kind: TripReplan, Detail: "a person asked for the replan", decided: &Decision{Action: ActionReplan, Reason: "replanned by ana: two parts"}}
+	res = sessionResult(sessionSpec{id: "s3"}, sessionOutcome{trip: person, commit: "c-wip", decision: person.decided, checkIn: start})
+	if res.Outcome != OutcomeReplan || res.Reason != "replanned by ana: two parts" || res.Replan != "replanned by ana: two parts" ||
+		res.Trip != string(TripReplan) || res.Commit != "c-wip" || res.CheckIn != start {
+		t.Fatalf("a person's replan after a start check-in's handover: %+v, want the replan with the record riding", res)
+	}
 }
 
 // A replan's result carries the planner's text: the check-in's names the

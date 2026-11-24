@@ -872,3 +872,37 @@ func TestHoldCardBetweenSessionsSignalsHeld(t *testing.T) {
 		t.Fatalf("signals = %q, want %q", wf.signals, want)
 	}
 }
+
+// A press whose ask the session does not read before the press's context
+// ends answers that error with the hold stored, and frees the session's
+// one hold ask: the next press asks again.
+func TestACancelledHoldPressFreesTheSessionsAsk(t *testing.T) {
+	store := newFakeStore()
+	store.tasks["t-run"] = Task{ID: "t-run", Kind: "agent", Repository: "demo/app", Track: policy.TrackDirect, Status: "running", IssueNumber: 2062}
+	wf := &fakeWorkflows{}
+	r := &Runner{store: store}
+	r.cfg.Workflows = wf
+	asks, end := r.liveSession("t-run", sessionWorker{session: "s1", holdStop: true})
+	defer end()
+	gone, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got, err := r.HoldCard(gone, "t-run", "", "out of the way", "sebastian"); !errors.Is(err, context.Canceled) || got != (HoldResult{Held: true}) {
+		t.Fatalf("the cancelled press = %+v, %v; want held with context.Canceled", got, err)
+	}
+	took := make(chan AgentAsk, 1)
+	go func() { took <- <-asks }()
+	if got, err := r.HoldCard(t.Context(), "t-run", "", "out of the way until the split lands", "sebastian"); err != nil || got != (HoldResult{Held: true, Stopped: true}) {
+		t.Fatalf("the next press = %+v, %v; want held and stopped", got, err)
+	}
+	select {
+	case a := <-took:
+		if want := (AgentAsk{Kind: AskHold, Reason: "held by sebastian: out of the way until the split lands"}); !reflect.DeepEqual(a, want) {
+			t.Fatalf("the session took %+v, want %+v", a, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the next press sent no ask: the cancelled press kept the session's hold ask")
+	}
+	if len(wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none: a session runs", wf.signals)
+	}
+}

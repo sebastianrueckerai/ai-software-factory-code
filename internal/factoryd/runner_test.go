@@ -5343,6 +5343,73 @@ func TestASessionRegisteringOnAHeldCardStopsAtOnce(t *testing.T) {
 	}
 }
 
+// pressingStore runs press at each take of a live session's row: the
+// session's first is its trip's, before the stop.
+type pressingStore struct {
+	Store
+	press func()
+}
+
+func (s *pressingStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
+	s.press()
+	return s.Store.TakeLiveSession(ctx, taskID, from, to)
+}
+
+// A press that lands once the registration read took the session's hold
+// ask sends no second ask: the session stops once, on its own read, and
+// the press answers that it stops. A press after the session ended finds
+// none and signals the card's run.
+func TestAPressRacingTheRegistrationReadSendsNoSecondAsk(t *testing.T) {
+	runner, _, kube, _, _, store, objects := liveRig(t)
+	card := store.tasks["t2"]
+	card.Kind, card.Hold = "agent", &CardHold{Reason: "out of the way", By: "sebastian", At: time.Now()}
+	store.tasks["t2"] = card
+	var pressed []HoldResult
+	runner.store = &pressingStore{Store: store, press: func() {
+		runner.liveMu.Lock()
+		ls, ok := runner.live["t2"]
+		claimed := ok && ls.hold
+		runner.liveMu.Unlock()
+		if !claimed || len(pressed) > 0 {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		got, err := runner.HoldCard(ctx, "t2", "", "out of the way for good", "sebastian")
+		if err != nil {
+			t.Errorf("the press during the stop: %v", err)
+		}
+		pressed = append(pressed, got)
+	}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small", HoldStop: true}, nil,
+		sigtermLogs+resultLine(false, "stopped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pressed, []HoldResult{{Held: true, Stopped: true}}) {
+		t.Fatalf("presses during the stop = %+v, want one that answers the session stops", pressed)
+	}
+	if res.Outcome != OutcomeHeld || res.Reason != "held by sebastian: out of the way" {
+		t.Fatalf("result = %+v, want the stop on the registration read's hold", res)
+	}
+	if rec := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")); strings.Count(rec, `"detector":"hold"`) != 1 {
+		t.Fatalf("record = %s, want one hold stop", rec)
+	}
+	if len(kube.deletedPods) != 1 {
+		t.Fatalf("deleted pods = %q, want the one stop", kube.deletedPods)
+	}
+	wf := runner.cfg.Workflows.(*fakeWorkflows)
+	if len(wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none while the session stops", wf.signals)
+	}
+	if got, err := runner.HoldCard(t.Context(), "t2", "", "out of the way for good", "sebastian"); err != nil || got != (HoldResult{Held: true}) {
+		t.Fatalf("the press after the end = %+v, %v; want held with no session", got, err)
+	}
+	if !slices.Equal(wf.signals, []string{"t2 held sebastian #0: "}) {
+		t.Fatalf("signals = %q, want one held signal", wf.signals)
+	}
+}
+
 // cutAsk is an agent's request_cut with two parts.
 var cutAsk = AgentAsk{Kind: AskCut, Reason: "a store and a UI", Parts: []string{"the store", "the UI"}}
 
