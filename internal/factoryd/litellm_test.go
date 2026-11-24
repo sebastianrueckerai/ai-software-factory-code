@@ -172,8 +172,8 @@ const proxyBudgetAnswer = `{"user_id":"litellm-proxy-budget","user_info":{"user_
 "created_at":"2026-09-26T08:14:00Z","updated_at":"2026-11-20T14:01:57Z","organization_memberships":null,"object_permission":null},
 "keys":[],"teams":[]}`
 
-// The backstop is the proxy budget user's spend and max_budget, read
-// under the master key and kept for 60 s: a second read within them asks
+// The backstop is the proxy budget user's spend, max_budget and
+// budget_reset_at, read under the master key and kept for 60 s: a second read within them asks
 // nothing, one at 60 s asks again. A failed read is its error, kept for
 // 60 s too, so a slow or failing LiteLLM costs one request a minute; a
 // read its caller cancelled keeps nothing.
@@ -196,8 +196,8 @@ func TestProxyBudget(t *testing.T) {
 	read := func(want int32) {
 		t.Helper()
 		b, err := l.ProxyBudget(context.Background())
-		if err != nil || b != (Backstop{SpendUSD: 1238.59, MaxUSD: 1875}) || calls.Load() != want {
-			t.Fatalf("ProxyBudget at %s = %+v, %v after %d requests, want 1238.59 of 1875 USD after %d", now.Format(time.TimeOnly), b, err, calls.Load(), want)
+		if err != nil || b.SpendUSD != 1238.59 || b.MaxUSD != 1875 || !b.ResetAt.Equal(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)) || calls.Load() != want {
+			t.Fatalf("ProxyBudget at %s = %+v, %v after %d requests, want 1238.59 of 1875 USD resetting 2026-12-01 00:00 UTC after %d", now.Format(time.TimeOnly), b, err, calls.Load(), want)
 		}
 	}
 	read(1)
@@ -239,6 +239,24 @@ func TestProxyBudgetWithoutMaxBudget(t *testing.T) {
 		l := &LiteLLMAdmin{BaseURL: srv.URL, MasterKey: "mk"}
 		if b, err := l.ProxyBudget(context.Background()); err == nil || !strings.Contains(err.Error(), "max_budget") {
 			t.Errorf("ProxyBudget with max_budget %s = %+v, %v, want an error naming max_budget", max, b, err)
+		}
+		srv.Close()
+	}
+}
+
+// A proxy budget user without budget_reset_at, LiteLLM's budget without a
+// budget_duration, has no reset moment, and neither has one whose moment
+// is not RFC 3339: the backstop's ResetAt stays zero beside its figures.
+// LiteLLM's moment in another zone is the same instant.
+func TestProxyBudgetResetMoment(t *testing.T) {
+	for at, want := range map[string]time.Time{"null": {}, `"2026-12-01 00:00"`: {},
+		`"2026-12-01T01:00:00.000+01:00"`: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"user_id":"litellm-proxy-budget","user_info":{"user_id":"litellm-proxy-budget","max_budget":1875.0,"spend":12.5,"budget_reset_at":`+at+`},"keys":[],"teams":[]}`)
+		}))
+		l := &LiteLLMAdmin{BaseURL: srv.URL, MasterKey: "mk"}
+		if b, err := l.ProxyBudget(context.Background()); err != nil || b.SpendUSD != 12.5 || b.MaxUSD != 1875 || !b.ResetAt.Equal(want) {
+			t.Errorf("ProxyBudget with budget_reset_at %s = %+v, %v, want 12.50 of 1875 USD resetting at %v", at, b, err, want)
 		}
 		srv.Close()
 	}

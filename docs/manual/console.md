@@ -89,7 +89,10 @@ decimals: a task's model calls cost fractions of a cent.
   panel's Spend section holds each cap's row, a trace line under a row
   whose count a reset restarted (who, when, the count before and the
   period's whole), LiteLLM's backstop as its own row and the escalation
-  pool's words. Reset, left of a row's gauge on its line,
+  pool's words. Each row's label says when its count resets by itself,
+  "(resets 1 December at 00:00 UTC)": the day's and the month's at the
+  turn of their UTC period, the backstop's at LiteLLM's `budget_reset_at`,
+  none when LiteLLM names none. Reset, left of a row's gauge on its line,
   restarts that cap's count, never the cap: the day's, the factory
   month's and the premium's for a writer of the factory's code
   (`POST /caps/{day|month|premium}/reset`), a project's month cap for its

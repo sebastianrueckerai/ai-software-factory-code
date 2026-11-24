@@ -1812,13 +1812,14 @@ func TestStripDayAlways(t *testing.T) {
 // panel and its cell once its spend reaches its max.
 func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 	r, ck := screenRig(t)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC) }
 	status := func() (string, string) {
 		t.Helper()
 		return statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
 	}
 	r.ledger.premiumCap, r.ledger.premium = 50, 45
 	strip, spend := status()
-	if strings.Contains(strip, "premium") || !strings.Contains(spend, `<span class="lbl">premium this month</span><span class="fig">45.00 of 50.00 EUR</span>`) {
+	if strings.Contains(strip, "premium") || !strings.Contains(spend, `<span class="lbl">premium this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span><span class="fig">45.00 of 50.00 EUR</span>`) {
 		t.Errorf("premium at 90 percent: want no strip cell and the panel's row\n%s\n%s", strip, spend)
 	}
 	if strings.Contains(strip, "pool") || !strings.Contains(spend, `<p class="trace">escalation pool: `+noDraws+`</p>`) {
@@ -1925,6 +1926,44 @@ func TestStripShowsReset(t *testing.T) {
 	seen(spend, "/caps/day/reset", "3")
 	seen(spend, "/projects/ai-software-factory-code/cap/reset", "5")
 	seen(spend, "/caps/premium/reset", "6")
+}
+
+// Each Spend row's label says when its count resets by itself, in the
+// words of the cap's ask: at 16:00 UTC on 20 November the day's on 21
+// November at 00:00 UTC; the month's, under the factory's cap and under a
+// project's own, and the premium's on 1 December at 00:00 UTC; LiteLLM's
+// backstop when LiteLLM resets its spend, 07:31:20 UTC on 26 November, to
+// the minute, and nothing without that moment.
+func TestSpendRowsSayWhenTheirCountsReset(t *testing.T) {
+	r, ck := screenRig(t)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC) }
+	r.ledger.premiumCap = 50
+	backstop := factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875, ResetAt: time.Date(2026, 11, 26, 7, 31, 20, 0, time.UTC)}
+	r.c.cfg.Backstop = func(context.Context) (factoryd.Backstop, error) { return backstop, nil }
+	spendNow := func() string {
+		t.Helper()
+		_, spend := statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
+		return spend
+	}
+	has := func(spend string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(spend, want) {
+				t.Errorf("the panel lacks %s:\n%s", want, spend)
+			}
+		}
+	}
+	has(spendNow(),
+		`<span class="lbl">today <span class="turn">(resets 21 November at 00:00 UTC)</span></span>`,
+		`<span class="lbl">this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span><span class="fig">0.00 of 50.00 EUR</span>`,
+		`<span class="lbl">premium this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span>`,
+		`<span class="lbl">LiteLLM backstop <span class="turn">(resets 26 November at 07:31 UTC)</span></span>`)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code"}}
+	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 60}
+	backstop.ResetAt = time.Time{}
+	has(spendNow(),
+		`<span class="lbl">this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span><span class="fig">0.00 of 60.00 EUR</span>`,
+		`<span class="lbl">LiteLLM backstop</span>`)
 }
 
 // Reset stands on a cap's row for who may reset it: a writer of the

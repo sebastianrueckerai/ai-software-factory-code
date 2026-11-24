@@ -1142,12 +1142,19 @@ func pushedTimeline(start time.Time, alias, failed string) []map[string]any {
 	}
 }
 
+// labMonthTurn is when LiteLLM resets the backstop's spend under its
+// budget_duration of 1mo: the next UTC month's start after now.
+func labMonthTurn(now time.Time) time.Time {
+	y, m, _ := now.UTC().Date()
+	return time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
+}
+
 func busyScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
 	s := labScene{drawer: labID(606), github: "1 open pull request", spend: 61.40, chatSpend: 3.85, today: 17,
 		dayReset:   &policy.CapReset{ID: 1, Cap: policy.CapDay, At: now.UTC().Truncate(24 * time.Hour).Add(14*time.Hour + 2*time.Minute), Login: "sebastian", BeforeEUR: 19.62},
-		backstop:   &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875},
+		backstop:   &factoryd.Backstop{SpendUSD: 1238.59, MaxUSD: 1875, ResetAt: labMonthTurn(now)},
 		premiumCap: 50, premium: 12.40,
 		premiumReset: &policy.CapReset{ID: 2, Cap: policy.CapPremium, At: now.UTC().Truncate(24 * time.Hour).Add(9*time.Hour + 15*time.Minute), Login: "sebastian", BeforeEUR: 50},
 		objects:      map[string]string{}, questions: map[string][]factoryd.PlanQuestion{}}
@@ -1700,7 +1707,7 @@ func historyScene(now time.Time) labScene {
 func fireScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
-	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, today: 20, dayHit: true, backstop: &factoryd.Backstop{SpendUSD: 1875, MaxUSD: 1875},
+	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, today: 20, dayHit: true, backstop: &factoryd.Backstop{SpendUSD: 1875, MaxUSD: 1875, ResetAt: labMonthTurn(now)},
 		objects: map[string]string{}}
 
 	stale := labCard(now, 619, "running", "direct", 90*time.Minute, "Load test: the event stream under 200 followers",

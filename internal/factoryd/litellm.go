@@ -39,16 +39,18 @@ type LiteLLMAdmin struct {
 
 // Backstop is LiteLLM's proxy-wide budget, the absolute monthly limit
 // behind the policy's caps: the spend of its budget period and its
-// max_budget, in USD.
+// max_budget, in USD, and ResetAt, when LiteLLM resets the spend
+// (budget_reset_at), zero when LiteLLM names no moment in RFC 3339.
 type Backstop struct {
 	SpendUSD, MaxUSD float64
+	ResetAt          time.Time
 }
 
 // backstopTTL is how long a read of the backstop serves.
 const backstopTTL = time.Minute
 
 // ProxyBudget reads the backstop off the user LiteLLM keeps the
-// proxy-wide max_budget and its spend on, litellm-proxy-budget: /user/info
+// proxy-wide max_budget, its spend and its reset on, litellm-proxy-budget: /user/info
 // answers its row as user_info (read off the litellm 1.102.4 source). A read
 // serves for backstopTTL, a failed one too, so a slow or failing LiteLLM
 // costs one request per TTL; a read its caller cancelled keeps nothing. A
@@ -82,8 +84,9 @@ func (l *LiteLLMAdmin) readBackstop(ctx context.Context) (Backstop, error) {
 	}
 	var info struct {
 		UserInfo *struct {
-			Spend     float64  `json:"spend"`
-			MaxBudget *float64 `json:"max_budget"`
+			Spend         float64  `json:"spend"`
+			MaxBudget     *float64 `json:"max_budget"`
+			BudgetResetAt *string  `json:"budget_reset_at"`
 		} `json:"user_info"`
 	}
 	if err := json.Unmarshal(body, &info); err != nil {
@@ -92,7 +95,13 @@ func (l *LiteLLMAdmin) readBackstop(ctx context.Context) (Backstop, error) {
 	if info.UserInfo == nil || info.UserInfo.MaxBudget == nil || *info.UserInfo.MaxBudget <= 0 {
 		return Backstop{}, fmt.Errorf("litellm user/info: litellm-proxy-budget has no max_budget above 0, so no backstop is set")
 	}
-	return Backstop{SpendUSD: info.UserInfo.Spend, MaxUSD: *info.UserInfo.MaxBudget}, nil
+	b := Backstop{SpendUSD: info.UserInfo.Spend, MaxUSD: *info.UserInfo.MaxBudget}
+	// a reset moment in another form than RFC 3339 is unknown, not a
+	// failed read: the figures stand without it
+	if at := info.UserInfo.BudgetResetAt; at != nil {
+		b.ResetAt, _ = time.Parse(time.RFC3339Nano, *at)
+	}
+	return b, nil
 }
 
 type liteKey struct {

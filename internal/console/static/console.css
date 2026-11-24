@@ -617,12 +617,20 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .cell.routine + .cell.gh { margin-left: 0; }
 /* the status in detail: two quiet columns split by a hairline */
 .sp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); border-top: 1px solid var(--line); cursor: default; }
-.sp > section { min-width: 0; padding: 10px 16px 12px; border-left: 1px solid var(--line); }
+.sp > section { min-width: 0; padding: 10px 16px 12px; border-left: 1px solid var(--line); container-type: inline-size; container-name: sp; }
 .sp > section:first-child { border-left: 0; }
 .sp h3 { margin: 0 0 6px; color: var(--text-faint); font-size: 12.5px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
 .sp-g { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin-bottom: 8px; color: var(--text-muted); font-size: 12.5px; }
 .sp-g .lbl { color: var(--text-faint); }
-.sp-g .fig { justify-self: end; font: 12px var(--font-mono); }
+/* when the row's count resets by itself, quiet beside its label, or under
+   it on its own line where label, moment and figure do not fit one */
+.sp-g .turn { font-size: 11.5px; white-space: nowrap; }
+.sp-g .fig { justify-self: end; font: 12px var(--font-mono); white-space: nowrap; }
+@container sp (max-width: 500px) {
+  .sp-g .lbl { grid-area: 1 / 1 / 2 / -1; }
+  .sp-g .fig { grid-area: 1 / 2; }
+  .sp-g .turn { display: block; }
+}
 .sp-g .gauge { grid-column: 1 / -1; width: 100%; height: 4px; }
 .sp-g.warn .gauge { --fill: var(--need); }
 .sp-g.over .gauge { --fill: var(--st-failed); }

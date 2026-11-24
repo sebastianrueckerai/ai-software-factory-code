@@ -18,6 +18,7 @@ import (
 // cap only once it is hit.
 func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 	r, ck := screenRig(t)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC) }
 	r.ledger.premiumCap, r.ledger.premium = 50, 12.5
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, r.readSession(t, ck)))
@@ -29,7 +30,7 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 		t.Errorf("premium %.2f of %.2f, want 12.50 of 50", d.Status.PremiumEUR, d.Status.PremiumCapEUR)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`aria-label="premium this month">25 percent</meter>`, `<span class="lbl">premium this month</span>`} {
+	for _, want := range []string{`aria-label="premium this month">25 percent</meter>`, `<span class="lbl">premium this month <span class="turn">(resets 1 December at 00:00 UTC)</span></span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}

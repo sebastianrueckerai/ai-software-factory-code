@@ -1125,6 +1125,11 @@ type statusLine struct {
 	// the month's and the premium's cap, nil for a viewer who may not
 	// reset it.
 	DayPress, MonthPress, PremiumPress *capPress
+	// DayTurn, MonthTurn, PremiumTurn and BackstopTurn are when each
+	// count resets by itself, as a cap's ask says it (factoryd.TimeWords):
+	// its period's turn, and LiteLLM's own reset of its spend, "" when
+	// LiteLLM names none.
+	DayTurn, MonthTurn, PremiumTurn, BackstopTurn string
 	// Backstop is LiteLLM's own budget, nil when unread; BackstopHit says
 	// its spend reached its max.
 	Backstop    *factoryd.Backstop
@@ -2397,9 +2402,14 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	}
 	s.TodayEUR, s.DayHit = e.Day, policy.CapHit(e.Day, s.DayCapEUR, e.DayHit)
 	s.DayReset, s.MonthReset = resetLineOf(e.DayReset, e.DayAll, "today", now), resetLineOf(s.Spend.Reset, s.Spend.AllEUR, "this month", now)
+	turn := func(decision string) string { return factoryd.TimeWords(factoryd.CapTurn(decision, now)) }
+	s.DayTurn, s.MonthTurn = turn(policy.RefusedDayCap), turn(policy.RefusedMonthCap)
+	if !s.FactoryCap {
+		s.MonthTurn = turn(policy.RefusedProjectCap)
+	}
 	if s.PremiumCapEUR > 0 {
 		s.PremiumEUR, s.PremiumHit = e.Premium, policy.CapHit(e.Premium, s.PremiumCapEUR, e.PremiumHit)
-		s.PremiumReset = resetLineOf(e.PremiumReset, e.PremiumAll, "premium this month", now)
+		s.PremiumReset, s.PremiumTurn = resetLineOf(e.PremiumReset, e.PremiumAll, "premium this month", now), turn(policy.RefusedPremiumCap)
 	}
 	s.Approver = v.approves(p.Repository)
 	if c.cfg.Backstop != nil {
@@ -2411,6 +2421,9 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			d.Problems = append(d.Problems, "LiteLLM's backstop could not be read")
 		} else {
 			s.Backstop, s.BackstopHit = &b, b.SpendUSD >= b.MaxUSD
+			if !b.ResetAt.IsZero() {
+				s.BackstopTurn = factoryd.TimeWords(b.ResetAt)
+			}
 		}
 	}
 	if c.cfg.Caps != nil {
