@@ -106,13 +106,42 @@ the store lacks: `the store lacks <package> <version> <file>: the copy
 before the checks did not make it`. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
 PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
-moves on its own: the code project's routine `weekly-bump` files a
-card for an agent on this repository every Monday 06:00, "Update the fixed
-versions of outside software every week", and holds while one is open (its project file and
-brief `routines/weekly-bump.md` in the configuration,
-`internal/factoryd/routine_run.go`), naming the list,
-the snapshot, the PostgreSQL versions, the Go patch and the downloaded
-tools; the copy before the checks fills the store with what it moves.
+moves on its own: the code project's routine `weekly-bump` runs the bump
+pass every Monday 06:00 (`files: pull-request`, `pass: bump` in its
+project file; `internal/factoryd/bumppass.go`) and holds while its card
+is open. A program looks up the new versions, and a model works only when
+a check fails:
+
+- **The lookup.** factoryd hands main's lists, Dockerfiles, `go.mod`,
+  `go.sum`, `factory/images.yaml` and plugin package files to a one-shot
+  pod of the copy's shape that runs `upstream-bump` (`cmd/upstream-bump`,
+  `internal/bump`), which the CI runner image carries. The pod holds no
+  login and reaches only the makers' hosts of a fixed list in code
+  (`bumpFQDNs`). Each line goes to the newest stable release of its
+  major: a tag that is no version (`bookworm-slim`, `22-bookworm-slim`)
+  takes its digest now, and a word after a line of `upstream-images.txt`
+  refines it: `patch` keeps the minor, `hold` never moves the line, `with
+  <name>` gives it the version of that image's line. An image's digest is
+  its linux/amd64 manifest's; a file's sha256 is the program's hash of its
+  own download. The program keeps every place in step: the list lines,
+  the Dockerfiles' `FROM` digests, `ADD --checksum` sums and version ARGs,
+  `DEBIAN_SNAPSHOT` at the date of the Debian image's dated tag,
+  the PostgreSQL ARGs at what bookworm-pgdg serves (libpq within its
+  major), go.mod's toolchain and the project image's Go at the plain
+  golang line's version, Node at its file line, the plugin at opencode's
+  version; then `go get -tool golang.org/x/vuln/cmd/govulncheck@latest`
+  and `npm install --package-lock-only --ignore-scripts`. A pin it cannot
+  resolve stays as it is and stands in the pull request's text with the
+  error, beside the newer lines the rules leave (`opencode v2.4.1`).
+- **The pull request.** The pod hands the changed files and the text back
+  in its log. factoryd commits them on the bot's fork at a new card's
+  branch, copies what they add into the store with the copy pod before
+  the pull request opens, and files the routine's agent card with the
+  pull request on its row. A bump that moves nothing files nothing.
+- **The card.** Its run takes the pull request's head through the checks
+  and gates first; a check that fails goes to a session as its finding,
+  as on any card. The brief `routines/weekly-bump.md` in the
+  configuration says what such a session needs to know.
 Each build imports and exports (`mode=max`)
 its image's layer cache in the in-cluster build cache,
 `build-cache.forgejo.svc.cluster.local:5000/cache/<image>:main` (infra

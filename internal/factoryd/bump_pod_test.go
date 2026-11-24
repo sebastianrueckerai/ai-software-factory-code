@@ -128,7 +128,7 @@ func TestBumpPodProgramRunsUpstreamBumpOverTheFilesInPlace(t *testing.T) {
 // and npm ask.
 func TestBumpPodEgressAdmitsTheHostsTheLookupReaches(t *testing.T) {
 	for _, host := range []string{
-		"registry-1.docker.io", "auth.docker.io", "ghcr.io", "quay.io", "registry.k8s.io", "us-west2-docker.pkg.dev",
+		"registry-1.docker.io", "auth.docker.io", "ghcr.io", "quay.io", "registry.k8s.io", "europe-west3-docker.pkg.dev",
 		"code.forgejo.org", "factory.talos.dev", "api.github.com", "github.com", "release-assets.githubusercontent.com",
 		"nodejs.org", "go.dev", "dl.google.com", "vuln.go.dev", "apt.postgresql.org",
 		"proxy.golang.org", "sum.golang.org", "registry.npmjs.org",
