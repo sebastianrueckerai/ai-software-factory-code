@@ -1604,12 +1604,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if out.overBound != "" {
 			res.Findings = slices.Insert(res.Findings, 0, out.overBound)
 		}
-		// the cluster ended the session: it left no result, or its worker
-		// reported a stop factoryd did not send. A worker that reported its
-		// own end ended it, whatever its node is doing now, and a pushed
-		// end stands.
-		clusterEnd := out.result == nil || out.result.Stopped && out.trip == nil
-		if d := out.death; d != nil && d.Class == DeathPlatform && clusterEnd && (res.Outcome == OutcomeNoPush || out.trip != nil && res.Outcome != OutcomePushed) {
+		// the cluster ended the session: no end of its own, a pushed one aside
+		if d := out.death; d != nil && d.Class == DeathPlatform && (res.Outcome == OutcomeNoPush || out.trip != nil && res.Outcome != OutcomePushed) {
 			res.Outcome = OutcomePlatformKilled
 		}
 	}()

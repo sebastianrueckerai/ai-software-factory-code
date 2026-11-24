@@ -357,45 +357,67 @@ func TestAReportedFailureGetsItsDeath(t *testing.T) {
 	}
 }
 
-// A worker that reported its own end ended the session itself, whatever
-// its node does at the read: a reported failure stays no_push and the
-// agent's request after factoryd's stop stays needs_info, though the node
-// is NotReady or gone, and the record keeps the platform class the node
-// gives it.
+// A worker that reported its own end, a success, a failure or its stop
+// after factoryd's, was not killed, whatever its node does at the read: its
+// record is unknown, its outcome stays, and the next session's lines hold
+// Forgejo's restart and no class sentence. A stop factoryd did not send on
+// a node gone at the read is still the platform's.
 func TestAReportedEndStaysTheWorkers(t *testing.T) {
+	ctx := context.Background()
 	notReady := map[string]NodeState{"sf-1": {Name: "sf-1", BootID: "b-1"}}
 	for name, tc := range map[string]struct {
 		nodes   map[string]NodeState
 		ask     bool
 		logs    string
 		outcome SessionOutcome
+		class   DeathClass
 	}{
-		"a failure on a NotReady node": {nodes: notReady, logs: modelCall + resultLine(false, "git push failed: connection refused"), outcome: OutcomeNoPush},
-		"a failure on a gone node":     {nodes: map[string]NodeState{}, logs: modelCall + resultLine(false, "git push failed: connection refused"), outcome: OutcomeNoPush},
+		"a failure on a NotReady node": {nodes: notReady, logs: modelCall + resultLine(false, "git push failed: connection refused"),
+			outcome: OutcomeNoPush, class: DeathUnknown},
+		"a failure on a gone node": {nodes: map[string]NodeState{}, logs: modelCall + resultLine(false, "git push failed: connection refused"),
+			outcome: OutcomeNoPush, class: DeathUnknown},
 		"a request on a NotReady node": {nodes: notReady, ask: true, logs: modelCall + sigtermLogs + stoppedResultLine("stopped; no work in progress to push"),
-			outcome: OutcomeNeedsInfo},
+			outcome: OutcomeNeedsInfo, class: DeathUnknown},
+		"a cluster stop on a gone node": {nodes: map[string]NodeState{}, logs: modelCall + stoppedResultLine("stopped; no work in progress to push"),
+			outcome: OutcomePlatformKilled, class: DeathPlatform},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newDeathRig(t, "t5w", nil)
 			g.kube.nodeStates = tc.nodes
 			g.kube.keepDeleted = true
 			g.r.stopWait = 5 * time.Second
+			from, until := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
+			if _, err := g.cluster.AddPlatformIncidents(ctx, []PlatformIncident{{Key: "restart/forgejo-pod/forgejo/x", At: from, Until: &until,
+				Kind: IncidentRestart, Subject: ServiceForgejo, Node: "sf-2", Namespace: "forgejo", PodUID: "forgejo-pod"}}); err != nil {
+				t.Fatal(err)
+			}
 			if tc.ask {
 				go func() {
 					ask := AgentAsk{Kind: AskInfo, Question: "Which browser?", Tried: "the steps on Go 1.26", Needs: "the browser and its version"}
 					for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-						if err := g.r.EscalateSession(context.Background(), "t5w", ask); !errors.Is(err, ErrNoLiveSession) {
+						if err := g.r.EscalateSession(ctx, "t5w", ask); !errors.Is(err, ErrNoLiveSession) {
 							return
 						}
 					}
 				}()
 			}
 			res := g.run(t, tc.logs)
-			if res.Outcome != tc.outcome || res.Death == nil || res.Death.Class != DeathPlatform || res.Death.Rule != RuleNodeNotReady {
-				t.Fatalf("result = %q, death %+v; want %q with the node's platform record", res.Outcome, res.Death, tc.outcome)
+			if res.Outcome != tc.outcome || res.Death == nil || res.Death.Class != tc.class {
+				t.Fatalf("result = %q, death %+v; want %q with a %s record", res.Outcome, res.Death, tc.outcome, tc.class)
 			}
-			if rec := g.stored(t, "t5w", res.SessionID); rec.Class != DeathPlatform {
-				t.Fatalf("stored = %+v, want the platform class for the tool", rec)
+			if rec := g.stored(t, "t5w", res.SessionID); rec.Class != tc.class {
+				t.Fatalf("stored = %+v, want class %s", rec, tc.class)
+			}
+			forgejo := "Forgejo restarted from " + clock(from) + " to " + clock(until) + " UTC during your previous session. Git errors in that window came from the restart."
+			lines := res.Death.Lines
+			if tc.class == DeathPlatform {
+				if len(lines) != 2 || !strings.HasPrefix(lines[0], "Your previous session did not fail on its own.") || lines[1] != forgejo {
+					t.Fatalf("lines = %q, want the class line and %q", lines, forgejo)
+				}
+				return
+			}
+			if !slices.Equal(lines, []string{forgejo}) {
+				t.Fatalf("lines = %q, want Forgejo's restart alone: %q", lines, forgejo)
 			}
 		})
 	}
@@ -459,9 +481,9 @@ func (c notReadyAtEnd) PlatformIncidents(ctx context.Context, from, to time.Time
 	return append(in, PlatformIncident{Key: "notready/sf-1", At: to, Kind: IncidentNodeNotReady, Subject: "sf-1", Node: "sf-1"}), err
 }
 
-// A reported end is read from the end's evidence alone: its node answers
-// at the read, so a NotReady in its last minutes ended nothing, and the
-// record names no cluster cause.
+// A worker that reported its own end was not killed: a NotReady of its
+// node in its last minutes ended nothing, and the record names no cluster
+// cause.
 func TestAReportedEndReadsNoNotReadyWindow(t *testing.T) {
 	g := newDeathRig(t, "t5y", nil)
 	g.r.cfg.Cluster = notReadyAtEnd{g.cluster}

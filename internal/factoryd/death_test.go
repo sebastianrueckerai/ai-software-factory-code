@@ -175,6 +175,12 @@ func TestClassifyOrder(t *testing.T) {
 	f.Pod.Conditions = []PodCondition{{Type: "DisruptionTarget", Status: "True", Reason: "PreemptionByScheduler"}}
 	f.AfterRestart, f.PodGone = true, true
 	f.Pod.Containers = []ContainerState{{Name: "agent", State: "terminated", Reason: "OOMKilled", ExitCode: 137}}
+	// a worker that reported its own end beats every rule
+	f.Reported = true
+	if r := Classify(f); r.Class != DeathUnknown || r.Rule != RuleNone || r.Container != "agent" {
+		t.Fatalf("a reported end with every rule's fact = %s %s %q; want unknown with its container", r.Class, r.Rule, r.Container)
+	}
+	f.Reported = false
 	for _, step := range []struct {
 		rule   DeathRule
 		source string

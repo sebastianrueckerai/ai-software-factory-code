@@ -73,9 +73,12 @@ type ServiceRestart struct {
 type DeathFacts struct {
 	Pod                                     PodDiagnosis
 	PodGone, StoppedByFactory, AfterRestart bool
-	BootAtStart                             string
-	Node                                    *NodeState
-	NodeGone                                bool
+	// Reported: the worker reported its own end, a success, a failure or
+	// its stop after factoryd's, so nothing killed it.
+	Reported    bool
+	BootAtStart string
+	Node        *NodeState
+	NodeGone    bool
 	// NodeNotReadyDuring: the incident log holds the node going NotReady
 	// inside the session's life.
 	NodeNotReadyDuring bool
@@ -110,7 +113,8 @@ var (
 	quotedValue      = regexp.MustCompile(`"([^"]*)"`)
 )
 
-// Classify names who ended a session, by the first rule that holds.
+// Classify names who ended a session, by the first rule that holds. A
+// worker that reported its own end ended it: no rule applies.
 func Classify(f DeathFacts) DeathRecord {
 	r := DeathRecord{Class: DeathUnknown, Rule: RuleNone, At: f.Ended, Node: f.Pod.Node, PodUID: f.Pod.UID, LastCommand: f.LastCommand}
 	failed := slices.IndexFunc(f.Pod.Containers, func(c ContainerState) bool {
@@ -122,6 +126,9 @@ func Classify(f DeathFacts) DeathRecord {
 	}
 	set := func(class DeathClass, rule DeathRule) DeathRecord {
 		r.Class, r.Rule = class, rule
+		return r
+	}
+	if f.Reported {
 		return r
 	}
 	kills := f.sessionKills()

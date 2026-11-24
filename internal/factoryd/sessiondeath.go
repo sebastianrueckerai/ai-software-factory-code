@@ -31,15 +31,16 @@ type deathReader struct {
 
 // deathInput names the pod and what factoryd knows of it: its UID, node and
 // the node's boot when it started, empty when unknown, and its life. live
-// is a read of a pod that may still run, or whose worker reported its own
-// end. It and a pod factoryd stopped are classed by the end's evidence
-// alone: a node that went NotReady and answers again ended nothing.
+// is a read of a pod that may still run. It and a pod factoryd stopped are
+// classed by the end's evidence alone: a node that went NotReady and
+// answers again ended nothing. reported is an end the worker reported
+// itself, which nothing killed (DeathFacts.Reported).
 type deathInput struct {
-	ns, pod                              string
-	uid, node, boot                      string
-	started, ended                       time.Time
-	stoppedByFactory, afterRestart, live bool
-	lastCommand, lastPush                string
+	ns, pod                                        string
+	uid, node, boot                                string
+	started, ended                                 time.Time
+	stoppedByFactory, afterRestart, live, reported bool
+	lastCommand, lastPush                          string
 }
 
 const (
@@ -89,7 +90,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	if dl, ok := ctx.Deadline(); ok {
 		waitEnd, firstEnd = earliest(waitEnd, dl.Add(-d.margin)), earliest(firstEnd, dl.Add(-d.margin))
 	}
-	f := DeathFacts{StoppedByFactory: in.stoppedByFactory, AfterRestart: in.afterRestart, BootAtStart: in.boot,
+	f := DeathFacts{StoppedByFactory: in.stoppedByFactory, AfterRestart: in.afterRestart, Reported: in.reported, BootAtStart: in.boot,
 		Started: in.started, Ended: in.ended, LastCommand: in.lastCommand}
 	pod, err := d.kube.PodDiagnosis(ctx, in.ns, in.pod)
 	switch {
@@ -178,7 +179,7 @@ func (d deathReader) read(ctx context.Context, in deathInput) DeathRecord {
 	r := Classify(f)
 	// after factoryd's own stop a 137 is the kubelet's kill at the grace's end
 	killed137 := slices.ContainsFunc(f.Pod.Containers, func(c ContainerState) bool { return c.State == "terminated" && c.ExitCode == 137 })
-	if asked && !in.stoppedByFactory && r.Rule == RuleNone && killed137 {
+	if asked && !in.stoppedByFactory && !in.reported && r.Rule == RuleNone && killed137 {
 	wait:
 		for time.Now().Before(waitEnd) {
 			select {
