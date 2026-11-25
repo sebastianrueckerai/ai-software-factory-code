@@ -1,6 +1,7 @@
 package bump
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"io"
@@ -83,6 +84,33 @@ func gzipped(t *testing.T, s string) string {
 	z := gzip.NewWriter(&b)
 	if _, err := z.Write([]byte(s)); err != nil {
 		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// vulnZip is vuln.go.dev's vulndb.zip cut to its index entries, in the
+// order given: index/db.json names modified, the others stand in empty.
+// Its entries are stored, not compressed, so its bytes are the same on
+// every Go.
+func vulnZip(t *testing.T, modified string, entries ...string) string {
+	t.Helper()
+	var b bytes.Buffer
+	z := zip.NewWriter(&b)
+	for _, name := range entries {
+		f, err := z.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := "[]"
+		if name == "index/db.json" {
+			body = `{"modified":"` + modified + `"}`
+		}
+		if _, err := f.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := z.Close(); err != nil {
 		t.Fatal(err)

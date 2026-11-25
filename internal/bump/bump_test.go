@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,7 +87,7 @@ func answersOf2309(t *testing.T) map[string]answer {
 		gh + "anomalyco/opencode/releases?per_page=100":                                        releaseList("v2.4.1", "v2.4.0", "v1.19.6", "v1.19.5"),
 		"GET https://code.forgejo.org/api/v1/repos/forgejo/runner/releases?limit=50":           {body: recorded(t, "forgejo-forgejo-runner.json")},
 		"GET https://nodejs.org/dist/index.json":                                               {body: recorded(t, "nodejs-index.json")},
-		"GET https://vuln.go.dev/index/db.json.gz":                                             {body: gzipped(t, `{"modified":"2026-11-24T15:56:00Z"}`)},
+		"GET https://vuln.go.dev/index/db.json.gz":                                             {body: recorded(t, "vuln-index-db.json.gz")},
 		"GET https://apt.postgresql.org/pub/repos/apt/dists/bookworm-pgdg/main/binary-amd64/Packages.gz": {body: gzipped(t,
 			"Package: libpq5\nVersion: 18.7-1.pgdg12+2\n\nPackage: libpq5\nVersion: 19.0-2.pgdg12+1\n\nPackage: libpq5\nVersion: 19.0-1.pgdg12+1\n\nPackage: libpq5\nVersion: 18.6-1.pgdg12+2\n\n"+
 				"Package: postgresql-17\nVersion: 17.11-1.pgdg12+2\n\nPackage: postgresql-17\nVersion: 17.12-1.pgdg12+1\n\n"+
@@ -97,7 +98,7 @@ func answersOf2309(t *testing.T) map[string]answer {
 		"GET https://code.forgejo.org/forgejo/runner/releases/download/v13.2.2/forgejo-runner-13.2.2-linux-amd64": {body: "forgejo-runner v13.2.2\n"},
 		"GET https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-linux-x64.tar.gz":           {body: "opencode v1.19.6\n"},
 		"GET https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz":                                     {body: "node v24.22.3\n"},
-		"GET https://vuln.go.dev/vulndb.zip":                 {body: "vulndb 20261124T155600Z\n"},
+		"GET https://vuln.go.dev/vulndb.zip":                 {body: vulnZip(t, "2026-11-24T15:56:00Z", "index/db.json", "index/modules.json", "index/vulns.json")},
 		"GET https://go.dev/dl/go1.26.11.linux-amd64.tar.gz": {body: "go1.26.11\n"},
 	}
 }
@@ -133,7 +134,7 @@ func TestABumpTurnsLastWeeksPinsIntoThisWeeks(t *testing.T) {
 			"quay.io/cilium/operator-generic v1.20.4 → v1.20.5",
 			"buildkit v0.34.2 → v0.35.1",
 			"forgejo-runner v13.2.1 → v13.2.2",
-			"govulndb 20261105T234957Z → 20261124T155600Z",
+			"govulndb 20261105T234957Z → 20261124T155600Z-d2ea60770940",
 			"opencode v1.19.5 → v1.19.6",
 			"node v24.22.2 → v24.22.3",
 			"DEBIAN_SNAPSHOT 20261108T000000Z → 20261123T000000Z",
@@ -154,6 +155,47 @@ func TestABumpTurnsLastWeeksPinsIntoThisWeeks(t *testing.T) {
 		if strings.Contains(a, "alpine/manifests") || strings.Contains(a, "alpine/tags") || strings.Contains(a, "cilium-envoy") || strings.Contains(a, "admin-tools/tags") || strings.Contains(a, "operator-generic/tags") {
 			t.Errorf("asked %s: a held line asks nothing, a with line no tags", a)
 		}
+	}
+}
+
+// Run 8 of the bump (pull request #2326): vuln.go.dev's index still named
+// 2026-11-24T15:56:00Z, the version main pinned with the sha256 of the zip
+// the store keeps under it, but vuln.go.dev had rebuilt the zip with the
+// same entries in another order (index/vulns.json first in the store's
+// copy, index/db.json first in the new one, both 3680074 bytes): other
+// bytes under one version. The pin stays, and the zip is not fetched.
+func TestAVulnDBVersionTheIndexStillNamesKeepsItsPin(t *testing.T) {
+	const sum = "217647abd48cf32d8df308fe5fa58cfac42aad05190c0dc36ee3f7639ba0e4df"
+	files := map[string]string{
+		"upstream-files.txt": "govulndb 20261124T155600Z vulndb.zip https://vuln.go.dev/vulndb.zip " + sum + "\n",
+		"Dockerfile.runner":  "ARG GOVULNDB_VERSION=20261124T155600Z\nADD --checksum=sha256:" + sum + " https://git.aisoftwarefactory.world/api/packages/upstream/generic/govulndb/${GOVULNDB_VERSION}/vulndb.zip /vulndb.zip\n",
+	}
+	w, f := newWeb(map[string]answer{
+		"GET https://vuln.go.dev/index/db.json.gz": {body: recorded(t, "vuln-index-db.json.gz")},
+		"GET https://vuln.go.dev/vulndb.zip":       {body: vulnZip(t, "2026-11-24T15:56:00Z", "index/db.json", "index/modules.json", "index/vulns.json")},
+	})
+	changed, report := Bump(context.Background(), w, files)
+	if len(changed) != 0 || len(report.Moved) != 0 || len(report.Failed) != 0 {
+		t.Errorf("changed %v, moved %q, failed %q: want the pin as it is", changed, report.Moved, report.Failed)
+	}
+	if slices.Contains(f.asked, "GET https://vuln.go.dev/vulndb.zip") {
+		t.Error("the zip of the version the pin names was fetched")
+	}
+}
+
+// A line whose download moves while its version label stays would put
+// other bytes under a version the store already holds, which it never
+// serves: the line stays and says why.
+func TestAFileLineWhoseBytesMoveUnderItsVersionStays(t *testing.T) {
+	const line = "cosign stable cosign-linux-amd64 https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 1580a4aaf1d72f6c3ef898c9e776a1a5f767eb493ed8f5821b9f88a8e766c3bd\n"
+	w, _ := newWeb(map[string]answer{
+		gh + "sigstore/cosign/releases?per_page=100":                                         releaseList("v3.1.5", "v3.1.4"),
+		"GET https://github.com/sigstore/cosign/releases/download/v3.1.5/cosign-linux-amd64": {body: "cosign v3.1.5\n"},
+	})
+	changed, report := Bump(context.Background(), w, map[string]string{"upstream-files.txt": line})
+	want := []string{"cosign stable: https://github.com/sigstore/cosign/releases/download/v3.1.5/cosign-linux-amd64 is other bytes under the same version, which the store never serves; the line stays"}
+	if len(changed) != 0 || len(report.Moved) != 0 || !reflect.DeepEqual(report.Failed, want) {
+		t.Errorf("changed %v, moved %q, failed %q; want the line as it is and %q", changed, report.Moved, report.Failed, want)
 	}
 }
 

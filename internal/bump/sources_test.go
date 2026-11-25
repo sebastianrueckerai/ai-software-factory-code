@@ -2,6 +2,8 @@ package bump
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"reflect"
 	"slices"
 	"strings"
@@ -131,28 +133,45 @@ func TestPGDGServesEachPackagesVersionsInOrder(t *testing.T) {
 	}
 }
 
-// The database's version is its modified time; its sum the sha256 of the
-// zip, downloaded again when the time moved during the download.
-func TestVulnDBPinsTheZipOfOneModifiedTime(t *testing.T) {
-	ctx := context.Background()
-	w, _ := newWeb(map[string]answer{
-		"GET https://vuln.go.dev/index/db.json.gz": {body: gzipped(t, `{"modified":"2026-11-24T15:56:00Z"}`)},
-		"GET https://vuln.go.dev/vulndb.zip":       {body: "the zip\n"},
-	})
-	version, sum, err := vulnDB(ctx, w)
-	// printf 'the zip\n' | sha256sum
-	if err != nil || version != "20261124T155600Z" || sum != "1580a4aaf1d72f6c3ef898c9e776a1a5f767eb493ed8f5821b9f88a8e766c3bd" {
-		t.Errorf("vulnDB = %q %q %v", version, sum, err)
-	}
-	w, f := newWeb(map[string]answer{"GET https://vuln.go.dev/vulndb.zip": {body: "the zip\n"}})
-	f.seq = map[string][]answer{"GET https://vuln.go.dev/index/db.json.gz": {
-		{body: gzipped(t, `{"modified":"2026-11-24T15:56:00Z"}`)},
-		{body: gzipped(t, `{"modified":"2026-11-24T17:17:00Z"}`)},
-		{body: gzipped(t, `{"modified":"2026-11-24T17:17:00Z"}`)},
-		{body: gzipped(t, `{"modified":"2026-11-24T17:17:00Z"}`)},
-	}}
-	if version, _, err := vulnDB(ctx, w); err != nil || version != "20261124T171700Z" {
-		t.Errorf("a database that moved during the download: vulnDB = %q %v, want the second time", version, err)
+// vuln.go.dev rebuilds the zip under one modified time of its index with
+// its entries in another order, other bytes: a modified time no newer than
+// the pin's keeps the pin and the zip is not fetched. A new version is the
+// modified time inside the zip the program hashed, even when the zip lags
+// the index, and the first 12 hex digits of its sha256, so it names those
+// bytes alone.
+func TestVulnDBNamesTheZipItHashes(t *testing.T) {
+	const stored = "217647abd48cf32d8df308fe5fa58cfac42aad05190c0dc36ee3f7639ba0e4df"
+	zip1556 := vulnZip(t, "2026-11-24T15:56:00Z", "index/db.json", "index/modules.json", "index/vulns.json")
+	sum1556 := sha256.Sum256([]byte(zip1556))
+	for name, c := range map[string]struct {
+		index, pinned, pinSum string
+		version, sum          string
+		fetched               bool
+	}{
+		"the index names the pinned version": {index: recorded(t, "vuln-index-db.json.gz"), pinned: "20261124T155600Z", pinSum: stored,
+			version: "20261124T155600Z", sum: stored},
+		"the index is older than the pin": {index: gzipped(t, `{"modified":"2026-11-05T23:49:57Z"}`), pinned: "20261124T155600Z", pinSum: stored,
+			version: "20261124T155600Z", sum: stored},
+		"a newer version is the zip's own": {index: gzipped(t, `{"modified":"2026-11-24T17:17:00Z"}`), pinned: "20261105T234957Z", pinSum: "0a54b7eb56bf031dc214fc4f29ca6db71073ab324595c3de9485f97a334e9e22",
+			version: "20261124T155600Z-" + hex.EncodeToString(sum1556[:])[:12], sum: hex.EncodeToString(sum1556[:]), fetched: true},
+		"a pin of the same modified time and its bytes": {index: recorded(t, "vuln-index-db.json.gz"), pinned: "20261124T155600Z-a71565a40a0b", pinSum: "a71565a40a0bd2bf5b1b46bcc333df3c4645ea7543c559d87350889c35702674",
+			version: "20261124T155600Z-a71565a40a0b", sum: "a71565a40a0bd2bf5b1b46bcc333df3c4645ea7543c559d87350889c35702674"},
+		"a zip that lags to the pin keeps it": {index: gzipped(t, `{"modified":"2026-11-24T17:17:00Z"}`), pinned: "20261124T155600Z", pinSum: stored,
+			version: "20261124T155600Z", sum: stored, fetched: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, f := newWeb(map[string]answer{
+				"GET https://vuln.go.dev/index/db.json.gz": {body: c.index},
+				"GET https://vuln.go.dev/vulndb.zip":       {body: zip1556},
+			})
+			version, sum, err := vulnDB(context.Background(), w, c.pinned, c.pinSum)
+			if err != nil || version != c.version || sum != c.sum {
+				t.Errorf("vulnDB = %q %q %v; want %q %q", version, sum, err, c.version, c.sum)
+			}
+			if fetched := slices.Contains(f.asked, "GET https://vuln.go.dev/vulndb.zip"); fetched != c.fetched {
+				t.Errorf("zip fetched %v, want %v", fetched, c.fetched)
+			}
+		})
 	}
 }
 

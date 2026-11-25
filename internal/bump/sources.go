@@ -1,6 +1,7 @@
 package bump
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"compress/gzip"
@@ -8,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -280,43 +280,56 @@ func pgdgVersions(ctx context.Context, w *Web, dist string) (map[string][]string
 	return served, nil
 }
 
-// vulnDB is the Go vulnerability database's version, its modified time
-// written as 20261124T155600Z, and the sha256 of its zip: the time is read
-// before and after the download, and a database that moved meanwhile is
-// read again.
-func vulnDB(ctx context.Context, w *Web) (version, sum string, err error) {
-	modified := func() (string, error) {
-		b, _, err := w.get(ctx, "https://vuln.go.dev/index/db.json.gz")
-		if err != nil {
-			return "", err
-		}
-		z, err := gzip.NewReader(bytes.NewReader(b))
-		if err != nil {
-			return "", fmt.Errorf("vuln.go.dev's index: %w", err)
-		}
-		var db struct {
-			Modified time.Time `json:"modified"`
-		}
-		if err := json.NewDecoder(z).Decode(&db); err != nil {
-			return "", fmt.Errorf("vuln.go.dev's index: %w", err)
-		}
-		return db.Modified.UTC().Format("20060102T150405Z"), nil
+// vulnDB is the Go vulnerability database's version and the sha256 of its
+// zip, from the pinned ones. vuln.go.dev rebuilds the zip under one
+// modified time of its index with its entries in another order, other
+// bytes, and the store keeps a version's first upload: a modified time no
+// newer than the pin's keeps the pin, with no download, and a new version
+// is the modified time inside the zip the program hashed, written as
+// 20261124T155600Z, and the first 12 hex digits of that hash, so it names
+// those bytes alone.
+func vulnDB(ctx context.Context, w *Web, pinned, pinSum string) (version, sum string, err error) {
+	at, _, _ := strings.Cut(pinned, "-")
+	b, _, err := w.get(ctx, "https://vuln.go.dev/index/db.json.gz")
+	if err != nil {
+		return "", "", err
 	}
-	for range 3 {
-		before, err := modified()
-		if err != nil {
-			return "", "", err
-		}
-		if sum, err = w.sum(ctx, "https://vuln.go.dev/vulndb.zip"); err != nil {
-			return "", "", err
-		}
-		after, err := modified()
-		if err != nil {
-			return "", "", err
-		}
-		if before == after {
-			return after, sum, nil
-		}
+	z, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return "", "", fmt.Errorf("vuln.go.dev's index: %w", err)
 	}
-	return "", "", errors.New("the Go vulnerability database moved during each of 3 downloads")
+	if version, err = vulnModified(z); err != nil || version <= at {
+		return pinned, pinSum, err
+	}
+	b, _, err = w.get(ctx, "https://vuln.go.dev/vulndb.zip")
+	if err != nil {
+		return "", "", err
+	}
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		return "", "", fmt.Errorf("vuln.go.dev's zip: %w", err)
+	}
+	f, err := zr.Open("index/db.json")
+	if err != nil {
+		return "", "", fmt.Errorf("vuln.go.dev's zip: %w", err)
+	}
+	defer f.Close()
+	if version, err = vulnModified(f); err != nil || version <= at {
+		return pinned, pinSum, err
+	}
+	h := sha256.Sum256(b)
+	sum = hex.EncodeToString(h[:])
+	return version + "-" + sum[:12], sum, nil
+}
+
+// vulnModified is the modified time of the database's index r, written as
+// 20261124T155600Z: the fixed width orders the versions as strings.
+func vulnModified(r io.Reader) (string, error) {
+	var db struct {
+		Modified time.Time `json:"modified"`
+	}
+	if err := json.NewDecoder(r).Decode(&db); err != nil {
+		return "", fmt.Errorf("vuln.go.dev's index: %w", err)
+	}
+	return db.Modified.UTC().Format("20060102T150405Z"), nil
 }

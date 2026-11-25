@@ -274,7 +274,7 @@ func (p *pass) fileList() {
 		var d download
 		if l.URL == "https://vuln.go.dev/vulndb.zip" {
 			d = download{oldURL: l.URL, newURL: l.URL, oldSum: l.SHA256, oldVersion: l.Version}
-			d.newVersion, d.newSum, err = vulnDB(p.ctx, p.w)
+			d.newVersion, d.newSum, err = vulnDB(p.ctx, p.w, l.Version, l.SHA256)
 		} else {
 			d, err = p.download(l.URL, l.SHA256, l.Package)
 		}
@@ -291,14 +291,15 @@ func (p *pass) fileList() {
 		if now == l {
 			continue
 		}
+		if now.Version == l.Version {
+			// the store keeps a version's first upload for good
+			p.failed("%s %s: %s is other bytes under the same version, which the store never serves; the line stays", l.Package, l.Version, now.URL)
+			continue
+		}
 		d.pkg, d.oldVersion, d.newVersion = l.Package, l.Version, now.Version
 		p.downloads = append(p.downloads, d)
 		moved[l.String()] = now.String()
-		if now.Version != l.Version {
-			p.moved("%s %s → %s", l.Package, l.Version, now.Version)
-		} else {
-			p.moved("%s %s: a new sha256", l.Package, l.Version)
-		}
+		p.moved("%s %s → %s", l.Package, l.Version, now.Version)
 	}
 	p.files[list] = rewriteLines(p.files[list], moved)
 }

@@ -123,7 +123,12 @@ a check fails:
   refines it: `patch` keeps the minor, `hold` never moves the line, `with
   <name>` gives it the version of that image's line. An image's digest is
   its linux/amd64 manifest's; a file's sha256 is the program's hash of its
-  own download. The program keeps every place in step: the list lines,
+  own download, made only when its version moves, since the store keeps a
+  version's first upload. vuln.go.dev rebuilds its zip under one modified
+  time with other bytes, so the database's version is the modified time
+  inside the zip and the first 12 hex digits of its sha256
+  (`20261124T155600Z-a71565a40a0b`), and a modified time the pin names
+  already keeps the pin. The program keeps every place in step: the list lines,
   the Dockerfiles' `FROM` digests, `ADD --checksum` sums and version ARGs,
   `DEBIAN_SNAPSHOT` at the date of the Debian image's dated tag,
   the PostgreSQL ARGs at what bookworm-pgdg serves (libpq within its

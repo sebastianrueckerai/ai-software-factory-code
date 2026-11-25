@@ -2,13 +2,13 @@ ARG FORGEJO_RUNNER_VERSION=13.2.2
 ARG BUILDKIT_VERSION=0.35.1
 ARG NODE_VERSION=24.22.3
 ARG CRANE_VERSION=0.22.1
-ARG GOVULNDB_VERSION=20261124T155600Z
+ARG GOVULNDB_VERSION=20261124T155600Z-d2ea60770940
 FROM ${UPSTREAM}docker.io/library/golang:1.26.11@sha256:6327cb290853a5d13091c436b88259b4f35ff70e49b1f8d9e5d1dd1757e9c6ba AS go-toolchain
 FROM scratch AS downloads
 ADD --checksum=sha256:1c778f2d33a800a8ffc10f62a74f405c0bf63e49f7b222082edc8ed69640294b https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /buildkit.tar.gz
 ADD --checksum=sha256:0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 https://git.aisoftwarefactory.world/api/packages/upstream/generic/crane/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /crane.tar.gz
 ADD --checksum=sha256:2cbb271ce5b451c1623134c6ac679a6138f9758fc8088918d1eb8167f06fae58 https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
-ADD --checksum=sha256:81d8260d407a8604e6f1c43d911c2b0cb4842e8931990bcda9bf11c3269c22aa https://git.aisoftwarefactory.world/api/packages/upstream/generic/govulndb/${GOVULNDB_VERSION}/vulndb.zip /vulndb.zip
+ADD --checksum=sha256:d2ea6077094095d90ce8d10828a2ea7d42df62fcdf12be6a2caa7527426ee71f https://git.aisoftwarefactory.world/api/packages/upstream/generic/govulndb/${GOVULNDB_VERSION}/vulndb.zip /vulndb.zip
 FROM scratch AS cosign
 FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:311f7a192fd9a92b165a86b32fa3aae9005b11849bfb1db2d4fd784559ee464f
 ARG DEBIAN_SNAPSHOT=20261123T000000Z
