@@ -3,7 +3,7 @@ ARG BUILDKIT_VERSION=0.35.1
 ARG NODE_VERSION=24.22.3
 ARG GOSEC_VERSION=2.30.0
 ARG CRANE_VERSION=0.22.1
-ARG COSIGN_VERSION=3.1.4
+ARG COSIGN_VERSION=3.1.5
 ARG GOVULNDB_VERSION=20261124T155600Z
 
 # Every outside image comes from the factory's store by the digest
@@ -11,7 +11,7 @@ ARG GOVULNDB_VERSION=20261124T155600Z
 # store (a local one) passes UPSTREAM= and pulls the same digests from
 # their upstreams.
 ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
-FROM ${UPSTREAM}docker.io/library/golang:1.26.11@sha256:6327cb290853a5d13091c436b88259b4f35ff70e49b1f8d9e5d1dd1757e9c6ba AS go-toolchain
+FROM ${UPSTREAM}docker.io/library/golang:1.26.11@sha256:e38b9d87c900de416a12351135e18daa9e477a79faa60fcb108f9b8279b85f8c AS go-toolchain
 
 # The archives the image unpacks, and cosign for the stage below, each
 # read from the factory's store (roadmap 203, step 2): the generic
@@ -29,7 +29,7 @@ ADD --checksum=sha256:b248c2b91698aafef11818fe8b681dc5e341581f7d5676709ff45ca1f2
 ADD --checksum=sha256:0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 https://git.aisoftwarefactory.world/api/packages/upstream/generic/crane/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /crane.tar.gz
 ADD --checksum=sha256:4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
 ADD --checksum=sha256:3fcce2c4e802ff4169217874602a7df355e9a37bcb6ffaa34b08f3d5f336cdfb https://git.aisoftwarefactory.world/api/packages/upstream/generic/gosec/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /gosec.tar.gz
-ADD --checksum=sha256:424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa --chmod=0755 https://git.aisoftwarefactory.world/api/packages/upstream/generic/cosign/v${COSIGN_VERSION}/cosign-linux-amd64 /cosign
+ADD --checksum=sha256:912502def4baf810eaf36b210a4f51e1da214f9f6d664e2a9a2154cfc67ee0d6 --chmod=0755 https://git.aisoftwarefactory.world/api/packages/upstream/generic/cosign/v${COSIGN_VERSION}/cosign-linux-amd64 /cosign
 ADD --checksum=sha256:217647abd48cf32d8df308fe5fa58cfac42aad05190c0dc36ee3f7639ba0e4df https://git.aisoftwarefactory.world/api/packages/upstream/generic/govulndb/${GOVULNDB_VERSION}/vulndb.zip /vulndb.zip
 
 # cosign alone, which the image does not carry: main CI's image jobs export
