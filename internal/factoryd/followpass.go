@@ -112,19 +112,11 @@ func (r *Runner) followPass(ctx context.Context, p Project, rt policy.Routine, r
 		return "held", fmt.Sprintf("held: the failure card %s is open: answer it, and the next run goes on", ShownName(card)), err
 	}
 	repo := p.Repo()
-	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
-	if err != nil {
-		return "", "", fmt.Errorf("main's head: %w", err)
-	}
-	files, err := r.forgejo.TreeFiles(ctx, repo, head)
+	_, results, err := r.followBehind(ctx, p)
 	if err != nil {
 		return "", "", err
 	}
 	parts := r.cfg.Policy().Projects[p.Name].Parts
-	results, err := follow.Run(files, parts, r.followStore())
-	if err != nil {
-		return "", "", terminalError("the follow program refuses main at %s:\n%v", ShortSHA(head), err)
-	}
 	behind, tried := 0, []string{}
 	for _, res := range results {
 		if res.Behind() == 0 {
@@ -154,6 +146,25 @@ func (r *Runner) followPass(ctx context.Context, p Project, rt policy.Routine, r
 		return "no change", line, nil
 	}
 	return "no change", fmt.Sprintf("%s behind, and each target has its attempt already: %s. A newer version of the lists makes a new target", plural(behind, "part"), strings.Join(tried, ", ")), nil
+}
+
+// followBehind runs the follow program over main's tree as the bot, and
+// answers main's head and the result of each part.
+func (r *Runner) followBehind(ctx context.Context, p Project) (string, []follow.Result, error) {
+	repo := p.Repo()
+	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+	if err != nil {
+		return "", nil, fmt.Errorf("main's head: %w", err)
+	}
+	files, err := r.forgejo.TreeFiles(ctx, repo, head)
+	if err != nil {
+		return "", nil, err
+	}
+	results, err := follow.Run(files, r.cfg.Policy().Projects[p.Name].Parts, r.followStore())
+	if err != nil {
+		return "", nil, terminalError("the follow program refuses main at %s:\n%v", ShortSHA(head), err)
+	}
+	return head, results, nil
 }
 
 func countLane(parts []policy.Part, lane string) int {

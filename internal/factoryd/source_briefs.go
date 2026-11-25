@@ -100,6 +100,10 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			Summary: "A pull request that writes the changed schemas into their copies. " +
 				"The policy check runs on it, and its merge makes the copies match the build."}
 	},
+	SourceFollowFailed: func(f BriefFacts) BriefText {
+		return BriefText{Title: followMarker + "part " + f.Name + " failed. Try it again?",
+			Why: "The part " + f.Name + " stays behind the upstream lists, and the follow routine waits for this card."}
+	},
 	SourceFollow: func(f BriefFacts) BriefText {
 		return BriefText{Title: "Merge the follow routine's move of part " + f.Name + "?",
 			Why: "The part " + f.Name + " runs behind the upstream lists, and its lane is one a human merges.",

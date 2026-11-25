@@ -55,6 +55,7 @@ const (
 	variantDismiss  = "dismiss"
 	variantPlanWait = "plan_wait"
 	variantRoll     = "roll"
+	variantFollow   = "follow"
 	variantThaw     = "thaw"
 	variantOverrule = "overrule"
 	variantOwnWords = "own_words"
@@ -124,6 +125,7 @@ var Vocabulary = []Answer{
 	{Action: ActSuccessor, Label: "Start a fresh card on this work", Effect: "Ends this card. A new card goes on from its branch with a full budget."},
 	{Action: ActRetry, Label: "Try the failed card again", Effect: "Files the failed card again as a new card."},
 	{Action: ActRetry, Variant: variantRoll, Label: "Try the roll again", Effect: "Starts the image roll again."},
+	{Action: ActRetry, Variant: variantFollow, Label: "Try the move again", Effect: "Opens a new pull request for the same versions and closes this card."},
 	{Action: ActRetry, Variant: variantThaw, Label: "Retry now", Effect: "Ends the freeze now. The waiting cards call the provider again, and a new limit makes them wait until its reset."},
 	{Action: ActReplan, Label: "Send back to the planner", Effect: "The planner cuts this work into cards again.",
 		Fields: []Field{optionalNote("A note for the planner")}},
@@ -2378,6 +2380,8 @@ func choiceValue(a Answer) string {
 		return AnswerNoted
 	case ActRetry + "/" + variantRoll:
 		return AnswerRetryRoll
+	case ActRetry + "/" + variantFollow:
+		return AnswerRetryFollow
 	}
 	return a.Action
 }

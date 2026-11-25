@@ -105,9 +105,19 @@ type infraForge struct {
 	titles   map[int64]string
 	// mergeStatus is what the statuses of a merge commit become once the
 	// pull request merges: merge<n> gets it
-	mergeStatus []CommitStatus
-	mergeFails  bool
-	comments    map[int64][]string // the comments of each pull request
+	mergeStatus  []CommitStatus
+	revertStatus []CommitStatus
+	mergeFails   bool
+	comments     map[int64][]string // the comments of each pull request
+}
+
+// mergedStatuses are the statuses a pull request's merge commit gets: a
+// return's are revertStatus, a move's mergeStatus.
+func (f *infraForge) mergedStatuses(pr *fakePull) []CommitStatus {
+	if strings.HasPrefix(pr.Head, "factory/follow-return-") {
+		return f.revertStatus
+	}
+	return f.mergeStatus
 }
 
 // humanMerges is a human's merge of pull request n: main moves to its merge
@@ -116,7 +126,7 @@ func (f *infraForge) humanMerges(n int64) {
 	pr := f.pulls[n]
 	pr.State, pr.Merged, pr.MergeSHA, pr.MergedBy = "closed", true, "merge"+strconv.FormatInt(n, 10), "sebastian"
 	f.main = pr.MergeSHA
-	f.statuses[pr.MergeSHA] = append([]CommitStatus(nil), f.mergeStatus...)
+	f.statuses[pr.MergeSHA] = append([]CommitStatus(nil), f.mergedStatuses(pr)...)
 }
 
 func newInfraForge(t *testing.T, files map[string]string) *infraForge {
@@ -195,7 +205,7 @@ func (f *infraForge) handler() http.HandlerFunc {
 			pr := f.pulls[n]
 			pr.State, pr.Merged, pr.MergeSHA = "closed", true, "merge"+strconv.FormatInt(n, 10)
 			f.main = pr.MergeSHA
-			f.statuses[pr.MergeSHA] = append([]CommitStatus(nil), f.mergeStatus...)
+			f.statuses[pr.MergeSHA] = append([]CommitStatus(nil), f.mergedStatuses(pr)...)
 			answer(http.StatusOK, map[string]any{})
 		case strings.HasPrefix(p, followAPI+"/pulls/") && r.Method == http.MethodPatch:
 			n, _ := strconv.ParseInt(strings.TrimPrefix(p, followAPI+"/pulls/"), 10, 64)

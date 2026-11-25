@@ -1292,6 +1292,9 @@ const (
 	// SourceFollow is the pull request of a move of the follow routine, in a
 	// lane a human merges.
 	SourceFollow = "follow"
+	// SourceFollowFailed is the human card of a move of the follow routine
+	// that failed: the part, what failed and whether the return held.
+	SourceFollowFailed = "follow-failed"
 )
 
 // factoryPRSources are the sources of a pull request factoryd opened

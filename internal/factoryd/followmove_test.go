@@ -362,3 +362,191 @@ func TestFollowMoveHumanExpires(t *testing.T) {
 		t.Fatalf("run = %+v, want %q", run, want)
 	}
 }
+
+// stubRevert substitutes the helper that reverts on a clone: it records the
+// commits and the branch it was asked for and answers conflict.
+func stubRevert(t *testing.T, conflict string) *[]string {
+	t.Helper()
+	prev := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = prev })
+	var calls []string
+	groupRevertBranch = func(_ context.Context, _ *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		calls = append(calls, repo.String()+" "+strings.Join(shas, ",")+" "+branch+" salvage="+salvage)
+		return conflict, nil
+	}
+	return &calls
+}
+
+// failureCard is the project's one failure card and its text.
+func (m *moveRun) failureCard(t *testing.T) (Task, string) {
+	t.Helper()
+	var cards []Task
+	for _, c := range m.store.tasks {
+		if c.Source == SourceFollowFailed {
+			cards = append(cards, c)
+		}
+	}
+	if len(cards) != 1 || cards[0].Kind != "human" {
+		t.Fatalf("failure cards = %+v, want one human card", cards)
+	}
+	for _, e := range recordedEvents(m.r, EventQuestionAsked) {
+		if e.TaskID == cards[0].ID {
+			return cards[0], e.Detail["ask"].(string) + "\n" + e.Detail["info"].(string)
+		}
+	}
+	t.Fatal("the card has no ask")
+	return Task{}, ""
+}
+
+func wantText(t *testing.T, got string, want ...string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("the card lacks %q:\n%s", w, got)
+		}
+	}
+}
+
+// A merged move whose judgment fails is returned: the revert of its merge
+// commit goes to a pull request that merges as the move did, Flux's statuses
+// on it are success, and one failure card tells the part, both versions,
+// what failed with its text, that the return held, and the part's words.
+func TestFollowMoveJudgmentFailureReturnsAndFilesOneCard(t *testing.T) {
+	calls := stubRevert(t, "")
+	m := newMoveRun(t)
+	m.forge.mergeStatus = []CommitStatus{{State: "failure", Context: "flux/flux-system", Description: "HelmRelease platform/litellm: upgrade retries exhausted"}, {State: "success", Context: "flux/platform"}}
+	m.forge.revertStatus = []CommitStatus{{State: "success", Context: "flux/flux-system"}, {State: "success", Context: "flux/platform"}}
+	m.forge.statuses["head41"] = []CommitStatus{{State: "success", Context: checkContext}}
+	m.workflow(t)
+	if want := "sf/ai-software-factory-infra merge40 factory/follow-return-merge40 salvage="; len(*calls) != 1 || (*calls)[0] != want {
+		t.Fatalf("reverts = %q, want %q", *calls, want)
+	}
+	if pr := m.forge.pulls[41]; pr.Head != "factory/follow-return-merge40" || !pr.Merged {
+		t.Fatalf("the return = %+v, want its pull request merged", pr)
+	}
+	if got := m.forge.titles[41]; got != "Return the follow routine's move of part litellm" {
+		t.Fatalf("title = %q", got)
+	}
+	_, text := m.failureCard(t)
+	wantText(t, text,
+		"The follow move of part litellm failed. Try it again?",
+		"part litellm (lane alone) in pull request #40: ghcr.io/berriai/litellm: 1.102.4 to 1.108.17",
+		"The move failed: the status “flux/flux-system” of the merge commit merge40 is failure: HelmRelease platform/litellm: upgrade retries exhausted",
+		"The factory returned the move: pull request #41 reverted the merge merge40, and its checks and Flux's statuses are success.",
+		"About this part: The migration does not go back.",
+		"The maker's release notes: https://example.org/litellm/releases",
+		"Try the move again opens a new pull request for the same versions")
+	run := m.lastRun(t)
+	if run.Outcome != "failed" || !strings.HasPrefix(run.Note, "part litellm: the status “flux/flux-system”") {
+		t.Fatalf("run = %+v", run)
+	}
+	if len(m.wf.routineRuns) != 0 {
+		t.Fatalf("a failed move started a run: %+v", m.wf.routineRuns)
+	}
+}
+
+// A return that does not hold says why on the card: the revert's own status
+// failed, so the cluster may run the new versions.
+func TestFollowMoveReturnThatDoesNotHold(t *testing.T) {
+	stubRevert(t, "")
+	m := newMoveRun(t)
+	m.forge.mergeStatus = []CommitStatus{{State: "failure", Context: "flux/flux-system", Description: "not ready"}, {State: "success", Context: "flux/platform"}}
+	m.forge.revertStatus = []CommitStatus{{State: "error", Context: "flux/flux-system", Description: "still not ready"}, {State: "success", Context: "flux/platform"}}
+	m.forge.statuses["head41"] = []CommitStatus{{State: "success", Context: checkContext}}
+	m.workflow(t)
+	_, text := m.failureCard(t)
+	wantText(t, text,
+		"The factory could not return the move: the revert merged as merge41, and the status “flux/flux-system” of the merge commit merge41 is error: still not ready. Pull request #41, the revert, stands. The cluster may still run the new versions: look at it first.")
+}
+
+// A revert that conflicts with main is no return: the card says so.
+func TestFollowMoveReturnConflicts(t *testing.T) {
+	stubRevert(t, "merge40")
+	m := newMoveRun(t)
+	m.forge.mergeStatus = []CommitStatus{{State: "failure", Context: "flux/flux-system", Description: "not ready"}, {State: "success", Context: "flux/platform"}}
+	m.workflow(t)
+	_, text := m.failureCard(t)
+	wantText(t, text, "The factory could not return the move: the revert of merge40 conflicts with main, which moved on since the merge. The cluster may still run the new versions: look at it first.")
+	if len(m.forge.byBranch) != 1 {
+		t.Fatalf("pull requests = %v, a conflicting revert opens none", m.forge.byBranch)
+	}
+}
+
+// A red check before the merge files the same card with no return, and the
+// pull request is closed.
+func TestFollowMoveRedCheckFilesTheCardWithoutAReturn(t *testing.T) {
+	calls := stubRevert(t, "")
+	m := newMoveRun(t)
+	m.forge.statuses["head40"] = []CommitStatus{{State: "failure", Context: checkContext}}
+	m.workflow(t)
+	if len(*calls) != 0 || m.forge.pulls[40].State != "closed" || m.forge.pulls[40].Merged {
+		t.Fatalf("reverts %v, pull request %+v: want no return and a closed pull request", *calls, m.forge.pulls[40])
+	}
+	_, text := m.failureCard(t)
+	wantText(t, text,
+		"The move failed: the check “config-check / check (pull_request)” of its head head40 has the state failure",
+		"The pull request did not merge, so nothing was returned.")
+}
+
+// While the failure card is open a run does nothing and its line names the
+// card, whoever starts it; a second failure files no second card.
+func TestFollowFailureCardHoldsTheRuns(t *testing.T) {
+	stubRevert(t, "")
+	m := newMoveRun(t)
+	m.forge.statuses["head40"] = []CommitStatus{{State: "failure", Context: checkContext}}
+	m.workflow(t)
+	card, _ := m.failureCard(t)
+	for _, trigger := range []string{"cron", TriggerRunNow} {
+		res, err := m.r.RoutineRun(context.Background(), RoutineRunInput{Project: infraName, Routine: "follow", Trigger: trigger, Due: m.clock.Now().Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "held: the failure card " + ShownName(card) + " is open: answer it, and the next run goes on"
+		if res.Outcome != "held" || res.Note != want {
+			t.Fatalf("%s run = %+v, want %q", trigger, res, want)
+		}
+	}
+	if err := m.r.FollowFail(context.Background(), m.in, FollowFailure{Why: "again"}); err != nil {
+		t.Fatal(err)
+	}
+	m.failureCard(t)
+}
+
+// Try again opens a new attempt for the same versions, by the counter on
+// the branch, and closes the card.
+func TestFollowRetryOpensAnotherAttempt(t *testing.T) {
+	stubRevert(t, "")
+	m := newMoveRun(t)
+	m.forge.statuses["head40"] = []CommitStatus{{State: "failure", Context: checkContext}}
+	m.workflow(t)
+	card, _ := m.failureCard(t)
+	var asked Event
+	for _, e := range recordedEvents(m.r, EventQuestionAsked) {
+		if e.TaskID == card.ID {
+			asked = e
+		}
+	}
+	m.store.cases = []Case{{ID: 1, TaskID: card.ID, Status: CaseOpen, Kind: CaseHumanCard, Facts: asked.Detail}}
+	m.moves.started = nil
+	if err := m.r.RetryFollow(context.Background(), card); err != nil {
+		t.Fatal(err)
+	}
+	branch := followBranch("litellm", litellmTarget(), 2)
+	if n, ok := m.forge.byBranch[branch]; !ok || n != 41 {
+		t.Fatalf("branches = %v, want %s as pull request #41", m.forge.byBranch, branch)
+	}
+	if len(m.moves.started) != 1 || m.moves.started[0].PR != 41 || m.moves.started[0].Run != 0 || m.moves.started[0].Part != "litellm" {
+		t.Fatalf("started = %+v", m.moves.started)
+	}
+	events, _ := m.store.IntakeEvents(context.Background(), card.ID)
+	if len(events) != 1 || events[0].Kind != IntakeFactoryClosed || !strings.Contains(events[0].Body, "attempt 2 of part litellm") {
+		t.Fatalf("the card's close = %+v", events)
+	}
+	// a third attempt takes the next counter
+	if err := m.r.RetryFollow(context.Background(), card); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.forge.byBranch[followBranch("litellm", litellmTarget(), 3)]; !ok {
+		t.Fatalf("branches = %v, want attempt 3", m.forge.byBranch)
+	}
+}

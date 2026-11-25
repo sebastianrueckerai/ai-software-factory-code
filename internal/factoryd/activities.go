@@ -181,6 +181,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityFollowAsk:                   r.FollowAsk,
 		ActivityFollowPR:                    r.FollowPR,
 		ActivityFollowClose:                 r.FollowClose,
+		ActivityFollowReturn:                r.FollowReturn,
+		ActivityFollowFail:                  r.FollowFail,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

@@ -798,6 +798,7 @@ func main() {
 		RetryRoll: func(ctx context.Context, card factoryd.Task) error {
 			return factoryd.RetryRoll(ctx, store, forgejo, card)
 		},
+		RetryFollow: runner.RetryFollow,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

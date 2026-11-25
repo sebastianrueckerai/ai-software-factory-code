@@ -316,6 +316,10 @@ type Config struct {
 	// failed roll requests of the card's repository go and the card's issue
 	// closes as factoryd's own.
 	RetryRoll func(ctx context.Context, card factoryd.Task) error
+	// RetryFollow is the follow failure card's Try again
+	// (factoryd.Runner.RetryFollow): a new attempt at the card's part, and
+	// the card's issue closes as factoryd's own.
+	RetryFollow func(ctx context.Context, card factoryd.Task) error
 	// Replan sends card taskID, or the plan it belongs to, back to the
 	// planner for by with comment saying why (factoryd's Runner.Replan),
 	// and answers the note for the person; a card or plan that takes no
@@ -756,6 +760,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no DismissStall")
 	case cfg.RetryRoll == nil:
 		return nil, errors.New("console: no RetryRoll")
+	case cfg.RetryFollow == nil:
+		return nil, errors.New("console: no RetryFollow")
 	case cfg.Replan == nil:
 		return nil, errors.New("console: no Replan")
 	case cfg.DeployNow == nil:

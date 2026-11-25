@@ -1105,3 +1105,35 @@ func TestGrantOnANeverJudgedPlanDraftsOneCard(t *testing.T) {
 		t.Errorf("catches = %q, want %q", st.catches, want)
 	}
 }
+
+// followFailedCard is the follow routine's failure card, #43 on sf/code.
+func followFailedCard() factoryd.BoardTask {
+	q := &factoryd.HumanQuestion{Ask: "The follow move of part litellm failed. Try it again?",
+		Choices: []factoryd.QuestionChoice{
+			{Value: factoryd.AnswerRetryFollow, Label: "Try the move again"},
+			{Value: factoryd.AnswerClose, Label: "End the card"},
+		}}
+	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-follow", Kind: "human", Status: "waiting-human", Source: factoryd.SourceFollowFailed,
+		Repository: "sf/code", IssueNumber: 43, Objective: "needs you: The follow move of part litellm failed"},
+		Escalation: q.Ask, Question: q}
+}
+
+// The failure card of a follow move offers Try again, which runs the
+// routine's retry as the answer's work and posts no comment of the
+// human's, and the plain close.
+func TestFollowFailedCardTriesAgain(t *testing.T) {
+	r, _ := newRigWithEvents(t)
+	r.tasks.tasks = []factoryd.BoardTask{followFailedCard()}
+	ck, s := r.loggedIn(t)
+	opened := drawer(t, r, ck, "t-follow", "overview")
+	if got := answerForm(t, opened, "choice:"+factoryd.AnswerRetryFollow); got.Action != "/tasks/t-follow/answer" || got.Values.Get("value") != factoryd.AnswerRetryFollow || got.Label != "Try the move again" || got.To != "off" {
+		t.Errorf("the retry answer is %+v", got)
+	}
+	rec := r.do(post("/tasks/t-follow/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerRetryFollow}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("retry = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	if !slices.Equal(r.followRetried, []string{"t-follow"}) || len(r.fg.patched) != 0 {
+		t.Fatalf("retried %v, patched %v; want the routine's retry run for the card and no close of the console's own", r.followRetried, r.fg.patched)
+	}
+}

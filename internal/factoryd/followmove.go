@@ -33,6 +33,8 @@ const (
 	ActivityFollowAsk    = "FollowAsk"
 	ActivityFollowPR     = "FollowPR"
 	ActivityFollowClose  = "FollowClose"
+	ActivityFollowReturn = "FollowReturn"
+	ActivityFollowFail   = "FollowFail"
 )
 
 // followPoll is how often a move in the human lane reads its pull request,
@@ -77,6 +79,23 @@ type FollowPullRequest struct {
 	At           time.Time
 }
 
+// FollowReturned is the return of a merged move: the pull request that
+// reverts it and whether the return held, or Why it did not.
+type FollowReturned struct {
+	PR   int64
+	Held bool
+	Why  string
+}
+
+// FollowFailure is a move that failed: Why, with the text of what failed;
+// Merged when the pull request merged, and then Returned.
+type FollowFailure struct {
+	Why      string
+	Merged   bool
+	Commit   string
+	Returned FollowReturned
+}
+
 // FollowEnding is how a move ends in its routine's run.
 type FollowEnding struct{ Outcome, Note string }
 
@@ -86,40 +105,61 @@ type FollowEnding struct{ Outcome, Note string }
 // failed.
 func FollowMoveWorkflow(ctx workflow.Context, in FollowMoveInput) error {
 	waits := workflow.WithActivityOptions(ctx, followOptions(landChecksBound+mergeWaitBound+5*time.Minute, 0))
-	judges := workflow.WithActivityOptions(ctx, followOptions(rolloutCap+rolloutSettle+followJudgeSlack, time.Minute))
+	judges := workflow.WithActivityOptions(ctx, followOptions(rolloutCap+rolloutSettle+followJudgeSlack, 8*time.Minute))
 	ends := workflow.WithActivityOptions(ctx, finishOptions())
 	end := func(outcome, note string) error {
 		return workflow.ExecuteActivity(ends, ActivityFollowEnd, in, FollowEnding{outcome, note}).Get(ctx, nil)
 	}
-	failed := func(why string) error { return end("failed", why) }
+	// fail files the failure card and ends the run. A merged move whose
+	// judgment found it failing is returned first, the revert merged as the
+	// move was.
+	fail := func(why string, landed *FollowLanded, returns bool) error {
+		f := FollowFailure{Why: why}
+		if landed != nil {
+			f.Merged, f.Commit = true, landed.Commit
+			if returns {
+				rets := workflow.WithActivityOptions(ctx, followOptions(landChecksBound+mergeWaitBound+rolloutCap+followJudgeSlack, 0))
+				if err := workflow.ExecuteActivity(rets, ActivityFollowReturn, in, *landed).Get(ctx, &f.Returned); err != nil {
+					f.Returned = FollowReturned{Why: "the return did not run: " + failureWords(err)}
+				}
+			}
+		}
+		if err := workflow.UpsertMemo(ctx, map[string]any{followMemoEnded: true}); err != nil {
+			return err
+		}
+		if err := workflow.ExecuteActivity(ends, ActivityFollowFail, in, f).Get(ctx, nil); err != nil {
+			return err
+		}
+		return end("failed", why)
+	}
 
 	var checks FollowVerdict
 	if err := workflow.ExecuteActivity(waits, ActivityFollowChecks, in).Get(ctx, &checks); err != nil {
-		return failed("the checks did not read: " + failureWords(err))
+		return fail("the checks did not read: "+failureWords(err), nil, false)
 	}
 	if !checks.Ok {
-		return failed(checks.Why)
+		return fail(checks.Why, nil, false)
 	}
 	var landed FollowLanded
 	if in.Lane == policy.LaneHuman {
 		var err error
 		if landed, err = awaitHuman(ctx, in, ends); err != nil {
-			return failed("the human's merge did not read: " + failureWords(err))
+			return fail("the human's merge did not read: "+failureWords(err), nil, false)
 		}
 		if landed.Why != "" {
 			return end("closed", landed.Why)
 		}
 	} else if err := workflow.ExecuteActivity(waits, ActivityFollowLand, in).Get(ctx, &landed); err != nil {
-		return failed("the merge did not run: " + failureWords(err))
+		return fail("the merge did not run: "+failureWords(err), nil, false)
 	} else if landed.Why != "" {
-		return failed(landed.Why)
+		return fail(landed.Why, nil, false)
 	}
 	var judged FollowVerdict
 	if err := workflow.ExecuteActivity(judges, ActivityFollowJudge, in, landed).Get(ctx, &judged); err != nil {
-		return failed("the judgment did not run: " + failureWords(err))
+		return fail("the judgment did not run: "+failureWords(err), &landed, false)
 	}
 	if !judged.Ok {
-		return failed(judged.Why)
+		return fail(judged.Why, &landed, true)
 	}
 	if err := workflow.UpsertMemo(ctx, map[string]any{followMemoEnded: true}); err != nil {
 		return err

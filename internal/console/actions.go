@@ -1614,7 +1614,7 @@ func extendable(t factoryd.Task) bool {
 // choiceCard tells a human card factoryd asks on whose choices act: the
 // chain stall card, the failed roll card and the held-production ask.
 func choiceCard(t factoryd.Task) bool {
-	return t.Source == factoryd.SourceChainStall || t.Source == factoryd.SourceRollFailed || t.Source == factoryd.SourceProductionHeld
+	return t.Source == factoryd.SourceChainStall || t.Source == factoryd.SourceRollFailed || t.Source == factoryd.SourceFollowFailed || t.Source == factoryd.SourceProductionHeld
 }
 
 // doHumanAnswer answers human card t with the choice value or text names,
@@ -1752,6 +1752,15 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return 0, nil
 		}
 		note = fmt.Sprintf("Answered %s: the failed rolls are reset, the card is closed and the roller starts the roll again.", cardRef(a, t))
+	case value == factoryd.AnswerRetryFollow:
+		work = func(ctx context.Context) (int64, error) {
+			if err := c.cfg.RetryFollow(ctx, t); err != nil {
+				log.Printf("console: %s retries the follow move of %s: %v", a.s.user, t.Repository, scrubText(err.Error()))
+				return 0, refuse(http.StatusInternalServerError, "The move's retry failed: "+errText(err)+". Try again in a moment.")
+			}
+			return 0, nil
+		}
+		note = fmt.Sprintf("Answered %s: the move's new attempt opened its pull request and the card is closed.", cardRef(a, t))
 	case value == factoryd.AnswerFundChat:
 		// the raise is the work; the choice itself takes no args in Act
 		eur, _ := res.Args["eur"].(float64)

@@ -325,6 +325,10 @@ const (
 // AnswerRetryRoll is the failed-roll card's retry, whose work is RetryRoll.
 const AnswerRetryRoll = "retry"
 
+// AnswerRetryFollow is the failure card's retry of a follow move, whose work
+// is RetryFollow.
+const AnswerRetryFollow = "retry_follow"
+
 // factWaitsOn is the fact of a card's case that waits on the human card
 // whose task id it holds (waitOnAsk).
 const factWaitsOn = "waits_on"
