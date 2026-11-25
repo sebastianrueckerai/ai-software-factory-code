@@ -79,6 +79,7 @@ var agentOnlyCalls = func() []struct{ Call, What, Why string } {
 		{"factoryd.(*Runner).nudge", "the nudge after identical calls", intoSession},
 		{"factoryd.(*Runner).watchLimits", "the note on a limit", intoSession},
 		{"factoryd.(*Runner).RunReport", "the prover's session", "it files tests, and factoryd writes its summary"},
+		{"factoryd.(*Runner).followModelAnswers", "the follow judgment's liveness call", "its answer is only checked for being there, and no one reads it"},
 	}
 	for _, capture := range []string{"console.agentDocVision", "factoryd.agentDocAnswer", "factoryd.agentDocAudit", "factoryd.agentDocBehaviours",
 		"factoryd.agentDocBrief", "factoryd.agentDocDelta", "factoryd.agentDocGateSupervisor", "factoryd.agentDocHoldout",

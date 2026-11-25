@@ -847,7 +847,11 @@ that is newer than the list's all stop the program, each naming file, line and k
 The project file's `parts:` lists the parts in the order of their moves. Each has
 a name, a lane and paths (files or directories). Lane `alone` merges once the checks
 are green, `human` waits for a human's merge, `hand` is never moved: its paths are
-where digests may stand with no marker, and they may overlap one another.
+where digests may stand with no marker, and they may overlap one another. A part
+may also name `notes`, the https address of the maker's release notes, and `after`,
+the words a human reads on the part's cards. A part of lane `alone` or `human` needs
+paths. The project's `chain.checks` names the status contexts that a pull request of
+the follow routine must show before it merges (see the next section).
 
 `factoryd follow [-w] <dir>` prints for each part what is behind and which files it
 would write, and writes them with `-w`. The store is read with `REGISTRY_USER` and
@@ -858,3 +862,59 @@ formed and in one part, no digest lacks its marker, and each marked value that d
 from `--base`'s is exactly its list line. A part may stay behind; the last line counts
 the references behind. The check reaches no network, so it proves a file-derived
 image's tag and a copy's sha256, and leaves the digest to the store test.
+
+## The follow routine
+
+A project file runs the follow program with a pull-request routine of `pass: follow`.
+The project may run no agents: a program does the work, no session starts, and every
+failure goes to a human card. The project needs at least one part that is not of lane
+`hand`. `while_open` is refused, since the routine files no card of its own.
+
+One run moves one part. It does this:
+
+1. If a move runs, the run ends as held and its line names the part and the pull request.
+2. If a failure card of the project is open, the run ends as held and its line names the card.
+   "Run now" by a human does the same.
+3. The run clones main as the bot and runs the program. If nothing is behind, it ends with
+   the line `nothing is behind`, and the count of `hand` parts.
+4. The run takes the first part in the list that is behind and has no attempt for its
+   target. An attempt is a pull request of the branch `factory/follow-<part>-<10 hex of the
+   changes>`, in any state. A newer version in the lists changes the changes, so it is a new target.
+5. The run commits the changes on the bot's fork, opens the pull request with the
+   versions and the `notes` link, and starts the Temporal workflow `FollowMove` (id
+   `follow/<project>`). Its line names part, versions and pull request.
+
+The workflow moves the part through these steps. Each step is a comment on the pull
+request and a `follow_step` event.
+
+1. It waits for the checks of the pull request. Each context in `chain.checks` must have
+   reported and none may have failed, for at most 20 minutes. A context matches a status
+   that equals it or starts with it and a space.
+2. Lane `alone`: the bot merges. Lane `human`: the factory files a card with the versions,
+   the `notes` link, the `after` words and the acts Merge and Reject. Reject closes the
+   pull request and leaves the part until the lists carry its next version. The workflow
+   reads the pull request every 5 minutes. After 14 days without a decision, the factory
+   closes the pull request and the move ends.
+3. The judgment reads the merge commit. Each status in `chain.requires` must be success,
+   and a failure or error status fails the move at once. After 30 minutes without success
+   the move fails. Then one pass of the dependency probes (object storage, provider
+   API, Forgejo, Postgres, Temporal and OpenBao unsealed) and one call of the `small`
+   class through the gateway must answer. Then no alert of the project's namespaces may
+   start in the 10 minutes after the merge. A firing that a rollout window holds counts.
+4. A good move ends the run as `done` and starts the routine's next run at once, so the
+   chain goes on while a part is behind.
+
+A move that fails is returned. The factory reverts the merge commit on a pull request of
+the bot, checks and merges it as it merged the move, and waits for Flux's statuses on the
+revert. A red check before the merge has nothing to return: the factory closes the pull
+request. In both cases the factory files one failure card for the project. It names the
+part, both versions, what failed with its text, whether the return held, and the part's
+`after` words and `notes` link. A return limit applies: a schema that moved does not go
+back. The card offers Try the move again and End the card. Try again opens a new attempt
+for the versions the lists carry now, on the same branch with a counter (`-2`, `-3`), and
+closes the card. End the card leaves the target tried. While the card is open, no run moves
+anything.
+
+`hold` in the lists is a human's edit. A line with `hold` never moves, and the bump
+names its newer version in its pull request, so the follow routine and the bump leave it
+alone. A move that failed is never tried again by itself.
