@@ -586,7 +586,7 @@ spec:
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:a1714511631aeb509fe734c3faae03e753878d30718a10ed99b84cae269b06e8
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:17c6f5e1dbef7aa6ebf4b8b19cf6ec783b912b84c814a8daf1ccd425db0c5157
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
@@ -702,7 +702,7 @@ spec:
         - name: SIGNOZ_WEBHOOK_PASSWORD
           valueFrom: {secretKeyRef: {name: signoz-webhook, key: password}}
         - name: CI_RUNNER_IMAGE
-          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:7e98b45d2b27bef7cc407212f1157dc0196046333ff2551f32abc567c14da10d
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:a1de68d36a5f6d8e2206ca44c6d719f4adc5d58eb0e4e074894eb5583bbb8d75
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT
@@ -716,11 +716,11 @@ spec:
         # the commit factoryd's image comes from, which a roll writes with
         # its digest: the schema copier orders main's copies by it
         - name: FACTORY_COMMIT
-          value: "d5f0078ae1f13c26bfda6dfbf23ae643e04fa4d2"
+          value: "e0ec8216171b060612a392ae3949cbae07e68f41"
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:ebceb04877ac449957f381d89c5416c8dd9d8495eea1e7918e6990454d88c843
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:f7dcf57e5ef9615d0a87590e79db9f6db5ddb8d86ca016a6a35b732acef2b8f9
         - name: SANDBOX_BASE_IMAGE
-          value: git.aisoftwarefactory.world/sf/sandbox-base@sha256:76bd0524a63c2e9cd5ae6111676112b3488d3a505652f75c1473c04b83f75bf4
+          value: git.aisoftwarefactory.world/sf/sandbox-base@sha256:5dae6ff2e3a4b03bc357eb518db3770ef2133b0c39d08d36bbb4cb7f8263f0f0
         - name: GATEWAY_URL
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
