@@ -47,7 +47,7 @@ docker.io/alpine/kubectl:1.36.4@sha256:8c43e5a81f279abdcb795516afd0c4f6012fdf41e
 docker.io/alpine/k8s:1.36.6@sha256:2b33c17a9e7fa4a7bc25b3194fefbc3363c863e6c073a5a81bf07fb00b99d92b patch
 docker.io/amazon/aws-cli:2.42.2@sha256:1f09692d3f91a0f41f76c286329fd5ca424b41b586b1853b4206414fb9ca4ac3
 quay.io/openbao/openbao:2.7.3@sha256:b9418c63e2185157d8ee8689a8a93265d5aadad677d6320156172bd42ad3b10b
-# LiteLLM keeps a line for each recent minor: the gateway stays in its own
+# LiteLLM stays in its minor
 ghcr.io/berriai/litellm:1.108.16@sha256:939fdfa5b682c60204e8cbb8dfb035ee67d96250ddb158b1a7728d7ff6505cc9 patch
 docker.io/temporalio/server:1.32.2@sha256:3e11544607762c3187c12a63e289e03beddf46c21ebb52b47ccb77db179d6313
 docker.io/temporalio/admin-tools:1.32.2@sha256:d6655e288364110b61204fbae5f103232b2c5c78e647a27bc11603d274145809 with docker.io/temporalio/server
