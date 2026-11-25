@@ -3,9 +3,13 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"strings"
 	"time"
 )
 
@@ -84,9 +88,11 @@ type DepProber struct {
 	Owner, RepoName, Branch string
 	PG                      func(ctx context.Context) error
 	Temporal                func(ctx context.Context) error
-	Interval                time.Duration // <= 0: a minute
-	SlowAfter               time.Duration // <= 0: 2 s, the degraded threshold
-	Cap                     time.Duration // <= 0: 10 s, one probe's deadline
+	// OpenBao, when set, probes the secret store (OpenBaoUnsealed).
+	OpenBao   func(ctx context.Context) error
+	Interval  time.Duration // <= 0: a minute
+	SlowAfter time.Duration // <= 0: 2 s, the degraded threshold
+	Cap       time.Duration // <= 0: 10 s, one probe's deadline
 
 	fails map[string]int
 }
@@ -134,37 +140,99 @@ func (p *DepProber) Run(ctx context.Context) {
 	}
 }
 
+// depProbe is one dependency's probe.
+type depProbe struct {
+	name string
+	run  func(context.Context) error
+}
+
+// probes are the dependencies' probes in the order the pass runs them.
+func (p *DepProber) probes() []depProbe {
+	probes := []depProbe{
+		{"object storage", func(ctx context.Context) error {
+			nonce := []byte("factoryd dependency probe " + time.Now().UTC().Format(time.RFC3339Nano))
+			if err := p.Objects.Put(ctx, healthProbeKey, nonce); err != nil {
+				return err
+			}
+			back, err := p.Objects.Get(ctx, healthProbeKey)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(nonce, back) {
+				return fmt.Errorf("read back %q", clip(string(back), 200))
+			}
+			return nil
+		}},
+		{"provider api", p.Control.Probe},
+		{"forgejo", func(ctx context.Context) error {
+			_, _, err := p.Forgejo.LatestCommit(ctx, p.Owner, p.RepoName, p.Branch, "k8s")
+			return err
+		}},
+		{"postgres", p.PG},
+		{"temporal", p.Temporal},
+	}
+	if p.OpenBao != nil {
+		probes = append(probes, depProbe{"openbao", p.OpenBao})
+	}
+	return probes
+}
+
 // probe runs one pass over every dependency, serial, and joins the store
 // writes' errors.
 func (p *DepProber) probe(ctx context.Context) error {
 	var errs []error
-	one := func(name string, probe func(context.Context) error) {
-		if err := p.one(ctx, name, probe); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+	for _, d := range p.probes() {
+		if err := p.one(ctx, d.name, d.run); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", d.name, err))
 		}
 	}
-	one("object storage", func(ctx context.Context) error {
-		nonce := []byte("factoryd dependency probe " + time.Now().UTC().Format(time.RFC3339Nano))
-		if err := p.Objects.Put(ctx, healthProbeKey, nonce); err != nil {
-			return err
+	return errors.Join(errs...)
+}
+
+// Check runs every probe once now, each under the cap, and answers the
+// failing ones as "<dependency>: <error>". It writes no state and applies no
+// flap rule: a judgment asks whether the dependencies answer at this
+// moment.
+func (p *DepProber) Check(ctx context.Context) []string {
+	var failing []string
+	for _, d := range p.probes() {
+		cctx, cancel := context.WithTimeout(ctx, p.cap())
+		err := d.run(cctx)
+		cancel()
+		if err != nil {
+			failing = append(failing, d.name+": "+clip(err.Error(), 300))
 		}
-		back, err := p.Objects.Get(ctx, healthProbeKey)
+	}
+	return failing
+}
+
+// OpenBaoUnsealed is the probe of an OpenBao at baseURL: its seal status
+// answers sealed false. A sealed OpenBao holds back every secret.
+func OpenBaoUnsealed(baseURL string, client *http.Client) func(context.Context) error {
+	return func(ctx context.Context) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(baseURL, "/")+"/v1/sys/seal-status", nil)
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(nonce, back) {
-			return fmt.Errorf("read back %q", clip(string(back), 200))
+		if client == nil {
+			client = http.DefaultClient
+		}
+		res, err := client.Do(req) // #nosec G704 -- the configured OpenBao address
+		if err != nil {
+			return err
+		}
+		defer res.Body.Close()
+		var st struct {
+			Sealed *bool `json:"sealed"`
+		}
+		if err := json.NewDecoder(io.LimitReader(res.Body, 1<<16)).Decode(&st); err != nil || res.StatusCode != http.StatusOK || st.Sealed == nil {
+			return fmt.Errorf("seal status: status %d, no sealed flag", res.StatusCode)
+		}
+		if *st.Sealed {
+			return errors.New("sealed")
 		}
 		return nil
-	})
-	one("provider api", p.Control.Probe)
-	one("forgejo", func(ctx context.Context) error {
-		_, _, err := p.Forgejo.LatestCommit(ctx, p.Owner, p.RepoName, p.Branch, "k8s")
-		return err
-	})
-	one("postgres", p.PG)
-	one("temporal", p.Temporal)
-	return errors.Join(errs...)
+	}
 }
 
 // one probes one dependency under the cap and writes its state by the flap

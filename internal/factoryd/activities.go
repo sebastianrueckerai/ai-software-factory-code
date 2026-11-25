@@ -174,6 +174,10 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySupersedeApproval:           r.SupersedeApproval,
 		ActivityReplanStopped:               r.ReplanStopped,
 		ActivityProofsAtMain:                r.ProofsAtMain,
+		ActivityFollowChecks:                r.FollowChecks,
+		ActivityFollowLand:                  r.FollowLand,
+		ActivityFollowJudge:                 r.FollowJudge,
+		ActivityFollowEnd:                   r.FollowEnd,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

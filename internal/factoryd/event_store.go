@@ -101,6 +101,9 @@ const (
 	// "note" when the run has one and "poke", the inbox's words, when the
 	// run tells the inbox, which the Poker writes.
 	EventRoutineRan = "routine_ran"
+	// EventFollowStep is one step of a move of the follow routine: detail
+	// {"project", "routine", "run", "part", "pr", "step"}, the step in words.
+	EventFollowStep = "follow_step"
 
 	// EventDocWritten is one write of a document through the door,
 	// whatever wrote it: the chat's write_doc, a close-out, the member's

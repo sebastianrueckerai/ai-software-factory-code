@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -23,9 +25,12 @@ var (
 // for up to mergeWaitBound), vet finds nothing to refuse, and no check of
 // the head fails. Checks that are pending are waited for, up to
 // landChecksBound. vet answers why a human must look at the pull request,
-// "" when it passes; nil vets nothing. LandPullRequest answers why a human
-// merges it, "" when no human needs to: it merged, or it closed.
-func (f *Forgejo) LandPullRequest(ctx context.Context, repo Repo, number int64, a Attribution, subject string, vet func(PullRequestRef) string) string {
+// "" when it passes; nil vets nothing. required names the checks the head
+// must show before the merge, each reported and not failed: a check that
+// reports a moment after the pull request opens is waited for, up to
+// landChecksBound. LandPullRequest answers why a human merges it, "" when no
+// human needs to: it merged, or it closed.
+func (f *Forgejo) LandPullRequest(ctx context.Context, repo Repo, number int64, a Attribution, subject string, vet func(PullRequestRef) string, required ...string) string {
 	pr, err := f.PullRequestState(ctx, repo.Owner, repo.Name, number)
 	for waits := 0; err == nil && pr.State == "open" && !pr.Mergeable && waits < maxMergeWaits; waits++ {
 		select {
@@ -49,7 +54,7 @@ func (f *Forgejo) LandPullRequest(ctx context.Context, repo Repo, number int64, 
 			return why
 		}
 	}
-	if why := f.awaitChecks(ctx, repo, pr.HeadSHA); why != "" {
+	if why := f.awaitChecks(ctx, repo, pr.HeadSHA, required); why != "" {
 		return why
 	}
 	if err := f.MergePullRequestAsBot(ctx, repo.Owner, repo.Name, number, pr.HeadSHA, a, subject); err != nil {
@@ -61,8 +66,11 @@ func (f *Forgejo) LandPullRequest(ctx context.Context, repo Repo, number int64, 
 
 // awaitChecks reads the statuses of head until none is pending, and
 // answers why they refuse the merge: one failed, one stayed pending past
-// landChecksBound, or they did not read. "" when none fails.
-func (f *Forgejo) awaitChecks(ctx context.Context, repo Repo, head string) string {
+// landChecksBound, or they did not read. "" when none fails. A check of
+// required that has not reported is waited for as a pending one is: it is a
+// status whose context is the name or starts with the name and a space
+// ("config-check / check (pull_request)" is "config-check").
+func (f *Forgejo) awaitChecks(ctx context.Context, repo Repo, head string, required []string) string {
 	start := time.Now()
 	for {
 		st, err := f.CombinedStatus(ctx, repo.Owner, repo.Name, head)
@@ -80,11 +88,20 @@ func (f *Forgejo) awaitChecks(ctx context.Context, repo Repo, head string) strin
 				}
 			}
 		}
+		missing := ""
+		for _, name := range required {
+			if !slices.ContainsFunc(st.Statuses, func(s CommitStatus) bool { return s.Context == name || strings.HasPrefix(s.Context, name+" ") }) {
+				missing = name
+				break
+			}
+		}
 		waited := time.Since(start)
 		switch {
 		case pending != nil && waited >= landChecksBound:
 			return fmt.Sprintf("the check “%s” of its head %s has the state pending", pending.Context, ShortSHA(head))
-		case pending == nil && (len(st.Statuses) > 0 || waited >= landNoStatusGrace):
+		case missing != "" && waited >= landChecksBound:
+			return fmt.Sprintf("the check “%s” of its head %s has not reported within %s", missing, ShortSHA(head), landChecksBound)
+		case pending == nil && missing == "" && (len(st.Statuses) > 0 || waited >= landNoStatusGrace):
 			return ""
 		}
 		select {

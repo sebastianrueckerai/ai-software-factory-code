@@ -21,10 +21,10 @@ import (
 )
 
 const (
-	infraName   = "ai-software-factory-infra"
-	followAPI    = "/api/v1/repos/sf/" + infraName
+	infraName     = "ai-software-factory-infra"
+	followAPI     = "/api/v1/repos/sf/" + infraName
 	followForkAPI = "/api/v1/repos/factory-agent/" + infraName
-	infraForkID = "factory-agent/" + infraName
+	infraForkID   = "factory-agent/" + infraName
 )
 
 func zeros(c string) string { return strings.Repeat(c, 64) }
@@ -107,14 +107,13 @@ type infraForge struct {
 	// pull request merges: merge<n> gets it
 	mergeStatus []CommitStatus
 	mergeFails  bool
-	// notMergeable keeps Forgejo's mergeable flag false
-	revert func(branch string)
+	comments    map[int64][]string // the comments of each pull request
 }
 
 func newInfraForge(t *testing.T, files map[string]string) *infraForge {
 	t.Helper()
 	return &infraForge{t: t, tar: infraTarball(t, files), main: "m1", pulls: map[int64]*fakePull{}, byBranch: map[string]int64{},
-		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}}
+		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}, comments: map[int64][]string{}}
 }
 
 // attempt is a pull request of a move's branch that exists already.
@@ -201,6 +200,18 @@ func (f *infraForge) handler() http.HandlerFunc {
 				return
 			}
 			answer(http.StatusOK, f.prJSON(pr))
+		case strings.HasPrefix(p, followAPI+"/issues/") && strings.HasSuffix(p, "/comments"):
+			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, followAPI+"/issues/"), "/comments"), 10, 64)
+			if r.Method == http.MethodPost {
+				f.comments[n] = append(f.comments[n], in["body"].(string))
+				answer(http.StatusCreated, map[string]any{"id": len(f.comments[n])})
+				return
+			}
+			list := []map[string]any{}
+			for _, c := range f.comments[n] {
+				list = append(list, map[string]any{"body": c})
+			}
+			answer(http.StatusOK, list)
 		case strings.HasPrefix(p, followAPI+"/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, followAPI+"/commits/"), "/status")
 			answer(http.StatusOK, map[string]any{"state": "success", "statuses": statusJSON(f.statuses[sha])})

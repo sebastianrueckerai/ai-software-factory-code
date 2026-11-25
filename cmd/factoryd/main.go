@@ -314,6 +314,7 @@ func main() {
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	taskWorker.RegisterWorkflowWithOptions(factoryd.RoutineRunWorkflow, workflow.RegisterOptions{Name: "RoutineRunWorkflow"})
+	taskWorker.RegisterWorkflowWithOptions(factoryd.FollowMoveWorkflow, workflow.RegisterOptions{Name: "FollowMove"})
 	runner.RegisterActivities(taskWorker)
 
 	webhookIntake := &factoryd.Intake{
@@ -521,12 +522,13 @@ func main() {
 	}
 	depProber := &factoryd.DepProber{Store: store, Objects: objects, Control: controlPlane,
 		Forgejo: forgejo, Owner: own.Repo().Owner, RepoName: own.Repo().Name, Branch: "main",
-		PG: store.Ping,
+		PG: store.Ping, OpenBao: factoryd.OpenBaoUnsealed(daemonURL("OPENBAO_URL"), nil),
 		Temporal: func(ctx context.Context) error {
 			_, err := temporal.CheckHealth(ctx, &client.CheckHealthRequest{})
 			return err
 		},
 		Interval: envDuration("DEPENDENCY_HEALTH_INTERVAL", time.Minute)}
+	runner.Follow.Probe = depProber.Check
 	go depProber.Run(ctx)
 	revertPass := &factoryd.RevertPass{Book: store, Forgejo: forgejo, Metrics: metrics, Now: time.Now}
 	go revertPass.Loop(ctx)
