@@ -75,6 +75,9 @@ type workflowHarness struct {
 	sessions    []SessionInput
 	finals      [][2]string
 	states      []string
+	// setState, when set, is SetState's answer: a test that runs the real
+	// activity on a store's row
+	setState    func(ctx context.Context, state string) error
 	state       RunState      // what Reconcile reports; zero = a fresh task
 	checksDelay time.Duration // how long WaitChecks takes on the workflow's clock
 	finishAt    time.Time
@@ -348,7 +351,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").AfterFn(func() time.Duration { return h.reconcileAfter }).Return(
 		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
-		func(ctx context.Context, taskID, state string) error { h.states = append(h.states, state); return nil })
+		func(ctx context.Context, taskID, state string) error {
+			h.states = append(h.states, state)
+			if h.setState != nil {
+				return h.setState(ctx, state)
+			}
+			return nil
+		})
 	h.env.OnActivity(ActivityRecordStep, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, step string, detail map[string]any) error {
 			h.recorded = append(h.recorded, recordedStep{step, detail, h.env.Now()})

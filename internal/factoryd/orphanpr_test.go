@@ -129,10 +129,7 @@ func TestFileFactoryPRTaskInsertsThePullRequestWithTheRow(t *testing.T) {
 
 // fileEntry gives every factory pull request source the roll's entry: the
 // direct track's class, queued, no process, the workflow started at once
-// outside the work bound. A card under the bound (finding 224) would queue
-// behind a session start its run never takes: its verify finds the pull
-// request linked and moves in-review straight from queued, which the task
-// state machine refuses.
+// outside the work bound.
 func TestFactoryPRSourcesEnterLikeARoll(t *testing.T) {
 	ctx := context.Background()
 	for name, source := range map[string]string{
@@ -364,7 +361,7 @@ func TestFactoryPRCardRunsItsGatesFromRunning(t *testing.T) {
 				t.Fatalf("steps = %v, want %v: the linked pull request runs the gates", g.steps, want)
 			}
 			if !slices.Equal(g.states, []string{"running", "in-review"}) {
-				t.Fatalf("states = %v, want running before in-review: in-review from queued is refused", g.states)
+				t.Fatalf("states = %v, want running before in-review: the gates run from running", g.states)
 			}
 			if !slices.Equal(g.merges, []string{"9 c7 sebastian"}) {
 				t.Fatalf("merges = %v", g.merges)
@@ -559,20 +556,16 @@ func TestFactoryPRCardClosesOnAChangeRequest(t *testing.T) {
 	}
 }
 
-// The task state machine refuses in-review from queued, the move the
-// factory pull request card's old lane entry asked of its run (finding
-// 224); the gate path enters from running.
-func TestSetStateRefusesInReviewFromQueued(t *testing.T) {
-	r, _, _ := newActivityRunner(t, withStatus(prTask, "queued"), &prForgejo{})
-	_, err := execActivity(t, r, ActivitySetState, "t1", "in-review")
-	if err == nil || !strings.Contains(err.Error(), "task t1 is queued, cannot move to in-review") {
-		t.Fatalf("err = %v, want the queued card's refusal", err)
-	}
-	if _, err := execActivity(t, r, ActivitySetState, "t1", "running"); err != nil {
-		t.Fatal(err)
-	}
+// A queued card whose run takes its pull request into review starts on
+// the way, through running as the gate path does: no run with a pull
+// request on its row is refused at review.
+func TestSetStateStartsAQueuedCardOnItsWayIntoReview(t *testing.T) {
+	r, store, _ := newActivityRunner(t, withStatus(prTask, "queued"), &prForgejo{})
 	if _, err := execActivity(t, r, ActivitySetState, "t1", "in-review"); err != nil {
 		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || !store.started["t1"] {
+		t.Fatalf("status %q, started %v: want the card started and in review", got.Status, store.started["t1"])
 	}
 }
 
