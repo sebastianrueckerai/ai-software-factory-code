@@ -314,10 +314,10 @@ func testSupervisorModel(url string) *SupervisorModel {
 // A JSON-mode answer that stops at its answer limit (finish_reason
 // length: a reasoning model thought the limit away and two bytes of
 // answer are left) is asked once more at the same limit, 1000 + 8000
-// tokens, at low thinking depth: reasoning_effort low, which LiteLLM
-// passes on only when allowed_openai_params lists it. The second answer is
-// Chat's, marked low. An answer that ends is asked once, with neither
-// field.
+// tokens, at low thinking depth: reasoning_effort low, and no
+// allowed_openai_params, which the gateway sets and refuses from a
+// caller. The second answer is Chat's, marked low. An answer that ends is
+// asked once, with neither field.
 func TestChatAsksACutAnswerOnceMoreAtLowThinkingDepth(t *testing.T) {
 	ll := &fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, `{"verdict":"clear"}`}}
 	got, _, low, err := testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
@@ -328,8 +328,8 @@ func TestChatAsksACutAnswerOnceMoreAtLowThinkingDepth(t *testing.T) {
 	if first["max_tokens"] != 9000.0 || first["reasoning_effort"] != nil || first["allowed_openai_params"] != nil {
 		t.Fatalf("the first call = %v, want 9000 tokens at the model's own depth", first)
 	}
-	if second["max_tokens"] != 9000.0 || second["reasoning_effort"] != "low" || !reflect.DeepEqual(second["allowed_openai_params"], []any{"reasoning_effort"}) {
-		t.Fatalf("the call once more = %v, want 9000 tokens, reasoning_effort low and its allowed_openai_params", second)
+	if second["max_tokens"] != 9000.0 || second["reasoning_effort"] != "low" || second["allowed_openai_params"] != nil {
+		t.Fatalf("the call once more = %v, want 9000 tokens and reasoning_effort low, no allowed_openai_params", second)
 	}
 	ll = &fakeLiteLLM{finishes: []string{"stop"}, content: `{"verdict":"clear"}`}
 	got, _, low, err = testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})

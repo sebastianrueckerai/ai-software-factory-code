@@ -28,14 +28,16 @@
 - `cmd/factory-gateway`: the enforcement point. Validates the pod's
   projected ServiceAccount JWT and checks the call against the policy
   version in force (read from Postgres, at most 30 s old; 503 while none
-  is loaded). It forwards only the OpenAI chat fields, and LiteLLM's
-  `allowed_openai_params` only as exactly `["reasoning_effort"]` (400
+  is loaded). It forwards only the OpenAI chat fields (400
   `refused_body` for anything else, above all LiteLLM's `fallbacks`,
-  `router_settings_override` and `mock_testing_*`, and for `n` above 1),
-  and of their values only function tools and text content: a provider's
-  built-in tools (web search, retrieval) bill per use and reach the
-  internet past the sandbox, and image, audio or file parts cost far more
-  than their bytes.
+  `router_settings_override`, `mock_testing_*` and
+  `allowed_openai_params`, and for `n` above 1), and of their values
+  only function tools and text content: a provider's built-in tools (web
+  search, retrieval) bill per use and reach the internet past the
+  sandbox, and image, audio or file parts cost far more than their bytes.
+  It sets `allowed_openai_params` itself, to those of `reasoning_effort`
+  and `response_format` the call carries: a LiteLLM provider config that
+  does not list such a field drops it otherwise.
   The task must be running and its capability classes must allow the
   model (403 `refused_capability`). The call is then metered, see [Policy and costs](policy.md#configuration-policy-and-costs): its output limit is clamped so its worst case fits the free
   headroom, the worst case is held, and the real cost is booked after the

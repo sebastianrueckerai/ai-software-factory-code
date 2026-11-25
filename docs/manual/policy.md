@@ -309,9 +309,12 @@ Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking
 does not, so the Qwen vision deployment runs with thinking off, and the
-gateway refuses a client's `thinking` field. It forwards LiteLLM's
-`allowed_openai_params` only as exactly `["reasoning_effort"]`: LiteLLM's
-z.ai provider drops `reasoning_effort` unless the call lists it. An
+gateway refuses a client's `thinking` field. It refuses a client's
+`allowed_openai_params` too and sets the field itself, to those of
+`reasoning_effort` and `response_format` the call carries: the aliases
+run with `drop_params`, so a LiteLLM provider config that does not list
+a field drops it unless the call names it, and JSON mode would come back
+as free text. An
 admitted call's answer names the output limit the call got in
 `X-Gateway-Output-Limit`. A reasoning model can think a whole limit
 away, so factoryd's JSON-mode calls read why the answer stopped: an

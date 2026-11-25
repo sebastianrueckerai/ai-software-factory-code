@@ -744,11 +744,11 @@ func (s *Server) factorydBearer(r *http.Request) bool {
 }
 
 // forwardedFields are the request fields LiteLLM receives: the OpenAI chat
-// parameters, and LiteLLM's allowed_openai_params, which may name only
-// reasoning_effort (reasoningEffortOnly). Everything else is refused, above
-// all LiteLLM's own routing overrides (fallbacks, context_window_fallbacks,
-// content_policy_fallbacks, router_settings_override, mock_testing_*),
-// which would reach aliases outside the task's classes.
+// parameters. Everything else is refused, above all LiteLLM's own routing
+// overrides (fallbacks, context_window_fallbacks, content_policy_fallbacks,
+// router_settings_override, mock_testing_*), which would reach aliases
+// outside the task's classes, and its allowed_openai_params, which the
+// gateway sets itself (passedParams).
 var forwardedFields = map[string]bool{
 	"model": true, "messages": true, "stream": true, "stream_options": true,
 	"max_tokens": true, "max_completion_tokens": true, "n": true,
@@ -757,13 +757,13 @@ var forwardedFields = map[string]bool{
 	"logprobs": true, "top_logprobs": true, "user": true,
 	"tools": true, "tool_choice": true, "parallel_tool_calls": true,
 	"response_format": true, "reasoning_effort": true,
-	"allowed_openai_params": true,
 }
 
-// reasoningEffortOnly is the one allowed_openai_params a call may send: a
-// provider config that drops reasoning_effort (LiteLLM's z.ai one) passes
-// it then, so a call can bound the model's thinking.
-var reasoningEffortOnly = []string{"reasoning_effort"}
+// passedParams are the fields a LiteLLM provider config that does not
+// list them drops (the aliases run with drop_params) unless the call's
+// allowed_openai_params names them: the gateway names those a call
+// carries, so JSON mode and a bounded thinking depth reach every provider.
+var passedParams = []string{"reasoning_effort", "response_format"}
 
 type chatRequest struct {
 	Model  string
@@ -814,11 +814,14 @@ func parseChat(body []byte, purpose string) (chatRequest, error) {
 			return req, errors.New("stream is not a boolean")
 		}
 	}
-	if raw, ok := req.fields["allowed_openai_params"]; ok {
-		var params []string
-		if err := json.Unmarshal(raw, &params); err != nil || !slices.Equal(params, reasoningEffortOnly) {
-			return req, fmt.Errorf(`allowed_openai_params must be exactly ["reasoning_effort"], is %s`, raw)
+	var passed []string
+	for _, f := range passedParams {
+		if raw, ok := req.fields[f]; ok && string(raw) != "null" {
+			passed = append(passed, f)
 		}
+	}
+	if passed != nil {
+		req.fields["allowed_openai_params"], _ = json.Marshal(passed)
 	}
 	if err := checkTools(req.fields); err != nil {
 		return req, err
