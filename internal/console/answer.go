@@ -360,7 +360,8 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 // the turn's try. Each choice sits in the "say:" value namespace, so no
 // label the agent writes equals a factory control value. A wake on a case
 // refuses it: the case reaches the human by its hand-up. A turn about a
-// card (turnCards) names the card the ask is about.
+// card (turnCards) names the card the ask is about, and a card Needs you
+// shows asking already takes no second ask (asksAlready).
 func (t *turn) escalate(in toolInput) (string, error) {
 	ask, why, info, recommendation, choice, choices := in.Ask, in.Why, in.Info, in.Recommendation, in.Choice, in.Choices
 	if cases := t.c.books.cases(t.key()); t.a.caseWake() && len(cases) > 0 {
@@ -411,6 +412,9 @@ func (t *turn) escalate(in toolInput) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if err := t.asksAlready(card); err != nil {
+			return "", err
+		}
 		about = card.ID
 	case len(cards) > 0:
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("`task_id`: this turn is about %s. Name the card or plan the ask is about, so a later stop of that card or its plan waits on this ask and asks no second time.",
@@ -436,6 +440,53 @@ func (t *turn) escalate(in toolInput) (string, error) {
 		return "", refuse(http.StatusBadGateway, "The escalation could not be filed: "+errText(err)+". Try again, or post the question on the card's issue.")
 	}
 	return fmt.Sprintf("Filed the escalation as #%d in Needs you; the inbox carries it to the project's humans with its choices.", n), nil
+}
+
+// asksAlready refuses an escalation about card k while Needs you shows an
+// ask about it: one of k's own, its helpers' among them, or one of a human
+// card the chat filed about k. It names the card that asks and its
+// question as the page shows them.
+func (t *turn) asksAlready(k factoryd.Task) error {
+	ctx := t.r.Context()
+	unread := func(err error) error {
+		log.Printf("console: the asks about %s: %v", k.ID, err)
+		return refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was filed. Try again.")
+	}
+	bt, _, err := t.c.cfg.Tasks.BoardTask(ctx, k.ID)
+	if err != nil {
+		return unread(err)
+	}
+	cs, err := t.c.caseSetOf(ctx, k.Repository, bt)
+	if err != nil {
+		return unread(err)
+	}
+	asking := []factoryd.BoardTask{bt}
+	for _, c := range cs.desk.Cases {
+		if about, _ := c.Facts[factoryd.FactAbout].(string); about != k.ID || c.Kind != factoryd.CaseHumanCard || c.Status != factoryd.CaseAtHuman {
+			continue
+		}
+		h, ok, err := t.c.cfg.Tasks.BoardTask(ctx, c.TaskID)
+		if err != nil {
+			return unread(err)
+		}
+		if ok {
+			asking = append(asking, h)
+		}
+	}
+	cs.adopt(asking...)
+	for _, b := range asking {
+		pages := factoryd.CardPages(b, cs.byCard[b.ID], cs.desk.Asks, nil, nil)
+		if len(pages) == 0 {
+			continue
+		}
+		at := fmt.Sprintf("#%d already asks the human “%s” in Needs you", b.IssueNumber, scrubText(pages[0].Face.Ask))
+		if b.ID != k.ID {
+			at += fmt.Sprintf(", about #%d", k.IssueNumber)
+		}
+		return refuse(http.StatusConflict, fmt.Sprintf("%s: a second card would ask twice. Tell the human to answer it there, or, if your question is another one, watch #%d with `watch_card` and ask once it is answered.",
+			at, b.IssueNumber))
+	}
+	return nil
 }
 
 // turnCards are the cards the turn is about: those its wake names, and

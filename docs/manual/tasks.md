@@ -229,7 +229,12 @@ since only a commit fixes the door.
 The chat's escalation names the card or plan it is about (`task_id`),
 which its ask row and its case keep as the fact `about`. A turn whose
 wake's first line names a card, or that answers in a card's own thread,
-files none without it: the refusal names those cards. An escalation may
+files none without it: the refusal names those cards. Nor does it file one
+about a card that already asks a human in Needs you, by its own ask, a
+helper's on it, or a human card the chat filed about it: the refusal names
+the card that asks and its question, so the agent sends the human there, or,
+for another question, watches that card (`watch_card`) and asks once it is
+answered. An escalation may
 carry an act, the exact command or press a human does outside the
 factory, which the issue shows as its own fenced block after the
 recommendation and the opened card as its own part. A card's stop that

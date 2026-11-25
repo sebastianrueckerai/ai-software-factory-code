@@ -260,6 +260,59 @@ func TestChatEscalateInACaseWakeNamesTheCase(t *testing.T) {
 	equal(t, "filings", filed, 0)
 }
 
+// An escalation about a card that already asks the human in Needs you
+// files no second card: the card's own ask, a helper's on it, or a human
+// card the chat filed about it. The refusal names the card that asks and
+// its question, and the two ways on. An ask still on its rungs, or one
+// about another card, files.
+func TestChatEscalateAboutACardThatAsksFilesNone(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	var about []string
+	r.c.cfg.Escalate = func(_ context.Context, _ string, _ factoryd.HumanQuestion, _, card string) (int64, error) {
+		about = append(about, card)
+		return 42, nil
+	}
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Source: factoryd.SourceChat, Status: "waiting-human", Repository: "sf/code", IssueNumber: 40}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-p", Kind: "agent", Source: factoryd.SourceProver, Parent: "t-m", Status: "waiting-human", Repository: "sf/code", IssueNumber: 41}})
+	r.openCases = map[string][]factoryd.Case{
+		"t-e": {{ID: 7, TaskID: "t-e", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman}},
+		"t-h": {{ID: 8, TaskID: "t-h", Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman,
+			Facts: map[string]any{"ask": "Which store should the build read?", factoryd.FactAbout: "t-r"}}},
+		"t-p": {{ID: 9, TaskID: "t-p", Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}},
+	}
+	face := func(ask string) factoryd.CaseAsk {
+		return factoryd.CaseAsk{At: time.Now(), Detail: map[string]any{"ask": ask, "story": map[string]any{}}}
+	}
+	r.caseAsks = map[int64]factoryd.CaseAsk{7: face("Use a replica?"), 9: face("Do the proofs hold?")}
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	escalate := func(card string) (string, error) {
+		return trn.escalate(toolInput{Ask: "Which store?", Why: "the ledger is short", Info: "the pool is dry", Recommendation: "Postgres",
+			Choices: []string{"Postgres", "SQLite"}, TaskID: card})
+	}
+	for _, in := range []struct{ name, card, want string }{
+		{"the card's own ask", "t-e", "#13 already asks the human “Use a replica?” in Needs you: a second card would ask twice. " +
+			"Tell the human to answer it there, or, if your question is another one, watch #13 with `watch_card` and ask once it is answered."},
+		{"a helper's ask on the card", "t-m", "#5 already asks the human “Do the proofs hold?” in Needs you: a second card would ask twice. " +
+			"Tell the human to answer it there, or, if your question is another one, watch #5 with `watch_card` and ask once it is answered."},
+		{"the chat's ask about the card", "t-r", "#40 already asks the human “Which store should the build read?” in Needs you, about #11: a second card would ask twice. " +
+			"Tell the human to answer it there, or, if your question is another one, watch #40 with `watch_card` and ask once it is answered."},
+	} {
+		_, err := escalate(in.card)
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != in.want {
+			t.Errorf("%s: escalate = %v, want 409 %q", in.name, err, in.want)
+		}
+	}
+	equal(t, "the refusals file nothing", about, []string(nil))
+	r.openCases["t-e"][0].Status = factoryd.CaseOpen
+	got, err := escalate("t-e")
+	equal(t, "an ask on its rungs, beside the chat's ask about another card", []any{got, err, about},
+		[]any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's humans with its choices.", error(nil), []string{"t-e"}})
+}
+
 // An answer that approves a merge needs an approver, as the board's
 // button and the chat's tool do: a writer on the notify list who presses
 // Approve on the merge case's face hears the refusal, and the request
