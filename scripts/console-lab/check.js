@@ -2437,9 +2437,8 @@ async function text(page) {
   // the factory's close of an ask: #640 runs on and says why in the
   // browser's zone, New York's EST or EDT, with no UTC words;
   // the month cap's human card #641 says it in its state, the human card #642
-  // a human answered and the agent card #643 that moved on read done. A
-  // finished human card holds no place on the board, so #641 and #642 are
-  // read on their opened cards.
+  // a human answered and the agent card #643 that moved on read done, in
+  // Done and on their opened cards.
   await seed("closed-asks");
   {
     const ny = await open(browser, { width: 1440, height: 900 }, false, "America/New_York");
@@ -2456,6 +2455,17 @@ async function text(page) {
       return st && st.innerText.trim();
     }, labID(643));
     if (state !== "done") fails.push("closed ask: agent card #643 reads " + JSON.stringify(state) + ", want done");
+    // Done holds the human cards that ended with the agents' ones, newest
+    // first: #643, then #641 the factory closed, which says why in New
+    // York's zone, then #642 a human answered
+    const lane = await ny.page.evaluate((ids) => {
+      const done = Array.from(document.querySelectorAll("#board section.column")).find((c) => /^Done\b/.test(c.querySelector("h3").innerText.trim()));
+      return done && Array.from(done.querySelectorAll("[data-card]")).filter((k) => ids.includes(k.dataset.card))
+        .map((k) => { const st = k.querySelector(".foot .st"); return [k.dataset.card, st && st.innerText.trim()]; });
+    }, [labID(641), labID(642), labID(643)]);
+    const laneWant = [[labID(643), /^done$/], [labID(641), /^needed you no more: the month cap's count was reset at \d\d:\d\d (EST|EDT) by sebastian$/], [labID(642), /^done$/]];
+    if (!lane || lane.length !== 3 || laneWant.some(([id, re], i) => lane[i][0] !== id || !re.test(lane[i][1] || "")))
+      fails.push("closed ask: Done holds " + JSON.stringify(lane) + ", want #643 done, #641 needed you no more in New York's zone, #642 done");
     for (const [issue, want] of [[641, /^needed you no more: .*\d\d:\d\d (EST|EDT)/], [642, /^done$/]]) {
       await ny.page.goto(base + "/#card=" + labID(issue), { waitUntil: "load" });
       await ny.page.waitForTimeout(900);

@@ -1660,10 +1660,6 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 		v.byID[bt.ID] = bt.Task
 	}
 	for _, bt := range page {
-		// a finished card of the human lane holds no column (boardOf)
-		if v.humanLane(bt.Task) {
-			continue
-		}
 		d.Columns[0].Cards = append(d.Columns[0].Cards, c.boardCard(ctx, v, bt))
 	}
 	c.finishCards(ctx, v, func(fn func(*card)) {
@@ -2171,8 +2167,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	for _, bt := range tasks {
 		t := bt.Task
 		// factoryd's own human card works with the factory agent until its
-		// face asks a human
-		human, col := v.humanLane(t) && t.Status != "waiting-agent", fiveColumn(t)
+		// face asks a human; one that ended stands in Done
+		human, col := v.humanLane(t) && t.Status != "waiting-agent" && !factoryd.Final(t.Status), fiveColumn(t)
 		// a done plan that waits on its failed card holds its case at the
 		// human: its row of Needs you carries the case
 		holds := cs.holds(t)
@@ -2184,9 +2180,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		case holds:
 			d.Status.NeedYou++
 		case human:
-			if !factoryd.Final(t.Status) {
-				d.Status.NeedYou++
-			}
+			d.Status.NeedYou++
 		case c.working(ctx, v, k):
 			d.Status.Working++
 		case col == colProgress && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
@@ -2204,9 +2198,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 		switch {
 		case human:
-			if factoryd.Final(t.Status) {
-				break
-			}
 			if holds {
 				needs = append(needs, row)
 				break

@@ -2202,7 +2202,7 @@ func casesScene(now time.Time) labScene {
 // its ask in the inbox settled with the reason, #641 is the month cap's
 // human card the watcher closed, #642 a human card a human's answer
 // closed, #643 an agent card that moved on through two statuses before it
-// finished.
+// finished. Done holds #643, #641 and #642 on top, newest first.
 func closedAsksScene(now time.Time) labScene {
 	s := threadsScene(now)
 	s.inbox, s.open = 5, 4

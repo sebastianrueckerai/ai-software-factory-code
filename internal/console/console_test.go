@@ -2358,7 +2358,7 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	// a card in Needs you shows its ask in its title's place
 	for title, objs := range map[string][]string{
 		"Needs you": {`data-card="t-e"`, `data-card="t-h"`}, "Queued": {"queued work"},
-		"In progress": {"closing work", "review work"}, "Done": {"done work", "failed work"},
+		"In progress": {"closing work", "review work"}, "Done": {"done work", "failed work", "finished human work"},
 	} {
 		for _, obj := range objs {
 			if !strings.Contains(col(t, body, title), obj) {
@@ -2390,8 +2390,8 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(body, "old reason") || strings.Contains(body, "finished human work") {
-		t.Error("board shows a superseded escalation or a finished human task")
+	if strings.Contains(body, "old reason") {
+		t.Error("board shows a superseded escalation")
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
 	if !strings.HasPrefix(frag, `<div id="board"`) || strings.Contains(frag, "<html") || !strings.Contains(frag, `data-card="t-e"`) {

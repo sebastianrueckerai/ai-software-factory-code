@@ -440,13 +440,14 @@ func arrival(t Task) time.Time {
 
 // FinishedTasks lists the page q asks for, and how many cards the read
 // leaves from the page on, the page's own included; a chat task is no
-// card, nor a finished human task, nor a helper task. A done card whose
+// card, nor a helper task. A human card that ended stands in Done with the
+// agents' cards, so a human sees why it left Needs you. A done card whose
 // change is not live yet is no finished card: it waits in the board's
 // progress (roadmap 296). A card whose helper task has not ended stays
 // past the window, so the helper's ask has its card to stand on.
 func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTask, int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+boardTaskColumns+`, count(*) OVER ()`+boardTaskFrom+`
-		 WHERE repository = $1 AND status = ANY($2) AND kind NOT IN ($3, 'human') AND tasks.source NOT IN `+reportSourcesSQL+`
+		 WHERE repository = $1 AND status = ANY($2) AND kind <> $3 AND tasks.source NOT IN `+reportSourcesSQL+`
 		   AND (finished_at > $4 OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
 		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps') OR `+liveHelper+`)
 		   AND (status <> 'done' OR `+deployLive+`)
@@ -578,7 +579,7 @@ func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	var out []BoardTask
 	for _, t := range tasks {
 		t.Helpers = HelpersOf(tasks, t.ID)
-		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" && !t.Report() &&
+		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && !t.Report() &&
 			(t.FinishedAt == nil || t.FinishedAt.After(q.Since) || len(t.Helpers) > 0) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) &&
 			(t.Status != "done" || DeployLive(tasks, t)) {
 			out = append(out, t)

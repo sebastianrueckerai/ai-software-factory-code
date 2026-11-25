@@ -962,7 +962,27 @@ func boardLine(k card) string {
 	if k.HoldLine != "" {
 		s += ", " + k.HoldLine
 	}
+	if w := endWords(k); w != "" {
+		s += ", " + w
+	}
 	return s
+}
+
+// endWords is why human card k ended, in the stored UTC words, as its face
+// in Done says it: the factory's close of its ask, else a closed card's
+// reason; "" for an agent card, an open one or a done one.
+func endWords(k card) string {
+	switch {
+	case k.Kind != "human" || !factoryd.Final(k.Status):
+		return ""
+	case k.Closed.Reason != "":
+		return "needed you no more: " + k.Closed.Reason
+	case k.Status != "closed" || k.ClosingReason == "":
+		return ""
+	case strings.HasPrefix(k.ClosingReason, "closed "):
+		return k.ClosingReason
+	}
+	return "closed: " + k.ClosingReason
 }
 
 // boardListed bounds each list of the board the agent reads: a column's

@@ -569,3 +569,121 @@ func TestAFactoryCardInDoneSaysWhyItClosed(t *testing.T) {
 		}
 	}
 }
+
+// Done holds the human lane's cards that ended in its window, in the one
+// order of finish with the agents' cards, and counts them: a card the
+// factory closed when its cause went says why, one a human answered reads
+// done, one a human closed its words. The page after a card, a find, the
+// agent's board read and its find list them too, the agent's in UTC.
+func TestDoneHoldsTheHumanLanesEndedCards(t *testing.T) {
+	const reason = "the month cap's count was reset at 07:30 UTC by sebastian"
+	moments := factoryd.Moments{{At: time.Date(2026, 11, 24, 7, 30, 32, 0, time.UTC), Layout: factoryd.LayoutClock}}
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	ended := func(id, kind, status, objective string, n int64, ago time.Duration) factoryd.BoardTask {
+		at := now.Add(-ago)
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: kind, Status: status, Repository: "sf/code", IssueNumber: n, Source: factoryd.SourceWebhook,
+			CreatedAt: at.Add(-time.Hour), FinishedAt: &at, Objective: objective}}
+	}
+	shut := ended("t-shut", "human", "closed", "Rotate the token\n\nRotate it.", 4, 4*time.Hour)
+	shut.ClosingReason = "closed by sebastian"
+	asking := ended("t-asking", "human", "waiting-human", "Pick the region\n\nPick it.", 6, 0)
+	asking.FinishedAt = nil
+	r.tasks.tasks = []factoryd.BoardTask{
+		ended("t-built", "agent", "done", "Export the board\n\nExport it.", 1, 2*time.Hour),
+		ended("t-cap", "human", "done", "The month cap cannot fund a call\n\nReset it.", 2, time.Hour),
+		ended("t-answered", "human", "done", "Which store keeps the snapshots?\n\nPick one.", 3, 3*time.Hour),
+		shut,
+		ended("t-old", "human", "done", "Rename the bucket\n\nRename it.", 5, 8*24*time.Hour),
+		asking,
+	}
+	closeAsk(t, r, "t-cap", reason, moments, "done")
+	board := func(q string) (string, map[string][]string) {
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name+q, nil), ck).Body.String()
+		doc, err := html.Parse(strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cols := map[string][]string{}
+		for n := range doc.Descendants() {
+			if n.Type == html.ElementNode && n.Data == "article" && htmlAttr(n, "data-card") != "" {
+				cols[columnOf(n)] = append(cols[columnOf(n)], htmlAttr(n, "data-card"))
+			}
+		}
+		return body, cols
+	}
+	body, cols := board("")
+	if want := []string{"t-cap", "t-built", "t-answered", "t-shut"}; !slices.Equal(cols["Done"], want) {
+		t.Errorf("Done holds %v, want %v", cols["Done"], want)
+	}
+	if !slices.Contains(cols["Needs you"], "t-asking") || strings.Contains(body, `data-card="t-old"`) {
+		t.Errorf("Needs you holds %v, want t-asking among them, and the card of last week stays out", cols["Needs you"])
+	}
+	if head := nodeText(doneHead(t, body)); !strings.HasPrefix(head, "Done 4") {
+		t.Errorf("Done's head reads %q, want it to count 4", head)
+	}
+	state := func(id string) string {
+		_, st, _ := strings.Cut(faceOf(t, body, id), `<span class="it st">`)
+		st, _, _ = strings.Cut(st, "</span>")
+		return htmlText(template.HTML(st))
+	}
+	// Berlin reads 07:30 UTC as 08:30 CET until the browser's script says its own zone
+	for id, want := range map[string]string{
+		"t-cap":      "needed you no more: the month cap's count was reset at 08:30 CET by sebastian",
+		"t-built":    "done",
+		"t-answered": "done",
+		"t-shut":     "closed by sebastian",
+	} {
+		if got := state(id); got != want {
+			t.Errorf("%s reads %q, want %q", id, got, want)
+		}
+	}
+	if _, cols := board("&q=" + url.QueryEscape("status:closed")); !slices.Equal(cols["Done"], []string{"t-shut"}) {
+		t.Errorf("status:closed leaves %v in Done, want t-shut", cols["Done"])
+	}
+	built := r.tasks.tasks[0].FinishedAt.UTC().Format(time.RFC3339Nano)
+	page := r.do(httptest.NewRequest(http.MethodGet, "/board/finished?project="+labCodeProject.Name+"&col=done&after="+url.QueryEscape(built)+"&after-id=t-built&done-shown=50", nil), ck).Body.String()
+	if got := regexp.MustCompile(`data-card="([^"]+)"`).FindAllStringSubmatch(page, -1); len(got) != 2 || got[0][1] != "t-answered" || got[1][1] != "t-shut" {
+		t.Errorf("the page after t-built holds %v, want t-answered and t-shut", got)
+	}
+	req, err := http.NewRequestWithContext(context.WithValue(t.Context(), ctxKey{}, &session{}), http.MethodGet, "/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := r.c.boardText(req, projectRows()[0], actor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Done (4):\n" +
+		`  #2 t-cap "The month cap cannot fund a call" done (is done), needed you no more: the month cap's count was reset at 07:30 UTC by sebastian` + "\n" +
+		`  #1 t-built "Export the board" done (is done)` + "\n" +
+		`  #3 t-answered "Which store keeps the snapshots?" done (is done)` + "\n" +
+		`  #4 t-shut "Rotate the token" closed (was closed), closed by sebastian` + "\n"; !strings.Contains(text, want) {
+		t.Errorf("the agent's board read lacks\n%s\nin\n%s", want, text)
+	}
+	for q, want := range map[string]string{
+		"snapshots": `#3 t-answered "Which store keeps the snapshots?" done (is done)`,
+		"t-old":     `#5 t-old "Rename the bucket" done (is done)`,
+	} {
+		if found, err := r.c.foundText(req, projectRows()[0], actor{}, q); err != nil || !strings.Contains(found, want) {
+			t.Errorf("find_cards %q = %q, %v; want it to list %s", q, found, err, want)
+		}
+	}
+}
+
+// doneHead is the head of the board's Done column.
+func doneHead(t *testing.T, body string) *html.Node {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := range doc.Descendants() {
+		if n.Type == html.ElementNode && n.Data == "h3" && strings.HasPrefix(nodeText(n), "Done") {
+			return n
+		}
+	}
+	t.Fatalf("no head of Done in\n%s", body)
+	return nil
+}

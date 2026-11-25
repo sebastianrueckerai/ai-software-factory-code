@@ -377,6 +377,74 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 	}
 }
 
+// Done holds the human lane's ended cards with the agents' ones, in one
+// window and one order: a human card that ended in the last seven days
+// stands where its finish puts it and counts, one that ended before it,
+// an open human card and the chat stay out; the in-memory fakes page the
+// same. Requires FACTORYD_TEST_DATABASE_URL.
+func TestPGStoreDoneHoldsTheHumanLane(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, tk := range []Task{
+		{ID: "built", Kind: "agent", Status: "done", Track: "direct"},
+		{ID: "answered", Kind: "human", Status: "done"},
+		{ID: "withdrawn", Kind: "human", Status: "closed", ClosingReason: "the alert cleared at 2026-11-24T07:30:00Z"},
+		{ID: "last-week", Kind: "human", Status: "done"},
+		{ID: "asking", Kind: "human", Status: "waiting-human"},
+		{ID: "chat", Kind: KindChat, Status: "done"},
+	} {
+		tk.BudgetEUR, tk.Repository = 1, "sf/r"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '2 hours' WHERE id = 'built';
+		UPDATE tasks SET finished_at = now() - interval '1 hour' WHERE id IN ('answered', 'chat');
+		UPDATE tasks SET finished_at = now() - interval '3 hours' WHERE id = 'withdrawn';
+		UPDATE tasks SET finished_at = now() - interval '8 days' WHERE id = 'last-week'`); err != nil {
+		t.Fatalf("stamp finished_at: %v", err)
+	}
+	ids := func(tasks []BoardTask) []string {
+		var out []string
+		for _, tk := range tasks {
+			out = append(out, tk.ID)
+		}
+		return out
+	}
+	q := FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: time.Now().Add(-7 * 24 * time.Hour)}
+	done, rest, err := s.FinishedTasks(ctx, q)
+	want := []string{"answered", "built", "withdrawn"}
+	if err != nil || !slices.Equal(ids(done), want) || rest != 3 {
+		t.Fatalf("FinishedTasks = %v, %d, %v; want %v and 3", ids(done), rest, err, want)
+	}
+	open, err := s.BoardTasks(ctx, "sf/r")
+	if err != nil {
+		t.Fatalf("BoardTasks: %v", err)
+	}
+	var stored []BoardTask
+	for _, id := range []string{"built", "answered", "withdrawn", "last-week", "chat"} {
+		bt, ok, err := s.BoardTask(ctx, id)
+		if err != nil || !ok && id != "chat" {
+			t.Fatalf("BoardTask %s: %v, %v", id, ok, err)
+		}
+		if ok {
+			stored = append(stored, bt)
+		}
+	}
+	stored = append(stored, open...)
+	stored = append(stored, BoardTask{Task: Task{ID: "chat", Kind: KindChat, Status: "done", Repository: "sf/r", FinishedAt: done[0].FinishedAt}})
+	if page, n := FinishedPage(stored, q); !slices.Equal(ids(page), want) || n != 3 {
+		t.Fatalf("FinishedPage = %v, %d; want %v and 3", ids(page), n, want)
+	}
+}
+
 // The board pages a project's finished cards by arrival and id: ties on
 // the arrival go by id, each page starts after the card the one before
 // ended with, so cards finishing between two pages neither repeat nor
@@ -440,21 +508,22 @@ func TestPGStoreFinishedPages(t *testing.T) {
 		}
 		return got
 	}
-	page(FinishedQuery{}, []string{"a", "b", "c", "d", "f", "e"}, 6)
-	page(FinishedQuery{Oldest: true}, []string{"e", "f", "b", "c", "d", "a"}, 6)
+	// the human card h ended with a, so it follows a by its id
+	page(FinishedQuery{}, []string{"a", "h", "b", "c", "d", "f", "e"}, 7)
+	page(FinishedQuery{Oldest: true}, []string{"e", "f", "b", "c", "d", "a", "h"}, 7)
 	page(FinishedQuery{Statuses: []string{"failed"}}, []string{"b", "f"}, 2)
 	page(FinishedQuery{After: Cursor{At: *minute(1), ID: "c"}}, []string{"d", "f", "e"}, 3)
-	page(FinishedQuery{After: Cursor{At: *minute(1), ID: "c"}, Oldest: true}, []string{"d", "a"}, 2)
+	page(FinishedQuery{After: Cursor{At: *minute(1), ID: "c"}, Oldest: true}, []string{"d", "a", "h"}, 3)
 	page(FinishedQuery{After: Cursor{At: *minute(2), ID: "e"}}, nil, 0)
-	first := page(FinishedQuery{Limit: 2}, []string{"a", "b"}, 6)
-	second := page(FinishedQuery{Limit: 2, After: CursorOf(first[1].Task)}, []string{"c", "d"}, 4)
+	first := page(FinishedQuery{Limit: 2}, []string{"a", "h"}, 7)
+	second := page(FinishedQuery{Limit: 2, After: CursorOf(first[1].Task)}, []string{"b", "c"}, 5)
 	// a card finishes now, newer than every page: the next page goes on
 	// where the last ended, and only a first page shows it
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 'k'`); err != nil {
 		t.Fatal(err)
 	}
-	page(FinishedQuery{Limit: 2, After: CursorOf(second[1].Task)}, []string{"f", "e"}, 2)
-	page(FinishedQuery{Limit: 2}, []string{"k", "a"}, 7)
+	page(FinishedQuery{Limit: 2, After: CursorOf(second[1].Task)}, []string{"d", "f"}, 3)
+	page(FinishedQuery{Limit: 2}, []string{"k", "a"}, 8)
 	// no Since reads the finished cards of every age: the card of a week
 	// ago comes last
 	all, rest, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses})
@@ -462,8 +531,8 @@ func TestPGStoreFinishedPages(t *testing.T) {
 	for _, b := range all {
 		ids = append(ids, b.ID)
 	}
-	if want := []string{"k", "a", "b", "c", "d", "f", "e", "g"}; err != nil || !slices.Equal(ids, want) || rest != 8 {
-		t.Fatalf("FinishedTasks with no Since = %v, %d, %v; want %v, 8", ids, rest, err, want)
+	if want := []string{"k", "a", "h", "b", "c", "d", "f", "e", "g"}; err != nil || !slices.Equal(ids, want) || rest != 9 {
+		t.Fatalf("FinishedTasks with no Since = %v, %d, %v; want %v, 9", ids, rest, err, want)
 	}
 }
 
