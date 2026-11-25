@@ -86,10 +86,9 @@ activities, each with a timeline step and a comment on the pull request:
    answer: every gate call reads why its answer stopped, and one that
    stopped at the limit (`finish_reason` `length`: the model thought the
    limit away) is asked once more at the same limit and low thinking
-   depth (`reasoning_effort` `low`, with `allowed_openai_params`
-   `["reasoning_effort"]`, which LiteLLM's z.ai provider needs to pass the
-   field on). A verdict that call gave carries `thinking: low` beside the
-   model on the `model_review` and `audit` steps. The second cut answer is
+   depth (`reasoning_effort` `low`). A verdict that call gave carries
+   `thinking: low` beside the model on the `model_review` and `audit`
+   steps. The second cut answer is
    the note "model review failed: the model used its whole answer limit of
    <n> tokens before it answered", `n` the limit the gateway named, and no
    retry follows it; a call its timeout cut is the note "model review

@@ -325,9 +325,7 @@ type SupervisorModel struct {
 const ChatInputLead = "The input, as JSON:\n"
 
 // chatPayload builds one JSON-mode call's body; low asks the model to
-// think at low depth (reasoning_effort low), which LiteLLM passes on to a
-// provider that does not list the field only when allowed_openai_params
-// names it.
+// think at low depth (reasoning_effort low).
 func chatPayload(alias, system string, user []byte, limit int, low bool) ([]byte, error) {
 	body := map[string]any{
 		"model":           alias,
@@ -339,7 +337,7 @@ func chatPayload(alias, system string, user []byte, limit int, low bool) ([]byte
 		},
 	}
 	if low {
-		body["reasoning_effort"], body["allowed_openai_params"] = thinkingLow, []string{"reasoning_effort"}
+		body["reasoning_effort"] = thinkingLow
 	}
 	return json.Marshal(body)
 }
