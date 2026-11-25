@@ -1840,6 +1840,10 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 		`<span class="gauge"><meter min="0" max="100" value="66" aria-label="LiteLLM backstop">66 percent</meter></span></div>`) {
 		t.Errorf("a backstop at 66 percent: want no strip cell and the panel's row\n%s\n%s", strip, spend)
 	}
+	last := spend[strings.Index(spend, `<span class="lbl">LiteLLM backstop`):]
+	if !strings.Contains(spend, `<span class="lbl">escalation pool this month`) || strings.Contains(last, `<div class="sp-g`) || strings.Contains(last, `class="rst`) {
+		t.Errorf("the backstop, the one limit no human resets: want it under every other limit and without a Reset\n%s", spend)
+	}
 	r.c.cfg.Backstop = func(context.Context) (factoryd.Backstop, error) {
 		return factoryd.Backstop{SpendUSD: 1875, MaxUSD: 1875}, nil
 	}
