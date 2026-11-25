@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -775,7 +778,8 @@ func TestUpstreamPodRefusesARunnerImageWithoutADigest(t *testing.T) {
 
 // A line whose host the pod's egress does not admit is a finding that names
 // the host, beside what the pod copies: an https line by its URL's host, an
-// image line by its registry, docker.io's being registry-1.docker.io.
+// image line by its registry, docker.io's being index.docker.io as crane
+// names it.
 func TestUpstreamPodNamesAHostOutsideItsEgress(t *testing.T) {
 	u := newUpstreamPod(t)
 	files := copyFiles()
@@ -854,22 +858,24 @@ func TestAdmitLeasesSkipsAnUpstreamCopyNamespace(t *testing.T) {
 	}
 }
 
-// The hosts the copy reached in #1698's real runs: the six registries of
-// upstream-images.txt, their token endpoints and the hosts their blobs
-// redirect to; and the hosts the file lines and the tarballs reach, with
-// where their downloads redirect, read with curl -sIL on 2026-11-24.
-var upstreamHostsSeen = []string{
-	"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com", "production.cloudflare.docker.com",
-	"docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
-	"ghcr.io", "pkg-containers.githubusercontent.com",
-	"quay.io", "cdn01.quay.io", "cdn02.quay.io",
-	"registry.k8s.io", "cdn.registry.k8s.io",
-	"code.forgejo.org",
-	"factory.talos.dev", "cdn.factory.talos.dev",
-	"europe-west3-docker.pkg.dev", "us-west1-docker.pkg.dev",
-	"github.com", "release-assets.githubusercontent.com",
-	"nodejs.org", "vuln.go.dev", "www.postgresql.org",
-	"proxy.golang.org", "registry.npmjs.org",
+// upstreamSecondHops are the hosts a first host of the scripts' tools sends
+// them on to, which no dial from here shows: a token realm a registry's 401
+// names, or a redirect of a registry API, a blob or a release download.
+// Read with crane --verbose (each image line's manifest, a child's and its
+// config blob) and curl -sSL -v (each https line of both lists) on
+// 2026-11-25; Docker Hub's other two blob hosts and us-west1 come from
+// #1698's runs of the Go copier.
+var upstreamSecondHops = map[string]string{
+	"auth.docker.io":                   "Docker Hub's token realm, which index.docker.io's 401 names",
+	"production.cloudfront.docker.com": "where index.docker.io redirects a blob",
+	"production.cloudflare.docker.com": "where index.docker.io redirects a blob",
+	"docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com": "where index.docker.io redirects a blob",
+	"pkg-containers.githubusercontent.com":                                         "where ghcr.io redirects a blob",
+	"cdn*.quay.io":                                                                 "where quay.io redirects a blob (cdn01 seen)",
+	"cdn.registry.k8s.io":                                                          "where registry.k8s.io redirects a blob",
+	"*-docker.pkg.dev":                                                             "where registry.k8s.io redirects its API (europe-west3 seen, us-west1 in #1698)",
+	"cdn.factory.talos.dev":                                                        "where factory.talos.dev redirects a blob",
+	"release-assets.githubusercontent.com":                                         "where github.com redirects a release download",
 }
 
 // podEgressFor is whether the pod's DNS rule resolves host and an FQDN rule
@@ -915,48 +921,127 @@ func podEgressFor(t *testing.T, host string) (resolves, admits bool) {
 	return resolves, admits
 }
 
-// listHosts are the hosts the lines of both lists name: an image line's
-// registry, docker.io's being registry-1.docker.io, and an https line's
-// URL host.
-func listHosts(t *testing.T) []string {
-	t.Helper()
-	var hosts []string
-	for _, list := range []string{"upstream-images.txt", "upstream-files.txt"} {
-		raw, err := os.ReadFile("../../" + list)
+// The real scripts run over the real lists, go.mod, go.sum and plugin
+// lockfile, crane, curl and go sent through a proxy that records each host
+// a tool dials and refuses it. npm reconnects to a refusing proxy without
+// end, so its hosts are read where npm ci reads them: each resolved URL of
+// the lockfile, and its registry. Each host is admitted by name, or is the
+// store, which the pod resolves and reaches through the edge gateway; and
+// each entry of upstreamFQDNs is such a host or one of upstreamSecondHops,
+// so the list names the hosts the tools use and no other.
+func TestUpstreamPodEgressAdmitsEveryHostTheScriptsDial(t *testing.T) {
+	for _, tool := range []string{"crane", "curl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("no %s on PATH: the CI runner image, where the copy pod and the checks run, has it", tool)
+		}
+	}
+	var mu sync.Mutex
+	dialled := map[string]bool{}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		mu.Lock()
+		dialled[host] = true
+		mu.Unlock()
+		http.Error(w, "refused", http.StatusForbidden)
+	}))
+	t.Cleanup(proxy.Close)
+	work := t.TempDir()
+	for _, p := range upstreamHeadFiles {
+		raw, err := os.ReadFile(filepath.Join("..", "..", p))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, l := range strings.Split(string(raw), "\n") {
-			f := strings.Fields(l)
-			switch {
-			case len(f) == 0 || strings.HasPrefix(f[0], "#"):
-			case list == "upstream-files.txt":
-				host, _, _ := strings.Cut(strings.TrimPrefix(f[3], "https://"), "/")
-				hosts = append(hosts, host)
-			case strings.HasPrefix(f[0], "https://"):
-				host, _, _ := strings.Cut(strings.TrimPrefix(f[0], "https://"), "/")
-				hosts = append(hosts, host)
-			default:
-				host, _, _ := strings.Cut(f[0], "/")
-				if host == "docker.io" {
-					host = "registry-1.docker.io"
-				}
-				hosts = append(hosts, host)
-			}
+		if err := os.MkdirAll(filepath.Join(work, filepath.Dir(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, p), raw, 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	return hosts
+	home, bin := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "npm"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		// the go that built this test, which go.mod's go line admits
+		"PATH=" + bin + string(os.PathListSeparator) + filepath.Join(runtime.GOROOT(), "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + home, "TMPDIR=" + t.TempDir(), "GOMODCACHE=" + filepath.Join(home, "mod"),
+		"GOPROXY=https://proxy.golang.org,direct", "GOSUMDB=sum.golang.org",
+		"UPSTREAM_STORE=" + storeHost + "/upstream", "REGISTRY_USER=u", "REGISTRY_PASSWORD=p",
+		"HTTPS_PROXY=" + proxy.URL, "https_proxy=" + proxy.URL, "HTTP_PROXY=" + proxy.URL, "http_proxy=" + proxy.URL,
+		"NO_PROXY=", "no_proxy=",
+	}
+	for _, script := range upstreamScripts {
+		path, err := filepath.Abs(filepath.Join("..", "..", script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "bash", path)
+		cmd.Dir, cmd.Env = work, env
+		// every line fails at the proxy: the hosts are the result
+		out, _ := cmd.CombinedOutput()
+		t.Logf("%s:\n%s", script, out)
+	}
+	var lock struct {
+		Packages map[string]struct{ Resolved string } `json:"packages"`
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "opencode-plugin", "package-lock.json"))
+	if err != nil || json.Unmarshal(raw, &lock) != nil {
+		t.Fatalf("the plugin lockfile: %v", err)
+	}
+	dialled["registry.npmjs.org"] = true
+	for _, p := range lock.Packages {
+		if u, err := url.Parse(p.Resolved); err == nil && u.Host != "" {
+			dialled[u.Hostname()] = true
+		}
+	}
+	hosts := slices.Sorted(maps.Keys(dialled))
+	for _, h := range hosts {
+		resolves, admits := podEgressFor(t, h)
+		if h == storeHost {
+			admits = true
+		}
+		if !resolves || !admits {
+			t.Errorf("the scripts dial %s, which the pod's policy resolves %v, admits on 443 %v", h, resolves, admits)
+		}
+	}
+	for _, e := range upstreamFQDNs {
+		m := e.(map[string]any)
+		name, _ := m["matchName"].(string)
+		if name == "" {
+			name, _ = m["matchPattern"].(string)
+		}
+		if _, hop := upstreamSecondHops[name]; !dialled[name] && !hop {
+			t.Errorf("upstreamFQDNs admits %s, which the scripts do not dial and no second hop names: %v", name, hosts)
+		}
+	}
 }
 
-func TestUpstreamPodEgressAdmitsEveryHostOfTheLists(t *testing.T) {
-	hosts := append(slices.Clone(upstreamHostsSeen), listHosts(t)...)
-	slices.Sort(hosts)
-	for _, h := range slices.Compact(hosts) {
-		t.Run(h, func(t *testing.T) {
-			if resolves, admits := podEgressFor(t, h); !resolves || !admits {
-				t.Errorf("the pod's policy resolves %s %v, admits it on 443/TCP alone %v", h, resolves, admits)
-			}
-		})
+// The edge gateway's Envoy is an L7 load balancer that enforces a pod's own
+// egress policy on its upstream leg too (enforce_policy_on_l7lb in its
+// bpf_metadata, and cilium.l7policy on the forgejo-http cluster): a pod that
+// reaches the store's public host needs entity ingress on 443 for the first
+// leg and Forgejo's HTTP port for the second, or the Envoy answers 403
+// "Access denied". The copy pod reaches the store as a build runner does.
+func TestUpstreamPodReachesTheStoreAsTheBuildRunnerDoes(t *testing.T) {
+	runner := (&CISpawner{cfg: CIConfig{GitBaseURL: "http://forgejo-http.forgejo.svc.cluster.local:3000", RegistryHost: storeHost}}).
+		ciEgressSpec(&BuildVM{IPv4: "10.0.0.5"}, CIRepo{}, "")
+	pod := upstreamEgressSpec(storeHost)
+	for _, rule := range []map[string]any{forgejoHTTPEgress(), edgeGatewayEgress()} {
+		if !slices.ContainsFunc(runner["egress"].([]any), func(r any) bool { return reflect.DeepEqual(r, rule) }) {
+			t.Fatalf("the build runner's policy lacks %v: the store's route is stated wrong here", rule)
+		}
+		if !slices.ContainsFunc(pod["egress"].([]any), func(r any) bool { return reflect.DeepEqual(r, rule) }) {
+			t.Errorf("the copy pod's policy lacks %v, which the build runner reaches the store by", rule)
+		}
+	}
+	if resolves, _ := podEgressFor(t, storeHost); !resolves {
+		t.Errorf("the copy pod does not resolve the store %s", storeHost)
 	}
 }
 
@@ -976,13 +1061,16 @@ func TestUpstreamPodEgressPatternsAdmitTheirCDNsAlone(t *testing.T) {
 // The pod's whole policy, written out: an extra rule on any port, a
 // reordered rule or a top-level key such as enableDefaultDeny fails it. The
 // store is its public host, which in-cluster DNS answers with the edge
-// gateway: the pod resolves it and reaches the gateway, entity ingress, on
-// 443, and no port of the in-cluster Forgejo.
+// gateway: the pod resolves it, reaches the gateway, entity ingress, on 443,
+// and Forgejo's HTTP port, the gateway's upstream leg, which the gateway's
+// Envoy holds to the pod's own policy.
 const upstreamPodPolicy = `{
   "endpointSelector": {"matchLabels": {"app.kubernetes.io/name": "upstream-copy"}},
   "egress": [
+    {"toEndpoints": [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "forgejo", "k8s:app.kubernetes.io/name": "forgejo"}}],
+     "toPorts": [{"ports": [{"port": "3000", "protocol": "TCP"}]}]},
     {"toFQDNs": [
-       {"matchName": "registry-1.docker.io"}, {"matchName": "auth.docker.io"},
+       {"matchName": "index.docker.io"}, {"matchName": "auth.docker.io"},
        {"matchName": "production.cloudfront.docker.com"}, {"matchName": "production.cloudflare.docker.com"},
        {"matchName": "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com"},
        {"matchName": "ghcr.io"}, {"matchName": "pkg-containers.githubusercontent.com"},
@@ -998,7 +1086,7 @@ const upstreamPodPolicy = `{
     {"toEndpoints": [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}],
      "toPorts": [{"ports": [{"port": "53", "protocol": "ANY"}],
        "rules": {"dns": [
-         {"matchName": "registry-1.docker.io"}, {"matchName": "auth.docker.io"},
+         {"matchName": "index.docker.io"}, {"matchName": "auth.docker.io"},
          {"matchName": "production.cloudfront.docker.com"}, {"matchName": "production.cloudflare.docker.com"},
          {"matchName": "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com"},
          {"matchName": "ghcr.io"}, {"matchName": "pkg-containers.githubusercontent.com"},
