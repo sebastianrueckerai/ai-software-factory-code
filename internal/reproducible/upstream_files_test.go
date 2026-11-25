@@ -92,6 +92,15 @@ func storePath(url string) string {
 	return rest
 }
 
+// infraFiles are the packages of upstream-files.txt that the infra
+// repository's follow reads: no build of this repository downloads them.
+var infraFiles = []string{"cnpg-operator", "barman-cloud-plugin", "local-path-provisioner", "go"}
+
+// buildFiles is upstream-files.txt's lines that the builds read.
+func buildFiles() []pins.File {
+	return slices.DeleteFunc(pins.Files(), func(f pins.File) bool { return slices.Contains(infraFiles, f.Package) })
+}
+
 // Every file the builds download with ADD is the store's copy of a line of
 // upstream-files.txt at the same sha256 (roadmap 203, step 2):
 // scripts/upstream-files fills the store from the list, so a download no
@@ -102,9 +111,9 @@ func storePath(url string) string {
 // runner image's eight downloads and the sandbox's two, opencode and
 // gotestsum; node and the PGDG key serve both images.
 func TestUpstreamFilesNameEveryDownload(t *testing.T) {
-	listed := pins.Files()
-	if len(listed) == 0 {
-		t.Fatal("upstream-files.txt lists no file")
+	listed := buildFiles()
+	if len(listed) == 0 || len(listed)+len(infraFiles) != len(pins.Files()) {
+		t.Fatalf("upstream-files.txt lists %d lines the builds read and the %d lines of the infra repository, want its %d", len(listed), len(infraFiles), len(pins.Files()))
 	}
 	want := map[string]string{}
 	for _, f := range []string{"Dockerfile.runner", "Dockerfile.sandbox"} {
@@ -155,17 +164,31 @@ func TestPinsParseTheLists(t *testing.T) {
 		"short v1 tool.tar.gz https://example.org/tool.tar.gz\n" +
 		"plain v1 tool.tar.gz http://example.org/tool.tar.gz " + sum + "\n" +
 		"bad v1 tool.tar.gz https://example.org/tool.tar.gz abc\n" +
+		"held v1 held.tar.gz https://example.org/held.tar.gz " + sum + " hold\n" +
+		"kept v1 kept.tar.gz https://example.org/kept.tar.gz " + sum + " patch\n" +
+		"manifest v1 m.yaml https://example.org/v1/m.yaml " + sum + " with example.org/m\n" +
+		"both v1 both.yaml https://example.org/both.yaml " + sum + " hold with example.org/m\n" +
+		"later v1 later.yaml https://example.org/later.yaml " + sum + " later\n" +
+		"bare v1 bare.yaml https://example.org/bare.yaml " + sum + " with\n" +
 		"other v1 other.tar.gz https://example.org/tool.tar.gz " + sum + "\n" +
 		"a/b v1 tool.tar.gz https://example.org/tool.tar.gz " + sum)
-	want := []pins.File{{Package: "tool", Version: "v1", Name: "tool.tar.gz", URL: "https://example.org/dl/v1/tool.tar.gz", SHA256: sum}}
+	want := []pins.File{
+		{Package: "tool", Version: "v1", Name: "tool.tar.gz", URL: "https://example.org/dl/v1/tool.tar.gz", SHA256: sum},
+		{Package: "held", Version: "v1", Name: "held.tar.gz", URL: "https://example.org/held.tar.gz", SHA256: sum, Rule: "hold"},
+		{Package: "kept", Version: "v1", Name: "kept.tar.gz", URL: "https://example.org/kept.tar.gz", SHA256: sum, Rule: "patch"},
+		{Package: "manifest", Version: "v1", Name: "m.yaml", URL: "https://example.org/v1/m.yaml", SHA256: sum, Rule: "with", Lead: "example.org/m"},
+		{Package: "both", Version: "v1", Name: "both.yaml", URL: "https://example.org/both.yaml", SHA256: sum, Rule: "hold", Lead: "example.org/m"},
+	}
 	if !slices.Equal(files, want) {
 		t.Errorf("files %+v, want %+v", files, want)
 	}
-	shape := "want <package> <version> <file> <https URL> <64 hex of the file's sha256>"
+	shape := "want <package> <version> <file> <https URL> <64 hex of the file's sha256>, then nothing, patch, hold, with <name> or hold with <name>"
 	store := "the store takes generic/<package>/<version>/<file>, the file its URL's name"
 	if got, wantErr := fmt.Sprint(err), `"short v1 tool.tar.gz https://example.org/tool.tar.gz": `+shape+"\n"+
 		`"plain v1 tool.tar.gz http://example.org/tool.tar.gz `+sum+`": `+shape+"\n"+
 		`"bad v1 tool.tar.gz https://example.org/tool.tar.gz abc": `+shape+"\n"+
+		`"later v1 later.yaml https://example.org/later.yaml `+sum+` later": `+shape+"\n"+
+		`"bare v1 bare.yaml https://example.org/bare.yaml `+sum+` with": `+shape+"\n"+
 		`"other v1 other.tar.gz https://example.org/tool.tar.gz `+sum+`": `+store+"\n"+
 		`"a/b v1 tool.tar.gz https://example.org/tool.tar.gz `+sum+`": `+store; got != wantErr {
 		t.Errorf("files error\n%s\nwant\n%s", got, wantErr)
@@ -173,8 +196,16 @@ func TestPinsParseTheLists(t *testing.T) {
 	if got := files[0].StoreURL(); got != "https://git.aisoftwarefactory.world/api/packages/upstream/generic/tool/v1/tool.tar.gz" {
 		t.Errorf("StoreURL = %s", got)
 	}
-	if got := files[0].String(); got != "tool v1 tool.tar.gz https://example.org/dl/v1/tool.tar.gz "+sum {
-		t.Errorf("String = %s", got)
+	for i, want := range []string{
+		"tool v1 tool.tar.gz https://example.org/dl/v1/tool.tar.gz " + sum,
+		"held v1 held.tar.gz https://example.org/held.tar.gz " + sum + " hold",
+		"kept v1 kept.tar.gz https://example.org/kept.tar.gz " + sum + " patch",
+		"manifest v1 m.yaml https://example.org/v1/m.yaml " + sum + " with example.org/m",
+		"both v1 both.yaml https://example.org/both.yaml " + sum + " hold with example.org/m",
+	} {
+		if got := files[i].String(); got != want {
+			t.Errorf("String = %s, want %s", got, want)
+		}
 	}
 	digest := "@sha256:" + sum
 	images, err := pins.ParseImages("# images\n" +
@@ -386,5 +417,29 @@ func TestUpstreamFilesUploadWhatTheStoreLacks(t *testing.T) {
 	}
 	if strings.Contains(strings.TrimPrefix(string(calls), string(before)), "https://example.org/") {
 		t.Errorf("a file the store holds was fetched:\n%s", calls)
+	}
+}
+
+// A file line that follows an image line names the one line of that image
+// name that the bump moves, and its version is a version of that line's
+// tag: the numbers that the bump copies from the tag.
+func TestUpstreamFileLinesFollowOneImageLine(t *testing.T) {
+	for _, f := range pins.Files() {
+		if f.Lead == "" {
+			continue
+		}
+		var tags []string
+		for _, l := range pins.Images() {
+			if name, tag, ok := strings.Cut(strings.Split(l.Ref, "@")[0], ":"); ok && name == f.Lead && l.Rule != pins.RuleHold {
+				tags = append(tags, tag)
+			}
+		}
+		if f.Rule != pins.RuleWith || len(tags) != 1 {
+			t.Errorf("upstream-files.txt: %s follows %s, which is not the name of one line the bump moves", f.Package, f.Lead)
+			continue
+		}
+		if !strings.Contains(f.Version, strings.TrimPrefix(tags[0], "v")) || !strings.Contains(f.URL, strings.TrimPrefix(tags[0], "v")) {
+			t.Errorf("upstream-files.txt: %s is at %s and names %s, but %s is at %s", f.Package, f.Version, f.URL, f.Lead, tags[0])
+		}
 	}
 }

@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 )
 
 var (
@@ -273,7 +271,7 @@ func TestTheBuildVMDeniesEveryUpstreamFileHost(t *testing.T) {
 		t.Fatal("buildvm.go: the deny list names no host")
 	}
 	upstream := map[string]bool{}
-	for _, l := range pins.Files() {
+	for _, l := range buildFiles() {
 		u, err := url.Parse(l.URL)
 		if err != nil {
 			t.Fatalf("upstream-files.txt: %s: %v", l.URL, err)

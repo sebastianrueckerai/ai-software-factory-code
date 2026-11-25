@@ -17,6 +17,11 @@
 # GOPROXY file layout and the npm tarball _cacache, and the builds
 # restore and install from them with no upstream. The weekly upstream
 # card bumps these lines.
+#
+# After the reference come rule words, as on an image line of
+# upstream-images.txt: patch keeps a line in its minor, hold never moves it
+# (the bump's text names a newer release), and with <image name> gives the
+# line the version of that image line, so a manifest and its images agree.
 
 # Dockerfile.runner's downloads; the buildkit tarball also runs the
 # build VMs (internal/factoryd/buildvm.go)
@@ -38,3 +43,12 @@ gotestsum v1.13.0 gotestsum_1.13.0_linux_amd64.tar.gz https://github.com/gotesty
 # both images' downloads
 node v24.22.3 node-v24.22.3-linux-x64.tar.xz https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb
 pgdg-key ACCC4CF8 ACCC4CF8.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc 0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
+
+# The infra repository's: the unedited release files that its vendored
+# manifests are copied from, each at the version of the image lines the
+# manifest runs, and the Go tarball of the ts-go template's tool, in its
+# minor. Nothing in this repository's builds reads them.
+cnpg-operator 1.30.2 cnpg-1.30.2.yaml https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.2/cnpg-1.30.2.yaml ea4cc355b394e10661d30c6b409cefb19029dd973bccb76b1ed8c789985bc68c with ghcr.io/cloudnative-pg/cloudnative-pg
+barman-cloud-plugin v0.16.0 manifest.yaml https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.16.0/manifest.yaml aee614683892dd4b44ff9f7afaca55254f1c28de17abbaa0552bf2e1228f7155 with ghcr.io/cloudnative-pg/plugin-barman-cloud
+local-path-provisioner v0.0.37 local-path-storage.yaml https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.37/deploy/local-path-storage.yaml 9781b39c24f3f651bd6d6e41b561e04e4904bbdb6d4f8c7a6009df3a702dcd65 with docker.io/rancher/local-path-provisioner
+go 1.25.14 go1.25.14.linux-amd64.tar.gz https://go.dev/dl/go1.25.14.linux-amd64.tar.gz a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712 patch

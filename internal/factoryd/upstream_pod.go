@@ -67,16 +67,13 @@ const (
 
 // bumpFQDNs are the hosts the bump pod reaches: the copy's, whose
 // registries and release downloads the lookup reads too, and the makers'
-// APIs it lists versions from (GitHub's, the PGDG archive's, go.dev's
-// downloads and where they redirect), the Go checksum database, which go
-// get asks, and Docker Hub's API as the lookup names it (internal/bump
+// APIs it lists versions from (GitHub's, the PGDG archive's), the Go
+// checksum database, which go get asks, and Docker Hub's API as the lookup names it (internal/bump
 // registryAPI), where crane names it index.docker.io.
 var bumpFQDNs = append(slices.Clone(upstreamFQDNs),
 	map[string]any{"matchName": "registry-1.docker.io"},
 	map[string]any{"matchName": "api.github.com"},
 	map[string]any{"matchName": "apt.postgresql.org"},
-	map[string]any{"matchName": "go.dev"},
-	map[string]any{"matchName": "dl.google.com"},
 	map[string]any{"matchName": "sum.golang.org"},
 )
 
@@ -112,7 +109,7 @@ func upstreamSweepAge() time.Duration {
 // upstream-images.txt as crane names them (docker.io is index.docker.io),
 // their token realms and where they redirect an API call or a blob; the
 // hosts the https lines of both lists download from and where github.com
-// redirects a release download; and the Go module proxy and the npm
+// and go.dev redirect a download; and the Go module proxy and the npm
 // registry, which fill the two tarballs.
 // TestUpstreamPodEgressAdmitsEveryHostTheScriptsDial holds the list to what
 // the scripts dial and the second hops it names.
@@ -134,6 +131,9 @@ var upstreamFQDNs = []any{
 	map[string]any{"matchPattern": "*-docker.pkg.dev"},
 	map[string]any{"matchName": "github.com"},
 	map[string]any{"matchName": "release-assets.githubusercontent.com"},
+	map[string]any{"matchName": "raw.githubusercontent.com"},
+	map[string]any{"matchName": "go.dev"},
+	map[string]any{"matchName": "dl.google.com"},
 	map[string]any{"matchName": "nodejs.org"},
 	map[string]any{"matchName": "vuln.go.dev"},
 	map[string]any{"matchName": "www.postgresql.org"},

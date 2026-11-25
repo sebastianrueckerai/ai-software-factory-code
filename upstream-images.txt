@@ -22,7 +22,11 @@
 # its digest now. A word after the reference and its kind refines the
 # line: patch keeps it in its minor, hold never moves it, and with <name>
 # gives it the version of the one line of that image name; hold with <name>
-# never moves it, and the bump's text says so when that line moves.
+# never moves it, and the bump's text says so when that line moves. The bump
+# looks a held line up too: its text names the line, held at its version
+# and the newest, when a newer one exists, and only counts the others. A line
+# of a part that the cluster does not follow by itself holds at the version
+# the cluster runs, which an upgrade by hand moves with the part.
 
 # the images' builds
 docker.io/library/golang:1.26.11-alpine@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38 patch
@@ -35,10 +39,11 @@ docker.io/moby/buildkit:v0.35.1@sha256:7583a0667093d941826bcd1d2878d6a360dfd08a8
 docker.io/library/node:24-bookworm-slim@sha256:e0e989b967dacc279681ed81774b2ce9eeebbb0efb8e0c427573235bebf1eda1
 docker.io/library/golang:1.25-bookworm@sha256:c268a04d59aea0b180ed9946a658cfab9e7b3391dc90eed6e4969ccff98c851f patch
 
-# main CI's job image and runner
-docker.io/catthehacker/ubuntu:act-22.04@sha256:77e3edc9c794c1207f8e86a9bafe634391e93829eaaf15814c5efcc7300825ec
-code.forgejo.org/forgejo/runner:13.2.2@sha256:083f957e066f0b2dc3286a248048afa24ec407084d25788ebe14834715c9055e
-docker.io/library/docker:29.10.1-dind@sha256:d367ae4192b30dd0559d1d21cfe7a9465c5b03344960eb51cdfcb5479e765d79
+# the cluster's Forgejo runner, its docker-in-docker and its job image: by
+# hand, so they hold at what runs
+docker.io/catthehacker/ubuntu:act-22.04@sha256:a03f9d3c8f0930dbf586cf375d09ff2a3718ee794a77d2b635f1a0dd79095488 hold
+code.forgejo.org/forgejo/runner:12.7.3@sha256:4b0d1075b1ef22f9180776734d4a9f8f5f52eea836a28eec4c9c74429e4d6b2a hold
+docker.io/library/docker:29.5.2-dind@sha256:392437eb2d6e54f9ae2be9c0aac2cbca95e3f5eb9854b0f0b1d664d473856633 hold
 
 # the platform
 docker.io/library/registry:3@sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8
@@ -47,7 +52,8 @@ docker.io/alpine/kubectl:1.36.4@sha256:8c43e5a81f279abdcb795516afd0c4f6012fdf41e
 docker.io/alpine/k8s:1.36.6@sha256:2b33c17a9e7fa4a7bc25b3194fefbc3363c863e6c073a5a81bf07fb00b99d92b patch
 docker.io/amazon/aws-cli:2.42.3@sha256:7de3a12f38e98c0ffee4dff402c9cd82d7e0f524c8e69f3c667d68c6831c5ba9
 quay.io/openbao/openbao:2.7.3@sha256:b9418c63e2185157d8ee8689a8a93265d5aadad677d6320156172bd42ad3b10b
-# LiteLLM stays in its minor
+# LiteLLM stays in its minor: the bump moves this line within it, and the
+# follow routine moves the cluster to the line, its chart with it
 ghcr.io/berriai/litellm:1.108.17@sha256:b2e660aa1746283f51f185a5eed26b2883da543e8a3ac7df94131f4817e5fd78 patch
 docker.io/temporalio/server:1.32.2@sha256:3e11544607762c3187c12a63e289e03beddf46c21ebb52b47ccb77db179d6313
 docker.io/temporalio/admin-tools:1.32.2@sha256:d6655e288364110b61204fbae5f103232b2c5c78e647a27bc11603d274145809 with docker.io/temporalio/server
@@ -81,20 +87,22 @@ docker.io/curlimages/curl:8.23.0@sha256:3b8fde20978e330b401837f24b871ebe2c8d14ff
 # the nodes' own: Talos's Kubernetes, the installer of its node image, and
 # Cilium, installed by its CLI; the nodes pull them through their registry
 # mirror (infra talos/patches.yaml), mostly by tag
-# A Talos release names its own coredns, etcd and pause, which hold, and
-# cilium-envoy's tag is the one Cilium's chart pins: it holds, and moves by
-# hand with Cilium.
-registry.k8s.io/kube-apiserver:v1.37.3@sha256:05b7c09a7dc5d38e11545a2ec250ceb20818e1f829b41f8049c9661ad527043d bootstrap patch
-registry.k8s.io/kube-controller-manager:v1.37.3@sha256:ed1be36e74994185f6101bc9cdb3cc25d656d2468482a968702cc53bf1535678 bootstrap with registry.k8s.io/kube-apiserver
-registry.k8s.io/kube-scheduler:v1.37.3@sha256:ebc35049e21a5c3df28340b1006d4d13ed5b46f7f5fcfffee28fe4a6823be189 bootstrap with registry.k8s.io/kube-apiserver
+# Upgraded by hand, each by the runbook, so every line holds at the version
+# the cluster runs and the bump's text names a newer one. A Talos release
+# names its own coredns, etcd and pause, and Kubernetes's components and
+# kubelet move with the apiserver's version. cilium-envoy's tag is the one
+# Cilium's chart pins, and operator-generic moves with cilium.
+registry.k8s.io/kube-apiserver:v1.37.0@sha256:83f25d9626d2860003425ad0e31b4d3c73738b2ee16505fca9645d6443b719da bootstrap hold
+registry.k8s.io/kube-controller-manager:v1.37.0@sha256:9db48abfafe1ca12b8cd6208331e0867fa225cb173e7588627cdada1818bcee9 bootstrap hold
+registry.k8s.io/kube-scheduler:v1.37.0@sha256:f705b23a4c819ed0f571ce1f618531acf59e3d53bec13896eb1c3a1d28488041 bootstrap hold
 registry.k8s.io/coredns/coredns:v1.14.7@sha256:2329f5f0e7e79fbe56dcdf11ecc4337ee2476bb251095bc275fe9461cb88a55b bootstrap hold
 registry.k8s.io/etcd:3.7.1@sha256:acf78d83ed1eb6263a0b972fdf4f1e5a3ca536545f8b54947486e22abfe14a11 bootstrap hold
 registry.k8s.io/pause:3.10.2@sha256:412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17 bootstrap hold
-ghcr.io/siderolabs/kubelet:v1.37.3@sha256:f3a6a10d76cb5c1275eee5c301881db2d28dce80752948d0483744dad132d4c5 bootstrap with registry.k8s.io/kube-apiserver
-factory.talos.dev/installer/d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5:v1.14.7@sha256:f43dd6cfd5b12de634d1bcc80848a733ff5fba6d452f2a0632baa46d88124fe3 bootstrap patch
-quay.io/cilium/cilium:v1.20.5@sha256:a54ced05354670afb7fecd075e91130dff5cca16518da7ff3d1ef093c5c2d0ae bootstrap patch
-quay.io/cilium/cilium-envoy:v1.39.6-1794557904-dee711ff0e84b106edd0abcdd71961af1b870359@sha256:32d2f9dd9981d92b11c8a37abac32f1c9397b3601af17b45b9403ad2bccc7dab bootstrap hold with quay.io/cilium/cilium
-quay.io/cilium/operator-generic:v1.20.5@sha256:3362404f43b6a01cf6e370fb637dac427b7b0259ff2629faa9e5b665121a3a76 bootstrap with quay.io/cilium/cilium
+ghcr.io/siderolabs/kubelet:v1.37.0@sha256:3e1d9098c9365fbc23177a1845687d3ffd9ac314042cae7b459454ffea3b4d3b bootstrap hold
+factory.talos.dev/installer/d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5:v1.14.1@sha256:92299630407775fc04b18f7c0d56e679c653b521ec48bb7542640b3bcecb46cf bootstrap hold
+quay.io/cilium/cilium:v1.20.0@sha256:9a9fc73bb594bf2497955a481996c7a4ad146ee2e142152c3890dea10ad6d3c5 bootstrap hold
+quay.io/cilium/cilium-envoy:v1.37.5-1782911245-7cffc778c923f68a77954a53b1a98d6b5353f004@sha256:070017873c423cf294b094eef9794f3670cac8df1872bd30a98f142dd6897e18 bootstrap hold
+quay.io/cilium/operator-generic:v1.20.0@sha256:79e630e3f5e2344a2c352d341a619c1cb7fbe874cadcfe244edf032d62d037c2 bootstrap hold
 
 # Forgejo's path, referenced at the upstream
 code.forgejo.org/forgejo/forgejo:17.0.2-rootless@sha256:020d7e5ed6228f147c9681a9c4a3bff485a07c59108e4731a2e94672f0f2202a bootstrap
@@ -109,7 +117,7 @@ quay.io/jetstack/cert-manager-acmesolver:v1.21.3@sha256:5d9c98380d108c34fba252ce
 quay.io/jetstack/cert-manager-startupapicheck:v1.21.3@sha256:6b9e17adc075c80c0c5cb1f901654f0efa4c5d4b1a8b369985ac67f5bbb0b8d2 bootstrap with quay.io/jetstack/cert-manager-controller
 docker.io/rancher/local-path-provisioner:v0.0.37@sha256:c3f2c60ee2490eb83ac00101d7e239fd8c20a5b8b4038e2dfc36a7e66fe99c08 bootstrap
 docker.io/library/busybox:1.38.0@sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4 bootstrap
-ghcr.io/fluxcd/source-controller:v1.10.2@sha256:4492b6e4503f955048c88f28516c99bc43257aedfb22d1a3ffcbdcea4bccce5c bootstrap
-ghcr.io/fluxcd/kustomize-controller:v1.10.2@sha256:d69dcc5f20edb713411f984dba2941ede5db7e4fb76ace831ec787cddb6c4a08 bootstrap
-ghcr.io/fluxcd/helm-controller:v1.7.2@sha256:6b9538805ba593e00dabec786939686f0266f653bec827aab0106b84c220c12e bootstrap
-ghcr.io/fluxcd/notification-controller:v1.10.1@sha256:b902b87f3f69a27e98eb5092220b42644b9b554dc23dbf97aded9b784f87f9db bootstrap
+ghcr.io/fluxcd/source-controller:v1.9.5@sha256:b2ac269f9d13d82514bcbf0e7057a4ae1d98504058b9353cead7e2452a64384f bootstrap hold
+ghcr.io/fluxcd/kustomize-controller:v1.9.5@sha256:ed11ebded23c9e9fe475f7d54b08cc34697e8f01bcd5cfd144fd5aef7b5d8f0d bootstrap hold
+ghcr.io/fluxcd/helm-controller:v1.6.4@sha256:2ba739b5c0df833dcd463fc1984673f506a5fd0aff64c2f8b28d528b0796f066 bootstrap hold
+ghcr.io/fluxcd/notification-controller:v1.9.4@sha256:69e484e937549694240d5754541feed0993a162000dbc07e7e262b9f41340348 bootstrap hold

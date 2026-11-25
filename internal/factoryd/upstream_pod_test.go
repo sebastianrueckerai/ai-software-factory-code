@@ -876,6 +876,7 @@ var upstreamSecondHops = map[string]string{
 	"*-docker.pkg.dev":                                                             "where registry.k8s.io redirects its API (europe-west3 seen, us-west1 in #1698)",
 	"cdn.factory.talos.dev":                                                        "where factory.talos.dev redirects a blob",
 	"release-assets.githubusercontent.com":                                         "where github.com redirects a release download",
+	"dl.google.com":                                                                "where go.dev redirects a Go tarball (seen 2026-11-25)",
 }
 
 // podEgressFor is whether the pod's DNS rule resolves host and an FQDN rule
@@ -1078,6 +1079,7 @@ const upstreamPodPolicy = `{
        {"matchName": "code.forgejo.org"}, {"matchName": "factory.talos.dev"}, {"matchName": "cdn.factory.talos.dev"},
        {"matchPattern": "cdn*.quay.io"}, {"matchPattern": "*-docker.pkg.dev"},
        {"matchName": "github.com"}, {"matchName": "release-assets.githubusercontent.com"},
+       {"matchName": "raw.githubusercontent.com"}, {"matchName": "go.dev"}, {"matchName": "dl.google.com"},
        {"matchName": "nodejs.org"}, {"matchName": "vuln.go.dev"}, {"matchName": "www.postgresql.org"},
        {"matchName": "proxy.golang.org"}, {"matchName": "registry.npmjs.org"}],
      "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]},
@@ -1094,6 +1096,7 @@ const upstreamPodPolicy = `{
          {"matchName": "code.forgejo.org"}, {"matchName": "factory.talos.dev"}, {"matchName": "cdn.factory.talos.dev"},
          {"matchPattern": "cdn*.quay.io"}, {"matchPattern": "*-docker.pkg.dev"},
          {"matchName": "github.com"}, {"matchName": "release-assets.githubusercontent.com"},
+         {"matchName": "raw.githubusercontent.com"}, {"matchName": "go.dev"}, {"matchName": "dl.google.com"},
          {"matchName": "nodejs.org"}, {"matchName": "vuln.go.dev"}, {"matchName": "www.postgresql.org"},
          {"matchName": "proxy.golang.org"}, {"matchName": "registry.npmjs.org"},
          {"matchName": "store.example"}]}}]}
