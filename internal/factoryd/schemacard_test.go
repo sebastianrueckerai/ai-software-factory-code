@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -41,6 +42,10 @@ type cardForgejo struct {
 	// "#number at head: message"; a merge brings main to the branch.
 	mergeable bool
 	statuses  []CommitStatus
+	// statusSeq, when set, answers the n-th read of the head's statuses
+	// with its n-th element, the last one for every read after
+	statusSeq [][]CommitStatus
+	reads     int
 	refuse    string
 	merges    []string
 }
@@ -95,7 +100,12 @@ func (s *cardForgejo) server(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]any{"number": number, "state": "open", "mergeable": s.mergeable, "base": map[string]string{"ref": "main"},
 				"head": map[string]any{"ref": schemaHead, "sha": "h1", "repo": map[string]string{"full_name": "factory-agent/ai-software-factory-infra"}}})
 		case p == cardUpPath+"/commits/h1/status":
-			json.NewEncoder(w).Encode(map[string]any{"state": "", "statuses": s.statuses})
+			statuses := s.statuses
+			if s.statusSeq != nil {
+				statuses = s.statusSeq[min(s.reads, len(s.statusSeq)-1)]
+			}
+			s.reads++
+			json.NewEncoder(w).Encode(map[string]any{"state": "", "statuses": statuses})
 		case strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/comments"):
 			prefix := strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/comments") + ": "
 			out := []map[string]any{}
@@ -292,6 +302,9 @@ func cardRig(t *testing.T) (*cardForgejo, *SchemaCopier, *fakeStore, *fakeWorkfl
 	for name, b := range schemas {
 		main["factory/schema/"+name] = string(b)
 	}
+	for name, b := range pins.ListFiles() {
+		main[name] = string(b)
+	}
 	main["factory/schema/policy.schema.json"] = "{}\n"
 	fj := &cardForgejo{main: main, branches: map[string]map[string]string{}}
 	srv := fj.server(t)
@@ -358,7 +371,7 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	}
 	if card.Repository != cardUpstream || card.SHA != "0123456789ab" ||
 		!strings.HasPrefix(card.Objective, "Copy the changed schemas to "+cardUpstream+"\n\nThe factory opened pull request [#1]") ||
-		!strings.Contains(card.Objective, "what build 0123456789ab generates") {
+		!strings.Contains(card.Objective, "what build 0123456789ab carries") {
 		t.Fatalf("card = %+v, want it on %s naming this build", card, cardUpstream)
 	}
 	if !slices.Equal(wf.started, []string{card.ID}) {
@@ -371,7 +384,7 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	wantBody := "Why: A new build changed the configuration schemas, and their copies in sf/ai-software-factory-infra no longer match.\n\n" +
 		"Summary: A pull request that writes the changed schemas into their copies. The policy check runs on it, and its merge makes the copies match the build.\n\n---\n\n" +
 		"The factory opened pull request [#1](https://git.example/sf/ai-software-factory-infra/pulls/1) on sf/ai-software-factory-infra: " +
-		"main's copies of the generated schemas differ from what build 0123456789ab generates.\n\n" +
+		"main's copies of the generated schemas and the upstream lists differ from what build 0123456789ab carries.\n\n" +
 		"Files: factory/schema/policy.schema.json\n\n"
 	if !strings.HasPrefix(issues[0].body, wantBody) {
 		t.Fatalf("issue body = %q, want it to name pull request #1 and the file it writes", issues[0].body)
@@ -739,6 +752,10 @@ func TestSchemaCopierLeavesARefusedMergeToAHuman(t *testing.T) {
 		}, false, "the check “config-check” of its head h1 has the state pending"},
 		{"Forgejo's refusal", func(fj *cardForgejo) { fj.refuse = "Not allowed to merge" }, true,
 			`the bot's merge failed: forgejo POST /api/v1/repos/sf/ai-software-factory-infra/pulls/1/merge: forgejo: refused: status 405: {"message":"Not allowed to merge"}`},
+		{"a list of other bytes", foreign(func(b map[string]string) { b["upstream-files.txt"] = "other\n" }), false,
+			"upstream-files.txt at its head h1 is not the copy of build 0123456789ab"},
+		{"a foreign file at the root", foreign(func(b map[string]string) { b["README.md"] = "x\n" }), false,
+			"it changes README.md besides the copies of build 0123456789ab"},
 		{"a foreign file", foreign(func(b map[string]string) { b["factory/policy.yaml"] = "version: 2\n" }), false,
 			"it changes factory/policy.yaml besides the copies of build 0123456789ab"},
 		{"a copy of other bytes", foreign(func(b map[string]string) { b["factory/schema/policy.schema.json"] = "{\"x\": 1}\n" }), false,

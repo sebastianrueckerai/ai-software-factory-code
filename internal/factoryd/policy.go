@@ -497,8 +497,13 @@ func (c *ForgejoConfig) Files(ctx context.Context, commit string) (map[string][]
 
 // File reads name, relative to Dir, at commit.
 func (c *ForgejoConfig) File(ctx context.Context, commit, name string) ([]byte, error) {
+	return c.RepoFile(ctx, commit, c.Dir+"/"+name)
+}
+
+// RepoFile reads path of Repo, from its root, at commit.
+func (c *ForgejoConfig) RepoFile(ctx context.Context, commit, path string) ([]byte, error) {
 	var segs []string
-	for _, seg := range strings.Split(c.Dir+"/"+name, "/") {
+	for _, seg := range strings.Split(path, "/") {
 		segs = append(segs, url.PathEscape(seg))
 	}
 	return c.call(ctx, "raw/"+strings.Join(segs, "/")+"?ref="+url.QueryEscape(commit))

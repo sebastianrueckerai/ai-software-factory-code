@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -206,6 +207,9 @@ func schemaRig(t *testing.T, change func(main map[string]string)) (*schemaForgej
 	for name, b := range schemas {
 		main["factory/schema/"+name] = string(b)
 	}
+	for name, b := range pins.ListFiles() {
+		main[name] = string(b)
+	}
 	change(main)
 	fj := &schemaForgejo{main: main}
 	srv := fj.server(t)
@@ -257,11 +261,11 @@ func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 	if got := branch["factory/schema/commit"]; got != codeMine+"\n" {
 		t.Errorf("the commit file holds %q, want this build's commit", got)
 	}
-	body := "Main's copies of these schemas differ from what the factory's build 0123456789ab generates. This pull request writes them whole:\n\n" +
+	body := "Main's copies of these files, the generated schemas and the upstream lists, differ from what the factory's build 0123456789ab carries. This pull request writes them whole:\n\n" +
 		"- `factory/schema/policy.schema.json`: differs\n" +
 		"- `factory/schema/process.schema.json`: missing\n\n" +
 		"`factory/schema/commit` names the build's commit " + codeMine + ": a later build writes over these copies, an older one leaves them.\n\n" +
-		"The factory merges it itself once Forgejo reports it mergeable, no check of its head fails or runs, and it changes only these files, each to the build's bytes. " +
+		"The factory merges it itself once Forgejo reports it mergeable, no check of its head fails or is still running, and it changes only these files, each to the build's bytes. " +
 		"Otherwise a card asks a human to merge it. `factoryd config check` only warns about a stale copy.\n"
 	want := []schemaPR{{number: 1, head: "factory/schema-0123456789ab", headRepo: "factory-agent/ai-software-factory-infra",
 		title: "Schema copies for 0123456789ab", body: body, poster: "bot", state: "open"}}
@@ -434,5 +438,33 @@ func TestSchemaCopierLeavesCopiesItsCommitDoesNotHold(t *testing.T) {
 				t.Fatalf("pull requests %+v, comments %q, writes %q; want the one open, none, none", prs, comments, writes)
 			}
 		})
+	}
+}
+
+// the lists are copies too: a stale one at the root and a missing one go
+// into the pull request beside the schemas, whole, and nothing else does
+func TestSchemaCopierWritesTheLists(t *testing.T) {
+	fj, c := schemaRig(t, func(main map[string]string) {
+		main["upstream-images.txt"] = "old\n"
+		delete(main, "upstream-files.txt")
+	})
+	if err := c.SyncOnce(context.Background(), 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	branch := fj.branch("factory/schema-0123456789ab")
+	if got, want := changed(fj.main, branch), []string{"factory/schema/commit", "upstream-files.txt", "upstream-images.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the branch changes %v, want %v", got, want)
+	}
+	lists := pins.ListFiles()
+	for name, b := range lists {
+		if branch[name] != string(b) {
+			t.Errorf("%s is not written whole", name)
+		}
+	}
+	prs, _, _ := fj.state()
+	for _, line := range []string{"- `upstream-files.txt`: missing\n", "- `upstream-images.txt`: differs\n"} {
+		if len(prs) != 1 || !strings.Contains(prs[0].body, line) {
+			t.Errorf("pull request %+v lacks %q", prs, line)
+		}
 	}
 }

@@ -28,9 +28,16 @@ the loader does and compares its `schema/` with the generated one: exit
 runs it on every push to `main`. When `main`'s copies differ from its
 build's, factoryd opens one pull request at boot from the bot's fork that
 writes the build's copies and `commit`, and merges it itself as the bot once
-Forgejo reports it mergeable, no check of its head fails or runs, and it
-changes only those files, each to the build's bytes. A pull request it does
-not merge gets a card that names why and asks a human to merge it.
+Forgejo reports it mergeable, no check of its head fails, and it changes only
+those files, each to the build's bytes. The copies are the schemas under
+`factory/schema/` and the two upstream lists, `upstream-images.txt` and
+`upstream-files.txt`, at the root of the infra repository, where the follow
+program reads them ([the follow program](#the-follow-program)). While a check
+of the head is pending it waits, for up to 20 minutes, and a head that has
+reported no check at all it waits for one more minute; `LandPullRequest`
+(`internal/factoryd/land.go`) is that wait and merge, for any pull request of
+the factory on one repository. A pull request it does not merge gets a card
+that names why and asks a human to merge it.
 `factoryd config explain [--tree <dir>]
 <process> <card kind>` prints the path of a card kind (`direct`, `plan`,
 `child`) through a process, generated from the
@@ -814,3 +821,40 @@ out only on 53, 80 and 443, as build VMs. Its egress is not
 name-restricted: an agent can reach the internet on those ports through
 its server, beyond the sandbox's allowlist, for at most the lease.
 
+## The follow program
+
+`internal/follow` moves the references of the infra tree to the lines of the two
+upstream lists, which the schema copy keeps at the tree's root. It is a pure
+function over the tree's files: it calls no host and writes nothing itself.
+A reference is found by its marker, a comment line directly above the line that
+holds the value:
+
+| Marker | The program writes |
+|---|---|
+| `# pin <name>` | the image or OCI chart line of that name: `tag@sha256:digest`, else the digest alone, else the line's last scalar as a version |
+| `# pin <name>:<tag pattern>` | the same, where lines share a name; `*` stands for one run of digits |
+| `# pin chart <chart>` | the version of the `helm` line whose archive is `<chart>-<version>.tgz` |
+| `# pin image-of <archive>` | tag: first 12 hex of the `onto` line's sha256; digest: the store's digest of that file-derived image |
+| `# pin file <package>` | on the marked line, the version, the URL or the sha256, whichever stands there |
+| `# pin copy <package>` | the file the line names is replaced by the store's copy of the file line, checked against its sha256 |
+
+A value that fits no shape, a key with no line or several, a marker outside every
+part or in two, a marker in a part of lane `hand`, an unmarked `sha256:<64 hex>`
+(outside a `hand` part, a copy, the lists, `factory/projects/`, an all-zero
+placeholder and a reference into `git.aisoftwarefactory.world/sf/`) and a value
+that is newer than the list's all stop the program, each naming file, line and key.
+
+The project file's `parts:` lists the parts in the order of their moves. Each has
+a name, a lane and paths (files or directories). Lane `alone` merges once the checks
+are green, `human` waits for a human's merge, `hand` is never moved: its paths are
+where digests may stand with no marker, and they may overlap one another.
+
+`factoryd follow [-w] <dir>` prints for each part what is behind and which files it
+would write, and writes them with `-w`. The store is read with `REGISTRY_USER` and
+`REGISTRY_PASSWORD` (`FORGEJO_PUBLIC_URL` names it); without a login the digest of a
+file-derived image stays as it is and no copy is fetched. `factoryd follow check <dir>
+[--base <dir>]` is the infra repository's check before a merge: every marker is well
+formed and in one part, no digest lacks its marker, and each marked value that differs
+from `--base`'s is exactly its list line. A part may stay behind; the last line counts
+the references behind. The check reaches no network, so it proves a file-derived
+image's tag and a copy's sha256, and leaves the digest to the store test.
