@@ -68,9 +68,11 @@ const (
 // bumpFQDNs are the hosts the bump pod reaches: the copy's, whose
 // registries and release downloads the lookup reads too, and the makers'
 // APIs it lists versions from (GitHub's, the PGDG archive's, go.dev's
-// downloads and where they redirect), and the Go checksum database, which
-// go get asks.
+// downloads and where they redirect), the Go checksum database, which go
+// get asks, and Docker Hub's API as the lookup names it (internal/bump
+// registryAPI), where crane names it index.docker.io.
 var bumpFQDNs = append(slices.Clone(upstreamFQDNs),
+	map[string]any{"matchName": "registry-1.docker.io"},
 	map[string]any{"matchName": "api.github.com"},
 	map[string]any{"matchName": "apt.postgresql.org"},
 	map[string]any{"matchName": "go.dev"},
@@ -106,12 +108,16 @@ func upstreamSweepAge() time.Duration {
 	return upstreamDeadline + upstreamStartGrace + upstreamSweepSlack
 }
 
-// upstreamFQDNs are the upstream registries upstream-images.txt names, their
-// token endpoints and the hosts their blobs redirect to; the hosts the https
-// lines of both lists download from and where those downloads redirect; and
-// the Go module proxy and the npm registry, which fill the two tarballs.
+// upstreamFQDNs are the hosts the scripts' tools dial: the registries of
+// upstream-images.txt as crane names them (docker.io is index.docker.io),
+// their token realms and where they redirect an API call or a blob; the
+// hosts the https lines of both lists download from and where github.com
+// redirects a release download; and the Go module proxy and the npm
+// registry, which fill the two tarballs.
+// TestUpstreamPodEgressAdmitsEveryHostTheScriptsDial holds the list to what
+// the scripts dial and the second hops it names.
 var upstreamFQDNs = []any{
-	map[string]any{"matchName": "registry-1.docker.io"},
+	map[string]any{"matchName": "index.docker.io"},
 	map[string]any{"matchName": "auth.docker.io"},
 	map[string]any{"matchName": "production.cloudfront.docker.com"},
 	map[string]any{"matchName": "production.cloudflare.docker.com"},
@@ -579,24 +585,23 @@ func (u *UpstreamPod) podSpec(job podRun) map[string]any {
 
 // upstreamEgressSpec admits the copy pod to the upstreams by name on 443, to
 // the store's public host, which in-cluster DNS answers with the edge
-// gateway (entity ingress, as a build job's runner reaches it), and DNS for
-// those names.
+// gateway, and DNS for those names. It reaches the store as a build job's
+// runner does: the gateway, entity ingress, on 443, and Forgejo's HTTP port,
+// the gateway's upstream leg, which the gateway's Envoy holds to this
+// policy.
 func upstreamEgressSpec(storeHost string) map[string]any {
 	dns := append(append([]any{}, upstreamFQDNs...), matchNames(storeHost)...)
 	return map[string]any{
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": upstreamPodName},
 		},
-		"egress": []any{fqdnEgress(upstreamFQDNs), map[string]any{
-			"toEntities": []any{"ingress"},
-			"toPorts":    []any{map[string]any{"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}}}},
-		}, dnsEgress(dns)},
+		"egress": []any{forgejoHTTPEgress(), fqdnEgress(upstreamFQDNs), edgeGatewayEgress(), dnsEgress(dns)},
 	}
 }
 
 // unadmittedLines are the findings for the lines of the lists whose host the
 // pod's egress does not admit: an image line's registry, docker.io's being
-// registry-1.docker.io, and an https line's URL host. A line of neither
+// index.docker.io as crane names it, and an https line's URL host. A line of neither
 // list's shape is the copy scripts' to refuse.
 func unadmittedLines(files map[string][]byte) []string {
 	var out []string
@@ -605,7 +610,7 @@ func unadmittedLines(files map[string][]byte) []string {
 		if u, err := url.Parse(ref); err == nil && u.Scheme == "https" {
 			host = u.Hostname()
 		} else if host, _, _ = strings.Cut(ref, "/"); host == "docker.io" {
-			host = "registry-1.docker.io"
+			host = "index.docker.io"
 		}
 		if !admits(upstreamFQDNs, host) {
 			out = append(out, fmt.Sprintf("%s: %s names %s, outside the copy's egress: a commit adds the host to upstreamFQDNs in internal/factoryd/upstream_pod.go", list, ref, host))

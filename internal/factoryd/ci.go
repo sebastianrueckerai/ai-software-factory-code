@@ -1224,6 +1224,19 @@ func forgejoHTTPEgress() map[string]any {
 	}
 }
 
+// edgeGatewayEgress admits the edge gateway, entity ingress, on 443: where
+// in-cluster DNS sends the store's public host. The gateway's Envoy holds the
+// pod's own policy on its upstream leg too, so a pod that reaches the store
+// this way needs forgejoHTTPEgress as well.
+func edgeGatewayEgress() map[string]any {
+	return map[string]any{
+		"toEntities": []any{"ingress"},
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
+		}},
+	}
+}
+
 // fqdnEgress admits each name of names, a matchName or a matchPattern
 // entry, on 443.
 func fqdnEgress(names []any) map[string]any {
@@ -1466,12 +1479,7 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo, staging string) map[s
 		})
 	}
 	if vm != nil {
-		egress = append(egress, buildVMEgressRule(vm.IPv4), map[string]any{
-			"toEntities": []any{"ingress"},
-			"toPorts": []any{map[string]any{
-				"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
-			}},
-		}, map[string]any{
+		egress = append(egress, buildVMEgressRule(vm.IPv4), edgeGatewayEgress(), map[string]any{
 			"toEndpoints": []any{map[string]any{
 				"matchLabels": map[string]string{
 					"k8s:io.kubernetes.pod.namespace": "forgejo",
