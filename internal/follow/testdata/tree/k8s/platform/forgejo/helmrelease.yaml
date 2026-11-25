@@ -1,0 +1,6 @@
+  values:
+    # Pinned by digest at the upstream: Forgejo serves the factory's store,
+    # so it cannot start from it (the code repository's upstream-images.txt
+    # marks it bootstrap).
+    # pin code.forgejo.org/forgejo/forgejo
+    image: {tag: "17.0.1", digest: "sha256:b76f32add7267b2a791ea04014a441cf9d086050e7c0250feec9fb7066e9828f"}

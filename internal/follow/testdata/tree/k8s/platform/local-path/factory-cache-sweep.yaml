@@ -1,0 +1,2 @@
+        # pin docker.io/library/busybox
+        image: docker.io/library/busybox:1.38.0@sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4

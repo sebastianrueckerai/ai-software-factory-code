@@ -1,0 +1,5 @@
+        file:
+          runner:
+            labels:
+              # pin docker.io/catthehacker/ubuntu
+              - ubuntu-latest:docker://git.aisoftwarefactory.world/upstream/docker.io/catthehacker/ubuntu:act-22.04@sha256:a03f9d3c8f0930dbf586cf375d09ff2a3718ee794a77d2b635f1a0dd79095488

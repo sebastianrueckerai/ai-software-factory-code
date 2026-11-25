@@ -259,9 +259,9 @@ func withoutReceipt(comments []string) []string {
 // quickMergeWaits bounds the wait for Forgejo's mergeability check at 5ms
 // for the test.
 func quickMergeWaits(t *testing.T) {
-	prev := mergeWaitBound
-	mergeWaitBound = 5 * time.Millisecond
-	t.Cleanup(func() { mergeWaitBound = prev })
+	prev, bound, poll, grace := mergeWaitBound, landChecksBound, landChecksPoll, landNoStatusGrace
+	mergeWaitBound, landChecksBound, landChecksPoll, landNoStatusGrace = 5*time.Millisecond, 5*time.Millisecond, time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { mergeWaitBound, landChecksBound, landChecksPoll, landNoStatusGrace = prev, bound, poll, grace })
 }
 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {

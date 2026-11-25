@@ -182,6 +182,12 @@ func mustImagesFile() policy.ImagesFile {
 	return f
 }
 
+// ListFiles is the two lists as compiled in, by their file names: the
+// copies the schema copy keeps at the root of the infra repository.
+func ListFiles() map[string][]byte {
+	return map[string][]byte{"upstream-images.txt": []byte(imagesList), "upstream-files.txt": []byte(filesList)}
+}
+
 // Files is upstream-files.txt's lines.
 func Files() []File { return slices.Clone(files) }
 

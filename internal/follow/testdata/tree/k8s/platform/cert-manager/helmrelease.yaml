@@ -1,0 +1,8 @@
+    # certificate) before the store serves (the code repository's
+    # upstream-images.txt marks these bootstrap).
+    # pin quay.io/jetstack/cert-manager-controller
+    image: {digest: "sha256:57bb397c639e0e94184ba67848e5dad04284f24645e521e764a0ee5f5002f286"}
+    # pin quay.io/jetstack/cert-manager-acmesolver
+    acmesolver: {image: {digest: "sha256:dc5c5b8456d1a50af47a240987e85afce352b5c1155a8a4698b7c91eac19f407"}}
+    # pin quay.io/jetstack/cert-manager-startupapicheck
+    startupapicheck: {image: {digest: "sha256:ed347b0ab607058f139b83f41567109456b9776330b63da8086a120afb7f1729"}}
