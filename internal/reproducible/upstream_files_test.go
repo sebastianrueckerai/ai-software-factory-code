@@ -245,7 +245,9 @@ func TestBuildsNameNoUpstreamFileURL(t *testing.T) {
 // scripts/upstream-files uploads only what the store lacks: a file the
 // store holds is left alone, a missing one is downloaded, checked
 // against its line's sha256 and PUT, and a mismatch fails the copy
-// naming the file. go.sum's modules and the opencode lockfile's npm
+// naming the file, and a store's copy of other bytes than the line's
+// sha256 fails it too: the store keeps a version's first upload, so the
+// line can never be served. go.sum's modules and the opencode lockfile's npm
 // packages ride as one tarball each, versioned by their lockfile's
 // sha256, and no code of a dependency runs to fill them: go runs on its
 // local toolchain with -mod=mod, npm ci with --ignore-scripts. A stateful
@@ -273,14 +275,14 @@ func TestUpstreamFilesUploadWhatTheStoreLacks(t *testing.T) {
 	write(filepath.Join("opencode-plugin", "package-lock.json"), "lock bytes\n")
 	const generic = "https://git.aisoftwarefactory.world/api/packages/upstream/generic"
 	curl := "#!/bin/sh\necho \"curl $*\" >> " + dir + "/calls\n" +
-		"out=; verb=GET; prev=\n" +
-		"for a; do [ \"$prev\" = -o ] && out=$a; [ \"$prev\" = -X ] && verb=$a; prev=$a; done\n" +
+		"out=; verb=GET; up=; prev=\n" +
+		"for a; do [ \"$prev\" = -o ] && out=$a; [ \"$prev\" = -X ] && verb=$a; [ \"$prev\" = --upload-file ] && up=$a; prev=$a; done\n" +
 		"case \"$a\" in\n" +
 		generic + "/*)\n" +
 		"  name=$(printf %s \"${a##*generic/}\" | tr / _)\n" +
-		"  if [ \"$verb\" = PUT ]; then touch " + dir + "/state/$name; exit 0; fi\n" +
-		"  [ -f " + dir + "/state/$name ] && exit 0\n" +
-		"  exit 22 ;;\n" +
+		"  if [ \"$verb\" = PUT ]; then cp \"$up\" " + dir + "/state/$name; exit 0; fi\n" +
+		"  [ -f " + dir + "/state/$name ] || exit 22\n" +
+		"  if [ -n \"$out\" ]; then cp " + dir + "/state/$name \"$out\"; else cat " + dir + "/state/$name; fi ;;\n" +
 		"https://example.org/held.txt) printf 'held bytes' > \"$out\" ;;\n" +
 		"https://example.org/new.tar.gz) printf 'new bytes' > \"$out\" ;;\n" +
 		"https://example.org/rot.bin) printf 'rot bytes' > \"$out\" ;;\n" +
@@ -307,7 +309,7 @@ func TestUpstreamFilesUploadWhatTheStoreLacks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(filepath.Join("state", "held_v1_held.txt"), "")
+	write(filepath.Join("state", "held_v1_held.txt"), "held bytes")
 	write(filepath.Join("modcache", "cache", "download", "example.com", "mod", "@v", "list"), "v1.0.0\n")
 	script, err := filepath.Abs(filepath.Join("..", "..", "scripts", "upstream-files"))
 	if err != nil {
@@ -363,5 +365,26 @@ func TestUpstreamFilesUploadWhatTheStoreLacks(t *testing.T) {
 	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "REGISTRY_USER=u", "REGISTRY_PASSWORD=p")
 	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "rot.bin") {
 		t.Errorf("upstream-files on a wrong sha256: %v: %s, want rot.bin named", err, out)
+	}
+	// the store holds other bytes under the line's version: the copy
+	// fails naming it, and fetches nothing
+	write(filepath.Join("state", "moved_v4_moved.zip"), "old bytes")
+	write("moved", "moved v4 moved.zip https://example.org/new.tar.gz "+newsum+"\n")
+	before, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(script, "moved")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "REGISTRY_USER=u", "REGISTRY_PASSWORD=p")
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "moved v4 moved.zip: the store holds sha256 "+sum("old bytes")+", the line pins "+newsum) {
+		t.Errorf("upstream-files on a store copy of other bytes: %v: %s, want moved.zip named with both sums", err, out)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.TrimPrefix(string(calls), string(before)), "https://example.org/") {
+		t.Errorf("a file the store holds was fetched:\n%s", calls)
 	}
 }

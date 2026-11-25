@@ -6,11 +6,13 @@
 # uploaded to the store's generic package registry,
 # /api/packages/upstream/generic/<package>/<version>/<file>, only when
 # the store lacks it: the download is checked against the line's sha256
-# first, and a mismatch fails the copy naming the file. The Go modules of
-# go.sum ride as one tarball, package go-modules, version go.sum's
-# sha256, and the npm packages of the sandbox image's opencode plugin
-# lockfile (opencode-plugin/) as one tarball, package npm-cache, version
-# the lockfile's sha256, both uploaded only when absent. The module
+# first, and a mismatch fails the copy naming the file. The store keeps a
+# version's first upload, so a copy it holds of other bytes than the
+# line's sha256 fails the copy too: the line needs a new version. The Go
+# modules of go.sum ride as one tarball, package go-modules, version
+# go.sum's sha256, and the npm packages of the sandbox image's opencode
+# plugin lockfile (opencode-plugin/) as one tarball, package npm-cache,
+# version the lockfile's sha256, both uploaded only when absent. The module
 # tarball keeps the GOPROXY file layout and the npm tarball _cacache,
 # and the builds restore and install from them with no upstream
 # (roadmap 203, step 2).
@@ -35,6 +37,11 @@ fail() {
 held() {
   curl -gfsS -o /dev/null -u "$login" "$generic/$1/$2/$3"
 }
+# stored <package> <version> <file>: the sha256 of the store's copy; fails
+# when the store lacks it
+stored() {
+  curl -gfsS -u "$login" "$generic/$1/$2/$3" | sha256sum | awk '{print $1}'
+}
 # put <package> <version> <file> <path>: the store's new copy
 put() {
   curl -gfsS -o /dev/null -u "$login" -X PUT --upload-file "$4" "$generic/$1/$2/$3"
@@ -45,7 +52,8 @@ sha() {
 }
 while read -r package version name url sum; do
   case "$package" in '' | '#'*) continue ;; esac
-  if held "$package" "$version" "$name"; then
+  if kept=$(stored "$package" "$version" "$name"); then
+    [ "$kept" = "$sum" ] || fail "$package $version $name: the store holds sha256 $kept, the line pins $sum"
     continue
   fi
   file=$work/$name
