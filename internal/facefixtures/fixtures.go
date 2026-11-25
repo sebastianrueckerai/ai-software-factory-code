@@ -588,6 +588,11 @@ var agentSources = []agentSource{
 	{factoryd.SourceTemplateUpdate, func(b *builder, n int64, status string) factoryd.Task {
 		return b.briefed(n, status, factoryd.SourceTemplateUpdate, 3*time.Hour, factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"))
 	}, factoryd.BriefFacts{Name: "go-service"}},
+	{factoryd.SourceFollow, func(b *builder, n int64, status string) factoryd.Task {
+		brief := factoryd.SourceBriefs[factoryd.SourceFollow](factoryd.BriefFacts{Name: "openbao"})
+		brief.Body = "The follow routine moves part openbao, lane human, to the versions of the upstream lists.\n\n- ghcr.io/openbao/openbao: 2.6.3 to 2.7.3"
+		return b.briefed(n, status, factoryd.SourceFollow, 3*time.Hour, brief)
+	}, factoryd.BriefFacts{Name: "openbao"}},
 	{factoryd.SourceImageRemoval, func(b *builder, n int64, status string) factoryd.Task {
 		return b.briefed(n, status, factoryd.SourceImageRemoval, 3*time.Hour, factoryd.ImageRemovalCard("opencode-worker-heavy", Project))
 	}, factoryd.BriefFacts{Name: "opencode-worker-heavy"}},
@@ -674,6 +679,12 @@ var humanSources = []humanSource{
 		return factoryd.RollFailedQuestion([]factoryd.RollFailure{{Title: title, Issue: 2088}, {Title: title, Issue: 2089},
 			{Title: title, Issue: 2090}})
 	}), factoryd.BriefFacts{Name: "3"}},
+	{factoryd.SourceFollowFailed, escalates(factoryd.SourceFollowFailed, "the follow routine", func(*builder) factoryd.HumanQuestion {
+		return factoryd.FollowFailedQuestion(factoryd.FollowMoveInput{Project: "ai-software-factory-infra", Part: "litellm", Lane: "alone", PR: 2101,
+			Moves: []string{"ghcr.io/berriai/litellm: 1.102.4 to 1.108.17"}, After: "The migration does not go back.", Notes: "https://github.com/BerriAI/litellm/releases"},
+			factoryd.FollowFailure{Why: "the status “flux/flux-system” of the merge commit 4f2b175 is failure: HelmRelease platform/litellm: upgrade retries exhausted",
+				Merged: true, Commit: "4f2b175a6d53", Returned: factoryd.FollowReturned{PR: 2102, Held: true}})
+	}), factoryd.BriefFacts{Name: "litellm"}},
 	{factoryd.SourceRerun, escalates(factoryd.SourceRerun, "factoryd", func(*builder) factoryd.HumanQuestion {
 		return factoryd.RerunQuestion(3380, mainRedSHA, "test", []string{factoryd.LostRunnerLine("test, https://git.example/sf/code/actions/runs/3380/jobs/0", "", 0, time.Time{}, new(factoryd.Moments))},
 			nil, factoryd.RerunWhy(nil, nil, same))
@@ -1654,6 +1665,7 @@ func (b *builder) cards() {
 	agent("template update", "in-review", factoryd.SourceTemplateUpdate, sourced(factoryd.SourceTemplateUpdate))
 	agent("schema copy", "in-review", factoryd.SourceSchemaCopy, sourced(factoryd.SourceSchemaCopy))
 	agent("GitHub sync", "in-review", factoryd.SourceGitHubSync, sourced(factoryd.SourceGitHubSync))
+	agent("follow", "in-review", factoryd.SourceFollow, sourced(factoryd.SourceFollow))
 	agent("image removal", "queued", factoryd.SourceImageRemoval, sourced(factoryd.SourceImageRemoval))
 
 	b.out = append(b.out, b.humanIssue(GroupCard, "human issue", b.next(), humanIssueTitle, humanIssueBody,
@@ -1693,7 +1705,7 @@ func (b *builder) cards() {
 	b.out = append(b.out, b.filedHuman(GroupCard, "chain repair (human)", b.next(), factoryd.SourceChainRepair, "",
 		factoryd.RepairQuestion(Repository, chainSHA, []string{factoryd.RequiredContextLine("deploy/staging", "failure")}, "https://git.example/sf/code/actions/runs/88", nil), 2*time.Hour))
 	for _, s := range []struct{ name, source string }{
-		{"roll refused", factoryd.SourceRollRefused}, {"roll failed", factoryd.SourceRollFailed}, {"rerun", factoryd.SourceRerun},
+		{"roll refused", factoryd.SourceRollRefused}, {"roll failed", factoryd.SourceRollFailed}, {"follow failed", factoryd.SourceFollowFailed}, {"rerun", factoryd.SourceRerun},
 		{"still red", factoryd.SourceStillRed}, {"config rejected", factoryd.SourceConfig}, {"month cap", factoryd.SourceMonthCap},
 		{"provider freeze", factoryd.SourceFreezeCard},
 		{"judgment budget", factoryd.SourceChatBudget}, {"production held", factoryd.SourceProductionHeld},

@@ -556,7 +556,7 @@ var censusCardKinds = []string{
 // which stands in Needs you; every other source's card stands in each
 // column.
 var humanCardSources = []string{
-	factoryd.SourceRollRefused, factoryd.SourceRollFailed, factoryd.SourceRerun, factoryd.SourceStillRed, factoryd.SourceChainStall,
+	factoryd.SourceRollRefused, factoryd.SourceRollFailed, factoryd.SourceFollowFailed, factoryd.SourceRerun, factoryd.SourceStillRed, factoryd.SourceChainStall,
 	factoryd.SourceChat, factoryd.SourceChatBudget, factoryd.SourceMonthCap, factoryd.SourceFreezeCard, factoryd.SourceConfig, factoryd.SourceProductionHeld,
 	factoryd.SourcePlatformDeaths,
 }

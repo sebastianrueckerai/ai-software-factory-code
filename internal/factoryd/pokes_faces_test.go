@@ -27,7 +27,7 @@ func fixtureOf(t *testing.T, group, kind string) facefixtures.Fixture {
 func TestCardMessageComesFromTheFace(t *testing.T) {
 	fx := fixtureOf(t, facefixtures.GroupCase, string(factoryd.CaseSessionCap))
 	m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Detail: fx.Ask.Detail}, fx.Task, factoryd.Task{})
-	want := "#2293 (Board export: import a snapshot back) needs you. A card runs only the sessions it was given, and this one has used all 3."
+	want := "#2298 (Board export: import a snapshot back) needs you. A card runs only the sessions it was given, and this one has used all 3."
 	if !ok || m.Content != want {
 		t.Fatalf("the message = %q, %v\nwant %q", m.Content, ok, want)
 	}
