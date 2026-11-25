@@ -190,7 +190,8 @@ var poolIdentity = regexp.MustCompile(`policy version \d+ \(commit [0-9a-f]{7,}\
 
 // The settings page stays read-only on the pool: it links the loaded
 // version's project file, offers no pool input or write, and a read
-// never moves the policy in force.
+// never moves the policy in force. The status panel's Reset restarts the
+// pool's count and writes no pool.
 func TestSettingsPoolVersion(t *testing.T) {
 	r := poolRig(t, &policy.Draw{EUR: 10}, policy.Draw{EUR: 3}, nil)
 	ck, _ := r.loggedIn(t)
@@ -205,6 +206,9 @@ func TestSettingsPoolVersion(t *testing.T) {
 		}
 	}
 	for _, rt := range r.c.postRoutes() {
+		if rt.pattern == "POST /projects/{name}/pool/reset" {
+			continue
+		}
 		if strings.Contains(rt.pattern, "settings") || strings.Contains(rt.pattern, "pool") {
 			t.Errorf("%s would write from the settings page", rt.pattern)
 		}

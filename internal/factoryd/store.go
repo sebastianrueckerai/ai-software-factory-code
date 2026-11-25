@@ -2360,32 +2360,27 @@ func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 	return nil
 }
 
-// poolDraws picks the event rows that are draws from the escalation pool:
-// a human's grant, a row of rung 3, draws from the project's month instead.
-const poolDraws = `kind IN ('card_funded', 'card_extended') AND detail->>'pool' = 'true' AND detail->>'rung' IS DISTINCT FROM '3'`
-
-// drawn sums the pool draws of the rows where picks out of them.
+// drawn sums the draws of the event rows e where picks.
 func drawn(ctx context.Context, q rowQuerier, where string, args ...any) (policy.Draw, error) {
 	var d policy.Draw
 	var seconds int64
 	err := q.QueryRowContext(ctx,
 		`SELECT COALESCE(sum((detail->>'sessions')::int), 0), COALESCE(sum((detail->>'agent_time_s')::bigint), 0),
 		        COALESCE(sum((detail->>'amount_eur')::numeric), 0)::float8
-		 FROM events WHERE `+poolDraws+` AND `+where, args...).Scan(&d.Sessions, &seconds, &d.EUR)
+		 FROM events e WHERE `+where, args...).Scan(&d.Sessions, &seconds, &d.EUR)
 	d.AgentTime = time.Duration(seconds) * time.Second
 	return d, err
 }
 
 // PoolDrawn is what repository's cards drew from the escalation pool in
-// the UTC calendar month of month, on every rung below a human's.
+// the UTC calendar month of month, on every rung below a human's, since a
+// human's newest reset of the pool in that month.
 func (s *PGStore) PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error) {
 	return poolDrawn(ctx, s.db, repository, month)
 }
 
 func poolDrawn(ctx context.Context, q rowQuerier, repository string, month time.Time) (policy.Draw, error) {
-	return drawn(ctx, q, `repository = $1
-		AND at >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-		AND at < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'`, repository, month)
+	return drawn(ctx, q, policy.PoolCountedSQL("$1", "$2::timestamptz"), repository, month)
 }
 
 // CardDrawn is what task taskID drew from the pool in its life on rungs 0
@@ -2396,7 +2391,7 @@ func (s *PGStore) CardDrawn(ctx context.Context, taskID string) (policy.Draw, er
 }
 
 func cardDrawn(ctx context.Context, q rowQuerier, taskID string) (policy.Draw, error) {
-	return drawn(ctx, q, `task_id = $1 AND detail->>'rung' IN ('0', '1')`, taskID)
+	return drawn(ctx, q, policy.PoolDrawsSQL+` AND e.task_id = $1 AND e.detail->>'rung' IN ('0', '1')`, taskID)
 }
 
 // SetTaskAccent sets task id's accent colour; "" removes it (NULL). The

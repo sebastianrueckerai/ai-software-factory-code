@@ -108,8 +108,11 @@ resources page, a period that recurs and no instant.
   pool drawn out, judgment budget spent, LiteLLM backstop hit). The status
   panel's Spend section holds each cap's row, a trace line under a row
   whose count a reset restarted (who, when, the count before and the
-  period's whole), LiteLLM's backstop as its own row and the escalation
-  pool's words. Each row's label says when its count resets by itself,
+  period's whole), LiteLLM's backstop as its own row, the judgment
+  budget's row (the month's chat task's spend against its budget, the
+  policy's `chat.monthly_eur` before the month's first turn) and the
+  escalation pool's row: its money, a gauge of its fullest part and its
+  words under it. Each row's label says when its count resets by itself,
   "(resets 1 December at 01:00 CET)": the day's and the month's at the
   turn of their UTC period, the backstop's at LiteLLM's `budget_reset_at`,
   none when LiteLLM names none. Reset, left of a row's gauge on its line,
@@ -117,7 +120,14 @@ resources page, a period that recurs and no instant.
   month's and the premium's for a writer of the factory's code
   (`POST /caps/{day|month|premium}/reset`), a project's month cap for its
   approver (`POST /projects/{name}/cap/reset`, a 409 for a project with no
-  month cap of its own). Its confirm opens under the row,
+  month cap of its own), and the escalation pool's for the project's
+  approver (`POST /projects/{name}/pool/reset`): the pool's draws then
+  count from the reset, and a card's own draw bound still counts its whole
+  life. The judgment budget's Reset, the project's approver's too
+  (`POST /projects/{name}/chat/reset`), is a fund: the chat task's budget
+  rises until `chat.monthly_eur` is free again, every turn the budget
+  stopped goes on, and a budget with that much free refuses the press with
+  a 409. LiteLLM's backstop has no Reset. A cap's confirm opens under the row,
   says what may still be spent before the period turns, and posts only
   from its own press, with the newest reset of the cap the panel showed:
   once another human or another tab reset the count since, the press is

@@ -4245,7 +4245,7 @@ func TestPoolReadContract(t *testing.T) {
 		t.Fatalf("board = %d", rec.Code)
 	}
 	const words = "2 of 30 sessions, 30 min of 30 h agent time and 3.00 of 60.00 EUR drawn this UTC month"
-	if body := rec.Body.String(); !strings.Contains(body, "pool: "+words) {
+	if body := rec.Body.String(); !strings.Contains(body, `<p class="trace">`+words+`</p>`) {
 		t.Errorf("board HTML lacks %q", words)
 	}
 	preq := httptest.NewRequest(http.MethodGet, "/chat/ai-software-factory-code", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, s))

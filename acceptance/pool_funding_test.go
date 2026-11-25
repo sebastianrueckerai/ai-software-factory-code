@@ -354,7 +354,7 @@ func TestPoolReadouts(t *testing.T) {
 	r.SetProjectSpend(factoryd.ProjectSpend{EUR: 42, ChatEUR: 41})                                            // the model spend, never a draw
 	drawn := "2 of 30 sessions, 1 h 20 min of 30 h agent time and 3.00 of 10.00 EUR drawn this UTC month"
 	readAll("the file's pool", drawn)
-	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, "pool: "+drawn) {
+	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, `<p class="trace">`+drawn+`</p>`) {
 		t.Fatalf("the face's pool line:\n%s", face)
 	}
 	for _, tool := range []string{"settings", "policy"} {
@@ -372,7 +372,9 @@ func TestPoolReadouts(t *testing.T) {
 	unreadable := "the pool is 30 sessions, 30 h of agent time and 10.00 EUR this UTC month, but what its cards drew could not be read"
 	readAll("the unreadable draws", unreadable)
 	for name, p := range pages {
-		if body := pageGET(t, r, ck, p); strings.Contains(body, "0.00 of 10.00 EUR") {
+		// the judgment budget's row reads 0.00 of 10.00 EUR too: the pool's
+		// zero is its words' or its row's
+		if body := pageGET(t, r, ck, p); strings.Contains(body, "0.00 of 10.00 EUR drawn") || strings.Contains(body, `aria-label="escalation pool this month"`) {
 			t.Fatalf("%s reads the failed read as zero:\n%s", name, body)
 		}
 	}

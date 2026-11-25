@@ -1795,8 +1795,8 @@ func TestStripDayAlways(t *testing.T) {
 
 // Another limit than the day and the month shows on the strip only once
 // it is hit, as one red cell: the premium cap at 90 percent does not, at
-// its cap it does; the pool's words stand in the panel, and the strip
-// names the pool only overdrawn; LiteLLM's backstop shows its row in the
+// its cap it does; the pool's row and words stand in the panel, and the
+// strip names the pool only overdrawn; LiteLLM's backstop shows its row in the
 // panel and its cell once its spend reaches its max.
 func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 	r, ck := screenRig(t)
@@ -1810,8 +1810,14 @@ func TestStripOtherLimitsOnlyWhenHit(t *testing.T) {
 	if strings.Contains(strip, "premium") || !strings.Contains(spend, `<span class="lbl">premium this month <span class="turn">(resets <time datetime="2026-12-01T00:00:00Z" data-layout="2 January at 15:04 MST">1 December at 01:00 CET</time>)</span></span><span class="fig">45.00 of 50.00 EUR</span>`) {
 		t.Errorf("premium at 90 percent: want no strip cell and the panel's row\n%s\n%s", strip, spend)
 	}
-	if strings.Contains(strip, "pool") || !strings.Contains(spend, `<p class="trace">escalation pool: `+noDraws+`</p>`) {
-		t.Errorf("a pool with draws to spare: want no strip cell and its words in the panel\n%s\n%s", strip, spend)
+	if strings.Contains(strip, "pool") || !strings.Contains(spend, `<span class="lbl">escalation pool this month <span class="turn">(resets <time datetime="2026-12-01T00:00:00Z" data-layout="2 January at 15:04 MST">1 December at 01:00 CET</time>)</span></span><span class="fig">0.00 of 60.00 EUR</span>`+
+		`<span class="gauge"><meter min="0" max="100" value="0" aria-label="escalation pool this month">0 percent</meter></span>`) ||
+		!strings.Contains(spend, `<p class="trace">`+noDraws+`</p>`) {
+		t.Errorf("a pool with draws to spare: want no strip cell, its row and its words in the panel\n%s\n%s", strip, spend)
+	}
+	if !strings.Contains(spend, `<span class="lbl">judgment budget this month <span class="turn">(resets <time datetime="2026-12-01T00:00:00Z" data-layout="2 January at 15:04 MST">1 December at 01:00 CET</time>)</span></span><span class="fig">0.00 of 10.00 EUR</span>`+
+		`<span class="gauge"><meter min="0" max="100" value="0" aria-label="judgment budget this month">0 percent</meter></span></div>`) {
+		t.Errorf("a month before the chat's first turn: want the judgment budget's row at the policy's 10 EUR and no Reset\n%s", spend)
 	}
 	if strings.Contains(strip, "backstop") || strings.Contains(spend, "backstop") {
 		t.Errorf("no backstop read: want no backstop on the strip or in the panel\n%s\n%s", strip, spend)

@@ -49,7 +49,7 @@ func testDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	// the gateway's cap resets, as its migrations create them
-	for _, name := range []string{"20261120130000_cap_resets.sql", "20261124120000_cap_resets_premium.sql"} {
+	for _, name := range []string{"20261120130000_cap_resets.sql", "20261124120000_cap_resets_premium.sql", "20261129100600_cap_resets_pool.sql"} {
 		resets, err := os.ReadFile("../schema/migrations/gateway/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -1411,7 +1411,7 @@ func TestProjectResetScope(t *testing.T) {
 func TestResetCapRefuses(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	for _, tc := range []struct{ cap, repository string }{{"chat", ""}, {CapProject, ""}, {CapDay, "a"}, {CapMonth, "a"}, {CapPremium, "a"}} {
+	for _, tc := range []struct{ cap, repository string }{{"chat", ""}, {CapProject, ""}, {CapPool, ""}, {CapDay, "a"}, {CapMonth, "a"}, {CapPremium, "a"}} {
 		if r, err := ResetCap(ctx, db, tc.cap, tc.repository, "sebastian", 0); err == nil {
 			t.Errorf("reset %s %q = %+v, want it refused", tc.cap, tc.repository, r)
 		}

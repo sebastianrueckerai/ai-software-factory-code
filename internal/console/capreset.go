@@ -10,7 +10,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // factoryCapReset is the status panel's Reset of the day's, the month's
@@ -45,6 +47,62 @@ func (c *Console) projectCapReset(w http.ResponseWriter, r *http.Request) {
 	c.resetCap(w, r, policy.CapProject, p.Repository)
 }
 
+// poolReset is the panel's Reset of a project's escalation pool.
+func (c *Console) poolReset(w http.ResponseWriter, r *http.Request) {
+	p, ok, err := c.projectOf(r.Context(), r.PathValue("name"))
+	if err != nil || !ok {
+		http.NotFound(w, r)
+		return
+	}
+	c.resetCap(w, r, policy.CapPool, p.Repository)
+}
+
+// chatReset is the panel's Reset of a project's judgment budget: the
+// month's chat task's budget rises until the policy's monthly figure is
+// free again (chatResetEUR), a fund as the stop's own (doChatFund). A
+// budget with that much free already is refused with a 409.
+func (c *Console) chatReset(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	p, ok, err := c.projectOf(r.Context(), name)
+	if err != nil || !ok {
+		http.NotFound(w, r)
+		return
+	}
+	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
+	if err != nil || !ok {
+		log.Printf("console: current policy: loaded %v, %v", ok, err)
+		http.Error(w, "The policy in force cannot be read. Press Reset again in a moment.", http.StatusServiceUnavailable)
+		return
+	}
+	stop, err := c.chatStopNow(r.Context(), p)
+	if err != nil {
+		log.Printf("console: the chat task of %s: %v", p.Repository, err)
+		c.fail(w, r, refuse(http.StatusInternalServerError, "The judgment budget could not be read. Press Reset again."))
+		return
+	}
+	monthly := v.Document.ChatOf(v.Projects[p.Name]).MonthlyEUR
+	eur := chatResetEUR(stop.task, monthly)
+	if eur <= 0 {
+		c.stalePanel(w, r, "The judgment budget has "+textutil.EUR(monthly)+" EUR free: there is nothing to reset.")
+		return
+	}
+	if _, _, err := c.doChatFund(r.Context(), button(r), name, eur, chatResetNote, ""); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	c.pressed(w, r, nil)
+}
+
+// chatResetNote is the note of a fund the panel's Reset made.
+const chatResetNote = "reset in the status panel"
+
+// chatResetEUR is what a Reset adds to chat task t's budget so that
+// monthly, the policy's monthly figure, is free again: 0 when that much
+// is free already.
+func chatResetEUR(t factoryd.Task, monthly float64) float64 {
+	return max(math.Round((monthly-(t.BudgetEUR-t.EnforcedSpent()))*100)/100, 0)
+}
+
 // stalePanel refuses a press made on a panel that no longer stands with a
 // 409 of line, and under htmx refreshes the board, so the panel shows
 // what stands now.
@@ -57,7 +115,7 @@ func (c *Console) stalePanel(w http.ResponseWriter, r *http.Request, line string
 
 // capCounts name each cap's count as its press does.
 var capCounts = map[string]string{policy.CapDay: "today's count", policy.CapMonth: "this month's count", policy.CapProject: "the project's month count",
-	policy.CapPremium: "this month's premium count"}
+	policy.CapPremium: "this month's premium count", policy.CapPool: "the project's pool count"}
 
 // resetCap restarts cap's count for the session's human and wakes the
 // cards that wait on a cap, when the form's seen is the newest reset of

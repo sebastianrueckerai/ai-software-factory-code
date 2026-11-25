@@ -1127,14 +1127,21 @@ type statusLine struct {
 	// DayHit and PremiumHit: the cap is hit (policy.CapHit); the month's
 	// is Spend.Hit.
 	DayHit, PremiumHit bool
-	// DayPress, MonthPress and PremiumPress are the Reset of the day's,
-	// the month's and the premium's cap, nil for a viewer who may not
-	// reset it.
-	DayPress, MonthPress, PremiumPress *capPress
-	// DayTurn, MonthTurn, PremiumTurn and BackstopTurn are when each
-	// count resets by itself: its period's turn, and LiteLLM's own reset
-	// of its spend, "" when LiteLLM names none.
-	DayTurn, MonthTurn, PremiumTurn, BackstopTurn template.HTML
+	// DayPress, MonthPress, PremiumPress, PoolPress and ChatPress are the
+	// Reset of the day's, the month's and the premium's cap, the pool and
+	// the judgment budget, nil for a viewer who may not reset it and for a
+	// judgment budget with its monthly figure free.
+	DayPress, MonthPress, PremiumPress, PoolPress, ChatPress *capPress
+	// DayTurn, MonthTurn, PremiumTurn, UTCMonthTurn and BackstopTurn are
+	// when each count resets by itself: its period's turn, the pool's and
+	// the judgment budget's at the UTC month's, and LiteLLM's own reset of
+	// its spend, "" when LiteLLM names none.
+	DayTurn, MonthTurn, PremiumTurn, UTCMonthTurn, BackstopTurn template.HTML
+	// ChatEUR is the spend of the month's chat task, holds included,
+	// against ChatBudgetEUR, the judgment budget: the task's budget, the
+	// policy's monthly figure before the month's first turn files it. A
+	// budget of 0 shows no row.
+	ChatEUR, ChatBudgetEUR float64
 	// Backstop is LiteLLM's own budget, nil when unread; BackstopHit says
 	// its spend reached its max.
 	Backstop    *factoryd.Backstop
@@ -2365,6 +2372,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	s.DayReset, s.MonthReset = resetLineOf(e.DayReset, e.DayAll, "today"), resetLineOf(s.Spend.Reset, s.Spend.AllEUR, "this month")
 	turn := func(decision string) template.HTML { return moment(factoryd.CapTurn(decision, now), momentWords) }
 	s.DayTurn, s.MonthTurn = turn(policy.RefusedDayCap), turn(policy.RefusedMonthCap)
+	s.UTCMonthTurn = s.MonthTurn
 	if !s.FactoryCap {
 		s.MonthTurn = turn(policy.RefusedProjectCap)
 	}
@@ -2408,12 +2416,31 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		case !s.FactoryCap && s.Approver:
 			s.MonthPress = press("/projects/"+p.Name+"/cap/reset", "Reset the project's month count", policy.CapProject, s.CapEUR, s.Spend.Hit, s.Spend.Reset)
 		}
+		if s.Approver && s.Pool.Readable {
+			s.PoolPress = press("/projects/"+p.Name+"/pool/reset", "Reset the project's pool count", policy.CapPool, s.Pool.Pool.EUR, s.Pool.Fill() >= 100, s.Pool.Reset)
+			s.PoolPress.Words = escaped(fmt.Sprintf("The pool's count starts again from nothing. Up to %d sessions, %s of agent time and %s EUR more may be drawn before ",
+				s.Pool.Pool.Sessions, agentHours(s.Pool.Pool.AgentTime), textutil.EUR(s.Pool.Pool.EUR))) + s.UTCMonthTurn + ". The pool stays as the policy sets it; the caps still hold."
+		}
 	}
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
 		log.Printf("console: the chat stop of %s: %v", p.Repository, err)
 		d.Problems = append(d.Problems, "the judgment budget could not be read")
-	} else if stop.stopped {
-		s.ChatSpent, s.ChatTask = true, stop.task.ID
+	} else {
+		if stop.stopped {
+			s.ChatSpent, s.ChatTask = true, stop.task.ID
+		}
+		monthly := 0.0
+		if v.policyOK {
+			monthly = v.policy.Document.ChatOf(v.policy.Projects[p.Name]).MonthlyEUR
+		}
+		if s.ChatBudgetEUR = monthly; stop.task.Kind == factoryd.KindChat {
+			s.ChatEUR, s.ChatBudgetEUR = stop.task.EnforcedSpent(), stop.task.BudgetEUR
+		}
+		if eur := chatResetEUR(stop.task, monthly); s.Approver && stop.task.Kind == factoryd.KindChat && eur > 0 {
+			s.ChatPress = &capPress{Action: "/projects/" + p.Name + "/chat/reset", Label: "Reset the judgment budget", CapEUR: monthly, Hit: s.ChatSpent, CSRF: d.CSRF, Filter: f,
+				Words: escaped(fmt.Sprintf("The judgment budget rises by %s EUR to %s EUR, so the chat has %s EUR again before ", textutil.EUR(eur), textutil.EUR(stop.task.BudgetEUR+eur), textutil.EUR(monthly))) +
+					s.UTCMonthTurn + ". Every turn the budget stopped goes on. The caps still hold."}
+		}
 	}
 	if c.cfg.Hold != nil {
 		if h, err := c.cfg.Hold(ctx, p.Repository); err != nil {

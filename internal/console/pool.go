@@ -27,7 +27,10 @@ import (
 // after a change lowered the pool below the month's draws. Present: the
 // project file sets the pool's money itself, which a top-up grows;
 // without, the money is the policy's and a set gives the project its own.
+// Reset: a human's newest reset of the pool this month, since which the
+// draws count, nil for none.
 type poolLine struct {
+	Reset                        *policy.CapReset
 	Present, Readable, Overdrawn bool
 	Pool, Drawn                  policy.Draw
 	// Month is the UTC month the draws count ("2026-11") and Policy the
@@ -54,9 +57,17 @@ func (c *Console) ProjectPool(ctx context.Context, v policy.Version, p factoryd.
 			out.Pool.Sessions, agentHours(out.Pool.AgentTime), textutil.EUR(out.Pool.EUR))
 		return out
 	}
+	since := "this UTC month"
+	if c.cfg.Caps != nil {
+		if out.Reset, err = c.cfg.Caps.NewestCapReset(ctx, policy.CapPool, p.Repository, now); err != nil {
+			log.Printf("console: the pool's reset of %s: %v", p.Repository, err)
+		} else if out.Reset != nil {
+			since = "since the " + factoryd.CapResetWords(*out.Reset, now)
+		}
+	}
 	out.Drawn, out.Readable = drawn, true
-	out.Words = fmt.Sprintf("%d of %d sessions, %s of %s agent time and %s of %s EUR drawn this UTC month",
-		drawn.Sessions, out.Pool.Sessions, agentHours(drawn.AgentTime), agentHours(out.Pool.AgentTime), textutil.EUR(drawn.EUR), textutil.EUR(out.Pool.EUR))
+	out.Words = fmt.Sprintf("%d of %d sessions, %s of %s agent time and %s of %s EUR drawn %s",
+		drawn.Sessions, out.Pool.Sessions, agentHours(drawn.AgentTime), agentHours(out.Pool.AgentTime), textutil.EUR(drawn.EUR), textutil.EUR(out.Pool.EUR), since)
 	var over []string
 	if drawn.Sessions > out.Pool.Sessions {
 		over = append(over, "sessions")
@@ -76,6 +87,11 @@ func (c *Console) ProjectPool(ctx context.Context, v policy.Version, p factoryd.
 		out.Words += ", overdrawn in " + textutil.AndList(over) + ": only the human draws more of " + part + " until the month turns"
 	}
 	return out
+}
+
+// Fill is the pool's fullest part, drawn against its pool, in percent.
+func (l poolLine) Fill() float64 {
+	return float64(max(pct(float64(l.Drawn.Sessions), float64(l.Pool.Sessions)), pct(float64(l.Drawn.AgentTime), float64(l.Pool.AgentTime)), pct(l.Drawn.EUR, l.Pool.EUR)))
 }
 
 // agentHours is agent time as the pool counts it, in hours and minutes.

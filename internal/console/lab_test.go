@@ -2336,7 +2336,7 @@ func roomMoneyScene(now time.Time) labScene {
 // the project's month of 120.00 - 4.10 = 115.90 EUR.
 func roomChatScene(now time.Time) labScene {
 	s := quietScene(now)
-	chat := factoryd.Task{ID: "chat-sf-code-" + now.UTC().Format("2006-01"), Kind: factoryd.KindChat, Status: "running", Repository: "sf/code",
+	chat := factoryd.Task{ID: factoryd.ChatTaskID("ai-software-factory-code", now), Kind: factoryd.KindChat, Status: "running", Repository: "sf/code",
 		BudgetEUR: 5, SpentEUR: 5}
 	q := factoryd.ChatBudgetQuestion(chat)
 	k := labCard(now, 642, "waiting-human", "direct", 2*time.Hour, q.Ask, q.Why)

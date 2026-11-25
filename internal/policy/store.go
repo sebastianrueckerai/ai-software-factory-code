@@ -250,26 +250,42 @@ func (e *StaleResetError) Error() string {
 	return fmt.Sprintf("the %s cap's count was reset by %s at %s (reset %d) after the press saw it", e.Newest.Cap, e.Newest.Login, e.Newest.At.UTC().Format(time.RFC3339), e.Newest.ID)
 }
 
+// resetCounts are the counts a reset ends, by cap: SQL over the
+// repository $2 and the clock $3.
+var resetCounts = map[string]string{
+	CapDay:     daySpentSQL("$3::timestamptz") + ` + ` + heldSQL,
+	CapMonth:   MonthSpentSQL("$3::timestamptz") + ` + ` + heldSQL,
+	CapProject: projectSpentSQL("$2", "$3::timestamptz") + ` + ` + projectHeldSQL("$2"),
+	CapPremium: PremiumMonthSpentSQL("$3::timestamptz") + ` + ` + premiumHeldSQL,
+	CapPool:    `COALESCE((SELECT sum((e.detail->>'amount_eur')::numeric) FROM events e WHERE ` + PoolCountedSQL("$2", "$3::timestamptz") + `), 0)`,
+}
+
+// resets refuses a cap no human resets, and a repository that does not
+// fit the cap: a project's month cap and its pool reset with their
+// repository, the others without one.
+func resets(cap, repository string) error {
+	if _, ok := resetCounts[cap]; !ok {
+		return fmt.Errorf("cap %q: only the caps %s, %s, %s, %s and %s reset", cap, CapDay, CapMonth, CapProject, CapPremium, CapPool)
+	}
+	if capOfRepository(cap) != (repository != "") {
+		return fmt.Errorf("cap %s of repository %q: the %s and %s caps reset with their repository, the %s, %s and %s caps without one", cap, repository, CapProject, CapPool, CapDay, CapMonth, CapPremium)
+	}
+	return nil
+}
+
 // ResetCap restarts cap's count for login at the headroom's clock, inside
 // the cap's current UTC period: the day's, the month's and the premium's
-// with repository "", a project's with its repository. The policy's cap stays. seen is
+// with repository "", a project's month cap and its pool with its
+// repository. The policy's cap stays. seen is
 // the id of the newest reset of the cap in the period the press saw, 0
 // for none: a newer one refuses the reset with *StaleResetError. Under
 // LockHeadroom, no hold and no other reset lands between the count the
 // reset ends and the reset.
 func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string, seen int64) (CapReset, error) {
-	count, ok := map[string]string{
-		CapDay:     daySpentSQL("$3::timestamptz") + ` + ` + heldSQL,
-		CapMonth:   MonthSpentSQL("$3::timestamptz") + ` + ` + heldSQL,
-		CapProject: projectSpentSQL("$2", "$3::timestamptz") + ` + ` + projectHeldSQL("$2"),
-		CapPremium: PremiumMonthSpentSQL("$3::timestamptz") + ` + ` + premiumHeldSQL,
-	}[cap]
-	if !ok {
-		return CapReset{}, fmt.Errorf("reset cap %q: only the caps %s, %s, %s and %s reset", cap, CapDay, CapMonth, CapProject, CapPremium)
+	if err := resets(cap, repository); err != nil {
+		return CapReset{}, fmt.Errorf("reset: %w", err)
 	}
-	if (cap == CapProject) != (repository != "") {
-		return CapReset{}, fmt.Errorf("reset cap %s of repository %q: the %s cap resets with its repository, the %s, %s and %s caps without one", cap, repository, CapProject, CapDay, CapMonth, CapPremium)
-	}
+	count := resetCounts[cap]
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return CapReset{}, err
@@ -302,8 +318,8 @@ func ResetCap(ctx context.Context, db *sql.DB, cap, repository, login string, se
 // the month's and the premium's) in its UTC period of at
 // (NewestResetSQL), nil without one.
 func NewestCapReset(ctx context.Context, db rowQuerier, cap, repository string, at time.Time) (*CapReset, error) {
-	if cap != CapDay && cap != CapMonth && cap != CapProject && cap != CapPremium {
-		return nil, fmt.Errorf("newest reset of cap %q: only the caps %s, %s, %s and %s reset", cap, CapDay, CapMonth, CapProject, CapPremium)
+	if err := resets(cap, repository); err != nil {
+		return nil, fmt.Errorf("newest reset: %w", err)
 	}
 	r := CapReset{Cap: cap, Repository: repository}
 	err := db.QueryRowContext(ctx, NewestResetSQL(cap, "$1", "$2::timestamptz"), repository, at).Scan(&r.ID, &r.At, &r.Login, &r.BeforeEUR)

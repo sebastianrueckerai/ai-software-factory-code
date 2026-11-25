@@ -51,6 +51,18 @@ func (f *fakeCaps) ResetCap(_ context.Context, cap, repository, login string, se
 	return r, nil
 }
 
+func (f *fakeCaps) NewestCapReset(_ context.Context, cap, repository string, _ time.Time) (*policy.CapReset, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var newest *policy.CapReset
+	for i, r := range f.resets {
+		if r.Cap == cap && r.Repository == repository && (newest == nil || r.ID > newest.ID) {
+			newest = &f.resets[i]
+		}
+	}
+	return newest, f.err
+}
+
 func (f *fakeCaps) CapResets(_ context.Context, from, to time.Time) ([]policy.CapReset, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -308,6 +320,53 @@ func TestNoAgentToolResets(t *testing.T) {
 	} {
 		if !posts[pattern] || accessTable[pattern] != want {
 			t.Errorf("%s: a POST route %v with rule %+v, want %+v", pattern, posts[pattern], accessTable[pattern], want)
+		}
+	}
+}
+
+// The pool's Reset is its project's approver's: bob's press restarts the
+// count of demo's pool, and alice, who approves another project, is
+// refused.
+func TestCapResetPool(t *testing.T) {
+	r, caps, _ := capRig(t)
+	ak, as := memberLogin(t, r, "alice")
+	if rec := r.do(post("/projects/demo/pool/reset", url.Values{"csrf": {as.csrf}, "seen": {"0"}}), ak); rec.Code != http.StatusForbidden {
+		t.Fatalf("another project's approver = %d %q, want 403", rec.Code, rec.Body)
+	}
+	ck, s := memberLogin(t, r, "bob")
+	req := post("/projects/demo/pool/reset", url.Values{"csrf": {s.csrf}, "seen": {"0"}})
+	req.Header.Set("HX-Request", "true")
+	if rec := r.do(req, ck); !pressRefreshes(rec) {
+		t.Fatalf("reset = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
+	}
+	equal(t, "the resets", caps.calls, []capCall{{"pool", "demo/demo", "bob", 0}})
+	req = post("/projects/demo/pool/reset", url.Values{"csrf": {s.csrf}, "seen": {"0"}})
+	req.Header.Set("HX-Request", "true")
+	if rec := r.do(req, ck); rec.Code != http.StatusConflict || rec.Body.String() != "bob reset the project's pool count; the panel now shows it. Press Reset again to reset it once more.\n" {
+		t.Fatalf("a press that did not see the reset = %d %q, want 409 naming it", rec.Code, rec.Body)
+	}
+}
+
+// The panel shows the pool's row with its Reset to an approver, the form
+// carrying the newest reset it saw, and the pool's words count since
+// that reset: sebastian's at 14:02 UTC on the clock's day, 12 EUR before.
+func TestPoolRowCountsSinceItsReset(t *testing.T) {
+	r, ck := screenRig(t)
+	r.c.clock = func() time.Time { return time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC) }
+	r.c.cfg.Caps = &fakeCaps{resets: []policy.CapReset{{ID: 4, Cap: policy.CapPool, Repository: "sf/code", Login: "sebastian",
+		At: time.Date(2026, 11, 20, 14, 2, 0, 0, time.UTC), BeforeEUR: 12}}}
+	r.drawn = policy.Draw{Sessions: 27, AgentTime: 3 * time.Hour, EUR: 6}
+	_, spend := statusOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
+	for _, want := range []string{
+		`<div class="sp-g warn"><span class="lbl">escalation pool this month `,
+		`<span class="fig">6.00 of 60.00 EUR</span><span class="gauge"><meter min="0" max="100" value="90" aria-label="escalation pool this month">90 percent</meter></span>`,
+		`<summary aria-label="Reset the project's pool count">Reset</summary><form method="post" action="/projects/ai-software-factory-code/pool/reset"`,
+		`<input type="hidden" name="seen" value="4">`,
+		`count starts again from nothing. Up to 30 sessions, 30 h of agent time and 60.00 EUR more may be drawn before `,
+		`<p class="trace">27 of 30 sessions, 3 h of 30 h agent time and 6.00 of 60.00 EUR drawn since the reset 14:02 UTC by sebastian, 12.00 EUR before</p>`,
+	} {
+		if !strings.Contains(spend, want) {
+			t.Errorf("the panel lacks %s\n%s", want, spend)
 		}
 	}
 }

@@ -81,6 +81,54 @@ func TestPoolDrawnSumsTheMonthsPoolRows(t *testing.T) {
 	}
 }
 
+// A human's reset restarts the pool's count: of sf/r's 2.5 EUR and 4 EUR
+// draws, the reset ends a count of 6.5 EUR, and only the session and the
+// 1 EUR drawn after it count. Another repository's pool keeps its 7 EUR,
+// and sf/r's card keeps its own draws.
+func TestPoolDrawnCountsSinceTheReset(t *testing.T) {
+	ctx := context.Background()
+	s := drawStore(t, "t-p", 5)
+	clear := func() {
+		if _, err := s.DB().ExecContext(ctx, `TRUNCATE cap_resets`); err != nil {
+			t.Fatalf("truncate: %v", err)
+		}
+	}
+	clear()
+	t.Cleanup(clear)
+	now := time.Now().UTC()
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	pooled := func(at time.Time, repository string, detail map[string]any) Event {
+		return Event{At: at, Repository: repository, TaskID: "t-p", Kind: EventCardFunded, Actor: "factoryd", Via: ViaConsole, Detail: detail}
+	}
+	recordAll(t, s,
+		pooled(month, "sf/r", map[string]any{"amount_eur": 2.5, "pool": true, "rung": 1}),
+		pooled(month.Add(time.Second), "sf/r", map[string]any{"amount_eur": 4, "pool": true, "rung": 2}),
+		pooled(month, "sf/other", map[string]any{"amount_eur": 7, "pool": true}),
+	)
+	r, err := s.ResetCap(ctx, policy.CapPool, "sf/r", "sebastian", 0)
+	if err != nil || r.Repository != "sf/r" || math.Abs(r.BeforeEUR-6.5) > 1e-9 {
+		t.Fatalf("ResetCap = %+v, %v; want sf/r's reset of a count of 6.5 EUR", r, err)
+	}
+	if got, err := s.PoolDrawn(ctx, "sf/r", time.Now()); err != nil || !got.IsZero() {
+		t.Fatalf("PoolDrawn right after the reset = %+v, %v; want zero", got, err)
+	}
+	recordAll(t, s, Event{At: time.Now().Add(time.Second), Repository: "sf/r", TaskID: "t-p", Kind: EventCardExtended, Actor: "factoryd", Via: ViaConsole,
+		Detail: map[string]any{"sessions": 1, "agent_time_s": 0, "amount_eur": 1, "pool": true, "rung": 1}})
+	at := time.Now().Add(2 * time.Second)
+	if got, err := s.PoolDrawn(ctx, "sf/r", at); err != nil || got != (policy.Draw{Sessions: 1, EUR: 1}) {
+		t.Fatalf("PoolDrawn after a draw since the reset = %+v, %v; want 1 session and 1 EUR", got, err)
+	}
+	if got, err := s.PoolDrawn(ctx, "sf/other", at); err != nil || got != (policy.Draw{EUR: 7}) {
+		t.Fatalf("PoolDrawn of another repository = %+v, %v; want its 7 EUR", got, err)
+	}
+	if got, err := s.CardDrawn(ctx, "t-p"); err != nil || got != (policy.Draw{Sessions: 1, EUR: 3.5}) {
+		t.Fatalf("CardDrawn = %+v, %v; want the card's rung 0 and 1 draws of its life, 1 session and 3.5 EUR", got, err)
+	}
+	if _, err := s.ResetCap(ctx, policy.CapPool, "", "sebastian", 0); err == nil {
+		t.Fatal("a pool reset without its repository was taken")
+	}
+}
+
 // A human's grant is no draw from the escalation pool: a pool row of rung
 // 3 leaves the month's pool at zero, and one of rung 2 with 1 session
 // raises it to 1 session.

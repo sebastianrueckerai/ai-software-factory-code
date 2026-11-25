@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -657,5 +658,51 @@ func TestTheChatBudgetCardShowsTheMoneyRow(t *testing.T) {
 	}
 	if !strings.Contains(body, `<td class="then" id="`+then+`" aria-live="polite">`) {
 		t.Errorf("the then cell is not read aloud when it changes:\n%s", body)
+	}
+}
+
+// The panel's Reset frees the policy's monthly figure again: a chat that
+// spent 14.96 of 15 EUR has 0.04 free, so the Reset of the 10 EUR budget
+// adds 9.96 to make 24.96, lifts the stop and records the fund. A second
+// press finds 10 EUR free and is refused.
+func TestChatResetFreesTheMonthlyFigure(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	chat := stoppedChat(t, r)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{
+		`<div class="sp-g over"><span class="lbl">judgment budget this month `,
+		`<span class="fig">14.96 of 15.00 EUR</span><span class="gauge"><meter min="0" max="100" value="100" aria-label="judgment budget this month">100 percent</meter></span>`,
+		`<details class="rst hit"><summary aria-label="Reset the judgment budget">Reset</summary><form method="post" action="/projects/ai-software-factory-code/chat/reset"`,
+		`The judgment budget rises by 9.96 EUR to 24.96 EUR, so the chat has 10.00 EUR again before `,
+		`Reset: up to 10.00 EUR more</button>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %s", want)
+		}
+	}
+	press := func() *httptest.ResponseRecorder {
+		req := post("/projects/ai-software-factory-code/chat/reset", url.Values{"csrf": {s.csrf}})
+		req.Header.Set("HX-Request", "true")
+		return r.do(req, ck)
+	}
+	if rec := press(); !pressRefreshes(rec) {
+		t.Fatalf("reset = %d %q, want 204 with board-refresh", rec.Code, rec.Body)
+	}
+	task, _, _ := r.tasks.Task(t.Context(), chat.ID)
+	if math.Abs(task.BudgetEUR-24.96) > 1e-9 || task.SpentEUR != 14.96 {
+		t.Fatalf("budget_eur = %v, spent_eur = %v; want 24.96 with the spend kept", task.BudgetEUR, task.SpentEUR)
+	}
+	rows := eventsOf(r, factoryd.EventChatFunded)
+	if len(rows) != 1 || rows[0].TaskID != chat.ID || rows[0].Actor != "sebastian" || rows[0].Via != factoryd.ViaButton ||
+		rows[0].Detail["amount_eur"] != 9.96 || rows[0].Detail["reason"] != "reset in the status panel" {
+		t.Fatalf("the reset's event rows: %+v", rows)
+	}
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(body, `>judgment budget spent</span>`) || strings.Contains(body, `/chat/reset"`) || !strings.Contains(body, `<span class="fig">14.96 of 24.96 EUR</span>`) {
+		t.Error("after the reset the board keeps the stop or the Reset, or lacks the raised budget's row")
+	}
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "The judgment budget has 10.00 EUR free: there is nothing to reset.\n" || len(eventsOf(r, factoryd.EventChatFunded)) != 1 {
+		t.Fatalf("a second reset = %d %q, want 409 and no second fund", rec.Code, rec.Body)
 	}
 }

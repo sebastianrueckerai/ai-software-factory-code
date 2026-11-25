@@ -546,14 +546,34 @@ func (f Free) stop(decision, reason string) string {
 }
 
 // The caps a human resets: the day's (budget.day_eur), the month's
-// (budget.month_eur), a project's (budget.month_eur in its file) and the
-// premium's (budget.premium_month_eur).
+// (budget.month_eur), a project's (budget.month_eur in its file), the
+// premium's (budget.premium_month_eur) and a project's escalation pool
+// (escalation.pool).
 const (
 	CapDay     = "day"
 	CapMonth   = "month"
 	CapProject = "project"
 	CapPremium = "premium"
+	CapPool    = "pool"
 )
+
+// capOfRepository says cap is counted per repository: a project's month
+// cap and its escalation pool.
+func capOfRepository(cap string) bool { return cap == CapProject || cap == CapPool }
+
+// PoolDrawsSQL picks the event rows that are draws from the escalation
+// pool: a human's grant, a row of rung 3, draws from the project's month
+// instead.
+const PoolDrawsSQL = `kind IN ('card_funded', 'card_extended') AND detail->>'pool' = 'true' AND detail->>'rung' IS DISTINCT FROM '3'`
+
+// PoolCountedSQL is whether event row e is in the pool's count of
+// repository, an SQL expression, in the UTC month of at, a timestamptz
+// expression: a draw of the repository in the month, since the pool's
+// newest reset there.
+func PoolCountedSQL(repository, at string) string {
+	return `e.repository = ` + repository + ` AND ` + PoolDrawsSQL + ` AND e.at >= ` + CapCountStartSQL(CapPool, repository, at) +
+		` AND e.at < (date_trunc('month', ` + at + ` AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'`
+}
 
 // periodStartSQL is the start of cap's UTC period of at, a timestamptz
 // expression: the day's counts the day, the others the calendar month.

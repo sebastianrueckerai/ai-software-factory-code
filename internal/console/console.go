@@ -217,6 +217,7 @@ type Config struct {
 	Caps interface {
 		ResetCap(ctx context.Context, cap, repository, login string, seen int64) (policy.CapReset, error)
 		CapResets(ctx context.Context, from, to time.Time) ([]policy.CapReset, error)
+		NewestCapReset(ctx context.Context, cap, repository string, at time.Time) (*policy.CapReset, error)
 	}
 	// WakeCapWaits signals every card that waits on a cap to check at once,
 	// for why, what it runs for (factoryd.CapWaits.Wake).
@@ -643,6 +644,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /caps/{cap}/reset", http.HandlerFunc(c.factoryCapReset), nil},
 		{"POST /projects/{name}/cap/reset", http.HandlerFunc(c.projectCapReset), nil},
+		{"POST /projects/{name}/pool/reset", http.HandlerFunc(c.poolReset), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},
@@ -659,6 +661,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/chat/delete", http.HandlerFunc(c.chatDelete), nil},
 		{"POST /projects/{name}/chat/answer", http.HandlerFunc(c.chatAnswer), nil},
 		{"POST /projects/{name}/chat/fund", http.HandlerFunc(c.chatFund), nil},
+		{"POST /projects/{name}/chat/reset", http.HandlerFunc(c.chatReset), nil},
 		{"POST /projects/{name}/chat/budget", http.HandlerFunc(c.chatFundAndGo), nil},
 		{"POST /projects/{name}/docs/{path...}", http.HandlerFunc(c.docWrite), nil},
 		{"POST /projects/{name}/chat/proposals/{id}", http.HandlerFunc(c.chatProposal), nil},

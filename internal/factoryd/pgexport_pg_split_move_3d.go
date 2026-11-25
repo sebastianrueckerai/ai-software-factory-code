@@ -52,9 +52,9 @@ func (r *Runner) PgSetKube(k Kube) { r.kube = k }
 // deploy tests whose Act posts on the chain fake's Forgejo.
 func (r *Runner) PgSetForgejo(f *Forgejo) { r.forgejo = f }
 
-// PgPoolDraws aliases the store's unexported poolDraws SQL, for the moved
-// propose tests that count the pool's draw rows directly.
-const PgPoolDraws = poolDraws
+// PgPoolDraws aliases the pool's draw rows' SQL, for the moved propose
+// tests that count them directly.
+const PgPoolDraws = policy.PoolDrawsSQL
 
 // PgMonitorFlagPrefix aliases the questions' unexported monitorFlagPrefix,
 // for the moved propose tests that build a monitor flag's reason.
