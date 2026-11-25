@@ -2,6 +2,8 @@ package bump
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -75,6 +77,8 @@ func answersOf2309(t *testing.T) map[string]answer {
 		"HEAD https://registry-1.docker.io/v2/library/debian/manifests/bookworm-20261123-slim": {header: map[string]string{"Docker-Content-Digest": "sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e"}},
 		hub + "moby/buildkit/tags/list?n=1000":                                                 tagList("buildx-stable-1", "v0.33.0", "v0.34.2", "v0.35.1", "v0.35.1-rootless", "v0.36.0-rc1"),
 		hub + "moby/buildkit/manifests/v0.35.1":                                                index("sha256:7583a0667093d941826bcd1d2878d6a360dfd08a82c93e6d6a6f6cce78801e12"),
+		hub + "library/alpine/tags/list?n=1000":                                                tagList("3.18.12", "3.18.11"),
+		quay + "cilium/cilium-envoy/tags/list?n=1000":                                          tagList("v1.37.7-1791291218-293ab4c1e2b1fec84de8fc5a2e3017889aaeac4d"),
 		hub + "temporalio/server/tags/list?n=1000":                                             tagList("1.31.4", "1.32.1", "1.32.2", "latest"),
 		hub + "temporalio/server/manifests/1.32.2":                                             index("sha256:3e11544607762c3187c12a63e289e03beddf46c21ebb52b47ccb77db179d6313"),
 		hub + "temporalio/admin-tools/manifests/1.32.2":                                        index("sha256:d6655e288364110b61204fbae5f103232b2c5c78e647a27bc11603d274145809"),
@@ -143,17 +147,17 @@ func TestABumpTurnsLastWeeksPinsIntoThisWeeks(t *testing.T) {
 			"postgresql-common 293.pgdg12+1 → 297.pgdg12+1",
 		},
 		Held: []string{
-			"docker.io/library/alpine 3.18.12",
 			"quay.io/cilium/cilium-envoy v1.37.7-1791291218-293ab4c1e2b1fec84de8fc5a2e3017889aaeac4d: quay.io/cilium/cilium moved to v1.20.5; quay.io/cilium/cilium-envoy is held and moves by hand with it",
 		},
-		Newer: []string{"docker.io/library/golang 1.27.4-alpine", "docker.io/library/golang 1.27.4", "opencode v2.4.1", "node v26.13.1", "libpq5 19.0-2.pgdg12+1"},
+		HeldKept: 1,
+		Newer:    []string{"docker.io/library/golang 1.27.4-alpine", "docker.io/library/golang 1.27.4", "opencode v2.4.1", "node v26.13.1", "libpq5 19.0-2.pgdg12+1"},
 	}
 	if !reflect.DeepEqual(report, want) {
 		t.Errorf("report\n%#v\nwant\n%#v", report, want)
 	}
 	for _, a := range f.asked {
-		if strings.Contains(a, "alpine/manifests") || strings.Contains(a, "alpine/tags") || strings.Contains(a, "cilium-envoy") || strings.Contains(a, "admin-tools/tags") || strings.Contains(a, "operator-generic/tags") {
-			t.Errorf("asked %s: a held line asks nothing, a with line no tags", a)
+		if strings.Contains(a, "alpine/manifests") || strings.Contains(a, "cilium-envoy/manifests") || strings.Contains(a, "admin-tools/tags") || strings.Contains(a, "operator-generic/tags") {
+			t.Errorf("asked %s: a held line asks for its tags only, a with line none", a)
 		}
 	}
 }
@@ -240,19 +244,141 @@ func TestAWithLineNeedsOneLeadThatMoves(t *testing.T) {
 	}
 }
 
-// The text lists what moved, then each held line with its tag, a held line
-// whose lead moved saying so, then the newer lines and what failed.
+// The text lists what moved, then the held lines that have news and how
+// many have none, then the newer lines and what failed.
 func TestTheReportReadsInItsOrder(t *testing.T) {
 	r := Report{Moved: []string{"quay.io/cilium/cilium v1.20.5 → v1.20.6"},
-		Held:   []string{"quay.io/cilium/cilium-envoy v1.39.6-1: quay.io/cilium/cilium moved to v1.20.6; quay.io/cilium/cilium-envoy is held and moves by hand with it"},
-		Newer:  []string{"opencode v2.4.1"},
-		Failed: []string{"node v24.22.3: GET https://nodejs.org/dist/index.json: 503 Service Unavailable"}}
+		Held:     []string{"quay.io/cilium/cilium-envoy v1.39.6-1: quay.io/cilium/cilium moved to v1.20.6; quay.io/cilium/cilium-envoy is held and moves by hand with it"},
+		HeldKept: 3,
+		Newer:    []string{"opencode v2.4.1"},
+		Failed:   []string{"node v24.22.3: GET https://nodejs.org/dist/index.json: 503 Service Unavailable"}}
 	want := "The factory's lookup moved the pins below to the newest release of their lines: upstream-bump, run in the bump pod.\n" +
 		"\nMoved:\n- quay.io/cilium/cilium v1.20.5 → v1.20.6\n" +
-		"\nHeld by rule (hold in upstream-images.txt), not moved:\n- quay.io/cilium/cilium-envoy v1.39.6-1: quay.io/cilium/cilium moved to v1.20.6; quay.io/cilium/cilium-envoy is held and moves by hand with it\n" +
+		"\nHeld by rule (hold in the lists), not moved:\n- quay.io/cilium/cilium-envoy v1.39.6-1: quay.io/cilium/cilium moved to v1.20.6; quay.io/cilium/cilium-envoy is held and moves by hand with it\n- held lines with nothing newer: 3\n" +
 		"\nNewer lines exist, which the rules of upstream-images.txt or a pin's major leave:\n- opencode v2.4.1\n" +
 		"\nNot resolved, kept as they were:\n- node v24.22.3: GET https://nodejs.org/dist/index.json: 503 Service Unavailable\n"
 	if got := r.Text(); got != want {
 		t.Errorf("Text =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func sumOf(body string) string {
+	h := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(h[:])
+}
+
+// A held line is looked up and never moved. The text names it when its
+// maker has a newer version (held at, newest), when the lookup fails, or
+// when its lead moved, and only counts the held lines with nothing newer.
+func TestAHeldLineIsLookedUpAndNeverMoved(t *testing.T) {
+	list := "docker.io/a/one:1.2.3@sha256:aa hold\n" +
+		"docker.io/a/two:2.0.0@sha256:bb hold\n" +
+		"docker.io/a/three:4.5.6@sha256:cc hold\n" +
+		"docker.io/a/four:5.0.0@sha256:dd hold\n" +
+		"docker.io/a/lead:1.0.0@sha256:ee\n" +
+		"docker.io/a/follower:1.0.0@sha256:ff hold with docker.io/a/lead\n"
+	w, _ := newWeb(map[string]answer{
+		hub + "a/one/tags/list?n=1000":      tagList("1.2.3", "1.2.4", "1.3.0"),
+		hub + "a/two/tags/list?n=1000":      tagList("2.0.0", "3.0.0"),
+		hub + "a/three/tags/list?n=1000":    tagList("4.5.6", "4.5.5"),
+		hub + "a/lead/tags/list?n=1000":     tagList("1.0.0", "1.0.1"),
+		hub + "a/lead/manifests/1.0.1":      index("sha256:" + strings.Repeat("1", 64)),
+		hub + "a/follower/tags/list?n=1000": tagList("1.0.0"),
+	})
+	changed, report := Bump(context.Background(), w, map[string]string{"upstream-images.txt": list})
+	if want := strings.Replace(list, "a/lead:1.0.0@sha256:ee", "a/lead:1.0.1@sha256:"+strings.Repeat("1", 64), 1); changed["upstream-images.txt"] != want {
+		t.Errorf("list\n%s\nwant\n%s", changed["upstream-images.txt"], want)
+	}
+	wantHeld := []string{
+		"docker.io/a/one held at 1.2.3, newest 1.3.0",
+		"docker.io/a/two held at 2.0.0, newest 3.0.0",
+		"docker.io/a/four 5.0.0: not looked up: GET https://registry-1.docker.io/v2/a/four/tags/list?n=1000: 404 Not Found no recorded answer",
+		"docker.io/a/follower 1.0.0: docker.io/a/lead moved to 1.0.1; docker.io/a/follower is held and moves by hand with it",
+	}
+	if !reflect.DeepEqual(report.Held, wantHeld) || report.HeldKept != 1 || len(report.Failed) != 0 {
+		t.Errorf("held %q kept %d failed %q; want %q, 1 and none", report.Held, report.HeldKept, report.Failed, wantHeld)
+	}
+}
+
+// A held line of upstream-files.txt is looked up the same way, and its
+// download is not fetched.
+func TestAHeldFileLineNamesItsNewestRelease(t *testing.T) {
+	const line = "cosign v3.1.4 cosign-linux-amd64 https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 1580a4aaf1d72f6c3ef898c9e776a1a5f767eb493ed8f5821b9f88a8e766c3bd hold\n"
+	w, f := newWeb(map[string]answer{gh + "sigstore/cosign/releases?per_page=100": releaseList("v3.1.5", "v3.1.4")})
+	changed, report := Bump(context.Background(), w, map[string]string{"upstream-files.txt": line})
+	if want := []string{"cosign held at v3.1.4, newest v3.1.5"}; len(changed) != 0 || !reflect.DeepEqual(report.Held, want) || len(report.Moved) != 0 {
+		t.Errorf("changed %v, held %q, moved %q; want the line as it is and %q", changed, report.Held, report.Moved, want)
+	}
+	for _, a := range f.asked {
+		if strings.Contains(a, "/download/") {
+			t.Errorf("asked %s: a held line fetches no file", a)
+		}
+	}
+}
+
+// A file line that follows an image line takes that line's version and no
+// lookup of its own: the manifest of a maker's release moves with the
+// image the release ships, and the file's name and URL carry the version
+// as the lead's tag spells it.
+func TestAFileLineFollowsItsImageLine(t *testing.T) {
+	const (
+		cnpg   = "ghcr.io/cloudnative-pg/cloudnative-pg"
+		barman = "ghcr.io/cloudnative-pg/plugin-barman-cloud"
+		oldSum = "1580a4aaf1d72f6c3ef898c9e776a1a5f767eb493ed8f5821b9f88a8e766c3bd"
+	)
+	images := cnpg + ":1.30.1@sha256:" + strings.Repeat("a", 64) + " bootstrap\n" +
+		barman + ":v0.15.0@sha256:" + strings.Repeat("b", 64) + " bootstrap\n"
+	files := "cnpg-operator 1.30.1 cnpg-1.30.1.yaml https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.1/cnpg-1.30.1.yaml " + oldSum + " with " + cnpg + "\n" +
+		"barman-cloud-plugin v0.15.0 manifest.yaml https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.15.0/manifest.yaml " + oldSum + " with " + barman + "\n"
+	const cnpgBody, barmanBody = "cnpg 1.30.2\n", "barman v0.16.0\n"
+	w, f := newWeb(map[string]answer{
+		"GET https://ghcr.io/v2/cloudnative-pg/cloudnative-pg/tags/list?n=1000":                             tagList("1.30.1", "1.30.2"),
+		"GET https://ghcr.io/v2/cloudnative-pg/cloudnative-pg/manifests/1.30.2":                             index("sha256:" + strings.Repeat("c", 64)),
+		"GET https://ghcr.io/v2/cloudnative-pg/plugin-barman-cloud/tags/list?n=1000":                        tagList("v0.15.0", "v0.16.0"),
+		"GET https://ghcr.io/v2/cloudnative-pg/plugin-barman-cloud/manifests/v0.16.0":                       index("sha256:" + strings.Repeat("d", 64)),
+		"GET https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.2/cnpg-1.30.2.yaml":   {body: cnpgBody},
+		"GET https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.16.0/manifest.yaml": {body: barmanBody},
+	})
+	changed, report := Bump(context.Background(), w, map[string]string{"upstream-images.txt": images, "upstream-files.txt": files})
+	want := "cnpg-operator 1.30.2 cnpg-1.30.2.yaml https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.2/cnpg-1.30.2.yaml " + sumOf(cnpgBody) + " with " + cnpg + "\n" +
+		"barman-cloud-plugin v0.16.0 manifest.yaml https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.16.0/manifest.yaml " + sumOf(barmanBody) + " with " + barman + "\n"
+	if changed["upstream-files.txt"] != want {
+		t.Errorf("files\n%s\nwant\n%s", changed["upstream-files.txt"], want)
+	}
+	if len(report.Failed) != 0 {
+		t.Errorf("failed %q", report.Failed)
+	}
+	for _, a := range f.asked {
+		if strings.Contains(a, "api.github.com") {
+			t.Errorf("asked %s: a file line that follows an image line looks up no release", a)
+		}
+	}
+}
+
+// A file line whose lead no line of the list gives stays and says why.
+func TestAFileLineWithoutItsLeadStays(t *testing.T) {
+	const line = "cnpg-operator 1.30.1 cnpg-1.30.1.yaml https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.1/cnpg-1.30.1.yaml 1580a4aaf1d72f6c3ef898c9e776a1a5f767eb493ed8f5821b9f88a8e766c3bd with ghcr.io/cloudnative-pg/cloudnative-pg\n"
+	w, _ := newWeb(map[string]answer{})
+	changed, report := Bump(context.Background(), w, map[string]string{"upstream-files.txt": line})
+	want := []string{"cnpg-operator 1.30.1: with ghcr.io/cloudnative-pg/cloudnative-pg: no line of that name leads it (one, not held, in the list)"}
+	if len(changed) != 0 || !reflect.DeepEqual(report.Failed, want) {
+		t.Errorf("changed %v, failed %q; want nothing changed and %q", changed, report.Failed, want)
+	}
+}
+
+// patch keeps a file line in its minor, as it does an image line: the go
+// tool of the ts-go template moves to the newest 1.25 and names the 1.26.
+func TestAPatchFileLineStaysInItsMinor(t *testing.T) {
+	const old = "1580a4aaf1d72f6c3ef898c9e776a1a5f767eb493ed8f5821b9f88a8e766c3bd"
+	const body = "go1.25.14\n"
+	w, _ := newWeb(map[string]answer{
+		"GET https://go.dev/dl/?mode=json&include=all":       {body: `[{"version":"go1.26.2","stable":true},{"version":"go1.25.14","stable":true},{"version":"go1.25.13","stable":true},{"version":"go1.26rc1","stable":false}]`},
+		"GET https://go.dev/dl/go1.25.14.linux-amd64.tar.gz": {body: body},
+	})
+	list := "go 1.25.13 go1.25.13.linux-amd64.tar.gz https://go.dev/dl/go1.25.13.linux-amd64.tar.gz " + old + " patch\n"
+	changed, report := Bump(context.Background(), w, map[string]string{"upstream-files.txt": list})
+	want := "go 1.25.14 go1.25.14.linux-amd64.tar.gz https://go.dev/dl/go1.25.14.linux-amd64.tar.gz " + sumOf(body) + " patch\n"
+	if changed["upstream-files.txt"] != want || !reflect.DeepEqual(report.Newer, []string{"go go1.26.2"}) {
+		t.Errorf("files\n%s\nnewer %q; want\n%s\nand go go1.26.2", changed["upstream-files.txt"], report.Newer, want)
 	}
 }

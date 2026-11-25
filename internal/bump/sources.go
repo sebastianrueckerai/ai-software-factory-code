@@ -111,6 +111,33 @@ func (nodeReleases) tags(ctx context.Context, w *Web) ([]string, error) {
 	return tags, nil
 }
 
+// goReleases lists Go's stable versions (go1.25.14) from go.dev's download
+// index, every minor's, not the newest two only.
+type goReleases struct{}
+
+func (goReleases) tags(ctx context.Context, w *Web) ([]string, error) {
+	b, _, err := w.get(ctx, "https://go.dev/dl/?mode=json&include=all")
+	if err != nil {
+		return nil, err
+	}
+	var rs []struct {
+		Version string `json:"version"`
+		Stable  bool   `json:"stable"`
+	}
+	if err := json.Unmarshal(b, &rs); err != nil {
+		return nil, fmt.Errorf("go.dev's index: %w", err)
+	}
+	var tags []string
+	for _, r := range rs {
+		if r.Stable {
+			tags = append(tags, r.Version)
+		}
+	}
+	return tags, nil
+}
+
+var goTarball = regexp.MustCompile(`^/dl/(go\d+(?:\.\d+)+)\.`)
+
 // registryAPI is the host and repository of an image name's registry API.
 func registryAPI(name string) (host, repo string) {
 	host, repo, _ = strings.Cut(name, "/")
@@ -130,8 +157,8 @@ func imageSource(name string) source {
 }
 
 // fileSource is where the versions of a file's URL are listed, and the tag
-// the URL holds: a GitHub or Forgejo release download, or nodejs.org's
-// dist. A URL of none has no versions: its line keeps its URL.
+// the URL holds: a GitHub or Forgejo release download, nodejs.org's dist,
+// or a Go tarball of go.dev. A URL of none has no versions: its line keeps its URL.
 func fileSource(raw string) (source, string, bool) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -139,6 +166,8 @@ func fileSource(raw string) (source, string, bool) {
 	}
 	parts := strings.Split(u.EscapedPath(), "/")
 	switch {
+	case u.Host == "go.dev" && goTarball.MatchString(u.Path):
+		return goReleases{}, goTarball.FindStringSubmatch(u.Path)[1], true
 	case u.Host == "nodejs.org" && len(parts) > 3 && parts[1] == "dist":
 		return nodeReleases{}, parts[2], true
 	case len(parts) > 5 && parts[3] == "releases" && parts[4] == "download":

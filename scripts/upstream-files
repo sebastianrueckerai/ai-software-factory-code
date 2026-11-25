@@ -3,6 +3,7 @@
 # of git.aisoftwarefactory.world, with every build input that is not an
 # image (roadmap 203, step 1). The list (upstream-files.txt by default)
 # holds one file a line: <package> <version> <file> <https URL> <sha256>,
+# then rule words for the bump, which this script ignores, each
 # uploaded to the store's generic package registry,
 # /api/packages/upstream/generic/<package>/<version>/<file>, only when
 # the store lacks it: the download is checked against the line's sha256
@@ -50,7 +51,7 @@ put() {
 sha() {
   sha256sum "$1" | awk '{print $1}'
 }
-while read -r package version name url sum; do
+while read -r package version name url sum _; do
   case "$package" in '' | '#'*) continue ;; esac
   if kept=$(stored "$package" "$version" "$name"); then
     [ "$kept" = "$sum" ] || fail "$package $version $name: the store holds sha256 $kept, the line pins $sum"

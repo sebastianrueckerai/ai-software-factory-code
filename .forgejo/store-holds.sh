@@ -23,7 +23,7 @@ for df in "$@"; do
       needs+=("image ${image%:*} ${image##*:} ${ref#*@}")
     fi
   done < upstream-images.txt
-  while read -r package version name _ sum; do
+  while read -r package version name _ sum _; do
     case "$package" in '' | '#'*) continue ;; esac
     if grep -qF "sha256:$sum" "$df"; then
       needs+=("file $package $version $name")

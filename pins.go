@@ -31,9 +31,11 @@ var (
 const StoreGeneric = "https://git.aisoftwarefactory.world/api/packages/upstream/generic/"
 
 // File is one line of upstream-files.txt: a file's package name, version,
-// file name, URL and sha256.
+// file name, URL and sha256, and a rule word as an image line takes it
+// (Rule, Lead as Image's): with <name> names an image line, whose version the
+// file's follows.
 type File struct {
-	Package, Version, Name, URL, SHA256 string
+	Package, Version, Name, URL, SHA256, Rule, Lead string
 }
 
 // StorePath is the line's <package>/<version>/<file> under StoreGeneric.
@@ -44,7 +46,7 @@ func (f File) StoreURL() string { return StoreGeneric + f.StorePath() }
 
 // String is the line as the list writes it.
 func (f File) String() string {
-	return strings.Join([]string{f.Package, f.Version, f.Name, f.URL, f.SHA256}, " ")
+	return strings.TrimSpace(strings.Join([]string{f.Package, f.Version, f.Name, f.URL, f.SHA256, ruleWords(f.Rule, f.Lead)}, " "))
 }
 
 // Image is one line of upstream-images.txt. Ref is an image or OCI chart,
@@ -68,6 +70,33 @@ const (
 	RuleWith  = "with"
 )
 
+// parseRule reads the words after a line's reference and its kind: none,
+// patch, hold, with <name> or hold with <name>.
+func parseRule(rest []string) (rule, lead string, ok bool) {
+	switch {
+	case len(rest) == 0:
+		return "", "", true
+	case len(rest) == 1 && (rest[0] == RulePatch || rest[0] == RuleHold):
+		return rest[0], "", true
+	case len(rest) == 2 && rest[0] == RuleWith:
+		return rest[0], rest[1], true
+	case len(rest) == 3 && rest[0] == RuleHold && rest[1] == RuleWith:
+		return rest[0], rest[2], true
+	}
+	return "", "", false
+}
+
+// ruleWords is parseRule's words again.
+func ruleWords(rule, lead string) string {
+	switch {
+	case rule == RuleHold && lead != "":
+		return "hold with " + lead
+	case lead != "":
+		return rule + " " + lead
+	}
+	return rule
+}
+
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ParseFiles returns the well-formed lines of an upstream-files.txt and an
@@ -76,11 +105,12 @@ func ParseFiles(list string) ([]File, error) {
 	var out []File
 	var errs []error
 	for line, f := range listLines(list) {
-		if len(f) != 5 || !strings.HasPrefix(f[3], "https://") || !hex64.MatchString(f[4]) {
-			errs = append(errs, fmt.Errorf("%q: want <package> <version> <file> <https URL> <64 hex of the file's sha256>", line))
+		rule, lead, ok := parseRule(f[min(5, len(f)):])
+		if len(f) < 5 || !ok || !strings.HasPrefix(f[3], "https://") || !hex64.MatchString(f[4]) {
+			errs = append(errs, fmt.Errorf("%q: want <package> <version> <file> <https URL> <64 hex of the file's sha256>, then nothing, patch, hold, with <name> or hold with <name>", line))
 			continue
 		}
-		l := File{Package: f[0], Version: f[1], Name: f[2], URL: f[3], SHA256: f[4]}
+		l := File{Package: f[0], Version: f[1], Name: f[2], URL: f[3], SHA256: f[4], Rule: rule, Lead: lead}
 		if strings.Contains(l.Package+l.Version+l.Name, "/") || l.Name != l.URL[strings.LastIndex(l.URL, "/")+1:] {
 			errs = append(errs, fmt.Errorf("%q: the store takes generic/<package>/<version>/<file>, the file its URL's name", line))
 			continue
@@ -103,15 +133,8 @@ func ParseImages(list string) ([]Image, error) {
 		case len(rest) > 1 && rest[0] == "onto":
 			l.Kind, l.Onto, rest = rest[0], rest[1], rest[2:]
 		}
-		switch {
-		case len(rest) == 0:
-		case len(rest) == 1 && (rest[0] == RulePatch || rest[0] == RuleHold):
-			l.Rule = rest[0]
-		case len(rest) == 2 && rest[0] == RuleWith:
-			l.Rule, l.Lead = rest[0], rest[1]
-		case len(rest) == 3 && rest[0] == RuleHold && rest[1] == RuleWith:
-			l.Rule, l.Lead = rest[0], rest[2]
-		default:
+		var ok bool
+		if l.Rule, l.Lead, ok = parseRule(rest); !ok {
 			errs = append(errs, fmt.Errorf("%q: want a reference, then nothing, bootstrap, helm or onto <name>:<tag>, then nothing, patch, hold, with <name> or hold with <name>", line))
 			continue
 		}

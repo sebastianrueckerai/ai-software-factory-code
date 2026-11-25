@@ -121,7 +121,19 @@ a check fails:
   major: a tag that is no version (`bookworm-slim`, `22-bookworm-slim`)
   takes its digest now, and a word after a line of `upstream-images.txt`
   refines it: `patch` keeps the minor, `hold` never moves the line, `with
-  <name>` gives it the version of that image's line. An image's digest is
+  <name>` gives it the version of that image's line, and `hold with <name>`
+  says so in the text when that line moves. A line of `upstream-files.txt`
+  takes the same words after its sha256, and its `with <name>` names an
+  image line too, so a vendored manifest of the infra repository
+  (`cnpg-operator`, `barman-cloud-plugin`, `local-path-provisioner`) moves
+  with the image it runs, with no release lookup of its own. A held line is
+  looked up like any other and never moved: the text names it as `held at X,
+  newest Y` when a newer version exists, names a failed lookup, and only
+  counts the held lines with nothing newer. The lines of the parts that the
+  cluster does not follow by itself (Talos, Kubernetes, Cilium, Flux, the
+  Forgejo runner with its docker-in-docker and job image) hold at the
+  version the cluster runs, so that text is the reminder that an upgrade by
+  hand is due, and the upgrade moves the line. An image's digest is
   its linux/amd64 manifest's; a file's sha256 is the program's hash of its
   own download, made only when its version moves, since the store keeps a
   version's first upload. vuln.go.dev rebuilds its zip under one modified

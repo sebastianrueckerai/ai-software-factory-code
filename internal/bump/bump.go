@@ -26,9 +26,11 @@ var dockerfiles = []string{"Dockerfile", "Dockerfile.runner", "Dockerfile.sandbo
 type Report struct {
 	// Moved names each pin that moved: its line, from and to.
 	Moved []string `json:"moved,omitempty"`
-	// Held names each line hold keeps, with its tag, and says so when the
-	// line it names to move with moved.
+	// Held names each line hold keeps that has news: a newer version, a
+	// lookup that failed, or a lead that moved.
 	Held []string `json:"held,omitempty"`
+	// HeldKept counts the held lines with none.
+	HeldKept int `json:"held_kept,omitempty"`
 	// Newer names the newer lines a rule left: a newer major, or a newer
 	// minor of a patch line.
 	Newer []string `json:"newer,omitempty"`
@@ -46,7 +48,7 @@ func (r Report) Text() string {
 		lines []string
 	}{
 		{"Moved", r.Moved},
-		{"Held by rule (hold in upstream-images.txt), not moved", r.Held},
+		{"Held by rule (hold in the lists), not moved", r.held()},
 		{"Newer lines exist, which the rules of upstream-images.txt or a pin's major leave", r.Newer},
 		{"Not resolved, kept as they were", r.Failed},
 	} {
@@ -61,6 +63,13 @@ func (r Report) Text() string {
 	return b.String()
 }
 
+func (r Report) held() []string {
+	if r.HeldKept == 0 {
+		return r.Held
+	}
+	return append(slices.Clone(r.Held), fmt.Sprintf("held lines with nothing newer: %d", r.HeldKept))
+}
+
 // pass is one bump over the files.
 type pass struct {
 	ctx    context.Context
@@ -71,6 +80,9 @@ type pass struct {
 	images map[string]string
 	// tags: each image name whose tag moved, to its new tag
 	tags map[string]string
+	// leads: each image name that one line of the list holds, not held, to
+	// the tag it has now
+	leads map[string]string
 	// downloads: each file line that moved
 	downloads []download
 }
@@ -86,7 +98,7 @@ type download struct {
 // It returns the files it changed. A pin it cannot resolve stays as it is
 // and stands in the report with why.
 func Bump(ctx context.Context, w *Web, files map[string]string) (map[string]string, Report) {
-	p := &pass{ctx: ctx, w: w, files: maps.Clone(files), images: map[string]string{}, tags: map[string]string{}}
+	p := &pass{ctx: ctx, w: w, files: maps.Clone(files), images: map[string]string{}, tags: map[string]string{}, leads: map[string]string{}}
 	p.imageList()
 	p.fileList()
 	p.dockerfiles()
@@ -125,13 +137,12 @@ func (p *pass) imageList() {
 			names[name]++
 		}
 	}
-	leads := map[string]string{}
 	for _, follow := range []bool{false, true} {
 		for _, l := range lines {
 			if (l.Rule == pins.RuleWith) != follow || l.Rule == pins.RuleHold {
 				continue
 			}
-			now, err := p.imageLine(l, leads, names)
+			now, err := p.imageLine(l, names)
 			if err != nil {
 				p.failed("%s: %v", strings.Fields(l.Ref)[0], err)
 				continue
@@ -143,32 +154,60 @@ func (p *pass) imageList() {
 	}
 	for _, l := range lines {
 		if l.Rule == pins.RuleHold {
-			p.held(l)
+			p.heldImage(l)
 		}
 	}
 	p.files[list] = rewriteImages(p.files[list], p.images)
 }
 
-// held names held line l with its tag, and the move of the line it names
-// to move with by hand, when that line moved.
-func (p *pass) held(l pins.Image) {
-	ref, _, _ := strings.Cut(l.Ref, "@")
-	name, tag, _, ok := splitImage(l.Ref)
-	line := ref
-	if ok {
-		line = name + " " + tag
+// heldImage looks held line l up, as the bump looks up any line, and
+// leaves it as it is.
+func (p *pass) heldImage(l pins.Image) {
+	if strings.HasPrefix(l.Ref, "https://") {
+		u, _, _ := strings.Cut(l.Ref, "@")
+		tag, pick, newer, _, err := p.releases(u, false)
+		p.held(u, tag, l.Lead, cmp.Or(newer, pick), err)
+		return
 	}
-	if to, moved := p.tags[l.Lead]; moved && l.Lead != "" {
-		line += fmt.Sprintf(": %s moved to %s; %s is held and moves by hand with it", l.Lead, to, cmp.Or(name, ref))
+	name, tag, _, ok := splitImage(l.Ref)
+	if !ok {
+		p.held(l.Ref, "", l.Lead, "", nil)
+		return
+	}
+	tags, err := imageSource(name).tags(p.ctx, p.w)
+	pick, newer := Newest(tag, tags, false, false)
+	p.held(name, tag, l.Lead, cmp.Or(newer, pick), err)
+}
+
+// held reports held line name at tag: its newest version when that is
+// newer, a lookup that failed, and the move of the line it names to move
+// with by hand. A line with none of these only counts.
+func (p *pass) held(name, tag, lead, newest string, err error) {
+	line := strings.TrimSpace(name + " " + tag)
+	news := err != nil
+	switch {
+	case err != nil:
+		line += ": not looked up: " + err.Error()
+	case newest != "" && newest != tag:
+		line = fmt.Sprintf("%s held at %s, newest %s", name, tag, newest)
+		news = true
+	}
+	if to, moved := p.tags[lead]; moved && lead != "" {
+		line += fmt.Sprintf(": %s moved to %s; %s is held and moves by hand with it", lead, to, name)
+		news = true
+	}
+	if !news {
+		p.report.HeldKept++
+		return
 	}
 	p.report.Held = append(p.report.Held, line)
 }
 
 // imageLine is the line's reference moved to the newest of its line.
-func (p *pass) imageLine(l pins.Image, leads map[string]string, names map[string]int) (string, error) {
+func (p *pass) imageLine(l pins.Image, names map[string]int) (string, error) {
 	if strings.HasPrefix(l.Ref, "https://") {
 		u, sum, _ := strings.Cut(l.Ref, "@sha256:")
-		d, err := p.download(u, sum, "")
+		d, err := p.download(u, sum, "", l.Rule == pins.RulePatch)
 		if err != nil {
 			return "", err
 		}
@@ -184,9 +223,9 @@ func (p *pass) imageLine(l pins.Image, leads map[string]string, names map[string
 	pick := tag
 	switch l.Rule {
 	case pins.RuleWith:
-		lead, ok := leads[l.Lead]
-		if !ok {
-			return "", fmt.Errorf("with %s: no line of that name leads it (one, not held, in the list)", l.Lead)
+		lead, err := p.lead(l.Lead)
+		if err != nil {
+			return "", err
 		}
 		v, ok := parseVersion(tag, false)
 		lv, lok := parseVersion(lead, false)
@@ -210,7 +249,7 @@ func (p *pass) imageLine(l pins.Image, leads map[string]string, names map[string
 		return "", err
 	}
 	if names[name] == 1 {
-		leads[name] = pick
+		p.leads[name] = pick
 	}
 	switch {
 	case pick != tag:
@@ -222,6 +261,16 @@ func (p *pass) imageLine(l pins.Image, leads map[string]string, names map[string
 	return name + ":" + pick + "@" + now, nil
 }
 
+// lead is the tag of the one line of image name that the list does not
+// hold.
+func (p *pass) lead(name string) (string, error) {
+	tag, ok := p.leads[name]
+	if !ok {
+		return "", fmt.Errorf("with %s: no line of that name leads it (one, not held, in the list)", name)
+	}
+	return tag, nil
+}
+
 func joinNums(nums []int) string {
 	s := make([]string, len(nums))
 	for i, n := range nums {
@@ -230,21 +279,32 @@ func joinNums(nums []int) string {
 	return strings.Join(s, ".")
 }
 
+// releases is the release tag of the file at u, the newest of its line
+// among its maker's (in its minor with patch), and the newest the line
+// leaves out. ok is false for a URL that names no release.
+func (p *pass) releases(u string, patch bool) (tag, pick, newer string, ok bool, err error) {
+	src, tag, ok := fileSource(u)
+	if !ok {
+		return "", "", "", false, nil
+	}
+	tags, err := src.tags(p.ctx, p.w)
+	if err != nil {
+		return tag, tag, "", true, err
+	}
+	pick, newer = Newest(tag, tags, true, patch)
+	return tag, pick, newer, true, nil
+}
+
 // download is the file at u moved to the newest release of its line,
 // with the sha256 of the program's own download. A file whose release
 // stays, or whose URL names no release, keeps its URL and its sum. name,
 // when set, leads its newer lines.
-func (p *pass) download(u, sum, name string) (download, error) {
+func (p *pass) download(u, sum, name string, patch bool) (download, error) {
 	d := download{oldURL: u, newURL: u, oldSum: sum, newSum: sum}
-	src, tag, ok := fileSource(u)
-	if !ok {
-		return d, nil
-	}
-	tags, err := src.tags(p.ctx, p.w)
-	if err != nil {
+	tag, pick, newer, ok, err := p.releases(u, patch)
+	if !ok || err != nil {
 		return d, err
 	}
-	pick, newer := Newest(tag, tags, true, false)
 	if newer != "" {
 		p.report.Newer = append(p.report.Newer, strings.TrimSpace(name+" "+newer))
 	}
@@ -255,9 +315,45 @@ func (p *pass) download(u, sum, name string) (download, error) {
 	o, _ := parseVersion(tag, true)
 	n, _ := parseVersion(pick, true)
 	d.oldVersion, d.newVersion = joinNums(o.nums), joinNums(n.nums)
-	d.newURL = strings.ReplaceAll(u, d.oldVersion, d.newVersion)
+	return p.sumAt(d)
+}
+
+// sumAt moves d's URL from its old version to its new one and takes the
+// sha256 of the file there.
+func (p *pass) sumAt(d download) (download, error) {
+	d.newURL = strings.ReplaceAll(d.oldURL, d.oldVersion, d.newVersion)
+	var err error
 	d.newSum, err = p.w.sum(p.ctx, d.newURL)
 	return d, err
+}
+
+// follow is the file of line l moved to the version of the image line it
+// follows: the numbers of the lead's tag in place of the line's.
+func (p *pass) follow(l pins.File) (download, error) {
+	d := download{oldURL: l.URL, newURL: l.URL, oldSum: l.SHA256, newSum: l.SHA256}
+	lead, err := p.lead(l.Lead)
+	if err != nil {
+		return d, err
+	}
+	v, ok := parseVersion(l.Version, true)
+	lv, lok := parseVersion(lead, false)
+	if !ok || !lok || len(v.nums) != len(lv.nums) {
+		return d, fmt.Errorf("with %s: its version %s and the lead's %s are not versions of the same parts", l.Lead, l.Version, lead)
+	}
+	d.oldVersion, d.newVersion = joinNums(v.nums), joinNums(lv.nums)
+	if d.oldVersion == d.newVersion {
+		return d, nil
+	}
+	return p.sumAt(d)
+}
+
+// heldFile looks held file line l up, as heldImage does.
+func (p *pass) heldFile(l pins.File) {
+	tag, pick, newer, ok, err := p.releases(l.URL, false)
+	if !ok {
+		tag = l.Version
+	}
+	p.held(l.Package, tag, l.Lead, cmp.Or(newer, pick), err)
 }
 
 // fileList moves the lines of upstream-files.txt.
@@ -272,11 +368,17 @@ func (p *pass) fileList() {
 	moved := map[string]string{}
 	for _, l := range lines {
 		var d download
-		if l.URL == "https://vuln.go.dev/vulndb.zip" {
+		switch {
+		case l.Rule == pins.RuleHold:
+			p.heldFile(l)
+			continue
+		case l.Rule == pins.RuleWith:
+			d, err = p.follow(l)
+		case l.URL == "https://vuln.go.dev/vulndb.zip":
 			d = download{oldURL: l.URL, newURL: l.URL, oldSum: l.SHA256, oldVersion: l.Version}
 			d.newVersion, d.newSum, err = vulnDB(p.ctx, p.w, l.Version, l.SHA256)
-		} else {
-			d, err = p.download(l.URL, l.SHA256, l.Package)
+		default:
+			d, err = p.download(l.URL, l.SHA256, l.Package, l.Rule == pins.RulePatch)
 		}
 		if err != nil {
 			p.failed("%s %s: %v", l.Package, l.Version, err)
