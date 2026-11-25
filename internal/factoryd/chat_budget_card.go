@@ -39,6 +39,7 @@ type ChatBudgetBook interface {
 // Parent the chat task and its BudgetEUR the budget it was filed at.
 type ChatBudgetCards struct {
 	mu       sync.Mutex
+	checking sync.Mutex
 	Store    ChatBudgetBook
 	Forgejo  *Forgejo
 	Timeline *Timeline
@@ -141,8 +142,11 @@ func (c *ChatBudgetCards) stoppedWithoutCard(ctx context.Context, now time.Time)
 // Check files the cards of the stops that have none, then closes every
 // open card whose chat task's budget was raised above the card's, or whose
 // month ended before now. A card that fails does not stop the others; the
-// failures are joined.
+// failures are joined. The loop's check and a raise's run one after the
+// other, so a card closes once.
 func (c *ChatBudgetCards) Check(ctx context.Context, now time.Time) error {
+	c.checking.Lock()
+	defer c.checking.Unlock()
 	open, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		return err

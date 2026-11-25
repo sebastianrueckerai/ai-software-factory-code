@@ -85,6 +85,45 @@ func TestChatBudgetCards(t *testing.T) {
 	}
 }
 
+// A raise's check and the loop's at the same moment close the card once:
+// one close comment, not eight.
+func TestChatBudgetCardsCloseOnceUnderRace(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	forgejo, _ := newAlertForgejo(t)
+	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}}
+	chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50}
+	if err := store.CreateTask(ctx, chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := cards.File(ctx, Project{Name: "linkshort", Repository: "sf/linkshort"}, chat); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := store.ListTasksByStatus(ctx, "waiting-human")
+	if len(open) != 1 {
+		t.Fatalf("cards = %+v, want one", open)
+	}
+	chat.BudgetEUR = 60
+	store.tasks[chat.ID] = chat
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := cards.Check(ctx, time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got, _, _ := store.Task(ctx, open[0].ID); got.Status != "done" {
+		t.Fatalf("after the raise the card is %s, want done", got.Status)
+	}
+	if got := closeComments(t, store, open[0].ID); !slices.Equal(got, []string{"The judgment budget is 60.00 EUR for 2026-11: the card closes."}) {
+		t.Fatalf("close comments = %q, want one", got)
+	}
+}
+
 // Two stops at the same moment file one card.
 func TestChatBudgetCardsFileOnceUnderRace(t *testing.T) {
 	ctx := context.Background()

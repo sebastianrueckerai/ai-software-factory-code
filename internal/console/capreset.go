@@ -90,6 +90,7 @@ func (c *Console) chatReset(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
+	c.closeRaised(r.Context())
 	c.pressed(w, r, nil)
 }
 

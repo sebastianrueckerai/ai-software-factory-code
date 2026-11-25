@@ -681,6 +681,8 @@ func TestChatResetFreesTheMonthlyFigure(t *testing.T) {
 			t.Errorf("the board lacks %s", want)
 		}
 	}
+	checks := 0
+	r.c.cfg.CheckChatBudgetCards = func(context.Context, time.Time) error { checks++; return nil }
 	press := func() *httptest.ResponseRecorder {
 		req := post("/projects/ai-software-factory-code/chat/reset", url.Values{"csrf": {s.csrf}})
 		req.Header.Set("HX-Request", "true")
@@ -693,6 +695,9 @@ func TestChatResetFreesTheMonthlyFigure(t *testing.T) {
 	if math.Abs(task.BudgetEUR-24.96) > 1e-9 || task.SpentEUR != 14.96 {
 		t.Fatalf("budget_eur = %v, spent_eur = %v; want 24.96 with the spend kept", task.BudgetEUR, task.SpentEUR)
 	}
+	if checks != 1 {
+		t.Fatalf("the reset checked the chat budget cards %d times, want once, so its card closes with the press", checks)
+	}
 	rows := eventsOf(r, factoryd.EventChatFunded)
 	if len(rows) != 1 || rows[0].TaskID != chat.ID || rows[0].Actor != "sebastian" || rows[0].Via != factoryd.ViaButton ||
 		rows[0].Detail["amount_eur"] != 9.96 || rows[0].Detail["reason"] != "reset in the status panel" {
@@ -702,7 +707,7 @@ func TestChatResetFreesTheMonthlyFigure(t *testing.T) {
 	if strings.Contains(body, `>judgment budget spent</span>`) || strings.Contains(body, `/chat/reset"`) || !strings.Contains(body, `<span class="fig">14.96 of 24.96 EUR</span>`) {
 		t.Error("after the reset the board keeps the stop or the Reset, or lacks the raised budget's row")
 	}
-	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "The judgment budget has 10.00 EUR free: there is nothing to reset.\n" || len(eventsOf(r, factoryd.EventChatFunded)) != 1 {
-		t.Fatalf("a second reset = %d %q, want 409 and no second fund", rec.Code, rec.Body)
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "The judgment budget has 10.00 EUR free: there is nothing to reset.\n" || len(eventsOf(r, factoryd.EventChatFunded)) != 1 || checks != 1 {
+		t.Fatalf("a second reset = %d %q, want 409, no second fund and no second check", rec.Code, rec.Body)
 	}
 }

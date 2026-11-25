@@ -354,6 +354,10 @@ type Config struct {
 	// once its budget is spent (factoryd.ChatBudgetCards.File); nil files
 	// none.
 	FileChatBudgetCard func(ctx context.Context, p factoryd.Project, chat factoryd.Task) error
+	// CheckChatBudgetCards closes the chat budget cards a raise lifted
+	// (factoryd.ChatBudgetCards.Check), so a raise closes its card with
+	// the press; nil leaves the close to factoryd's minute loop.
+	CheckChatBudgetCards func(ctx context.Context, now time.Time) error
 	// DocsToken is the docs writer's Forgejo token, which write_doc
 	// commits documents with (FORGEJO_DOCS_TOKEN); empty: no chat writes
 	// documents.

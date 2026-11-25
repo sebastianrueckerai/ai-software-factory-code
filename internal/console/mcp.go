@@ -478,6 +478,9 @@ func (c *Console) tokenFund(ctx context.Context, call tokenCall, in fundInput) (
 		return nil, nil, errors.New("The chat is not stopped, so no fund is suggested: give eur to raise its budget anyway.")
 	}
 	from, to, err := c.doChatFund(ctx, t.a, call.p.Name, eur, chatFundNote, "")
+	if err == nil {
+		c.closeRaised(ctx)
+	}
 	if err != nil {
 		return nil, nil, errors.New(t.sentence(err))
 	}

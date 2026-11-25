@@ -3147,6 +3147,7 @@ func (c *Console) chatFund(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
+	c.closeRaised(r.Context())
 	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
 }
 

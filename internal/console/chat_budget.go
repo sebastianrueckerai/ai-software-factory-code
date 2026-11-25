@@ -239,6 +239,9 @@ func (c *Console) chatFundAndGo(w http.ResponseWriter, r *http.Request) {
 	}
 	t.a.decider = "member"
 	from, to, err := c.doChatFund(r.Context(), t.a, t.p.Name, eur, chatFundNote, t.key())
+	if err == nil {
+		c.closeRaised(r.Context())
+	}
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -262,6 +265,19 @@ func (c *Console) chatFundAndGo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.run(task.ID, "")
+}
+
+// closeRaised closes the chat budget cards a raise lifted, at once
+// (CheckChatBudgetCards). The card's own answer closes its card itself
+// and does not call this. A failure is logged: factoryd's minute loop
+// closes the card.
+func (c *Console) closeRaised(ctx context.Context) {
+	if c.cfg.CheckChatBudgetCards == nil {
+		return
+	}
+	if err := c.cfg.CheckChatBudgetCards(context.WithoutCancel(ctx), time.Now()); err != nil {
+		log.Printf("console: the chat budget cards after a raise: %v", err)
+	}
 }
 
 // resumeStopped goes on with every turn of project p the chat's budget
