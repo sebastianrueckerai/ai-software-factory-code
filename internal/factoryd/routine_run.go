@@ -122,6 +122,13 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		}
 		return filed(t.ID, ref.Number, told(fmt.Sprintf("%s Filed #%d %q.", NothingForYou, ref.Number, rt.Title)))
 	case policy.FilesPullRequest:
+		if rt.Pass == policy.PassFollow {
+			outcome, note, err := r.followPass(ctx, p, rt, run.Run)
+			if err != nil {
+				return RoutineRunResult{}, err
+			}
+			return end(outcome, note, "")
+		}
 		if rt.Pass == policy.PassBump {
 			t, ref, err := r.bumpPass(ctx, p, rt, brief, provenance)
 			if err != nil {

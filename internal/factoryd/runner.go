@@ -247,6 +247,8 @@ type Runner struct {
 	// Upstream copies what a branch's head adds to the build inputs into
 	// the store before its checks; nil copies nothing
 	Upstream *UpstreamPod
+	// Follow wires the follow routine's moves; nil runs none
+	Follow *FollowDeps
 	// Scrub scrubs every session record. NewRunner's knows no secret
 	// value; factoryd sets the one built from its boot secrets before the
 	// worker starts.

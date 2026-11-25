@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -168,6 +169,55 @@ func (w TemporalWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInp
 		return nil
 	}
 	return err
+}
+
+// FollowMoveID is the workflow ID of project's move of the follow routine:
+// one runs at a time.
+func FollowMoveID(project string) string { return "follow/" + project }
+
+// StartFollowMove starts project's move. Its memo holds the input, which
+// RunningFollowMove reads back.
+func (w TemporalWorkflows) StartFollowMove(ctx context.Context, in FollowMoveInput) error {
+	_, err := w.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:                                       FollowMoveID(in.Project),
+		TaskQueue:                                TaskQueue,
+		Memo:                                     map[string]any{followMemoMove: in},
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
+	}, "FollowMove", in)
+	var started *serviceerror.WorkflowExecutionAlreadyStarted
+	if errors.As(err, &started) {
+		return fmt.Errorf("a move of project %s runs already", in.Project)
+	}
+	return err
+}
+
+// RunningFollowMove is the move of project that runs and has not reached
+// its end: a move past its judgment marks its memo, so the run it starts
+// next is not held by the workflow that is just ending.
+func (w TemporalWorkflows) RunningFollowMove(ctx context.Context, project string) (FollowMoveInput, bool, error) {
+	d, err := w.Client.DescribeWorkflowExecution(ctx, FollowMoveID(project), "")
+	var missing *serviceerror.NotFound
+	if errors.As(err, &missing) {
+		return FollowMoveInput{}, false, nil
+	}
+	if err != nil {
+		return FollowMoveInput{}, false, err
+	}
+	info := d.GetWorkflowExecutionInfo()
+	if info.GetStatus() != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		return FollowMoveInput{}, false, nil
+	}
+	fields := info.GetMemo().GetFields()
+	if _, ended := fields[followMemoEnded]; ended {
+		return FollowMoveInput{}, false, nil
+	}
+	var in FollowMoveInput
+	if p, ok := fields[followMemoMove]; ok {
+		if err := converter.GetDefaultDataConverter().FromPayload(p, &in); err != nil {
+			return FollowMoveInput{}, false, err
+		}
+	}
+	return in, true, nil
 }
 
 // Terminate ends the task's running workflow with reason. A workflow that is

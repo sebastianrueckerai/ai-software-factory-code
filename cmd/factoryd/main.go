@@ -396,6 +396,7 @@ func main() {
 	upstream := &factoryd.UpstreamPod{Kube: kube, Forgejo: forgejo, OpenBao: registrar.OpenBao, Namespace: kube.Namespace(),
 		PullSecret: env("PULL_SECRET", "forgejo-registry"), RunnerImage: mustEnv("CI_RUNNER_IMAGE"), StoreHost: registryHost, Scrub: runner.Scrub}
 	runner.Upstream = upstream
+	runner.Follow = &factoryd.FollowDeps{Moves: &inner, Cards: store, Alerts: store}
 	// BootSweep took every copy namespace: the tokens of those runs go now
 	upstream.Sweep(ctx, true)
 	ciSpawner.SweepEachPass(func(ctx context.Context) { upstream.Sweep(ctx, false) })
