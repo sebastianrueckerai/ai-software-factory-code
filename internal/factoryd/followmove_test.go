@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -60,7 +61,10 @@ type moveRun struct {
 	gateway int
 }
 
-func newMoveRun(t *testing.T) *moveRun {
+// newMoveRun is a move run whose pass opened its pull request after the
+// targets of the parts attempted had their attempts: attempted litellm moves
+// the part cache, by a human, as pull request #41.
+func newMoveRun(t *testing.T, attempted ...string) *moveRun {
 	t.Helper()
 	quickMergeWaits(t)
 	m := &moveRun{followRun: newFollowRun(t, behindTree()), clock: &moveClock{now: time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)}, alerts: &fakeAlertRows{}, gateway: http.StatusOK}
@@ -73,21 +77,35 @@ func newMoveRun(t *testing.T) *moveRun {
 	m.r.now, m.r.sleep = m.clock.Now, m.clock.sleep
 	m.r.Follow.Alerts = m.alerts
 	m.r.Follow.Probe = func(context.Context) []string { return m.probe }
+	for _, part := range attempted {
+		m.forge.attempt(followBranch(part, map[string]map[string][]byte{"litellm": litellmTarget(), "cache": cacheTarget()}[part], 1), "closed", false)
+	}
 	m.run(t)
 	if len(m.moves.started) != 1 {
 		t.Fatalf("the pass started %v", m.moves.started)
 	}
 	m.in = m.moves.started[0]
-	m.forge.statuses["head40"] = []CommitStatus{{State: "success", Context: checkContext}}
+	m.forge.statuses[m.head()] = []CommitStatus{{State: "success", Context: checkContext}}
 	m.forge.mergeStatus = []CommitStatus{{State: "success", Context: "flux/flux-system"}, {State: "success", Context: "flux/platform"}}
 	return m
 }
 
+func (m *moveRun) head() string  { return "head" + strconv.FormatInt(m.in.PR, 10) }
+func (m *moveRun) merge() string { return "merge" + strconv.FormatInt(m.in.PR, 10) }
+
 // workflow runs the move's workflow over the runner's activities.
-func (m *moveRun) workflow(t *testing.T) {
+// A human's act, when given, happens in the workflow's time at human.
+func (m *moveRun) workflow(t *testing.T, human ...func(f *infraForge)) {
 	t.Helper()
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	for _, act := range human {
+		env.RegisterDelayedCallback(func() {
+			m.forge.mu.Lock()
+			defer m.forge.mu.Unlock()
+			act(m.forge)
+		}, 90*time.Second)
+	}
 	env.RegisterWorkflowWithOptions(FollowMoveWorkflow, workflow.RegisterOptions{Name: "FollowMove"})
 	m.r.RegisterActivities(env)
 	env.ExecuteWorkflow("FollowMove", m.in)
@@ -265,4 +283,82 @@ func TestFollowJudgeFailures(t *testing.T) {
 			t.Fatalf("verdict = %+v, want the held alert named", v)
 		}
 	})
+}
+
+// A move of the human lane files the card that asks for a merge, with the
+// versions, the notes, what a human does after the merge and the words that
+// Reject leaves the part, and goes on when the human merges.
+func TestFollowMoveHumanMerges(t *testing.T) {
+	followPoll = time.Minute
+	t.Cleanup(func() { followPoll, followHumanBound = 5*time.Minute, 14*24*time.Hour })
+	m := newMoveRun(t, "litellm")
+	m.workflow(t, func(f *infraForge) { f.humanMerges(41) })
+	cards := m.store.tasks
+	if len(cards) != 1 {
+		t.Fatalf("cards = %+v, want the one that asks for the merge", cards)
+	}
+	var card Task
+	for _, c := range cards {
+		card = c
+	}
+	if card.Source != SourceFollow || card.PRNumber != 41 || card.Kind != "human" || card.Repository != "sf/"+infraName {
+		t.Fatalf("card = %+v", card)
+	}
+	asked := recordedEvents(m.r, EventQuestionAsked)
+	if len(asked) != 1 {
+		t.Fatalf("asks = %+v", asked)
+	}
+	issue := asked[0].Detail["ask"].(string) + "\n" + asked[0].Detail["info"].(string)
+	for _, want := range []string{
+		"Merge the follow routine's move of part cache?",
+		"part cache is of the human lane, and moves docker.io/library/registry: 3@000000000000 to 3@888888888888",
+		"The maker's release notes: https://example.org/registry/releases",
+		"Reject closes the pull request and leaves the part as it is until the lists carry its next version",
+	} {
+		if !strings.Contains(issue, want) {
+			t.Errorf("the card lacks %q:\n%s", want, issue)
+		}
+	}
+	if run := m.lastRun(t); run.Outcome != "done" {
+		t.Fatalf("run = %+v, want the move judged and done", run)
+	}
+	if len(m.wf.routineRuns) != 1 {
+		t.Fatalf("next runs = %+v", m.wf.routineRuns)
+	}
+	if got := m.forge.comments[41][1]; got != "Follow routine: asked a human: card “Merge the follow routine's move of part cache?”." {
+		t.Fatalf("second step = %q", got)
+	}
+}
+
+// A human's Reject closes the pull request: the move ends closed, nothing is
+// judged and no run starts.
+func TestFollowMoveHumanRejects(t *testing.T) {
+	followPoll = time.Minute
+	t.Cleanup(func() { followPoll = 5 * time.Minute })
+	m := newMoveRun(t, "litellm")
+	m.workflow(t, func(f *infraForge) { f.pulls[41].State = "closed" })
+	run := m.lastRun(t)
+	if run.Outcome != "closed" || run.Note != "part cache: the pull request was closed without a merge: the part stays as it is until the lists carry its next version" {
+		t.Fatalf("run = %+v", run)
+	}
+	if len(m.wf.routineRuns) != 0 || len(m.forge.statuses["merge41"]) != 0 {
+		t.Fatalf("a rejected move went on: %+v", m.wf.routineRuns)
+	}
+}
+
+// A human who never answers: after the bound the factory closes the pull
+// request and the move ends.
+func TestFollowMoveHumanExpires(t *testing.T) {
+	followPoll, followHumanBound = 5*time.Minute, 20*time.Minute
+	t.Cleanup(func() { followPoll, followHumanBound = 5*time.Minute, 14*24*time.Hour })
+	m := newMoveRun(t, "litellm")
+	m.workflow(t)
+	if m.forge.pulls[41].State != "closed" || m.forge.pulls[41].Merged {
+		t.Fatalf("pull request #41 = %+v, want closed by the factory", m.forge.pulls[41])
+	}
+	run := m.lastRun(t)
+	want := "part cache: no human decided in 20m0s, so the factory closed the pull request: the part stays as it is until the lists carry its next version"
+	if run.Outcome != "closed" || run.Note != want {
+		t.Fatalf("run = %+v, want %q", run, want)
+	}
 }

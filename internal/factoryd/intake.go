@@ -1289,13 +1289,16 @@ const (
 	SourceSchemaCopy = "schema-copy"
 	// SourceTemplateUpdate is a template update pull request (TemplateUpdates).
 	SourceTemplateUpdate = "template-update"
+	// SourceFollow is the pull request of a move of the follow routine, in a
+	// lane a human merges.
+	SourceFollow = "follow"
 )
 
 // factoryPRSources are the sources of a pull request factoryd opened
 // itself: like a roll they run the direct track's class outside the work
 // bound.
 func factoryPRSources(source string) bool {
-	return source == SourceGitHubSync || source == SourceSchemaCopy || source == SourceTemplateUpdate || source == SourceRevert
+	return source == SourceGitHubSync || source == SourceSchemaCopy || source == SourceTemplateUpdate || source == SourceRevert || source == SourceFollow
 }
 
 // mechanicalSource: factoryd wrote the whole change (a roll, a revert, a

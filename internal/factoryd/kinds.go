@@ -28,7 +28,7 @@ func CardSources() []string {
 		SourceScreening, SourceSizing, SourceProver, policy.SourceToolRequest,
 		SourceRoll, SourceRollRefused, SourceRollFailed, SourceMainFix, SourceRerun, SourceRevert, SourceStillRed,
 		SourceGroupRevert, SourceChainRepair, SourceChainStall, SourceAlert,
-		SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceImageRemoval,
+		SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceFollow, SourceImageRemoval,
 		SourceChat, SourceChatBudget, SourceMonthCap, SourceFreezeCard, SourceConfig, SourceProductionHeld, SourcePlatformDeaths,
 	}
 }

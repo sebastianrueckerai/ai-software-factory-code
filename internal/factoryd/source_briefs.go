@@ -100,6 +100,12 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			Summary: "A pull request that writes the changed schemas into their copies. " +
 				"The policy check runs on it, and its merge makes the copies match the build."}
 	},
+	SourceFollow: func(f BriefFacts) BriefText {
+		return BriefText{Title: "Merge the follow routine's move of part " + f.Name + "?",
+			Why: "The part " + f.Name + " runs behind the upstream lists, and its lane is one a human merges.",
+			Summary: "A pull request that moves the part's references to the versions of the lists. " +
+				"The project's checks ran on it, and a human merges it or closes it."}
+	},
 	SourceTemplateUpdate: func(f BriefFacts) BriefText {
 		return BriefText{Title: "Update the project from its template " + f.Name,
 			Why: "The template " + f.Name + " changed since the project took it, and the project lacks the changes.",

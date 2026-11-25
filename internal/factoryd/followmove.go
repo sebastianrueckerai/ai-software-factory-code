@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,17 @@ const (
 	ActivityFollowLand   = "FollowLand"
 	ActivityFollowJudge  = "FollowJudge"
 	ActivityFollowEnd    = "FollowEnd"
+	ActivityFollowAsk    = "FollowAsk"
+	ActivityFollowPR     = "FollowPR"
+	ActivityFollowClose  = "FollowClose"
+)
+
+// followPoll is how often a move in the human lane reads its pull request,
+// and followHumanBound how long it waits for a human before it closes the
+// pull request.
+var (
+	followPoll       = 5 * time.Minute
+	followHumanBound = 14 * 24 * time.Hour
 )
 
 // FollowMoveInput is one move of the follow routine: the part and its pull
@@ -58,6 +70,13 @@ type FollowLanded struct {
 	Why    string
 }
 
+// FollowPullRequest is the move's pull request as a poll reads it.
+type FollowPullRequest struct {
+	Open, Merged bool
+	Commit       string
+	At           time.Time
+}
+
 // FollowEnding is how a move ends in its routine's run.
 type FollowEnding struct{ Outcome, Note string }
 
@@ -82,10 +101,17 @@ func FollowMoveWorkflow(ctx workflow.Context, in FollowMoveInput) error {
 		return failed(checks.Why)
 	}
 	var landed FollowLanded
-	if err := workflow.ExecuteActivity(waits, ActivityFollowLand, in).Get(ctx, &landed); err != nil {
+	if in.Lane == policy.LaneHuman {
+		var err error
+		if landed, err = awaitHuman(ctx, in, ends); err != nil {
+			return failed("the human's merge did not read: " + failureWords(err))
+		}
+		if landed.Why != "" {
+			return end("closed", landed.Why)
+		}
+	} else if err := workflow.ExecuteActivity(waits, ActivityFollowLand, in).Get(ctx, &landed); err != nil {
 		return failed("the merge did not run: " + failureWords(err))
-	}
-	if landed.Why != "" {
+	} else if landed.Why != "" {
 		return failed(landed.Why)
 	}
 	var judged FollowVerdict
@@ -99,6 +125,38 @@ func FollowMoveWorkflow(ctx workflow.Context, in FollowMoveInput) error {
 		return err
 	}
 	return end("done", "moved: "+strings.Join(in.Moves, "; "))
+}
+
+// awaitHuman files the card that asks a human to merge the move's pull
+// request and reads the pull request every followPoll until it is merged or
+// closed, or followHumanBound passes and the pull request is closed. A
+// landed with Why says why the move ends without a merge.
+func awaitHuman(ctx workflow.Context, in FollowMoveInput, short workflow.Context) (FollowLanded, error) {
+	if err := workflow.ExecuteActivity(short, ActivityFollowAsk, in).Get(ctx, nil); err != nil {
+		return FollowLanded{}, err
+	}
+	deadline := workflow.Now(ctx).Add(followHumanBound)
+	for {
+		if err := workflow.Sleep(ctx, followPoll); err != nil {
+			return FollowLanded{}, err
+		}
+		var pr FollowPullRequest
+		if err := workflow.ExecuteActivity(short, ActivityFollowPR, in).Get(ctx, &pr); err != nil {
+			return FollowLanded{}, err
+		}
+		switch {
+		case pr.Merged:
+			return FollowLanded{Commit: pr.Commit, At: pr.At}, nil
+		case !pr.Open:
+			return FollowLanded{Why: "the pull request was closed without a merge: the part stays as it is until the lists carry its next version"}, nil
+		case workflow.Now(ctx).After(deadline):
+			why := "no human decided in " + followHumanBound.String() + ", so the factory closed the pull request: the part stays as it is until the lists carry its next version"
+			if err := workflow.ExecuteActivity(short, ActivityFollowClose, in, why).Get(ctx, nil); err != nil {
+				return FollowLanded{}, err
+			}
+			return FollowLanded{Why: why}, nil
+		}
+	}
 }
 
 // followJudgeSlack is how long the judgment's activity may run past the
@@ -347,4 +405,71 @@ func (r *Runner) FollowEnd(ctx context.Context, in FollowMoveInput, e FollowEndi
 		return nil
 	}
 	return r.cfg.Workflows.StartRoutineRun(ctx, RoutineRunInput{Project: in.Project, Routine: in.Routine, Trigger: TriggerRunNow, Due: r.Clock()})
+}
+
+// FollowAsk files the card that asks a human to merge the move's pull
+// request, as the roller files its cards: Merge or Reject, with the
+// versions, the maker's notes, what a human does after the merge, and the
+// words that Reject leaves the part until its next version. A card of the
+// pull request stands once.
+func (r *Runner) FollowAsk(ctx context.Context, in FollowMoveInput) error {
+	p, ok, err := r.Routines.Project(ctx, in.Project)
+	if err != nil || !ok {
+		return errors.Join(err, terminalError("move %s: no project %s in the store", in.Part, in.Project))
+	}
+	repo := p.Repo()
+	have, err := r.store.TasksByPR(ctx, p.Repository, in.PR)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(have, func(t Task) bool { return t.Source == SourceFollow }) {
+		return nil
+	}
+	b := SourceBriefs[SourceFollow](BriefFacts{Name: in.Part})
+	b.Body = followBody(in)
+	refusal := fmt.Sprintf("part %s is of the human lane, and moves %s", in.Part, strings.Join(in.Moves, "; "))
+	if in.Notes != "" {
+		refusal += ". The maker's release notes: " + in.Notes
+	}
+	if in.After != "" {
+		refusal += ". After the merge: " + strings.TrimSuffix(strings.TrimSpace(in.After), ".")
+	}
+	refusal += ". Reject closes the pull request and leaves the part as it is until the lists carry its next version"
+	card, _, err := FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, r.cfg.Policy().Document.Budget, p, b, nil,
+		Task{ID: NewTaskID(), RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), Source: SourceFollow}, in.PR, refusal)
+	if err != nil {
+		return err
+	}
+	r.followStep(ctx, repo, in, "asked a human: card "+ShownName(card)+".")
+	return nil
+}
+
+// FollowPR reads the move's pull request: open, or merged and with what
+// commit and when.
+func (r *Runner) FollowPR(ctx context.Context, in FollowMoveInput) (FollowPullRequest, error) {
+	repo, err := r.followRepo(ctx, in)
+	if err != nil {
+		return FollowPullRequest{}, err
+	}
+	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, in.PR)
+	if err != nil {
+		return FollowPullRequest{}, err
+	}
+	if pr.Merged {
+		r.followStep(ctx, repo, in, "merged by "+cmp.Or(pr.MergedBy, "a human")+" as "+ShortSHA(pr.MergeCommit)+".")
+	}
+	return FollowPullRequest{Open: pr.State == "open", Merged: pr.Merged, Commit: pr.MergeCommit, At: pr.MergedAt}, nil
+}
+
+// FollowClose closes the move's pull request, for why.
+func (r *Runner) FollowClose(ctx context.Context, in FollowMoveInput, why string) error {
+	repo, err := r.followRepo(ctx, in)
+	if err != nil {
+		return err
+	}
+	if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, in.PR); err != nil {
+		return err
+	}
+	r.followStep(ctx, repo, in, "closed the pull request: "+why)
+	return nil
 }

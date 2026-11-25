@@ -83,10 +83,10 @@ func infraTarball(t *testing.T, files map[string]string) []byte {
 
 // fakePull is a pull request of the infra repository as the forge holds it.
 type fakePull struct {
-	Number            int64
-	Head, State       string
-	Merged            bool
-	HeadSHA, MergeSHA string
+	Number                      int64
+	Head, State                 string
+	Merged                      bool
+	HeadSHA, MergeSHA, MergedBy string
 }
 
 // infraForge is the infra repository and the bot's fork as the follow pass
@@ -110,6 +110,15 @@ type infraForge struct {
 	comments    map[int64][]string // the comments of each pull request
 }
 
+// humanMerges is a human's merge of pull request n: main moves to its merge
+// commit, which carries mergeStatus.
+func (f *infraForge) humanMerges(n int64) {
+	pr := f.pulls[n]
+	pr.State, pr.Merged, pr.MergeSHA, pr.MergedBy = "closed", true, "merge"+strconv.FormatInt(n, 10), "sebastian"
+	f.main = pr.MergeSHA
+	f.statuses[pr.MergeSHA] = append([]CommitStatus(nil), f.mergeStatus...)
+}
+
 func newInfraForge(t *testing.T, files map[string]string) *infraForge {
 	t.Helper()
 	return &infraForge{t: t, tar: infraTarball(t, files), main: "m1", pulls: map[int64]*fakePull{}, byBranch: map[string]int64{},
@@ -129,7 +138,7 @@ func (f *infraForge) attempt(branch, state string, merged bool) int64 {
 func (f *infraForge) prJSON(p *fakePull) map[string]any {
 	return map[string]any{"number": p.Number, "state": p.State, "merged": p.Merged, "mergeable": true, "merge_commit_sha": p.MergeSHA,
 		"html_url": fmt.Sprintf("https://git.example/sf/%s/pulls/%d", infraName, p.Number), "title": f.titles[p.Number], "body": f.bodies[p.Number],
-		"base": map[string]string{"ref": "main"}, "merged_by": nil,
+		"base": map[string]string{"ref": "main"}, "merged_by": mergedBy(p),
 		"head": map[string]any{"ref": p.Head, "sha": p.HeadSHA, "repo": map[string]string{"full_name": infraForkID}}}
 }
 
@@ -220,6 +229,13 @@ func (f *infraForge) handler() http.HandlerFunc {
 			http.NotFound(w, r)
 		}
 	}
+}
+
+func mergedBy(p *fakePull) any {
+	if p.MergedBy == "" {
+		return nil
+	}
+	return map[string]string{"login": p.MergedBy}
 }
 
 func statusJSON(ss []CommitStatus) []map[string]any {

@@ -1260,6 +1260,8 @@ type PullRequestRef struct {
 	MergedBy string // who merged it, when Merged
 	// MergeCommit is the commit its merge made on the base, when Merged.
 	MergeCommit string
+	// MergedAt is when it merged, the zero time before.
+	MergedAt time.Time
 	// Mergeable is Forgejo's verdict that the head merges into the base
 	// without conflict.
 	Mergeable bool
@@ -1270,15 +1272,16 @@ type PullRequestRef struct {
 
 // wirePR is Forgejo's pull request JSON, as far as the factory reads it.
 type wirePR struct {
-	Number    int64  `json:"number"`
-	Title     string `json:"title"`
-	HTMLURL   string `json:"html_url"`
-	State     string `json:"state"`
-	Merged    bool   `json:"merged"`
-	Mergeable bool   `json:"mergeable"`
-	MergeSHA  string `json:"merge_commit_sha"`
-	MergeBase string `json:"merge_base"`
-	Body      string `json:"body"`
+	Number    int64     `json:"number"`
+	Title     string    `json:"title"`
+	HTMLURL   string    `json:"html_url"`
+	State     string    `json:"state"`
+	Merged    bool      `json:"merged"`
+	Mergeable bool      `json:"mergeable"`
+	MergeSHA  string    `json:"merge_commit_sha"`
+	MergedAt  time.Time `json:"merged_at"`
+	MergeBase string    `json:"merge_base"`
+	Body      string    `json:"body"`
 	Base      struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
@@ -1296,7 +1299,7 @@ type wirePR struct {
 
 func (w wirePR) ref() PullRequestRef {
 	ref := PullRequestRef{Number: w.Number, Title: w.Title, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
-		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA, MergeBase: w.MergeBase, Body: w.Body}
+		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA, MergedAt: w.MergedAt, MergeBase: w.MergeBase, Body: w.Body}
 	if w.MergedBy != nil {
 		ref.MergedBy = w.MergedBy.Login
 	}
