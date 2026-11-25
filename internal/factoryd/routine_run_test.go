@@ -88,6 +88,13 @@ func (c *codeIssues) handler(t *testing.T) http.HandlerFunc {
 			n, _ := strconv.ParseInt(strings.TrimPrefix(path, "issues/"), 10, 64)
 			c.closed = append(c.closed, n)
 			json.NewEncoder(w).Encode(map[string]any{}) // #nosec G104 -- test stub
+		case r.Method == http.MethodGet && strings.HasSuffix(path, "/labels"):
+			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(path, "issues/"), "/labels"), 10, 64)
+			labels := []map[string]string{}
+			for _, l := range c.labels[n] {
+				labels = append(labels, map[string]string{"name": l})
+			}
+			json.NewEncoder(w).Encode(labels) // #nosec G104 -- test stub
 		case r.Method == http.MethodPut && strings.HasSuffix(path, "/labels"):
 			var in struct{ Labels []string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub

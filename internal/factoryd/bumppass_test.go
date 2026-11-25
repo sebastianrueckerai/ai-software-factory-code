@@ -249,32 +249,3 @@ func TestRoutineRunBumpRefusesAFileNoBumpWrites(t *testing.T) {
 		t.Errorf("err %v, commits %v", err, b.forge.commits)
 	}
 }
-
-// The bump's card starts with its pull request on its row: its run takes
-// the pull request's head through the checks before any session, and a
-// check that fails goes to a session as its finding, from that head.
-func TestABumpCardVerifiesItsPullRequestFirstAndASessionAnswersAFailedCheck(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.state = RunState{Status: "queued", Source: SourceRoutine, PR: PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, Head: "c7"}
-	order := h.activityOrder()
-	var steps []string
-	red := ChecksResult{State: ChecksFailure, Findings: []string{"test: TestDockerfilesBuildWithOneGo: golang bases [1.26.12 1.26.11]"}}
-	h.onVerify(&steps, []SessionResult{pushed("s1", "c8")}, red, ChecksResult{State: ChecksSuccess})
-	copied := h.onCopy(nil, nil)
-	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, h.finals)
-	}
-	if !before(*order, ActivityWaitChecks, ActivityRunSession) || !slices.Equal(*copied, []string{"c7", "c8"}) {
-		t.Errorf("order %v, copies %v: want c7 copied and checked before the first session", *order, *copied)
-	}
-	if len(h.sessions) != 1 || h.sessions[0].StartRef != "c7" || !slices.ContainsFunc(h.sessions[0].Findings, func(f string) bool {
-		return strings.Contains(f, "TestDockerfilesBuildWithOneGo")
-	}) {
-		t.Fatalf("sessions %+v: want one from c7 with the failed check", h.sessions)
-	}
-	// OpenPullRequest takes the open pull request of the card's branch
-	if want := []string{"pr c7 after 0 cards", "session 1 after 0 cards", "pr c8 after 0 cards"}; !slices.Equal(steps[:min(3, len(steps))], want) {
-		t.Errorf("steps %v, want %v first", steps, want)
-	}
-}

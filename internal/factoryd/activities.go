@@ -344,7 +344,11 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 // SetState moves the task to running (a session starts) or in-review (its
 // pull request is open), or a running task back to the wait a refused
 // switch to the plan track woke it from, and mirrors the state onto the
-// issue.
+// issue. A queued card whose run takes its pull request into review
+// starts on the way, as a card back from a person's wait enters review:
+// one filed with its pull request on its row (the weekly bump's), whose
+// run began once the work bound admitted it, or one parked in the queue
+// with its pull request open whose run starts again.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
 		"running": {"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"},
@@ -364,6 +368,12 @@ func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	cur, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return err
+	}
+	if state == "in-review" && cur.Status == "queued" {
+		if err := r.store.MarkStarted(ctx, taskID); err != nil {
+			return err
+		}
+		cur.Status = "running"
 	}
 	if !slices.Contains(from, cur.Status) {
 		return terminalError("task %s is %s, cannot move to %s", taskID, cur.Status, state)

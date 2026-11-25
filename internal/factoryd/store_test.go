@@ -1273,7 +1273,7 @@ func (s *fakeStore) transition(id string, from []string, to string) error {
 
 func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	t, ok := s.tasks[id]
-	if !ok || !slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster"}, t.Status) {
+	if !ok || !slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status) {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Status, t.ResumedAt, t.QueueReason, t.QueueSince = "running", nil, "", nil

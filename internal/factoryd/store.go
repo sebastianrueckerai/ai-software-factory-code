@@ -2594,8 +2594,9 @@ func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time)
 // MarkStarted moves a startable card — queued, held, in review,
 // waiting-human and the like — to running. A card back from a wait takes
 // its slot again by its status, over the bound, and keeps its first
-// admission. SetState's running branch and AdmitResume's grant are its
-// callers; a card outside the startable set answers ErrNotFound.
+// admission. SetState, on a move to running or a queued card's move to
+// in review, and AdmitResume's grant are its callers; a card outside the
+// startable set answers ErrNotFound.
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	changed, err := s.changeStatus(ctx, `status = 'running', resumed_at = NULL, queue_reason = '', queue_since = NULL`,
 		`id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image')`, id)
