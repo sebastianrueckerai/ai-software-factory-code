@@ -1,0 +1,10 @@
+    spec:
+      chart: temporal
+      # pin chart temporal
+      version: 1.7.0
+      sourceRef: {kind: HelmRepository, name: upstream, namespace: flux-system}
+    server:
+      image:
+        repository: git.aisoftwarefactory.world/upstream/docker.io/temporalio/server
+        # pin docker.io/temporalio/server
+        tag: "1.32.0@sha256:ca47d4de249b9cc28137628dba77ae5e75e8b313ebb5c801c64615c1c99cbb09"

@@ -1,0 +1,4 @@
+      initContainers:
+        udf:
+          # pin image-of histogram-quantile_linux_amd64.tar.gz
+          image: {registry: git.aisoftwarefactory.world/upstream, repository: files/histogram-quantile_linux_amd64.tar.gz, tag: "33997073eb6d@sha256:72b27cf84d625ae61559978fb66788856ac87656a389ff9fa01301b69cc3d3cb"}

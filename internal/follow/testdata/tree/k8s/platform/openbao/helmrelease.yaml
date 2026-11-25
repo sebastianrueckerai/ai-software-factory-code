@@ -1,0 +1,16 @@
+  interval: 10m
+  # the chart from the factory's store by its digest (the code
+  # repository's upstream-images.txt, roadmap 203)
+  url: oci://git.aisoftwarefactory.world/upstream/ghcr.io/openbao/charts/openbao
+  # pin ghcr.io/openbao/charts/openbao
+  ref: {digest: "sha256:98c8fc901e2579ac6da9a805537fcd7a19525ef8e563ae8737dc16fc8f641e3e"}
+  secretRef: {name: forgejo-registry}
+    injector:
+      enabled: false
+    server:
+      image:
+        registry: git.aisoftwarefactory.world/upstream/quay.io
+        repository: openbao/openbao
+        # pin quay.io/openbao/openbao
+        tag: "2.6.3@sha256:99c8dd178200d9a5f1a0420d6b1923514280e31e9271bdd92c69f765738c42aa"
+      resources:

@@ -29,6 +29,11 @@ import (
 //	factoryd config explain [--tree <dir>] <process> <card kind>
 //	                               prints the path of a card kind through a
 //	                               process of a valid tree (default factory)
+//	factoryd follow check <dir> [--base <dir>]
+//	                               the infra repository's check before a
+//	                               merge (internal/follow)
+//	factoryd follow [-w] <dir>     prints what the infra tree has behind
+//	                               the lists, and with -w writes it
 //	factoryd manual --out <file>   rewrites the marked spend-rail section
 //	                               of the markdown file with the table
 //	                               generated from the policy schema and the
@@ -50,6 +55,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "schemas written to %s\n", *out)
 		return 0
+	case len(args) >= 1 && args[0] == "follow":
+		return runFollow(args[1:], stdout, stderr)
 	case len(args) >= 1 && args[0] == "manual":
 		fs := flag.NewFlagSet("manual", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -92,7 +99,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, text)
 		return 0
 	}
-	fmt.Fprintln(stderr, "usage: factoryd config check <dir> | factoryd config explain [--tree <dir>] <process> <card kind> | factoryd schema --out <dir> --commit <sha> | factoryd manual --out <file>")
+	fmt.Fprintln(stderr, "usage: factoryd config check <dir> | factoryd config explain [--tree <dir>] <process> <card kind> | factoryd schema --out <dir> --commit <sha> | factoryd manual --out <file> | factoryd follow check <dir> [--base <dir>] | factoryd follow [-w] <dir>")
 	return 2
 }
 

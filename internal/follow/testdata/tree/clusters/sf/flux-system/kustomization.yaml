@@ -1,0 +1,9 @@
+images:
+# pin ghcr.io/fluxcd/source-controller
+- {name: ghcr.io/fluxcd/source-controller, digest: "sha256:b2ac269f9d13d82514bcbf0e7057a4ae1d98504058b9353cead7e2452a64384f"}
+# pin ghcr.io/fluxcd/kustomize-controller
+- {name: ghcr.io/fluxcd/kustomize-controller, digest: "sha256:ed11ebded23c9e9fe475f7d54b08cc34697e8f01bcd5cfd144fd5aef7b5d8f0d"}
+# pin ghcr.io/fluxcd/helm-controller
+- {name: ghcr.io/fluxcd/helm-controller, digest: "sha256:2ba739b5c0df833dcd463fc1984673f506a5fd0aff64c2f8b28d528b0796f066"}
+# pin ghcr.io/fluxcd/notification-controller
+- {name: ghcr.io/fluxcd/notification-controller, digest: "sha256:69e484e937549694240d5754541feed0993a162000dbc07e7e262b9f41340348"}
