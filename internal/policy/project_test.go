@@ -524,3 +524,48 @@ func TestCommandClasses(t *testing.T) {
 		t.Fatal("project schema has no commands property")
 	}
 }
+
+// A project's parts are the follow pass's groups: a unique name, a known
+// lane, paths unless the lane is hand, and an https address for the notes.
+// A follow routine needs a part that is not of lane hand, and runs on a
+// project without agents, since no session ever starts for it.
+func TestPartsAndTheFollowPass(t *testing.T) {
+	const infra = "projects/ai-software-factory-infra.yaml"
+	follow := "routines:\n  - {name: follow, title: t, schedule: [{cron: \"0 6 * * 2\"}], files: pull-request, pass: follow}\n"
+	with := func(block string) map[string][]byte {
+		files := fixtureTree(t)
+		files[infra] = append(files[infra], block...)
+		return files
+	}
+	for name, tc := range map[string]struct{ block, want string }{
+		"twice":         {"parts: [{name: a, lane: alone, paths: [x]}, {name: a, lane: human, paths: [y]}]\n", "part a: given twice"},
+		"lane":          {"parts: [{name: a, lane: sometimes, paths: [x]}]\n", `part a: lane "sometimes", not one of [alone human hand]`},
+		"no paths":      {"parts: [{name: a, lane: human}]\n", "part a: no paths: only a hand part may have none"},
+		"name":          {"parts: [{name: A b, lane: hand}]\n", `part "A b": the name`},
+		"notes":         {"parts: [{name: a, lane: hand, notes: \"http://x.example/notes\"}]\n", `part a: notes "http://x.example/notes": an https address`},
+		"no parts":      {follow, `routine "follow": pass follow moves the project's parts, and none is of lane alone or human`},
+		"only hand":     {"parts: [{name: a, lane: hand}]\n" + follow, `routine "follow": pass follow moves the project's parts`},
+		"while open":    {"parts: [{name: a, lane: alone, paths: [x]}]\nroutines:\n  - {name: follow, title: t, schedule: [{cron: \"0 6 * * 2\"}], files: pull-request, pass: follow, while_open: hold}\n", "the follow pass files no card"},
+		"agent routine": {"routines:\n  - {name: audit, title: t, schedule: [{merges: 20}], files: agent, skill: audit}\n", "files agent, and the project's agents are none"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseTree(with(tc.block)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	tree, err := ParseTree(with("chain: {checks: [config-check]}\nparts:\n  - {name: litellm, lane: alone, paths: [k8s/platform/litellm], notes: \"https://github.com/BerriAI/litellm/releases\", after: after words}\n  - {name: talos, lane: hand}\n" + follow))
+	if err != nil {
+		t.Fatalf("a follow routine with a part of lane alone on a project without agents: %v", err)
+	}
+	want := []Part{{Name: "litellm", Lane: LaneAlone, Paths: []string{"k8s/platform/litellm"}, Notes: "https://github.com/BerriAI/litellm/releases", After: "after words"}, {Name: "talos", Lane: LaneHand}}
+	if got := tree.Projects["ai-software-factory-infra"].Parts; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parts = %+v, want %+v", got, want)
+	}
+	if got := tree.Projects["ai-software-factory-infra"].Chain.Checks; !reflect.DeepEqual(got, []string{"config-check"}) {
+		t.Fatalf("chain checks = %v", got)
+	}
+	if p := resolvedSchema(t, "project.schema.json").Schema().Properties["parts"]; p == nil {
+		t.Fatal("project schema has no parts property")
+	}
+}

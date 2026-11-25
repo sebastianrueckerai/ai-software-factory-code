@@ -63,7 +63,7 @@ func TestRoutineValidate(t *testing.T) {
 	}{
 		{Routine{Name: "Bad Name", Title: "t", Files: FilesHuman, Schedule: merges}, `routine "Bad Name": the name: lowercase letters, digits and dashes`},
 		{Routine{Name: "a", Title: "t", Files: "weekly", Schedule: merges}, `files is "weekly", not one of [human agent pull-request report]`},
-		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges}, "a pull-request routine names its pass, template or bump"},
+		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges}, "a pull-request routine names its pass, template, bump or follow"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman}, "no schedule"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1, Cron: "0 6 * * 1"}}}, "a trigger is one of cron, merges or on"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{}}}, "a trigger is one of cron, merges or on"},
@@ -83,7 +83,7 @@ func TestRoutineValidate(t *testing.T) {
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Skill: "audit"}, "skill is an agent routine's, this one files human"},
 		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, Pass: PassTemplate}, "pass is a pull-request or report routine's, this one files agent"},
 		{Routine{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Pass: PassTemplate}, `a report routine's pass is long-waits, not "template"`},
-		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassLongWaits}, "a pull-request routine names its pass, template or bump"},
+		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassLongWaits}, "a pull-request routine names its pass, template, bump or follow"},
 		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassBump, WhileOpen: WhileOpenFold}, "while_open fold is the template pass's, which folds into its open pull request: the bump files a card each run, so hold or file"},
 		{Routine{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Pass: PassBump}, `a report routine's pass is long-waits, not "bump"`},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "docs/a.md"}, `brief "docs/a.md": a file routines/<name>.md`},
@@ -337,7 +337,7 @@ func TestRoutineSchema(t *testing.T) {
 		r := s.Properties["routines"].Items
 		for key, want := range map[string][]any{
 			"files":      {"human", "agent", "pull-request", "report"},
-			"pass":       {"template", "long-waits", "bump"},
+			"pass":       {"template", "long-waits", "bump", "follow"},
 			"while_open": {"hold", "fold", "file"},
 			"missed":     {"file-once", "skip"},
 			"tell":       {"inbox", "quiet"},

@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/follow"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // runFollow serves factoryd follow: with check it is the infra
@@ -123,30 +124,19 @@ func mapKeys[V any](m map[string]V) func(func(string) bool) {
 
 // readParts reads the parts of the tree's project file: the one file of
 // factory/projects that holds a parts list.
-func readParts(files map[string][]byte) ([]follow.Part, error) {
-	var found []follow.Part
+func readParts(files map[string][]byte) ([]policy.Part, error) {
+	var found []policy.Part
 	var from []string
 	for _, name := range slices.Sorted(mapKeys(files)) {
 		if path.Dir(name) != "factory/projects" || path.Ext(name) != ".yaml" {
 			continue
 		}
-		var doc struct {
-			Parts []struct {
-				Name  string   `yaml:"name"`
-				Lane  string   `yaml:"lane"`
-				Paths []string `yaml:"paths"`
-			} `yaml:"parts"`
-		}
-		if err := yaml.Unmarshal(files[name], &doc); err != nil {
+		var p policy.ProjectConfig
+		if err := yaml.Unmarshal(files[name], &p); err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		if len(doc.Parts) == 0 {
-			continue
-		}
-		from = append(from, name)
-		found = nil
-		for _, p := range doc.Parts {
-			found = append(found, follow.Part{Name: p.Name, Lane: p.Lane, Paths: p.Paths})
+		if len(p.Parts) > 0 {
+			from, found = append(from, name), p.Parts
 		}
 	}
 	switch len(from) {

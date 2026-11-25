@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // testdata/tree holds the smallest real snippets of each form of reference
@@ -15,7 +17,7 @@ func TestSnapshotOfTheRealForms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parts := []Part{{Name: "all", Lane: LaneAlone, Paths: []string{"k8s", "clusters", ".forgejo", "factory", "scripts"}}}
+	parts := []policy.Part{{Name: "all", Lane: policy.LaneAlone, Paths: []string{"k8s", "clusters", ".forgejo", "factory", "scripts"}}}
 	res, err := Run(files, parts, store)
 	if err != nil {
 		t.Fatal(err)

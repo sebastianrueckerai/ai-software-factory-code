@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -344,6 +345,55 @@ type ProjectConfig struct {
 	// session-time metric sums. Absent: the repository's check script is
 	// check, its changed mode check_changed.
 	Commands *CommandsConfig `yaml:"commands,omitempty" json:"commands,omitempty"`
+	// Parts are the groups of files the follow pass moves, one pull request
+	// each, in the order of their moves. Absent: none.
+	Parts []Part `yaml:"parts,omitempty" json:"parts,omitempty"`
+}
+
+// The lanes of a part: alone merges once its checks are green, human waits
+// for a human's merge, hand holds what the follow pass never moves.
+const (
+	LaneAlone = "alone"
+	LaneHuman = "human"
+	LaneHand  = "hand"
+)
+
+// PartLanes are the values of a part's lane.
+var PartLanes = []string{LaneAlone, LaneHuman, LaneHand}
+
+// Part is a group of files of the project's repository that moves as one
+// pull request.
+type Part struct {
+	// Name is the part's name, which its branch and its card carry.
+	Name string `yaml:"name" json:"name"`
+	// Lane is how the part's pull request lands: alone, human or hand.
+	Lane string `yaml:"lane" json:"lane"`
+	// Paths are files or directories of the repository; every marker under
+	// them belongs to the part. A hand part may have none.
+	Paths []string `yaml:"paths,omitempty" json:"paths,omitempty"`
+	// Notes is the https address of the maker's release notes, which the
+	// part's pull request and card link.
+	Notes string `yaml:"notes,omitempty" json:"notes,omitempty"`
+	// After is what a human does once the part's move merged, in words for
+	// the card.
+	After string `yaml:"after,omitempty" json:"after,omitempty"`
+}
+
+func (p Part) validate() error {
+	switch {
+	case !projectFileName.MatchString(p.Name):
+		return fmt.Errorf("part %q: the name: lowercase letters, digits and dashes, at most 37", p.Name)
+	case !slices.Contains(PartLanes, p.Lane):
+		return fmt.Errorf("part %s: lane %q, not one of %v", p.Name, p.Lane, PartLanes)
+	case p.Lane != LaneHand && len(p.Paths) == 0:
+		return fmt.Errorf("part %s: no paths: only a hand part may have none", p.Name)
+	}
+	if p.Notes != "" {
+		if u, err := url.Parse(p.Notes); err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("part %s: notes %q: an https address", p.Name, p.Notes)
+		}
+	}
+	return nil
 }
 
 // CommandsConfig is a project's command classes in match order: a command
@@ -454,6 +504,11 @@ type ChainConfig struct {
 	// Requires are the commit-status contexts every head must carry green
 	// beside its push runs; absent: none.
 	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
+	// Checks are the status contexts a pull request's head must show, each
+	// reported and not failed, before the factory merges its own pull request
+	// of the follow pass; a status that reports a moment after the pull
+	// request opens must not let it merge unchecked. Absent: none.
+	Checks []string `yaml:"checks,omitempty" json:"checks,omitempty"`
 	// TestContext is the status context that proves a main run tested its
 	// commit. A finished run older than main's newest whose commit shows it
 	// skipped or absent was superseded: its cards take the verdict of the
@@ -615,6 +670,14 @@ func (p ProjectConfig) Validate(name string) error {
 	if !repositoryName.MatchString(p.Repository) {
 		bad("repository %q: owner/name in lower case", p.Repository)
 	}
+	for i, part := range p.Parts {
+		if err := part.validate(); err != nil {
+			bad("%v", err)
+		}
+		if slices.ContainsFunc(p.Parts[:i], func(o Part) bool { return o.Name == part.Name }) {
+			bad("part %s: given twice", part.Name)
+		}
+	}
 	for i, c := range p.Companions {
 		if !repositoryName.MatchString(c.Repository) {
 			bad("companion %q: owner/name in lower case", c.Repository)
@@ -774,8 +837,12 @@ func (p ProjectConfig) Validate(name string) error {
 	for i, r := range p.Routines {
 		errs = append(errs, r.Validate("project "+name))
 		switch {
+		case r.Files == FilesPullRequest && r.Pass == PassFollow:
+			if !slices.ContainsFunc(p.Parts, func(o Part) bool { return o.Lane != LaneHand }) {
+				bad("routine %q: pass follow moves the project's parts, and none is of lane alone or human", r.Name)
+			}
 		case r.Files == FilesPullRequest && r.Pass != PassBump:
-			bad("routine %q: pass %s is a pass over every project, which policy.yaml holds: a project's own pull-request routine is pass bump", r.Name, r.Pass)
+			bad("routine %q: pass %s is a pass over every project, which policy.yaml holds: a project's own pull-request routine is pass bump or follow", r.Name, r.Pass)
 		case r.Files == FilesPullRequest && p.Agents == AgentsNone:
 			bad("routine %q: pass bump, and the project's agents are none, so no session would answer its pull request's failing checks", r.Name)
 		case r.Files == FilesAgent && p.Agents == AgentsNone:

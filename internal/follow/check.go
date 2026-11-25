@@ -3,6 +3,8 @@ package follow
 import (
 	"errors"
 	"fmt"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // Check is the infra repository's check before a merge: every marker is
@@ -12,7 +14,7 @@ import (
 // network: a file-derived image's digest and a copy's bytes are left to
 // the store's own test, so the check proves the tag and the copy's sha256.
 // A nil base compares nothing.
-func Check(files, base map[string][]byte, parts []Part) (int, error) {
+func Check(files, base map[string][]byte, parts []policy.Part) (int, error) {
 	res, err := Run(files, parts, Offline{})
 	if err != nil {
 		return 0, err

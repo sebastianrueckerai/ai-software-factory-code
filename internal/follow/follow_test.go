@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	pins "github.com/sebastianrueckerai/ai-software-factory-code"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // dg is the digest sha256:<64 times c>.
@@ -73,7 +75,7 @@ func tree(files map[string]string) map[string][]byte {
 	return out
 }
 
-var all = []Part{{Name: "all", Lane: LaneAlone, Paths: []string{"k8s", "Dockerfile"}}}
+var all = []policy.Part{{Name: "all", Lane: policy.LaneAlone, Paths: []string{"k8s", "Dockerfile"}}}
 
 // Every form of value, behind: the line below the marker becomes what the
 // list says, and the move names before and after.
@@ -168,12 +170,12 @@ func TestRunCurrentValueIsNotBehind(t *testing.T) {
 // counts twice, each with its own ID; a hand part holds no marker and its
 // digests need none, whatever other hand parts overlap it.
 func TestRunPartsAndLanes(t *testing.T) {
-	parts := []Part{
-		{Name: "b", Lane: LaneHuman, Paths: []string{"k8s/b"}},
-		{Name: "a", Lane: LaneAlone, Paths: []string{"k8s/a.yaml"}},
-		{Name: "h", Lane: LaneHand, Paths: []string{"k8s/h", "docs"}},
-		{Name: "g", Lane: LaneHand, Paths: []string{"k8s/h/deep"}},
-		{Name: "n", Lane: LaneHand},
+	parts := []policy.Part{
+		{Name: "b", Lane: policy.LaneHuman, Paths: []string{"k8s/b"}},
+		{Name: "a", Lane: policy.LaneAlone, Paths: []string{"k8s/a.yaml"}},
+		{Name: "h", Lane: policy.LaneHand, Paths: []string{"k8s/h", "docs"}},
+		{Name: "g", Lane: policy.LaneHand, Paths: []string{"k8s/h/deep"}},
+		{Name: "n", Lane: policy.LaneHand},
 	}
 	files := tree(map[string]string{
 		"k8s/a.yaml":      "# pin ghcr.io/berriai/litellm\ntag: \"1.1.1@" + dg("0") + "\"\n# pin ghcr.io/berriai/litellm\ntag: \"1.1.2@" + dg("0") + "\"\n",
@@ -257,7 +259,7 @@ func TestRunRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		files map[string]string
-		parts []Part
+		parts []policy.Part
 		want  []string
 	}{
 		{"a key with no line", map[string]string{"k8s/f.yaml": "# pin ghcr.io/none/none\nimage: x:1@" + old + "\n"}, all,
@@ -277,10 +279,10 @@ func TestRunRefuses(t *testing.T) {
 		{"a marker outside every part", map[string]string{"other/f.yaml": "# pin chart temporal\nversion: 1.7.0\n"}, all,
 			[]string{"other/f.yaml:1: # pin chart temporal lies in no part: add other/f.yaml to the paths of a part"}},
 		{"a marker in a hand part", map[string]string{"hand/f.yaml": "# pin chart temporal\nversion: 1.7.0\n"},
-			[]Part{{Name: "h", Lane: LaneHand, Paths: []string{"hand"}}, {Name: "x", Lane: LaneAlone, Paths: []string{"hand/f.yaml"}}},
+			[]policy.Part{{Name: "h", Lane: policy.LaneHand, Paths: []string{"hand"}}, {Name: "x", Lane: policy.LaneAlone, Paths: []string{"hand/f.yaml"}}},
 			[]string{"hand/f.yaml:1: # pin chart temporal lies in the hand part h, which carries no marker"}},
 		{"a marker in two parts", map[string]string{"k8s/f.yaml": "# pin chart temporal\nversion: 1.7.0\n"},
-			[]Part{{Name: "one", Lane: LaneAlone, Paths: []string{"k8s"}}, {Name: "two", Lane: LaneHuman, Paths: []string{"k8s/f.yaml"}}},
+			[]policy.Part{{Name: "one", Lane: policy.LaneAlone, Paths: []string{"k8s"}}, {Name: "two", Lane: policy.LaneHuman, Paths: []string{"k8s/f.yaml"}}},
 			[]string{"k8s/f.yaml:1: # pin chart temporal lies in the parts one and two"}},
 		{"an unmarked digest", map[string]string{"k8s/f.yaml": "a: 1\nimage: x:1@" + dg("1") + "\n"}, all,
 			[]string{"k8s/f.yaml:2: a sha256 digest with no marker above it, in no part of lane hand"}},
@@ -302,7 +304,7 @@ func TestRunRefuses(t *testing.T) {
 			[]string{"names k8s/cnpg.yaml, which the tree does not hold"}},
 		{"a copy that leaves the tree", map[string]string{"k8s/f.yaml": "# pin copy cnpg\n- ../../x.yaml\n"}, all,
 			[]string{"../../x.yaml leaves the tree"}},
-		{"a lane that is none", map[string]string{}, []Part{{Name: "p", Lane: "now"}},
+		{"a lane that is none", map[string]string{}, []policy.Part{{Name: "p", Lane: "now"}},
 			[]string{"part p: lane \"now\": use alone, human or hand"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,7 +360,7 @@ func TestRunUnmarkedDigestExemptions(t *testing.T) {
 		"k8s/zero.yaml":           "digest: \"" + dg("0") + "\"\n",
 		"factory/projects/p.yaml": "  chromium:\n    digest: " + dg("6") + "\n",
 	})
-	_, err := Run(files, append([]Part{{Name: "hand", Lane: LaneHand, Paths: []string{"hand"}}}, all...), Offline{})
+	_, err := Run(files, append([]policy.Part{{Name: "hand", Lane: policy.LaneHand, Paths: []string{"hand"}}}, all...), Offline{})
 	if err != nil {
 		t.Fatal(err)
 	}

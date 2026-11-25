@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	pins "github.com/sebastianrueckerai/ai-software-factory-code"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The two lists lie at the root of the tree, copied there by the schema copy.
@@ -29,23 +30,6 @@ const (
 	ImagesList = "upstream-images.txt"
 	FilesList  = "upstream-files.txt"
 )
-
-// The lanes of a part: alone merges once its checks are green, human waits
-// for a human's merge, hand holds what the program never moves: its paths
-// are where digests may stand with no marker, and no marker may lie in them.
-const (
-	LaneAlone = "alone"
-	LaneHuman = "human"
-	LaneHand  = "hand"
-)
-
-// Part is a group of files that moves as one pull request. Paths are files
-// or directories of the tree; every marker under them belongs to the part.
-type Part struct {
-	Name  string
-	Lane  string
-	Paths []string
-}
 
 // Store holds what the lists do not: the digest of the image that the
 // store derived from a file line, and the bytes of a file line's copy. A
@@ -86,7 +70,7 @@ type Marker struct {
 
 // Result is what one part comes to.
 type Result struct {
-	Part Part
+	Part policy.Part
 	// Changes are the new bytes of each changed file by path, empty for a
 	// copy the store could not give.
 	Changes map[string][]byte
@@ -115,7 +99,7 @@ var (
 // parts, and rewrites each marked value to its list line. It answers one
 // Result for each part in the parts' order, or every refusal at once, each
 // naming file, line and key and the act that fits.
-func Run(files map[string][]byte, parts []Part, store Store) ([]Result, error) {
+func Run(files map[string][]byte, parts []policy.Part, store Store) ([]Result, error) {
 	images, err := pins.ParseImages(string(files[ImagesList]))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w: fix the line, or copy the list from the code repository again", ImagesList, err)
@@ -131,7 +115,7 @@ func Run(files map[string][]byte, parts []Part, store Store) ([]Result, error) {
 	results := make([]Result, len(parts))
 	for i, p := range parts {
 		results[i] = Result{Part: p, Changes: map[string][]byte{}}
-		if p.Lane != LaneAlone && p.Lane != LaneHuman && p.Lane != LaneHand {
+		if p.Lane != policy.LaneAlone && p.Lane != policy.LaneHuman && p.Lane != policy.LaneHand {
 			errs = append(errs, fmt.Errorf("part %s: lane %q: use alone, human or hand", p.Name, p.Lane))
 		}
 	}
@@ -167,12 +151,12 @@ func Run(files map[string][]byte, parts []Part, store Store) ([]Result, error) {
 				marked[file] = map[int]bool{}
 			}
 			marked[file][i+1] = true
-			idx := slices.IndexFunc(parts, func(p Part) bool { return contains(p, file) })
+			idx := slices.IndexFunc(parts, func(p policy.Part) bool { return contains(p, file) })
 			var in []string
 			for _, p := range parts {
 				if contains(p, file) {
 					in = append(in, p.Name)
-					if p.Lane == LaneHand {
+					if p.Lane == policy.LaneHand {
 						errs = append(errs, fmt.Errorf("%s: # pin %s lies in the hand part %s, which carries no marker: move the marker's file out of its paths, or give the file to a part of lane alone or human", at, key, p.Name))
 						in = nil
 						break
@@ -272,15 +256,15 @@ func Values(files map[string][]byte) map[string]string {
 	return out
 }
 
-func contains(p Part, file string) bool {
+func contains(p policy.Part, file string) bool {
 	return slices.ContainsFunc(p.Paths, func(q string) bool {
 		q = strings.TrimSuffix(path.Clean(q), "/")
 		return file == q || strings.HasPrefix(file, q+"/")
 	})
 }
 
-func inHand(parts []Part, file string) bool {
-	return slices.ContainsFunc(parts, func(p Part) bool { return p.Lane == LaneHand && contains(p, file) })
+func inHand(parts []policy.Part, file string) bool {
+	return slices.ContainsFunc(parts, func(p policy.Part) bool { return p.Lane == policy.LaneHand && contains(p, file) })
 }
 
 func mapKeys[V any](m map[string]V) func(func(string) bool) {
