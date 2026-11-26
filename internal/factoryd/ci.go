@@ -154,6 +154,9 @@ type CISpawner struct {
 	// Forgejo still lists as waiting gets no second VM within
 	// ciReclaimWindow; the poll loop is the only user.
 	tornDown map[int64]time.Time
+	// roomless holds, for each waiting job no node has room for, the poll
+	// that first found none: a restart starts the wait anew.
+	roomless map[int64]time.Time
 	// vmTries counts the build VMs each live build job got: a job whose
 	// first VM never answered gets one more, its last try.
 	vmTries map[int64]int
@@ -270,6 +273,22 @@ func (s *CISpawner) hold(ctx context.Context, ns string, st *runnerStarts) {
 	st.add(key, words, at, line)
 }
 
+// noRoom adds to st the cause of a waiting job that no node has had room
+// for since ciStartWait: it gets no pod, so no pod shows what it waits on.
+func (s *CISpawner) noRoom(job int64, label string, st *runnerStarts) {
+	if s.roomless == nil {
+		s.roomless = map[int64]time.Time{}
+	}
+	since, ok := s.roomless[job]
+	if !ok {
+		since = s.now()
+		s.roomless[job] = since
+	}
+	if s.now().Sub(since) >= ciStartWait {
+		st.add("no-room", "no node has room for them", since.Add(ciStartWait), fmt.Sprintf("job %d (%s) gets no runner pod: no node has room for it", job, label))
+	}
+}
+
 // ciReclaimWindow: a job whose runner served another waiting job is still
 // served by the next build runner that registers; after the window it is
 // claimed for itself again.
@@ -367,8 +386,10 @@ func (s *CISpawner) poll(ctx context.Context) {
 			}
 			node, fits := s.fitsStorage(fit, job.ID, rj.repo, kind)
 			if !fits {
+				s.noRoom(job.ID, kind.label, &starts)
 				continue
 			}
+			delete(s.roomless, job.ID)
 			kind := kind
 			kind.node = node
 			if kind.build {
@@ -404,6 +425,9 @@ func (s *CISpawner) raiseStarts(ctx context.Context, starts *runnerStarts, waiti
 	maps.DeleteFunc(s.pullFails, func(id int64, f pullFail) bool {
 		return !waiting[id] && !unread[f.repo] && (f.repo != "" || len(unread) == 0)
 	})
+	if len(unread) == 0 {
+		maps.DeleteFunc(s.roomless, func(id int64, _ time.Time) bool { return !waiting[id] })
+	}
 	for _, id := range slices.Sorted(maps.Keys(s.pullFails)) {
 		if f := s.pullFails[id]; f.tries >= ciPullTries {
 			starts.add("pull", "their image cannot be pulled", f.at,

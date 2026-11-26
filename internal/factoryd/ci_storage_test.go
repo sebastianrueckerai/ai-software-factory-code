@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const gi = int64(1) << 30
@@ -145,6 +146,47 @@ func TestCISpawnerSaysWhenTheReserveLeavesNoRoom(t *testing.T) {
 	}
 	if got := sums(t, reader, "factory.ci.storage.starved"); !reflect.DeepEqual(got, map[string]float64{"reserve_gib=20": 1}) {
 		t.Fatalf("starved = %v, want one poll at a 20 GiB reserve", got)
+	}
+}
+
+// A job no node has room for gets no pod, so the spawner raises the cause
+// itself once the job has waited 10 minutes: at 10:00 the node's 41 GiB
+// leave no room, at 10:09 nothing is raised, at 10:10 the cause stands from
+// 10:10, and once the node has 63 GiB the job gets its pod and the cause
+// is gone.
+func TestCISpawnerRaisesAJobNoNodeHasRoomFor(t *testing.T) {
+	kube := newFakeKube()
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 41 * gi}}
+	hub := &ciHub{jobs: []CIJob{{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.cfg.Repos = func(context.Context) ([]CIRepo, error) {
+		return []CIRepo{{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo", AgentCache: "cache-agent-demo"}}, nil
+	}
+	at := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	spawner.now = func() time.Time { return at }
+	var holds []RunnerHold
+	spawner.RaiseStarts(func(_ context.Context, h []RunnerHold, _ bool, _ time.Time) error {
+		holds = h
+		return nil
+	})
+	spawner.poll(context.Background())
+	at = at.Add(9 * time.Minute)
+	spawner.poll(context.Background())
+	if len(holds) != 0 {
+		t.Fatalf("after 9 minutes: holds %+v, want none", holds)
+	}
+	at = at.Add(time.Minute)
+	spawner.poll(context.Background())
+	want := []RunnerHold{{Key: "no-room", Words: "no node has room for them", At: time.Date(2026, 11, 19, 10, 10, 0, 0, time.UTC),
+		Lines: []string{"job 1 (pr-untrusted) gets no runner pod: no node has room for it"}}}
+	if !reflect.DeepEqual(holds, want) {
+		t.Fatalf("after 10 minutes: holds %+v, want %+v", holds, want)
+	}
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 63 * gi}}
+	at = at.Add(time.Minute)
+	spawner.poll(context.Background())
+	if _, ok := kube.namespaces["factory-agents-ci-1"]; !ok || len(holds) != 0 {
+		t.Fatalf("with room: namespace present %v, holds %+v; want the pod and no cause", ok, holds)
 	}
 }
 
