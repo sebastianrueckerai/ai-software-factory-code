@@ -1486,7 +1486,7 @@ func (hr fluxHelmRelease) rollout() Rollout {
 			r.Message = c.Message
 		}
 		if c.Type == "Ready" && c.Status != "Unknown" && c.ObservedGeneration == hr.Metadata.Generation {
-			r.Settled = c.LastTransitionTime
+			r.Settled, r.Ready = c.LastTransitionTime, c.Status == "True"
 			if r.Settled.Before(r.Applied) {
 				r.Settled = r.Applied
 			}

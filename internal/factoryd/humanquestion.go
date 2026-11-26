@@ -85,18 +85,28 @@ func FactoryPRQuestion(b BriefText, number int64, url, refusal string) HumanQues
 // AlertQuestion is the human card of alert a on project in namespace ns,
 // which informs: what fires where, and why a human looks into it. why says
 // why no agent takes it, body is the alert's write-up. An event's card
-// (eventLabel) says that no resolve clears it and names the failed Job its
-// labels carry.
+// (eventLabel) says that no resolve clears it and, by its rule, names the
+// object its labels carry and the fact that closes it (CloseGoneEvents).
 func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 	name, of := oneLine(a.Labels["alertname"]), cmp.Or(alertService(a.Labels), ns)
 	_, _, source := alertParts(a)
 	if a.Labels[eventLabel] == "true" {
-		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a human closes it."
-		if job := a.Labels["k8s.object.name"]; dnsLabel.MatchString(job) {
-			if cron := cronJobOf(job); cron != "" {
-				info = fmt.Sprintf("The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `%s` completes a run, or when a human closes it.", cron)
+		const event = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card "
+		info := event + "stays open until a human closes it."
+		if object := a.Labels["k8s.object.name"]; dnsLabel.MatchString(object) {
+			switch name {
+			case jobFailedAlert:
+				if cron := cronJobOf(object); cron != "" {
+					info = event + fmt.Sprintf("closes when the CronJob `%s` completes a run, or when a human closes it.", cron)
+				}
+				info = fmt.Sprintf("The Job `%s` in namespace `%s` failed: read its pods' logs (`kubectl -n %s logs job/%s --all-containers`). ", object, ns, ns, object) + info
+			case claimAlert:
+				info = fmt.Sprintf("A provisioner refused the volume claim `%s` in namespace `%s`: read its events (`kubectl -n %s describe pvc %s`). ", object, ns, ns, object) +
+					event + "closes when the claim is bound or gone, unless a human acted on it first."
+			case helmReleaseAlert:
+				info = fmt.Sprintf("The HelmRelease `%s` in namespace `%s` failed or went back: read its status (`kubectl -n %s describe helmrelease %s`). ", object, ns, ns, object) +
+					event + "closes when Flux reads the HelmRelease Ready again or it is gone, unless a human acted on it first."
 			}
-			info = fmt.Sprintf("The Job `%s` in namespace `%s` failed: read its pods' logs (`kubectl -n %s logs job/%s --all-containers`). ", job, ns, ns, job) + info
 		}
 		body = info + "\n\n" + body
 	}

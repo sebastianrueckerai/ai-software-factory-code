@@ -36,9 +36,14 @@ const refileAfter = 30 * time.Minute
 // card.
 const eventLabel = "event"
 
-// jobFailedAlert is the name of the rule that fires when a Kubernetes Job
-// fails; its alerts carry eventLabel.
-const jobFailedAlert = "Job failed"
+// The rules whose alerts carry eventLabel and whose reason a later fact
+// shows gone (CloseGoneEvents): a Kubernetes Job failed, a provisioner
+// refused a volume claim, a Flux HelmRelease failed or went back.
+const (
+	jobFailedAlert   = "Job failed"
+	claimAlert       = "Volume claim not provisioned"
+	helmReleaseAlert = "HelmRelease failed or went back"
+)
 
 // restartWindowAlert is the only rule a roll of the factory's own
 // Deployments holds: k8s/alerts/5xx-rate.json's "alert". The
@@ -140,6 +145,9 @@ type Rollout struct {
 	Applied, Settled time.Time
 	// Message is Flux's message on the Ready condition.
 	Message string
+	// Ready says a HelmRelease's Ready condition reads True for its
+	// generation.
+	Ready bool
 }
 
 func (r Rollout) object() string { return r.Kind + " " + r.Namespace + "/" + r.Name }
@@ -160,6 +168,11 @@ type JobReader interface {
 	Jobs(ctx context.Context, namespace string) ([]JobState, error)
 	// CronJobUID is ErrNotFound for a CronJob that is gone.
 	CronJobUID(ctx context.Context, namespace, name string) (string, error)
+}
+
+// ClaimReader lists the volume claims of a namespace (InClusterKube).
+type ClaimReader interface {
+	VolumeClaims(ctx context.Context, namespace string) ([]VolumeClaim, error)
 }
 
 // AlertBook is what the alert intake keeps: the task rows it files and one
@@ -220,11 +233,13 @@ type AlertIntake struct {
 	LinkHosts func() []string
 	// Flux reads the Kustomizations FluxPass watches and the rollouts
 	// whose windows hold alerts: the platform's every alert, a project
-	// environment's its namespace's; nil = no Flux rollout holds one.
+	// environment's its namespace's, and whose HelmReleases' readiness
+	// closes their event cards; nil = no Flux rollout holds one.
 	Flux FluxReader
-	// Jobs reads the Jobs of a namespace, for CloseCompletedJobs; nil = no
-	// such card closes.
-	Jobs JobReader
+	// Jobs reads the Jobs of a namespace and Claims its volume claims, for
+	// CloseGoneEvents; nil = no such card closes.
+	Jobs   JobReader
+	Claims ClaimReader
 	// SigNoz lists the alerts SigNoz holds firing, for SweepSigNoz.
 	SigNoz AlertSource
 	// Metrics counts the cards CloseCleared ends; nil counts none.
@@ -577,8 +592,9 @@ func clearedQuestion(row Alert, until time.Time) HumanQuestion {
 // nothing. A card an agent works, a row still firing or judged, a card
 // that left waiting-human, and a card a person commented on, labelled
 // noise, answered or parked are left as they are, and so is an event's
-// card (eventLabel): no resolve clears it. A touch is marked on the row,
-// so a touched card is never read again.
+// card (eventLabel): no resolve clears it, a later fact does
+// (CloseGoneEvents). A touch is marked on the row, so a touched card is
+// never read again.
 func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
@@ -623,6 +639,20 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	if err != nil || !ok || t.Kind != "human" || !slices.Contains(humanCardWaits, t.Status) {
 		return err
 	}
+	var said Moments
+	words := at
+	if cleared, err := time.Parse(time.RFC3339, at); err == nil {
+		words = said.Say(cleared, resetLayout(cleared, time.Now()))
+	}
+	return in.closeQuiet(ctx, row, t, "The alert cleared at "+words+".", said,
+		"the alert cleared at "+at, "The alert cleared at "+at+". Nobody touched the card, so it closes.")
+}
+
+// closeQuiet closes human card t of row unless a person touched it: a touch
+// is marked on the row, so a touched card is never read again. Its live
+// ask is withdrawn for sentence, which names the moments said, and its end
+// records reason and note (endCard).
+func (in *AlertIntake) closeQuiet(ctx context.Context, row Alert, t Task, sentence string, said Moments, reason, note string) error {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err
@@ -633,15 +663,10 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	case touched:
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
-	var said Moments
-	words := at
-	if cleared, err := time.Parse(time.RFC3339, at); err == nil {
-		words = said.Say(cleared, resetLayout(cleared, time.Now()))
-	}
-	if err := in.Timeline.WithdrawAsk(ctx, t, "The alert cleared at "+words+".", said); err != nil {
+	if err := in.Timeline.WithdrawAsk(ctx, t, sentence, said); err != nil {
 		return err
 	}
-	return in.endCard(ctx, row, t, "the alert cleared at "+at, "The alert cleared at "+at+". Nobody touched the card, so it closes.")
+	return in.endCard(ctx, row, t, reason, note)
 }
 
 // endCard judges row unjudged by factoryd and closes its human card t,
@@ -661,47 +686,111 @@ func (in *AlertIntake) endCard(ctx context.Context, row Alert, t Task, reason, n
 	return closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, note)
 }
 
-// CloseCompletedJobs closes the human card of each Job failed alert whose
-// CronJob has completed a later run: a Job owned by the same CronJob (kind,
-// name and uid) as the failed Job, started after it started, and
-// completed. The next success is the proof that the job works again, and
-// the note on the card names the earliest such run. When the failed Job
+// CloseGoneEvents closes the human card of each event alert (eventLabel)
+// whose reason a later fact shows gone. A Job failed card closes when the
+// failed Job's CronJob has completed a later run: a Job owned by the same
+// CronJob (kind, name and uid) as the failed Job, started after it started,
+// and completed. The next success is the proof that the job works again,
+// and the note on the card names the earliest such run. When the failed Job
 // is gone from the cluster, the CronJob its name says (read now) and the
-// alert's start stand for it. A card a person closed, a CronJob with no
-// such run and an alert of any other rule are left as they are. Each
-// namespace's Jobs are listed once per pass.
-func (in *AlertIntake) CloseCompletedJobs(ctx context.Context) error {
-	if in.Jobs == nil {
-		return nil
-	}
+// alert's start stand for it. A Volume claim not provisioned card closes
+// once its claim is bound or gone, a HelmRelease failed or went back card
+// once Flux reads the HelmRelease Ready for its generation or it is gone,
+// each unless a person touched it (closeQuiet). A card a person closed, a
+// reason that still holds and an event of any other rule are left as they
+// are: Premium served by another model has no fact factoryd could read
+// without naming the model behind premium. Each namespace's Jobs and
+// claims, and Flux's rollouts, are read once per pass.
+func (in *AlertIntake) CloseGoneEvents(ctx context.Context) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
 	if err != nil {
 		return err
 	}
-	listed := map[string][]JobState{}
-	jobsOf := func(ns string) ([]JobState, error) {
-		if jobs, ok := listed[ns]; ok {
-			return jobs, nil
+	jobsOf := readOnce("Jobs", func(ns string) ([]JobState, error) { return in.Jobs.Jobs(ctx, ns) })
+	claimsOf := readOnce("volume claims", func(ns string) ([]VolumeClaim, error) { return in.Claims.VolumeClaims(ctx, ns) })
+	rollouts := readOnce("Flux rollouts", func(string) ([]Rollout, error) { return in.Flux.FluxRollouts(ctx, in.Namespace) })
+	claimGone := func(name, ns string) (string, error) {
+		claims, err := claimsOf(ns)
+		switch i := slices.IndexFunc(claims, func(c VolumeClaim) bool { return c.Name == name }); {
+		case err != nil:
+			return "", err
+		case i < 0:
+			return fmt.Sprintf("The volume claim %s in %s is gone.", name, ns), nil
+		case claims[i].Phase == "Bound":
+			return fmt.Sprintf("The volume claim %s in %s is bound.", name, ns), nil
 		}
-		jobs, err := in.Jobs.Jobs(ctx, ns)
-		if err != nil {
-			return nil, fmt.Errorf("the Jobs of %s: %w", ns, err)
+		return "", nil
+	}
+	releaseGone := func(name, ns string) (string, error) {
+		rs, err := rollouts("")
+		switch i := slices.IndexFunc(rs, func(r Rollout) bool { return r.Kind == "HelmRelease" && r.Namespace == ns && r.Name == name }); {
+		case err != nil:
+			return "", err
+		case i < 0:
+			return fmt.Sprintf("The HelmRelease %s in %s is gone.", name, ns), nil
+		case rs[i].Ready:
+			return fmt.Sprintf("Flux reads the HelmRelease %s in %s Ready since %s.", name, ns, stamp(rs[i].Settled)), nil
 		}
-		listed[ns] = jobs
-		return jobs, nil
+		return "", nil
 	}
 	var errs []error
 	for _, row := range rows {
-		if row.Source != jobFailedAlert || row.Verdict != "" || row.Detail["event"] != true {
+		if row.Verdict != "" || row.Detail["event"] != true || row.Detail["touched"] == true {
 			continue
 		}
-		if err := in.closeCompletedJob(ctx, row, jobsOf); err != nil {
+		var err error
+		switch {
+		case row.Source == jobFailedAlert && in.Jobs != nil:
+			err = in.closeCompletedJob(ctx, row, jobsOf)
+		case row.Source == claimAlert && in.Claims != nil:
+			err = in.closeWhenGone(ctx, row, claimGone)
+		case row.Source == helmReleaseAlert && in.Flux != nil:
+			err = in.closeWhenGone(ctx, row, releaseGone)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// readOnce is read of each namespace, read once and kept for the pass;
+// what names it in an error.
+func readOnce[T any](what string, read func(ns string) ([]T, error)) func(ns string) ([]T, error) {
+	listed := map[string][]T{}
+	return func(ns string) ([]T, error) {
+		if v, ok := listed[ns]; ok {
+			return v, nil
+		}
+		v, err := read(ns)
+		if err != nil {
+			return nil, fmt.Errorf("the %s of %s: %w", what, cmp.Or(ns, "the cluster"), err)
+		}
+		listed[ns] = v
+		return v, nil
+	}
+}
+
+// closeWhenGone closes the human card of event row once gone, given the
+// object its k8s.object.name label names and the row's namespace, says in
+// a sentence that its reason is gone; "" leaves the card.
+func (in *AlertIntake) closeWhenGone(ctx context.Context, row Alert, gone func(name, ns string) (string, error)) error {
+	t, ok, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil || !ok || t.Kind != "human" || !slices.Contains(humanCardWaits, t.Status) {
+		return err
+	}
+	name := rowLabel(row, "k8s.object.name")
+	ns, _ := row.Detail["namespace"].(string)
+	if name == "" || ns == "" {
+		return nil
+	}
+	why, err := gone(name, ns)
+	if err != nil || why == "" {
+		return err
+	}
+	return in.closeQuiet(ctx, row, t, why, nil, clause(why), why+" The card closes.")
 }
 
 func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf func(string) ([]JobState, error)) error {

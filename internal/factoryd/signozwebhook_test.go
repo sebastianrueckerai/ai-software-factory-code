@@ -2317,7 +2317,7 @@ func TestAJobFailedCardClosesWhenItsCronJobRunsAgain(t *testing.T) {
 		job("build-29887351", "build", "u4", day(29, 2, 30), day(29, 2, 31)),
 	}}}
 	r.in.Jobs = jobs
-	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+	if err := r.in.CloseGoneEvents(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	status, ids := map[string]string{}, map[string]string{}
@@ -2338,7 +2338,7 @@ func TestAJobFailedCardClosesWhenItsCronJobRunsAgain(t *testing.T) {
 	if jobs.lists["demo-staging"] != 1 {
 		t.Fatalf("lists of demo-staging's Jobs = %d, want 1 for the pass", jobs.lists["demo-staging"])
 	}
-	if err := r.in.CloseCompletedJobs(context.Background()); err != nil || len(factoryCloses(r.store, ids["fp-done"])) != 1 {
+	if err := r.in.CloseGoneEvents(context.Background()); err != nil || len(factoryCloses(r.store, ids["fp-done"])) != 1 {
 		t.Fatalf("second pass: %v, factory closes %q", err, factoryCloses(r.store, ids["fp-done"]))
 	}
 }
@@ -2372,7 +2372,7 @@ func TestAJobFailedCardWhoseJobIsGoneClosesOnALaterRun(t *testing.T) {
 			job("sweep-29884470", "sweep", "s1", day(28, 16, 0), day(28, 17, 0)),
 			job("rotate-29887350", "rotate", "r1", day(29, 2, 30), day(29, 2, 31)),
 		}}}
-	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+	if err := r.in.CloseGoneEvents(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	status, ids := map[string]string{}, map[string]string{}
@@ -2422,7 +2422,7 @@ func TestAJobFailedCardClosesOverTheClusterReader(t *testing.T) {
 	}))
 	defer srv.Close()
 	r.in.Jobs = kubeAt(t, srv)
-	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+	if err := r.in.CloseGoneEvents(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	status := map[string]string{}
@@ -2544,5 +2544,124 @@ func TestRunnerPodsThatDoNotStartFileOneHumanCardPerCause(t *testing.T) {
 	row, _, _ := r.store.AlertByFingerprint(ctx, AlertSigNoz, "ci/claim")
 	if _, firing := firingSince(row); !firing || row.Detail["starts_at"] != "2026-11-26T04:24:00Z" || len(r.store.tasks) != 2 || len(r.fj.comments) != 0 {
 		t.Fatalf("after the sweep and a restart: row %+v, %d tasks, comments %q; want the claim still firing from 04:24, no new card", row, len(r.store.tasks), r.fj.comments)
+	}
+}
+
+// fakeClaims answers VolumeClaims from claims keyed by namespace and counts
+// the lists.
+type fakeClaims struct {
+	claims map[string][]VolumeClaim
+	lists  map[string]int
+}
+
+func (f *fakeClaims) VolumeClaims(_ context.Context, namespace string) ([]VolumeClaim, error) {
+	f.lists[namespace]++
+	return f.claims[namespace], nil
+}
+
+// eventCards posts one event alert of rule name per fingerprint in
+// demo-staging, its object the name it maps to, on a rig whose project runs
+// no agents: each files a held human card.
+func eventCards(t *testing.T, name string, objects map[string]string) *alertRig {
+	t.Helper()
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	for _, fp := range slices.Sorted(maps.Keys(objects)) {
+		alert, _ := r.alert(name, fp, "demo-staging", "2026-11-26T04:15:00Z", "event", "true", "k8s.object.name", objects[fp])
+		if rr := r.post(t, "signoz", "hook-pw", alert); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	return r
+}
+
+// cardStates are the states of the rig's cards by their alert's
+// fingerprint, and their tasks' ids.
+func cardStates(r *alertRig) (map[string]string, map[string]string) {
+	status, ids := map[string]string{}, map[string]string{}
+	for _, row := range r.store.alertRows() {
+		status[row.Fingerprint], ids[row.Fingerprint] = r.store.tasks[row.TaskID].Status, row.TaskID
+	}
+	return status, ids
+}
+
+// A Volume claim not provisioned card ends once its claim is bound or gone
+// from its namespace, the note saying which, and its live ask is withdrawn
+// for it. A claim still Pending, a card a person touched (marked on its
+// row, never read again), and a Job failed card of a bound claim's name
+// leave their cards waiting, and the pass lists the namespace's claims
+// once.
+func TestAClaimCardClosesWhenItsClaimIsBoundOrGone(t *testing.T) {
+	ctx := context.Background()
+	r := eventCards(t, "Volume claim not provisioned", map[string]string{"fp-bound": "data-0", "fp-gone": "data-1", "fp-pending": "data-2", "fp-touched": "data-3"})
+	job, _ := r.alert("Job failed", "fp-job", "demo-staging", "2026-11-26T04:15:00Z", "event", "true", "k8s.object.name", "data-0")
+	if rr := r.post(t, "signoz", "hook-pw", job); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	_, ids := cardStates(r)
+	faced(t, r, ids["fp-bound"])
+	r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: ids["fp-touched"], Kind: "issue_comment", Author: "sebastian", CommentID: 5})
+	claims := &fakeClaims{lists: map[string]int{}, claims: map[string][]VolumeClaim{"demo-staging": {
+		{Name: "data-0", Phase: "Bound"}, {Name: "data-2", Phase: "Pending", Event: "ProvisioningFailed: the shared path needs its switch"}, {Name: "data-3", Phase: "Bound"}}}}
+	r.in.Claims = claims
+	for range 2 {
+		if err := r.in.CloseGoneEvents(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, _ := cardStates(r)
+	want := map[string]string{"fp-bound": "closed", "fp-gone": "closed", "fp-pending": "waiting-agent", "fp-touched": "waiting-agent", "fp-job": "waiting-agent"}
+	if !reflect.DeepEqual(status, want) {
+		t.Fatalf("task states %v, want %v", status, want)
+	}
+	if want := []string{"#1 The volume claim data-0 in demo-staging is bound. The card closes."}; !slices.Equal(r.fj.comments, want) || !slices.Equal(r.fj.closed, []int64{1}) {
+		t.Errorf("the faced card: comments %q, closed %v; want %q and [1]", r.fj.comments, r.fj.closed, want)
+	}
+	if got, want := factoryCloses(r.store, ids["fp-gone"]), []string{"The volume claim data-1 in demo-staging is gone. The card closes."}; !slices.Equal(got, want) {
+		t.Errorf("the held card: factory closes %q, want %q", got, want)
+	}
+	if rows := withdrawnRows(r.store, ids["fp-bound"]); len(rows) != 1 {
+		t.Errorf("the faced card's close wrote %d withdrawal rows, want 1", len(rows))
+	}
+	if row, _, _ := r.store.AlertByFingerprint(ctx, AlertSigNoz, "fp-touched"); row.Detail["touched"] != true {
+		t.Errorf("the touched card's row %+v, want it marked touched", row)
+	}
+	if claims.lists["demo-staging"] != 2 {
+		t.Errorf("lists of demo-staging's claims = %d, want one a pass", claims.lists["demo-staging"])
+	}
+}
+
+// A HelmRelease failed or went back card ends once Flux reads its
+// HelmRelease Ready for its generation, the note naming since when, or once
+// the HelmRelease is gone. One Ready only for an older generation, or not
+// Ready, leaves its card waiting.
+func TestAHelmReleaseCardClosesWhenFluxReadsItReady(t *testing.T) {
+	ctx := context.Background()
+	r := eventCards(t, "HelmRelease failed or went back", map[string]string{"fp-ready": "web", "fp-older": "api", "fp-failed": "db", "fp-gone": "cache"})
+	r.in.Flux = (&fluxAPI{releases: []string{
+		helmRelease("demo-staging", "web", 3, "2026-11-26T04:20:00Z", "2026-11-26T04:21:00Z"),
+		`{"metadata":{"namespace":"demo-staging","name":"api","generation":4},
+			"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":3,"lastTransitionTime":"2026-11-26T04:21:00Z"}],
+			"history":[{"lastDeployed":"2026-11-26T04:20:00Z"}]}}`,
+		`{"metadata":{"namespace":"demo-staging","name":"db","generation":2},
+			"status":{"conditions":[{"type":"Ready","status":"False","observedGeneration":2,"lastTransitionTime":"2026-11-26T04:16:00Z","message":"upgrade retries exhausted"}],
+			"history":[{"lastDeployed":"2026-11-26T04:14:00Z"}]}}`,
+	}}).kube(t)
+	if err := r.in.CloseGoneEvents(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, ids := cardStates(r)
+	want := map[string]string{"fp-ready": "closed", "fp-older": "waiting-agent", "fp-failed": "waiting-agent", "fp-gone": "closed"}
+	if !reflect.DeepEqual(status, want) {
+		t.Fatalf("task states %v, want %v", status, want)
+	}
+	for fp, note := range map[string]string{"fp-ready": "Flux reads the HelmRelease web in demo-staging Ready since 2026-11-26T04:21:00Z. The card closes.",
+		"fp-gone": "The HelmRelease cache in demo-staging is gone. The card closes."} {
+		if got := factoryCloses(r.store, ids[fp]); !slices.Equal(got, []string{note}) {
+			t.Errorf("%s: factory closes %q, want %q", fp, got, note)
+		}
 	}
 }

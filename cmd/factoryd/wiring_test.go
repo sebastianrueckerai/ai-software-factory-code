@@ -72,20 +72,23 @@ func TestMainWiresTheRunnerStartAlerts(t *testing.T) {
 	}
 }
 
-// The alert intake in main.go gets the in-cluster client as its Jobs reader
-// and runs the Job failed close every minute: without either, a Job failed
-// card never closes on its CronJob's next run, and nothing else notices.
-func TestMainWiresTheJobFailedClose(t *testing.T) {
+// The alert intake in main.go gets the in-cluster client as its Jobs, claims
+// and Flux reader and runs the close of gone events every minute: without
+// them, an event's card never closes on the fact that its reason is gone,
+// and nothing else notices.
+func TestMainWiresTheCloseOfGoneEvents(t *testing.T) {
 	mainGo, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, re := range map[string]string{
-		"the Jobs reader": `(?s)&factoryd\.AlertIntake\{.*?\bJobs:\s+kube\b.*?\}\n`,
-		"the pass":        `passes\.Run\(ctx, "completed_job_alerts", time\.Minute, [^,]+, alertIntake\.CloseCompletedJobs\)`,
+		"the Jobs reader":   `(?s)&factoryd\.AlertIntake\{.*?\bJobs:\s+kube\b.*?\}\n`,
+		"the claims reader": `(?s)&factoryd\.AlertIntake\{.*?\bClaims:\s+kube\b.*?\}\n`,
+		"the Flux reader":   `(?s)&factoryd\.AlertIntake\{.*?\bFlux:\s+kube\b.*?\}\n`,
+		"the pass":          `passes\.Run\(ctx, "event_alerts", time\.Minute, [^,]+, alertIntake\.CloseGoneEvents\)`,
 	} {
 		if !regexp.MustCompile(re).Match(mainGo) {
-			t.Errorf("main.go does not wire %s of the Job failed close", name)
+			t.Errorf("main.go does not wire %s of the close of gone events", name)
 		}
 	}
 }

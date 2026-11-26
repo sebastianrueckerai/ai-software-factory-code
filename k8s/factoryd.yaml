@@ -38,7 +38,8 @@ rules:
 - apiGroups: [""]
   resources: [nodes, pods]
   verbs: [list]
-# the CI spawner names the claim a Pending runner pod waits on
+# the CI spawner names the claim a Pending runner pod waits on, and a
+# refused claim's card closes once the claim is bound or gone
 - apiGroups: [""]
   resources: [persistentvolumeclaims]
   verbs: [list]
