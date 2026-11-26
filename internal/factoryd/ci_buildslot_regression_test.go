@@ -166,7 +166,7 @@ func TestBuildVMReleaseLeavesARetryableFailureToTheCollector(t *testing.T) {
 	// the provider keeps refusing the firewall: the release gives up on it
 	hz.fwInUseTimes = 1 << 20
 	kube.pods["factory-agents-ci-80/"+ciPodName].phase = "Succeeded"
-	spawner.reconcile(ctx, codeCIRepos)
+	spawner.reconcile(ctx, codeCIRepos, &runnerStarts{})
 
 	if got := regState(t, reg, serverRow); got != cloudres.StateDeleted {
 		t.Fatalf("server row = %s, want deleted", got)

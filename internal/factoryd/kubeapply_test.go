@@ -195,8 +195,9 @@ func TestKubeSuspendKustomization(t *testing.T) {
 // reconcile, so its rollout starts when the content before it last
 // reconciled and settles one interval later. A HelmRelease's runs from its
 // newest release's deploy until Ready reads True or False for its
-// generation, never before the deploy; Ready Unknown, or a generation not
-// observed yet, still runs. An object Flux never applied has none.
+// generation, never before the deploy, and is Ready on True; Ready
+// Unknown, or a generation not observed yet, still runs. An object Flux
+// never applied has none.
 func TestKubeFluxRollouts(t *testing.T) {
 	k := stubKube(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -247,12 +248,12 @@ func TestKubeFluxRollouts(t *testing.T) {
 		{Kind: "Kustomization", Namespace: "flux-system", Name: "fresh"},
 		{Kind: "Kustomization", Namespace: "demo-staging", Name: "demo-app", Scope: "demo-staging",
 			Applied: at("2026-10-15T10:58:00Z"), Settled: at("2026-10-15T10:58:00Z")},
-		{Kind: "HelmRelease", Namespace: "platform", Name: "signoz", Applied: at("2026-10-15T10:49:31Z"), Settled: at("2026-10-15T10:50:04Z")},
+		{Kind: "HelmRelease", Namespace: "platform", Name: "signoz", Applied: at("2026-10-15T10:49:31Z"), Settled: at("2026-10-15T10:50:04Z"), Ready: true},
 		{Kind: "HelmRelease", Namespace: "platform", Name: "upgrading", Applied: at("2026-10-15T11:00:58Z"),
 			Message: "Running 'upgrade' action with timeout of 5m0s"},
 		{Kind: "HelmRelease", Namespace: "platform", Name: "unobserved", Applied: at("2026-10-15T10:19:00Z")},
 		{Kind: "HelmRelease", Namespace: "forgejo", Name: "failed", Applied: at("2026-10-15T10:42:10Z"), Settled: at("2026-10-15T10:47:10Z")},
-		{Kind: "HelmRelease", Namespace: "forgejo", Name: "quick", Applied: at("2026-10-15T11:00:01Z"), Settled: at("2026-10-15T11:00:01Z")},
+		{Kind: "HelmRelease", Namespace: "forgejo", Name: "quick", Applied: at("2026-10-15T11:00:01Z"), Settled: at("2026-10-15T11:00:01Z"), Ready: true},
 		{Kind: "HelmRelease", Namespace: "forgejo", Name: "new"},
 	}
 	if err != nil || !reflect.DeepEqual(got, want) {

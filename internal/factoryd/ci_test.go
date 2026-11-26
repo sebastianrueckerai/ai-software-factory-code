@@ -350,7 +350,7 @@ func TestCISpawnerReconcileTearsDownSucceededPod(t *testing.T) {
 	ns := "factory-agents-ci-5"
 	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("finished namespace survived reconcile")
@@ -370,7 +370,7 @@ func TestCISpawnerReconcileTearsDownFailedPod(t *testing.T) {
 	ns := "factory-agents-ci-15"
 	kube.pods[ns+"/"+ciPodName].phase = "Failed"
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("deadline-exceeded namespace survived reconcile")
@@ -445,7 +445,7 @@ func TestCISpawnerRecordsAPlatformEnd(t *testing.T) {
 				delete(kube.pods, ns+"/"+ciPodName)
 			}
 
-			spawner.reconcile(context.Background(), codeCIRepos)
+			spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 			if _, ok := kube.namespaces[ns]; ok {
 				t.Fatal("the ended runner's namespace survived reconcile")
@@ -486,7 +486,7 @@ func TestCISpawnerLogsItsStoreErrorScrubbed(t *testing.T) {
 	spawner.deaths.cluster = failingCluster{fakeClusterStore: newFakeClusterStore(), err: errors.New("connect as factoryd with " + secret + ": refused")}
 	spawner.deaths.scrub = redact.New(secret)
 	logged := captureLog(t)
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 	if out := logged.String(); strings.Contains(out, secret) || !strings.Contains(out, "store the death of runner") {
 		t.Fatalf("log:\n%s\nwant the store's error without the secret", out)
 	}
@@ -523,7 +523,7 @@ func TestCISpawnerBoundsTheDeathRead(t *testing.T) {
 	kube.podEvents = map[string][]PodEvent{ns + "/" + ciPodName: {{Reason: "Killing", Type: "Normal"}}}
 
 	began := time.Now()
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 	took := time.Since(began)
 
 	rec, ok, _ := cluster.CIDeath(context.Background(), kube.secrets[ns+"/"+ciSecretName]["uuid"])
@@ -542,7 +542,7 @@ func TestCISpawnerReconcileLeavesRunningPodAlone(t *testing.T) {
 	spawner.poll(context.Background())
 	ns := "factory-agents-ci-6" // fakeKube.CreatePod defaults phase to "Running"
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if _, ok := kube.namespaces[ns]; !ok {
 		t.Fatal("running namespace was torn down")
@@ -562,7 +562,7 @@ func TestCISpawnerReconcileIgnoresAgentNamespaces(t *testing.T) {
 	hub := &ciHub{}
 	spawner := newTestCISpawner(t, kube, hub)
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if _, ok := kube.namespaces["factory-agents-t1"]; !ok {
 		t.Fatal("agent task namespace was swept by the CI reconciler")
@@ -591,7 +591,7 @@ func TestCISpawnerReconcileSkipsTerminatingNamespaces(t *testing.T) {
 	kube.statusErr = map[string]error{ns + "/" + ciPodName: fmt.Errorf("%w: cannot get pods", ErrForbidden)}
 
 	logs := captureLog(t)
-	live := spawner.reconcile(ctx, codeCIRepos)
+	live := spawner.reconcile(ctx, codeCIRepos, &runnerStarts{})
 	if out := logs.String(); out != "" {
 		t.Fatalf("reconcile of a Terminating namespace logged:\n%s", out)
 	}
@@ -615,7 +615,7 @@ func TestCISpawnerReconcileSkipsTerminatingNamespaces(t *testing.T) {
 	// so only the forbidden namespace 1 is read.
 	kube.namespaces["factory-agents-ci-2"]["pod-security.kubernetes.io/enforce"] = ""
 	logs.Reset()
-	live = spawner.reconcile(ctx, codeCIRepos)
+	live = spawner.reconcile(ctx, codeCIRepos, &runnerStarts{})
 	if live != 1 {
 		t.Fatalf("live = %d, want 1: an unreadable namespace still counts as live", live)
 	}
@@ -646,7 +646,7 @@ func TestCISpawnerRollsBackRunnerOnSetupFailure(t *testing.T) {
 		t.Fatal("half-built namespace should still exist until the next reconcile")
 	}
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("half-built namespace survived a reconcile tick")
@@ -770,7 +770,7 @@ func TestCISpawnerReconcileRetriesForbiddenRegistrationRead(t *testing.T) {
 	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
 	kube.getErr = map[string]error{ns + "/" + ciSecretName: ErrForbidden}
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if _, ok := kube.namespaces[ns]; !ok {
 		t.Fatal("namespace was torn down despite a Forbidden registration read")
@@ -780,7 +780,7 @@ func TestCISpawnerReconcileRetriesForbiddenRegistrationRead(t *testing.T) {
 	}
 
 	delete(kube.getErr, ns+"/"+ciSecretName)
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("namespace survived once the registration read succeeded")
@@ -803,7 +803,7 @@ func TestCISpawnerReconcileSweepsOrphanRunnerRegistration(t *testing.T) {
 	// crashed before CreateNamespace ever ran for job 99
 	hub.runners = map[int64]string{99: "ci-job-99"}
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if len(hub.deleted) != 1 || hub.deleted[0] != 99 {
 		t.Fatalf("deleted = %v, want the orphan runner 99 deregistered", hub.deleted)
@@ -819,7 +819,7 @@ func TestCISpawnerReconcileLeavesActiveRunnerRegistrationAlone(t *testing.T) {
 	spawner := newTestCISpawner(t, kube, hub)
 	spawner.poll(context.Background()) // registers ci-job-6 and creates its namespace
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if len(hub.deleted) != 0 {
 		t.Fatalf("deleted = %v, want the active job's runner registration left alone", hub.deleted)
@@ -834,7 +834,7 @@ func TestCISpawnerReconcileIgnoresForeignRunnerNames(t *testing.T) {
 	spawner := newTestCISpawner(t, kube, hub)
 	hub.runners = map[int64]string{5: "some-other-runner"}
 
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 
 	if len(hub.deleted) != 0 {
 		t.Fatalf("deleted = %v, want a non-spawner runner name left alone", hub.deleted)
@@ -1089,7 +1089,7 @@ func TestCISpawnerTeardownReleasesBuildVM(t *testing.T) {
 			kube.pods[ns+"/"+ciPodName].phase = phase
 			hz.calls = nil
 
-			spawner.reconcile(ctx, codeCIRepos)
+			spawner.reconcile(ctx, codeCIRepos, &runnerStarts{})
 
 			if _, ok := kube.namespaces[ns]; ok {
 				t.Fatal("finished build namespace survived reconcile")
@@ -1200,7 +1200,7 @@ func TestCISpawnerFailedBuildVMLeavesNoShellNamespace(t *testing.T) {
 	ctx := context.Background()
 
 	spawner.poll(ctx)
-	if live := spawner.reconcile(ctx, codeCIRepos); live != 0 {
+	if live := spawner.reconcile(ctx, codeCIRepos, &runnerStarts{}); live != 0 {
 		t.Fatalf("live = %d after the failed spawn, want 0", live)
 	}
 	if _, ok := kube.namespaces["factory-agents-ci-54"]; ok {
@@ -1240,7 +1240,7 @@ func TestCISpawnerTeardownLeavesAFirewallInUseToTheCollector(t *testing.T) {
 	hz.calls, hz.fwInUseTimes = nil, 1
 
 	start := time.Now()
-	spawner.reconcile(ctx, codeCIRepos)
+	spawner.reconcile(ctx, codeCIRepos, &runnerStarts{})
 
 	if time.Since(start) > time.Second {
 		t.Fatalf("teardown waited %s on the firewall", time.Since(start))
@@ -1792,7 +1792,7 @@ func TestCISpawnerTeardownOfAnOldNamespace(t *testing.T) {
 	delete(kube.secrets[ns+"/"+ciSecretName], "repo")
 	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
 	logs := captureLog(t)
-	spawner.reconcile(context.Background(), codeCIRepos)
+	spawner.reconcile(context.Background(), codeCIRepos, &runnerStarts{})
 	if strings.Contains(logs.String(), "left to itself") {
 		t.Fatalf("teardown did not take the runner as the code repository's:\n%s", logs)
 	}
@@ -2190,5 +2190,137 @@ func TestCISpawnerKeepsThePullCountsOfASmokeRepositoryItCouldNotList(t *testing.
 	hub.mu.Unlock()
 	if spawned != 0 {
 		t.Fatalf("%d pods: the job held after its tries got a pod once its list was read again", spawned)
+	}
+}
+
+// pending sets the runner pod of namespace ns Pending, its scheduling
+// decided at since: refused with reason and message, or placed when reason
+// is "".
+func pending(t *testing.T, kube *fakeKube, ns string, since time.Time, reason, message string) {
+	t.Helper()
+	kube.mu.Lock()
+	defer kube.mu.Unlock()
+	p := kube.pods[ns+"/"+ciPodName]
+	if p == nil {
+		t.Fatalf("no runner pod in %s", ns)
+	}
+	c := PodCondition{Type: "PodScheduled", Status: "True", Since: since}
+	if reason != "" {
+		c.Status, c.Reason, c.Message = "False", reason, message
+	}
+	p.phase, p.conditions = "Pending", []PodCondition{c}
+}
+
+// A runner pod that stays Pending for ciStartWait from the decision on its
+// scheduling hands the cause it waits on to the raise: a claim of its
+// namespace that is not bound, with the claim's newest event, else the
+// scheduler's refusal with the pod's newest event. Each cause is one hold,
+// its pods one line each, from the first pod's wait plus ciStartWait. A pod
+// Pending for less hands nothing. Each poll says whether a runner pod runs
+// or no job waits for one, and a poll that could not read a pod hands
+// nothing over.
+func TestCISpawnerRaisesWhatItsRunnerPodsWaitOn(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 71, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+		{ID: 72, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}, {ID: 73, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	s := newTestCISpawner(t, kube, hub)
+	now := time.Date(2026, 11, 26, 4, 14, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	type raise struct {
+		holds   []RunnerHold
+		started bool
+	}
+	var raised []raise
+	s.RaiseStarts(func(_ context.Context, holds []RunnerHold, started bool, at time.Time) error {
+		if !at.Equal(now) {
+			t.Errorf("raised at %v, want the poll's %v", at, now)
+		}
+		raised = append(raised, raise{holds, started})
+		return nil
+	})
+	poll := func(after time.Duration) raise {
+		t.Helper()
+		now = now.Add(after)
+		n := len(raised)
+		s.poll(ctx)
+		if len(raised) != n+1 {
+			t.Fatalf("at %v the poll raised %d times, want once", now, len(raised)-n)
+		}
+		return raised[n]
+	}
+	if got := poll(0); len(got.holds) != 0 || got.started {
+		t.Fatalf("the poll that spawns: %+v, want no hold and no runner pod running", got)
+	}
+	refused := "the shared path needs its switch"
+	pending(t, kube, "factory-agents-ci-71", now, "SchedulerError", `running PreBind plugin "VolumeBinding": binding volumes: provisioning failed for PVC "cache-ci-demo"`)
+	pending(t, kube, "factory-agents-ci-72", now.Add(30*time.Second), "Unschedulable", "0/3 nodes are available: 3 Insufficient cpu.")
+	pending(t, kube, "factory-agents-ci-73", now.Add(time.Minute), "SchedulerError", `running PreBind plugin "VolumeBinding": binding volumes: provisioning failed for PVC "cache-ci-demo"`)
+	kube.claims = map[string][]VolumeClaim{
+		"factory-agents-ci-71": {{Name: "cache-ci-demo", Phase: "Pending", Event: "ProvisioningFailed: " + refused}},
+		"factory-agents-ci-72": {{Name: "cache-ci-demo", Phase: "Bound"}},
+		"factory-agents-ci-73": {{Name: "cache-ci-demo", Phase: "Pending", Event: "ProvisioningFailed: " + refused}},
+	}
+	kube.events = map[string]string{"factory-agents-ci-72/" + ciPodName: "FailedScheduling: 0/3 nodes are available: 3 Insufficient cpu."}
+	if got := poll(5 * time.Minute); len(got.holds) != 0 || got.started {
+		t.Fatalf("5 minutes Pending: %+v, want no hold yet", got)
+	}
+	claimLine := func(job int) string {
+		return fmt.Sprintf("the volume claim cache-ci-demo in factory-agents-ci-%d is Pending: ProvisioningFailed: %s", job, refused)
+	}
+	claim := RunnerHold{Key: "claim", Words: "a volume claim is not bound", At: time.Date(2026, 11, 26, 4, 24, 0, 0, time.UTC), Lines: []string{claimLine(71)}}
+	if got := poll(5 * time.Minute); !reflect.DeepEqual(got, raise{[]RunnerHold{claim}, false}) {
+		t.Fatalf("at 04:24: %+v, want %+v", got, claim)
+	}
+	claim.Lines = append(claim.Lines, claimLine(73))
+	node := RunnerHold{Key: "unscheduled", Words: "no node takes them", At: time.Date(2026, 11, 26, 4, 24, 30, 0, time.UTC),
+		Lines: []string{"the runner pod in factory-agents-ci-72 waits: Unschedulable: 0/3 nodes are available: 3 Insufficient cpu.; " +
+			"its newest event: FailedScheduling: 0/3 nodes are available: 3 Insufficient cpu."}}
+	if got := poll(time.Minute); !reflect.DeepEqual(got, raise{[]RunnerHold{claim, node}, false}) {
+		t.Fatalf("at 04:25: %+v, want %+v", got, []RunnerHold{claim, node})
+	}
+	kube.mu.Lock()
+	kube.pods["factory-agents-ci-72/"+ciPodName].phase = "Running"
+	kube.mu.Unlock()
+	if got := poll(time.Minute); !reflect.DeepEqual(got, raise{[]RunnerHold{claim}, true}) {
+		t.Fatalf("job 72's pod runs: %+v, want the claim alone, and a runner pod running", got)
+	}
+	kube.statusErr = map[string]error{"factory-agents-ci-71/" + ciPodName: errors.New("the API server is gone")}
+	n := len(raised)
+	s.poll(ctx)
+	if len(raised) != n {
+		t.Fatalf("a poll that could not read a pod raised %+v, want nothing", raised[n:])
+	}
+}
+
+// A job whose runner pods failed their pull ciPullTries times is a cause of
+// its own while it waits: its line names the job, the tries and the last
+// pull's reason, from the poll that gave up. Once Forgejo lists the job as
+// no longer waiting, it holds nothing, and no job waits.
+func TestCISpawnerRaisesAPullItGaveUpOn(t *testing.T) {
+	r := newPullRig(t, 63)
+	var holds []RunnerHold
+	var started bool
+	r.spawner.RaiseStarts(func(_ context.Context, h []RunnerHold, s bool, _ time.Time) error {
+		holds, started = h, s
+		return nil
+	})
+	r.failPull() // torn down at 10:04, spawned again
+	r.failPull() // torn down at 10:08, spawned again
+	if len(holds) != 0 || started {
+		t.Fatalf("after two failed pulls: holds %+v, started %v; want none, none", holds, started)
+	}
+	r.failPull() // torn down at 10:12, held
+	want := []RunnerHold{{Key: "pull", Words: "their image cannot be pulled", At: time.Date(2026, 11, 19, 10, 12, 0, 0, time.UTC),
+		Lines: []string{"job 63: 3 runner pods could not pull their image, the last with ErrImagePull: " + pullDenied}}}
+	if !reflect.DeepEqual(holds, want) || started {
+		t.Fatalf("the spawner gave up: holds %+v, started %v; want %+v, false", holds, started, want)
+	}
+	r.hub.mu.Lock()
+	r.hub.jobs[0].Status = "success"
+	r.hub.mu.Unlock()
+	r.poll(time.Minute)
+	if len(holds) != 0 || !started {
+		t.Fatalf("the job no longer waits: holds %+v, started %v; want none, true", holds, started)
 	}
 }

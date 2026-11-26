@@ -837,7 +837,7 @@ func TestCISpawnerReconcileSweepsALeftoverUpstreamNamespace(t *testing.T) {
 	old := fmt.Sprintf("factory-agents-upstream-%d-aaaa", time.Now().Add(-time.Hour).Unix())
 	k.namespaces[old] = map[string]string{UpstreamLabel: "true"}
 	spawner.SweepEachPass(func(ctx context.Context) { u.Sweep(ctx, false) })
-	spawner.reconcile(t.Context(), codeCIRepos)
+	spawner.reconcile(t.Context(), codeCIRepos, &runnerStarts{})
 	if _, ok := k.namespaces[old]; ok {
 		t.Error("the leftover namespace survived a reconcile pass")
 	}

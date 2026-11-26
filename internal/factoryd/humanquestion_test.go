@@ -164,6 +164,30 @@ func TestEventAlertCardNamesTheJob(t *testing.T) {
 	}
 }
 
+// An event's card says what failed and which fact closes it, by its rule:
+// a refused volume claim names the claim and its events and closes once
+// the claim is bound or gone, a HelmRelease that failed or went back names
+// its status and closes once Flux reads it Ready; the object of any other
+// rule is no Job, so its card names none and stays.
+func TestEventAlertCardSaysWhatClosesIt(t *testing.T) {
+	const event = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card "
+	for _, tc := range []struct{ alert, object, want string }{
+		{"Volume claim not provisioned", "data-signoz-clickhouse-0", "A provisioner refused the volume claim `data-signoz-clickhouse-0` in namespace `platform`: " +
+			"read its events (`kubectl -n platform describe pvc data-signoz-clickhouse-0`). " + event +
+			"closes when the claim is bound or gone, unless a human acted on it first."},
+		{"HelmRelease failed or went back", "litellm", "The HelmRelease `litellm` in namespace `platform` failed or went back: " +
+			"read its status (`kubectl -n platform describe helmrelease litellm`). " + event +
+			"closes when Flux reads the HelmRelease Ready again or it is gone, unless a human acted on it first."},
+		{"Premium served by another model", "", event + "stays open until a human closes it."},
+		{"Backup failed", "nightly-29885910", event + "stays open until a human closes it."},
+	} {
+		a := SigNozAlert{Labels: map[string]string{"alertname": tc.alert, "event": "true", "k8s.object.name": tc.object}}
+		if got := AlertQuestion(a, "infra", "platform", "w", "body").Info; got != tc.want+"\n\nbody" {
+			t.Errorf("%s: info = %q, want %q", tc.alert, got, tc.want+"\n\nbody")
+		}
+	}
+}
+
 // A room that already covers the need of 0.30 EUR needs no raise.
 func TestTheRaiseIsZeroWhenTheRoomCoversTheNeed(t *testing.T) {
 	if got := fundFor(0.3, policy.SessionHeadroom(0.7, 0.4)); got != 0 {

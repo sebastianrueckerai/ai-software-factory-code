@@ -978,11 +978,18 @@ still running hears of such a resolve, so stale rows of finished cards
 resolve quietly; a list whose active alerts carry no fingerprint
 resolves nothing. An alert card's pre-check
 before its first model call reads the card's alerts row: a resolve after
-its start closes the card. A rule labelled `event: "true"` (`Job failed`)
-marks a failure that happened: its resolve is recorded without a comment
-and closes no card, neither through the pre-check nor as a cleared
-alert. Each issue is an alerts row of kind `alert` with the
-fingerprint, judged
+its start closes the card. A rule labelled `event: "true"` (`Job failed`,
+`Volume claim not provisioned`, `HelmRelease failed or went back`,
+`Premium served by another model`) marks a failure that happened: its
+resolve is recorded without a comment and closes no card, neither through
+the pre-check nor as a cleared alert. A later fact closes it instead,
+every minute: a Job failed card once the failed Job's CronJob completes a
+later run, a claim's card once the claim is bound or gone, a HelmRelease's
+once Flux reads it Ready for its generation or it is gone, the last two
+only while no human acted on the card. A premium card stays until a human
+closes it: only the model behind premium could tell that premium serves
+again, and factoryd names no model. Each issue is an alerts row of kind
+`alert` with the fingerprint, judged
 when its task ends: `real` on a merge, `noise` when a human closed the
 issue without one. A human-lane alert issue is judged by its close: `noise`
 when it carries the label `noise`, `real` otherwise (the closer is
@@ -1000,6 +1007,19 @@ wrote never applied and raises nothing; `Unknown`, Flux mid-reconcile,
 changes nothing. The firing's start is kept on its alerts row, so a
 restart of factoryd neither files it again nor misses the resolve; the
 SigNoz sweep leaves these rows alone.
+
+The CI spawner's poll raises the causes of runner pods that do not start
+the same way, in namespace `factory`, fingerprint `ci/<cause>`. A runner
+pod still Pending 10 minutes after its scheduling was decided waits on a
+volume claim of its namespace that is not bound, named with the claim's
+newest event (a provisioner's refusal), else on the scheduler's refusal or
+a waiting container, named with the pod's newest event; a job whose runner
+pods failed their pull three times is a cause of its own. Each cause fires
+`CI runner pods do not start: <cause>` and files a human card: the
+factory's project runs agents, but the cause lies in the cluster. A cause
+the spawner no longer sees resolves once a runner pod runs or no job
+waits, and its untouched card closes as a cleared alert's. The pod stays:
+the scheduler and the provisioner retry it themselves.
 
 The factory's own rules are `k8s/alerts/*.json`, ConfigMap `signoz-rules`
 in namespace `factory`: 5xx rate above 5 % per service (factoryd, its

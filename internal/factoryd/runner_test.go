@@ -76,6 +76,7 @@ type fakeKube struct {
 	nsDelay     time.Duration // every CreateNamespace takes this long
 	pvs         []PersistentVolume
 	deletedPVs  []string
+	claims      map[string][]VolumeClaim  // namespace → its volume claims
 	cronJobs    map[string][]CronJobState // namespace → its CronJobs and ScheduledBackups
 	deployments map[string]string         // ns/name → Deployment JSON
 	events      map[string]string         // ns/pod → its newest event
@@ -603,6 +604,12 @@ func (k *fakeKube) DeletePersistentVolume(ctx context.Context, name string) erro
 	defer k.mu.Unlock()
 	k.deletedPVs = append(k.deletedPVs, name)
 	return nil
+}
+
+func (k *fakeKube) VolumeClaims(ctx context.Context, namespace string) ([]VolumeClaim, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.claims[namespace]), nil
 }
 
 func (k *fakeKube) CronJobs(ctx context.Context, namespace string) ([]CronJobState, error) {
