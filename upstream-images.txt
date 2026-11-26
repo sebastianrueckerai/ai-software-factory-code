@@ -50,16 +50,16 @@ docker.io/library/registry:3@sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fb
 # kubectl and the k8s tools stay in the cluster's minor
 docker.io/alpine/kubectl:1.36.4@sha256:8c43e5a81f279abdcb795516afd0c4f6012fdf41e92568b04fa2b08b14be00e5 patch
 docker.io/alpine/k8s:1.36.6@sha256:2b33c17a9e7fa4a7bc25b3194fefbc3363c863e6c073a5a81bf07fb00b99d92b patch
-docker.io/amazon/aws-cli:2.42.3@sha256:7de3a12f38e98c0ffee4dff402c9cd82d7e0f524c8e69f3c667d68c6831c5ba9
+docker.io/amazon/aws-cli:2.42.4@sha256:21285021b0cf91696c7ca948781ab3356e7aa596f30f229693fdb079b749a0c8
 quay.io/openbao/openbao:2.7.3@sha256:b9418c63e2185157d8ee8689a8a93265d5aadad677d6320156172bd42ad3b10b
 # LiteLLM stays in its minor: the bump moves this line within it, and the
 # follow routine moves the cluster to the line, its chart with it
-ghcr.io/berriai/litellm:1.108.17@sha256:b2e660aa1746283f51f185a5eed26b2883da543e8a3ac7df94131f4817e5fd78 patch
+ghcr.io/berriai/litellm:1.108.19@sha256:91ffe5f486ed35397d96c4e672692bed0e43fe7738a4d78eac87108cbe86be91 patch
 docker.io/temporalio/server:1.32.2@sha256:3e11544607762c3187c12a63e289e03beddf46c21ebb52b47ccb77db179d6313
 docker.io/temporalio/admin-tools:1.32.2@sha256:d6655e288364110b61204fbae5f103232b2c5c78e647a27bc11603d274145809 with docker.io/temporalio/server
 docker.io/temporalio/ui:2.58.1@sha256:0e2c36ce783ac7aa8918d093035d69be8ce231dd49514ed1d1465a760b535336
-docker.io/signoz/signoz:v0.151.0@sha256:ae235f94c4aa702dc2f249afc4d3beb737cd918ffbeed64c116efd9d8559d158
-docker.io/signoz/signoz-otel-collector:v0.144.18@sha256:32182c132fe82894659b9c2164ab90fb6a7c229857e995fdcc46b76069457fba
+docker.io/signoz/signoz:v0.152.0@sha256:a1da4418aa1c46a85b0e55db9b4e410f6cb8d4053c576f42991621b8968e52bd
+docker.io/signoz/signoz-otel-collector:v0.144.19@sha256:6ad0a1653b444c976d024e45f7bf3a7f4c88dd410fdec24129cc029e99d0ba28
 # the SigNoz and k8s-infra charts pin these: they hold, and move with
 # their chart
 docker.io/signoz/zookeeper:3.7.2@sha256:9f9c93aab277486a21d3dd839daa4aa90a5daf131ceaf84dd696b6d035875ddd hold
@@ -74,7 +74,7 @@ docker.io/otel/opentelemetry-collector-contrib:0.139.0@sha256:87b591b18a0a330b62
 # chart repository's archive uploaded to the store's Helm repository
 quay.io/jetstack/charts/cert-manager:v1.21.3@sha256:e482675aec32862d323a9218293ff7de81192337998615e4378c56498473f240 with quay.io/jetstack/cert-manager-controller
 ghcr.io/openbao/charts/openbao:0.30.8@sha256:91ec229677b4b6bf14cbb45ddbb6a04dd15afd504459fca33f44646287269c66
-ghcr.io/berriai/litellm-helm:1.108.17@sha256:04a85376f8d921d66515b04e0200330e3cb363ba58983577c249a276801a01da with ghcr.io/berriai/litellm
+ghcr.io/berriai/litellm-helm:1.108.19@sha256:f67f129c0dade2daf757b50ad1de35acedaad436e28470570c5ee82c155cd834 with ghcr.io/berriai/litellm
 code.forgejo.org/forgejo-helm/forgejo:17.3.3@sha256:420f4ece79befff4c7b58afff86eda5632eede333a583571f274ddad409c6eb8
 https://github.com/temporalio/helm-charts/releases/download/temporal-1.8.0/temporal-1.8.0.tgz@sha256:e65b454d620129f3d7da2c16611a7f754e2d89b20b7a135dc5f0916a062f3a9e helm
 https://github.com/SigNoz/charts/releases/download/signoz-0.151.0/signoz-0.151.0.tgz@sha256:c09021f5c095eba3d273b3484a154ebc8ddf668f07a775ba4f357ba93ea87004 helm

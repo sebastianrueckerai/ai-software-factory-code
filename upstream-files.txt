@@ -28,7 +28,7 @@
 buildkit v0.35.1 buildkit-v0.35.1.linux-amd64.tar.gz https://github.com/moby/buildkit/releases/download/v0.35.1/buildkit-v0.35.1.linux-amd64.tar.gz b248c2b91698aafef11818fe8b681dc5e341581f7d5676709ff45ca1f29b0408
 crane v0.22.1 go-containerregistry_Linux_x86_64.tar.gz https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
 gosec v2.30.0 gosec_2.30.0_linux_amd64.tar.gz https://github.com/securego/gosec/releases/download/v2.30.0/gosec_2.30.0_linux_amd64.tar.gz 3fcce2c4e802ff4169217874602a7df355e9a37bcb6ffaa34b08f3d5f336cdfb
-cosign v3.1.5 cosign-linux-amd64 https://github.com/sigstore/cosign/releases/download/v3.1.5/cosign-linux-amd64 912502def4baf810eaf36b210a4f51e1da214f9f6d664e2a9a2154cfc67ee0d6
+cosign v3.1.6 cosign-linux-amd64 https://github.com/sigstore/cosign/releases/download/v3.1.6/cosign-linux-amd64 318a99ade4156a0c4113aa983b46c0a0830fa7896a096c63121ee47b610a94c6
 forgejo-runner v13.2.2 forgejo-runner-13.2.2-linux-amd64 https://code.forgejo.org/forgejo/runner/releases/download/v13.2.2/forgejo-runner-13.2.2-linux-amd64 6b077ccadc22036ba049cea39b09cfbdc5e5ad6000a38f90c83a19e4fb815543
 # govulncheck's database, the whole of vuln.go.dev as one zip, its
 # version the database's modified time (index/db.json). The zip moves
