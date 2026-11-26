@@ -625,6 +625,44 @@ func TestEndPauseCardEndsTheRevertPastAFixCardsRefusal(t *testing.T) {
 	}
 }
 
+// A green main whose pause's human card does not close keeps the pause:
+// the poll fails, no head wakes, and the next poll closes the card, then
+// ends the pause and wakes the head.
+func TestRollerKeepsThePauseUntilItsCardsEnd(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(59, commitC2, "success"), pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+		refusedCloses: []string{"40"},
+	}
+	roller, store, wf := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
+	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
+	store.tasks["rerun1"] = Task{ID: "rerun1", Source: SourceRerun, Kind: "human", Status: "waiting-human", Repository: codeRepo, IssueNumber: 40}
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-time.Hour), FixTask: "rerun1"}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err == nil || !strings.Contains(err.Error(), "issues/40") {
+		t.Fatalf("poll error = %v, want the refused close of #40", err)
+	}
+	if _, ok := store.pauses[codeRepo]; !ok || len(wf.signals) != 0 {
+		t.Fatalf("pause kept %t, signals %q; want the pause standing and no head woken", ok, wf.signals)
+	}
+	f.refusedCloses = nil
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.pauses[codeRepo]; ok || !slices.Equal(f.closed, []string{"40"}) || !slices.Contains(wf.signals, "w1 queue_turn  #0: ") {
+		t.Fatalf("pause kept %t, closed issues %q, signals %q; want the card closed, the pause ended and the head woken", ok, f.closed, wf.signals)
+	}
+	want := "40 CI run 0 on main, at commit " + ShortSHA(commitC2) + ", is green (https://git.example/" + codeRepo + "/actions/runs/0): the merge queue's pause has ended. Closing this issue."
+	if !slices.Equal(f.comments, []string{want}) {
+		t.Fatalf("comments %q, want the one close comment %q", f.comments, want)
+	}
+}
+
 // A re-run's pause round-trips through Postgres with no card; the card
 // that follows the re-run's red takes the row and keeps its since, main
 // red since then, and a pause written after the clear has its own.
