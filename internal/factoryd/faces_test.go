@@ -1000,6 +1000,7 @@ func TestTheAsksWithManyAnswersNameNoPair(t *testing.T) {
 	}
 	for ask, f := range map[string]factoryd.Facts{
 		"The checks ran past their time limit. How should the card go on?":       {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: factoryd.ActivityWaitChecks}},
+		"No runner started the checks. How should the card go on?":               {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: factoryd.ActivityWaitChecks, NoRunner: true}},
 		"The card used all 3 sessions. How should it go on?":                     {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseSessionCap, SessionCap: 3}},
 		"The review keeps raising the same findings. How should the card go on?": {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseFindingsRepeated}},
 	} {

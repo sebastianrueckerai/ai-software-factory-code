@@ -88,6 +88,10 @@ type caseKindRow struct {
 	// Exception is why a case of the kind passes the door with no step of
 	// rung 1 or rung 2, "" for none.
 	Exception string
+	// Retires is the fact that says the kind's reason is gone and what ends
+	// its case on it with no human. Decision, for a kind no fact can end, is
+	// why only an answer ends it. Every kind states one of the two.
+	Retires, Decision string
 }
 
 // What rung 2 does with a case kind: decides it where the action table
@@ -115,6 +119,16 @@ const (
 	projectCapLift   = "only a human lifts the project's month cap: a reset of its count in the status panel or a raise by a commit"
 )
 
+// What retires the kinds that share a row of rung 0, and why a stop on a
+// card's room is a decision.
+const (
+	headRetires     = "the head is green and its review approved it, or a red head's checks have not run again yet: rung 0 sends it to the approval or runs the checks again (route_approval, rerun_checks)"
+	capRetires      = "the cap no longer binds a session, by a reset, a raise or its period's turn: the run's own wait or rung 0 resumes the card (cap_wait)"
+	providerRetires = "a call on the card's model answered since the stop: rung 0 resumes the card (provider_answers)"
+	sessionsRetire  = "a session of any card started since the stop and the platform ended none since: rung 0 resumes the card (sessions_run)"
+	roomIsSpend     = "the card used what it was given, and more room is a spend that a rung or a human grants"
+)
+
 // headRows are rung 0's rows for a stop at the card's head.
 var headRows = []string{"route_approval", "rerun_checks"}
 
@@ -123,53 +137,75 @@ var headRows = []string{"route_approval", "rerun_checks"}
 // it, what rung 2 does with it, whether its question's choices answer it,
 // and why it passes the door with no rung's step.
 var caseKinds = []caseKindRow{
-	{Kind: CaseSessionCap, Words: "session cap", Rung0: headRows, Rung2: rung2Decides},
-	{Kind: CaseAgentTimeCap, Words: "agent time cap", Rung0: headRows, Rung2: rung2Decides},
-	{Kind: CaseBudgetFloor, Words: "budget floor", Rung0: headRows, Rung2: rung2Decides},
-	{Kind: CaseDayCap, Words: "day cap", Rung0: []string{"cap_wait"}, NoRung1: dayCapLift, Rung2: rung2Analyses, Rung2Why: dayCapLift},
-	{Kind: CaseMonthCap, Words: "month cap", Rung0: []string{"cap_wait"}, NoRung1: monthCapLift, Rung2: rung2Analyses, Rung2Why: monthCapLift},
+	{Kind: CaseSessionCap, Words: "session cap", Rung0: headRows, Rung2: rung2Decides, Retires: headRetires, Decision: roomIsSpend},
+	{Kind: CaseAgentTimeCap, Words: "agent time cap", Rung0: headRows, Rung2: rung2Decides, Retires: headRetires, Decision: roomIsSpend},
+	{Kind: CaseBudgetFloor, Words: "budget floor", Rung0: headRows, Rung2: rung2Decides, Retires: headRetires, Decision: roomIsSpend},
+	{Kind: CaseDayCap, Words: "day cap", Rung0: []string{"cap_wait"}, NoRung1: dayCapLift, Rung2: rung2Analyses, Rung2Why: dayCapLift, Retires: capRetires},
+	{Kind: CaseMonthCap, Words: "month cap", Rung0: []string{"cap_wait"}, NoRung1: monthCapLift, Rung2: rung2Analyses, Rung2Why: monthCapLift, Retires: capRetires},
 	{Kind: CaseFactoryMonthCap, Words: "factory's month cap", NoRung1: noRungRunsCap, Rung2: rung2Nothing, Rung2Why: noRungRunsCap,
-		Choices: true, Exception: noRungRunsCap},
-	{Kind: CaseProjectCap, Words: "project cap", Rung0: []string{"cap_wait"}, NoRung1: projectCapLift, Rung2: rung2Analyses, Rung2Why: projectCapLift},
-	{Kind: CaseCheckinHuman, Words: "check-in with a human", Rung0: []string{"wait_on_ask"}, NoRung1: checkinJudged, Rung2: rung2Decides},
-	{Kind: CaseCheckinShare, Words: "check-in spend", Rung0: headRows, Rung2: rung2Decides},
-	{Kind: CaseCheckinFailed, Words: "failed check-in", Rung0: headRows, Rung2: rung2Decides},
-	{Kind: CaseGateStop, Words: "gate stop", Rung0: append(slices.Clone(headRows), "wait_checks"), Rung2: rung2Decides},
-	{Kind: CaseFindingsRepeated, Words: "repeated findings", Rung2: rung2Decides},
-	{Kind: CaseDependencyClosed, Words: "closed dependency", NoRung1: aboutTheBoard, Rung2: rung2Decides},
-	{Kind: CaseDependencyFailed, Words: "failed dependency", Rung0: []string{"retry_dependency", "impasse"}, NoRung1: aboutTheBoard, Rung2: rung2Decides},
-	{Kind: CaseWaitExpired, Words: "expired wait", Rung2: rung2Decides},
-	{Kind: CasePodNeverStarted, Words: "pod that never started", Rung2: rung2Decides},
-	{Kind: CaseProviderRefused, Words: "provider refusal", Rung0: []string{"provider_answers"}, Rung2: rung2Decides},
-	{Kind: CaseNoAnswer, Words: "missing answer", Rung2: rung2Decides},
-	{Kind: CaseContentFilter, Words: "content filter stop", Rung2: rung2Decides},
-	{Kind: CaseImageWait, Words: "image wait", Rung2: rung2Decides},
-	{Kind: CaseScreeningSuspect, Words: "screening suspect", Rung2: rung2Decides},
-	{Kind: CaseAgentEscalate, Words: "agent's escalation", Rung0: []string{"wait_on_ask"}, Rung2: rung2Decides},
+		Choices: true, Exception: noRungRunsCap, Retires: "the month turned, a commit raised the cap or a human reset its count: the month alarm's pass closes the card"},
+	{Kind: CaseProjectCap, Words: "project cap", Rung0: []string{"cap_wait"}, NoRung1: projectCapLift, Rung2: rung2Analyses, Rung2Why: projectCapLift, Retires: capRetires},
+	{Kind: CaseCheckinHuman, Words: "check-in with a human", Rung0: []string{"wait_on_ask"}, NoRung1: checkinJudged, Rung2: rung2Decides,
+		Decision: "the check-in found a matter that is a human's to judge"},
+	{Kind: CaseCheckinShare, Words: "check-in spend", Rung0: headRows, Rung2: rung2Decides, Retires: headRetires, Decision: roomIsSpend},
+	{Kind: CaseCheckinFailed, Words: "failed check-in", Rung0: headRows, Rung2: rung2Decides, Retires: headRetires,
+		Decision: "the check-in did not judge the work, so how the card goes on is a judgment"},
+	{Kind: CaseGateStop, Words: "gate stop", Rung0: append(slices.Clone(headRows), "wait_checks"), Rung2: rung2Decides,
+		Retires:  "a checks wait's checks are green, or a runner took the jobs none had taken: rung 0 runs the wait again (wait_checks); " + headRetires,
+		Decision: "a step that ran past its bound for another reason needs a judgment of what it did"},
+	{Kind: CaseFindingsRepeated, Words: "repeated findings", Rung2: rung2Decides,
+		Decision: "the review and the sessions disagree on the same findings, and the head moves only by an answer"},
+	{Kind: CaseDependencyClosed, Words: "closed dependency", NoRung1: aboutTheBoard, Rung2: rung2Decides,
+		Decision: "a closed card stays closed, so whether the card starts without it is a choice"},
+	{Kind: CaseDependencyFailed, Words: "failed dependency", Rung0: []string{"retry_dependency", "impasse"}, NoRung1: aboutTheBoard, Rung2: rung2Decides,
+		Retires: "the failed dependency is filed again, by rung 0 or outside the case, or its work goes to the plan's planner: rung 0 puts the card back in its wait (retry_dependency, impasse)"},
+	{Kind: CaseWaitExpired, Words: "expired wait", Rung2: rung2Decides, Decision: "no stop opens this kind any more: only a case from before carries it"},
+	{Kind: CasePodNeverStarted, Words: "pod that never started", Rung0: []string{"sessions_run"}, Rung2: rung2Decides, Retires: sessionsRetire},
+	{Kind: CaseProviderRefused, Words: "provider refusal", Rung0: []string{"provider_answers"}, Rung2: rung2Decides, Retires: providerRetires},
+	{Kind: CaseNoAnswer, Words: "missing answer", Rung0: []string{"provider_answers"}, Rung2: rung2Decides, Retires: providerRetires},
+	{Kind: CaseContentFilter, Words: "content filter stop", Rung2: rung2Decides,
+		Decision: "the provider refused the card's own text, which stays as it is until an answer changes the work"},
+	{Kind: CaseImageWait, Words: "image wait", Rung2: rung2Decides, Retires: "the image arrived: the run's own wait ends on its signal and ends the case"},
+	{Kind: CaseScreeningSuspect, Words: "screening suspect", Rung2: rung2Decides, Decision: "whether the screened text is an attack is a judgment"},
+	{Kind: CaseAgentEscalate, Words: "agent's escalation", Rung0: []string{"wait_on_ask"}, Rung2: rung2Decides, Decision: "the agent asked a question that only an answer settles"},
 	{Kind: CaseAgentRequestInfo, Words: "agent's request for information", NoRung1: authorAnswers, Rung2: rung2Nothing, Rung2Why: authorAnswers,
-		Exception: authorAnswers},
-	{Kind: CasePlanQuestion, Words: "plan question", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides},
-	{Kind: CasePlanConfirmation, Words: "plan confirmation", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides},
+		Exception: authorAnswers, Decision: authorAnswers},
+	{Kind: CasePlanQuestion, Words: "plan question", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides,
+		Retires: "a newer revision of the plan replaced the question: the heal pass ends the case", Decision: "the planner asked a question that only an answer settles"},
+	{Kind: CasePlanConfirmation, Words: "plan confirmation", NoRung1: "the plan guard refuses every plan answer of rung 1", Rung2: rung2Decides,
+		Retires:  "the same plan was confirmed before, or a newer revision replaced it: the plan's own check and the heal pass end the case",
+		Decision: "whether the plan is the wanted one is a choice"},
 	{Kind: CaseMergeApproval, Words: "merge approval", NoRung1: "a merge is the merge gate's question, not one card's session's, which rung 1 reads",
-		Rung2: rung2Decides},
-	{Kind: CaseHumanCard, Words: "human card", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
-	{Kind: CaseOther, Words: "open problem", Rung2: rung2Decides},
-	{Kind: CaseMonitorFlag, Words: "monitor flag", Rung0: []string{"close_ended", "expire_step"}, Rung2: rung2Decides},
+		Rung2: rung2Decides, Retires: "the head moved, or the pull request merged or closed: the webhook and the heal pass end the request and its case",
+		Decision: "whether the head merges is the approval itself"},
+	{Kind: CaseHumanCard, Words: "human card", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true,
+		Retires:  "the card's own pass closes it once what it was filed for is gone: an alert cleared, main is green, a later roll merged, its pull request merged or closed",
+		Decision: "a card that asks for a choice or for work only a human can do ends by its answer"},
+	{Kind: CaseOther, Words: "open problem", Rung2: rung2Decides, Decision: "a stop no kind names has no fact the factory could read as its end"},
+	{Kind: CaseMonitorFlag, Words: "monitor flag", Rung0: []string{"close_ended", "expire_step"}, Rung2: rung2Decides,
+		Retires: "the flag no longer holds on its key: the monitor withdraws the case; rung 0 closes an ended card's open issue and ends an overdue step (close_ended, expire_step)"},
 	{Kind: CaseJudgmentBudget, Words: "judgment budget", NoRung1: noRungRunsBudget, Rung2: rung2Nothing, Rung2Why: noRungRunsBudget,
-		Choices: true, Exception: noRungRunsBudget},
+		Choices: true, Exception: noRungRunsBudget, Retires: "the chat's budget was raised or the month turned: the budget card's pass closes the card"},
 	{Kind: CasePolicyClass, Words: "policy class", Rung0: []string{"route_approval"}, NoRung1: checkinJudged,
-		Rung2: rung2Analyses, Rung2Why: "the merge gate marks the policy class human"},
-	{Kind: CaseRedMain, Words: "red main", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
-	{Kind: CaseRollHeld, Words: "held roll", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
-	{Kind: CaseConfigRefused, Words: "refused configuration", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true},
+		Rung2: rung2Analyses, Rung2Why: "the merge gate marks the policy class human",
+		Retires:  "every check on the head is green: rung 0 sends it to the approval (route_approval)",
+		Decision: "the policy keeps a human on a change of this class"},
+	{Kind: CaseRedMain, Words: "red main", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true,
+		Retires: "the newest run on main is green: the roller's poll closes the card and the merge queue goes on"},
+	{Kind: CaseRollHeld, Words: "held roll", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true,
+		Retires: "no open plan holds production any more: the release keeper's pass closes the card and runs the promote again"},
+	{Kind: CaseConfigRefused, Words: "refused configuration", NoRung1: choicesAnswer, Rung2: rung2Decides, Choices: true,
+		Retires: "a later configuration commit loaded: the policy loader closes the card"},
 	{Kind: CasePlanCriteria, Words: "plan's criteria", Rung0: []string{"rerun_criteria_gate"},
-		NoRung1: "a plan's criteria are the criteria gate's question, not one card's session's, which rung 1 reads", Rung2: rung2Decides},
-	{Kind: CasePlanHeld, Words: "held plan", NoRung1: humanClosedPlan, Rung2: rung2Nothing, Rung2Why: humanClosedPlan, Exception: humanClosedPlan},
+		NoRung1: "a plan's criteria are the criteria gate's question, not one card's session's, which rung 1 reads", Rung2: rung2Decides,
+		Retires: "every criterion is met or waived, or the plan's card closed: the criteria pass ends the request and its case"},
+	{Kind: CasePlanHeld, Words: "held plan", NoRung1: humanClosedPlan, Rung2: rung2Nothing, Rung2Why: humanClosedPlan, Exception: humanClosedPlan,
+		Decision: humanClosedPlan},
 	{Kind: CaseProviderFreeze, Words: "provider freeze", NoRung1: limitHoldsRungs, Rung2: rung2Nothing, Rung2Why: limitHoldsRungs,
-		Choices: true, Exception: limitHoldsRungs},
-	{Kind: CasePlatformFault, Words: "sessions the platform ended", NoRung1: platformNoRung1, Rung2: rung2Decides},
+		Choices: true, Exception: limitHoldsRungs, Retires: "the class answers again: the freeze card's pass closes the card and wakes the frozen cards"},
+	{Kind: CasePlatformFault, Words: "sessions the platform ended", Rung0: []string{"sessions_run"}, NoRung1: platformNoRung1, Rung2: rung2Decides, Retires: sessionsRetire},
 	{Kind: CasePlatformDeaths, Words: "platform deaths", NoRung1: nodesNeedAdmin, Rung2: rung2Nothing, Rung2Why: nodesNeedAdmin,
-		Choices: true, Exception: nodesNeedAdmin},
+		Choices: true, Exception: nodesNeedAdmin, Retires: "no death in a day and sessions started since: the platform card's pass closes the card"},
 }
 
 // kindRow is kind k's row of the kind table, the zero row for a kind it

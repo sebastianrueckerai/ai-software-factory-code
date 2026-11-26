@@ -293,6 +293,8 @@ var Actions = []Action{
 			return fmt.Sprintf("the checks on the head are %s, so there is nothing to run again", cmp.Or(f.Checks, "not known yet"))
 		case f.RerunOnHead:
 			return "the checks on this head were run again once already"
+		case slices.Contains(f.Partial, partialTimeline) || slices.Contains(f.Partial, "cases"):
+			return "the card's record could not be read, so it is unknown whether the checks on this head ran again already, which `" + ActRerunChecks + "` needs: try again in a minute"
 		}
 		return ""
 	}},
@@ -916,8 +918,13 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if slices.Contains(mergeDecisions, a.Name) && r.Room != nil {
 		return "`" + a.Name + "` decides the merge request alone: it draws nothing"
 	}
-	if a.Name == ActWaitChecks && rung < 3 && f.WaitedOnHead {
-		return "the checks wait on this head was run again once already"
+	if a.Name == ActWaitChecks && rung < 3 && f.Checks != "green" {
+		switch {
+		case f.WaitedOnHead:
+			return "the checks wait on this head was run again once already, and its checks are not green"
+		case slices.Contains(f.Partial, "cases"):
+			return factsUnread("the card's cases", "the checks wait on this head ran again already", a.Name, rung)
+		}
 	}
 	room, asked := r.room(f)
 	if !asked {

@@ -614,6 +614,9 @@ const (
 type ChecksResult struct {
 	State    ChecksState
 	Findings []string
+	// NoRunner says the checks are pending because no runner took any of
+	// their jobs.
+	NoRunner bool `json:",omitempty"`
 }
 
 // sessionGrace is how long past its own supervisor deadline a session may

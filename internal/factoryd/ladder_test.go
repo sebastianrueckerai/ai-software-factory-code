@@ -120,7 +120,8 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		{"red", CaseBudgetFloor, head("red", false), &Resolution{Action: ActRerunChecks}},
 		{"red, run again", CaseCheckinShare, func() CaseFacts { f := head("red", false); f.RerunOnHead = true; return f }(), nil},
 		{"a checks wait's stop with every check green", CaseGateStop, checksWait("green", false), &Resolution{Action: ActWaitChecks}},
-		{"a checks wait's stop, waited on this head already", CaseGateStop, checksWait("green", true), nil},
+		{"a checks wait's stop with every check green, waited on this head already", CaseGateStop, checksWait("green", true), &Resolution{Action: ActWaitChecks}},
+		{"a checks wait's stop with checks pending, waited on this head already", CaseGateStop, checksWait("pending", true), nil},
 		{"a checks wait's stop with red checks", CaseGateStop, checksWait("red", false), &Resolution{Action: ActRerunChecks}},
 		{"a checks wait's stop with checks pending", CaseGateStop, checksWait("pending", false), nil},
 		{"green at a stop of no head", CaseAgentEscalate, head("green", true), nil},
@@ -312,9 +313,10 @@ func TestHandedUpByReadsAMomentsHandUpStepAsTheHandUp(t *testing.T) {
 	}
 }
 
-// A row whose action fails part way hands the case up with why: the close
-// of the failed card's issue fails after the replacement is filed, rung 2
-// hands it on, and the human is asked.
+// A row whose action fails part way hands the case up with why, and the
+// check before the climb takes it: the close of the failed card's issue
+// fails after the replacement is filed, so the dependency is filed again
+// already, and the card goes back to its wait with no rung asked.
 func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	ctx := context.Background()
 	r, store, fj := outsidePlanRig(t)
@@ -324,12 +326,12 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out = rung2Faces(t, r, "t-b", out)
 	c, _ := store.CaseByID(ctx, out.CaseID)
 	steps, _ := store.CaseSteps(ctx, c.ID)
-	if out.Resolution != nil || out.Comment == 0 || c.Status != CaseAtHuman || len(steps) != 3 ||
-		!strings.HasPrefix(steps[0].Found, "retry_dependency failed: ") || steps[0].Outcome != StepHandedUp || steps[1].Rung != 2 || steps[2].Rung != 3 || steps[2].CommentID != out.Comment {
-		t.Fatalf("outcome %+v, case %+v, steps %+v; want the retry's failure handed up, then the face the human is asked on", out, c, steps)
+	if out.Resolution == nil || out.Resolution.Action != ActRetry || out.Comment != 0 || c.Status != CaseResolved || len(steps) != 2 ||
+		!strings.HasPrefix(steps[0].Found, "retry_dependency failed: ") || steps[0].Outcome != StepHandedUp ||
+		steps[1].Rung != 0 || steps[1].Outcome != StepResolved || steps[1].Grounds != "the failed dependency was filed again as #9, so the card waits for that one" {
+		t.Fatalf("outcome %+v, case %+v, steps %+v; want the retry's failure handed up, then rung 0's retry on the replacement and no human asked", out, c, steps)
 	}
 }
 
@@ -408,7 +410,7 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 		}
 		c, _ := g.store.CaseByID(context.Background(), out.CaseID)
 		steps, _ := g.store.CaseSteps(context.Background(), out.CaseID)
-		if c.Status != CaseAtHuman || len(steps) != 2 || steps[0].Found != "facts read partly: timeline, so rung 0 took nothing" || steps[0].Outcome != StepHandedUp ||
+		if c.Status != CaseAtHuman || len(steps) != 2 || steps[0].Found != "facts read partly: timeline, which route_approval and rerun_checks would read, so rung 0 took nothing" || steps[0].Outcome != StepHandedUp ||
 			steps[1].Rung != 2 {
 			t.Fatalf("case %+v, steps %+v; want it at the human, rung 0 handing up on the unread timeline, then rung 2", c, steps)
 		}
@@ -553,6 +555,17 @@ func TestTheKindTableHoldsEveryKind(t *testing.T) {
 		for _, name := range row.Rung0 {
 			if !slices.ContainsFunc(rung0, func(r resolver) bool { return r.Name == name }) {
 				t.Errorf("kind %s names rung 0's row %q, which rung0 does not hold", row.Kind, name)
+			}
+		}
+		if row.Retires == "" && row.Decision == "" {
+			t.Errorf("kind %s states neither what retires its case once its reason is gone nor why only an answer ends it", row.Kind)
+		}
+		if firesOn(row.Kind) && row.Retires == "" {
+			t.Errorf("kind %s has a row of rung 0 that fires and does not state what retires its case", row.Kind)
+		}
+		for _, name := range row.Rung0 {
+			if i := slices.IndexFunc(rung0, func(r resolver) bool { return r.Name == name }); i >= 0 && rung0[i].Fire != nil && !strings.Contains(row.Retires, name) {
+				t.Errorf("kind %s: its retire statement does not name its row %s of rung 0", row.Kind, name)
 			}
 		}
 	}

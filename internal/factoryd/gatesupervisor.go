@@ -204,7 +204,8 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 
 // rollChecksLine is the one-line state of a roll task's checks at a trip:
 // the combined status and its jobs by state (green, failed, errored,
-// warning, skipped, running), or why they are unreadable, scrubbed.
+// warning, skipped, waiting for a runner, waiting for a job before it,
+// running), or why they are unreadable, scrubbed.
 func (r *Runner) rollChecksLine(ctx context.Context, t Task, in GateSupervision) string {
 	repo, err := SplitRepo(t.Repository)
 	sha := ""
@@ -221,10 +222,24 @@ func (r *Runner) rollChecksLine(ctx context.Context, t Task, in GateSupervision)
 		return "checks unreadable: " + redact.New().String(err.Error())
 	}
 	line := "checks: combined status " + cs.State
-	for _, g := range []struct{ label, state string }{{"green", "success"}, {"failed", "failure"}, {"errored", "error"}, {"warning", "warning"}, {"skipped", "skipped"}, {"running", "pending"}} {
+	for _, g := range []struct {
+		label string
+		is    func(CommitStatus) bool
+	}{
+		{"green", func(s CommitStatus) bool { return s.State == "success" }},
+		{"failed", func(s CommitStatus) bool { return s.State == "failure" }},
+		{"errored", func(s CommitStatus) bool { return s.State == "error" }},
+		{"warning", func(s CommitStatus) bool { return s.State == "warning" }},
+		{"skipped", func(s CommitStatus) bool { return s.State == "skipped" }},
+		{"waiting for a runner", func(s CommitStatus) bool { return s.State == "pending" && s.Description == statusWaitsForRunner }},
+		{"waiting for a job before it", func(s CommitStatus) bool { return s.State == "pending" && s.Description == statusWaitsForJob }},
+		{"running", func(s CommitStatus) bool {
+			return s.State == "pending" && s.Description != statusWaitsForRunner && s.Description != statusWaitsForJob
+		}},
+	} {
 		var names []string
 		for _, s := range cs.Statuses {
-			if s.State == g.state {
+			if g.is(s) {
 				names = append(names, s.Context)
 			}
 		}

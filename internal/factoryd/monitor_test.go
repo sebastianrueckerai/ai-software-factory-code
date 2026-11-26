@@ -2,7 +2,10 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -98,29 +101,36 @@ func TestAFlagsIssueLineNamesItsAnswers(t *testing.T) {
 	}
 }
 
-// The minute's re-take runs rung 0 on a case at the human again, on the
-// facts Act reads: t1's checks wait stop on h2, whose checks are green,
-// resolves at rung 0 with wait_checks and the finding as its reason, and
-// the run hears it. t1 has no issue here, so no comment withdraws the
-// question (the Postgres test reads that comment). On facts read partly (t1's timeline unreadable) the
-// stop stays at the human, and so does one whose head a human's
-// wait_checks already ran the wait on again (case 4, WaitedOnHead): the
-// pass writes no step, no event and no signal for either.
-func TestRetakeTakesAGreenChecksWaitOnFactsReadWhole(t *testing.T) {
+// A checks wait's stop at the human whose checks are green goes on with no
+// human: the pass takes it on rung 0 with wait_checks, the run is told, and
+// the timeline holds one question_withdrawn row of the question (the
+// Postgres test reads that comment). Only a reader the row needs keeps it
+// off: an unreadable timeline does not, nor does a model nobody can price,
+// which fails the floor's read (the roll card whose checks turned green
+// while LiteLLM priced no model), nor a wait_checks a human answered on the
+// head before. With the checks themselves unreadable the stop stays at the
+// human, and one step says which read failed, however often the pass runs.
+func TestRetakeTakesAGreenChecksWaitOnTheFactsItsRowNeeds(t *testing.T) {
 	stop := Case{ID: 7, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, Status: CaseAtHuman,
-		Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2"}}
+		Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2", "model": "small"}}
 	waited := Case{ID: 4, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, Status: CaseResolved,
 		Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2"}, Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActWaitChecks}}
 	took := &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Reason: "every check on head h2 is green, so the factory resumed the checks wait"}
 	for name, tc := range map[string]struct {
 		setup func(g factsRig)
 		want  *CaseResolution
+		kept  string
 	}{
-		"read whole": {func(factsRig) {}, took},
-		"timeline unreadable": {func(g factsRig) {
+		"read whole": {setup: func(factsRig) {}, want: took},
+		"timeline unreadable": {setup: func(g factsRig) {
 			g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
-		}, nil},
-		"waited on h2": {func(g factsRig) { g.store.cases = append(g.store.cases, waited) }, nil},
+		}, want: took},
+		"no model priced": {setup: func(g factsRig) { g.r.cfg.Prices = aliasPrices{} }, want: took},
+		"waited on h2":    {setup: func(g factsRig) { g.store.cases = append(g.store.cases, waited) }, want: took},
+		"checks unreadable": {setup: func(g factsRig) {
+			g.r.forgejo = &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "pw"}
+		},
+			kept: "facts read partly: checks, which route_approval, rerun_checks and wait_checks would read, so rung 0 took nothing"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -135,15 +145,19 @@ func TestRetakeTakesAGreenChecksWaitOnFactsReadWhole(t *testing.T) {
 			tc.setup(g)
 			events := len(g.store.events)
 			m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
-			if err := m.Retake(ctx); err != nil {
-				t.Fatal(err)
+			for range 2 {
+				if err := m.Retake(ctx); err != nil {
+					t.Fatal(err)
+				}
 			}
 			c, _ := g.store.CaseByID(ctx, stop.ID)
 			signals := g.r.cfg.Workflows.(*fakeWorkflows).signals
 			if tc.want == nil {
-				if c.Status != CaseAtHuman || c.Resolution != nil || len(g.store.caseSteps[stop.ID]) != 0 || len(g.store.events) != events || len(signals) != 0 {
-					t.Fatalf("case %+v, steps %+v, events %d (were %d), signals %q; want the stop at the human and nothing written",
-						c, g.store.caseSteps[stop.ID], len(g.store.events), events, signals)
+				steps := g.store.caseSteps[stop.ID]
+				if c.Status != CaseAtHuman || c.Resolution != nil || len(steps) != 1 || steps[0].Rung != 0 || steps[0].Found != tc.kept ||
+					len(g.store.events) != events || len(signals) != 0 {
+					t.Fatalf("case %+v, steps %+v, events %d (were %d), signals %q; want the stop at the human and the one step %q",
+						c, steps, len(g.store.events), events, signals, tc.kept)
 				}
 				return
 			}
@@ -220,8 +234,9 @@ func TestRetakeTakesAMonthCapAskWhoseCountWasReset(t *testing.T) {
 }
 
 // A lifted cap on a card whose sessions are spent takes nothing: resume is
-// refused at the session cap, so the ask stays with the human with no
-// step, no row and no signal.
+// refused at the session cap, so the ask stays with the human with no row
+// and no signal, and one step of rung 0 says why, however often the pass
+// runs.
 func TestRetakeLeavesALiftedCapAtTheSessionCap(t *testing.T) {
 	ctx := context.Background()
 	g, c := capRetakeRig(t, 10)
@@ -229,12 +244,17 @@ func TestRetakeLeavesALiftedCapAtTheSessionCap(t *testing.T) {
 	g.store.capsFree.Month = 800
 	events := len(g.store.events)
 	m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
-	if err := m.Retake(ctx); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := m.Retake(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	got, _ := g.store.CaseByID(ctx, c.ID)
-	if got.Status != CaseAtHuman || len(g.store.caseSteps[c.ID]) != 0 || len(g.store.events) != events || len(g.r.cfg.Workflows.(*fakeWorkflows).signals) != 0 {
-		t.Fatalf("case %s, steps %+v, %d new events; want it at the human and nothing written", got.Status, g.store.caseSteps[c.ID], len(g.store.events)-events)
+	steps := g.store.caseSteps[c.ID]
+	if got.Status != CaseAtHuman || len(steps) != 1 || steps[0].Rung != 0 || steps[0].Outcome != StepHandedUp ||
+		!strings.HasPrefix(steps[0].Found, "cap_wait was refused: the session cap of 3 is reached") || !strings.HasSuffix(steps[0].Found, ", so rung 0 took nothing") ||
+		len(g.store.events) != events || len(g.r.cfg.Workflows.(*fakeWorkflows).signals) != 0 {
+		t.Fatalf("case %s, steps %+v, %d new events; want it at the human, one step that names the session cap, and no row", got.Status, steps, len(g.store.events)-events)
 	}
 }
 
@@ -431,5 +451,127 @@ func TestRetakeReadsOnlyKindsWithAFiringRow(t *testing.T) {
 		if c.Status != CaseAtHuman || c.Resolution != nil {
 			t.Fatalf("case %d = %s by %+v; want it at the human", c.ID, c.Status, c.Resolution)
 		}
+	}
+}
+
+// A card with no model answer in three sessions resumes on the fact a
+// provider stop resumes on: another card's call on big at 05:43:10, after
+// the stop opened at 05:00, says the provider answers again.
+func TestRetakeResumesACardWithNoModelAnswerOnceItsModelAnswers(t *testing.T) {
+	ctx := context.Background()
+	g, c := providerRig(t)
+	g.store.cases[len(g.store.cases)-1].Kind = CaseNoAnswer
+	g.store.answeredCalls = []fakeCall{{alias: "big", at: factsAt(5, 43).Add(10 * time.Second)}}
+	m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+	if err := m.Retake(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const why = "a call on big answered at 05:43 UTC, so the provider answers again"
+	if got, _ := g.store.CaseByID(ctx, c.ID); got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Rung != 0 || got.Resolution.Action != ActResume || got.Resolution.Reason != why {
+		t.Fatalf("case %s by %+v; want it resolved on rung 0 with resume for %q", got.Status, got.Resolution, why)
+	}
+}
+
+// A card whose pods did not start, and one whose sessions the platform
+// ended, resume once sessions run again: two sessions of other cards
+// started at 05:10 and 05:20, after the stop opened at 05:00, and the
+// platform ended none since. No session started since the stop takes
+// nothing, and neither does a session the platform ended at 05:30.
+func TestRetakeResumesAPlatformStopOnceSessionsRunAgain(t *testing.T) {
+	ctx := context.Background()
+	started := func(g factsRig) {
+		g.event("t2", factsAt(4, 50), EventSessionStarted, nil)
+		g.event("t2", factsAt(5, 10), EventSessionStarted, nil)
+		g.event("t3", factsAt(5, 20), EventSessionStarted, nil)
+	}
+	for _, kind := range []CaseKind{CasePodNeverStarted, CasePlatformFault} {
+		for name, tc := range map[string]struct {
+			setup func(g factsRig)
+			took  bool
+		}{
+			"sessions started since": {started, true},
+			"none started since":     {func(g factsRig) { g.event("t2", factsAt(4, 50), EventSessionStarted, nil) }, false},
+			"the platform ended one since": {func(g factsRig) {
+				started(g)
+				g.store.platformDeaths = []PodDeath{{Kind: "session", Record: DeathRecord{At: factsAt(5, 30)}}}
+			}, false},
+		} {
+			t.Run(string(kind)+", "+name, func(t *testing.T) {
+				g, c := providerRig(t)
+				g.store.cases[len(g.store.cases)-1].Kind = kind
+				tc.setup(g)
+				events := len(g.store.events)
+				m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+				if err := m.Retake(ctx); err != nil {
+					t.Fatal(err)
+				}
+				got, _ := g.store.CaseByID(ctx, c.ID)
+				if !tc.took {
+					if got.Status != CaseAtHuman || len(g.store.events) != events || len(g.store.caseSteps[c.ID]) != 0 {
+						t.Fatalf("case %s, %d new events, steps %+v; want it at the human and nothing written", got.Status, len(g.store.events)-events, g.store.caseSteps[c.ID])
+					}
+					return
+				}
+				const why = "2 sessions started since the stop and the platform ended none, so sessions run again"
+				if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Rung != 0 || got.Resolution.Action != ActResume || got.Resolution.Reason != why {
+					t.Fatalf("case %s by %+v; want it resolved on rung 0 with resume for %q", got.Status, got.Resolution, why)
+				}
+				if signals := g.r.cfg.Workflows.(*fakeWorkflows).signals; len(signals) != 1 || !strings.HasPrefix(signals[0], "t1 case_resolved factoryd") {
+					t.Fatalf("signals %q; want the run told", signals)
+				}
+			})
+		}
+	}
+}
+
+// A checks wait's stop that found no runner on its jobs goes on once a
+// runner takes one: the stop's facts say no_runner, the head's checks are
+// still pending and one job has started, so the pass runs the wait again. While
+// every job still waits for a runner the stop stays, with nothing written.
+func TestRetakeResumesAChecksWaitOnceARunnerTakesItsJobs(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		statuses string
+		took     bool
+	}{
+		"a job started": {`{"status":"pending","context":"pr / test","description":"Has started running"},{"status":"pending","context":"pr / vet","description":"Waiting to run"}`, true},
+		"none started":  {`{"status":"pending","context":"pr / test","description":"Waiting to run"},{"status":"pending","context":"pr / image-build","description":"Blocked by required conditions"}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newFactsRig(t)
+			g.card()
+			g.timeline(t)
+			forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/repos/demo-app/demo-app/commits/h2/status" {
+					fmt.Fprint(w, `{"state":"pending","statuses":[`+tc.statuses+`]}`)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			t.Cleanup(forge.Close)
+			g.r.forgejo = &Forgejo{BaseURL: forge.URL, BotUser: "factory-agent", BotPassword: "pw"}
+			card := g.store.tasks["t1"]
+			card.IssueNumber = 0
+			g.store.tasks["t1"] = card
+			stop := Case{ID: 7, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, Status: CaseAtHuman,
+				Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2", "no_runner": true}}
+			g.store.cases = append(g.store.cases, stop)
+			g.r.timeline = &Timeline{Objects: g.r.objects, Events: g.store, Store: g.store}
+			m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+			if err := m.Retake(ctx); err != nil {
+				t.Fatal(err)
+			}
+			c, _ := g.store.CaseByID(ctx, stop.ID)
+			if !tc.took {
+				if c.Status != CaseAtHuman || len(g.store.caseSteps[stop.ID]) != 0 {
+					t.Fatalf("case %s, steps %+v; want the stop at the human and nothing written", c.Status, g.store.caseSteps[stop.ID])
+				}
+				return
+			}
+			want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Reason: "a runner took the jobs of the checks on head h2, so the factory resumed the checks wait"}
+			if c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, want) {
+				t.Fatalf("case %s by %+v; want it resolved by %+v", c.Status, c.Resolution, want)
+			}
+		})
 	}
 }

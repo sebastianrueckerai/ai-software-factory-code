@@ -836,6 +836,12 @@ func (s *accBatchStore) NewestAskCase(ctx context.Context, taskID string) (facto
 func (s *accBatchStore) ModelAnsweredSince(context.Context, string, time.Time) (time.Time, error) {
 	panic("unused")
 }
+func (s *accBatchStore) SessionsStartedSince(context.Context, time.Time) (int, error) {
+	panic("unused")
+}
+func (s *accBatchStore) PlatformDeaths(context.Context, time.Time) ([]factoryd.PodDeath, error) {
+	panic("unused")
+}
 func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	panic("unused")
 }

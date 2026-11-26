@@ -533,6 +533,12 @@ type Store interface {
 	// was allowed, whichever card or purpose made it: the provider answers
 	// the alias again. Zero for none.
 	ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error)
+	// SessionsStartedSince counts the sessions of every card that started
+	// after since.
+	SessionsStartedSince(ctx context.Context, since time.Time) (int, error)
+	// PlatformDeaths are the sessions, CI jobs and gate pods the platform
+	// ended since since, newest first.
+	PlatformDeaths(ctx context.Context, since time.Time) ([]PodDeath, error)
 	// SpendAndCallsBetween is the call costs and the count of the task's
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.

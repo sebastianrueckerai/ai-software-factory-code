@@ -27,6 +27,10 @@ type platformStore struct {
 	taskReads int
 }
 
+func (s *platformStore) PlatformDeaths(ctx context.Context, since time.Time) ([]PodDeath, error) {
+	return s.fakeClusterStore.PlatformDeaths(ctx, since)
+}
+
 func (s *platformStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	s.taskReads++
 	return s.fakeStore.Task(ctx, id)

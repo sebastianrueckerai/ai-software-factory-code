@@ -38,6 +38,7 @@ type CaseFacts struct {
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
 	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // Head's checks ran again, or a rerun made Head
 	WaitedOnHead   bool   `json:"waited_on_head,omitempty"`  // a case on Head ran its stopped checks wait again
+	NoRunner       bool   `json:"no_runner,omitempty"`       // every check on Head still waits for a runner: none took a job
 	Stage          string `json:"stage,omitempty"`           // the gate the card is in
 	Attempts       int    `json:"attempts"`
 	SessionCap     int    `json:"session_cap"`
@@ -516,7 +517,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			res, err := r.HeadChecks(ctx, t.ID, f.Head)
 			if err == nil {
-				f.Checks = checksWord(res.State)
+				f.Checks, f.NoRunner = checksWord(res.State), res.NoRunner
 			}
 			return err
 		}},

@@ -932,25 +932,51 @@ func TestWaitChecksAppliesToAChecksWaitStop(t *testing.T) {
 	}
 }
 
-// Rungs 0 to 2 take wait_checks once per head, as rerun_checks; a human
-// may press it again.
+// Rungs 0 to 2 take wait_checks once per head while its checks are not
+// green, as rerun_checks; a human may press it again. On green checks the
+// wait ends at once, so no rung is held to once, and neither is one whose
+// cases could not be read.
 func TestWaitChecksIsOncePerHeadBelowTheHuman(t *testing.T) {
-	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Head: "h1", Checks: "green"}
+	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Head: "h1", Checks: "pending"}
 	waited := stop
 	waited.WaitedOnHead = true
+	green := waited
+	green.Checks = "green"
+	unread := stop
+	unread.Partial = []string{"cases"}
+	greenUnread := unread
+	greenUnread.Checks = "green"
 	a, _ := ActionByName(ActWaitChecks)
 	for _, c := range []struct {
 		rung   int
 		f      CaseFacts
 		refuse bool
-	}{{0, stop, false}, {1, stop, false}, {2, stop, false}, {0, waited, true}, {1, waited, true}, {2, waited, true}, {3, waited, false}} {
+	}{{0, stop, false}, {1, stop, false}, {2, stop, false}, {0, waited, true}, {1, waited, true}, {2, waited, true}, {3, waited, false},
+		{0, green, false}, {1, green, false}, {2, green, false}, {0, unread, true}, {3, unread, false}, {0, greenUnread, false}} {
 		got := a.refusal(c.f, c.rung, Resolution{Action: ActWaitChecks})
 		if (got != "") != c.refuse {
-			t.Errorf("rung %d, waited %v: refusal %q, want refused %v", c.rung, c.f.WaitedOnHead, got, c.refuse)
+			t.Errorf("rung %d, checks %s, waited %v, partial %v: refusal %q, want refused %v", c.rung, c.f.Checks, c.f.WaitedOnHead, c.f.Partial, got, c.refuse)
 		}
 	}
-	if got := a.refusal(waited, 2, Resolution{Action: ActWaitChecks}); got != "the checks wait on this head was run again once already" {
+	if got := a.refusal(waited, 2, Resolution{Action: ActWaitChecks}); got != "the checks wait on this head was run again once already, and its checks are not green" {
 		t.Errorf("refusal = %q", got)
+	}
+}
+
+// A re-run of a red head's checks is refused while the record of an earlier
+// re-run could not be read: the timeline or the card's cases.
+func TestRerunChecksIsRefusedOnAnUnreadRecord(t *testing.T) {
+	a, _ := ActionByName(ActRerunChecks)
+	red := CaseFacts{Kind: CaseSessionCap, PROpen: true, Head: "h1", Checks: "red"}
+	for _, tc := range []struct {
+		partial []string
+		refuse  bool
+	}{{nil, false}, {[]string{"floor"}, false}, {[]string{partialTimeline}, true}, {[]string{"cases"}, true}} {
+		f := red
+		f.Partial = tc.partial
+		if got := a.refusal(f, 0, Resolution{Action: ActRerunChecks}); (got != "") != tc.refuse {
+			t.Errorf("partial %v: refusal %q, want refused %v", tc.partial, got, tc.refuse)
+		}
 	}
 }
 
@@ -1155,10 +1181,10 @@ func TestAnUnreadTimelineRefusesTheGatesReruns(t *testing.T) {
 	}
 }
 
-// Rung 0 takes nothing on facts read in part, except where a fact's own
-// actions refuse while it is unread: a hold that could not be read refuses
-// the starts and closes it guards (holdRefusal), so rung 0 goes on to its
-// rows, and an unread timeline stops it.
+// A row of rung 0 is kept from a case only by a reader it needs: a hold
+// that could not be read refuses the starts and closes it guards itself
+// (holdRefusal), an unread timeline is nothing a failed dependency's rows
+// read, and unread dependencies keep both of them off.
 func TestRungZeroGoesOnPastAnUnreadHold(t *testing.T) {
 	c := Case{Kind: CaseDependencyFailed}
 	for _, tc := range []struct {
@@ -1166,7 +1192,8 @@ func TestRungZeroGoesOnPastAnUnreadHold(t *testing.T) {
 		want    string
 	}{
 		{[]string{partialHold, partialPlanHold}, "no resolver fits"},
-		{[]string{partialHold, "timeline"}, "facts read partly: timeline, so rung 0 took nothing"},
+		{[]string{partialHold, "timeline"}, "no resolver fits"},
+		{[]string{partialHold, "dependencies"}, "facts read partly: dependencies, which retry_dependency and impasse would read, so rung 0 took nothing"},
 	} {
 		res, found, err := new(Runner).rungZero(context.Background(), Task{ID: "t1"}, c, CaseFacts{Kind: CaseDependencyFailed, Partial: tc.partial}, nil)
 		if err != nil || res != nil || found != tc.want {

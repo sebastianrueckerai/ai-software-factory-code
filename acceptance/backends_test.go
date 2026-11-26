@@ -1644,6 +1644,14 @@ func (s *acceptanceStore) ModelAnsweredSince(context.Context, string, time.Time)
 	return time.Time{}, nil
 }
 
+func (s *acceptanceStore) SessionsStartedSince(context.Context, time.Time) (int, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) PlatformDeaths(context.Context, time.Time) ([]factoryd.PodDeath, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
 // The holds: no acceptance run holds a card.

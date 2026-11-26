@@ -911,6 +911,30 @@ func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 	}
 }
 
+// No runner took a job while every status is pending and waits for a
+// runner or for a job before it. One job that started, one that ended, or
+// no status at all says nothing of the runners.
+func TestNoRunnerTookAJob(t *testing.T) {
+	waits := CommitStatus{State: "pending", Context: "pr / test", Description: "Waiting to run"}
+	blocked := CommitStatus{State: "pending", Context: "pr / image-build", Description: "Blocked by required conditions"}
+	for name, tc := range map[string]struct {
+		statuses []CommitStatus
+		want     bool
+	}{
+		"every job waits for a runner":   {[]CommitStatus{waits, waits}, true},
+		"one waits for a job before it":  {[]CommitStatus{waits, blocked}, true},
+		"only a blocked job":             {[]CommitStatus{blocked}, false},
+		"one started":                    {[]CommitStatus{waits, {State: "pending", Context: "pr / vet", Description: "Has started running"}}, false},
+		"one ended":                      {[]CommitStatus{waits, {State: "success", Context: "pr / vet", Description: "Successful in 4s"}}, false},
+		"no status":                      {nil, false},
+		"a pending status of another CI": {[]CommitStatus{{State: "pending", Context: "flux"}}, false},
+	} {
+		if got := noRunner(CombinedStatus{State: "pending", Statuses: tc.statuses}); got != tc.want {
+			t.Errorf("%s: noRunner = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 // A skipped check beside a running one is not pending itself: the head
 // pends on the running check alone.
 func TestASkippedCheckBesideAPendingOnePends(t *testing.T) {

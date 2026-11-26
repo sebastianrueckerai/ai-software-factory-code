@@ -105,6 +105,7 @@ type fakeStore struct {
 	providerDecisions map[string]string
 	answered          map[string]bool // ModelAnswered's answer by task
 	answeredCalls     []fakeCall      // the allowed calls ModelAnsweredSince reads
+	platformDeaths    []PodDeath      // the deaths PlatformDeaths reads
 	// chatErr is EnsureChatTask's error
 	chatErr error
 	// chatSpent is the spend EnsureChatTask's task shows
@@ -2744,6 +2745,17 @@ func (s *fakeStore) SessionsStartedSince(ctx context.Context, since time.Time) (
 		}
 	}
 	return n, nil
+}
+
+// PlatformDeaths are the fake's platformDeaths at or after since.
+func (s *fakeStore) PlatformDeaths(_ context.Context, since time.Time) ([]PodDeath, error) {
+	var out []PodDeath
+	for _, d := range s.platformDeaths {
+		if !d.Record.At.Before(since) {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }
 
 // fakeSpend is one gateway audit row of a task: its time and its call's

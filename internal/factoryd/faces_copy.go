@@ -841,6 +841,9 @@ func gateLine(f Facts) string {
 	if err != nil {
 		return ""
 	}
+	if f.Gate == ActivityWaitChecks && f.NoRunner {
+		return "No runner took the checks' jobs in their " + spanWords(d) + "."
+	}
 	if f.Gate == ActivityWaitChecks {
 		return "The checks ran longer than their " + spanWords(d) + "."
 	}
@@ -1219,6 +1222,8 @@ var gateShape = regexp.MustCompile(`stopped (\S+) \(attempt (\d+)\)`)
 
 func gateAsk(f Facts) string {
 	switch {
+	case f.Gate == ActivityWaitChecks && f.NoRunner:
+		return "No runner started the checks. How should the card go on?"
 	case f.Gate == ActivityWaitChecks:
 		return "The checks ran past their time limit. How should the card go on?"
 	case reviewStop(f):
@@ -1238,6 +1243,9 @@ var gateWords = map[string]string{ActivityRunSession: "The session", ActivityMod
 	ActivityGateReproduction: "The reproduction check", ActivityGateCriteria: "The test of the plan's promises", ActivityMerge: "The merge"}
 
 func gateWhy(f Facts) string {
+	if f.Gate == ActivityWaitChecks && f.NoRunner {
+		return "No CI runner took the checks' jobs in the time they were given, so no check ran and the card stopped. Look at the runners. The card goes on by itself once a runner takes a job."
+	}
 	if f.Gate == ActivityWaitChecks {
 		return "The checks did not finish in the time they were given, so the card stopped."
 	}

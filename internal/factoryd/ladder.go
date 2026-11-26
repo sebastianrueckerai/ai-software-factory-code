@@ -86,12 +86,17 @@ type TripOutcome struct {
 // in plain words, for the human whose case it takes (retake). A row that
 // holds its case in place of a resolution has Hold instead: it sets the
 // case's wake itself and answers held, and its error hands the case up
-// with why.
+// with why. Needs names the readers of the card's facts (tripFacts) the row
+// and its action read: one of them unread keeps the row from firing, and
+// no other reader does. Bounded says the row's action bounds its own
+// repeats, so it is tried on a stop that came back too.
 type resolver struct {
-	Name string
-	Fire func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error)
-	Took func(c Case, f CaseFacts, res Resolution) string
-	Hold func(ctx context.Context, r *Runner, c Case) (held bool, err error)
+	Name    string
+	Needs   []string
+	Bounded bool
+	Fire    func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error)
+	Took    func(c Case, f CaseFacts, res Resolution) string
+	Hold    func(ctx context.Context, r *Runner, c Case) (held bool, err error)
 }
 
 // headKinds are the stops keyed on the card's head: the caps, the floor, the
@@ -109,7 +114,7 @@ func init() {
 	rung0 = []resolver{
 		// an open pull request whose head is green and approved goes to the
 		// approval again: no session is asked for
-		{Name: "route_approval", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		{Name: "route_approval", Needs: []string{"events", partialTimeline, "checks"}, Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
 			return rungZeroTakes(f, Resolution{Action: ActRouteApproval}), nil
 		}, Took: func(_ Case, f CaseFacts, _ Resolution) string {
 			found := "every check on head " + ShortSHA(f.Head) + " is green"
@@ -119,19 +124,23 @@ func init() {
 			return found + " and it still merges into main, so the factory sent it to the approval"
 		}},
 		// a red head's checks run again, once per head (RerunOnHead)
-		{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		{Name: "rerun_checks", Needs: []string{"checks", partialTimeline, "cases"}, Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
 			return rungZeroTakes(f, Resolution{Action: ActRerunChecks}), nil
 		}, Took: func(_ Case, f CaseFacts, _ Resolution) string {
 			return "a check on head " + ShortSHA(f.Head) + " failed, so the factory ran the checks again"
 		}},
-		// a checks wait's stop with every check green: the wait runs again,
-		// once per head (WaitedOnHead)
-		{Name: "wait_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-			if f.Checks != "green" {
+		// a checks wait's stop whose checks are green, or whose jobs a runner
+		// took after none had: the wait runs again, the second once per head
+		// (WaitedOnHead)
+		{Name: "wait_checks", Needs: []string{"checks", "cases"}, Bounded: true, Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+			if f.Checks != "green" && !runnerCame(c, f) {
 				return nil, nil
 			}
-			return rungZeroTakes(f, Resolution{Action: ActWaitChecks}), nil
+			return rungZeroMay(f, Resolution{Action: ActWaitChecks})
 		}, Took: func(_ Case, f CaseFacts, _ Resolution) string {
+			if f.Checks != "green" {
+				return "a runner took the jobs of the checks on head " + ShortSHA(f.Head) + ", so the factory resumed the checks wait"
+			}
 			return "every check on head " + ShortSHA(f.Head) + " is green, so the factory resumed the checks wait"
 		}},
 		// a day's, a month's or a project's cap: the run's own wait (capWait)
@@ -139,7 +148,7 @@ func init() {
 		// and the same check (capLift) resumes the card here when it reads so
 		// first, its words the check's; a case that names no model has no
 		// session to weigh and waits for the run
-		{Name: "cap_wait", Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		{Name: "cap_wait", Needs: roomNeeds, Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error) {
 			model, _ := c.Facts["model"].(string)
 			if model == "" {
 				return nil, nil
@@ -154,13 +163,13 @@ func init() {
 			if err != nil || !lift.Resume {
 				return nil, err
 			}
-			return rungZeroTakes(f, Resolution{Action: ActResume, Note: lift.Why, Moments: lift.Moments}), nil
+			return rungZeroMay(f, Resolution{Action: ActResume, Note: lift.Why, Moments: lift.Moments})
 		}, Took: func(_ Case, _ CaseFacts, res Resolution) string { return res.Note }},
 		// a provider's refusal of the card's model: a call on the model the
 		// gateway allowed since the stop opened, whichever card made it,
 		// says the provider answers again, and the card resumes; a stop that
 		// came back after that stays with the human (firing)
-		{Name: "provider_answers", Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		{Name: "provider_answers", Needs: roomNeeds, Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error) {
 			model, _ := c.Facts["model"].(string)
 			if model == "" {
 				return nil, nil
@@ -171,26 +180,47 @@ func init() {
 			}
 			var said Moments
 			note := "a call on " + model + " answered at " + said.Say(at, resetLayout(at, r.Clock())) + ", so the provider answers again"
-			return rungZeroTakes(f, Resolution{Action: ActResume, Note: note, Moments: said}), nil
+			return rungZeroMay(f, Resolution{Action: ActResume, Note: note, Moments: said})
+		}, Took: func(_ Case, _ CaseFacts, res Resolution) string { return res.Note }},
+		// a card whose pods did not start, or whose sessions the platform
+		// ended: a session of any card that started since the stop, with no
+		// session the platform ended since, says sessions run again, and the
+		// card resumes
+		{Name: "sessions_run", Needs: roomNeeds, Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error) {
+			n, err := r.store.SessionsStartedSince(ctx, c.OpenedAt)
+			if err != nil || n == 0 {
+				return nil, err
+			}
+			if deaths, err := r.store.PlatformDeaths(ctx, c.OpenedAt); err != nil || len(deaths) > 0 {
+				return nil, err
+			}
+			return rungZeroMay(f, Resolution{Action: ActResume, Note: plural(n, "session") + " started since the stop and the platform ended none, so sessions run again"})
 		}, Took: func(_ Case, _ CaseFacts, res Resolution) string { return res.Note }},
 		// a failed dependency outside a plan is filed again once, and a retry
-		// that failed in turn goes to the human
-		{Name: "retry_dependency", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		// that failed in turn goes to the human; one filed again outside the
+		// case puts the card back in the wait on what replaced it
+		{Name: "retry_dependency", Needs: []string{"dependencies"}, Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+			if _, ok := retriedAs(f, c.StateKey); ok {
+				return rungZeroMay(f, Resolution{Action: ActRetry, Args: map[string]any{"task_id": c.StateKey}})
+			}
 			d := caseDep(c, f)
 			if f.Plan != "" || d == nil || d.RetryOf != "" {
 				return nil, nil
 			}
-			return rungZeroTakes(f, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), nil
+			return rungZeroMay(f, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}})
 		}, Took: func(c Case, f CaseFacts, _ Resolution) string {
+			if as, ok := retriedAs(f, c.StateKey); ok {
+				return "the failed dependency was filed again as " + as + ", so the card waits for that one"
+			}
 			return fmt.Sprintf("dependency #%d failed, so the factory filed it again", caseDep(c, f).Issue)
 		}},
 		// inside a plan, the failed dependency's work goes to the plan's planner
-		{Name: "impasse", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		{Name: "impasse", Needs: []string{"dependencies"}, Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
 			d := caseDep(c, f)
 			if f.Plan == "" || d == nil {
 				return nil, nil
 			}
-			return rungZeroTakes(f, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), nil
+			return rungZeroMay(f, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}})
 		}, Took: func(c Case, f CaseFacts, _ Resolution) string {
 			return fmt.Sprintf("dependency #%d failed, so the factory gave its work to the plan's planner", caseDep(c, f).Issue)
 		}},
@@ -201,7 +231,7 @@ func init() {
 			if c.Facts["flag"] != "issue_open_after_end" || f.Final == "" {
 				return nil, nil
 			}
-			return rungZeroTakes(f, Resolution{Action: ActClose}), nil
+			return rungZeroMay(f, Resolution{Action: ActClose})
 		}, Took: func(Case, CaseFacts, Resolution) string { return "the card ended, so the factory closed its issue" }},
 		// the monitor's wait_over_bound on a rung that did not answer: the
 		// card's steps past their bound end as ExpireSteps ends one, and that
@@ -285,6 +315,35 @@ func rungZeroTakes(f CaseFacts, res Resolution) *Resolution {
 		return nil
 	}
 	return &res
+}
+
+// rowRefused is why the action table refuses rung 0 the answer of a row
+// whose own fact holds: the case's reason is gone and the case stands.
+type rowRefused string
+
+func (e rowRefused) Error() string { return string(e) }
+
+// rungZeroMay is res when the action table lets rung 0 take res on facts
+// f, else its refusal as a rowRefused: for a row whose own fact says the
+// case's reason is gone, so a refusal is worth a step.
+func rungZeroMay(f CaseFacts, res Resolution) (*Resolution, error) {
+	a, ok := ActionByName(res.Action)
+	if !ok {
+		return nil, nil
+	}
+	if why := a.refusal(f, 0, res); why != "" {
+		return nil, rowRefused(why)
+	}
+	return &res, nil
+}
+
+// roomNeeds are the readers a session's room is weighed on (sessionRoom).
+var roomNeeds = []string{"live session", "config", "floor"}
+
+// runnerCame says checks wait stop c found no runner on its jobs, and one
+// took a job since.
+func runnerCame(c Case, f CaseFacts) bool {
+	return c.Facts["no_runner"] == true && f.Checks == "pending" && !f.NoRunner
 }
 
 // tries says row is tried on case c: the kind table names it for c's kind.
@@ -1181,32 +1240,50 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 }
 
 // firing is the first row of rung0 tried on case c that fires on facts f,
-// with its resolution: none on facts read partly, which could hide what a
-// row needs (a head a rerun made), and none when rung 0 resolved a case of
-// c's kind and key before, for the stop came back. With none it answers
-// what rung 0 found.
+// with its resolution. A row is not tried while a reader it needs is unread
+// (Needs), nor, unless it bounds its own repeats, when rung 0 resolved a
+// case of c's kind and key before, for the stop came back. With none it
+// answers what rung 0 found: "no resolver fits" when no row's fact holds,
+// else what kept each row from the case.
 func (r *Runner) firing(ctx context.Context, c Case, f CaseFacts, cases []Case) (resolver, *Resolution, string, error) {
-	// an unread hold refuses the answers it guards itself (holdRefusal)
-	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool {
-		return slices.Contains([]string{"siblings", "head_commits", "checks_log", partialHold, partialPlanHold}, n)
-	}); len(partial) > 0 {
-		return resolver{}, nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
-	}
-	if i := slices.IndexFunc(cases, func(e Case) bool {
+	back := slices.IndexFunc(cases, func(e Case) bool {
 		return e.ID != c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil && e.Resolution.Rung == 0
-	}); i >= 0 {
-		return resolver{}, nil, "rung 0 took this stop with " + cases[i].Resolution.Action + " before, and it came back", nil
-	}
+	})
+	var kept, unread, blind []string
 	for _, row := range rung0 {
 		if row.Fire == nil || !row.tries(c) {
 			continue
 		}
-		if res, err := row.Fire(ctx, r, c, f); err != nil || res != nil {
+		if back >= 0 && !row.Bounded {
+			kept = append(kept, "rung 0 took this stop with "+cases[back].Resolution.Action+" before, and it came back")
+			continue
+		}
+		if miss := slices.DeleteFunc(slices.Clone(row.Needs), func(n string) bool { return !slices.Contains(f.Partial, n) }); len(miss) > 0 {
+			unread, blind = append(unread, miss...), append(blind, row.Name)
+			continue
+		}
+		res, err := row.Fire(ctx, r, c, f)
+		var refused rowRefused
+		if errors.As(err, &refused) {
+			kept = append(kept, row.Name+" was refused: "+string(refused))
+			continue
+		}
+		if err != nil || res != nil {
 			return row, res, "", err
 		}
 	}
-	return resolver{}, nil, "no resolver fits", nil
+	if len(blind) > 0 {
+		slices.Sort(unread)
+		kept = append(kept, "facts read partly: "+textutil.AndList(slices.Compact(unread))+", which "+textutil.AndList(blind)+" would read")
+	}
+	if kept = slices.Compact(kept); len(kept) > 0 {
+		return resolver{}, nil, strings.Join(kept, "; ") + ", so rung 0 took nothing", nil
+	}
+	return resolver{}, nil, noRowFits, nil
 }
+
+// noRowFits is what rung 0 finds on a case none of whose rows' facts hold.
+const noRowFits = "no resolver fits"
 
 // firesOn says rung 0 tries a row that fires on a case of kind k.
 func firesOn(k CaseKind) bool {
@@ -1240,9 +1317,10 @@ func (r *Runner) causeGone(ctx context.Context, c Case) (*Resolution, error) {
 // retake runs rung 0 again on case c, on the facts Act reads: the first
 // row that fires (firing) takes the case through Act on rung 0, its note
 // the row's words (Took), and answers the resolution taken; from the
-// human, that is a withdrawal of its question. Nothing that fires, and
-// an answer Act refuses or one that came first, write nothing and answer
-// nil.
+// human, that is a withdrawal of its question. A row that something kept
+// from the case, and an answer Act refuses, leave one step of rung 0 per
+// cause that says why the case still stands (keptStep). Nothing that fires
+// and an answer that came first write nothing and answer nil.
 func (r *Runner) retake(ctx context.Context, c Case) (*Resolution, error) {
 	t, _, err := r.task(ctx, c.TaskID)
 	if err != nil {
@@ -1256,22 +1334,42 @@ func (r *Runner) retake(ctx context.Context, c Case) (*Resolution, error) {
 	if err != nil {
 		return nil, err
 	}
-	row, res, _, err := r.firing(ctx, c, f, cases)
-	if err != nil || res == nil {
+	row, res, found, err := r.firing(ctx, c, f, cases)
+	if err != nil {
 		return nil, err
+	}
+	if res == nil {
+		return nil, r.keptStep(ctx, c.ID, found)
 	}
 	res.Note = row.Took(c, f, *res)
 	_, err = r.Act(ctx, ActInput{TaskID: t.ID, CaseID: c.ID, By: FactoryDecider, Via: ViaFactoryd, Rung: 0, Res: *res})
 	var refused ErrActRefused
 	var noRetry ErrNoRetry
 	var ended ErrCaseEnded
-	if errors.As(err, &refused) || errors.As(err, &noRetry) || errors.As(err, &ended) {
+	switch {
+	case errors.As(err, &ended):
 		return nil, nil
-	}
-	if err != nil {
+	case errors.As(err, &refused), errors.As(err, &noRetry):
+		return nil, r.keptStep(ctx, c.ID, row.Name+" was refused: "+err.Error()+", so rung 0 took nothing")
+	case err != nil:
 		return nil, err
 	}
 	return res, nil
+}
+
+// keptStep is rung 0's step on case id that says what kept a row from it,
+// found, appended once per case and cause; a case no row's fact holds on
+// gets none.
+func (r *Runner) keptStep(ctx context.Context, id int64, found string) error {
+	if found == noRowFits {
+		return nil
+	}
+	steps, err := r.store.CaseSteps(ctx, id)
+	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 0 && s.Found == found }) {
+		return err
+	}
+	_, err = r.store.AppendCaseStep(ctx, CaseStep{CaseID: id, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
+	return err
 }
 
 // askedAgain says reason asks a card's standing question again: a run's

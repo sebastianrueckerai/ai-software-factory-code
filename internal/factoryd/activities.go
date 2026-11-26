@@ -2886,9 +2886,24 @@ func (r *Runner) HeadChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		r.annotateMainFailures(ctx, repo, &res)
 	case ChecksSuccess:
 	default:
-		res = ChecksResult{State: ChecksPending, Findings: pendingCheckFindings(sha, cs)}
+		res = ChecksResult{State: ChecksPending, Findings: pendingCheckFindings(sha, cs), NoRunner: noRunner(cs)}
 	}
 	return res, nil
+}
+
+// Forgejo's descriptions of a job's status before it starts: one that waits
+// for a runner, and one that waits for a job before it.
+const (
+	statusWaitsForRunner = "Waiting to run"
+	statusWaitsForJob    = "Blocked by required conditions"
+)
+
+// noRunner says no runner took a job of cs: every status is pending and
+// waits for a runner, or for a job that does.
+func noRunner(cs CombinedStatus) bool {
+	return len(cs.Statuses) > 0 && !slices.ContainsFunc(cs.Statuses, func(s CommitStatus) bool {
+		return s.State != "pending" || s.Description != statusWaitsForRunner && s.Description != statusWaitsForJob
+	}) && slices.ContainsFunc(cs.Statuses, func(s CommitStatus) bool { return s.Description == statusWaitsForRunner })
 }
 
 // jobLogOf is logOf for a head's failed checks: the tail of a check's job
