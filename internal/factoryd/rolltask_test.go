@@ -411,6 +411,7 @@ type rollForgejo struct {
 	issues      []string // "title\n\nbody"
 	comments    []string // "#n body"
 	commentsOff bool     // the issue comments answer 500
+	commentFail string   // the issue whose next comment answers 500
 	commits     []map[string]any
 	synced      int
 	calls       []string
@@ -752,6 +753,9 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 		case (r.Method == "PUT" || r.Method == "GET") && strings.HasSuffix(p, "/labels"):
 			reply([]any{})
 		case f.commentsOff && strings.HasSuffix(p, "/comments"):
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.Method == "POST" && f.commentFail != "" && p == "/issues/"+f.commentFail+"/comments":
+			f.commentFail = ""
 			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
 			n := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments")

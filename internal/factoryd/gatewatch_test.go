@@ -339,6 +339,20 @@ func TestBoundActivitiesAreTheRegisteredOnes(t *testing.T) {
 	}
 }
 
+// The long activities take their own timeouts as bounds: the judgment
+// the rollout window and its slack, a routine run the pods it holds.
+func TestLongActivitiesAreBoundAtTheirOwnTimeout(t *testing.T) {
+	d := testTree(testPolicyYAML).Document
+	for name, want := range map[string]time.Duration{
+		ActivityFollowJudge: rolloutCap + rolloutSettle + followJudgeSlack,
+		ActivityRoutineRun:  routineRunBound(),
+	} {
+		if got := d.Bound(name); got != want {
+			t.Errorf("Bound(%s) = %s, want %s", name, got, want)
+		}
+	}
+}
+
 type nameRecorder func(string)
 
 func (f nameRecorder) RegisterActivityWithOptions(_ any, o activity.RegisterOptions) { f(o.Name) }
