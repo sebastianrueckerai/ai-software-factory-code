@@ -112,11 +112,14 @@ type infraForge struct {
 	// later are main's commits after the move's merge, newest first, which
 	// contain it when mainHolds; raw is the fork's files by path, prFiles the
 	// files of each pull request
-	later     []string
-	merges    []string // "<branch> <head named by the merge>"
-	mainHolds bool
-	raw       map[string]string
-	prFiles   map[int64][]string
+	// storeLacks are the store paths that answer 404, storeReads the reads
+	storeLacks map[string]bool
+	storeReads []string
+	later      []string
+	merges     []string // "<branch> <head named by the merge>"
+	mainHolds  bool
+	raw        map[string]string
+	prFiles    map[int64][]string
 }
 
 // mergedStatuses are the statuses a pull request's merge commit gets: a
@@ -140,7 +143,7 @@ func (f *infraForge) humanMerges(n int64) {
 func newInfraForge(t *testing.T, files map[string]string) *infraForge {
 	t.Helper()
 	return &infraForge{t: t, tar: infraTarball(t, files), main: "m1", pulls: map[int64]*fakePull{}, byBranch: map[string]int64{},
-		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}, comments: map[int64][]string{}, raw: map[string]string{}, prFiles: map[int64][]string{}}
+		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}, comments: map[int64][]string{}, raw: map[string]string{}, storeLacks: map[string]bool{}, prFiles: map[int64][]string{}}
 }
 
 // attempt is a pull request of a move's branch that exists already, whose
@@ -183,6 +186,13 @@ func (f *infraForge) handler() http.HandlerFunc {
 		}
 		p := r.URL.Path
 		switch {
+		case strings.HasPrefix(p, "/v2/upstream/") || strings.HasPrefix(p, "/api/packages/upstream/"):
+			f.storeReads = append(f.storeReads, r.Method+" "+p)
+			if f.storeLacks[p] {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
 		case p == followAPI+"/branches/main":
 			answer(http.StatusOK, map[string]any{"name": "main", "commit": map[string]string{"id": f.main}})
 		case strings.HasPrefix(p, followAPI+"/archive/"):
@@ -345,7 +355,7 @@ func followTree(t *testing.T) policy.Tree {
 		{Name: "talos", Lane: policy.LaneHand},
 	}
 	p.Routines = []policy.Routine{{Name: "follow", Title: "Follow the lists", Files: policy.FilesPullRequest, Pass: policy.PassFollow, Schedule: []policy.Trigger{{Cron: "0 6 * * 2"}}}}
-	p.Chain = policy.ChainConfig{Requires: []string{"flux/flux-system", "flux/platform"}, Checks: []string{"config-check"}}
+	p.Chain = policy.ChainConfig{Requires: []string{"flux/flux-system", "flux/platform"}}
 	tree.Projects = map[string]policy.ProjectConfig{infraName: p}
 	return tree
 }
@@ -527,5 +537,29 @@ func TestFollowPassRefusesToAdoptAnotherHead(t *testing.T) {
 				t.Fatalf("err = %v, started %v; want a refusal with %q", err, f.moves.started, tc.want)
 			}
 		})
+	}
+}
+
+// The store must hold every reference the chosen part moves to before its
+// pull request opens: a digest the store lacks ends the run with a line
+// that names it and the move, and files nothing, so the later parts wait too.
+func TestFollowPassNeedsTheStoreToHoldTheTargets(t *testing.T) {
+	f := newFollowRun(t, behindTree())
+	f.forge.storeLacks["/v2/upstream/ghcr.io/berriai/litellm/manifests/sha256:"+zeros("d")] = true
+	res := f.run(t)
+	want := "part litellm: the store lacks ghcr.io/berriai/litellm@sha256:" + zeros("d") + ", which ghcr.io/berriai/litellm moves to: the bump's copy did not run for it, so no pull request opens"
+	if res.Outcome != "no change" || res.Note != want {
+		t.Fatalf("result = %+v, want %q", res, want)
+	}
+	if len(f.forge.commits) != 0 || len(f.moves.started) != 0 || len(f.forge.pulls) != 0 {
+		t.Fatalf("a run with a missing copy filed: commits %v, started %v, pulls %v", f.forge.commits, f.moves.started, f.forge.pulls)
+	}
+	if got := f.forge.storeReads; len(got) != 1 || got[0] != "HEAD /v2/upstream/ghcr.io/berriai/litellm/manifests/sha256:"+zeros("d") {
+		t.Fatalf("store reads = %q", got)
+	}
+	// the copy is there: the same run opens its pull request
+	delete(f.forge.storeLacks, "/v2/upstream/ghcr.io/berriai/litellm/manifests/sha256:"+zeros("d"))
+	if res := f.run(t); res.Outcome != "reported" {
+		t.Fatalf("with the copy in the store: %+v", res)
 	}
 }

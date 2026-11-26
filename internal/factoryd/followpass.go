@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	pins "github.com/sebastianrueckerai/ai-software-factory-code"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/follow"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -112,10 +113,11 @@ func (r *Runner) followPass(ctx context.Context, p Project, rt policy.Routine, r
 		return "held", fmt.Sprintf("held: the failure card %s is open: answer it, and the next run goes on", ShownName(card)), err
 	}
 	repo := p.Repo()
-	_, results, err := r.followBehind(ctx, p)
+	tree, err := r.followBehind(ctx, p)
 	if err != nil {
 		return "", "", err
 	}
+	results := tree.results
 	parts := r.cfg.Policy().Projects[p.Name].Parts
 	behind, tried := 0, []string{}
 	for _, res := range results {
@@ -131,6 +133,9 @@ func (r *Runner) followPass(ctx context.Context, p Project, rt policy.Routine, r
 		if pr != nil && pr.State != "open" {
 			tried = append(tried, res.Part.Name)
 			continue
+		}
+		if line, err := r.storeLacks(tree, res); err != nil || line != "" {
+			return "no change", line, err
 		}
 		in, err := r.startMove(ctx, p, rt, run, res, branch, pr)
 		if err != nil {
@@ -148,23 +153,76 @@ func (r *Runner) followPass(ctx context.Context, p Project, rt policy.Routine, r
 	return "no change", fmt.Sprintf("%s behind, and each target has its attempt already: %s. A newer version of the lists makes a new target", plural(behind, "part"), strings.Join(tried, ", ")), nil
 }
 
-// followBehind runs the follow program over main's tree as the bot, and
-// answers main's head and the result of each part.
-func (r *Runner) followBehind(ctx context.Context, p Project) (string, []follow.Result, error) {
+// mainTree is main's tree as the follow program reads it: its head, its
+// files, the result of each part and the store the program read.
+type mainTree struct {
+	head    string
+	files   map[string][]byte
+	results []follow.Result
+	store   storeReader
+}
+
+// storeReader is the store as the program reads it: a file image or a copy
+// it lacks is answered as offline, so the program still answers for every
+// part. storeLacks names what is missing.
+type storeReader struct{ follow.HTTPStore }
+
+func (s storeReader) FileImageDigest(archive, tag string) (string, error) {
+	d, err := s.HTTPStore.FileImageDigest(archive, tag)
+	if err != nil {
+		return "", follow.ErrOffline
+	}
+	return d, nil
+}
+
+func (s storeReader) FileCopy(f pins.File) ([]byte, error) {
+	b, err := s.HTTPStore.FileCopy(f)
+	if err != nil {
+		return nil, follow.ErrOffline
+	}
+	return b, nil
+}
+
+// followBehind runs the follow program over main's tree as the bot.
+func (r *Runner) followBehind(ctx context.Context, p Project) (mainTree, error) {
 	repo := p.Repo()
 	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
 	if err != nil {
-		return "", nil, fmt.Errorf("main's head: %w", err)
+		return mainTree{}, fmt.Errorf("main's head: %w", err)
 	}
 	files, err := r.forgejo.TreeFiles(ctx, repo, head)
 	if err != nil {
-		return "", nil, err
+		return mainTree{}, err
 	}
-	results, err := follow.Run(files, r.cfg.Policy().Projects[p.Name].Parts, r.followStore())
+	store := storeReader{r.followStore()}
+	results, err := follow.Run(files, r.cfg.Policy().Projects[p.Name].Parts, store)
 	if err != nil {
-		return "", nil, terminalError("the follow program refuses main at %s:\n%v", ShortSHA(head), err)
+		return mainTree{}, terminalError("the follow program refuses main at %s:\n%v", ShortSHA(head), err)
 	}
-	return head, results, nil
+	return mainTree{head, files, results, store}, nil
+}
+
+// storeLacks is "" when the store holds every reference part res moves to,
+// else the report line that names the first one it lacks: the bump copies
+// each new version into the store before its pull request, and a reference
+// the copy did not reach has no pull request to move to.
+func (r *Runner) storeLacks(tree mainTree, res follow.Result) (string, error) {
+	targets, err := follow.Targets(tree.files, res.Moves)
+	if err != nil {
+		return "", terminalError("the follow program refuses main at %s: %v", ShortSHA(tree.head), err)
+	}
+	line := func(key, what string) string {
+		return fmt.Sprintf("part %s: the store lacks %s, which %s moves to: the bump's copy did not run for it, so no pull request opens", res.Part.Name, what, key)
+	}
+	for _, t := range targets {
+		switch err := tree.store.Holds(t); {
+		case errors.Is(err, follow.ErrMissing):
+			return line(t.Key, t.Path), nil
+		case err != nil:
+			return "", fmt.Errorf("the store's answer for %s: %w", t.Path, err)
+		}
+	}
+	return "", nil
 }
 
 func countLane(parts []policy.Part, lane string) int {
@@ -179,7 +237,7 @@ func countLane(parts []policy.Part, lane string) int {
 
 // followStore is the store of the outside files and images, which the bot
 // reads as it reads the code.
-func (r *Runner) followStore() follow.Store {
+func (r *Runner) followStore() follow.HTTPStore {
 	return follow.HTTPStore{Base: r.forgejo.BaseURL, User: r.forgejo.BotUser, Password: r.forgejo.BotPassword, Client: r.forgejo.HTTP}
 }
 

@@ -850,8 +850,7 @@ are green, `human` waits for a human's merge, `hand` is never moved: its paths a
 where digests may stand with no marker, and they may overlap one another. A part
 may also name `notes`, the https address of the maker's release notes, and `after`,
 the words a human reads on the part's cards. A part of lane `alone` or `human` needs
-paths. The project's `chain.checks` names the status contexts that a pull request of
-the follow routine must show before it merges (see the next section).
+paths.
 
 `factoryd follow [-w] <dir>` prints for each part what is behind and which files it
 would write, and writes them with `-w`. The store is read with `REGISTRY_USER` and
@@ -880,16 +879,22 @@ One run moves one part. It does this:
 4. The run takes the first part in the list that is behind and has no attempt for its
    target. An attempt is a pull request of the branch `factory/follow-<part>-<10 hex of the
    changes>`, in any state. A newer version in the lists changes the changes, so it is a new target.
-5. The run commits the changes on the bot's fork, opens the pull request with the
+5. The run checks that the store holds every reference the part moves to: an image or OCI
+   chart by its digest, a chart archive and a file copy by their package paths, a file-derived
+   image by its tag. A reference the store lacks ends the run with a line that names it and says
+   that the bump's copy did not run for it. Nothing is filed.
+6. The run commits the changes on the bot's fork, opens the pull request with the
    versions and the `notes` link, and starts the Temporal workflow `FollowMove` (id
    `follow/<project>`). Its line names part, versions and pull request.
 
 The workflow moves the part through these steps. Each step is a comment on the pull
 request and a `follow_step` event.
 
-1. It waits for the checks of the pull request. Each context in `chain.checks` must have
-   reported and none may have failed, for at most 20 minutes. A context matches a status
-   that equals it or starts with it and a space.
+1. It waits for the checks of the pull request: none may have failed or stay pending, for at
+   most 20 minutes. A head with no status at all is waited for one minute. The infra
+   repository runs no check on a pull request, since the move's head is the program's own
+   output and is pinned, so that minute passes at every merge. Before the pull request opens,
+   the pass checks that the store holds every reference the part moves to (step 5 of the run).
 2. Lane `alone`: the bot merges. Lane `human`: the factory files a card with the versions,
    the `notes` link, the `after` words and the acts Merge and Reject. Reject closes the
    pull request and leaves the part until the lists carry its next version. The workflow

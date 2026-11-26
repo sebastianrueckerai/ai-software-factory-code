@@ -204,31 +204,6 @@ func TestFollowMoveRedCheckBeforeTheMerge(t *testing.T) {
 	}
 }
 
-// A check the project names that has not reported is waited for: a head with
-// no status yet does not merge unchecked, and one that reports in time
-// does. Past the bound the missing check is the reason.
-func TestFollowChecksHoldUntilTheNamedCheckReports(t *testing.T) {
-	m := newMoveRun(t)
-	delete(m.forge.statuses, "head40")
-	landChecksBound, landChecksPoll, landNoStatusGrace = 2*time.Second, time.Millisecond, time.Millisecond
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		m.forge.mu.Lock()
-		m.forge.statuses["head40"] = []CommitStatus{{State: "success", Context: checkContext}}
-		m.forge.mu.Unlock()
-	}()
-	if v, err := m.r.FollowChecks(context.Background(), m.in); err != nil || !v.Ok {
-		t.Fatalf("a check that reports in time: %+v, %v", v, err)
-	}
-	delete(m.forge.statuses, "head40")
-	m.forge.statuses["head40"] = []CommitStatus{{State: "success", Context: "other"}}
-	landChecksBound = 20 * time.Millisecond
-	v, err := m.r.FollowChecks(context.Background(), m.in)
-	if err != nil || v.Ok || v.Why != "the check “config-check” of its head head40 has not reported within 20ms" {
-		t.Fatalf("a check that never reports: %+v, %v", v, err)
-	}
-}
-
 // Each way a judgment fails names what failed with its text.
 func TestFollowJudgeFailures(t *testing.T) {
 	at := func(m *moveRun, d time.Duration) string { return m.clock.Now().Add(d).UTC().Format(time.RFC3339) }

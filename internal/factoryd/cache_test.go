@@ -235,7 +235,7 @@ func TestCIPodMountsCICache(t *testing.T) {
 	store := &memProjects{m: map[string]Project{
 		"linkshort": {Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"},
 	}}
-	repos, err := CIReposOf(&Forgejo{ProjectsToken: "pt"}, store)(context.Background())
+	repos, err := CIReposOf(&Forgejo{}, store)(context.Background())
 	if err != nil || len(repos) != 1 || repos[0].Cache != "cache-ci-linkshort" {
 		t.Fatalf("repos = %+v, %v; want one with cache cache-ci-linkshort", repos, err)
 	}

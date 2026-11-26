@@ -554,16 +554,13 @@ func TestPartsAndTheFollowPass(t *testing.T) {
 			}
 		})
 	}
-	tree, err := ParseTree(with("chain: {checks: [config-check]}\nparts:\n  - {name: litellm, lane: alone, paths: [k8s/platform/litellm], notes: \"https://github.com/BerriAI/litellm/releases\", after: after words}\n  - {name: talos, lane: hand}\n" + follow))
+	tree, err := ParseTree(with("parts:\n  - {name: litellm, lane: alone, paths: [k8s/platform/litellm], notes: \"https://github.com/BerriAI/litellm/releases\", after: after words}\n  - {name: talos, lane: hand}\n" + follow))
 	if err != nil {
 		t.Fatalf("a follow routine with a part of lane alone on a project without agents: %v", err)
 	}
 	want := []Part{{Name: "litellm", Lane: LaneAlone, Paths: []string{"k8s/platform/litellm"}, Notes: "https://github.com/BerriAI/litellm/releases", After: "after words"}, {Name: "talos", Lane: LaneHand}}
 	if got := tree.Projects["ai-software-factory-infra"].Parts; !reflect.DeepEqual(got, want) {
 		t.Fatalf("parts = %+v, want %+v", got, want)
-	}
-	if got := tree.Projects["ai-software-factory-infra"].Chain.Checks; !reflect.DeepEqual(got, []string{"config-check"}) {
-		t.Fatalf("chain checks = %v", got)
 	}
 	if p := resolvedSchema(t, "project.schema.json").Schema().Properties["parts"]; p == nil {
 		t.Fatal("project schema has no parts property")

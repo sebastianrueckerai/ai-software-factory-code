@@ -168,8 +168,7 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # clock: the build reads a copy dated at the commit's time and removes
 # it, so no layer holds the source. go.mod's tools (govulncheck) install
 # into $GOPATH/bin, and so does upstream-bump, the weekly bump's lookup,
-# which factoryd's bump pod runs in this image, and factoryd itself, whose
-# `config check` and `follow check` the infra repository's pull request job runs.
+# which factoryd's bump pod runs in this image.
 # Each action entry (*-a) ends in the time it was written, in a 20-wide
 # field, and trim.txt holds the last trim's time: both take the commit's
 # clock. Go reads an entry's time only to expire cached test results after
@@ -195,12 +194,11 @@ RUN --mount=type=bind,source=go.mod,target=/tmp/src/go.mod --mount=type=bind,sou
       && cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
       && go install -trimpath tool \
       && go build -trimpath -o "$(go env GOPATH)/bin/upstream-bump" ./cmd/upstream-bump \
-      && go build -trimpath -o "$(go env GOPATH)/bin/factoryd" ./cmd/factoryd \
       && cd / && rm -r /tmp/warm \
       && cache=$(go env GOCACHE) \
       && find "$cache" -name '*-a' -exec sed -i -E "s/.{20}\$/$(printf '%20d' "${SOURCE_DATE_EPOCH}000000000")/" {} + \
       && printf %s "$SOURCE_DATE_EPOCH" > "$cache/trim.txt"
 USER root
-RUN cp /home/runner/go/bin/govulncheck /home/runner/go/bin/upstream-bump /home/runner/go/bin/factoryd /usr/local/bin/
+RUN cp /home/runner/go/bin/govulncheck /home/runner/go/bin/upstream-bump /usr/local/bin/
 USER 1000:1000
 ENTRYPOINT ["forgejo-runner"]

@@ -106,10 +106,7 @@ type CIRepo struct {
 	Staging string
 }
 
-// CIReposOf serves every active project that holds an Actions token: a
-// project's pull requests run on the untrusted runner whether agents work
-// on it or not. A seed project without agents, the infra repository, is
-// served once its file names an Actions token that can register a runner.
+// CIReposOf serves every project agents work on.
 func CIReposOf(f *Forgejo, projects interface {
 	Projects(ctx context.Context) ([]Project, error)
 }) func(ctx context.Context) ([]CIRepo, error) {
@@ -120,11 +117,10 @@ func CIReposOf(f *Forgejo, projects interface {
 		}
 		var out []CIRepo
 		for _, p := range ps {
-			token := f.Access(p).Actions
-			if !p.Active() || token == "" {
+			if !p.Coder() {
 				continue
 			}
-			r := CIRepo{Repo: p.Repo(), Token: token, Cache: ciCacheName(p.Name), AgentCache: agentCacheName(p.Name)}
+			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions, Cache: ciCacheName(p.Name), AgentCache: agentCacheName(p.Name)}
 			if p.Objects == policy.ObjectsFactory {
 				r.Project = p.Name
 				if e, ok := p.Staging(); ok {

@@ -504,11 +504,6 @@ type ChainConfig struct {
 	// Requires are the commit-status contexts every head must carry green
 	// beside its push runs; absent: none.
 	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
-	// Checks are the status contexts a pull request's head must show, each
-	// reported and not failed, before the factory merges its own pull request
-	// of the follow pass; a status that reports a moment after the pull
-	// request opens must not let it merge unchecked. Absent: none.
-	Checks []string `yaml:"checks,omitempty" json:"checks,omitempty"`
 	// TestContext is the status context that proves a main run tested its
 	// commit. A finished run older than main's newest whose commit shows it
 	// skipped or absent was superseded: its cards take the verdict of the

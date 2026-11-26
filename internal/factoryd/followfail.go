@@ -133,7 +133,7 @@ func (r *Runner) FollowReturn(ctx context.Context, in FollowMoveInput, landed Fo
 			pr = &created
 		}
 		r.followStep(ctx, repo, in, fmt.Sprintf("the judgment failed: pull request #%d reverts the merge.", pr.Number))
-		why := r.forgejo.LandPullRequest(ctx, repo, pr.Number, Attribution{Role: "follow"}, title, headVet(head), r.followChecks(in)...)
+		why := r.forgejo.LandPullRequest(ctx, repo, pr.Number, Attribution{Role: "follow"}, title, headVet(head))
 		if state, err = r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr.Number); err != nil {
 			return FollowReturned{}, err
 		}
@@ -183,13 +183,18 @@ func (r *Runner) RetryFollow(ctx context.Context, t Task) error {
 	if mv, running, err := r.Follow.Moves.RunningFollowMove(ctx, name); err != nil || running {
 		return errors.Join(err, fmt.Errorf("the move of part %s runs, pull request #%d: wait for it", mv.Part, mv.PR))
 	}
-	_, results, err := r.followBehind(ctx, p)
+	tree, err := r.followBehind(ctx, p)
 	if err != nil {
 		return err
 	}
-	for _, res := range results {
+	for _, res := range tree.results {
 		if res.Part.Name != part || res.Behind() == 0 {
 			continue
+		}
+		if line, err := r.storeLacks(tree, res); err != nil {
+			return err
+		} else if line != "" {
+			return errors.New(line)
 		}
 		repo, fork := p.Repo(), r.forgejo.Fork(p.Repo())
 		attempt := 1

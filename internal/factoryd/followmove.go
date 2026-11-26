@@ -239,14 +239,8 @@ func (r *Runner) followStep(ctx context.Context, repo Repo, in FollowMoveInput, 
 	}
 }
 
-// followChecks are the contexts the project's pull request of a move must
-// show before it merges.
-func (r *Runner) followChecks(in FollowMoveInput) []string {
-	return r.cfg.Policy().Projects[in.Project].Chain.Checks
-}
-
-// FollowChecks waits for the checks of the move's pull request: each named
-// by the project's chain checks reported, and none failed or pending.
+// FollowChecks waits for the checks of the move's pull request: none failed
+// or pending.
 func (r *Runner) FollowChecks(ctx context.Context, in FollowMoveInput) (FollowVerdict, error) {
 	repo, err := r.followRepo(ctx, in)
 	if err != nil {
@@ -265,7 +259,7 @@ func (r *Runner) FollowChecks(ctx context.Context, in FollowMoveInput) (FollowVe
 	if why := headVet(in.Head)(pr); why != "" {
 		return FollowVerdict{Why: why}, nil
 	}
-	if why := r.forgejo.awaitChecks(ctx, repo, pr.HeadSHA, r.followChecks(in)); why != "" {
+	if why := r.forgejo.awaitChecks(ctx, repo, pr.HeadSHA); why != "" {
 		return FollowVerdict{Why: why}, nil
 	}
 	r.followStep(ctx, repo, in, "the checks of pull request head "+ShortSHA(pr.HeadSHA)+" are green.")
@@ -279,7 +273,7 @@ func (r *Runner) FollowLand(ctx context.Context, in FollowMoveInput) (FollowLand
 	if err != nil {
 		return FollowLanded{}, err
 	}
-	why := r.forgejo.LandPullRequest(ctx, repo, in.PR, Attribution{Role: "follow"}, "Follow the lists: part "+in.Part, headVet(in.Head), r.followChecks(in)...)
+	why := r.forgejo.LandPullRequest(ctx, repo, in.PR, Attribution{Role: "follow"}, "Follow the lists: part "+in.Part, headVet(in.Head))
 	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, in.PR)
 	switch {
 	case err != nil:
