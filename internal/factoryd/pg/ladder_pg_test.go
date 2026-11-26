@@ -82,7 +82,8 @@ func TestTheWakePassLeavesATripsOwnCase(t *testing.T) {
 // either, and faces with the problem and the ask as the case's own and the
 // agent's view saying why no rung judged it, rung 0's step marked "not
 // judged, judgment budget unreadable". With no project the card's
-// configuration is unread, so rung 0 takes nothing.
+// configuration is unread, which no row of a failed dependency reads: its
+// rows run, no fact of theirs holds, and rung 0 takes nothing.
 func TestATripOfNoProjectFacesMarkedUnreadable(t *testing.T) {
 	g := newTripRig(t, "success")
 	v := g.r.PgCfg().Policy()
@@ -108,7 +109,7 @@ func TestATripOfNoProjectFacesMarkedUnreadable(t *testing.T) {
 	for _, st := range caseStepsOf(t, g.s, c.ID) {
 		found = append(found, fmt.Sprintf("%d %s", st.Rung, st.Found))
 	}
-	want := []string{"0 facts read partly: config, so rung 0 took nothing", "0 not judged, judgment budget unreadable: repository demo-app/demo-app names no project, so its judgment budget cannot be read", "3 "}
+	want := []string{"0 no resolver fits", "0 not judged, judgment budget unreadable: repository demo-app/demo-app names no project, so its judgment budget cannot be read", "3 "}
 	if !reflect.DeepEqual(found, want) {
 		t.Fatalf("steps %q, want %q", found, want)
 	}
@@ -141,7 +142,7 @@ func TestOpenTripRerunsRedChecksOnceThenAsks(t *testing.T) {
 	}
 	steps := caseStepsOf(t, g.s, c.ID)
 	if len(steps) != 3 || steps[0].Rung != 0 || steps[0].Outcome != StepHandedUp ||
-		steps[0].Found != "rung 0 took this stop with rerun_checks before, and it came back" || steps[1].Rung != 2 || steps[1].Outcome != StepHandedUp ||
+		steps[0].Found != "rung 0 took this stop with rerun_checks before, and it came back, so rung 0 took nothing" || steps[1].Rung != 2 || steps[1].Outcome != StepHandedUp ||
 		steps[2].Rung != 3 || steps[2].Outcome != StepInProgress {
 		t.Fatalf("steps = %+v, want rung 0 handing up the stop that came back, rung 2's hand-up, then the human's", steps)
 	}
@@ -928,7 +929,9 @@ const tripChecksWait = GateStopped + "WaitChecks (attempt 1) past its bound of 5
 // A checks-wait stop whose checks are all green, #1652's shape, with the
 // head's review approving it too: rung 0 resolves it with wait_checks (not
 // route_approval) through Act, no comment, and the run hears of it. The
-// same stop on the same head, once the wait ran, goes to the human.
+// same stop on the same head, once the wait ran, opens the case that
+// follows, which rung 0 resolves with wait_checks again: a wait on green
+// checks is not held to once per head.
 func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
 	g := newTripRig(t, "success")
 	rung1Off(g.r)
@@ -949,9 +952,12 @@ func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
 	if f, err := g.r.PgTripFacts(context.Background(), card, "", ""); err != nil || !f.WaitedOnHead {
 		t.Fatalf("facts after = %+v, %v; want h2 waited on", f, err)
 	}
-	second := g.faced(t, tripChecksWait)
-	if second.Resolution != nil || second.CaseID == first.CaseID || second.Rung != 3 || second.Comment == 0 {
-		t.Fatalf("second outcome = %+v, want a new case at the human", second)
+	second := g.trip(t, tripChecksWait)
+	if second.Resolution == nil || second.Resolution.Action != ActWaitChecks || second.CaseID == first.CaseID || second.Rung != 0 || second.Comment != 0 {
+		t.Fatalf("second outcome = %+v, want wait_checks on rung 0 again, on a new case, with no comment", second)
+	}
+	if c := caseByID(t, g.s, second.CaseID); c.Status != CaseResolved || c.Follows != first.CaseID {
+		t.Fatalf("second case = %+v, want it resolved, following case %d", c, first.CaseID)
 	}
 }
 
