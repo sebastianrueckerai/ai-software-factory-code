@@ -197,8 +197,11 @@ type Server struct {
 
 	// the provider-limit class holds, in memory only: a restart forgets
 	// them and the first call re-derives the hold from the provider.
+	// known are the classes whose freeze rows this process has written or
+	// read (endForgottenHold).
 	holdMu sync.Mutex
 	holds  map[string]*classHold
+	known  map[string]bool
 }
 
 // PolicyTTL bounds how long the gateway enforces a policy version after
@@ -213,7 +216,7 @@ func NewServer(opts ServerOptions) *Server {
 	if tel == nil {
 		tel = noTelemetry()
 	}
-	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, holds: map[string]*classHold{}, scrub: redact.New(), now: time.Now}
+	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, holds: map[string]*classHold{}, known: map[string]bool{}, scrub: redact.New(), now: time.Now}
 }
 
 // classHold is one frozen model class: armed on a dated provider refusal
@@ -318,12 +321,35 @@ func (s *Server) changeHold(ctx context.Context, task Task, class string, to, wa
 	if err := s.insertEvent(ctx, task, kind, class, row.reset, row.words); err != nil {
 		return err
 	}
+	s.known[class] = true
 	if to == nil {
 		delete(s.holds, class)
 	} else {
 		s.holds[class] = to
 	}
 	return nil
+}
+
+// endForgottenHold ends a freeze of class that stands in the rows with no
+// hold here, one a restart forgot: the call that was just answered says
+// the class answers, so it writes the class_resumed row the hold's lapse
+// would have written. It reads the rows once for each class, on the first
+// answered call; a read or a row the store refuses is tried on the next.
+func (s *Server) endForgottenHold(ctx context.Context, task Task, class string) {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	if s.known[class] {
+		return
+	}
+	reset, words, stands, err := s.opts.Store.FreezeStands(ctx, class)
+	if err == nil && stands {
+		err = s.insertEvent(ctx, task, "class_resumed", class, reset, words)
+	}
+	if err != nil {
+		log.Printf("the %s class's freeze rows are not read (task %s): %v", class, task.ID, err)
+		return
+	}
+	s.known[class] = true
 }
 
 // eventWriteTimeout bounds one events-table write, made under holdMu,
@@ -1421,6 +1447,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		if cost == nil && r.Context().Err() != nil {
 			s.settleCanceled(c)
 			return
+		}
+		if c.held != "" {
+			s.endForgottenHold(ctx, c.task, c.held)
 		}
 		s.finish(c, cost, "allowed")
 		return

@@ -8,17 +8,24 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/follow"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// factFollowPart is the fact of a failure card's ask that names the part,
-// which the card's Try again reads.
-const factFollowPart = "follow_part"
+// The facts of a failure card's ask: factFollowPart names the part, which
+// the card's Try again reads, and factFollowHeld says the repository and
+// the cluster hold the old versions, so nothing waits for a human's look.
+const (
+	factFollowPart = "follow_part"
+	factFollowHeld = "follow_held"
+)
 
 // FollowFailedQuestion is the failure card of a move: the part and its
 // versions, what failed with its text, whether the return held, and what
 // the part's maker or the project says about it. Try again opens a new pull
 // request for the same versions, and End the card leaves the target tried.
+// A card whose move left the old versions in place closes by itself once
+// its target is gone (followTargetGone).
 func FollowFailedQuestion(in FollowMoveInput, f FollowFailure) HumanQuestion {
 	var ret string
 	switch {
@@ -43,7 +50,7 @@ func FollowFailedQuestion(in FollowMoveInput, f FollowFailure) HumanQuestion {
 	if in.Notes != "" {
 		info += "\n\nThe maker's release notes: " + in.Notes
 	}
-	info += "\n\nTry the move again opens a new pull request for the same versions and runs it as before. End the card leaves the part as it is: this target stays tried, and the next version of the lists makes a new target. The routine's runs wait until this card is answered."
+	info += "\n\nTry the move again opens a new pull request for the same versions and runs it as before. End the card leaves the part as it is: this target stays tried, and the next version of the lists makes a new target. The routine's runs wait until this card is answered, or until the lists carry another version of the part: the card then closes by itself."
 	b := SourceBriefs[SourceFollowFailed](BriefFacts{Name: in.Part})
 	return HumanQuestion{
 		Ask:      b.Title,
@@ -77,13 +84,47 @@ func (r *Runner) FollowFail(ctx context.Context, in FollowMoveInput, f FollowFai
 		return err
 	}
 	card, err := EscalateToHumanWith(ctx, r.store, r.forgejo, repo, FollowFailedQuestion(in, f), "the follow routine", Task{Source: SourceFollowFailed},
-		map[string]any{factFollowPart: in.Part})
+		map[string]any{factFollowPart: in.Part, factFollowHeld: !f.Merged || f.Returned.Held})
 	if err != nil {
 		return err
 	}
 	r.followStep(ctx, repo, in, "failed: "+f.Why)
 	r.followStep(ctx, repo, in, "filed the failure card "+ShownName(card)+".")
 	return nil
+}
+
+// followTargetGone closes failure card card once nothing is left to try
+// again: its part is not behind the lists any more, or the lists carry
+// another version, a target that has no attempt yet. It reports the close,
+// after which the routine's runs go on. A card whose move the factory could
+// not return stays: a human looks at the cluster first.
+func (r *Runner) followTargetGone(ctx context.Context, p Project, card Task) (bool, error) {
+	c, err := r.store.NewestAskCase(ctx, card.ID)
+	if err != nil {
+		return false, err
+	}
+	part, _ := c.Facts[factFollowPart].(string)
+	if held, _ := c.Facts[factFollowHeld].(bool); !held || part == "" {
+		return false, nil
+	}
+	tree, err := r.followBehind(ctx, p)
+	if err != nil {
+		return false, err
+	}
+	why := "Part " + part + " is not behind the lists any more"
+	if i := slices.IndexFunc(tree.results, func(res follow.Result) bool { return res.Part.Name == part }); i >= 0 && tree.results[i].Behind() > 0 {
+		repo := p.Repo()
+		pr, err := r.forgejo.FindPullRequestByHead(ctx, repo.Owner, repo.Name, prBase, r.forgejo.Fork(repo), followBranch(part, tree.results[i].Changes, 1))
+		if err != nil || pr != nil {
+			return false, err
+		}
+		why = "The lists carry another version of part " + part + ", which the routine's next run moves"
+	}
+	msg := why + ", so there is nothing left to try again. Closing this issue."
+	if err := r.timeline.WithdrawAsk(ctx, card, msg, nil); err != nil {
+		return false, err
+	}
+	return true, closeIssueAsFactory(ctx, r.store, r.forgejo, card, msg)
 }
 
 // FollowReturn takes a merged move back: the revert of its merge commit goes

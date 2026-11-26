@@ -89,6 +89,15 @@ func (g *switchGateway) InsertEvent(_ context.Context, row gateway.EventRow) err
 	return nil
 }
 
+func (g *switchGateway) FreezeStands(_ context.Context, class string) (string, string, bool, error) {
+	for _, row := range slices.Backward(g.store.rows) {
+		if row.Class == class {
+			return row.Reset, row.Words, row.Kind == "class_frozen", nil
+		}
+	}
+	return "", "", false, nil
+}
+
 func (g *switchGateway) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	return g.version, true, nil
 }

@@ -256,6 +256,21 @@ func (s *accGatewayStore) InsertAudit(_ context.Context, row factorygateway.Audi
 	return nil
 }
 
+// FreezeStands reads the newest freeze row of class among the fake's events.
+func (s *accGatewayStore) FreezeStands(_ context.Context, class string) (reset, words string, stands bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.events) - 1; i >= 0; i-- {
+		e := s.events[i]
+		if (e.Kind == "class_frozen" || e.Kind == "class_resumed") && e.Detail["class"] == class {
+			reset, _ = e.Detail["reset"].(string)
+			words, _ = e.Detail["words"].(string)
+			return reset, words, e.Kind == "class_frozen", nil
+		}
+	}
+	return "", "", false, nil
+}
+
 func (s *accGatewayStore) InsertEvent(_ context.Context, row factorygateway.EventRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

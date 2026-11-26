@@ -426,6 +426,9 @@ func (s agentDocLoopStore) TaskCosts(ctx context.Context, id string) (gateway.Ta
 
 func (s agentDocLoopStore) InsertAudit(ctx context.Context, row gateway.AuditRow) error { return nil }
 func (s agentDocLoopStore) InsertEvent(ctx context.Context, row gateway.EventRow) error { return nil }
+func (s agentDocLoopStore) FreezeStands(context.Context, string) (string, string, bool, error) {
+	return "", "", false, nil
+}
 
 func (s agentDocLoopStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, error) {
 	return s.v, true, nil

@@ -530,8 +530,8 @@ type Store interface {
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
 	// ModelAnsweredSince is when the first model call on alias after since
-	// was allowed, whichever card or purpose made it: the provider answers
-	// the alias again. Zero for none.
+	// was allowed, on any alias for "", whichever card or purpose made it:
+	// the provider answers the alias again. Zero for none.
 	ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error)
 	// SessionsStartedSince counts the sessions of every card that started
 	// after since.
@@ -2007,11 +2007,12 @@ func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.T
 }
 
 // ModelAnsweredSince is when the gateway first allowed a model call on
-// alias after since, whichever card or purpose made it; zero for none.
+// alias, on any alias for "", after since, whichever card or purpose made
+// it; zero for none.
 func (s *PGStore) ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error) {
 	var at sql.NullTime
 	err := s.db.QueryRowContext(ctx,
-		`SELECT min(ts) FROM audit WHERE model_alias = $1 AND tool = '' AND decision = 'allowed' AND ts > $2`,
+		`SELECT min(ts) FROM audit WHERE ($1 = '' OR model_alias = $1) AND tool = '' AND decision = 'allowed' AND ts > $2`,
 		alias, since).Scan(&at)
 	return at.Time, err
 }

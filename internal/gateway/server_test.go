@@ -307,6 +307,21 @@ func (m *memStore) InsertEvent(ctx context.Context, row EventRow) error {
 	return nil
 }
 
+// FreezeStands reads the newest freeze row of class among the fake's events.
+func (m *memStore) FreezeStands(_ context.Context, class string) (reset, words string, stands bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := len(m.events) - 1; i >= 0; i-- {
+		e := m.events[i]
+		if (e.Kind == "class_frozen" || e.Kind == "class_resumed") && e.Detail["class"] == class {
+			reset, _ = e.Detail["reset"].(string)
+			words, _ = e.Detail["words"].(string)
+			return reset, words, e.Kind == "class_frozen", nil
+		}
+	}
+	return "", "", false, nil
+}
+
 func (m *memStore) eventRows() []EventRow {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -3491,6 +3506,51 @@ func TestProviderLimitHoldLocalRefusal(t *testing.T) {
 // check-in are answered by the hold with no upstream call; an analyzer
 // card's brief on the same alias, a brief that names no card and the
 // chat's own title call on small reach the upstream.
+// A freeze that stands in the rows with no hold in this process, as after
+// a restart, ends on the first answered call of its class: the gateway
+// writes the class_resumed row with the freeze's reset and words, once. A
+// class with no standing freeze gets no row.
+func TestAnAnsweredCallEndsAFreezeARestartForgot(t *testing.T) {
+	for name, standing := range map[string]bool{"a freeze stands": true, "no freeze stands": false} {
+		t.Run(name, func(t *testing.T) {
+			stub := newStubUpstream(t)
+			store := newMemStore()
+			task := Task{Classes: []string{"big"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big", Repository: "sf/code"}
+			store.tasks[task.ID] = task
+			store.setPolicy(providerLimitPolicy())
+			want := 0
+			if standing {
+				store.events = []EventRow{{Repository: "sf/code", TaskID: "7", Kind: "class_frozen", Detail: map[string]any{"class": "big", "reset": "2026-11-14T17:05:50Z", "words": "Usage limit reached"}}}
+				want = 2
+			}
+			s := NewServer(ServerOptions{
+				Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+				Store:      store,
+				Minter:     &fakeMinter{},
+				LiteLLMURL: stub.URL,
+				Prices:     testPrices,
+			})
+			h := s.Routes("test")
+			stub.setResp(stubResp{status: http.StatusOK, body: `{}`})
+			for range 2 {
+				if rr := doChat(t, h, chatBody("big")); rr.Code != http.StatusOK {
+					t.Fatalf("the call = %d %s, want it served", rr.Code, rr.Body.String())
+				}
+			}
+			events := store.eventRows()
+			if len(events) != want {
+				t.Fatalf("rows = %+v, want %d", events, want)
+			}
+			if standing {
+				last := events[1]
+				if last.Kind != "class_resumed" || last.TaskID != "42" || last.Detail["class"] != "big" || last.Detail["reset"] != "2026-11-14T17:05:50Z" || last.Detail["words"] != "Usage limit reached" {
+					t.Fatalf("the row = %+v, want the class_resumed of big on the answered call's task, with the freeze's reset and words", last)
+				}
+			}
+		})
+	}
+}
+
 func TestProviderLimitHoldsTheChatTasksCalls(t *testing.T) {
 	stub := newStubUpstream(t)
 	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-code-2026-11", BudgetEUR: 5, Status: "running", Repository: "sf/code"}

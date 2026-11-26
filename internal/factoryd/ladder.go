@@ -88,15 +88,16 @@ type TripOutcome struct {
 // case's wake itself and answers held, and its error hands the case up
 // with why. Needs names the readers of the card's facts (tripFacts) the row
 // and its action read: one of them unread keeps the row from firing, and
-// no other reader does. Bounded says the row's action bounds its own
-// repeats, so it is tried on a stop that came back too.
+// no other reader does. Back says the row may take a stop that came back
+// after rung 0 resolved prior, a case of its kind and key; a row with none
+// takes no stop that came back.
 type resolver struct {
-	Name    string
-	Needs   []string
-	Bounded bool
-	Fire    func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error)
-	Took    func(c Case, f CaseFacts, res Resolution) string
-	Hold    func(ctx context.Context, r *Runner, c Case) (held bool, err error)
+	Name  string
+	Needs []string
+	Back  func(prior Case, f CaseFacts) bool
+	Fire  func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error)
+	Took  func(c Case, f CaseFacts, res Resolution) string
+	Hold  func(ctx context.Context, r *Runner, c Case) (held bool, err error)
 }
 
 // headKinds are the stops keyed on the card's head: the caps, the floor, the
@@ -130,13 +131,19 @@ func init() {
 			return "a check on head " + ShortSHA(f.Head) + " failed, so the factory ran the checks again"
 		}},
 		// a checks wait's stop whose checks are green, or whose jobs a runner
-		// took after none had: the wait runs again, the second once per head
-		// (WaitedOnHead)
-		{Name: "wait_checks", Needs: []string{"checks", "cases"}, Bounded: true, Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-			if f.Checks != "green" && !runnerCame(c, f) {
-				return nil, nil
+		// took after none had: the wait runs again, each once per head
+		// (WaitedOnHead, Back): a wait on green checks that stops again is no
+		// wait's to end
+		{Name: "wait_checks", Needs: []string{"checks", "cases"}, Back: func(prior Case, f CaseFacts) bool {
+			return f.Checks == "green" && prior.Resolution.Args["runner"] == true
+		}, Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+			switch {
+			case f.Checks == "green":
+				return rungZeroMay(f, Resolution{Action: ActWaitChecks})
+			case runnerCame(c, f):
+				return rungZeroMay(f, Resolution{Action: ActWaitChecks, Args: map[string]any{"runner": true}})
 			}
-			return rungZeroMay(f, Resolution{Action: ActWaitChecks})
+			return nil, nil
 		}, Took: func(_ Case, f CaseFacts, _ Resolution) string {
 			if f.Checks != "green" {
 				return "a runner took the jobs of the checks on head " + ShortSHA(f.Head) + ", so the factory resumed the checks wait"
@@ -1241,21 +1248,24 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 
 // firing is the first row of rung0 tried on case c that fires on facts f,
 // with its resolution. A row is not tried while a reader it needs is unread
-// (Needs), nor, unless it bounds its own repeats, when rung 0 resolved a
-// case of c's kind and key before, for the stop came back. With none it
-// answers what rung 0 found: "no resolver fits" when no row's fact holds,
-// else what kept each row from the case.
+// (Needs), nor when rung 0 resolved a case of c's kind and key before,
+// for the stop came back, unless the row takes such a stop (Back). With
+// none it answers what rung 0 found: "no resolver fits" when no row's fact
+// holds, else what kept each row from the case.
 func (r *Runner) firing(ctx context.Context, c Case, f CaseFacts, cases []Case) (resolver, *Resolution, string, error) {
-	back := slices.IndexFunc(cases, func(e Case) bool {
-		return e.ID != c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil && e.Resolution.Rung == 0
-	})
+	var priors []Case
+	for _, e := range cases {
+		if e.ID != c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil && e.Resolution.Rung == 0 {
+			priors = append(priors, e)
+		}
+	}
 	var kept, unread, blind []string
 	for _, row := range rung0 {
 		if row.Fire == nil || !row.tries(c) {
 			continue
 		}
-		if back >= 0 && !row.Bounded {
-			kept = append(kept, "rung 0 took this stop with "+cases[back].Resolution.Action+" before, and it came back")
+		if i := slices.IndexFunc(priors, func(e Case) bool { return row.Back == nil || !row.Back(e, f) }); i >= 0 {
+			kept = append(kept, "rung 0 took this stop with "+priors[i].Resolution.Action+" before, and it came back")
 			continue
 		}
 		if miss := slices.DeleteFunc(slices.Clone(row.Needs), func(n string) bool { return !slices.Contains(f.Partial, n) }); len(miss) > 0 {
@@ -1277,7 +1287,7 @@ func (r *Runner) firing(ctx context.Context, c Case, f CaseFacts, cases []Case) 
 		kept = append(kept, "facts read partly: "+textutil.AndList(slices.Compact(unread))+", which "+textutil.AndList(blind)+" would read")
 	}
 	if kept = slices.Compact(kept); len(kept) > 0 {
-		return resolver{}, nil, strings.Join(kept, "; ") + ", so rung 0 took nothing", nil
+		return resolver{}, nil, strings.Join(kept, "; "), nil
 	}
 	return resolver{}, nil, noRowFits, nil
 }
@@ -1350,7 +1360,7 @@ func (r *Runner) retake(ctx context.Context, c Case) (*Resolution, error) {
 	case errors.As(err, &ended):
 		return nil, nil
 	case errors.As(err, &refused), errors.As(err, &noRetry):
-		return nil, r.keptStep(ctx, c.ID, row.Name+" was refused: "+err.Error()+", so rung 0 took nothing")
+		return nil, r.keptStep(ctx, c.ID, row.Name+" was refused: "+err.Error())
 	case err != nil:
 		return nil, err
 	}

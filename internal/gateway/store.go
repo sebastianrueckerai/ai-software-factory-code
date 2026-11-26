@@ -117,6 +117,10 @@ type Store interface {
 	// InsertEvent writes one row on the events table factoryd reads;
 	// best-effort on the caller's side.
 	InsertEvent(ctx context.Context, row EventRow) error
+	// FreezeStands reports whether class's newest freeze row is a
+	// class_frozen, with its reset and words: a freeze no class_resumed
+	// ended.
+	FreezeStands(ctx context.Context, class string) (reset, words string, stands bool, err error)
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
 	// TakeHold admits a call into the free task and day headroom (see
 	// policy.TakeHold); a *policy.Refusal when it does not fit.
@@ -203,6 +207,17 @@ func (s *PGStore) InsertEvent(ctx context.Context, row EventRow) error {
 		`INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ($1, $2, $3, 'gateway', 'gateway', $4)`,
 		row.Repository, row.TaskID, row.Kind, detail)
 	return err
+}
+
+// FreezeStands reads the newest class_frozen or class_resumed row of class.
+func (s *PGStore) FreezeStands(ctx context.Context, class string) (reset, words string, stands bool, err error) {
+	var kind string
+	err = s.db.QueryRowContext(ctx, `SELECT kind, COALESCE(detail->>'reset', ''), COALESCE(detail->>'words', '') FROM events
+		WHERE kind IN ('class_frozen', 'class_resumed') AND detail->>'class' = $1 ORDER BY id DESC LIMIT 1`, class).Scan(&kind, &reset, &words)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return reset, words, kind == "class_frozen", err
 }
 
 func (s *PGStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, error) {

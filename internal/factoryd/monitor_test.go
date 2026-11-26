@@ -108,13 +108,20 @@ func TestAFlagsIssueLineNamesItsAnswers(t *testing.T) {
 // off: an unreadable timeline does not, nor does a model nobody can price,
 // which fails the floor's read (the roll card whose checks turned green
 // while LiteLLM priced no model), nor a wait_checks a human answered on the
-// head before. With the checks themselves unreadable the stop stays at the
-// human, and one step says which read failed, however often the pass runs.
+// head before, nor rung 0's own wait when a runner came. A stop that came
+// back after rung 0 ran the wait on green checks stays at the human, and so
+// does one whose checks cannot be read: one step says why, however often
+// the pass runs.
 func TestRetakeTakesAGreenChecksWaitOnTheFactsItsRowNeeds(t *testing.T) {
 	stop := Case{ID: 7, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, Status: CaseAtHuman,
 		Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2", "model": "small"}}
 	waited := Case{ID: 4, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseGateStop, Status: CaseResolved,
 		Facts: map[string]any{"gate": ActivityWaitChecks, "head": "h2"}, Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActWaitChecks}}
+	rungZeroWaited := func(args map[string]any) Case {
+		c := waited
+		c.Resolution = &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Args: args}
+		return c
+	}
 	took := &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Reason: "every check on head h2 is green, so the factory resumed the checks wait"}
 	for name, tc := range map[string]struct {
 		setup func(g factsRig)
@@ -127,10 +134,15 @@ func TestRetakeTakesAGreenChecksWaitOnTheFactsItsRowNeeds(t *testing.T) {
 		}, want: took},
 		"no model priced": {setup: func(g factsRig) { g.r.cfg.Prices = aliasPrices{} }, want: took},
 		"waited on h2":    {setup: func(g factsRig) { g.store.cases = append(g.store.cases, waited) }, want: took},
+		"rung 0 ran the wait again when a runner came": {setup: func(g factsRig) {
+			g.store.cases = append(g.store.cases, rungZeroWaited(map[string]any{"runner": true}))
+		}, want: took},
+		"rung 0 ran the wait again on green checks": {setup: func(g factsRig) { g.store.cases = append(g.store.cases, rungZeroWaited(nil)) },
+			kept: "rung 0 took this stop with wait_checks before, and it came back"},
 		"checks unreadable": {setup: func(g factsRig) {
 			g.r.forgejo = &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "pw"}
 		},
-			kept: "facts read partly: checks, which route_approval, rerun_checks and wait_checks would read, so rung 0 took nothing"},
+			kept: "facts read partly: checks, which route_approval, rerun_checks and wait_checks would read"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -252,7 +264,7 @@ func TestRetakeLeavesALiftedCapAtTheSessionCap(t *testing.T) {
 	got, _ := g.store.CaseByID(ctx, c.ID)
 	steps := g.store.caseSteps[c.ID]
 	if got.Status != CaseAtHuman || len(steps) != 1 || steps[0].Rung != 0 || steps[0].Outcome != StepHandedUp ||
-		!strings.HasPrefix(steps[0].Found, "cap_wait was refused: the session cap of 3 is reached") || !strings.HasSuffix(steps[0].Found, ", so rung 0 took nothing") ||
+		!strings.HasPrefix(steps[0].Found, "cap_wait was refused: the session cap of 3 is reached") ||
 		len(g.store.events) != events || len(g.r.cfg.Workflows.(*fakeWorkflows).signals) != 0 {
 		t.Fatalf("case %s, steps %+v, %d new events; want it at the human, one step that names the session cap, and no row", got.Status, steps, len(g.store.events)-events)
 	}
@@ -568,7 +580,7 @@ func TestRetakeResumesAChecksWaitOnceARunnerTakesItsJobs(t *testing.T) {
 				}
 				return
 			}
-			want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Reason: "a runner took the jobs of the checks on head h2, so the factory resumed the checks wait"}
+			want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks, Args: map[string]any{"runner": true}, Reason: "a runner took the jobs of the checks on head h2, so the factory resumed the checks wait"}
 			if c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, want) {
 				t.Fatalf("case %s by %+v; want it resolved by %+v", c.Status, c.Resolution, want)
 			}

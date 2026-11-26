@@ -894,9 +894,9 @@ func TestACriteriaCaseClimbsToRung2AndFacesItsHandUp(t *testing.T) {
 		t.Fatalf("gate rows = %+v, want the two cut runs alone", rows)
 	}
 	// the rig's process has no plan track, so the plan card's config reads
-	// partly: rung 0's other rows take nothing either way
+	// partly, which no row of a criteria case reads
 	steps := g.steps(t, c.ID)
-	if len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != "facts read partly: config, so rung 0 took nothing" || steps[1].Rung != 2 || steps[1].Outcome != StepInProgress {
+	if len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != "no resolver fits" || steps[1].Rung != 2 || steps[1].Outcome != StepInProgress {
 		t.Fatalf("steps = %+v, want rung 0's hand-up and rung 2 in progress", steps)
 	}
 	if climbed := g.rows(t, EventCaseClimbed); len(climbed) != 1 || climbed[0].Detail["case_id"] != float64(c.ID) {

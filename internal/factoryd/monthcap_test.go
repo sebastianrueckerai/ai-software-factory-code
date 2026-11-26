@@ -489,7 +489,8 @@ func TestMonthAlarmFollowsTheReset(t *testing.T) {
 }
 
 // LiteLLM's outer guard counts the whole month, which a reset does not
-// move: its card, filed at 300 of 544 EUR, stays open after a reset.
+// move: its card, filed at 300 of 544 EUR, stays open after a reset, and
+// closes once a model call answers after it.
 func TestMonthAlarmKeepsTheOuterGuardsCardOnAReset(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
@@ -507,8 +508,25 @@ func TestMonthAlarmKeepsTheOuterGuardsCardOnAReset(t *testing.T) {
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
+	card := taskOf(t, store, "2026-10/100/544")
+	if card.Status != "waiting-human" {
+		t.Fatalf("the outer guard's card = %s after a reset, want it open", card.Status)
+	}
+	// a call that answered before the card says nothing of the guard
+	store.answeredCalls = []fakeCall{{alias: "small", at: card.CreatedAt.Add(-time.Minute)}}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "waiting-human" {
-		t.Fatalf("the outer guard's card = %s after a reset, want it open", got.Status)
+		t.Fatalf("the outer guard's card = %s after a call before it, want it open", got.Status)
+	}
+	// one that answers after it says the guard lets calls through again
+	store.answeredCalls = append(store.answeredCalls, fakeCall{alias: "big", at: card.CreatedAt.Add(time.Minute)})
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "done" || len(fj.closed) != 1 {
+		t.Fatalf("the outer guard's card = %s with %d closed issues after an answered call, want it closed", got.Status, len(fj.closed))
 	}
 }
 

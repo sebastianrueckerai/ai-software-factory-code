@@ -508,6 +508,56 @@ func TestFollowFailureCardHoldsTheRuns(t *testing.T) {
 	m.failureCard(t)
 }
 
+// A failure card whose move did not merge closes by itself once the lists
+// carry another version of its part: the target's first branch has no pull
+// request then, so the run withdraws the card's ask, closes the card and
+// goes on to the move of the new target. A card whose merged move the
+// factory could not return stays, and holds the runs.
+func TestFollowFailureCardClosesOnceItsTargetIsGone(t *testing.T) {
+	for name, tc := range map[string]struct {
+		held bool
+		want string
+	}{
+		"the old versions hold":          {true, "reported"},
+		"the move could not be returned": {false, "held"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubRevert(t, "")
+			m := newMoveRun(t)
+			m.forge.statuses["head40"] = []CommitStatus{{State: "failure", Context: checkContext}}
+			m.workflow(t)
+			card, _ := m.failureCard(t)
+			var asked Event
+			for _, e := range recordedEvents(m.r, EventQuestionAsked) {
+				if e.TaskID == card.ID {
+					asked = e
+				}
+			}
+			if asked.Detail[factFollowPart] != "litellm" || asked.Detail[factFollowHeld] != true {
+				t.Fatalf("the ask's facts = %v, want the part litellm and the old versions held", asked.Detail)
+			}
+			asked.Detail[factFollowHeld] = tc.held
+			m.store.cases = []Case{{ID: 1, TaskID: card.ID, Status: CaseAtHuman, Kind: CaseHumanCard, Facts: asked.Detail}}
+			delete(m.forge.byBranch, followBranch("litellm", litellmTarget(), 1))
+			res, err := m.r.RoutineRun(context.Background(), RoutineRunInput{Project: infraName, Routine: "follow", Trigger: "cron", Due: m.clock.Now().Add(time.Hour)})
+			if err != nil || res.Outcome != tc.want {
+				t.Fatalf("run = %+v, %v; want outcome %q", res, err, tc.want)
+			}
+			events, _ := m.store.IntakeEvents(context.Background(), card.ID)
+			if !tc.held {
+				if len(events) != 0 {
+					t.Fatalf("the card's close = %+v, want it open", events)
+				}
+				return
+			}
+			const why = "The lists carry another version of part litellm, which the routine's next run moves, so there is nothing left to try again. Closing this issue."
+			if len(events) != 1 || events[0].Kind != IntakeFactoryClosed || events[0].Body != why {
+				t.Fatalf("the card's close = %+v, want %q", events, why)
+			}
+		})
+	}
+}
+
 // Try again opens a new attempt for the same versions, by the counter on
 // the branch, and closes the card.
 func TestFollowRetryOpensAnotherAttempt(t *testing.T) {

@@ -182,6 +182,7 @@ type MonthBook interface {
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
+	ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
@@ -295,7 +296,8 @@ func resetMark(r *policy.CapReset) string {
 // closeLifted closes every open cap card whose month has ended, and those of
 // this month whose cap a raise lifted above the card's or whose alert came
 // before the month's newest reset, unless LiteLLM's outer guard filed it:
-// the guard counts the whole month, which no reset moves. A card that
+// the guard counts the whole month, which no reset moves, so its card
+// closes once a model call of any class answers after it. A card that
 // fails to close does not stop the others; the failures are joined.
 func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthSpend, limit float64, now time.Time) error {
 	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
@@ -328,6 +330,16 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 			msg = fmt.Sprintf("The month cap is %s EUR in policy version %d, so the cap card closes.", textutil.EUR(limit), v.ID)
 		case month == m.Month && m.Reset != nil && !strings.HasSuffix(row.Fingerprint, resetMark(m.Reset)) && !outerGuardRefused(refusal, spent, capEUR):
 			msg = fmt.Sprintf("%s reset the month's count at %s, so the cap card closes.", m.Reset.Login, said.Say(m.Reset.At, resetLayout(m.Reset.At, now)))
+		case month == m.Month && outerGuardRefused(refusal, spent, capEUR):
+			at, err := a.Store.ModelAnsweredSince(ctx, "", t.CreatedAt)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if at.IsZero() {
+				continue
+			}
+			msg = fmt.Sprintf("LiteLLM's outer guard lets model calls through again: one answered at %s, so the cap card closes.", said.Say(at, resetLayout(at, now)))
 		default:
 			continue
 		}

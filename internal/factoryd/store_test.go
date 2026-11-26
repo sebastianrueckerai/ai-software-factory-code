@@ -2729,7 +2729,7 @@ type fakeCall struct {
 func (s *fakeStore) ModelAnsweredSince(ctx context.Context, alias string, since time.Time) (time.Time, error) {
 	var first time.Time
 	for _, c := range s.answeredCalls {
-		if c.alias == alias && c.at.After(since) && (first.IsZero() || c.at.Before(first)) {
+		if (alias == "" || c.alias == alias) && c.at.After(since) && (first.IsZero() || c.at.Before(first)) {
 			first = c.at
 		}
 	}
@@ -5596,6 +5596,8 @@ func TestPGStoreModelAnsweredSince(t *testing.T) {
 	}{
 		{"big", at(5, 0, 0), at(5, 43, 10)}, {"big", at(5, 45, 0), at(5, 50, 0)}, {"big", at(5, 50, 0), time.Time{}},
 		{"small", at(5, 0, 0), at(5, 30, 0)}, {"premium", at(4, 0, 0), time.Time{}},
+		// any alias: small's call at 05:30 is the first after 05:00
+		{"", at(5, 0, 0), at(5, 30, 0)}, {"", at(5, 50, 0), time.Time{}},
 	} {
 		if got, err := s.ModelAnsweredSince(ctx, tc.alias, tc.since); err != nil || !got.Equal(tc.want) {
 			t.Errorf("ModelAnsweredSince(%s, %v) = (%v, %v), want %v", tc.alias, tc.since, got, err, tc.want)

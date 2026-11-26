@@ -108,7 +108,7 @@ func TestATripOfNoProjectFacesMarkedUnreadable(t *testing.T) {
 	for _, st := range caseStepsOf(t, g.s, c.ID) {
 		found = append(found, fmt.Sprintf("%d %s", st.Rung, st.Found))
 	}
-	want := []string{"0 facts read partly: config, so rung 0 took nothing", "0 not judged, judgment budget unreadable: repository demo-app/demo-app names no project, so its judgment budget cannot be read", "3 "}
+	want := []string{"0 no resolver fits", "0 not judged, judgment budget unreadable: repository demo-app/demo-app names no project, so its judgment budget cannot be read", "3 "}
 	if !reflect.DeepEqual(found, want) {
 		t.Fatalf("steps %q, want %q", found, want)
 	}

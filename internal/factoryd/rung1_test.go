@@ -350,7 +350,7 @@ func TestHumanOnlyPoolUnread(t *testing.T) {
 func TestRungZeroIgnoresAnUnreadSiblings(t *testing.T) {
 	r := &Runner{}
 	_, found, _ := r.rungZero(context.Background(), Task{}, Case{Kind: CaseSessionCap}, CaseFacts{Partial: []string{"siblings", "timeline"}}, nil)
-	if found != "facts read partly: timeline, which route_approval and rerun_checks would read, so rung 0 took nothing" {
+	if found != "facts read partly: timeline, which route_approval and rerun_checks would read" {
 		t.Errorf("found = %q", found)
 	}
 }

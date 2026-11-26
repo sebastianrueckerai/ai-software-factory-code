@@ -410,7 +410,7 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 		}
 		c, _ := g.store.CaseByID(context.Background(), out.CaseID)
 		steps, _ := g.store.CaseSteps(context.Background(), out.CaseID)
-		if c.Status != CaseAtHuman || len(steps) != 2 || steps[0].Found != "facts read partly: timeline, which route_approval and rerun_checks would read, so rung 0 took nothing" || steps[0].Outcome != StepHandedUp ||
+		if c.Status != CaseAtHuman || len(steps) != 2 || steps[0].Found != "facts read partly: timeline, which route_approval and rerun_checks would read" || steps[0].Outcome != StepHandedUp ||
 			steps[1].Rung != 2 {
 			t.Fatalf("case %+v, steps %+v; want it at the human, rung 0 handing up on the unread timeline, then rung 2", c, steps)
 		}

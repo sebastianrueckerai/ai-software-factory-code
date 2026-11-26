@@ -114,8 +114,12 @@ func (r *Runner) followPass(ctx context.Context, p Project, rt policy.Routine, r
 	if mv, running, err := r.Follow.Moves.RunningFollowMove(ctx, p.Name); err != nil || running {
 		return "held", fmt.Sprintf("held: the move of part %s runs, pull request #%d", mv.Part, mv.PR), err
 	}
-	if card, standing, err := r.Follow.Cards.StandingQuestion(ctx, p.Repository, followMarker); err != nil || standing {
-		return "held", fmt.Sprintf("held: the failure card %s is open: answer it, and the next run goes on", ShownName(card)), err
+	if card, standing, err := r.Follow.Cards.StandingQuestion(ctx, p.Repository, followMarker); err != nil {
+		return "", "", err
+	} else if standing {
+		if gone, err := r.followTargetGone(ctx, p, card); err != nil || !gone {
+			return "held", fmt.Sprintf("held: the failure card %s is open: answer it, and the next run goes on", ShownName(card)), err
+		}
 	}
 	repo := p.Repo()
 	tree, err := r.followBehind(ctx, p)

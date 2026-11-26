@@ -1193,7 +1193,7 @@ func TestRungZeroGoesOnPastAnUnreadHold(t *testing.T) {
 	}{
 		{[]string{partialHold, partialPlanHold}, "no resolver fits"},
 		{[]string{partialHold, "timeline"}, "no resolver fits"},
-		{[]string{partialHold, "dependencies"}, "facts read partly: dependencies, which retry_dependency and impasse would read, so rung 0 took nothing"},
+		{[]string{partialHold, "dependencies"}, "facts read partly: dependencies, which retry_dependency and impasse would read"},
 	} {
 		res, found, err := new(Runner).rungZero(context.Background(), Task{ID: "t1"}, c, CaseFacts{Kind: CaseDependencyFailed, Partial: tc.partial}, nil)
 		if err != nil || res != nil || found != tc.want {
