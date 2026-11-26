@@ -297,3 +297,39 @@ func TestRowsCarryTheSessionAndTheAuthor(t *testing.T) {
 		t.Fatalf("audit authors = (%q, %v)", authors, err)
 	}
 }
+
+// Requires a disposable Postgres (GATEWAY_TEST_DATABASE_URL). A class's
+// freeze stands while its newest freeze row is a class_frozen: big's arm
+// stands with its reset and words, small's ended with its class_resumed,
+// and premium has no row.
+func TestPGStoreFreezeStands(t *testing.T) {
+	dsn := os.Getenv("GATEWAY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("GATEWAY_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE kind IN ('class_frozen', 'class_resumed')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []EventRow{
+		{Repository: "sf/app", Kind: "class_frozen", Detail: map[string]any{"class": "big", "reset": "2026-11-14T17:05:50Z", "words": "first"}},
+		{Repository: "sf/app", Kind: "class_frozen", Detail: map[string]any{"class": "small", "reset": "2026-11-14T18:00:00Z", "words": "small's"}},
+		{Repository: "sf/app", Kind: "class_resumed", Detail: map[string]any{"class": "small"}},
+		{Repository: "sf/app", Kind: "class_frozen", Detail: map[string]any{"class": "big", "reset": "2026-11-15T09:00:00Z", "words": "second"}},
+	} {
+		if err := s.InsertEvent(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for class, want := range map[string][3]any{"big": {"2026-11-15T09:00:00Z", "second", true}, "small": {"", "", false}, "premium": {"", "", false}} {
+		reset, words, stands, err := s.FreezeStands(ctx, class)
+		if err != nil || stands != want[2] || stands && (reset != want[0] || words != want[1]) {
+			t.Errorf("FreezeStands(%s) = %q, %q, %v, %v; want %v", class, reset, words, stands, err, want)
+		}
+	}
+}
