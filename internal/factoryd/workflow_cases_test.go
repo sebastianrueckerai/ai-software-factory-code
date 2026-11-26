@@ -107,8 +107,8 @@ func TestWorkflowFinishesIntoTheSuccessorFromAnyWait(t *testing.T) {
 		h.onSessions(pushed("s4", "c4"))
 		h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, successor, 605))
 
-		if final := h.run(t); final != "failed" || h.finals[0][1] != "closed into successor t-succ" {
-			t.Fatalf("finals = %v, want failed closed into successor t-succ", h.finals)
+		if final := h.run(t); final != "closed" || h.finals[0][1] != "cut into successor #41" {
+			t.Fatalf("finals = %v, want closed cut into successor #41", h.finals)
 		}
 		if len(h.successions) != 1 || h.successions[0].PR != 9 || h.successions[0].Findings != "" || len(h.sessions) != 0 {
 			t.Fatalf("successions %+v, sessions %d; want one carrying #9 with no work state, no session", h.successions, len(h.sessions))
@@ -131,8 +131,8 @@ func TestWorkflowFinishesIntoTheSuccessorFromAnyWait(t *testing.T) {
 			})
 		h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, successor, 605))
 
-		if final := h.run(t); final != "failed" || h.finals[0][1] != "closed into successor t-succ" {
-			t.Fatalf("finals = %v, want failed closed into successor t-succ", h.finals)
+		if final := h.run(t); final != "closed" || h.finals[0][1] != "cut into successor #41" {
+			t.Fatalf("finals = %v, want closed cut into successor #41", h.finals)
 		}
 		if len(h.successions) != 1 || h.successions[0].PR != 9 || len(h.sessions) != 2 {
 			t.Fatalf("successions %+v, sessions %d; want one carrying #9 after the two sessions", h.successions, len(h.sessions))
@@ -431,8 +431,8 @@ func TestWorkflowGateWaitTakesRerunAndHandover(t *testing.T) {
 	})
 	t.Run("successor", func(t *testing.T) {
 		g, _, _ := gate(t, Resolution{Action: ActSuccessor})
-		if final := g.run(t); final != "failed" || g.finals[0][1] != "closed into successor t-succ" {
-			t.Fatalf("finals = %v, want failed closed into successor t-succ", g.finals)
+		if final := g.run(t); final != "closed" || g.finals[0][1] != "cut into successor #41" {
+			t.Fatalf("finals = %v, want closed cut into successor #41", g.finals)
 		}
 		if len(g.successions) != 1 || g.successions[0].PR != 9 || len(g.sessions) != 1 {
 			t.Fatalf("successions %+v, sessions %d; want one carrying #9 after the one session", g.successions, len(g.sessions))
@@ -560,8 +560,8 @@ func TestStagesRungZeroAnswersTheReviewBesideTheChecks(t *testing.T) {
 	})
 	t.Run("successor", func(t *testing.T) {
 		g := beside(t, Resolution{Action: ActSuccessor})
-		if final := g.run(t); final != "failed" || g.finals[0][1] != "closed into successor t-succ" {
-			t.Fatalf("finals = %v, want failed closed into successor t-succ", g.finals)
+		if final := g.run(t); final != "closed" || g.finals[0][1] != "cut into successor #41" {
+			t.Fatalf("finals = %v, want closed cut into successor #41", g.finals)
 		}
 		if len(g.successions) != 1 || len(g.requested) != 0 {
 			t.Fatalf("successions %+v, approvals %v; want one successor and no approval", g.successions, g.requested)
@@ -719,8 +719,8 @@ func TestWorkflowHealedWaitsTakeTheResolution(t *testing.T) {
 		g.onSessions(pushed("s1", "c1"))
 		g.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActSuccessor}, 605))
 
-		if final := g.run(t); final != "failed" || g.finals[0][1] != "closed into successor t-succ" {
-			t.Fatalf("finals = %v, want failed closed into successor t-succ", g.finals)
+		if final := g.run(t); final != "closed" || g.finals[0][1] != "cut into successor #41" {
+			t.Fatalf("finals = %v, want closed cut into successor #41", g.finals)
 		}
 		if len(g.successions) != 1 || len(g.sessions) != 0 {
 			t.Fatalf("successions %+v, sessions %d; want one successor, no session", g.successions, len(g.sessions))

@@ -796,7 +796,8 @@ func TestRetryRefusesACardCutIntoASuccessor(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := newRetryRig(t)
 	setStatus(store, "t-a", "running")
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	id := SuccessorID("t-a")
+	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -819,7 +820,8 @@ func TestRetryCardOfAPlanCardsSuccessor(t *testing.T) {
 	ctx := context.Background()
 	r, store, objects, _, _ := newRetryRig(t)
 	setStatus(store, "t-a", "running")
-	succ, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	succ := SuccessorID("t-a")
+	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
 	if err != nil {
 		t.Fatal(err)
 	}

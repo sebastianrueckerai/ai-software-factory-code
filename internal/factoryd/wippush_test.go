@@ -2571,7 +2571,8 @@ func successorObjective(t *testing.T, findings []string) string {
 	t.Helper()
 	r, store, _, _, _ := newRetryRig(t)
 	packed, _ := packCardLines(slices.Clone(findings))
-	id, err := r.Successor(context.Background(), SuccessorInput{TaskID: "t-a", Findings: packed})
+	id := SuccessorID("t-a")
+	_, err := r.Successor(context.Background(), SuccessorInput{TaskID: "t-a", Findings: packed})
 	if err != nil {
 		t.Fatal(err)
 	}

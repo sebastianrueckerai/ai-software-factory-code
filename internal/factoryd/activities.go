@@ -573,7 +573,8 @@ func successorMarker(id string) string {
 // successor's row lands first, with the old card's dependencies
 // and its dependents, and its issue after, so a filing that stops part way
 // runs again to the same one card: the row's identity holds the card and
-// the marker holds the issue.
+// the marker holds the issue. It answers the successor as a human reads it
+// (ShownName); its id is SuccessorID's.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -646,7 +647,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
 	}
-	return t.ID, nil
+	return ShownName(t), nil
 }
 
 // RecordUsage keeps what the task used of its caps on its row. Agent time
