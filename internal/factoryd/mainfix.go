@@ -529,9 +529,9 @@ func (r *Roller) endRevertCard(ctx context.Context, pause QueuePause, green stri
 	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, rev, green+": main is green without this revert. Closing this issue.")
 }
 
-// closeRevertPR closes human-lane revert card t's pull request as the bot
-// while it is open, commenting first so a failed comment is retried; one a person merged or
-// closed is left.
+// closeRevertPR closes human-lane revert card t's pull request as the
+// bot while it is open, commenting first so a failed comment is retried;
+// one a person merged or closed is left.
 func (r *Roller) closeRevertPR(ctx context.Context, t Task, comment string) error {
 	st, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber)
 	if err != nil || st.State != "open" {

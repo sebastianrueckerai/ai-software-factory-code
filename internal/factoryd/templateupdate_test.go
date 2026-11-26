@@ -723,11 +723,12 @@ func TestTemplateUpdateCloseClosesCard(t *testing.T) {
 	if fj.prs[0].state != "closed" || !slices.Equal(fj.comments, comments) {
 		t.Fatalf("pull request %+v, comments %q; want %q", fj.prs[0], fj.comments, comments)
 	}
-	want := []string{"POST /api/v1/repos/demo-app/demo-app/issues/1/comments by basic factory-agent",
+	want := []string{"PATCH /api/v1/repos/demo-app/demo-app/issues/1 by basic factory-agent",
+		"POST /api/v1/repos/demo-app/demo-app/issues/1/comments by basic factory-agent",
 		"DELETE /api/v1/repos/factory-projects/demo-app/branches/factory/template-update by token projects-tok",
 		"PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by token projects-tok"}
-	if got := fj.writes[len(fj.writes)-3:]; !slices.Equal(got, want) {
-		t.Fatalf("writes %q\nwant %q: the comment comes before the branch's delete and the pull request's close", got, want)
+	if got := fj.writes[len(fj.writes)-4:]; !slices.Equal(got, want) {
+		t.Fatalf("writes %q\nwant %q: the card closes first, then the comment comes before the branch's delete and the pull request's close", got, want)
 	}
 }
 
@@ -925,8 +926,8 @@ func TestTemplateUpdateKeepsItsPullRequest(t *testing.T) {
 }
 
 // Files on main that now equal the render close the open pull request:
-// its branch goes, then the close, then the bot's comment, so a failed
-// close repeats no comment.
+// the bot's comment comes first, then its branch goes, then the close, so
+// a failed comment leaves the pull request open for the next pass.
 func TestTemplateUpdateClosesWhenMainEquals(t *testing.T) {
 	fj, reg, _ := templateRig(t, stage15Main())
 	ctx := context.Background()
