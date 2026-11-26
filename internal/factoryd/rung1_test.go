@@ -520,3 +520,23 @@ func TestAPlannersRefusedSessionsOpenAProviderRefusedCase(t *testing.T) {
 		t.Fatalf("the plan loop's ask opens a %s case, want provider_refused", kind)
 	}
 }
+
+// Rung 2's recommendation on a human card names one of the card's choices,
+// by its value or by its label as the card shows it, and is recorded by the
+// value. Anything else is refused with the choices' values.
+func TestRungTwoRecommendsAChoiceByItsValueOrItsLabel(t *testing.T) {
+	g := newFactsRig(t)
+	c := Case{ID: 7, TaskID: "t1", Kind: CaseHumanCard, Status: CaseAtHuman}
+	g.event("t1", factsAt(9, 0), EventQuestionAsked, map[string]any{"case_id": 7, "offers": []any{
+		map[string]any{"label": "Merge it", "value": "choice:approve_merge"},
+		map[string]any{"label": "Reject and close it", "value": "choice:deny_merge"}}})
+	for rec, want := range map[string]string{"approve_merge": "approve_merge", "Merge it": "approve_merge", "reject and close it": "deny_merge"} {
+		if got, err := g.r.rungTwoRecommends(context.Background(), g.store.tasks["t1"], c, rec); err != nil || got != want {
+			t.Errorf("%q = %q, %v; want %q", rec, got, err, want)
+		}
+	}
+	_, err := g.r.rungTwoRecommends(context.Background(), g.store.tasks["t1"], c, "Merge")
+	if want := `"Merge" is no choice of card #12: recommend one of approve_merge and deny_merge`; err == nil || err.Error() != want {
+		t.Errorf("refusal = %v, want %q", err, want)
+	}
+}

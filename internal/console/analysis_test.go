@@ -104,7 +104,12 @@ func TestTheChatsRecommendationsNameNoMachinery(t *testing.T) {
 	_, _, analysis := tool.run(trn, toolInput{TaskID: "t-e", Found: "found", Recommendation: "Keep one replica, as factory-chat found."})
 	_, escalation := trn.escalate(toolInput{Ask: "Which store?", Why: "Postgres runs out of connections at the peak.", Info: "The counts say so.",
 		Recommendation: "Postgres, as factory-chat found", Choice: "Postgres", Choices: []string{"Postgres", "SQLite"}})
+	const picks = " The answer you would pick goes in `recommended`, by its value or its label, and its reason here in plain words."
 	for door, err := range map[string]error{"attach_analysis": analysis, "escalate": escalation} {
+		want := want
+		if door == "attach_analysis" {
+			want += picks
+		}
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusBadRequest || no.msg != want {
 			t.Errorf("%s with a decider's name = %v, want 400 %q", door, err, want)

@@ -142,7 +142,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 		return 0, err
 	}
 	if rec.Action != "" {
-		if err := r.rungTwoRecommends(ctx, t, c, rec.Action); err != nil {
+		if rec.Action, err = r.rungTwoRecommends(ctx, t, c, rec.Action); err != nil {
 			return 0, err
 		}
 	}
@@ -176,36 +176,40 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 // rungTwoRecommends refuses rung 2's recommendation rec on case c of card
 // t unless the human can take it there: a plan's question one of its
 // choices, any answer where it offers none, its confirmation confirm or
-// revise, a human card's case one of its question's choices, by value, any
-// answer where it offers none, every other case an action the human may
-// take.
-func (r *Runner) rungTwoRecommends(ctx context.Context, t Task, c Case, rec string) error {
+// revise, a human card's case one of its question's choices, by value or by
+// label, any answer where it offers none, every other case an action the
+// human may take. It answers the recommendation as the case takes it: a
+// choice's value.
+func (r *Runner) rungTwoRecommends(ctx context.Context, t Task, c Case, rec string) (string, error) {
 	if ChoiceKind(c.Kind) {
 		ask, _ := r.CaseAsk(ctx, c)
 		offers := AskOffers(ask.Detail)
-		if len(offers) == 0 || slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == rec }) {
-			return nil
+		if len(offers) == 0 {
+			return rec, nil
+		}
+		if i := slices.IndexFunc(offers, func(o QuestionChoice) bool { return o.Value == rec || strings.EqualFold(o.Label, rec) }); i >= 0 {
+			return offers[i].Value, nil
 		}
 		values := make([]string, len(offers))
 		for i, o := range offers {
 			values[i] = o.Value
 		}
-		return ErrActRefused(fmt.Sprintf("%q is no choice of card %s: recommend one of %s", rec, AgentName(t), textutil.AndList(values)))
+		return "", ErrActRefused(fmt.Sprintf("%q is no choice of card %s: recommend one of %s", rec, AgentName(t), textutil.AndList(values)))
 	}
 	switch c.Kind {
 	case CasePlanConfirmation:
 		if rec != DecisionConfirm && rec != DecisionRevise {
-			return ErrActRefused(fmt.Sprintf("%q is no decision of a plan's confirmation: recommend %s or %s", rec, DecisionConfirm, DecisionRevise))
+			return "", ErrActRefused(fmt.Sprintf("%q is no decision of a plan's confirmation: recommend %s or %s", rec, DecisionConfirm, DecisionRevise))
 		}
-		return nil
+		return rec, nil
 	case CasePlanQuestion:
 		if choices := factStrings(c, "choices"); len(choices) > 0 && !slices.Contains(choices, rec) {
-			return ErrActRefused(fmt.Sprintf("%q is no choice of this plan question: recommend one of %s", rec, textutil.AndList(choices)))
+			return "", ErrActRefused(fmt.Sprintf("%q is no choice of this plan question: recommend one of %s", rec, textutil.AndList(choices)))
 		}
-		return nil
+		return rec, nil
 	}
 	if a, ok := ActionByName(rec); ok && a.Rungs[3] {
-		return nil
+		return rec, nil
 	}
 	names := make([]string, 0, len(Actions))
 	for _, a := range Actions {
@@ -213,7 +217,7 @@ func (r *Runner) rungTwoRecommends(ctx context.Context, t Task, c Case, rec stri
 			names = append(names, a.Name)
 		}
 	}
-	return ErrActRefused(fmt.Sprintf("%q is no action the human may take: recommend %s", rec, textutil.AndList(names)))
+	return "", ErrActRefused(fmt.Sprintf("%q is no action the human may take: recommend %s", rec, textutil.AndList(names)))
 }
 
 // RefusedRung2 hands up each of cases whose rung 2 turn the model provider

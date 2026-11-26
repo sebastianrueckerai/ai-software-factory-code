@@ -25,8 +25,8 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	case len(recommendation) > 2000:
 		return "", refuse(http.StatusBadRequest, "`recommendation`: 0 to 2000 characters, empty to suggest none")
 	}
-	if err := groundsRefusal(recommendation); err != nil {
-		return "", err
+	if faults := factoryd.GroundsFaults(recommendation); len(faults) > 0 {
+		return "", refuse(http.StatusBadRequest, "recommendation: "+strings.Join(faults, " ")+" The answer you would pick goes in `recommended`, by its value or its label, and its reason here in plain words.")
 	}
 	k, err := t.card(in)
 	if err != nil {
