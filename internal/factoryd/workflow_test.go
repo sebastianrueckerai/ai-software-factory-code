@@ -213,7 +213,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityReadUsage: func(ctx context.Context, taskID string) (TaskUsage, error) { return h.rowUsage, nil },
 		ActivitySuccessor: func(ctx context.Context, in SuccessorInput) (string, error) {
 			h.successions = append(h.successions, in)
-			return "t-succ", nil
+			return "#41", nil
 		},
 		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 			return PolicyGate{}, nil
@@ -5233,7 +5233,7 @@ func TestWorkflowClosesAnOverBoundPlanCardIntoASuccessor(t *testing.T) {
 	h.state.Source = SourcePlan
 	h.onSessions(overBound("s1"))
 	calls := h.onProofsAtMain(ProofsAtMain{}, nil)
-	if final := h.run(t); final != "failed" || len(h.finals) != 1 || h.finals[0][1] != "closed into successor t-succ" {
+	if final := h.run(t); final != "closed" || len(h.finals) != 1 || h.finals[0][1] != "cut into successor #41" {
 		t.Fatalf("final %q, finals %v; want the one close into the successor", final, h.finals)
 	}
 	if !slices.Equal(*calls, []string{"t1"}) || len(h.successions) != 1 || h.successions[0].TaskID != "t1" {

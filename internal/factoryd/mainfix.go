@@ -191,14 +191,15 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	}
 	switch {
 	case newest.Status == "success" && paused:
+		// no woken card takes its turn before the pause's cards end, and
+		// a pause whose cards did not end stands for the next poll
+		if err := r.endPauseCard(ctx, pause, *newest); err != nil {
+			return fmt.Errorf("end the pause's cards %s and %s: %w", pause.FixTask, pause.RevertTask, err)
+		}
 		if err := r.Store.ClearQueuePause(ctx, project); err != nil {
 			return err
 		}
 		log.Printf("roller: main is green again at %s (run %d): the merge queue of %s goes on", newest.CommitSHA, newest.ID, project)
-		// no woken card takes its turn before the pause's cards end
-		if err := r.endPauseCard(ctx, pause, *newest); err != nil {
-			log.Printf("roller: end the pause's cards %s and %s: %v", pause.FixTask, pause.RevertTask, err)
-		}
 		signalQueueHeads(ctx, r.Store, r.Workflows)
 		return nil
 	case newest.Status == "failure" && (!paused || pause.FixTask == ""),

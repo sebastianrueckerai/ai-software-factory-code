@@ -338,8 +338,8 @@ func overBound(session string) SessionResult {
 
 // A session that ends on the named push refusal closes the card into a
 // successor instead of looping: the successor activity runs once with the
-// refusal's findings and the open pull request, the card finishes failed
-// with a reason naming the successor, and nobody is asked.
+// refusal's findings and the open pull request, the card finishes closed
+// with a reason naming the successor by its issue, and nobody is asked.
 func TestPushOverBoundClosesIntoASuccessor(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
@@ -351,7 +351,7 @@ func TestPushOverBoundClosesIntoASuccessor(t *testing.T) {
 		})
 	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" {
+	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q, escalations %q", final, h.escalated)
 	}
 	if len(h.successions) != 1 || h.successions[0].TaskID != "t1" || h.successions[0].PR != 9 {
@@ -360,7 +360,7 @@ func TestPushOverBoundClosesIntoASuccessor(t *testing.T) {
 	if !strings.Contains(h.successions[0].Findings, "push refused: over the card's line bound") {
 		t.Fatalf("the successor's findings = %q, want the refusal", h.successions[0].Findings)
 	}
-	if reason := h.finals[0][1]; !strings.Contains(reason, "successor") || !strings.Contains(reason, "t-succ") {
+	if reason := h.finals[0][1]; reason != "cut into successor #41" {
 		t.Fatalf("the finish reason %q must name the successor", reason)
 	}
 	if len(h.escalated) != 0 {
@@ -395,7 +395,7 @@ func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
 // A typed answer that names the successor exit closes the card into its
 // successor only in a run from before versionNoTypedSuccessor: that run
 // files the successor with the work state instead of buying another
-// session, and finishes failed naming it. Since the gate the same answer
+// session, and finishes closed naming it. Since the gate the same answer
 // files no successor; the successor is an answer of the case's face.
 func TestATypedSuccessorAnswerClosesTheCardOnlyBeforeItsGate(t *testing.T) {
 	for _, before := range []bool{true, false} {
@@ -426,8 +426,8 @@ func TestATypedSuccessorAnswerClosesTheCardOnlyBeforeItsGate(t *testing.T) {
 			}
 			continue
 		}
-		if final != "failed" || len(h.successions) != 1 || h.successions[0].PR != 9 || len(h.sessions) != 3 {
-			t.Fatalf("before the gate: final %q, successions %+v, sessions %d; want failed into one successor carrying PR 9, three sessions",
+		if final != "closed" || len(h.successions) != 1 || h.successions[0].PR != 9 || len(h.sessions) != 3 {
+			t.Fatalf("before the gate: final %q, successions %+v, sessions %d; want closed into one successor carrying PR 9, three sessions",
 				final, h.successions, len(h.sessions))
 		}
 		for _, want := range []string{"the migration runs outside its transaction", "review: concerns"} {
@@ -435,8 +435,8 @@ func TestATypedSuccessorAnswerClosesTheCardOnlyBeforeItsGate(t *testing.T) {
 				t.Errorf("before the gate: the successor's findings = %q, want %q", h.successions[0].Findings, want)
 			}
 		}
-		if reason := h.finals[0][1]; !strings.Contains(reason, "successor") {
-			t.Fatalf("before the gate: the finish reason %q must name the successor", reason)
+		if reason := h.finals[0][1]; reason != "cut into successor #41" {
+			t.Fatalf("before the gate: the finish reason %q must name the successor by its issue", reason)
 		}
 	}
 }
@@ -445,7 +445,7 @@ func TestATypedSuccessorAnswerClosesTheCardOnlyBeforeItsGate(t *testing.T) {
 // the findings so far, the carried pull request and its size and budget,
 // queued on the direct track on an issue labelled like a filed card's,
 // started under the work bound, its old card's key and revision in its
-// plan. It continues the old card's branch at the
+// plan, and answers it by its issue. It continues the old card's branch at the
 // old card's base b0; an old card with no branch leaves it no base of its
 // own, so it starts from main's tip.
 func TestSuccessorFilesOneCard(t *testing.T) {
@@ -463,11 +463,12 @@ func TestSuccessorFilesOneCard(t *testing.T) {
 			a.Size, a.PRNumber, a.PlanRevision = "small", 7, 3
 			store.tasks["t-a"] = a
 			fj.calls = nil
-			id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9,
+			name, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9,
 				Findings: "\n- the migration runs outside its transaction\n- the flag is read before it is set"})
-			if err != nil || id != SuccessorID("t-a") {
-				t.Fatalf("Successor = %q, %v", id, err)
+			if err != nil || name != "#9" {
+				t.Fatalf("Successor = %q, %v; want the successor's issue #9", name, err)
 			}
+			id := SuccessorID("t-a")
 			s := store.tasks[id]
 			if s.Status != "queued" || s.Track != policy.TrackDirect || s.Source != SourceSuccessor || s.Kind != "agent" ||
 				s.CarryPR != 9 || s.SHA != tc.sha || s.Repository != "linkshort/linkshort" || s.Parent != "t-plan" ||
@@ -496,7 +497,7 @@ func TestSuccessorFilesOneCard(t *testing.T) {
 
 // A successor takes over the stuck card's edges: it waits on what the old
 // card waited on, and the card that waited on the old card waits on the
-// successor, so the old card's failed end leaves it waiting with no failed
+// successor, so the old card's closed end leaves it waiting with no ended
 // dependency, and the successor's end wakes it and starts it. The issues
 // show the same waits.
 func TestSuccessorTakesOverTheDependents(t *testing.T) {
@@ -506,7 +507,8 @@ func TestSuccessorTakesOverTheDependents(t *testing.T) {
 	a := store.tasks["t-a"]
 	a.Status = "running"
 	store.tasks["t-a"] = a
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	id := SuccessorID("t-a")
+	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,10 +521,10 @@ func TestSuccessorTakesOverTheDependents(t *testing.T) {
 	if !slices.Equal(fj.issues[9].deps, []int64{4}) || !slices.Equal(fj.issues[6].deps, []int64{9}) {
 		t.Fatalf("issue dependencies: the successor's #9 on %v, t-b's #6 on %v; want [4] and [9]", fj.issues[9].deps, fj.issues[6].deps)
 	}
-	a.Status = "failed"
+	a.Status = "closed"
 	store.tasks["t-a"] = a
 	if st, err := r.Dependencies(ctx, "t-b"); err != nil || st.Failed != nil || st.Ended != nil || !slices.Equal(st.Waiting, []int64{9}) {
-		t.Fatalf("t-b after the old card failed: %+v, %v; want it waiting on the successor #9", st, err)
+		t.Fatalf("t-b after the old card closed: %+v, %v; want it waiting on the successor #9", st, err)
 	}
 	s := store.tasks[id]
 	s.Status = "done"
@@ -545,7 +547,8 @@ func TestSuccessorRetryFilesNoSecondIssue(t *testing.T) {
 	if _, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"}); err == nil {
 		t.Fatal("the first filing must stop at its labels")
 	}
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	id := SuccessorID("t-a")
+	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
 	if err != nil {
 		t.Fatalf("the second filing = %v", err)
 	}
@@ -577,7 +580,8 @@ func TestSuccessorFindsItsIssueClosed(t *testing.T) {
 	fj.mu.Lock()
 	fj.issues[9].state = "closed"
 	fj.mu.Unlock()
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	id := SuccessorID("t-a")
+	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
 	if err != nil {
 		t.Fatalf("the refiling = %v", err)
 	}
@@ -603,7 +607,8 @@ func TestSuccessorFindsItsIssueClosed(t *testing.T) {
 func TestSuccessorContinuesAnyBranchTheOldCardHolds(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", Findings: "\n- previous session ended without a pushed commit"})
+	id := SuccessorID("t-a")
+	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", Findings: "\n- previous session ended without a pushed commit"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +633,8 @@ func TestSuccessorContinuesAnyBranchTheOldCardHolds(t *testing.T) {
 func TestSuccessorOfOverBoundWorkStartsAtTheInterimHead(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a",
+	id := SuccessorID("t-a")
+	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a",
 		Findings: "\n- " + overBoundNote + " factory/t-a at c7"})
 	if err != nil {
 		t.Fatal(err)

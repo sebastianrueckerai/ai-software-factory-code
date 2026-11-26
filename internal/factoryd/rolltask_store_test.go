@@ -342,3 +342,90 @@ func TestASettledFailedRollEndsItsReleaseWindow(t *testing.T) {
 		t.Fatalf("linkshort deploy_now = %q, want g standing", rel.DeployNow)
 	}
 }
+
+// The newest merged roll retires the cards whose reason it took away, in
+// the order they were filed: the failed roll cards filed before it that
+// carry no newer run, the roll ladder's human card asked before it settled,
+// and the human card of a refused commit older than its run. A card whose
+// close factoryd recorded, a newer card, another repository's and a card of
+// another source stay.
+func TestPGStoreRollRetirees(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE roll_requests, tasks, intake_events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "sf/ai-software-factory-code"
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	card := func(id, repository, kind, source, status string, issue int64, minute int) {
+		t.Helper()
+		track := ""
+		if kind == "agent" {
+			track = "direct"
+		}
+		if err := s.CreateTask(ctx, Task{ID: id, Status: status, Repository: repository, Kind: kind, Source: source, Track: track,
+			IssueNumber: issue, CreatedAt: at.Add(time.Duration(minute) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert := func(r RollRequest) {
+		t.Helper()
+		if err := s.InsertRollRequest(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retirees := func() (string, []string) {
+		t.Helper()
+		roll, cards, err := s.RollRetirees(ctx, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, c := range cards {
+			ids = append(ids, c.ID)
+		}
+		return roll.ID, ids
+	}
+
+	card("f-old", repo, "agent", SourceRoll, "failed", 10, 0)
+	insert(RollRequest{SHA: "a", Repository: repo, RunID: 10, State: RollFailed, TaskID: "f-old"})
+	card("ask-old", repo, "human", SourceRollFailed, "waiting-human", 13, 20)
+	if roll, ids := retirees(); roll != "" || ids != nil {
+		t.Fatalf("with no merged roll: roll %q, retirees %q; want none", roll, ids)
+	}
+
+	card("f-deleted", repo, "agent", SourceRoll, "failed", 11, 1) // its request gone with a retry
+	card("f-recorded", repo, "agent", SourceRoll, "failed", 12, 2)
+	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "f-recorded", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 12}); err != nil {
+		t.Fatal(err)
+	}
+	card("ref-old", repo, "human", SourceRollRefused, "waiting-agent", 14, 3)
+	insert(RollRequest{SHA: "r", Repository: repo, RunID: 15, State: RollRefused, TaskID: "ref-old"})
+	card("f-newer-run", repo, "agent", SourceRoll, "failed", 16, 5)
+	insert(RollRequest{SHA: "x", Repository: repo, RunID: 25, State: RollFailed, TaskID: "f-newer-run"})
+	card("f-newer-attempt", repo, "agent", SourceRoll, "failed", 17, 6)
+	card("other-source", repo, "agent", SourceMainFix, "failed", 18, 7)
+	card("ask-done", repo, "human", SourceRollFailed, "done", 19, 8)
+	card("m1", repo, "agent", SourceRoll, "done", 20, 10)
+	insert(RollRequest{SHA: "m", Repository: repo, RunID: 20, State: RollMerged, TaskID: "m1"})
+	card("ask-new", repo, "human", SourceRollFailed, "waiting-human", 21, 35)
+	card("ref-new", repo, "human", SourceRollRefused, "waiting-human", 22, 36)
+	insert(RollRequest{SHA: "s", Repository: repo, RunID: 22, State: RollRefused, TaskID: "ref-new"})
+	card("f-new", repo, "agent", SourceRoll, "failed", 23, 40)
+	insert(RollRequest{SHA: "n", Repository: repo, RunID: 21, State: RollFailed, TaskID: "f-new"})
+	card("o-old", "sf/linkshort", "agent", SourceRoll, "failed", 10, 0)
+	if _, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET settled_at = $1 WHERE sha = 'm'`, at.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET failed_tasks = ARRAY['f-newer-attempt'] WHERE sha = 'n'`); err != nil {
+		t.Fatal(err)
+	}
+	roll, ids := retirees()
+	if want := []string{"f-old", "f-deleted", "ref-old", "ask-old"}; roll != "m1" || !reflect.DeepEqual(ids, want) {
+		t.Fatalf("roll %q, retirees %q; want m1 and %q", roll, ids, want)
+	}
+}

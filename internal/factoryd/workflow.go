@@ -5034,15 +5034,17 @@ func (t *taskRun) closedWithoutMerge() string {
 const pushOverBoundMark = "push refused: over the card's line bound"
 
 // closeIntoSuccessor files the card's successor with the findings so far
-// (a packed block of lines) and is the card's end, failed, the successor
-// named in its reason, which its callers finish.
+// (a packed block of lines) and is the card's end, which its callers
+// finish: closed, the successor named by its issue in its reason, as the
+// successor carries its work and no retry of it makes sense; failed when
+// the filing failed.
 func (t *taskRun) closeIntoSuccessor(findings string) (final, reason string) {
 	var succ string
 	in := SuccessorInput{TaskID: t.taskID, Findings: findings, PR: t.pr.Number}
 	if err := workflow.ExecuteActivity(t.short, ActivitySuccessor, in).Get(t.ctx, &succ); err != nil {
 		return "failed", "close into the successor: " + errMessage(err)
 	}
-	return "failed", "closed into successor " + succ
+	return "closed", "cut into successor " + succ
 }
 
 func (t *taskRun) finish(final, reason string) (string, error) {
