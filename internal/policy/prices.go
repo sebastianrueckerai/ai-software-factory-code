@@ -233,6 +233,13 @@ func deploymentPrice(mi map[string]json.RawMessage, residency bool) (Price, erro
 					return Price{}, fmt.Errorf("off_peak_pricing: %w", err)
 				}
 			}
+		case k == "pricing_overrides":
+			// LiteLLM's names of the rates the deployment sets itself; the
+			// rates stand in their own fields.
+			var names []string
+			if err := json.Unmarshal(raw, &names); err != nil {
+				return Price{}, fmt.Errorf("%s: %w", k, err)
+			}
 		case strings.Contains(k, "multiplier"):
 			return Price{}, fmt.Errorf("unbounded multiplier %s", k)
 		case strings.Contains(k, "cost") || strings.Contains(k, "pric"):

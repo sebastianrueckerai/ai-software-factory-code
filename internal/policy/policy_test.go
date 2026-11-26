@@ -677,6 +677,8 @@ func TestParseModelInfo(t *testing.T) {
 	   "off_peak_pricing":{"input_cost_per_token":5e-7,"output_cost_per_token":6e-7,"hours_utc":"16:30-00:30","weekday_timezone":"Asia/Shanghai"}}},
 	 {"model_name":"off-peak-odd","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"off_peak_pricing":{"output_cost_per_second":1,"windows":[]}}},
 	 {"model_name":"odd-tier","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"tiered_pricing":[{"output_cost_per_second":1}]}},
+	 {"model_name":"own-rates","model_info":{"input_cost_per_token":3e-7,"output_cost_per_token":6e-7,"pricing_overrides":["input_cost_per_token","output_cost_per_token"]}},
+	 {"model_name":"odd-overrides","model_info":{"input_cost_per_token":3e-7,"output_cost_per_token":6e-7,"pricing_overrides":{"input_cost_per_token":1e-9}}},
 	 {"model_name":"half-priced","model_info":{"input_cost_per_token":1e-7,"output_cost_per_token":1e-7}},
 	 {"model_name":"half-priced","model_info":{"input_cost_per_token":null,"output_cost_per_token":1e-7}},
 	 {"model_name":"free","model_info":{"input_cost_per_token":0,"output_cost_per_token":0}},
@@ -694,6 +696,8 @@ func TestParseModelInfo(t *testing.T) {
 		"off-peak":        {In: 3e-7, CacheRead: 6e-9, Out: 1.2e-6, MaxOutput: 393216},
 		"off-peak-dearer": {In: 4e-7, CacheRead: 4e-7, Out: 5e-7},
 		"off-peak-flat":   {In: 5e-7, CacheRead: 5e-7, Out: 1.2e-6},
+		// LiteLLM from 1.108 names the rates a deployment sets itself
+		"own-rates": {In: 3e-7, CacheRead: 3e-7, Out: 6e-7},
 		// an OpenAI deployment without data_residency: the service tiers,
 		// the batch API, the 12-hour cache, web search and the regional
 		// uplifts bill no gateway call; the long-context rates do
@@ -705,7 +709,7 @@ func TestParseModelInfo(t *testing.T) {
 	if !reflect.DeepEqual(prices, want) {
 		t.Fatalf("prices = %+v, want %+v", prices, want)
 	}
-	for _, alias := range []string{"per-query", "odd-tier", "off-peak-odd", "sonar", "regional", "residency", "half-priced", "free", "negative"} {
+	for _, alias := range []string{"per-query", "odd-tier", "off-peak-odd", "odd-overrides", "sonar", "regional", "residency", "half-priced", "free", "negative"} {
 		if !unpriced[alias] {
 			t.Errorf("%s priced, want unpriced", alias)
 		}

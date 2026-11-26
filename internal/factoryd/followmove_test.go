@@ -241,6 +241,18 @@ func TestFollowJudgeFailures(t *testing.T) {
 			}
 		})
 	}
+	t.Run("the model call after the settle time", func(t *testing.T) {
+		m := newMoveRun(t)
+		m.forge.statuses["merge40"] = m.forge.mergeStatus
+		m.r.sleep = func(ctx context.Context, d time.Duration) error {
+			m.gateway = http.StatusServiceUnavailable
+			return m.clock.sleep(ctx, d)
+		}
+		want := "after the 10m0s of settling, the small model class does not answer through the gateway: "
+		if v := m.judge(t); v.Ok || !strings.HasPrefix(v.Why, want) {
+			t.Fatalf("verdict = %+v, want %q", v, want)
+		}
+	})
 	t.Run("alerts that do not count", func(t *testing.T) {
 		m := newMoveRun(t)
 		m.forge.statuses["merge40"] = m.forge.mergeStatus

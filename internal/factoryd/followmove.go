@@ -294,8 +294,9 @@ const followModelSystem = `Answer with a JSON object {"ok": true}.`
 // FollowJudge judges the merge commit of a move. The Flux statuses that the
 // project's chain requires are success on it, a failure at once, none by
 // rolloutCap a failure of that status; then the dependency probes answer and
-// one call on the small class through the gateway returns; then no alert of
-// the project's namespaces fired since the merge, after rolloutSettle.
+// one call on the small class through the gateway returns, at once and again
+// after rolloutSettle, when no cache of the time before the move still
+// answers; then no alert of the project's namespaces fired since the merge.
 func (r *Runner) FollowJudge(ctx context.Context, in FollowMoveInput, landed FollowLanded) (FollowVerdict, error) {
 	repo, err := r.followRepo(ctx, in)
 	if err != nil {
@@ -305,13 +306,8 @@ func (r *Runner) FollowJudge(ctx context.Context, in FollowMoveInput, landed Fol
 		return FollowVerdict{Why: why}, err
 	}
 	r.followStep(ctx, repo, in, "the chain is green on "+ShortSHA(landed.Commit)+" or a later commit of main that holds it: CI and Flux applied it.")
-	if r.Follow.Probe != nil {
-		if failing := r.Follow.Probe(ctx); len(failing) > 0 {
-			return FollowVerdict{Why: "a dependency does not answer: " + strings.Join(failing, "; ")}, nil
-		}
-	}
-	if err := r.followModelAnswers(ctx, in); err != nil {
-		return FollowVerdict{Why: "the small model class does not answer through the gateway: " + err.Error()}, nil
+	if why := r.followAnswers(ctx, in); why != "" {
+		return FollowVerdict{Why: why}, nil
 	}
 	r.followStep(ctx, repo, in, "the dependencies answer and the small model class answers.")
 	until := r.Clock().Add(rolloutSettle)
@@ -320,6 +316,9 @@ func (r *Runner) FollowJudge(ctx context.Context, in FollowMoveInput, landed Fol
 		if err := r.pause(ctx, min(rollPoll, until.Sub(r.Clock()))); err != nil {
 			return FollowVerdict{}, err
 		}
+	}
+	if why := r.followAnswers(ctx, in); why != "" {
+		return FollowVerdict{Why: "after the " + rolloutSettle.String() + " of settling, " + why}, nil
 	}
 	fired, err := platformAlertsSince(ctx, r.Follow.Alerts, r.followNamespaces(ctx, in), landed.At)
 	if err != nil {
@@ -331,6 +330,20 @@ func (r *Runner) FollowJudge(ctx context.Context, in FollowMoveInput, landed Fol
 	}
 	r.followStep(ctx, repo, in, "no alert of the project's namespaces fired in the "+rolloutSettle.String()+" after the merge: the move is settled.")
 	return FollowVerdict{Ok: true}, nil
+}
+
+// followAnswers is why the cluster does not answer, "" when the dependency
+// probes and one call on the small class through the gateway do.
+func (r *Runner) followAnswers(ctx context.Context, in FollowMoveInput) string {
+	if r.Follow.Probe != nil {
+		if failing := r.Follow.Probe(ctx); len(failing) > 0 {
+			return "a dependency does not answer: " + strings.Join(failing, "; ")
+		}
+	}
+	if err := r.followModelAnswers(ctx, in); err != nil {
+		return "the small model class does not answer through the gateway: " + err.Error()
+	}
+	return ""
 }
 
 // followNamespaces are the namespaces of the move's project.
