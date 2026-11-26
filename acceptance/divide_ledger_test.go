@@ -468,7 +468,8 @@ func (accKube) ServicePods(context.Context, string, string) ([]factoryd.ServiceP
 func (accKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolume, error) {
 	return nil, nil
 }
-func (accKube) DeletePersistentVolume(context.Context, string) error { return nil }
+func (accKube) DeletePersistentVolume(context.Context, string) error                 { return nil }
+func (accKube) VolumeClaims(context.Context, string) ([]factoryd.VolumeClaim, error) { return nil, nil }
 func (accKube) CronJobs(context.Context, string) ([]factoryd.CronJobState, error) {
 	return nil, nil
 }

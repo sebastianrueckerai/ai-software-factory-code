@@ -2468,3 +2468,81 @@ func TestAClearedAlertWithdrawsItsAsk(t *testing.T) {
 		})
 	}
 }
+
+// The CI spawner's causes of runner pods that do not start file one human
+// card each, through the alert intake, on the factory's own project: it
+// runs agents, but the cause lies in the cluster. The card names the cause
+// and the first pod's hold, and a second pass files nothing more. A cause
+// the spawner no longer sees resolves only while a runner pod runs or no
+// job waits, and its untouched card then closes. SigNoz's sweep leaves
+// these rows alone, and after a restart a firing keeps its row's start.
+func TestRunnerPodsThatDoNotStartFileOneHumanCardPerCause(t *testing.T) {
+	ctx := context.Background()
+	r := newAlertRig(t)
+	seedProjects(r)
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	refused := "the volume claim cache-ci-demo in factory-agents-ci-%d is Pending: ProvisioningFailed: the shared path needs its switch"
+	claim := RunnerHold{Key: "claim", Words: "a volume claim is not bound", At: at("2026-11-26T04:24:00Z"),
+		Lines: []string{fmt.Sprintf(refused, 71), fmt.Sprintf(refused, 73)}}
+	node := RunnerHold{Key: "unscheduled", Words: "no node takes them", At: at("2026-11-26T04:24:30Z"),
+		Lines: []string{"the runner pod in factory-agents-ci-72 waits: Unschedulable: 0/3 nodes are available: 3 Insufficient cpu."}}
+	for _, now := range []string{"2026-11-26T04:25:00Z", "2026-11-26T04:26:00Z"} {
+		if err := r.in.RunnerPass(ctx, []RunnerHold{claim, node}, false, at(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cards := map[string]Task{}
+	for _, row := range r.store.alertRows() {
+		cards[row.Fingerprint] = r.store.tasks[row.TaskID]
+	}
+	ask := "factoryd fires the alert “CI runner pods do not start: a volume claim is not bound” on factory"
+	const why = "It may point at a fault on factory, and the cause lies in the cluster, which no agent works on."
+	want := ask + "\n\n```\n" + ask + "\n```\n\n" +
+		"Info: factoryd fires the alert CI runner pods do not start: a volume claim is not bound in namespace factory of project ai-software-factory-code.\n\n" +
+		"Firing since 2026-11-26T04:24:00Z.\n\n" +
+		"Value and annotations:\n\n```\nvalue=" + fmt.Sprintf(refused, 71) + "; and 1 more\n" +
+		"action=fix what the runner pods wait on, in the cluster or its configuration. The alert clears once runner pods start again and none waits on its cause.\n```\n\n" +
+		"Labels:\n\n```\nalertname=CI runner pods do not start: a volume claim is not bound\nnamespace=factory\n```\n\n" +
+		"Filed by the factory from the factoryd alert ci/claim.\n\n" +
+		"Choices:\n- Noted\n- Not now\n\n" +
+		"The factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nFiled by the factory."
+	c := cards["ci/claim"]
+	if len(cards) != 2 || c.Objective != want || c.Why != why || c.Kind != "human" || c.Status != "waiting-agent" || c.Repository != "sf/ai-software-factory-code" ||
+		cards["ci/unscheduled"].Kind != "human" || len(r.flows.started) != 0 || !slices.Equal(heldLabels(r.store, c.ID), []string{"human", "bug"}) {
+		t.Fatalf("cards %+v, started %v; want two held human cards on the code repository, the claim's:\n%s", cards, r.flows.started, want)
+	}
+
+	if err := r.in.RunnerPass(ctx, []RunnerHold{claim}, false, at("2026-11-26T04:27:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if row, _, _ := r.store.AlertByFingerprint(ctx, AlertSigNoz, "ci/unscheduled"); row.Detail["resolved_at"] != nil {
+		t.Fatalf("no runner pod runs and jobs wait: row %+v, want it still firing", row)
+	}
+	if err := r.in.RunnerPass(ctx, []RunnerHold{claim}, true, at("2026-11-26T04:28:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.in.CloseCleared(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gone, kept := r.store.tasks[cards["ci/unscheduled"].ID], r.store.tasks[c.ID]
+	if gone.Status != "closed" || gone.ClosingReason != "The alert cleared at 2026-11-26T04:28:00Z." || kept.Status != "waiting-agent" {
+		t.Fatalf("a runner pod runs: the node card %s for %q, the claim card %s; want the node card closed as cleared, the claim card waiting",
+			gone.Status, gone.ClosingReason, kept.Status)
+	}
+
+	r.in.SigNoz = &fakeAlerts{}
+	if err := r.in.SweepSigNoz(ctx, at("2026-11-26T04:29:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &AlertIntake{Namespaces: r.ns, Projects: r.in.Projects, Store: r.store, Forgejo: r.in.Forgejo, Workflows: r.flows,
+		Budget: testBudget, Kube: r.in.Kube, Namespace: "factory"}
+	later := claim
+	later.At = at("2026-11-26T04:30:00Z")
+	if err := restarted.RunnerPass(ctx, []RunnerHold{later}, false, at("2026-11-26T04:31:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	row, _, _ := r.store.AlertByFingerprint(ctx, AlertSigNoz, "ci/claim")
+	if _, firing := firingSince(row); !firing || row.Detail["starts_at"] != "2026-11-26T04:24:00Z" || len(r.store.tasks) != 2 || len(r.fj.comments) != 0 {
+		t.Fatalf("after the sweep and a restart: row %+v, %d tasks, comments %q; want the claim still firing from 04:24, no new card", row, len(r.store.tasks), r.fj.comments)
+	}
+}

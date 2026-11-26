@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -172,6 +173,8 @@ type CISpawner struct {
 	smokeDone, smokeMissed map[int64]string
 	// sweeps run in each reconcile pass, after the CI namespaces'
 	sweeps []func(ctx context.Context)
+	// raise takes what each poll saw of the runner pods' starts (RaiseStarts)
+	raise func(ctx context.Context, holds []RunnerHold, started bool, now time.Time) error
 	// deaths reads how a runner pod ended, within deathBound
 	// (ciDeathBound); it never waits for a kill line
 	deaths     deathReader
@@ -182,6 +185,89 @@ type CISpawner struct {
 // The upstream copy's leftover namespaces go this way.
 func (s *CISpawner) SweepEachPass(sweep func(ctx context.Context)) {
 	s.sweeps = append(s.sweeps, sweep)
+}
+
+// RaiseStarts has each poll that read every runner pod and every job list
+// hand raise the causes that keep runner pods from starting, and whether a
+// runner pod runs or no job waits for one; set before Run.
+func (s *CISpawner) RaiseStarts(raise func(ctx context.Context, holds []RunnerHold, started bool, now time.Time) error) {
+	s.raise = raise
+}
+
+// RunnerHold is one cause that keeps runner pods from starting, as a poll
+// saw it: Key and Words name it, At is when its first pod or job had waited
+// on it for ciStartWait, and Lines say what each one waits on.
+type RunnerHold struct {
+	Key, Words string
+	At         time.Time
+	Lines      []string
+}
+
+// runnerStarts is what one poll saw of the runner pods' starts: the
+// causes they wait on, whether one runs, and whether a read failed.
+type runnerStarts struct {
+	holds   []RunnerHold
+	running bool
+	unread  bool
+}
+
+// add counts line under the cause key, which held its pod or job from at.
+func (st *runnerStarts) add(key, words string, at time.Time, line string) {
+	i := slices.IndexFunc(st.holds, func(h RunnerHold) bool { return h.Key == key })
+	if i < 0 {
+		st.holds = append(st.holds, RunnerHold{Key: key, Words: words, At: at})
+		i = len(st.holds) - 1
+	}
+	h := &st.holds[i]
+	h.At, h.Lines = earliest(h.At, at), append(h.Lines, line)
+}
+
+// ciStartWait is how long a runner pod may stay Pending before the cause
+// it waits on is raised: its pull, its claim's provision and its placement
+// take seconds to minutes when nothing is wrong.
+const ciStartWait = 10 * time.Minute
+
+// hold adds to st the cause the Pending runner pod of ns waits on, once it
+// has waited ciStartWait since its scheduling was first decided (its
+// PodScheduled condition): a volume claim of the namespace that is not
+// bound, with the claim's newest event, else the scheduler's refusal or the
+// first container that waits, with the pod's newest event. The pod stays:
+// the scheduler and the provisioner retry it themselves.
+func (s *CISpawner) hold(ctx context.Context, ns string, st *runnerStarts) {
+	d, err := s.kube.PodDiagnosis(ctx, ns, ciPodName)
+	if err != nil {
+		log.Printf("ci spawner: %s: read the Pending runner pod: %v", ns, err)
+		st.unread = true
+		return
+	}
+	i := slices.IndexFunc(d.Conditions, func(c PodCondition) bool { return c.Type == "PodScheduled" })
+	if i < 0 || s.now().Sub(d.Conditions[i].Since) < ciStartWait {
+		return
+	}
+	at := d.Conditions[i].Since.Add(ciStartWait)
+	claims, err := s.kube.VolumeClaims(ctx, ns)
+	if err != nil {
+		log.Printf("ci spawner: %s: read the volume claims of the Pending runner pod: %v", ns, err)
+		st.unread = true
+		return
+	}
+	for _, c := range claims {
+		if c.Phase != "Bound" {
+			st.add("claim", "a volume claim is not bound", at, fmt.Sprintf("the volume claim %s in %s is %s: %s", c.Name, ns, c.Phase, cmp.Or(c.Event, "no event")))
+			return
+		}
+	}
+	key, words := "pending", "they stay Pending"
+	if d.Conditions[i].Status == "False" {
+		key, words = "unscheduled", "no node takes them"
+	} else if j := slices.IndexFunc(d.Containers, func(c ContainerState) bool { return c.State == "waiting" }); j >= 0 {
+		key, words = "wait/"+d.Containers[j].Reason, "a container waits with "+d.Containers[j].Reason
+	}
+	line := "the runner pod in " + ns + " waits: " + cmp.Or(waitsOn(d), "Pending")
+	if e, err := s.kube.NewestPodEvent(ctx, ns, ciPodName); err == nil && e != "" {
+		line += "; its newest event: " + e
+	}
+	st.add(key, words, at, line)
 }
 
 // ciReclaimWindow: a job whose runner served another waiting job is still
@@ -249,19 +335,14 @@ func (s *CISpawner) poll(ctx context.Context) {
 		log.Printf("ci spawner: repositories: %v", err)
 		return
 	}
-	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos)
+	var starts runnerStarts
+	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos, &starts)
 	fit := &fitReader{read: func() (*storageFit, error) { return s.storageFit(ctx, repos) }}
 
 	unread, waiting := map[string]bool{}, map[int64]bool{}
 	s.serveSmoke(ctx, repos, &slots, fit, waiting, unread)
 	s.jobs(ctx, repos, s.cfg.TrustedLabel, unread)
-	// a job Forgejo no longer lists as waiting is forgotten, unless its
-	// repository's list, or with no repository known any list, was not read
-	defer func() {
-		maps.DeleteFunc(s.pullFails, func(id int64, f pullFail) bool {
-			return !waiting[id] && !unread[f.repo] && (f.repo != "" || len(unread) == 0)
-		})
-	}()
+	defer s.raiseStarts(ctx, &starts, waiting, unread)
 	for _, kind := range s.jobKinds() {
 		for _, rj := range s.jobs(ctx, repos, kind.label, unread) {
 			job := rj.job
@@ -311,6 +392,30 @@ func (s *CISpawner) poll(ctx context.Context) {
 			fit.take(kind.node, s.podNeed(kind, rj.repo.Cache))
 			slots--
 		}
+	}
+}
+
+// raiseStarts ends a poll: a job Forgejo no longer lists as waiting is
+// forgotten, unless its repository's list, or with no repository known any
+// list, was not read; each job whose pulls the spawner gave up on is a
+// cause of its own; and a poll that read every pod and every list hands
+// starts to raise, started when a runner pod runs or no job waits.
+func (s *CISpawner) raiseStarts(ctx context.Context, starts *runnerStarts, waiting map[int64]bool, unread map[string]bool) {
+	maps.DeleteFunc(s.pullFails, func(id int64, f pullFail) bool {
+		return !waiting[id] && !unread[f.repo] && (f.repo != "" || len(unread) == 0)
+	})
+	for _, id := range slices.Sorted(maps.Keys(s.pullFails)) {
+		if f := s.pullFails[id]; f.tries >= ciPullTries {
+			starts.add("pull", "their image cannot be pulled", f.at,
+				fmt.Sprintf("job %d: %d runner pods could not pull their image, the last with %s", id, f.tries, f.why))
+		}
+	}
+	if s.raise == nil || starts.unread || len(unread) > 0 {
+		return
+	}
+	started := starts.running || !slices.Contains(slices.Collect(maps.Values(waiting)), true)
+	if err := s.raise(ctx, starts.holds, started, s.now()); err != nil {
+		log.Printf("ci spawner: the alerts of the runner pods' starts: %v", err)
 	}
 }
 
@@ -830,8 +935,9 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // fails closed. A namespace already Terminating (deletionTimestamp set) is
 // skipped entirely: teardown deleted it, its RoleBinding usually went with
 // it, so a pod read there answers Forbidden; the namespace is neither read
-// nor logged nor counted as live.
-func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
+// nor logged nor counted as live. Each live pod's start goes to st: whether
+// it runs, and what a Pending one waits on (hold).
+func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo, st *runnerStarts) (live int) {
 	for id, at := range s.tornDown {
 		if s.now().Sub(at) >= ciReclaimWindow {
 			delete(s.tornDown, id)
@@ -840,6 +946,7 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 	names, err := s.kube.ListNamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", "restricted")
 	if err != nil {
 		log.Printf("ci spawner: reconcile list: %v", err)
+		st.unread = true
 	}
 	if err == nil {
 		maps.DeleteFunc(s.pullSeen, func(name string, _ time.Time) bool {
@@ -856,11 +963,16 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 		phase, _, wait, err := s.kube.PodStatus(ctx, ns.Name, ciPodName)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("ci spawner: reconcile %s status: %v", ns.Name, err)
+			st.unread = true
 			live++
 			continue
 		}
 		pull := err == nil && s.pullFailed(ns.Name, wait)
 		if err == nil && phase != "Succeeded" && phase != "Failed" && !pull {
+			st.running = st.running || phase == "Running"
+			if phase == "Pending" {
+				s.hold(ctx, ns.Name, st)
+			}
 			live++
 			continue
 		}

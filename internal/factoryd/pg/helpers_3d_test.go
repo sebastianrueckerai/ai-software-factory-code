@@ -608,6 +608,10 @@ func (k *fakeKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolu
 
 func (k *fakeKube) DeletePersistentVolume(context.Context, string) error { return nil }
 
+func (k *fakeKube) VolumeClaims(context.Context, string) ([]factoryd.VolumeClaim, error) {
+	return nil, nil
+}
+
 func (k *fakeKube) CronJobs(context.Context, string) ([]factoryd.CronJobState, error) {
 	return nil, nil
 }

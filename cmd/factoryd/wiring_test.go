@@ -58,6 +58,20 @@ func TestWiringBuildsThePollerAsMainDoes(t *testing.T) {
 	}
 }
 
+// The CI spawner hands what its runner pods wait on to the alert intake
+// before it runs: without it, runner pods that never start reach no human.
+func TestMainWiresTheRunnerStartAlerts(t *testing.T) {
+	mainGo, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raise := regexp.MustCompile(`ciSpawner\.RaiseStarts\(alertIntake\.RunnerPass\)`).FindIndex(mainGo)
+	run := regexp.MustCompile(`ciSpawner\.Run\(`).FindIndex(mainGo)
+	if raise == nil || run == nil || raise[0] > run[0] {
+		t.Errorf("main.go does not hand the runner pods' starts to alertIntake.RunnerPass before ciSpawner.Run")
+	}
+}
+
 // The alert intake in main.go gets the in-cluster client as its Jobs reader
 // and runs the Job failed close every minute: without either, a Job failed
 // card never closes on its CronJob's next run, and nothing else notices.

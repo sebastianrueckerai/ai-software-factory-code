@@ -373,6 +373,8 @@ func main() {
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
 		Flux:      kube, SigNoz: signoz, Metrics: metrics}
 	registrar.FluxAlerts = alertIntake.FluxPass
+	// runner pods that do not start raise their causes as alerts
+	ciSpawner.RaiseStarts(alertIntake.RunnerPass)
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	// the store's images, read with a read:package token that can overwrite
 	// no tag: main CI's for the roller, the projects' for the imager

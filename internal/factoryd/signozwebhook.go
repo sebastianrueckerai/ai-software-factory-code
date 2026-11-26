@@ -68,11 +68,13 @@ const rolloutCap = 30 * time.Minute
 const fluxAlert = "Kustomization not Ready"
 
 // fluxPrefix starts a fluxAlert's fingerprint, flux/<namespace>/<name>,
-// and rolloutPrefix a stuck rollout's, rollout/<kind>/<namespace>/<name>
-// (RolloutPass); SigNoz's fingerprints are hexadecimal.
+// rolloutPrefix a stuck rollout's, rollout/<kind>/<namespace>/<name>
+// (RolloutPass), and runnerPrefix the CI spawner's, ci/<cause>
+// (RunnerPass); SigNoz's fingerprints are hexadecimal.
 const (
 	fluxPrefix    = "flux/"
 	rolloutPrefix = "rollout/"
+	runnerPrefix  = "ci/"
 )
 
 // fromFlux reports whether fingerprint is of an alert factoryd raises
@@ -80,6 +82,10 @@ const (
 func fromFlux(fingerprint string) bool {
 	return strings.HasPrefix(fingerprint, fluxPrefix) || strings.HasPrefix(fingerprint, rolloutPrefix)
 }
+
+// fromSpawner reports whether fingerprint is of an alert factoryd raises
+// from what its CI spawner saw of the runner pods' starts.
+func fromSpawner(fingerprint string) bool { return strings.HasPrefix(fingerprint, runnerPrefix) }
 
 // fluxGrace is how long a Kustomization that applied once reads not
 // Ready before its alert fires: ten of its one-minute reconciles, so a
@@ -179,7 +185,8 @@ type AlertBook interface {
 // is a comment. An alert no project owns is logged and dropped. A firing
 // that starts inside a rollout's window is held, filed only if it still
 // fires once no window holds (fileUnlessHeld). FluxPass takes factoryd's
-// own alert of a broken environment the same way, and SweepSigNoz resolves
+// own alert of a broken environment the same way, RolloutPass a stuck
+// rollout's and RunnerPass the CI runner pods', and SweepSigNoz resolves
 // the rows SigNoz no longer lists, so the alerts rows are the one answer
 // to whether an alert fires.
 type AlertIntake struct {
@@ -492,7 +499,8 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 // SweepSigNoz resolves, through take as its lost resolve delivery would
 // have, each SigNoz alerts row that still fires while SigNoz no longer
 // lists its fingerprint as active, so a row stays true to SigNoz (the rows
-// of the alerts factoryd raises from Flux are FluxPass's and RolloutPass's). The issue of a finished task hears
+// of the alerts factoryd raises are FluxPass's, RolloutPass's and
+// RunnerPass's). The issue of a finished task hears
 // nothing, so the stale rows a first sweep finds resolve quietly and only
 // a running card's issue gets the comment. A held row SigNoz still lists
 // goes to take as its redelivery would, which files it once no rollout's
@@ -528,7 +536,7 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 		f, listed := active[row.Fingerprint]
 		var a SigNozAlert
 		switch _, firing := firingSince(row); {
-		case !firing || fromFlux(row.Fingerprint):
+		case !firing || fromFlux(row.Fingerprint) || fromSpawner(row.Fingerprint):
 			continue
 		case !listed:
 			ns, _ := row.Detail["namespace"].(string)
@@ -822,6 +830,60 @@ func (in *AlertIntake) RolloutPass(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
+// RunnerPass raises an alert, through take as a SigNoz alert would, on each
+// cause that keeps CI runner pods from starting, as a poll of the CI
+// spawner saw them (holds), in the factory's own namespace: its name says
+// the cause, its value what the first pod or job waits on and how many
+// more do. A fired alert's start is its row's. An alert whose cause the
+// poll no longer saw resolves once started, a runner pod running or no job
+// waiting: a pull the spawner gave up on lives in its memory, so after a
+// restart it is not seen until the spawner gives up again, which alone
+// says nothing of the cause.
+func (in *AlertIntake) RunnerPass(ctx context.Context, holds []RunnerHold, started bool, now time.Time) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, in.Namespace)
+	if err != nil {
+		return err
+	}
+	firing := map[string]Alert{}
+	for _, row := range rows {
+		if _, ok := firingSince(row); ok && fromSpawner(row.Fingerprint) {
+			firing[row.Fingerprint] = row
+		}
+	}
+	var errs []error
+	for _, h := range holds {
+		fp := runnerPrefix + h.Key
+		start, ok := firingSince(firing[fp])
+		if !ok {
+			start = h.At
+		}
+		delete(firing, fp)
+		value := h.Lines[0]
+		if n := len(h.Lines) - 1; n > 0 {
+			value += fmt.Sprintf("; and %d more", n)
+		}
+		a := SigNozAlert{Status: "firing", StartsAt: start, Fingerprint: fp,
+			Labels: map[string]string{"alertname": "CI runner pods do not start: " + h.Words, "namespace": in.Namespace},
+			Annotations: map[string]string{"value": value,
+				"action": "fix what the runner pods wait on, in the cluster or its configuration. The alert clears once runner pods start again and none waits on its cause."}}
+		if err := in.take(ctx, a, now); err != nil {
+			errs = append(errs, fmt.Errorf("alert %s: %w", fp, err))
+		}
+	}
+	if !started {
+		return errors.Join(errs...)
+	}
+	for fp, row := range firing {
+		a := SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: fp, Labels: map[string]string{"alertname": row.Source, "namespace": in.Namespace}}
+		if err := in.take(ctx, a, now); err != nil {
+			errs = append(errs, fmt.Errorf("alert %s: %w", fp, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // firingSince is the start alerts row a records, and whether it still
 // fires: no resolve recorded at or after that start.
 func firingSince(a Alert) (time.Time, bool) {
@@ -933,6 +995,8 @@ func AlertHumanWhy(p Project, a SigNozAlert) string {
 		return "the project runs no agents"
 	case a.Labels["capacity"] != "":
 		return "a capacity alert needs a human's evidence: a coding agent can only raise a limit"
+	case fromSpawner(a.Fingerprint):
+		return "the cause lies in the cluster, which no agent works on"
 	}
 	return ""
 }
@@ -1099,11 +1163,14 @@ func alertService(labels map[string]string) string {
 }
 
 // alertParts is what alert a is called: its name, " on service <s>" (empty
-// without a service) and its source, SigNoz or Flux.
+// without a service) and its source, SigNoz, Flux or factoryd.
 func alertParts(a SigNozAlert) (name, on, source string) {
 	name, source = oneLine(a.Labels["alertname"]), "SigNoz"
-	if fromFlux(a.Fingerprint) {
+	switch {
+	case fromFlux(a.Fingerprint):
 		source = "Flux"
+	case fromSpawner(a.Fingerprint):
+		source = "factoryd"
 	}
 	if s := alertService(a.Labels); s != "" {
 		on = " on service " + s

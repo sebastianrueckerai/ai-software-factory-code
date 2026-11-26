@@ -1049,6 +1049,37 @@ func TestPodEventsOldestFirst(t *testing.T) {
 	}
 }
 
+// VolumeClaims lists a namespace's volume claims with their phase, and reads the
+// events of each claim that is not Bound, by its kind and name, for the
+// newest: where a provisioner says why it refused the claim.
+func TestInClusterKubeVolumeClaims(t *testing.T) {
+	var selectors []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/namespaces/factory-agents-ci-7/persistentvolumeclaims":
+			io.WriteString(w, `{"items":[{"metadata":{"name":"cache-ci-demo"},"status":{"phase":"Pending"}},`+
+				`{"metadata":{"name":"data"},"status":{"phase":"Bound"}}]}`)
+		case "/api/v1/namespaces/factory-agents-ci-7/events":
+			selectors = append(selectors, r.URL.Query().Get("fieldSelector"))
+			io.WriteString(w, `{"items":[`+
+				`{"reason":"ProvisioningFailed","message":"the shared path needs its switch","lastTimestamp":"2026-11-26T04:15:00Z"},`+
+				`{"reason":"ExternalProvisioning","message":"waiting for a volume to be created","lastTimestamp":"2026-11-26T04:14:00Z"}]}`)
+		default:
+			t.Errorf("%s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	got, err := kubeAt(t, srv).VolumeClaims(context.Background(), "factory-agents-ci-7")
+	want := []VolumeClaim{{Name: "cache-ci-demo", Phase: "Pending", Event: "ProvisioningFailed: the shared path needs its switch"}, {Name: "data", Phase: "Bound"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Claims = %+v, %v; want %+v", got, err, want)
+	}
+	if !slices.Equal(selectors, []string{"involvedObject.kind=PersistentVolumeClaim,involvedObject.name=cache-ci-demo"}) {
+		t.Errorf("event reads %q, want the unbound claim's alone", selectors)
+	}
+}
+
 func TestPodEventsKeepTheNewestTwenty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var items []string

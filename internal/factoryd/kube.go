@@ -122,6 +122,7 @@ type Kube interface {
 	ServicePods(ctx context.Context, namespace, selector string) ([]ServicePod, error)
 	PersistentVolumes(ctx context.Context) ([]PersistentVolume, error)
 	DeletePersistentVolume(ctx context.Context, name string) error
+	VolumeClaims(ctx context.Context, namespace string) ([]VolumeClaim, error)
 	CronJobs(ctx context.Context, namespace string) ([]CronJobState, error)
 	ScheduledBackups(ctx context.Context, namespace string) ([]CronJobState, error)
 	// Deployment reads a Deployment: a roll's rollout wait reads the
@@ -753,12 +754,18 @@ func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, 
 // has none.
 func (k *InClusterKube) NewestPodEvent(ctx context.Context, namespace, name string) (string, error) {
 	evs, err := k.PodEvents(ctx, namespace, name)
-	if err != nil || len(evs) == 0 {
-		return "", err
+	return newestEvent(evs), err
+}
+
+// newestEvent is the newest of events, oldest first, as "Reason: message";
+// among events of the newest time the first listed, "" for none.
+func newestEvent(evs []PodEvent) string {
+	if len(evs) == 0 {
+		return ""
 	}
 	newest := evs[len(evs)-1].At
 	e := evs[slices.IndexFunc(evs, func(e PodEvent) bool { return e.At.Equal(newest) })]
-	return e.Reason + ": " + e.Message, nil
+	return e.Reason + ": " + e.Message
 }
 
 const podEventsKept = 20
@@ -767,7 +774,49 @@ const podEventsKept = 20
 // event's time is its series' last observation, else its last, event or
 // first timestamp.
 func (k *InClusterKube) PodEvents(ctx context.Context, namespace, pod string) ([]PodEvent, error) {
-	q := url.Values{"fieldSelector": {"involvedObject.kind=Pod,involvedObject.name=" + pod}}
+	return k.events(ctx, namespace, "Pod", pod)
+}
+
+// VolumeClaim is a volume claim as the CI spawner and the claim alert's
+// close read it: its name, its phase and, while it is not Bound, its newest
+// event, where a provisioner says why it refused it.
+type VolumeClaim struct{ Name, Phase, Event string }
+
+// VolumeClaims lists the volume claims of namespace with their phase and
+// the newest event of each that is not Bound.
+func (k *InClusterKube) VolumeClaims(ctx context.Context, namespace string) ([]VolumeClaim, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				Phase string `json:"phase"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/persistentvolumeclaims", &list); err != nil {
+		return nil, err
+	}
+	out := make([]VolumeClaim, 0, len(list.Items))
+	for _, it := range list.Items {
+		c := VolumeClaim{Name: it.Metadata.Name, Phase: it.Status.Phase}
+		if c.Phase != "Bound" {
+			evs, err := k.events(ctx, namespace, "PersistentVolumeClaim", c.Name)
+			if err != nil {
+				return nil, err
+			}
+			c.Event = newestEvent(evs)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// events is the newest events of the object of kind and name, as PodEvents
+// says them.
+func (k *InClusterKube) events(ctx context.Context, namespace, kind, name string) ([]PodEvent, error) {
+	q := url.Values{"fieldSelector": {"involvedObject.kind=" + kind + ",involvedObject.name=" + name}}
 	var evs struct {
 		Items []struct {
 			Reason         string    `json:"reason"`

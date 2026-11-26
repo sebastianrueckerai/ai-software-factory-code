@@ -171,8 +171,11 @@ func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys Deploym
 			continue
 		}
 		source := "signoz"
-		if fromFlux(a.Fingerprint) {
+		switch {
+		case fromFlux(a.Fingerprint):
 			source = "flux"
+		case fromSpawner(a.Fingerprint):
+			source = "factoryd"
 		}
 		summary, _ := a.Detail["summary"].(string)
 		out = append(out, ProjectAlert{Name: a.Source, Namespace: ns, Source: source, Since: since, Summary: summary})
