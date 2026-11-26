@@ -36,10 +36,13 @@ func atLevel(t *testing.T, r *Runner, state string) {
 
 // Rung 2's retry of the failed dependency on the retry rig. By hand: at
 // assisted nothing is filed (no issue #9, no replacement task), rung 2's
-// step ends handed up with the retry proposed, and the human is asked once
-// with it preselected, whether the case was open or already at the human
-// (a new comment names the proposal, the question carries it). At
-// autonomous and full auto the same call files #9 and resolves the case.
+// step ends handed up with the retry proposed, and the human is asked with
+// it preselected: an open case, and one at the human whose rung 2 step the
+// proposal ends, by one face of their own (one comment, the face's; the
+// case at the human holds the face it had before as well), and one at the
+// human whose step expired by its face updated (a new comment names the
+// proposal, the question carries it). At autonomous and full auto the same
+// call files #9 and resolves the case.
 func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 	for _, mode := range []string{CaseOpen, CaseAtHuman, "at human, step expired"} {
 		status := CaseAtHuman
@@ -85,14 +88,15 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 							asked = append(asked, e)
 						}
 					}
-					if len(asked) != 1 {
-						t.Fatalf("%d question_asked rows, want the one face", len(asked))
+					if want := map[string]int{CaseOpen: 1, CaseAtHuman: 2, "at human, step expired": 1}[mode]; len(asked) != want {
+						t.Fatalf("%d question_asked rows, want %d", len(asked), want)
 					}
-					pre, _ := asked[0].Detail["preselected"].(map[string]any)
-					if pre["action"] != ActRetry || asked[0].Detail["recommendation"] == "" {
-						t.Errorf("face %+v, want retry preselected and recommended", asked[0].Detail)
+					face := asked[len(asked)-1]
+					pre, _ := face.Detail["preselected"].(map[string]any)
+					if pre["action"] != ActRetry || face.Detail["recommendation"] == "" {
+						t.Errorf("face %+v, want retry preselected and recommended", face.Detail)
 					}
-					recommendation, _ := asked[0].Detail["recommendation"].(string)
+					recommendation, _ := face.Detail["recommendation"].(string)
 					if !strings.HasPrefix(recommendation, "the dependency failed on a cap") || strings.Contains(recommendation, "user:pass") || strings.Contains(recommendation, "abc123def456") {
 						t.Errorf("recommendation %q, want rung 2's grounds alone, masked", recommendation)
 					}
@@ -102,7 +106,7 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 							on6 = append(on6, c.body)
 						}
 					}
-					if len(on6) != 1 || (status == CaseAtHuman && !strings.Contains(on6[0], "The factory agent proposes retry: ")) ||
+					if len(on6) != 1 || (mode == "at human, step expired" && !strings.Contains(on6[0], "The factory agent proposes retry: ")) ||
 						strings.Contains(on6[0], "user:pass") || strings.Contains(on6[0], "abc123def456") {
 						t.Errorf("comments on #6 %q, want one", on6)
 					}

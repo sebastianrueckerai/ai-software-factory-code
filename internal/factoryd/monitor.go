@@ -163,11 +163,12 @@ func (m *Monitor) WakeCases(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Retake runs rung 0 again on every case at the human of a project whose
-// kind rung 0 tries a firing row on (firesOn), its own pass once a minute:
-// a row that fires on the case's facts now takes it from the human
-// (retake). Every other case is skipped unread. A repository no project
-// names is not read, as the sweep reads none of its cards.
+// Retake runs over every case at the human of a project, its own pass once
+// a minute: rung 0 again on a kind it tries a firing row on (firesOn),
+// where a row that fires on the case's facts now takes it from the human
+// (retake), then rung 2 again on a case it did not judge, once the cause
+// is gone (judgeAgain). A repository no project names is not read, as the
+// sweep reads none of its cards.
 func (m *Monitor) Retake(ctx context.Context) error {
 	var errs []error
 	tree := m.Policy()
@@ -178,7 +179,7 @@ func (m *Monitor) Retake(ctx context.Context) error {
 			continue
 		}
 		for _, c := range cases {
-			if c.Status != CaseAtHuman || !firesOn(c.Kind) {
+			if c.Status != CaseAtHuman {
 				continue
 			}
 			if err := m.retake(ctx, c); err != nil {
@@ -192,12 +193,17 @@ func (m *Monitor) Retake(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// retake is Runner.retake on case c, one card at a time with the passes.
+// retake is Runner.retake, then Runner.judgeAgain, on case c, one card at a
+// time with the passes: a case rung 0 took asks no rung again.
 func (m *Monitor) retake(ctx context.Context, c Case) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, err := m.Runner.retake(ctx, c)
-	return err
+	if firesOn(c.Kind) {
+		if res, err := m.Runner.retake(ctx, c); err != nil || res != nil {
+			return err
+		}
+	}
+	return m.Runner.judgeAgain(ctx, c)
 }
 
 // logged runs card on card taskID and logs what fails. It answers only the

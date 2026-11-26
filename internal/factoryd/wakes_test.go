@@ -239,21 +239,37 @@ func TestWakerBatchesCases(t *testing.T) {
 	}
 }
 
-// The same case climbed again, its mark standing, wakes no second time:
-// a reprocessed batch wakes once.
-func TestWakerTheSameCaseWakesOnce(t *testing.T) {
+// A reprocessed batch wakes once: the row read again, the cursor set back
+// behind it, finds its mark standing. The same case handed to rung 2 again
+// by a row of its own, as the retake pass hands a case it did not judge
+// (judgeAgain), wakes a second time, and the first row read again still
+// wakes nobody.
+func TestWakerTheSameRowWakesOnceAndAClimbAgainWakes(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
-	wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
+	first := wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	again := wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE chat_wake_cursor SET event_id = $2 WHERE repository = $1`, "sf/wake", first-1); err != nil {
+		t.Fatal(err)
+	}
 	*clock = clock.Add(11 * time.Second)
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
 		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+	again := wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE chat_wake_cursor SET event_id = $2 WHERE repository = $1`, "sf/wake", first-1); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(11 * time.Second)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 2 || len(calls[1].cases) != 1 {
+		t.Fatalf("%d wakes, want a second one on the case: %+v", len(calls), calls)
 	}
 	if got := wakeCursorOf(t, s, "sf/wake"); got < again {
 		t.Fatalf("the cursor %d stayed behind the second climb %d", got, again)

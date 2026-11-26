@@ -586,14 +586,17 @@ func (s *PGStore) StartRung1Step(ctx context.Context, taskID string, limit int, 
 }
 
 // StartRungStep appends st, the in-progress step of a rung that works on its
-// case until st.DueAt, and makes that rung the case's owner with its wake at
-// the due, in one transaction: no step holds a case the case-wake pass would not wake.
-// ErrNotFound when the case is not live.
+// case until st.DueAt, in one transaction with the case's owner and wake: an
+// open case's owner is that rung with its wake at the due, so no step holds
+// an open case the case-wake pass would not wake; a case at the human stays
+// owned by rung 3 with no wake, its answer its end, and the due bounds the
+// step alone (ExpireSteps). ErrNotFound when the case is not live.
 func (s *PGStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
 	var id int64
 	err := s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
-		res, err := tx.ExecContext(ctx, `UPDATE cases SET owner_rung = $2, wake_on = '{}', next_wake_at = $3 WHERE id = $1 AND `+caseLive,
-			st.CaseID, st.Rung, st.DueAt)
+		res, err := tx.ExecContext(ctx, `UPDATE cases SET owner_rung = CASE WHEN status = $4 THEN $2 ELSE owner_rung END,
+			wake_on = CASE WHEN status = $4 THEN '{}' ELSE wake_on END, next_wake_at = CASE WHEN status = $4 THEN $3 ELSE next_wake_at END
+			WHERE id = $1 AND `+caseLive, st.CaseID, st.Rung, st.DueAt, CaseOpen)
 		if err := oneRow(res, err, fmt.Sprintf("live case %d", st.CaseID)); err != nil {
 			return nil, err
 		}

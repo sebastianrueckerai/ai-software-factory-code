@@ -8,7 +8,6 @@ import (
 	"log"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -581,11 +580,12 @@ func (w *Waker) staleCaseEvent(ctx context.Context, e Event) (bool, error) {
 	return !open, nil
 }
 
-// askKey is a case handed to rung 2's identity on its mark: its case id, so
-// a reprocessed batch wakes once.
+// askKey is the identity of row e, which hands a case to rung 2, on its
+// mark: the case and the row, so a reprocessed batch wakes once and a case
+// handed to rung 2 again (judgeAgain) wakes again.
 func askKey(e Event) string {
 	id, _ := toInt(e.Detail["case_id"])
-	return "case:" + strconv.Itoa(id)
+	return fmt.Sprintf("case:%d@%d", id, e.ID)
 }
 
 // askSentence is the ask event's own words: a shaped ask carries its full

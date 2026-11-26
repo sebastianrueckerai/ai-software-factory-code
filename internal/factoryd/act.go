@@ -704,9 +704,10 @@ func (r *Runner) autonomyOf(t Task) string {
 // propose ends rung 2's step on case c handed up with the action it
 // proposes, which nothing runs and nothing draws for, and puts it before
 // the human preselected with note, the rung's own words, which the human
-// reads as its grounds and so meet GroundsFaults first: a case still open
-// climbs and faces once, a case already at the human has its face updated
-// and one comment posted. The case's lock is held.
+// reads as its grounds and so meet GroundsFaults first: a case still open,
+// or one at the human whose rung 2 step own ends, climbs and faces once;
+// any other case at the human has its face updated and one comment posted.
+// The case's lock is held.
 func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own int64, note string) (ActResult, error) {
 	if faults := GroundsFaults(strings.TrimSpace(note)); len(faults) > 0 {
 		return ActResult{}, ErrActRefused("the note, which the human reads as the grounds of your proposal: " + strings.Join(faults, " "))
@@ -726,7 +727,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 	if err != nil {
 		return ActResult{}, err
 	}
-	if c.Status == CaseAtHuman {
+	if c.Status == CaseAtHuman && own == 0 {
 		err = r.proposeAtHuman(ctx, t, c, HandUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
 	} else {
 		var f CaseFacts

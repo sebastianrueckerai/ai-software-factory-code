@@ -1504,3 +1504,177 @@ func TestARerunOfAMergeCasesChecksGoesThroughActOnce(t *testing.T) {
 		t.Fatalf("case = %+v, resolution %+v; want it ended by the request's decision", got, got.Resolution)
 	}
 }
+
+// refusedAtHuman is the rung 2 rig's trip whose two rungs the provider
+// refused: the check-in's call, then rung 2's wake turn, which the Waker
+// started on the case's case_climbed row. The case faced the human marked
+// not judged (refusedSeen), and a call on big answered after both
+// refusals.
+func refusedAtHuman(t *testing.T) (rungRig, *Waker, *fakeWakeStarter, int64) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	out := g.trip(t, tripCap)
+	g.settle()
+	if err := drainPass(t, w); err != nil {
+		t.Fatal(err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 {
+		t.Fatalf("wakes = %+v, want the one on the first climb", calls)
+	}
+	if err := g.r.RefusedRung2(ctx, []int64{out.CaseID}, "the gateway refused the call"); err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || g.infoOf(t, out.CaseID) != refusedSeen {
+		t.Fatalf("case %s, info %q; want it at the human marked not judged", c.Status, g.infoOf(t, out.CaseID))
+	}
+	g.bigAnswered(t)
+	return g, w, starter, out.CaseID
+}
+
+// bigAnswered records a call on big the gateway allowed, a second from now,
+// on another card.
+func (g rungRig) bigAnswered(t *testing.T) {
+	t.Helper()
+	if _, err := g.s.PgDB().ExecContext(context.Background(), `INSERT INTO audit (ts, task_id, decision, reason, tool, model_alias)
+		VALUES (now() + interval '1 second', 't-other', 'allowed', 'x', '', 'big')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// retake runs the retake pass twice over the rig's projects.
+func (g rungRig) retake(t *testing.T) {
+	t.Helper()
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return g.r.PgCfg().Policy().Tree }, Now: time.Now}
+	for range 2 {
+		if err := m.Retake(context.Background()); err != nil {
+			t.Fatalf("Retake: %v", err)
+		}
+	}
+}
+
+// The provider refused both rungs, and the case faced the human marked not
+// judged (refusedAtHuman). Once big answers, two retake passes give the
+// case to rung 2 once more: a second rung 2 step, in progress, and a second
+// case_climbed row, while the case stays at the human, owned by rung 3 with
+// no wake, which the heal pass leaves as it is and the case-wake pass does
+// not list. The Waker wakes the agent on that row, though it woke it for
+// the case before. Rung 2's analysis then faces the human again: a second
+// comment and a second ask, whose recommendation is rung 2's and whose view
+// is its finding with the line of the check-in, which no pass asked again,
+// and no line that the agent did not judge it, and the run hears the new
+// face's comment, 502.
+func TestARefusedCaseIsJudgedAgainOnceTheProviderAnswers(t *testing.T) {
+	g, w, starter, id := refusedAtHuman(t)
+	ctx := context.Background()
+	g.retake(t)
+	if two := g.stepsOfRung(t, id, 2); len(two) != 2 || two[1].Outcome != StepInProgress || two[1].DueAt == nil || len(g.rows(t, EventCaseClimbed)) != 2 {
+		t.Fatalf("rung 2 steps %+v, %d case_climbed rows; want a second step in progress and a second row", two, len(g.rows(t, EventCaseClimbed)))
+	}
+	if _, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	if c := caseByID(t, g.s, id); c.Status != CaseAtHuman || c.OwnerRung != 3 || c.NextWakeAt != nil {
+		t.Fatalf("case %s owned by rung %d waking at %v; want it at the human, owned by rung 3 with no wake", c.Status, c.OwnerRung, c.NextWakeAt)
+	}
+	due, err := g.s.DueCases(ctx, time.Now().Add(2*time.Hour), 100)
+	if err != nil || slices.ContainsFunc(due, func(c Case) bool { return c.ID == id }) {
+		t.Fatalf("due cases %+v, %v; want case %d among none", due, err, id)
+	}
+	g.r.PgSetNow(func() time.Time { return time.Now().Add(time.Minute) })
+	if err := drainPass(t, w); err != nil {
+		t.Fatal(err)
+	}
+	if calls := starter.recorded(); len(calls) != 2 || !slices.Equal(calls[1].cases, []int64{id}) {
+		t.Fatalf("wakes = %+v, want a second one on case %d", calls, id)
+	}
+	if _, err := g.r.HandUpRung2(ctx, "t1", id, "the pull request is merged on main", RungTwoRecommendation{Action: ActClose, Grounds: "nothing is left to build"}, nil); err != nil {
+		t.Fatalf("HandUpRung2: %v", err)
+	}
+	g.settle()
+	asks := g.asks(t)
+	newest := asks[len(asks)-1]
+	info, _ := newest.Detail["info"].(string)
+	const view = "The factory agent found:\n\n> the pull request is merged on main\n\nThe check-in did not judge it: the model provider refused."
+	if len(g.forge.comments) != 2 || len(asks) != 2 || newest.Detail["recommendation"] != "nothing is left to build" || newest.Detail["recommended_by"] != "the factory agent" || info != view {
+		t.Fatalf("%d comments, %d asks, the newest %+v, info %q; want a second face with rung 2's recommendation and the view %q", len(g.forge.comments), len(asks), newest.Detail, info, view)
+	}
+	faced := g.signalsOf(SignalCaseFaced)
+	if c := caseByID(t, g.s, id); c.Status != CaseAtHuman || c.CommentID != 502 || len(faced) != 2 || faced[1].sig.Case.Comment != 502 {
+		t.Fatalf("case %s faced at %d, case_faced signals %+v; want it at the human on comment 502 and the run told", c.Status, c.CommentID, faced)
+	}
+}
+
+// Rung 2 asked again decides: at autonomous its extend resolves the case at
+// the human on rung 2, by the step the retake pass started, records the
+// answer that settles the human's question, and tells the run.
+func TestARefusedCaseRungTwoDecidesIsResolved(t *testing.T) {
+	g, _, _, id := refusedAtHuman(t)
+	g.retake(t)
+	two := g.stepsOfRung(t, id, 2)
+	if len(two) != 2 || two[1].Outcome != StepInProgress {
+		t.Fatalf("rung 2 steps %+v; want a second one in progress", two)
+	}
+	started := two[1].ID
+	g.atAutonomy(policy.AutonomyAutonomous)
+	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: id, By: ChatUser, Via: ViaChat, Rung: 2,
+		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more session"}}); err != nil {
+		t.Fatalf("Act: %v", err)
+	}
+	c := caseByID(t, g.s, id)
+	two = g.stepsOfRung(t, id, 2)
+	answered := g.rows(t, EventQuestionAnswered)
+	resolved := g.signalsOf(SignalCaseResolved)
+	if c.Status != CaseResolved || c.Resolution.Rung != 2 || len(two) != 2 || two[1].ID != started || two[1].Outcome != StepResolved || two[1].Decision != ActExtend ||
+		len(answered) != 1 || answered[0].Detail["case_id"] != float64(id) || len(resolved) != 1 || resolved[0].sig.Case.CaseID != id {
+		t.Fatalf("case %s by %+v, rung 2 steps %+v, answers %+v, case_resolved %+v; want it resolved on rung 2's second step, answered and the run told",
+			c.Status, c.Resolution, two, answered, resolved)
+	}
+}
+
+// Rung 2 asked again and refused again leaves the case with the human: its
+// second step ends with the refusal, no comment and no ask follow, the face
+// still says no rung judged it, and the retake passes give the case to rung
+// 2 no third time, though big answered after the second refusal.
+func TestARefusedCaseRefusedAgainStaysWithTheHuman(t *testing.T) {
+	g, _, _, id := refusedAtHuman(t)
+	ctx := context.Background()
+	g.retake(t)
+	if err := g.r.RefusedRung2(ctx, []int64{id}, "the gateway refused the call"); err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	g.bigAnswered(t)
+	g.retake(t)
+	two := g.stepsOfRung(t, id, 2)
+	if c := caseByID(t, g.s, id); c.Status != CaseAtHuman || len(two) != 2 || two[1].Outcome != StepHandedUp ||
+		two[1].Found != "not judged: the model provider refused: the gateway refused the call" ||
+		len(g.forge.comments) != 1 || len(g.asks(t)) != 1 || g.infoOf(t, id) != refusedSeen || len(g.rows(t, EventCaseClimbed)) != 2 {
+		t.Fatalf("case %s, rung 2 steps %+v, %d comments, %d asks, %d climbs; want it at the human with its one face and no third ask",
+			c.Status, two, len(g.forge.comments), len(g.asks(t)), len(g.rows(t, EventCaseClimbed)))
+	}
+}
+
+// Rung 2 asked again proposes: at manual its extend is a proposal, and the
+// case at the human faces again with it: a second ask preselecting the
+// extend, recommended by the factory agent on the proposal's grounds, whose
+// view says nothing of an agent that did not judge it.
+func TestARefusedCaseRungTwoProposesFacesAgain(t *testing.T) {
+	g, _, _, id := refusedAtHuman(t)
+	g.retake(t)
+	out, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: id, By: ChatUser, Via: ViaChat, Rung: 2,
+		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more session clears the finding"}})
+	if err != nil || !out.Proposed {
+		t.Fatalf("Act = %+v, %v; want a proposal", out, err)
+	}
+	g.settle()
+	asks := g.asks(t)
+	newest := asks[len(asks)-1]
+	pre, _ := newest.Detail["preselected"].(map[string]any)
+	info, _ := newest.Detail["info"].(string)
+	if c := caseByID(t, g.s, id); c.Status != CaseAtHuman || len(asks) != 2 || pre["action"] != ActExtend || newest.Detail["recommended_by"] != "the factory agent" ||
+		newest.Detail["recommendation"] != "one more session clears the finding" || strings.Contains(info, "The factory agent did not judge it") {
+		t.Fatalf("case %s, %d asks, the newest %+v; want a second face preselecting the extend on rung 2's grounds", c.Status, len(asks), newest.Detail)
+	}
+}
