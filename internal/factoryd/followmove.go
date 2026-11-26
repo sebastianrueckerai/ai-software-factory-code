@@ -301,12 +301,10 @@ func (r *Runner) FollowJudge(ctx context.Context, in FollowMoveInput, landed Fol
 	if err != nil {
 		return FollowVerdict{}, err
 	}
-	tree := r.cfg.Policy()
-	project := tree.Projects[in.Project]
-	if why, err := r.followStatuses(ctx, repo, project.Chain.Requires, landed); err != nil || why != "" {
+	if why, err := r.followChain(ctx, repo, landed); err != nil || why != "" {
 		return FollowVerdict{Why: why}, err
 	}
-	r.followStep(ctx, repo, in, "Flux applied "+ShortSHA(landed.Commit)+": "+strings.Join(project.Chain.Requires, ", ")+" are success.")
+	r.followStep(ctx, repo, in, "the chain is green on "+ShortSHA(landed.Commit)+" or a later commit of main that holds it: CI and Flux applied it.")
 	if r.Follow.Probe != nil {
 		if failing := r.Follow.Probe(ctx); len(failing) > 0 {
 			return FollowVerdict{Why: "a dependency does not answer: " + strings.Join(failing, "; ")}, nil
@@ -365,73 +363,56 @@ func (r *Runner) followCommits(ctx context.Context, repo Repo, commit string) []
 	return out
 }
 
-// followStatuses waits for each of required to be success on the merge
-// commit or on a later commit of main that contains it, and answers why one
-// is not: a failure or error status at once, when no commit shows success
-// for it, and a status that is not success rolloutCap after the merge.
-func (r *Runner) followStatuses(ctx context.Context, repo Repo, required []string, landed FollowLanded) (string, error) {
-	if len(required) == 0 {
-		return "", nil
-	}
+// followChain waits for the project's chain to be green on the merge commit
+// or on a later commit of main that contains it, by the rule the chain poller
+// holds a head to (ChainPoller.CommitVerdict: the CI runs of the push and the
+// contexts chain.requires). It answers why not: a red commit at once, with
+// the run's name and link or the context and its text, and a chain that is
+// not green rolloutCap after the merge.
+func (r *Runner) followChain(ctx context.Context, repo Repo, landed FollowLanded) (string, error) {
 	until := landed.At.Add(rolloutCap)
 	for {
-		commits := r.followCommits(ctx, repo, landed.Commit)
-		var all []map[string]CommitStatus // by commit, by context
+		var red, waiting string
 		var readErr error
-		for _, c := range commits {
-			st, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, c)
+		good := false
+		for _, c := range r.followCommits(ctx, repo, landed.Commit) {
+			verdict, findings, err := r.Follow.Chain.CommitVerdict(ctx, repo.String(), c)
 			if err != nil {
 				readErr = err
 				break
 			}
-			by := map[string]CommitStatus{}
-			for _, s := range st.Statuses {
-				by[s.Context] = s
-			}
-			all = append(all, by)
-		}
-		if readErr != nil {
-			if !r.Clock().Before(until) {
-				return "", readErr
-			}
-			log.Printf("follow: the statuses of %s: %v", ShortSHA(landed.Commit), readErr)
-		}
-		waiting := ""
-		for _, name := range required {
-			var seen *CommitStatus
-			var on string
-			good := false
-			for i, by := range all {
-				st, ok := by[name]
-				switch {
-				case !ok:
-				case st.State == "success":
-					good = true
-				case seen == nil || st.State == "failure" || st.State == "error":
-					seen, on = &st, commits[i]
+			switch verdict {
+			case "success":
+				good = true
+			case "failure":
+				if red == "" {
+					where := "the merge commit " + ShortSHA(c)
+					if c != landed.Commit {
+						where = "commit " + ShortSHA(c) + " after the merge commit " + ShortSHA(landed.Commit)
+					}
+					red = fmt.Sprintf("the chain is red on %s: %s", where, strings.Join(findings, "; "))
 				}
-			}
-			switch {
-			case good:
-			case seen != nil && (seen.State == "failure" || seen.State == "error"):
-				where := "the merge commit " + ShortSHA(on)
-				if on != landed.Commit {
-					where = "commit " + ShortSHA(on) + " after the merge commit " + ShortSHA(landed.Commit)
-				}
-				return fmt.Sprintf("the status “%s” of %s is %s: %s", name, where, seen.State, seen.Description), nil
-			case waiting != "":
-			case seen != nil:
-				waiting = name + " is " + seen.State
 			default:
-				waiting = name + " has not reported"
+				if waiting == "" {
+					waiting = strings.Join(findings, "; ")
+				}
 			}
 		}
-		if waiting == "" && readErr == nil {
+		switch {
+		case readErr == nil && good:
 			return "", nil
+		case readErr == nil && red != "":
+			return red, nil
 		}
 		now := r.Clock()
 		if !now.Before(until) {
-			return fmt.Sprintf("the merge commit %s has no success status within %s: %s", ShortSHA(landed.Commit), rolloutCap, waiting), nil
+			if readErr != nil {
+				return "", readErr
+			}
+			return fmt.Sprintf("the chain is not green on the merge commit %s within %s: %s", ShortSHA(landed.Commit), rolloutCap, waiting), nil
+		}
+		if readErr != nil {
+			log.Printf("follow: the chain of %s: %v", ShortSHA(landed.Commit), readErr)
 		}
 		activity.RecordHeartbeat(ctx)
 		if err := r.pause(ctx, min(rollPoll, until.Sub(now))); err != nil {

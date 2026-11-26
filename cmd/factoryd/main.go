@@ -509,6 +509,7 @@ func main() {
 	if err := chainPoller.RegisterPollAge(metrics.Meter); err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
+	runner.Follow.Chain = chainPoller
 	webhookIntake.Nudge = chainPoller.Nudge
 	go chainPoller.Run(ctx)
 	// the factory's own dependency health (roadmap 299): the provider seam

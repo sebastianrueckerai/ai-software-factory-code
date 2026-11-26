@@ -1371,6 +1371,51 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 	return "success", nil, stuck, nil
 }
 
+// CommitVerdict is the verdict of the chain on sha of repository by the rule
+// of a head, headVerdict: the CI runs of the push on the commit and the
+// contexts the project's chain requires. verdict is success, failure or
+// pending; findings name each red or pending run with its link, and each
+// required context with its state and the text of the status.
+func (p *ChainPoller) CommitVerdict(ctx context.Context, repository, sha string) (verdict string, findings []string, err error) {
+	proj, ok, err := p.projectOf(ctx, repository)
+	if err != nil || !ok {
+		return "", nil, errors.Join(err, fmt.Errorf("no active project serves %s", repository))
+	}
+	seen, err := p.mainRuns(ctx, proj)
+	if err != nil {
+		return "", nil, err
+	}
+	_, cfg, _ := p.Policy().ProjectOf(repository)
+	repo := proj.Repo()
+	verdict, findings, _, err = p.headVerdict(ctx, repo, cfg.Chain.Resolved(), seen, sha)
+	if err != nil || verdict == "success" {
+		return verdict, findings, err
+	}
+	combined, err := p.Forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return "", nil, err
+	}
+	for i, f := range findings {
+		var index int64
+		if _, err := fmt.Sscanf(f, "CI run %d failure", &index); err == nil && strings.HasSuffix(f, " failure") {
+			findings[i] = fmt.Sprintf("%s (%s/%s/actions/runs/%d)", f, p.Forgejo.PublicURL, repo, index)
+		}
+		for _, s := range combined.Statuses {
+			if s.Description != "" && (f == RequiredContextLine(s.Context, "failure") || f == RequiredContextLine(s.Context, "error")) {
+				findings[i] = f + " (" + s.Description + ")"
+			}
+		}
+	}
+	if verdict == "failure" {
+		for _, s := range combined.Statuses {
+			if (s.State == "failure" || s.State == "error") && !slices.Contains(cfg.Chain.Requires, s.Context) {
+				findings = append(findings, fmt.Sprintf("check “%s” %s (%s)", s.Context, s.State, cmp.Or(s.Description, "no text")))
+			}
+		}
+	}
+	return verdict, findings, nil
+}
+
 // watch follows proj's head row's verdict: pending past the project's
 // stall bound records the stall once (stalled) and climbs the stall
 // ladder every tick (climb) until a member dismisses it; concluded

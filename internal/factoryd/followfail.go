@@ -141,11 +141,10 @@ func (r *Runner) FollowReturn(ctx context.Context, in FollowMoveInput, landed Fo
 			return FollowReturned{PR: pr.Number, Why: cmp.Or(why, fmt.Sprintf("pull request #%d was closed without a merge", pr.Number))}, nil
 		}
 	}
-	project := r.cfg.Policy().Projects[in.Project]
-	if why, err := r.followStatuses(ctx, repo, project.Chain.Requires, FollowLanded{Commit: state.MergeCommit, At: r.Clock()}); err != nil || why != "" {
+	if why, err := r.followChain(ctx, repo, FollowLanded{Commit: state.MergeCommit, At: r.Clock()}); err != nil || why != "" {
 		return FollowReturned{PR: state.Number, Why: "the revert merged as " + ShortSHA(state.MergeCommit) + ", and " + why}, err
 	}
-	r.followStep(ctx, repo, in, "the return held: "+ShortSHA(state.MergeCommit)+" is success.")
+	r.followStep(ctx, repo, in, "the return held: the chain is green on "+ShortSHA(state.MergeCommit)+".")
 	return FollowReturned{PR: state.Number, Held: true}, nil
 }
 
@@ -191,7 +190,7 @@ func (r *Runner) RetryFollow(ctx context.Context, t Task) error {
 		if res.Part.Name != part || res.Behind() == 0 {
 			continue
 		}
-		if line, err := r.storeLacks(tree, res); err != nil {
+		if line, err := r.storeLacks(ctx, tree, res); err != nil {
 			return err
 		} else if line != "" {
 			return errors.New(line)

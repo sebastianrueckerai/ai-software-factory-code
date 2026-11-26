@@ -92,7 +92,13 @@ func (s HTTPStore) Holds(t Target) error {
 	default:
 		url = base + "/api/packages/upstream/" + t.Path
 	}
-	res, err := s.get(http.MethodHead, url, "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json")
+	// Forgejo answers a Helm archive's HEAD with 405: it is read with a GET
+	// and closed unread, as the infra repository's store test reads it
+	method := http.MethodHead
+	if t.Kind == KindChart {
+		method = http.MethodGet
+	}
+	res, err := s.get(method, url, "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json")
 	if err != nil {
 		if strings.HasSuffix(err.Error(), "status 404") {
 			return fmt.Errorf("%s: %w", t.Path, ErrMissing)

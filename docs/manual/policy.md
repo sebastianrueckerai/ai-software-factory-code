@@ -901,12 +901,14 @@ request and a `follow_step` event.
    pull request and leaves the part until the lists carry its next version. The workflow
    reads the pull request every 5 minutes. After 14 days without a decision, the factory
    closes the pull request and the move ends.
-3. The judgment reads the merge commit. Each status in `chain.requires` must be success,
-   and a failure or error status fails the move at once. After 30 minutes without success
-   the move fails. Then one pass of the dependency probes (object storage, provider
-   API, Forgejo, Postgres, Temporal and OpenBao unsealed) and one call of the `small`
-   class through the gateway must answer. Then no alert of the project's namespaces may
-   start in the 10 minutes after the merge. A firing that a rollout window holds counts.
+3. The judgment first waits for the project's chain to be green on the merge commit or on a
+   later commit of main that holds it, by the rule the chain poller holds a head to: the CI runs
+   of the push and the contexts in `chain.requires`. A red run or context fails the move at once,
+   and the failure text names the run with its link, or the context with its text. A run or context
+   that is still waiting is waited for, for at most 30 minutes. Then one pass of the dependency
+   probes (object storage, provider API, Forgejo, Postgres, Temporal and OpenBao unsealed) and one
+   call of the `small` class through the gateway must answer. Then no alert of the project's
+   namespaces may start in the 10 minutes after the merge. A firing that a rollout window holds counts.
 4. A good move ends the run as `done` and starts the routine's next run at once, so the
    chain goes on while a part is behind.
 

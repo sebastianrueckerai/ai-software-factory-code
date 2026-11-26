@@ -164,7 +164,7 @@ func TestFollowMoveAloneGoodPath(t *testing.T) {
 	want := []string{
 		"the checks of pull request head head40 are green.",
 		"merged as merge40.",
-		"Flux applied merge40: flux/flux-system, flux/platform are success.",
+		"the chain is green on merge40 or a later commit of main that holds it: CI and Flux applied it.",
 		"the dependencies answer and the small model class answers.",
 		"no alert of the project's namespaces fired in the 10m0s after the merge: the move is settled.",
 		"done: moved: ghcr.io/berriai/litellm: 1.102.4 to 1.108.17",
@@ -213,16 +213,16 @@ func TestFollowJudgeFailures(t *testing.T) {
 	}{
 		"a failed status": {func(m *moveRun) {
 			m.forge.mergeStatus = []CommitStatus{{State: "failure", Context: "flux/flux-system", Description: "HelmRelease platform/litellm: upgrade retries exhausted"}, {State: "success", Context: "flux/platform"}}
-		}, "the status “flux/flux-system” of the merge commit merge40 is failure: HelmRelease platform/litellm: upgrade retries exhausted"},
+		}, "the chain is red on the merge commit merge40: required context flux/flux-system: failure (HelmRelease platform/litellm: upgrade retries exhausted)"},
 		"an errored status": {func(m *moveRun) {
 			m.forge.mergeStatus = []CommitStatus{{State: "success", Context: "flux/flux-system"}, {State: "error", Context: "flux/platform", Description: "health check failed"}}
-		}, "the status “flux/platform” of the merge commit merge40 is error: health check failed"},
+		}, "the chain is red on the merge commit merge40: required context flux/platform: error (health check failed)"},
 		"a status that never reports": {func(m *moveRun) {
 			m.forge.mergeStatus = []CommitStatus{{State: "success", Context: "flux/flux-system"}}
-		}, "the merge commit merge40 has no success status within 30m0s: flux/platform has not reported"},
+		}, "the chain is not green on the merge commit merge40 within 30m0s: required context flux/platform: not reported"},
 		"a status that stays pending": {func(m *moveRun) {
 			m.forge.mergeStatus = []CommitStatus{{State: "success", Context: "flux/flux-system"}, {State: "pending", Context: "flux/platform"}}
-		}, "the merge commit merge40 has no success status within 30m0s: flux/platform is pending"},
+		}, "the chain is not green on the merge commit merge40 within 30m0s: required context flux/platform: pending"},
 		"a dependency probe": {func(m *moveRun) { m.probe = []string{"openbao: sealed"} },
 			"a dependency does not answer: openbao: sealed"},
 		"the model call": {func(m *moveRun) { m.gateway = http.StatusServiceUnavailable },
@@ -415,13 +415,13 @@ func TestFollowMoveJudgmentFailureReturnsAndFilesOneCard(t *testing.T) {
 	wantText(t, text,
 		"The follow move of part litellm failed. Try it again?",
 		"part litellm (lane alone) in pull request #40: ghcr.io/berriai/litellm: 1.102.4 to 1.108.17",
-		"The move failed: the status “flux/flux-system” of the merge commit merge40 is failure: HelmRelease platform/litellm: upgrade retries exhausted",
+		"The move failed: the chain is red on the merge commit merge40: required context flux/flux-system: failure (HelmRelease platform/litellm: upgrade retries exhausted)",
 		"The factory returned the move: pull request #41 reverted the merge merge40, and its checks and Flux's statuses are success.",
 		"About this part: The migration does not go back.",
 		"The maker's release notes: https://example.org/litellm/releases",
 		"Try the move again opens a new pull request for the same versions")
 	run := m.lastRun(t)
-	if run.Outcome != "failed" || !strings.HasPrefix(run.Note, "part litellm: the status “flux/flux-system”") {
+	if run.Outcome != "failed" || !strings.HasPrefix(run.Note, "part litellm: the chain is red on the merge commit merge40") {
 		t.Fatalf("run = %+v", run)
 	}
 	if len(m.wf.routineRuns) != 0 {
@@ -440,7 +440,7 @@ func TestFollowMoveReturnThatDoesNotHold(t *testing.T) {
 	m.workflow(t)
 	_, text := m.failureCard(t)
 	wantText(t, text,
-		"The factory could not return the move: the revert merged as merge41, and the status “flux/flux-system” of the merge commit merge41 is error: still not ready. Pull request #41, the revert, stands. The cluster may still run the new versions: look at it first.")
+		"The factory could not return the move: the revert merged as merge41, and the chain is red on the merge commit merge41: required context flux/flux-system: error (still not ready). Pull request #41, the revert, stands. The cluster may still run the new versions: look at it first.")
 }
 
 // A revert that conflicts with main is no return: the card says so.
@@ -590,17 +590,83 @@ func TestFollowJudgeReadsLaterCommitsOfMain(t *testing.T) {
 	}{
 		"success on a later commit": {true, good, ""},
 		"failure on a later commit": {true, []CommitStatus{{State: "failure", Context: "flux/flux-system", Description: "not ready"}, {State: "success", Context: "flux/platform"}},
-			"the status “flux/flux-system” of commit later2 after the merge commit merge40 is failure: not ready"},
-		"a later commit that lacks the merge": {false, good, "the merge commit merge40 has no success status within 30m0s: flux/flux-system has not reported"},
+			"the chain is red on commit laterc2 after the merge commit merge40: required context flux/flux-system: failure (not ready)"},
+		"a later commit that lacks the merge": {false, good, "the chain is not green on the merge commit merge40 within 30m0s: required context flux/flux-system: not reported; required context flux/platform: not reported"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := newMoveRun(t)
-			m.forge.main, m.forge.later, m.forge.mainHolds = "later2", []string{"later2", "later1"}, tc.holds
-			m.forge.statuses["later2"] = tc.status
+			m.forge.main, m.forge.later, m.forge.mainHolds = "laterc2", []string{"laterc2", "laterc1"}, tc.holds
+			m.forge.statuses["laterc2"] = tc.status
 			v := m.judge(t)
 			if (tc.want == "") != v.Ok || !strings.HasPrefix(v.Why, tc.want) {
 				t.Fatalf("verdict = %+v, want %q", v, tc.want)
 			}
 		})
+	}
+}
+
+const pushCheck = "config-check / config-check (push)"
+
+// A move whose merge commit passes Flux but fails the repository's own push
+// check is no good move: the chain is judged as the chain poller judges a
+// head, so the red CI run fails the judgment at once, the revert goes out,
+// and the failure card names the run with its link and the check with its text.
+func TestFollowMoveRedPushCheckFailsAndReturns(t *testing.T) {
+	stubRevert(t, "")
+	m := newMoveRun(t)
+	m.forge.runs["merge40"] = []ActionRun{{Index: 12, Status: "failure"}}
+	m.forge.mergeStatus = append(m.forge.mergeStatus, CommitStatus{State: "failure", Context: pushCheck, Description: "the store's copy of a line or a bootstrap line by its digest"})
+	m.forge.runs["merge41"] = []ActionRun{{Index: 13, Status: "success"}}
+	m.forge.revertStatus = []CommitStatus{{State: "success", Context: "flux/flux-system"}, {State: "success", Context: "flux/platform"}, {State: "success", Context: pushCheck}}
+	m.forge.statuses["head41"] = []CommitStatus{{State: "success", Context: checkContext}}
+	m.workflow(t)
+	if !m.forge.pulls[41].Merged {
+		t.Fatalf("the return = %+v, want its pull request merged", m.forge.pulls[41])
+	}
+	_, text := m.failureCard(t)
+	wantText(t, text,
+		"The move failed: the chain is red on the merge commit merge40: CI run 12 failure (https://git.example/sf/ai-software-factory-infra/actions/runs/12); check “config-check / config-check (push)” failure (the store's copy of a line or a bootstrap line by its digest)",
+		"The factory returned the move: pull request #41 reverted the merge merge40, and its checks and Flux's statuses are success.")
+}
+
+// A CI run that is still running is waited for within the cap, and the move
+// is good once it succeeds.
+func TestFollowJudgeWaitsForARunningPushRun(t *testing.T) {
+	m := newMoveRun(t)
+	m.forge.statuses["merge40"] = m.forge.mergeStatus
+	m.forge.runs["merge40"] = []ActionRun{{Index: 12, Status: "running"}}
+	pauses := 0
+	m.r.sleep = func(ctx context.Context, d time.Duration) error {
+		pauses++
+		if pauses == 3 {
+			m.forge.mu.Lock()
+			m.forge.runs["merge40"] = []ActionRun{{Index: 12, Status: "success"}}
+			m.forge.mu.Unlock()
+		}
+		return m.clock.sleep(ctx, d)
+	}
+	if v := m.judge(t); !v.Ok || pauses < 3 {
+		t.Fatalf("verdict = %+v after %d pauses, want a good move once the run succeeds", v, pauses)
+	}
+	// a run that never ends fails the move at the cap, naming the run
+	m = newMoveRun(t)
+	m.forge.statuses["merge40"] = m.forge.mergeStatus
+	m.forge.runs["merge40"] = []ActionRun{{Index: 12, Status: "running"}}
+	want := "the chain is not green on the merge commit merge40 within 30m0s: CI run 12 running (https://git.example/sf/ai-software-factory-infra/actions/runs/12)"
+	if v := m.judge(t); v.Ok || v.Why != want {
+		t.Fatalf("verdict = %+v, want %q", v, want)
+	}
+}
+
+// Green on a later commit of main that holds the merge makes the move good,
+// whatever the merge commit's own run said.
+func TestFollowJudgeLaterGreenCommitIsGood(t *testing.T) {
+	m := newMoveRun(t)
+	m.forge.main, m.forge.later, m.forge.mainHolds = "laterc2", []string{"laterc2"}, true
+	m.forge.runs["merge40"] = []ActionRun{{Index: 12, Status: "failure"}}
+	m.forge.runs["laterc2"] = []ActionRun{{Index: 14, Status: "success"}}
+	m.forge.statuses["laterc2"] = m.forge.mergeStatus
+	if v := m.judge(t); !v.Ok {
+		t.Fatalf("verdict = %+v, want a good move", v)
 	}
 }

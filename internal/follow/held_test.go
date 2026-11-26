@@ -53,6 +53,8 @@ func TestStoreHolds(t *testing.T) {
 			return
 		}
 		switch {
+		case strings.Contains(r.URL.Path, "/helm/") && r.Method != http.MethodGet:
+			w.WriteHeader(http.StatusMethodNotAllowed) // Forgejo's Helm endpoint answers no HEAD
 		case strings.Contains(r.URL.Path, "missing"):
 			w.WriteHeader(http.StatusNotFound)
 		case strings.Contains(r.URL.Path, "broken"):
@@ -71,6 +73,7 @@ func TestStoreHolds(t *testing.T) {
 	}{
 		{Target{Kind: KindImage, Path: "ghcr.io/a/b@" + dg("d"), Ref: dg("d")}, "/v2/upstream/ghcr.io/a/b/manifests/" + dg("d"), false, false},
 		{Target{Kind: KindChart, Path: "helm/temporal-1.8.0.tgz"}, "/api/packages/upstream/helm/temporal-1.8.0.tgz", false, false},
+		{Target{Kind: KindChart, Path: "helm/missing-1.0.0.tgz"}, "/api/packages/upstream/helm/missing-1.0.0.tgz", true, false},
 		{Target{Kind: KindFile, Path: "generic/node/v1/missing.tgz"}, "/api/packages/upstream/generic/node/v1/missing.tgz", true, false},
 		{Target{Kind: KindImage, Path: "x/broken@" + dg("1"), Ref: dg("1")}, "/v2/upstream/x/broken/manifests/" + dg("1"), false, true},
 		{Target{Kind: KindDerived, Path: "files/a.tar.gz:123456789abc"}, "/v2/upstream/files/a.tar.gz/manifests/123456789abc", false, false},
@@ -80,8 +83,12 @@ func TestStoreHolds(t *testing.T) {
 		if got := errors.Is(err, ErrMissing); got != tc.missing || (err != nil) != (tc.missing || tc.broken) {
 			t.Errorf("%s: err = %v, want missing %v broken %v", tc.t.Path, err, tc.missing, tc.broken)
 		}
-		if len(asked) != 1 || asked[0] != "HEAD "+tc.path {
-			t.Errorf("%s: asked %q, want HEAD %s", tc.t.Path, asked, tc.path)
+		verb := "HEAD "
+		if tc.t.Kind == KindChart {
+			verb = "GET "
+		}
+		if len(asked) != 1 || asked[0] != verb+tc.path {
+			t.Errorf("%s: asked %q, want %s%s", tc.t.Path, asked, verb, tc.path)
 		}
 	}
 }

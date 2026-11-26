@@ -116,12 +116,15 @@ type infraForge struct {
 	// files of each pull request
 	// storeLacks are the store paths that answer 404, storeReads the reads
 	storeLacks map[string]bool
+	storeCode  map[string]int // store paths that answer this status instead
 	storeReads []string
 	later      []string
-	merges     []string // "<branch> <head named by the merge>"
-	mainHolds  bool
-	raw        map[string]string
-	prFiles    map[int64][]string
+	// runs are the push runs of main by commit
+	runs      map[string][]ActionRun
+	merges    []string // "<branch> <head named by the merge>"
+	mainHolds bool
+	raw       map[string]string
+	prFiles   map[int64][]string
 }
 
 // mergedStatuses are the statuses a pull request's merge commit gets: a
@@ -145,7 +148,7 @@ func (f *infraForge) humanMerges(n int64) {
 func newInfraForge(t *testing.T, files map[string]string) *infraForge {
 	t.Helper()
 	return &infraForge{t: t, tar: infraTarball(t, files), main: "m1", pulls: map[int64]*fakePull{}, byBranch: map[string]int64{},
-		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}, comments: map[int64][]string{}, raw: map[string]string{}, storeLacks: map[string]bool{}, prFiles: map[int64][]string{}}
+		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}, comments: map[int64][]string{}, raw: map[string]string{}, runs: map[string][]ActionRun{}, storeLacks: map[string]bool{}, storeCode: map[string]int{}, prFiles: map[int64][]string{}}
 }
 
 // attempt is a pull request of a move's branch that exists already, whose
@@ -190,11 +193,23 @@ func (f *infraForge) handler() http.HandlerFunc {
 		switch {
 		case strings.HasPrefix(p, "/v2/upstream/") || strings.HasPrefix(p, "/api/packages/upstream/"):
 			f.storeReads = append(f.storeReads, r.Method+" "+p)
+			if code := f.storeCode[p]; code != 0 {
+				w.WriteHeader(code)
+				return
+			}
 			if f.storeLacks[p] {
 				http.NotFound(w, r)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
+		case p == followAPI+"/actions/runs":
+			runs := []map[string]any{}
+			for sha, rs := range f.runs {
+				for _, run := range rs {
+					runs = append(runs, map[string]any{"index_in_repo": run.Index, "commit_sha": sha, "prettyref": "main", "event": "push", "trigger_event": "push", "status": run.Status})
+				}
+			}
+			answer(http.StatusOK, map[string]any{"workflow_runs": runs})
 		case p == followAPI+"/branches/main":
 			answer(http.StatusOK, map[string]any{"name": "main", "commit": map[string]string{"id": f.main}})
 		case strings.HasPrefix(p, followAPI+"/archive/"):
@@ -373,10 +388,11 @@ func newFollowRun(t *testing.T, files map[string]string) *followRun {
 	t.Cleanup(srv.Close)
 	v := policy.Version{Tree: tree}
 	moves := &fakeMoves{}
-	r := &Runner{store: store, forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
+	r := &Runner{store: store, forgejo: &Forgejo{BaseURL: srv.URL, PublicURL: "https://git.example", BotUser: "factory-agent", BotPassword: "bot-pw"},
 		timeline: &Timeline{Objects: &fakeObjectStore{}, Events: &fakeEventRecorder{}, Store: store},
 		cfg:      RunnerConfig{Policy: func() policy.Version { return v }, Workflows: wf}, Routines: store,
 		Follow: &FollowDeps{Moves: moves, Cards: store}}
+	r.Follow.Chain = &ChainPoller{Forgejo: r.forgejo, Projects: store, Policy: r.cfg.Policy}
 	return &followRun{r: r, store: store, forge: forge, moves: moves, wf: wf, srv: srv}
 }
 
@@ -597,5 +613,36 @@ func TestFollowPassListsEqualMovesOnce(t *testing.T) {
 	}
 	if body := f.forge.bodies[40]; !strings.Contains(body, "- "+line+"\n") || strings.Count(body, "ghcr.io/berriai/litellm: 1.102.4") != 1 {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+// A store that answers neither 200 nor 404 is asked a few times, and the run
+// then ends with a line that says what it answered: the activity does not
+// retry without end, and the run row gets its note.
+func TestFollowPassEndsWithTheStoresAnswer(t *testing.T) {
+	f := newFollowRun(t, behindTree())
+	path := "/v2/upstream/ghcr.io/berriai/litellm/manifests/sha256:" + zeros("d")
+	f.forge.storeCode[path] = http.StatusBadGateway
+	var pauses []time.Duration
+	f.r.sleep = func(_ context.Context, d time.Duration) error { pauses = append(pauses, d); return nil }
+	res := f.run(t)
+	want := "part litellm: the store did not answer for ghcr.io/berriai/litellm@sha256:" + zeros("d") + " after 3 tries, and the last answer was HEAD " + f.srv.URL + path + ": status 502: no pull request opens"
+	if res.Outcome != "no change" || res.Note != want {
+		t.Fatalf("result = %+v, want %q", res, want)
+	}
+	if len(f.forge.storeReads) != 3 || len(pauses) != 2 || pauses[0] != followStoreWait || len(f.forge.commits) != 0 || len(f.moves.started) != 0 {
+		t.Fatalf("store reads %q, pauses %v, commits %v: want 3 tries with 2 waits and nothing filed", f.forge.storeReads, pauses, f.forge.commits)
+	}
+	// a 502 that clears on the second try is no refusal
+	f = newFollowRun(t, behindTree())
+	f.forge.storeCode[path] = http.StatusBadGateway
+	f.r.sleep = func(context.Context, time.Duration) error {
+		f.forge.mu.Lock()
+		defer f.forge.mu.Unlock()
+		delete(f.forge.storeCode, path)
+		return nil
+	}
+	if res := f.run(t); res.Outcome != "reported" {
+		t.Fatalf("result = %+v, want the move opened once the store answers", res)
 	}
 }

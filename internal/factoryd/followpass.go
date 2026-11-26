@@ -39,6 +39,11 @@ type FollowDeps struct {
 		StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error)
 	}
 	Alerts AlertRowReader
+	// Chain judges a commit of main by the rule of the chain poller's head
+	// (ChainPoller.CommitVerdict)
+	Chain interface {
+		CommitVerdict(ctx context.Context, repository, sha string) (verdict string, findings []string, err error)
+	}
 	// Probe runs one pass of the dependency probes and answers each failing
 	// one with its error.
 	Probe func(ctx context.Context) []string
@@ -134,7 +139,7 @@ func (r *Runner) followPass(ctx context.Context, p Project, rt policy.Routine, r
 			tried = append(tried, res.Part.Name)
 			continue
 		}
-		if line, err := r.storeLacks(tree, res); err != nil || line != "" {
+		if line, err := r.storeLacks(ctx, tree, res); err != nil || line != "" {
 			return "no change", line, err
 		}
 		in, err := r.startMove(ctx, p, rt, run, res, branch, pr)
@@ -202,11 +207,18 @@ func (r *Runner) followBehind(ctx context.Context, p Project) (mainTree, error) 
 	return mainTree{head, files, results, store}, nil
 }
 
+// followStoreTries is how often the store is asked for one object, with
+// followStoreWait between the tries, before the run ends with the answer it got.
+var (
+	followStoreTries = 3
+	followStoreWait  = 5 * time.Second
+)
+
 // storeLacks is "" when the store holds every reference part res moves to,
 // else the report line that names the first one it lacks: the bump copies
 // each new version into the store before its pull request, and a reference
 // the copy did not reach has no pull request to move to.
-func (r *Runner) storeLacks(tree mainTree, res follow.Result) (string, error) {
+func (r *Runner) storeLacks(ctx context.Context, tree mainTree, res follow.Result) (string, error) {
 	targets, err := follow.Targets(tree.files, res.Moves)
 	if err != nil {
 		return "", terminalError("the follow program refuses main at %s: %v", ShortSHA(tree.head), err)
@@ -215,11 +227,22 @@ func (r *Runner) storeLacks(tree mainTree, res follow.Result) (string, error) {
 		return fmt.Sprintf("part %s: the store lacks %s, which %s moves to: the bump's copy did not run for it, so no pull request opens", res.Part.Name, what, key)
 	}
 	for _, t := range targets {
-		switch err := tree.store.Holds(t); {
+		var err error
+		for try := 1; try <= followStoreTries; try++ {
+			if err = tree.store.Holds(t); err == nil || errors.Is(err, follow.ErrMissing) {
+				break
+			}
+			if try < followStoreTries {
+				if err := r.pause(ctx, followStoreWait); err != nil {
+					return "", err
+				}
+			}
+		}
+		switch {
 		case errors.Is(err, follow.ErrMissing):
 			return line(t.Key, t.Path), nil
 		case err != nil:
-			return "", fmt.Errorf("the store's answer for %s: %w", t.Path, err)
+			return fmt.Sprintf("part %s: the store did not answer for %s after %d tries, and the last answer was %v: no pull request opens", res.Part.Name, t.Path, followStoreTries, err), nil
 		}
 	}
 	return "", nil
