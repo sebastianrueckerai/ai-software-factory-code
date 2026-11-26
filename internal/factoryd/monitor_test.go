@@ -428,11 +428,11 @@ func TestClimbUnderTheCasesLockSkipsTheCheck(t *testing.T) {
 	}
 }
 
-// The re-take reads only the cases at the human of a kind rung 0 tries a
-// Fire row on: a human card's case, whose kind names none, costs no read
-// of its card, and a day cap's, opened today, whose cap_wait row finds the
-// card's own budget short of a session, costs one read of t1's timeline
-// and takes nothing.
+// The re-take reads a card only for a case at the human of a kind rung 0
+// tries a Fire row on: a human card's case, whose kind names none and
+// whose steps say no rung missed it, costs no read of its card, and a day
+// cap's, opened today, whose cap_wait row finds the card's own budget short
+// of a session, costs one read of t1's timeline and takes nothing.
 func TestRetakeReadsOnlyKindsWithAFiringRow(t *testing.T) {
 	ctx := context.Background()
 	g := newFactsRig(t)
@@ -573,5 +573,148 @@ func TestRetakeResumesAChecksWaitOnceARunnerTakesItsJobs(t *testing.T) {
 				t.Fatalf("case %s by %+v; want it resolved by %+v", c.Status, c.Resolution, want)
 			}
 		})
+	}
+}
+
+// judgeAgainRig is the facts rig with card t1 waiting on its human for case
+// 9, an open problem opened at 05:00: the provider refused rung 2's step,
+// which ran from 05:01 to 05:05, and the case faced the human marked not
+// judged. The clock is at 05:44.
+func judgeAgainRig(t *testing.T) (factsRig, Case) {
+	t.Helper()
+	g := newFactsRig(t)
+	g.r.timeline = &Timeline{Objects: g.r.objects, Events: g.store, Store: g.store}
+	g.r.now = func() time.Time { return factsAt(5, 44) }
+	c := Case{ID: 9, TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseAtHuman, OwnerRung: 3,
+		OpenedAt: factsAt(5, 0), Problem: "the run stopped on something no rule names", Facts: map[string]any{"head": "h2"}}
+	g.store.cases = append(g.store.cases, c)
+	const refusal = "not judged: the model provider refused: the gateway refused the call"
+	ended := factsAt(5, 5)
+	g.store.caseSteps = map[int64][]CaseStep{c.ID: {
+		{ID: 1, CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Outcome: StepHandedUp, Found: noRowFits},
+		{ID: 2, CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp, StartedAt: factsAt(5, 1), EndedAt: &ended, Found: refusal},
+		{ID: 3, CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Outcome: StepHandedUp, Found: refusal},
+		{ID: 4, CaseID: c.ID, Rung: 3, Actor: FactoryDecider, CommentID: 50},
+	}}
+	return g, c
+}
+
+// retakeTwice runs the retake pass twice on rig g.
+func retakeTwice(t *testing.T, g factsRig) {
+	t.Helper()
+	m := &Monitor{Store: g.store, Runner: g.r, Policy: func() policy.Tree { return g.r.cfg.Policy().Tree }}
+	for range 2 {
+		if err := m.Retake(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// givenToRungTwo checks that the passes on case c of rig g wrote, past the
+// steps and events it held before, one rung 2 step in progress due at the
+// rung's bound of 35m past 05:44 and one case_climbed row that names the
+// case, and that the case is still at the human, owned by rung 3 with no
+// wake.
+func givenToRungTwo(t *testing.T, g factsRig, c Case, steps, events int) {
+	t.Helper()
+	got, _ := g.store.CaseByID(context.Background(), c.ID)
+	if got.Status != CaseAtHuman || got.OwnerRung != 3 || got.NextWakeAt != nil {
+		t.Fatalf("case %s owned by rung %d waking at %v; want it at the human, owned by rung 3 with no wake", got.Status, got.OwnerRung, got.NextWakeAt)
+	}
+	added := g.store.caseSteps[c.ID][steps:]
+	due := factsAt(6, 19)
+	if len(added) != 1 || added[0].Rung != 2 || added[0].Actor != ChatUser || added[0].Outcome != StepInProgress || added[0].DueAt == nil || !added[0].DueAt.Equal(due) {
+		t.Fatalf("new steps %+v; want one of rung 2 in progress due at %s", added, due)
+	}
+	rows := g.store.events[events:]
+	if len(rows) != 1 || rows[0].Kind != EventCaseClimbed || rows[0].Detail["case_id"] != c.ID || rows[0].Detail["rung"] != 2 {
+		t.Fatalf("new rows %+v; want one case_climbed row naming case %d at rung 2", rows, c.ID)
+	}
+}
+
+// A case at the human no rung judged, for the provider refused rung 2's
+// step at 05:05, goes to rung 2 once more when a call on big answers after
+// the refusal, at 05:19, whichever card made it: two passes give it to rung
+// 2 once (givenToRungTwo). A call on big during the refused step, or on small
+// alone, writes nothing.
+func TestRetakeAsksRungTwoAgainOnceTheProviderAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		calls []fakeCall
+		asks  bool
+	}{
+		{"big answered after the refusal", []fakeCall{{alias: "big", at: factsAt(5, 19)}}, true},
+		{"big answered during the refused step", []fakeCall{{alias: "big", at: factsAt(5, 3)}}, false},
+		{"small alone answered", []fakeCall{{alias: "small", at: factsAt(5, 30)}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, c := judgeAgainRig(t)
+			g.store.answeredCalls = tc.calls
+			steps, events := len(g.store.caseSteps[c.ID]), len(g.store.events)
+			retakeTwice(t, g)
+			if tc.asks {
+				givenToRungTwo(t, g, c, steps, events)
+				return
+			}
+			got, _ := g.store.CaseByID(context.Background(), c.ID)
+			if got.Status != CaseAtHuman || len(g.store.caseSteps[c.ID]) != steps || len(g.store.events) != events {
+				t.Fatalf("case %s, steps %+v, %d new events; want it at the human and nothing written", got.Status, g.store.caseSteps[c.ID], len(g.store.events)-events)
+			}
+		})
+	}
+}
+
+// A case rung 2 was asked on again, whose second step the provider refused
+// too, stays with the human: rung 2 works a case at most twice, so the pass
+// writes nothing, though big answered after both refusals.
+func TestRetakeAsksRungTwoNoThirdTime(t *testing.T) {
+	g, c := judgeAgainRig(t)
+	second := factsAt(5, 30)
+	g.store.caseSteps[c.ID] = append(g.store.caseSteps[c.ID], CaseStep{ID: 5, CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp,
+		StartedAt: factsAt(5, 20), EndedAt: &second, Found: "not judged: the model provider refused: the gateway refused the call"})
+	g.store.answeredCalls = []fakeCall{{alias: "big", at: factsAt(5, 19)}, {alias: "big", at: factsAt(5, 40)}}
+	steps, events := len(g.store.caseSteps[c.ID]), len(g.store.events)
+	retakeTwice(t, g)
+	if len(g.store.caseSteps[c.ID]) != steps || len(g.store.events) != events {
+		t.Fatalf("steps %+v, %d new events; want nothing written", g.store.caseSteps[c.ID][steps:], len(g.store.events)-events)
+	}
+}
+
+// A case at the human whose rung 2 never ran, for the judgment budget was
+// spent, goes to rung 2 once the budget leaves a call room: with the month
+// spent the passes write nothing, the step that says so standing; once the
+// chat task has spent nothing, two passes give the case to rung 2 once
+// (givenToRungTwo).
+func TestRetakeAsksRungTwoOnceTheJudgmentBudgetLeavesRoom(t *testing.T) {
+	g, c := judgeAgainRig(t)
+	g.store.caseSteps[c.ID] = []CaseStep{
+		{ID: 1, CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Outcome: StepHandedUp, Found: noRowFits},
+		{ID: 2, CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Outcome: StepHandedUp, Found: "not judged, judgment budget spent: the chat task t-chat has 0.00 of 10.00 EUR left"},
+		{ID: 3, CaseID: c.ID, Rung: 3, Actor: FactoryDecider, CommentID: 50},
+	}
+	g.store.chatSpent = 1000
+	steps, events := len(g.store.caseSteps[c.ID]), len(g.store.events)
+	retakeTwice(t, g)
+	if len(g.store.caseSteps[c.ID]) != steps || len(g.store.events) != events {
+		t.Fatalf("the budget spent: steps %+v, %d new events; want nothing written", g.store.caseSteps[c.ID][steps:], len(g.store.events)-events)
+	}
+	g.store.chatSpent = 0
+	retakeTwice(t, g)
+	givenToRungTwo(t, g, c, steps, events)
+}
+
+// A due ask a spent budget keeps off leaves one step that says so: big
+// answered after rung 2's refusal, but the chat task's month is spent, so
+// two passes write one step of rung 0 that names the spent budget and no
+// rung 2 step.
+func TestRetakeNamesTheBudgetThatKeepsADueAskOff(t *testing.T) {
+	g, c := judgeAgainRig(t)
+	g.store.answeredCalls = []fakeCall{{alias: "big", at: factsAt(5, 19)}}
+	g.store.chatSpent = 1000
+	steps, events := len(g.store.caseSteps[c.ID]), len(g.store.events)
+	retakeTwice(t, g)
+	added := g.store.caseSteps[c.ID][steps:]
+	if len(added) != 1 || added[0].Rung != 0 || !strings.HasPrefix(added[0].Found, "not judged, judgment budget spent: the chat task ") || len(g.store.events) != events {
+		t.Fatalf("new steps %+v, %d new events; want one step of rung 0 naming the spent budget and no row", added, len(g.store.events)-events)
 	}
 }

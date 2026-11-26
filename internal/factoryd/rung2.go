@@ -94,10 +94,11 @@ type RungTwoRecommendation struct {
 // found as its finding, the recommendation as its decision and grounds and
 // the turn's reads, and climbs: the human is asked once, with the
 // recommendation, which the face preselects as an action; a plan answer
-// is its decision alone. The case is caseID, or with 0 the card's open
-// case rung 2 holds. It answers the case it handed up, 0 when rung 2 holds
-// no case of the card, and the ask stays as it was. A case of another card
-// is refused with the card's open cases.
+// is its decision alone. A case at the human that rung 2 was asked on
+// again (judgeAgain) climbs the same way, to a new face. The case is
+// caseID, or with 0 the card's live case rung 2 holds. It answers the case
+// it handed up, 0 when rung 2 holds no case of the card, and the ask stays
+// as it was. A case of another card is refused with the card's open cases.
 func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, found string, rec RungTwoRecommendation, reads []CaseRead) (handled int64, err error) {
 	var c Case
 	var own CaseStep
@@ -133,7 +134,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 			}
 		}
 	}
-	if own.ID == 0 || c.Status != CaseOpen {
+	if own.ID == 0 || c.Status != CaseOpen && c.Status != CaseAtHuman {
 		return 0, nil
 	}
 	t, _, err := r.task(ctx, taskID)

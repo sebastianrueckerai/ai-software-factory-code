@@ -462,7 +462,8 @@ func (r *Runner) waitsOnRung(ctx context.Context, c Case) (TripOutcome, bool, er
 // after any of those, to the human, with the recommendation the rung
 // before made, and a case no rung judged with the agent's view saying why.
 // The card keeps its status while a rung works: only the face moves it. A
-// case at the human climbs nowhere.
+// case at the human climbs nowhere, but rung 2's hand-up on it faces it
+// again, unless no rung judged it, and its face stands.
 func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from int, found string) (TripOutcome, error) {
 	var unjudged *HandUp
 	if from == 0 {
@@ -502,7 +503,8 @@ func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	if live.Status != CaseOpen {
+	again := live.Status == CaseAtHuman && from == 2
+	if live.Status != CaseOpen && !again {
 		return TripOutcome{CaseID: c.ID, Comment: live.CommentID, Rung: 3}, nil
 	}
 	if res, err := r.causeGone(ctx, live); err != nil || res != nil {
@@ -525,6 +527,9 @@ func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 		if unjudged, up, err = r.refusedUp(ctx, live, steps, up); err != nil {
 			return TripOutcome{}, err
 		}
+	}
+	if again && unjudged != nil {
+		return TripOutcome{CaseID: c.ID, Comment: live.CommentID, Rung: 3}, nil
 	}
 	switch {
 	case unjudged != nil && unjudged.Mark == "" && up != nil:
@@ -581,7 +586,8 @@ func (r *Runner) notJudged(ctx context.Context, c Case, steps []CaseStep, mark, 
 }
 
 // refusedUp is the hand-up of case c, whose rung steps are among steps,
-// after the model provider refused a rung's calls: with every rung 1 and
+// after the model provider refused a rung's calls: a rung asked again that
+// worked the case is no refused rung (judgeAgain); with every rung 1 and
 // rung 2 step refused, no rung judged it and the case is marked (unjudged);
 // with a rung that judged beside a refused one, the face is the judging
 // rung's work with a line for the refused rung. up, the hand-up the steps
@@ -594,6 +600,9 @@ func (r *Runner) refusedUp(ctx context.Context, c Case, steps []CaseStep, up *Ha
 			return true
 		}
 		return false
+	})
+	refused = slices.DeleteFunc(refused, func(s CaseStep) bool {
+		return slices.ContainsFunc(kept, func(k CaseStep) bool { return k.Rung == s.Rung })
 	})
 	switch {
 	case len(refused) == 0:
@@ -814,11 +823,12 @@ func rungTwoTakes(c Case) bool {
 }
 
 // startRung2 hands case c to rung 2 as a step in progress due after the
-// rung's bound, the case's wake on rung 2, and a case_climbed row the Waker
-// wakes the factory agent on. It starts nothing, started false, for a case
-// rung 2 does not take or one it worked already; a judgment budget that is
-// spent, or unreadable on a repository that names no project, starts
-// nothing either and answers the case's unjudged hand-up (spent).
+// rung's bound, the case's wake on rung 2 (StartRungStep), and a
+// case_climbed row the Waker wakes the factory agent on. It starts nothing,
+// started false, for a case rung 2 does not take or one it worked already
+// (rungTwoWorked); a judgment budget that is spent, or unreadable on a
+// repository that names no project, starts nothing either and answers the
+// case's unjudged hand-up (spent).
 func (r *Runner) startRung2(ctx context.Context, t Task, c Case) (started bool, spent *HandUp, err error) {
 	if !rungTwoTakes(c) {
 		return false, nil, nil
@@ -827,7 +837,10 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case) (started bool, 
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
 	steps, err := r.store.CaseSteps(ctx, c.ID)
-	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }) {
+	if err != nil {
+		return false, nil, err
+	}
+	if worked, err := r.rungTwoWorked(ctx, steps); err != nil || worked {
 		return false, nil, err
 	}
 	if _, _, ok := r.cfg.Policy().ProjectOf(t.Repository); !ok {
@@ -844,6 +857,76 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case) (started bool, 
 	r.timeline.RecordRow(ctx, t.ID, EventCaseClimbed, FactoryDecider, ViaFactoryd, map[string]any{
 		"case_id": c.ID, "rung": 2, "kind": string(c.Kind), "problem": textutil.Truncate(r.scrub(c.Problem), 300)})
 	return true, nil, nil
+}
+
+// rungTwoWorked says rung 2 worked the case of steps already: it holds a
+// step of rung 2, unless that one step is the model provider's refusal and
+// a call on big answered since, which gives the case to rung 2 once more.
+// Rung 2 works a case at most twice.
+func (r *Runner) rungTwoWorked(ctx context.Context, steps []CaseStep) (bool, error) {
+	refused, ok := refusedRungTwo(steps)
+	if !ok {
+		return slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }), nil
+	}
+	since := refused.StartedAt
+	if refused.EndedAt != nil {
+		since = *refused.EndedAt
+	}
+	at, err := r.store.ModelAnsweredSince(ctx, policy.Big, since)
+	return at.IsZero(), err
+}
+
+// refusedRungTwo is the one step of rung 2 among steps when the model
+// provider refused it; false with none, with more, or with one that judged.
+func refusedRungTwo(steps []CaseStep) (CaseStep, bool) {
+	two := slices.DeleteFunc(slices.Clone(steps), func(s CaseStep) bool { return s.Rung != 2 })
+	if len(two) != 1 || !strings.HasPrefix(two[0].Found, markProviderRefused) {
+		return CaseStep{}, false
+	}
+	return two[0], true
+}
+
+// rungTwoMissed says rung 2 did not judge the case of steps for a cause
+// they name: its one step is the model provider's refusal, or it has none
+// and a step of rung 0 says no rung could judge the case (notJudgedMarks)
+// or the factory agent could not, for want of money or under a cap.
+func rungTwoMissed(steps []CaseStep) bool {
+	if _, ok := refusedRungTwo(steps); ok {
+		return true
+	}
+	return !slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }) && slices.ContainsFunc(steps, func(s CaseStep) bool {
+		return s.Rung == 0 && (climbed([]CaseStep{s}) || strings.HasPrefix(s.Found, rungName(2)+" did not judge it: "))
+	})
+}
+
+// judgeAgain gives case c, at the human because rung 2 did not judge it
+// (rungTwoMissed), to rung 2 once more through startRung2, which weighs
+// whether the cause is gone: a call on big answered since the provider
+// refused rung 2's step, or the judgment budget and the caps leave its call
+// room. A cause that stands writes nothing; a budget or a cap that keeps a
+// due ask off leaves its one step. The case stays at the human while rung 2
+// works it: rung 2's answer ends it through Act, its hand-up faces the human
+// again (Climb). A card that cannot wait for a human is the heal pass's.
+func (r *Runner) judgeAgain(ctx context.Context, c Case) error {
+	if !rungTwoTakes(c) {
+		return nil
+	}
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil || !rungTwoMissed(steps) {
+		return err
+	}
+	if c, err = r.store.CaseByID(ctx, c.ID); err != nil || c.Status != CaseAtHuman {
+		return caseEnded(err)
+	}
+	t, _, err := r.task(ctx, c.TaskID)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(openStatuses, t.Status) && !outlivesCard(c, t) {
+		return nil
+	}
+	_, _, err = r.startRung2(ctx, t, c)
+	return caseEnded(err)
 }
 
 // facedSignal is the case_faced that tells a run the comment of case c's

@@ -2172,9 +2172,13 @@ func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []st
 	return nil
 }
 
-// StartRungStep sets the wake of st's case to st.DueAt, owned by st's rung,
-// and appends st, as PGStore.StartRungStep does in one transaction.
+// StartRungStep sets the wake of st's open case to st.DueAt, owned by st's
+// rung, and appends st, as PGStore.StartRungStep does in one transaction; a
+// case at the human keeps rung 3 and no wake.
 func (s *fakeStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
+	if c, err := s.CaseByID(ctx, st.CaseID); err == nil && c.Status == CaseAtHuman {
+		return s.AppendCaseStep(ctx, st)
+	}
 	if err := s.SetCaseWake(ctx, st.CaseID, st.Rung, nil, st.DueAt); err != nil {
 		return 0, err
 	}
