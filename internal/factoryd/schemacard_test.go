@@ -45,6 +45,9 @@ type cardForgejo struct {
 	// statusSeq, when set, answers the n-th read of the head's statuses
 	// with its n-th element, the last one for every read after
 	statusSeq [][]CommitStatus
+	// workflows are the upstream's workflow files at main by name: what its
+	// pushes and pull requests run
+	workflows map[string]string
 	reads     int
 	refuse    string
 	merges    []string
@@ -99,6 +102,16 @@ func (s *cardForgejo) server(t *testing.T) *httptest.Server {
 			fmt.Sscanf(strings.TrimPrefix(p, cardUpPath+"/pulls/"), "%d", &number)
 			json.NewEncoder(w).Encode(map[string]any{"number": number, "state": "open", "mergeable": s.mergeable, "base": map[string]string{"ref": "main"},
 				"head": map[string]any{"ref": schemaHead, "sha": "h1", "repo": map[string]string{"full_name": "factory-agent/ai-software-factory-infra"}}})
+		case p == cardUpPath+"/contents/.forgejo/workflows":
+			out := []map[string]string{}
+			for name := range s.workflows {
+				out = append(out, map[string]string{"name": name})
+			}
+			json.NewEncoder(w).Encode(out)
+		case p == cardUpPath+"/contents/.gitea/workflows":
+			http.NotFound(w, r)
+		case strings.HasPrefix(p, cardUpPath+"/raw/.forgejo/workflows/"):
+			fmt.Fprint(w, s.workflows[strings.TrimPrefix(p, cardUpPath+"/raw/.forgejo/workflows/")])
 		case p == cardUpPath+"/commits/h1/status":
 			statuses := s.statuses
 			if s.statusSeq != nil {

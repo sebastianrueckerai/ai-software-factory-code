@@ -891,10 +891,11 @@ The workflow moves the part through these steps. Each step is a comment on the p
 request and a `follow_step` event.
 
 1. It waits for the checks of the pull request: none may have failed or stay pending, for at
-   most 20 minutes. A head with no status at all is waited for one minute. The infra
-   repository runs no check on a pull request, since the move's head is the program's own
-   output and is pinned, so that minute passes at every merge. Before the pull request opens,
-   the pass checks that the store holds every reference the part moves to (step 5 of the run).
+   most 20 minutes. A head with no status at all is waited for one minute, unless no workflow
+   of the repository's main names a pull request trigger: then no status will come, and the
+   merge does not wait. The infra repository runs no check on a pull request, since the move's
+   head is the program's own output and is pinned. Before the pull request opens, the pass checks
+   that the store holds every reference the part moves to (step 5 of the run).
 2. Lane `alone`: the bot merges. Lane `human`: the factory files a card with the versions,
    the `notes` link, the `after` words and the acts Merge and Reject. Reject closes the
    pull request and leaves the part until the lists carry its next version. The workflow

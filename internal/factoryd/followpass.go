@@ -245,9 +245,32 @@ func (r *Runner) followStore() follow.HTTPStore {
 func moveLine(in FollowMoveInput) string {
 	first := in.Moves[0]
 	if more := len(in.Moves) - 1; more > 0 {
-		first += fmt.Sprintf(" and %s more", plural(more, "reference"))
+		first += fmt.Sprintf(" and %s more", plural(more, "other move"))
 	}
 	return fmt.Sprintf("part %s (%s): %s, pull request #%d", in.Part, in.Lane, first, in.PR)
+}
+
+// movesText is the moves as every text for a human lists them: each key with
+// its before and after once, in the order of the first, with the count of
+// places when the same move stands in more than one. Twelve references of
+// three images read as three lines.
+func movesText(moves []follow.Move) []string {
+	var out []string
+	count := map[string]int{}
+	index := map[string]int{}
+	for _, m := range moves {
+		line := fmt.Sprintf("%s: %s to %s", m.Key, m.Before, m.After)
+		if count[line]++; count[line] == 1 {
+			index[line] = len(out)
+			out = append(out, line)
+		}
+	}
+	for line, n := range count {
+		if n > 1 {
+			out[index[line]] = fmt.Sprintf("%s (%d places)", line, n)
+		}
+	}
+	return out
 }
 
 // startMove carries part res of project p to its pull request, unless
@@ -256,9 +279,7 @@ func moveLine(in FollowMoveInput) string {
 func (r *Runner) startMove(ctx context.Context, p Project, rt policy.Routine, run int, res follow.Result, branch string, adopt *PullRequestRef) (FollowMoveInput, error) {
 	repo, fork := p.Repo(), r.forgejo.Fork(p.Repo())
 	in := FollowMoveInput{Project: p.Name, Routine: rt.Name, Run: run, Part: res.Part.Name, Lane: res.Part.Lane, Notes: res.Part.Notes, After: res.Part.After}
-	for _, m := range res.Moves {
-		in.Moves = append(in.Moves, fmt.Sprintf("%s: %s to %s", m.Key, m.Before, m.After))
-	}
+	in.Moves = movesText(res.Moves)
 	if adopt != nil {
 		if err := r.adoptable(ctx, repo, fork, adopt, res.Changes); err != nil {
 			return in, err

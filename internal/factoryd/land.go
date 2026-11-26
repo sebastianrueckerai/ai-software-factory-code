@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"time"
 )
 
@@ -64,6 +65,7 @@ func (f *Forgejo) LandPullRequest(ctx context.Context, repo Repo, number int64, 
 // landChecksBound, or they did not read. "" when none fails.
 func (f *Forgejo) awaitChecks(ctx context.Context, repo Repo, head string) string {
 	start := time.Now()
+	var noChecks *bool // whether the repository has no pull request check, read once
 	for {
 		st, err := f.CombinedStatus(ctx, repo.Owner, repo.Name, head)
 		if err != nil {
@@ -81,6 +83,15 @@ func (f *Forgejo) awaitChecks(ctx context.Context, repo Repo, head string) strin
 			}
 		}
 		waited := time.Since(start)
+		if pending == nil && len(st.Statuses) == 0 && waited < landNoStatusGrace {
+			if noChecks == nil {
+				none := !f.runsOnPullRequests(ctx, repo)
+				noChecks = &none
+			}
+			if *noChecks {
+				return ""
+			}
+		}
 		switch {
 		case pending != nil && waited >= landChecksBound:
 			return fmt.Sprintf("the check “%s” of its head %s has the state pending", pending.Context, ShortSHA(head))
@@ -93,4 +104,25 @@ func (f *Forgejo) awaitChecks(ctx context.Context, repo Repo, head string) strin
 		case <-time.After(landChecksPoll):
 		}
 	}
+}
+
+// pullRequestTrigger finds a pull request trigger in a workflow file.
+var pullRequestTrigger = regexp.MustCompile(`\bpull_request(_target)?\b`)
+
+// runsOnPullRequests reports whether any workflow of repo's main, listed as
+// the chain poller lists them, names a pull request trigger: only then does
+// a head's status come a moment after its pull request opens. A list or a
+// file that does not read says yes, so the grace stays.
+func (f *Forgejo) runsOnPullRequests(ctx context.Context, repo Repo) bool {
+	files, err := f.WorkflowList(ctx, repo)
+	if err != nil {
+		return true
+	}
+	for _, name := range files {
+		body, err := f.FileAt(ctx, repo.Owner, repo.Name, prBase, name)
+		if err != nil || pullRequestTrigger.Match(body) {
+			return true
+		}
+	}
+	return false
 }

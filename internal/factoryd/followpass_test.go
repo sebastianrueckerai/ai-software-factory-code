@@ -11,12 +11,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/follow"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -561,5 +563,39 @@ func TestFollowPassNeedsTheStoreToHoldTheTargets(t *testing.T) {
 	delete(f.forge.storeLacks, "/v2/upstream/ghcr.io/berriai/litellm/manifests/sha256:"+zeros("d"))
 	if res := f.run(t); res.Outcome != "reported" {
 		t.Fatalf("with the copy in the store: %+v", res)
+	}
+}
+
+// A move that stands in several places is one line in every text for a
+// human, with the count of its places; another move keeps its own line, in
+// the order of the first.
+func TestMovesTextCountsEqualMoves(t *testing.T) {
+	m := func(key, before, after string) follow.Move {
+		return follow.Move{Key: key, Before: before, After: after}
+	}
+	got := movesText([]follow.Move{
+		m("docker.io/alpine/k8s", "1.36.1", "1.36.6"), m("docker.io/alpine/kubectl", "1.36.1", "1.36.4"),
+		m("docker.io/alpine/k8s", "1.36.1", "1.36.6"), m("docker.io/alpine/kubectl", "1.36.1", "1.36.4"),
+		m("docker.io/alpine/k8s", "1.36.1", "1.36.6"), m("aws-cli", "2.28.5", "2.42.3"),
+	})
+	want := []string{"docker.io/alpine/k8s: 1.36.1 to 1.36.6 (3 places)", "docker.io/alpine/kubectl: 1.36.1 to 1.36.4 (2 places)", "aws-cli: 2.28.5 to 2.42.3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("movesText = %q, want %q", got, want)
+	}
+}
+
+// Two references of one image that move alike read as one move with its
+// count in the report line and the pull request's text.
+func TestFollowPassListsEqualMovesOnce(t *testing.T) {
+	files := behindTree()
+	files[litellmFile] = litellmAt("1.102.4", "0") + litellmAt("1.102.4", "0")
+	f := newFollowRun(t, files)
+	res := f.run(t)
+	line := "ghcr.io/berriai/litellm: 1.102.4 to 1.108.17 (2 places)"
+	if want := "part litellm (alone): " + line + ", pull request #40"; res.Note != want {
+		t.Fatalf("note = %q, want %q", res.Note, want)
+	}
+	if body := f.forge.bodies[40]; !strings.Contains(body, "- "+line+"\n") || strings.Count(body, "ghcr.io/berriai/litellm: 1.102.4") != 1 {
+		t.Fatalf("body = %q", body)
 	}
 }
