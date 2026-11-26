@@ -38,6 +38,8 @@ func TestLandWaitsForPendingChecks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fj, c, _, _ := cardRig(t)
+			// the rows end by their sequence, never by the bound: a loaded runner spends the rig's 5ms on one read
+			landChecksBound = time.Minute
 			if tc.grace > 0 {
 				landNoStatusGrace = tc.grace
 			}
