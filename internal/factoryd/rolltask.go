@@ -349,6 +349,39 @@ func (s *PGStore) StandingQuestion(ctx context.Context, repository, marker strin
 		repository, marker, humanCardWaits)
 }
 
+// RollRetirees are repository's cards whose reason its newest merged roll,
+// roll, took away, oldest first: the failed roll cards filed before roll
+// that carry no newer run, the roll ladder's human card asked before roll
+// settled, and the human card of a refused commit older than roll's run.
+// A card whose close factoryd recorded is left to that close. With no
+// merged roll there is none.
+func (s *PGStore) RollRetirees(ctx context.Context, repository string) (roll Task, cards []Task, err error) {
+	var id string
+	var run int64
+	var settled time.Time
+	err = s.db.QueryRowContext(ctx, `SELECT task_id, run_id, settled_at FROM roll_requests
+		WHERE repository = $1 AND state = 'merged' ORDER BY run_id DESC LIMIT 1`, repository).Scan(&id, &run, &settled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, nil, nil
+	}
+	if err != nil {
+		return Task{}, nil, err
+	}
+	roll, ok, err := s.Task(ctx, id)
+	if err != nil || !ok {
+		return Task{}, nil, err
+	}
+	cards, err = s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND (
+			source = $2 AND status = 'failed' AND created_at < $5 AND NOT EXISTS (SELECT 1 FROM roll_requests r
+				WHERE r.repository = $1 AND r.run_id > $6 AND (r.task_id = tasks.id OR tasks.id = ANY(r.failed_tasks)))
+			OR source = $3 AND status = ANY($8) AND created_at < $7
+			OR source = $4 AND status = ANY($8) AND EXISTS (SELECT 1 FROM roll_requests r
+				WHERE r.task_id = tasks.id AND r.state = 'refused' AND r.run_id < $6))
+		AND NOT EXISTS (SELECT 1 FROM intake_events e WHERE e.task_id = tasks.id AND e.kind = $9 AND e.comment_id = tasks.issue_number)
+		ORDER BY created_at, id`, repository, SourceRoll, SourceRollFailed, SourceRollRefused, roll.CreatedAt, run, settled, humanCardWaits, IntakeFactoryClosed)
+	return roll, cards, err
+}
+
 // bumpDigest points the one pinned reference to image in a manifest at
 // digest, and changes nothing else.
 func bumpDigest(content []byte, image, digest string) ([]byte, error) {
@@ -416,6 +449,7 @@ type RollerStore interface {
 	RetryableRoll(ctx context.Context, repository string, backoff time.Duration, bound int) (string, bool, error)
 	ForgetRollRequest(ctx context.Context, sha string) error
 	StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error)
+	RollRetirees(ctx context.Context, repository string) (Task, []Task, error)
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// the backstop of the cheap merge turn (mainfix.go)
@@ -552,6 +586,7 @@ func (r *Roller) poll(ctx context.Context) error {
 	if stuck {
 		r.escalateRolls(ctx)
 	}
+	r.retireRolls(ctx)
 	// the queue before the groups: a plan card counts as queued from its
 	// approval wait until it merged, so one that merges between the two
 	// reads counts in one
@@ -937,6 +972,38 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	q := RollFailedQuestion(failed)
 	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Repo, q, "the roller", Task{Source: SourceRollFailed}); err != nil {
 		log.Printf("roller: escalate the failed rolls: %v", err)
+	}
+}
+
+// retireRolls closes the cards whose reason the newest merged roll took
+// away (RollRetirees) as factoryd's own, each with a comment that names
+// the roll, a card's live ask withdrawn first. It reads the store on each
+// poll, so the next poll tries a close that failed again, and a restart
+// loses none.
+func (r *Roller) retireRolls(ctx context.Context) {
+	roll, cards, err := r.Store.RollRetirees(ctx, r.Repo.String())
+	if err != nil {
+		log.Printf("roller: read the cards a merged roll retires: %v", err)
+		return
+	}
+	for _, t := range cards {
+		why := "was filed, so rolls work again"
+		switch t.Source {
+		case SourceRoll:
+			why = "failed and carries newer images, so this card needs no retry"
+		case SourceRollRefused:
+			why = "was filed and carries signed images of a newer commit"
+		}
+		msg := fmt.Sprintf("Roll card %s merged after this card %s. Closing this issue.", ShownName(roll), why)
+		err := r.Timeline.WithdrawAsk(ctx, t, msg, nil)
+		if err == nil {
+			err = closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, msg)
+		}
+		if err != nil {
+			log.Printf("roller: close card %s, which roll card %s retires: %v", cardName(t), cardName(roll), err)
+			continue
+		}
+		log.Printf("roller: roll card %s merged: card %s closes", cardName(roll), cardName(t))
 	}
 }
 

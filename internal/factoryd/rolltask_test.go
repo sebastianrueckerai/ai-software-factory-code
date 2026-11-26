@@ -217,6 +217,41 @@ func (s *fakeStore) FailedRolls(ctx context.Context, repository string) ([]RollR
 	return out, nil
 }
 
+// RollRetirees mirrors the store's read.
+func (s *fakeStore) RollRetirees(ctx context.Context, repository string) (Task, []Task, error) {
+	var m RollRequest
+	for _, r := range s.rolls {
+		if r.Repository == repository && r.State == RollMerged && r.RunID > m.RunID {
+			m = r
+		}
+	}
+	roll, ok := s.tasks[m.TaskID]
+	if !ok {
+		return Task{}, nil, nil
+	}
+	newer := func(id string) bool {
+		return slices.ContainsFunc(s.rolls, func(r RollRequest) bool {
+			return r.Repository == repository && r.RunID > m.RunID && (r.TaskID == id || slices.Contains(r.FailedTasks, id))
+		})
+	}
+	older := func(id string) bool {
+		return slices.ContainsFunc(s.rolls, func(r RollRequest) bool { return r.TaskID == id && r.State == RollRefused && r.RunID < m.RunID })
+	}
+	var cards []Task
+	for _, t := range s.tasks {
+		events, _ := s.IntakeEvents(ctx, t.ID)
+		waits := slices.Contains(humanCardWaits, t.Status)
+		if t.Repository == repository && !botCloseRecorded(events, t) &&
+			(t.Source == SourceRoll && t.Status == "failed" && t.CreatedAt.Before(roll.CreatedAt) && !newer(t.ID) ||
+				t.Source == SourceRollFailed && waits && t.CreatedAt.Before(s.rollSettled[m.SHA]) ||
+				t.Source == SourceRollRefused && waits && older(t.ID)) {
+			cards = append(cards, t)
+		}
+	}
+	slices.SortFunc(cards, func(a, b Task) int { return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID)) })
+	return roll, cards, nil
+}
+
 func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.Kind == "human" && slices.Contains(humanCardWaits, t.Status) && strings.Contains(t.Objective, marker) {
@@ -3034,6 +3069,63 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	if n != 1 || len(f.issues) != 0 {
 		t.Fatalf("%d ask cards, issues %q; want the one question and no issue", n, f.issues)
 	}
+}
+
+// A roll that merges retires the cards whose reason it took away, in the
+// order they were filed, each closed as factoryd's own with a comment that
+// names the roll: a refused commit's older card, the failed roll cards and
+// the roll ladder's human card, a card's live ask withdrawn first. A close
+// Forgejo refuses before factoryd recorded it is tried again by the next
+// poll, and no close is made twice.
+func TestRollerRetiresTheCardsAMergedRollLeaves(t *testing.T) {
+	f := &rollForgejo{files: map[string]map[string]string{codeRepo + "@main": mainPins()}, depsDown: true}
+	roller, store, _ := newTestRoller(t, f)
+	roller.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
+	ctx := context.Background()
+	now := time.Now()
+	card := func(id, kind, source, status string, issue int64, ago time.Duration) {
+		store.tasks[id] = Task{ID: id, Kind: kind, Source: source, Status: status, Repository: codeRepo, IssueNumber: issue, CreatedAt: now.Add(-ago)}
+	}
+	card("t-refused", "human", SourceRollRefused, "waiting-human", 35, 4*time.Hour)
+	card("t-r1", "agent", SourceRoll, "failed", 31, 3*time.Hour)
+	card("t-r2", "agent", SourceRoll, "failed", 32, 2*time.Hour)
+	card("t-ask", "human", SourceRollFailed, "waiting-human", 34, time.Hour)
+	card("t-roll", "agent", SourceRoll, "done", 36, 30*time.Minute)
+	store.rolls = append(store.rolls,
+		RollRequest{SHA: "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f", Repository: codeRepo, RunID: 50, State: RollRefused, TaskID: "t-refused"},
+		RollRequest{SHA: "2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f", Repository: codeRepo, RunID: 51, State: RollFailed, TaskID: "t-r2", FailedTasks: []string{"t-r1"}},
+		RollRequest{SHA: "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", Repository: codeRepo, RunID: 53, State: RollOpened, TaskID: "t-roll", Committed: true}) // merges this poll
+	for _, id := range []string{"t-refused", "t-ask"} {
+		if _, _, err := store.OpenCase(ctx, Case{TaskID: id, Repository: codeRepo, Kind: CaseOther, StateKey: id, Problem: "The roll waits."}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.closed) != 0 || len(f.comments) != 0 {
+		t.Fatalf("closed issues %q, comments %q; want none while Forgejo refuses the dependencies", f.closed, f.comments)
+	}
+	f.depsDown = false
+	for range 2 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"35", "31", "32", "34"}; !slices.Equal(f.closed, want) {
+		t.Fatalf("closed issues %q, want %q", f.closed, want)
+	}
+	want := []string{
+		"35 Roll card #36 merged after this card was filed and carries signed images of a newer commit. Closing this issue.",
+		"31 Roll card #36 merged after this card failed and carries newer images, so this card needs no retry. Closing this issue.",
+		"32 Roll card #36 merged after this card failed and carries newer images, so this card needs no retry. Closing this issue.",
+		"34 Roll card #36 merged after this card was filed, so rolls work again. Closing this issue.",
+	}
+	if !slices.Equal(f.comments, want) {
+		t.Fatalf("comments %q, want %q", f.comments, want)
+	}
+	requireWithdrawn(t, store, "t-refused", "roll card #36 merged after this card was filed and carries signed images of a newer commit", nil)
+	requireWithdrawn(t, store, "t-ask", "roll card #36 merged after this card was filed, so rolls work again", nil)
 }
 
 // The question's Try the roll again work: the failed attempts' requests go
