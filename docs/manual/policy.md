@@ -904,6 +904,12 @@ request and a `follow_step` event.
 4. A good move ends the run as `done` and starts the routine's next run at once, so the
    chain goes on while a part is behind.
 
+The merge is pinned to the commit the pass pushed. The checks, the merge call
+(`head_commit_id`) and a human's Merge press name that head and no other: a push to
+the branch afterwards fails the move, or is refused on the card with both heads. The
+judgment accepts Flux's success on the merge commit or on a later commit of main that
+contains it, since Flux posts on the revision it applied.
+
 A move that fails is returned. The factory reverts the merge commit on a pull request of
 the bot, checks and merges it as it merged the move, and waits for Flux's statuses on the
 revert. A red check before the merge has nothing to return: the factory closes the pull

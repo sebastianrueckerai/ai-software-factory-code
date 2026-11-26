@@ -2192,3 +2192,20 @@ func TestCISpawnerKeepsThePullCountsOfASmokeRepositoryItCouldNotList(t *testing.
 		t.Fatalf("%d pods: the job held after its tries got a pod once its list was read again", spawned)
 	}
 }
+
+// A project's pull requests run on the untrusted runner whether agents
+// work on it or not, as long as its file names an Actions token: the infra
+// repository, a seed project without agents, is served with the seeded
+// token, and one without a token is not.
+func TestCIReposServeProjectsWithoutAgents(t *testing.T) {
+	store := &memProjects{m: map[string]Project{
+		"infra":  {Name: "infra", Repository: "sf/infra", Objects: policy.ObjectsSeed, Agents: policy.AgentsNone, File: true, Tokens: policy.SeedTokens{Actions: policy.SecretCIRegistrar}},
+		"bare":   {Name: "bare", Repository: "sf/bare", Objects: policy.ObjectsSeed, Agents: policy.AgentsNone, File: true},
+		"parked": {Name: "parked", Repository: "sf/parked", Objects: policy.ObjectsSeed, Agents: policy.AgentsNone, Tokens: policy.SeedTokens{Actions: policy.SecretCIRegistrar}},
+	}}
+	f := &Forgejo{Seeded: map[string]string{policy.SecretCIRegistrar: "registrar-token"}}
+	repos, err := CIReposOf(f, store)(context.Background())
+	if err != nil || len(repos) != 1 || repos[0].Repo.String() != "sf/infra" || repos[0].Token != "registrar-token" || repos[0].Project != "" {
+		t.Fatalf("repos = %+v, %v; want sf/infra alone with the seeded token", repos, err)
+	}
+}

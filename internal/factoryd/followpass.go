@@ -202,7 +202,10 @@ func (r *Runner) startMove(ctx context.Context, p Project, rt policy.Routine, ru
 		in.Moves = append(in.Moves, fmt.Sprintf("%s: %s to %s", m.Key, m.Before, m.After))
 	}
 	if adopt != nil {
-		in.PR = adopt.Number
+		if err := r.adoptable(ctx, repo, fork, adopt, res.Changes); err != nil {
+			return in, err
+		}
+		in.PR, in.Head = adopt.Number, adopt.HeadSHA
 	} else {
 		if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 			return in, err
@@ -215,9 +218,11 @@ func (r *Runner) startMove(ctx context.Context, p Project, rt policy.Routine, ru
 			return in, err
 		}
 		title := "Follow the lists: part " + res.Part.Name
-		if _, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, prBase, branch, Attribution{Role: "follow"}, title, changes); err != nil {
+		head, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, prBase, branch, Attribution{Role: "follow"}, title, changes)
+		if err != nil {
 			return in, err
 		}
+		in.Head = head
 		pr, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, title, followBody(in))
 		if err != nil {
 			return in, errors.Join(err, r.forgejo.DeleteBranch(context.WithoutCancel(ctx), fork.Owner, fork.Name, branch))
@@ -243,4 +248,43 @@ func followBody(in FollowMoveInput) string {
 		b.WriteString("\nA human merges it or closes it. Closing it leaves the part until its next version.\n")
 	}
 	return b.String()
+}
+
+// adoptable refuses an open pull request of an attempt whose head is not what
+// the program writes for the target: its files are not exactly the changes,
+// or a file differs in a byte. Such a head was pushed by someone else.
+func (r *Runner) adoptable(ctx context.Context, repo, fork Repo, pr *PullRequestRef, changes map[string][]byte) error {
+	files, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr.Number)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for _, f := range files {
+		names = append(names, f.Filename)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, slices.Sorted(maps.Keys(changes))) {
+		return terminalError("pull request #%d of the attempt changes %v, and the program writes %v for this target: close it, and the next run opens its own", pr.Number, names, slices.Sorted(maps.Keys(changes)))
+	}
+	for path, want := range changes {
+		got, err := r.forgejo.FileAt(ctx, fork.Owner, fork.Name, pr.HeadSHA, path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(got, want) {
+			return terminalError("pull request #%d of the attempt holds another %s than the program writes for this target: close it, and the next run opens its own", pr.Number, path)
+		}
+	}
+	return nil
+}
+
+// headVet refuses a pull request whose head is not the commit the pass
+// pushed: a push to the branch after the checks ran would ride in with them.
+func headVet(want string) func(PullRequestRef) string {
+	return func(pr PullRequestRef) string {
+		if pr.HeadSHA != want {
+			return fmt.Sprintf("the head of pull request #%d is %s, and the pass pushed %s: a push since then is not checked", pr.Number, ShortSHA(pr.HeadSHA), ShortSHA(want))
+		}
+		return ""
+	}
 }

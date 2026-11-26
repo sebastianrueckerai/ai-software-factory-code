@@ -1791,7 +1791,13 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		res.Args = nil // the head is the merge's own; the choice takes no args in Act
 		if value == factoryd.ActApproveMerge {
 			// the head check runs once Act took the press, so the chat hears Act's rule first
-			work = func(ctx context.Context) (int64, error) { return 0, c.mergeRead(ctx, a, repo, t.PRNumber, head) }
+			work = func(ctx context.Context) (int64, error) {
+				// a follow move's card merges the head its checks judged, no other
+				if t.Source == factoryd.SourceFollow && t.SHA != "" && head != t.SHA {
+					return 0, refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d is at %s, and its checks judged %s: the factory merges only the judged head. Read the pull request again, or close it and the next run opens its own.", t.PRNumber, factoryd.ShortSHA(head), factoryd.ShortSHA(t.SHA)))
+				}
+				return 0, c.mergeRead(ctx, a, repo, t.PRNumber, head)
+			}
 			note = fmt.Sprintf("Merged %s of pull request #%d. The card ends with it.", factoryd.ShortSHA(head), t.PRNumber)
 			break
 		}

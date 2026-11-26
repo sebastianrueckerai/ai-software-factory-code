@@ -1137,3 +1137,31 @@ func TestFollowFailedCardTriesAgain(t *testing.T) {
 		t.Fatalf("retried %v, patched %v; want the routine's retry run for the card and no close of the console's own", r.followRetried, r.fg.patched)
 	}
 }
+
+// A follow move's card merges the head its checks judged and no other: a
+// press that names another head is refused with both, and nothing merges;
+// a press on the judged head merges it, pinned.
+func TestFollowCardMergesOnlyTheJudgedHead(t *testing.T) {
+	const pull = "/api/v1/repos/sf/code/pulls/14"
+	const judged, pushed = "abc1234aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "def5678bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	all := facefixtures.All()
+	i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool {
+		return fx.Group == facefixtures.GroupCard && fx.Kind == "factory pull request on a project without agents"
+	})
+	fx := all[i]
+	fx.Task.Source, fx.Task.SHA = factoryd.SourceFollow, judged
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.seedScene(fixtureScene(fx, all))
+	press := func(head string) *httptest.ResponseRecorder {
+		r.fg.setPullHead(pull, head)
+		return r.do(post("/tasks/"+fx.Task.ID+"/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.ActApproveMerge}, "head": {head}}), ck)
+	}
+	want := "Pull request #14 is at def5678, and its checks judged abc1234: the factory merges only the judged head."
+	if rec := press(pushed); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) || len(r.fg.merged) != 0 {
+		t.Fatalf("a press on a pushed head = %d %q, merged %v; want 409 %q and no merge", rec.Code, rec.Body, r.fg.merged, want)
+	}
+	if rec := press(judged); rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.merged, []string{pull + " " + judged}) {
+		t.Fatalf("a press on the judged head = %d %q, merged %v; want the merge of %s", rec.Code, rec.Body, r.fg.merged, judged)
+	}
+}

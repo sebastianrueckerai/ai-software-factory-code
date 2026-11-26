@@ -78,7 +78,7 @@ func newMoveRun(t *testing.T, attempted ...string) *moveRun {
 	m.r.Follow.Alerts = m.alerts
 	m.r.Follow.Probe = func(context.Context) []string { return m.probe }
 	for _, part := range attempted {
-		m.forge.attempt(followBranch(part, map[string]map[string][]byte{"litellm": litellmTarget(), "cache": cacheTarget()}[part], 1), "closed", false)
+		m.forge.attempt(followBranch(part, map[string]map[string][]byte{"litellm": litellmTarget(), "cache": cacheTarget()}[part], 1), "closed", false, nil)
 	}
 	m.run(t)
 	if len(m.moves.started) != 1 {
@@ -157,6 +157,9 @@ func TestFollowMoveAloneGoodPath(t *testing.T) {
 	m.workflow(t)
 	if pr := m.forge.pulls[40]; !pr.Merged {
 		t.Fatalf("pull request #40 = %+v, want merged", pr)
+	}
+	if len(m.forge.merges) != 1 || m.forge.merges[0] != followBranch("litellm", litellmTarget(), 1)+" head40" {
+		t.Fatalf("merges = %q, want the merge of %s to name head40, the commit the pass pushed", m.forge.merges, followBranch("litellm", litellmTarget(), 1))
 	}
 	want := []string{
 		"the checks of pull request head head40 are green.",
@@ -293,6 +296,9 @@ func TestFollowMoveHumanMerges(t *testing.T) {
 	t.Cleanup(func() { followPoll, followHumanBound = 5*time.Minute, 14*24*time.Hour })
 	m := newMoveRun(t, "litellm")
 	m.workflow(t, func(f *infraForge) { f.humanMerges(41) })
+	if m.in.Head != "head41" {
+		t.Fatalf("head = %q", m.in.Head)
+	}
 	cards := m.store.tasks
 	if len(cards) != 1 {
 		t.Fatalf("cards = %+v, want the one that asks for the merge", cards)
@@ -300,6 +306,9 @@ func TestFollowMoveHumanMerges(t *testing.T) {
 	var card Task
 	for _, c := range cards {
 		card = c
+	}
+	if card.SHA != "head41" {
+		t.Fatalf("the card judged head %q, want head41: the console merges only that", card.SHA)
 	}
 	if card.Source != SourceFollow || card.PRNumber != 41 || card.Kind != "human" || card.Repository != "sf/"+infraName {
 		t.Fatalf("card = %+v", card)
@@ -548,5 +557,75 @@ func TestFollowRetryOpensAnotherAttempt(t *testing.T) {
 	}
 	if _, ok := m.forge.byBranch[followBranch("litellm", litellmTarget(), 3)]; !ok {
 		t.Fatalf("branches = %v, want attempt 3", m.forge.byBranch)
+	}
+}
+
+// A push to the branch after the pass wrote it is not checked and not
+// merged: the move fails on the head it did not push, the pull request
+// closes, and nothing merges.
+func TestFollowMoveRefusesAPushedHead(t *testing.T) {
+	m := newMoveRun(t)
+	m.forge.pulls[40].HeadSHA = "pushed1"
+	m.forge.statuses["pushed1"] = []CommitStatus{{State: "success", Context: checkContext}}
+	m.workflow(t)
+	run := m.lastRun(t)
+	want := "part litellm: the head of pull request #40 is pushed1, and the pass pushed head40: a push since then is not checked"
+	if run.Outcome != "failed" || run.Note != want || len(m.forge.merges) != 0 || m.forge.pulls[40].State != "closed" {
+		t.Fatalf("run = %+v, merges %v, pull request %+v; want %q and nothing merged", run, m.forge.merges, m.forge.pulls[40], want)
+	}
+}
+
+// A push between the checks and the merge cannot ride in: the merge is
+// vetted against the pushed head and names it, and Forgejo's own head check
+// refuses any other.
+func TestFollowLandVetsTheHead(t *testing.T) {
+	m := newMoveRun(t)
+	m.forge.pulls[40].HeadSHA = "pushed1"
+	m.forge.statuses["pushed1"] = []CommitStatus{{State: "success", Context: checkContext}}
+	landed, err := m.r.FollowLand(context.Background(), m.in)
+	if err != nil || landed.Why != "the head of pull request #40 is pushed1, and the pass pushed head40: a push since then is not checked" || len(m.forge.merges) != 0 {
+		t.Fatalf("landed = %+v, %v, merges %v", landed, err, m.forge.merges)
+	}
+}
+
+// The return's revert is checked and merged at the head read right after
+// its push, and its merge names it.
+func TestFollowReturnMergesThePushedHead(t *testing.T) {
+	stubRevert(t, "")
+	m := newMoveRun(t)
+	m.forge.mergeStatus = []CommitStatus{{State: "failure", Context: "flux/flux-system", Description: "x"}, {State: "success", Context: "flux/platform"}}
+	m.forge.revertStatus = []CommitStatus{{State: "success", Context: "flux/flux-system"}, {State: "success", Context: "flux/platform"}}
+	m.forge.statuses["head41"] = []CommitStatus{{State: "success", Context: checkContext}}
+	m.workflow(t)
+	if got := m.forge.merges; len(got) != 2 || got[1] != "factory/follow-return-merge40 head41" {
+		t.Fatalf("merges = %q, want the return's to name head41", got)
+	}
+}
+
+// Flux posts its status on the revision it applied, which is main's head: a
+// move whose merge commit Flux skipped is judged on the later commit of main
+// that contains it. A later commit that does not contain it counts for
+// nothing.
+func TestFollowJudgeReadsLaterCommitsOfMain(t *testing.T) {
+	good := []CommitStatus{{State: "success", Context: "flux/flux-system"}, {State: "success", Context: "flux/platform"}}
+	for name, tc := range map[string]struct {
+		holds  bool
+		status []CommitStatus
+		want   string // "" is a good move
+	}{
+		"success on a later commit": {true, good, ""},
+		"failure on a later commit": {true, []CommitStatus{{State: "failure", Context: "flux/flux-system", Description: "not ready"}, {State: "success", Context: "flux/platform"}},
+			"the status “flux/flux-system” of commit later2 after the merge commit merge40 is failure: not ready"},
+		"a later commit that lacks the merge": {false, good, "the merge commit merge40 has no success status within 30m0s: flux/flux-system has not reported"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newMoveRun(t)
+			m.forge.main, m.forge.later, m.forge.mainHolds = "later2", []string{"later2", "later1"}, tc.holds
+			m.forge.statuses["later2"] = tc.status
+			v := m.judge(t)
+			if (tc.want == "") != v.Ok || !strings.HasPrefix(v.Why, tc.want) {
+				t.Fatalf("verdict = %+v, want %q", v, tc.want)
+			}
+		})
 	}
 }

@@ -109,6 +109,14 @@ type infraForge struct {
 	revertStatus []CommitStatus
 	mergeFails   bool
 	comments     map[int64][]string // the comments of each pull request
+	// later are main's commits after the move's merge, newest first, which
+	// contain it when mainHolds; raw is the fork's files by path, prFiles the
+	// files of each pull request
+	later     []string
+	merges    []string // "<branch> <head named by the merge>"
+	mainHolds bool
+	raw       map[string]string
+	prFiles   map[int64][]string
 }
 
 // mergedStatuses are the statuses a pull request's merge commit gets: a
@@ -132,18 +140,27 @@ func (f *infraForge) humanMerges(n int64) {
 func newInfraForge(t *testing.T, files map[string]string) *infraForge {
 	t.Helper()
 	return &infraForge{t: t, tar: infraTarball(t, files), main: "m1", pulls: map[int64]*fakePull{}, byBranch: map[string]int64{},
-		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}, comments: map[int64][]string{}}
+		statuses: map[string][]CommitStatus{}, bodies: map[int64]string{}, titles: map[int64]string{}, comments: map[int64][]string{}, raw: map[string]string{}, prFiles: map[int64][]string{}}
 }
 
-// attempt is a pull request of a move's branch that exists already.
-func (f *infraForge) attempt(branch, state string, merged bool) int64 {
+// attempt is a pull request of a move's branch that exists already, whose
+// head holds changes.
+func (f *infraForge) attempt(branch, state string, merged bool, changes map[string][]byte) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := int64(10 + len(f.pulls))
 	f.pulls[n] = &fakePull{Number: n, Head: branch, State: state, Merged: merged, HeadSHA: "head" + strconv.FormatInt(n, 10)}
 	f.byBranch[branch] = n
+	for path, b := range changes {
+		f.prFiles[n] = append(f.prFiles[n], path)
+		f.raw[path] = string(b)
+	}
 	return n
 }
+
+// nextHead is the commit the next push makes: the head of the pull request
+// the next call opens.
+func (f *infraForge) nextHead() string { return "head" + strconv.Itoa(40+len(f.pulls)) }
 
 func (f *infraForge) prJSON(p *fakePull) map[string]any {
 	return map[string]any{"number": p.Number, "state": p.State, "merged": p.Merged, "mergeable": true, "merge_commit_sha": p.MergeSHA,
@@ -179,7 +196,33 @@ func (f *infraForge) handler() http.HandlerFunc {
 			answer(http.StatusOK, map[string]string{"content": base64.StdEncoding.EncodeToString([]byte("old " + file)), "encoding": "base64", "sha": "blob-" + file})
 		case p == followForkAPI+"/contents" && r.Method == http.MethodPost:
 			f.commits = append(f.commits, in)
-			answer(http.StatusCreated, map[string]any{"commit": map[string]string{"sha": "b1"}})
+			answer(http.StatusCreated, map[string]any{"commit": map[string]string{"sha": f.nextHead()}})
+		case strings.HasPrefix(p, followForkAPI+"/branches/"):
+			answer(http.StatusOK, map[string]any{"name": "x", "commit": map[string]string{"id": f.nextHead()}})
+		case strings.HasPrefix(p, followForkAPI+"/raw/"):
+			w.Write([]byte(f.raw[strings.TrimPrefix(p, followForkAPI+"/raw/")])) // #nosec G104 -- test stub
+		case strings.HasPrefix(p, followAPI+"/pulls/") && strings.HasSuffix(p, "/files"):
+			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, followAPI+"/pulls/"), "/files"), 10, 64)
+			list := []map[string]any{}
+			if r.URL.Query().Get("page") == "1" || r.URL.Query().Get("page") == "" {
+				for _, name := range f.prFiles[n] {
+					list = append(list, map[string]any{"filename": name})
+				}
+			}
+			answer(http.StatusOK, list)
+		case p == followAPI+"/commits":
+			// what sha has that not lacks: main's later commits over the merge, and
+			// for the merge over main nothing when main holds it
+			list := []map[string]any{}
+			switch {
+			case r.URL.Query().Get("sha") == f.main:
+				for _, c := range f.later {
+					list = append(list, map[string]any{"sha": c, "commit": map[string]string{"message": "later"}})
+				}
+			case !f.mainHolds:
+				list = append(list, map[string]any{"sha": "elsewhere"})
+			}
+			answer(http.StatusOK, list)
 		case strings.HasPrefix(p, followAPI+"/pulls/main/"+infraForkID+":"):
 			n, ok := f.byBranch[strings.TrimPrefix(p, followAPI+"/pulls/main/"+infraForkID+":")]
 			if !ok {
@@ -203,6 +246,7 @@ func (f *infraForge) handler() http.HandlerFunc {
 				return
 			}
 			pr := f.pulls[n]
+			f.merges = append(f.merges, pr.Head+" "+in["head_commit_id"].(string))
 			pr.State, pr.Merged, pr.MergeSHA = "closed", true, "merge"+strconv.FormatInt(n, 10)
 			f.main = pr.MergeSHA
 			f.statuses[pr.MergeSHA] = append([]CommitStatus(nil), f.mergedStatuses(pr)...)
@@ -375,7 +419,7 @@ func TestFollowPassOpensTheFirstBehindPart(t *testing.T) {
 			t.Errorf("body = %q, want %q", body, want)
 		}
 	}
-	want := FollowMoveInput{Project: infraName, Routine: "follow", Run: 1, Part: "litellm", Lane: policy.LaneAlone, PR: 40,
+	want := FollowMoveInput{Project: infraName, Routine: "follow", Run: 1, Part: "litellm", Lane: policy.LaneAlone, PR: 40, Head: "head40",
 		Moves: []string{"ghcr.io/berriai/litellm: 1.102.4 to 1.108.17"}, Notes: "https://example.org/litellm/releases", After: "The migration does not go back."}
 	if len(f.moves.started) != 1 || fmt.Sprint(f.moves.started[0]) != fmt.Sprint(want) {
 		t.Fatalf("started = %+v, want %+v", f.moves.started, want)
@@ -386,14 +430,14 @@ func TestFollowPassOpensTheFirstBehindPart(t *testing.T) {
 // that is behind moves. Once every target has one the run says so.
 func TestFollowPassSkipsAnAttemptedTarget(t *testing.T) {
 	f := newFollowRun(t, behindTree())
-	f.forge.attempt(followBranch("litellm", litellmTarget(), 1), "closed", false)
+	f.forge.attempt(followBranch("litellm", litellmTarget(), 1), "closed", false, nil)
 	res := f.run(t)
 	if res.Outcome != "reported" || !strings.HasPrefix(res.Note, "part cache (human): docker.io/library/registry: 3@000000000000 to 3@888888888888, pull request #41") {
 		t.Fatalf("result = %+v", res)
 	}
 	f2 := newFollowRun(t, behindTree())
-	f2.forge.attempt(followBranch("litellm", litellmTarget(), 1), "closed", true)
-	f2.forge.attempt(followBranch("cache", cacheTarget(), 1), "closed", false)
+	f2.forge.attempt(followBranch("litellm", litellmTarget(), 1), "closed", true, nil)
+	f2.forge.attempt(followBranch("cache", cacheTarget(), 1), "closed", false, nil)
 	res = f2.run(t)
 	if res.Outcome != "no change" || res.Note != "2 parts behind, and each target has its attempt already: litellm, cache. A newer version of the lists makes a new target" {
 		t.Fatalf("result = %+v", res)
@@ -423,9 +467,9 @@ func TestFollowBranchNamesTheTarget(t *testing.T) {
 // no second pull request.
 func TestFollowPassAdoptsAnOpenAttempt(t *testing.T) {
 	f := newFollowRun(t, behindTree())
-	n := f.forge.attempt(followBranch("litellm", litellmTarget(), 1), "open", false)
+	n := f.forge.attempt(followBranch("litellm", litellmTarget(), 1), "open", false, litellmTarget())
 	res := f.run(t)
-	if len(f.moves.started) != 1 || f.moves.started[0].PR != n || len(f.forge.commits) != 0 {
+	if len(f.moves.started) != 1 || f.moves.started[0].PR != n || f.moves.started[0].Head != "head10" || len(f.forge.commits) != 0 {
 		t.Fatalf("started %+v, commits %v, want the workflow for #%d and no commit (%+v)", f.moves.started, f.forge.commits, n, res)
 	}
 }
@@ -461,5 +505,27 @@ func TestFollowPassNothingBehind(t *testing.T) {
 	res := f.run(t)
 	if res.Outcome != "no change" || res.Note != "nothing is behind; parts of the hand lane: 1" {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+// An open attempt whose files or bytes are not what the program writes for the
+// target was pushed by someone else: the run refuses to adopt it.
+func TestFollowPassRefusesToAdoptAnotherHead(t *testing.T) {
+	branch := followBranch("litellm", litellmTarget(), 1)
+	for name, tc := range map[string]struct {
+		changes map[string][]byte
+		want    string
+	}{
+		"another byte": {map[string][]byte{litellmFile: []byte("pushed\n")}, "holds another k8s/platform/litellm/helmrelease.yaml than the program writes"},
+		"another file": {map[string][]byte{litellmFile: []byte(litellmAt("1.108.17", "d")), "extra.sh": []byte("rm\n")}, "changes [extra.sh k8s/platform/litellm/helmrelease.yaml], and the program writes [k8s/platform/litellm/helmrelease.yaml]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFollowRun(t, behindTree())
+			f.forge.attempt(branch, "open", false, tc.changes)
+			_, err := f.r.RoutineRun(context.Background(), RoutineRunInput{Project: infraName, Routine: "follow", Trigger: "cron", Due: time.Now()})
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(f.moves.started) != 0 {
+				t.Fatalf("err = %v, started %v; want a refusal with %q", err, f.moves.started, tc.want)
+			}
+		})
 	}
 }

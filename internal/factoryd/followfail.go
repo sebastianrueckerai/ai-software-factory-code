@@ -101,7 +101,15 @@ func (r *Runner) FollowReturn(ctx context.Context, in FollowMoveInput, landed Fo
 	if err != nil {
 		return FollowReturned{}, err
 	}
-	if pr == nil {
+	var state PullRequestRef
+	switch {
+	case pr != nil && pr.State != "open" && !pr.Merged:
+		return FollowReturned{PR: pr.Number, Why: fmt.Sprintf("pull request #%d was closed without a merge", pr.Number)}, nil
+	case pr != nil && pr.Merged:
+		state = *pr
+	default:
+		// the revert is made again and pushed over the branch, so the head
+		// that is checked and merged is the one read right after the push
 		if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 			return FollowReturned{}, err
 		}
@@ -112,28 +120,33 @@ func (r *Runner) FollowReturn(ctx context.Context, in FollowMoveInput, landed Fo
 		if conflict != "" {
 			return FollowReturned{Why: "the revert of " + ShortSHA(conflict) + " conflicts with main, which moved on since the merge"}, nil
 		}
-		body := fmt.Sprintf("The judgment of the follow routine's move of part %s (pull request #%d) failed, so this pull request reverts its merge %s.", in.Part, in.PR, ShortSHA(landed.Commit))
-		created, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, title, body)
+		head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, branch)
 		if err != nil {
 			return FollowReturned{}, err
 		}
-		pr = &created
-	}
-	r.followStep(ctx, repo, in, fmt.Sprintf("the judgment failed: pull request #%d reverts the merge.", pr.Number))
-	why := r.forgejo.LandPullRequest(ctx, repo, pr.Number, Attribution{Role: "follow"}, title, nil, r.followChecks(in)...)
-	state, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr.Number)
-	switch {
-	case err != nil:
-		return FollowReturned{}, err
-	case !state.Merged:
-		return FollowReturned{PR: pr.Number, Why: cmp.Or(why, fmt.Sprintf("pull request #%d was closed without a merge", pr.Number))}, nil
+		if pr == nil {
+			body := fmt.Sprintf("The judgment of the follow routine's move of part %s (pull request #%d) failed, so this pull request reverts its merge %s.", in.Part, in.PR, ShortSHA(landed.Commit))
+			created, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, title, body)
+			if err != nil {
+				return FollowReturned{}, err
+			}
+			pr = &created
+		}
+		r.followStep(ctx, repo, in, fmt.Sprintf("the judgment failed: pull request #%d reverts the merge.", pr.Number))
+		why := r.forgejo.LandPullRequest(ctx, repo, pr.Number, Attribution{Role: "follow"}, title, headVet(head), r.followChecks(in)...)
+		if state, err = r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr.Number); err != nil {
+			return FollowReturned{}, err
+		}
+		if !state.Merged {
+			return FollowReturned{PR: pr.Number, Why: cmp.Or(why, fmt.Sprintf("pull request #%d was closed without a merge", pr.Number))}, nil
+		}
 	}
 	project := r.cfg.Policy().Projects[in.Project]
 	if why, err := r.followStatuses(ctx, repo, project.Chain.Requires, FollowLanded{Commit: state.MergeCommit, At: r.Clock()}); err != nil || why != "" {
-		return FollowReturned{PR: pr.Number, Why: "the revert merged as " + ShortSHA(state.MergeCommit) + ", and " + why}, err
+		return FollowReturned{PR: state.Number, Why: "the revert merged as " + ShortSHA(state.MergeCommit) + ", and " + why}, err
 	}
 	r.followStep(ctx, repo, in, "the return held: "+ShortSHA(state.MergeCommit)+" is success.")
-	return FollowReturned{PR: pr.Number, Held: true}, nil
+	return FollowReturned{PR: state.Number, Held: true}, nil
 }
 
 // RetryFollow is the failure card's Try again, the work of its answer: a

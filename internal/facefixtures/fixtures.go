@@ -680,7 +680,7 @@ var humanSources = []humanSource{
 			{Title: title, Issue: 2090}})
 	}), factoryd.BriefFacts{Name: "3"}},
 	{factoryd.SourceFollowFailed, escalates(factoryd.SourceFollowFailed, "the follow routine", func(*builder) factoryd.HumanQuestion {
-		return factoryd.FollowFailedQuestion(factoryd.FollowMoveInput{Project: "ai-software-factory-infra", Part: "litellm", Lane: "alone", PR: 2101,
+		return factoryd.FollowFailedQuestion(factoryd.FollowMoveInput{Project: "demo", Part: "litellm", Lane: "alone", PR: 2101,
 			Moves: []string{"ghcr.io/berriai/litellm: 1.102.4 to 1.108.17"}, After: "The migration does not go back.", Notes: "https://github.com/BerriAI/litellm/releases"},
 			factoryd.FollowFailure{Why: "the status “flux/flux-system” of the merge commit 4f2b175 is failure: HelmRelease platform/litellm: upgrade retries exhausted",
 				Merged: true, Commit: "4f2b175a6d53", Returned: factoryd.FollowReturned{PR: 2102, Held: true}})

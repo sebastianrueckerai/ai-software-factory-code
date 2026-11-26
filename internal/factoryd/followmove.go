@@ -53,8 +53,11 @@ type FollowMoveInput struct {
 	Run              int
 	Part, Lane       string
 	PR               int64
-	Moves            []string // "<reference>: <before> to <after>"
-	Notes, After     string
+	// Head is the commit the pass pushed for the pull request: the only
+	// head that is checked, merged or judged.
+	Head         string
+	Moves        []string // "<reference>: <before> to <after>"
+	Notes, After string
 }
 
 // FollowVerdict is a step's answer: Ok, or Why it did not hold, with the
@@ -259,6 +262,9 @@ func (r *Runner) FollowChecks(ctx context.Context, in FollowMoveInput) (FollowVe
 	case pr.State != "open":
 		return FollowVerdict{Why: fmt.Sprintf("pull request #%d was closed without a merge", in.PR)}, nil
 	}
+	if why := headVet(in.Head)(pr); why != "" {
+		return FollowVerdict{Why: why}, nil
+	}
 	if why := r.forgejo.awaitChecks(ctx, repo, pr.HeadSHA, r.followChecks(in)); why != "" {
 		return FollowVerdict{Why: why}, nil
 	}
@@ -273,7 +279,7 @@ func (r *Runner) FollowLand(ctx context.Context, in FollowMoveInput) (FollowLand
 	if err != nil {
 		return FollowLanded{}, err
 	}
-	why := r.forgejo.LandPullRequest(ctx, repo, in.PR, Attribution{Role: "follow"}, "Follow the lists: part "+in.Part, nil, r.followChecks(in)...)
+	why := r.forgejo.LandPullRequest(ctx, repo, in.PR, Attribution{Role: "follow"}, "Follow the lists: part "+in.Part, headVet(in.Head), r.followChecks(in)...)
 	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, in.PR)
 	switch {
 	case err != nil:
@@ -341,35 +347,92 @@ func (r *Runner) followNamespaces(ctx context.Context, in FollowMoveInput) []str
 	return p.Namespaces
 }
 
+// followCommits are the commits whose statuses judge a merge: the merge
+// commit, and the commits of main after it that contain it. Flux posts its
+// status on the revision it applied, which is main's head then: when main
+// moved on between the merge and Flux's run, Flux may skip the merge commit
+// and post on the newer head alone.
+func (r *Runner) followCommits(ctx context.Context, repo Repo, commit string) []string {
+	out := []string{commit}
+	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+	if err != nil || head == commit {
+		return out
+	}
+	if holds, err := r.forgejo.Holds(ctx, repo, head, commit); err != nil || !holds {
+		return out
+	}
+	later, err := r.forgejo.CommitsBetween(ctx, repo.Owner, repo.Name, commit, head)
+	if err != nil {
+		return out
+	}
+	for _, c := range later {
+		out = append(out, c.SHA)
+	}
+	return out
+}
+
 // followStatuses waits for each of required to be success on the merge
-// commit and answers why one is not: a failure or error status at once, a
-// status that is not success rolloutCap after the merge.
+// commit or on a later commit of main that contains it, and answers why one
+// is not: a failure or error status at once, when no commit shows success
+// for it, and a status that is not success rolloutCap after the merge.
 func (r *Runner) followStatuses(ctx context.Context, repo Repo, required []string, landed FollowLanded) (string, error) {
 	if len(required) == 0 {
 		return "", nil
 	}
 	until := landed.At.Add(rolloutCap)
 	for {
-		st, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, landed.Commit)
-		if err != nil {
-			if !r.Clock().Before(until) {
-				return "", err
+		commits := r.followCommits(ctx, repo, landed.Commit)
+		var all []map[string]CommitStatus // by commit, by context
+		var readErr error
+		for _, c := range commits {
+			st, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, c)
+			if err != nil {
+				readErr = err
+				break
 			}
-			log.Printf("follow: the statuses of %s: %v", ShortSHA(landed.Commit), err)
+			by := map[string]CommitStatus{}
+			for _, s := range st.Statuses {
+				by[s.Context] = s
+			}
+			all = append(all, by)
+		}
+		if readErr != nil {
+			if !r.Clock().Before(until) {
+				return "", readErr
+			}
+			log.Printf("follow: the statuses of %s: %v", ShortSHA(landed.Commit), readErr)
 		}
 		waiting := ""
 		for _, name := range required {
-			i := slices.IndexFunc(st.Statuses, func(s CommitStatus) bool { return s.Context == name })
+			var seen *CommitStatus
+			var on string
+			good := false
+			for i, by := range all {
+				st, ok := by[name]
+				switch {
+				case !ok:
+				case st.State == "success":
+					good = true
+				case seen == nil || st.State == "failure" || st.State == "error":
+					seen, on = &st, commits[i]
+				}
+			}
 			switch {
-			case i < 0:
+			case good:
+			case seen != nil && (seen.State == "failure" || seen.State == "error"):
+				where := "the merge commit " + ShortSHA(on)
+				if on != landed.Commit {
+					where = "commit " + ShortSHA(on) + " after the merge commit " + ShortSHA(landed.Commit)
+				}
+				return fmt.Sprintf("the status “%s” of %s is %s: %s", name, where, seen.State, seen.Description), nil
+			case waiting != "":
+			case seen != nil:
+				waiting = name + " is " + seen.State
+			default:
 				waiting = name + " has not reported"
-			case st.Statuses[i].State == "failure" || st.Statuses[i].State == "error":
-				return fmt.Sprintf("the status “%s” of the merge commit %s is %s: %s", name, ShortSHA(landed.Commit), st.Statuses[i].State, st.Statuses[i].Description), nil
-			case st.Statuses[i].State != "success":
-				waiting = name + " is " + st.Statuses[i].State
 			}
 		}
-		if waiting == "" {
+		if waiting == "" && readErr == nil {
 			return "", nil
 		}
 		now := r.Clock()
@@ -458,6 +521,11 @@ func (r *Runner) FollowAsk(ctx context.Context, in FollowMoveInput) error {
 		return errors.Join(err, terminalError("move %s: no project %s in the store", in.Part, in.Project))
 	}
 	repo := p.Repo()
+	if pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, in.PR); err != nil {
+		return err
+	} else if why := headVet(in.Head)(pr); why != "" {
+		return terminalError("%s", why)
+	}
 	have, err := r.store.TasksByPR(ctx, p.Repository, in.PR)
 	if err != nil {
 		return err
@@ -476,7 +544,7 @@ func (r *Runner) FollowAsk(ctx context.Context, in FollowMoveInput) error {
 	}
 	refusal += ". Reject closes the pull request and leaves the part as it is until the lists carry its next version"
 	card, _, err := FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, r.cfg.Policy().Document.Budget, p, b, nil,
-		Task{ID: NewTaskID(), RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), Source: SourceFollow}, in.PR, refusal)
+		Task{ID: NewTaskID(), RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), Source: SourceFollow, SHA: in.Head}, in.PR, refusal)
 	if err != nil {
 		return err
 	}
