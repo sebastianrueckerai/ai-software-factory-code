@@ -27,9 +27,6 @@ func TestFor(t *testing.T) {
 	if got, want := For(JobChat), strings.TrimSpace(Guide)+"\n\n"+file("chat"); got != want {
 		t.Errorf("For(chat) = %q, want the guide and the chat's lines", got)
 	}
-	if !strings.HasPrefix(For(JobChat), "# The writing guide\n") {
-		t.Errorf("For(chat) does not open with the guide")
-	}
 	want := file("title") + "\n\n" + file("ask")
 	for _, got := range []string{For(JobTitle, JobAsk), For(JobAsk, JobTitle), For(JobAsk, JobTitle, JobAsk)} {
 		if got != want {
@@ -38,6 +35,29 @@ func TestFor(t *testing.T) {
 	}
 	if For() != "" {
 		t.Errorf("For() = %q, want none", For())
+	}
+}
+
+// The chat form carries the guide's two bullets on references, which the
+// guide itself no longer holds.
+func TestChatFormCarriesTheReferenceBullets(t *testing.T) {
+	lines := strings.TrimPrefix(For(JobChat), strings.TrimSpace(Guide))
+	for _, want := range []string{"Explain each reference at its first use and link it.", "Never name a thing that no reader can open"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("the chat form lacks %q", want)
+		}
+	}
+}
+
+// The guide is the owner's skill body with nothing of the code copy's own.
+func TestGuideHasNoAdditions(t *testing.T) {
+	for _, not := range []string{"writingguide.For", "A human is a human", "Readers, references and titles", "the owner's OK"} {
+		if strings.Contains(Guide, not) {
+			t.Errorf("the guide holds %q", not)
+		}
+	}
+	if !strings.HasPrefix(Guide, "**Changes to this guide need the user's OK.**") {
+		t.Errorf("the guide opens with %.60q", Guide)
 	}
 }
 

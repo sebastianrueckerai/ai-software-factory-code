@@ -1,8 +1,4 @@
-# The writing guide
-
-The one guide for any text a person reads: check-in questions, chat answers, notifications, pokes, report lines. Each step that writes such text carries the form of its job (`writingguide.For`). Not for progress lines, which stay very short. Not for output meant for other agents.
-
-**Changes to this guide need the owner's OK.**
+**Changes to this guide need the user's OK.** A correction given in conversation applies only to the current context.
 
 ## Orwell's rules
 
@@ -17,19 +13,18 @@ The one guide for any text a person reads: check-in questions, chat answers, not
 
 - One name for one thing. Do not rotate check / verify / validate / confirm for the same action.
 - One meaning per word. "fall" means to move down, not to decrease.
-- A human is a human. Say human, never member, operator or resource. A member may be an agent.
 - Take the short common word: start not begin or commence, use not utilise or leverage, help not facilitate, make sure not ensure, before not prior to, after not subsequent to, about not regarding, get not obtain, show not demonstrate, also not additionally or furthermore.
 - Introduce an uncommon term or an abbreviation before using it.
 - Noun clusters max three words.
 - No phrasal verbs: spin up, dive into, kick off, roll out.
 - British spelling: standardise, optimise, colour.
-- Avoid as self-praise: honest, robust, comprehensive, clean, etc.
-- No "honest note about X: ...". Say what you want to say.
+- Avoid as self-praise: honest, robust, comprehensive, clean, etc. 
+- No "honest note about x: ..." -> just say what you want to say!
 - Never as marketing: seamless, powerful, cutting-edge, effortless, world-class, next-generation, etc.
 - No intensifiers and no hollow claims. "significantly", "dramatically", "a significant impact" stand in for a number. Write the number. Not "the pricing was significantly higher", but "they charged $1,200 for a repair that needed a $5 chip".
 - No weasel words: "may potentially", "can help to", "might be able to". Either it happens or it does not. Say which.
 - Nothing "bites", "burns" or is "load-bearing". Write what happens.
-- No announcer fragments. Every sentence has a subject, a verb and a fact. Never announce content. Not "Three sources, each with its own failure mode. First, …", but "I would gather three data sources: the wearable, a morning questionnaire and app behaviour." No "First, Second, Third" in prose. Cut every clause that grades what follows ("with one catch", "and this is the point"). When the text needs structure, use a real heading or a list, never a fragment.
+- No announcer fragments. Every sentence has a subject, a verb and a fact. Never announce content! Not "Three sources, each with its own failure mode. First, …", but "I would gather three data sources: the wearable, a morning questionnaire and app behaviour." No "First, Second, Third" in prose. Cut every clause that grades what follows ("with one catch", "and this is the point"). Structure wanted: a real heading or a list, never a fragment.
 
 ## Verbs
 
@@ -42,7 +37,7 @@ The one guide for any text a person reads: check-in questions, chat answers, not
 
 - Lead with the result and explain it, never with a build-up or a line about how significant it is.
 - Never hold back the answer to build interest. No "Yes and the second half is what counts". Answer, then explain.
-- In response to an assertion you can answer "Yes", "No", or just explain the situation. Skip lines that grade the question instead of answering it.
+- In response to an assertion you can answer "Yes", "No", or just explain the situation. Skip lines like "Half right, and the half that is wrong kills the plan" - they don't add information!
 - No credibility framing and no grading: never "the honest answer is", "frankly", "you are right, and for a sharper reason". State the fact. When a verdict on the premise matters it is one word: yes, no, mostly.
 - One instruction per sentence.
 - Short sentences, short paragraphs.
@@ -57,7 +52,7 @@ The one guide for any text a person reads: check-in questions, chat answers, not
 
 - Answer first. When the request contains a decision, give the verdict in the opening sentence, then support it.
 - Order points by how much each one moves the decision. Caveats go last and are named as caveats. A caveat in the middle reads as a reversal.
-- Be brief but do not compress: compressing six sections into dense prose makes it unreadable.
+- Be brief but do not compress: compressing six sections into dense prose makes them unreadable.
 - A heading names what the section holds. It does not tease. Not "The Hidden Cost of Planned Obsolescence", but "Economic impact of shortened product lifespans".
 - One topic per paragraph.
 - Put the condition before the command: "If the build fails, run make clean", not "run make clean if the build fails". A reader acting on the first half must not act too early.
@@ -73,16 +68,9 @@ The one guide for any text a person reads: check-in questions, chat answers, not
 - The relevant facts must jump out at a glance. When they do not, write prose instead.
 
 ## Questions
-
-When asking for a decision, give enough info for the reader to make an informed decision. Do not assume they already have all the context you have. Explain including the reason behind a needed decision.
-
-## Readers, references and titles
-
-- Write for a reader who dropped in cold. This reader did not follow the work and forgot how the process runs. Say what the text is about, why it exists and where it stands, with the facts of this card or this question, not a general account of the process. Give the context the reader needs and no more. A wall of text fails this reader as much as a missing reason does.
-- Explain each reference at its first use and link it. A card number, a plan, a pull request, a criterion, a term of the factory: give a few words on what it is, for example "#2011 (the plan's last card, closed without a merge)". Link a part of a document as [words](path#heading). Never write a bare label such as "Phase B", "requirement 1b", "fault 3", "step 2" or "task #2004".
-- Never name a thing that no reader can open: a branch name, a task id, a case number, a finding hash.
-- A title names the work in plain words, the verb first: "Narrow the close refusal to plans that hold criteria", not "The doClose refusal narrowed to plans that hold criteria: the review finding answered on branch card/2084". On a card that asks, the title is the ask: one question or one instruction.
+When asking for a decision, give enough info for the reader to make an informed decision. Dont assume they already have all the context you have. Explain including the reason behind a needed decsion.
 
 ## Guard
 
-Never drop a fact, number, condition or scope qualifier to make a sentence short. Keep the longer sentence. Preserve code, identifiers, units and error strings exactly.
+Never drop a fact, number, condition or scope qualifier to make a sentence short. Keep the
+longer sentence. Preserve code, identifiers, units and error strings exactly.

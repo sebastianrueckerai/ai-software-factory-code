@@ -2570,7 +2570,7 @@ func TestSystemTool(t *testing.T) {
 		}
 		at = i
 	}
-	if strings.Contains(got, "# The writing guide") {
+	if strings.Contains(got, "## Orwell's rules") {
 		t.Errorf("the manual holds the writing guide, which the standing prompt carries:\n%s", got)
 	}
 	for _, not := range []string{"\n  steer", "month cap", "needs OK", "\n  card, ", "\n  approve_merge"} {
