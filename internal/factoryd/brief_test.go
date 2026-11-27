@@ -464,12 +464,13 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	}
 }
 
-// The writer's prompt asks for the two story lines with the ask form of the
-// guide and each line's bound, and forbids naming a button.
+// The writer's prompt asks for the two story lines with the line form of
+// the guide, and forbids naming a button; each line's bound is the
+// parser's.
 func TestCaseBriefPromptWritesTheStoryAndNamesNoButton(t *testing.T) {
-	form, _ := writingguide.Form("ask")
+	form, _ := writingguide.Form("line")
 	prompt := testPrompt(t, "case-brief-writer", caseBriefPrompt).Text()
-	for _, want := range []string{`{"happened": "...", "left": "..."}`, "happened: one sentence, at most 160 characters", "left: one sentence, at most 87 characters",
+	for _, want := range []string{`{"happened": "...", "left": "..."}`, "happened: one sentence: what stopped the card", "left: one sentence: what is left",
 		"Name no button, answer or action", form} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the prompt lacks %q", want)

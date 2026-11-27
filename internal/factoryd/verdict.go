@@ -18,7 +18,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The spec's verdict as data (the spec-intake concept, pieces 7 and 8,
@@ -1345,14 +1344,14 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, p Plan, revisio
 // deltaSystem is the delta round's system prompt: one card under the open
 // plan that closes the named criteria; %s is the card's image field
 // (imageField).
-const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met or were never judged after its cards ran: each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "why": "...", "summary": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. %s directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+const deltaSystem = `Each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. Answer with one JSON object and nothing else: {"card": {"title": "...", "why": "...", "summary": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
 
 // deltaFacts are the images the delta round's project pins.
 type deltaFacts struct{ Pins map[string]policy.ImagePin }
 
 // deltaPrompt is the delta round's text for a project pinning f.Pins.
 func deltaPrompt(f deltaFacts) (string, error) {
-	return strings.TrimSpace(fmt.Sprintf(deltaSystem, imageField(f.Pins), writingguide.BriefLines) + " " + imagesLine(f.Pins)), nil
+	return strings.TrimSpace(fmt.Sprintf(deltaSystem, imageField(f.Pins)) + " " + imagesLine(f.Pins)), nil
 }
 
 // deltaInput is the delta round's whole context.

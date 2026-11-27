@@ -242,9 +242,7 @@ const titleTokens = 200
 
 // TitlePrompt is the naming call's system prompt (roadmap 304): the
 // answer must work as a thread title in the switcher.
-const TitlePrompt = "You name a chat thread from its first message. " +
-	"Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. " +
-	"Answer in the message's language."
+const TitlePrompt = "Answer with the title alone: a name, not a sentence, a few words. Answer in the message's language."
 
 // Title is one naming call of chat thread thread on chat task taskID's
 // account (roadmap 304): the cheap alias reads the thread's first

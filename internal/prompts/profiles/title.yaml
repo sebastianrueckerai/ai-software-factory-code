@@ -4,7 +4,7 @@ reader: human
 guide: false
 forms: [title]
 chunks: []
-paragraph: ""
+paragraph: title
 facts: text
 answer: ""
 tools:

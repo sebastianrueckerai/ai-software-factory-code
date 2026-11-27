@@ -168,12 +168,10 @@ func TestStandingRowSkipsARowOfAnotherKind(t *testing.T) {
 // says what the card's tests prove, and the prompt names no criterion's
 // test.
 func TestTheDeltaPromptReadsTheNewFields(t *testing.T) {
-	delta := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
+	delta := fmt.Sprintf(deltaSystem, "")
 	for _, want := range []string{
 		`"text": "what the card's tests prove, with the inputs and the numbers`,
 		`{"card": {"title": "...", "why": "...", "summary": "...", "brief": "..."`,
-		"title: the work, verb first, plain words, under 70 characters. why: one sentence, the reason this work exists. " +
-			"summary: what gets built, what it changes, how it is checked, under 600 characters.",
 		"acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers.",
 	} {
 		if !strings.Contains(delta, want) {
@@ -247,8 +245,12 @@ func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
 		form, _ := writingguide.Form(name)
 		forms = append(forms, form)
 	}
-	lead := strings.Join(forms, "\n\n") + "\n\n"
-	bare := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
+	standing := testPrompt(t, "delta-planner", nil).Standing()
+	if !strings.HasPrefix(standing, strings.Join(forms, "\n\n")+"\n\n") {
+		t.Fatalf("the delta planner's forms do not open its prompt:\n%s", standing)
+	}
+	lead := standing + "\n\n"
+	bare := fmt.Sprintf(deltaSystem, "")
 	if got := testPrompt(t, "delta-planner", deltaFacts{}).Text(); got != lead+bare || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
 		t.Fatalf("no pins: %q, want the forms and deltaSystem without the image field", got)
 	}

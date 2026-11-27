@@ -4,7 +4,7 @@ reader: human
 guide: false
 forms: [ask]
 chunks: []
-paragraph: ""
+paragraph: brief-writer
 facts: brief
 answer: ""
 tools:

@@ -3,8 +3,8 @@ purpose: review
 reader: human
 guide: false
 forms: [title, why, summary, brief]
-chunks: []
-paragraph: ""
+chunks: [factory]
+paragraph: delta-planner
 facts: delta
 answer: ""
 tools:
@@ -12,4 +12,4 @@ tools:
   gateway: []
   chat: []
 agents_md: false
-budget_words: 960
+budget_words: 971

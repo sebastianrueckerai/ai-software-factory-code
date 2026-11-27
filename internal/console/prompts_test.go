@@ -390,3 +390,56 @@ func TestChunkCarriers(t *testing.T) {
 		}
 	}
 }
+
+// built is step's prompt on its registered fixture.
+func built(t *testing.T, step string) prompts.Prompt {
+	t.Helper()
+	for _, r := range prompts.Registered() {
+		if r.Step == step {
+			p, err := prompts.Build(step, r.Fixture)
+			if err != nil {
+				t.Fatalf("step %s: %v", step, err)
+			}
+			return p
+		}
+	}
+	t.Fatalf("step %s is not registered", step)
+	var none prompts.Prompt
+	return none
+}
+
+// lacks fails for each of banned that step's prompt holds.
+func lacks(t *testing.T, step string, banned ...string) {
+	t.Helper()
+	text := built(t, step).Text()
+	for _, b := range banned {
+		if strings.Contains(text, b) {
+			t.Errorf("step %s holds %q:\n%s", step, b, text)
+		}
+	}
+}
+
+// The case brief writer writes two lines a human reads on the card: the
+// line form, not the ask form.
+func TestCaseBriefWriterCarriesTheLineForm(t *testing.T) {
+	if text := built(t, "case-brief-writer").Text(); !strings.Contains(text, "This text is one short line or one short paragraph that a human reads on a card.") {
+		t.Errorf("the case brief writer lacks the line form:\n%s", text)
+	}
+	lacks(t, "case-brief-writer", "The story has three short lines:")
+}
+
+// The delta planner's prompt spells no bound of the brief and no rule on
+// the keys: AdmitBrief and readPlan refuse them.
+func TestDeltaPromptHasNoBriefLines(t *testing.T) {
+	lacks(t, "delta-planner", "under 70 characters", "names only keys the plan holds")
+}
+
+// The thread title's bounds are cleanTitle's: its length and its quotes.
+func TestTitleCarriesNoBounds(t *testing.T) {
+	lacks(t, "title", "60 characters", "surrounding quotes")
+}
+
+// The plan name's bound is normalizePlanName's.
+func TestPlanNamerCarriesNoBounds(t *testing.T) {
+	lacks(t, "plan-namer", "24 characters")
+}

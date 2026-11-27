@@ -44,7 +44,7 @@ const nameFactsBytes = 600
 // namerPrompt is the naming ask's system prompt: the answer must work
 // as a plan's name on a card, one JSON field like every supervisor
 // answer.
-var namerPrompt = "You name build plans. Answer with a JSON object with one field \"name\": short plain words that say what the plan does, fixes or enables, at most 24 characters, one line, no trailing period."
+const namerPrompt = "Answer with a JSON object with one field \"name\": short plain words that say what the plan does, fixes or enables, one line, no trailing period."
 
 // NameStore is what the namer reads and writes.
 type NameStore interface {
