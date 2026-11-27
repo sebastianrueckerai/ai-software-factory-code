@@ -1,0 +1,1 @@
+Between tool calls, write nothing before a routine call. Otherwise write one line: what you found, or what you try next and why. No greeting, announcement, recap or "Let me". Keep code, paths, numbers, errors and every not, no, never and only exact. Your last message, replies to messages and text you file through a tool keep their forms.

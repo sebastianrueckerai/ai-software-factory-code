@@ -12,4 +12,4 @@ tools:
   gateway: [file_proofs, manual]
   chat: []
 agents_md: true
-budget_words: 411
+budget_words: 438

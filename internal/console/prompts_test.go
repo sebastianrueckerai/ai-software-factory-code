@@ -363,3 +363,30 @@ func TestEveryProfileHasAStep(t *testing.T) {
 		}
 	}
 }
+
+// The factory chunk goes to the steps that act across the factory's flow,
+// the narration chunk to the sessions that write most.
+func TestChunkCarriers(t *testing.T) {
+	t.Skip("carriers land task by task")
+	producers := []string{"coding", "coding-card", "prover", "repo-map", "screening", "sizing"}
+	planner := []string{"planner-cards", "planner-criteria", "planner-replan", "planner-revert", "planner-spec"}
+	want := map[string][]string{
+		"factory": slices.Sorted(slices.Values(slices.Concat([]string{"case-checkin", "checkin-dead", "checkin-gate", "checkin-session",
+			"delta-planner", "project-agent"}, producers, planner))),
+		"narration": slices.Sorted(slices.Values(slices.Concat(producers, planner))),
+	}
+	if len(want["factory"]) != 17 || len(want["narration"]) != 11 {
+		t.Fatalf("the lists hold %d and %d steps, want 17 and 11", len(want["factory"]), len(want["narration"]))
+	}
+	for chunk, steps := range want {
+		var got []string
+		for _, p := range prompts.Profiles() {
+			if slices.Contains(p.Chunks, chunk) {
+				got = append(got, p.Step)
+			}
+		}
+		if !slices.Equal(got, steps) {
+			t.Errorf("chunk %s is carried by %q, want %q", chunk, got, steps)
+		}
+	}
+}
