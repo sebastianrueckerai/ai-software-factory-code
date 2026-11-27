@@ -16,6 +16,7 @@ graph LR
     message-responder["message-responder"]
     checkin["checkin"]
     opencode-subagents["opencode subagents"]
+    opencode-title["opencode-title"]
     digest["digest"]
     image-look["image-look"]
   end
@@ -50,6 +51,7 @@ graph LR
   planner -.-> plan-namer
   holdout-proposer -.-> prover
   coding -.-> opencode-subagents
+  coding -.-> opencode-title
   coding -.-> digest
   coding -.-> image-look
   message-responder --> coding

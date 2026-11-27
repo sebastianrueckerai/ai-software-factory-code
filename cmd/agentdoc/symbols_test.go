@@ -134,3 +134,31 @@ func TestLocateRefusesAmbiguousCrossPackageNames(t *testing.T) {
 		t.Fatal("the in-package hit must still win")
 	}
 }
+
+// A subpackage's file sits under the page's package directory but is
+// another package: its declaration of the same name, sorted first, never
+// wins over the page's own.
+func TestLocateKeepsThePagesOwnPackage(t *testing.T) {
+	root, _ := writeFixtureModule(t)
+	sub := filepath.Join(root, "internal", "fixture", "pg")
+	if err := os.MkdirAll(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for path, src := range map[string]string{
+		filepath.Join(root, "internal", "fixture", "z.go"): "package fixture\n\n// Zed is the fixture's own.\nvar Zed = 1\n",
+		filepath.Join(sub, "pg.go"):                        "package pg\n\n// Zed re-exports the fixture's Zed.\nvar Zed = 1\n",
+	} {
+		if err := os.WriteFile(path, []byte(src), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	syms, err := loadSymbols(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, symbol := range []string{"Zed", "fixture.Zed"} {
+		if rel, line, ok := syms.locate("internal/fixture", symbol); !ok || rel+":"+strconv.Itoa(line) != "internal/fixture/z.go:4" {
+			t.Errorf("%s resolved to %s:%d (ok=%v), want internal/fixture/z.go:4", symbol, rel, line, ok)
+		}
+	}
+}

@@ -28,8 +28,9 @@ type Agent struct {
 	// JSON-mode clients, plain text that ends the loop for the chat.
 	Answer  string
 	Capture func(ctx context.Context, id, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error)
-	// Loop marks an opencode loop mode: its capture drives the pinned
-	// binary through factoryd.AgentDocLoop, not an in-process client.
+	// Loop marks a page the pinned binary captures through
+	// factoryd.AgentDocLoop, not an in-process client: an opencode loop
+	// mode, or the harness's own title call.
 	Loop bool
 	// Config marks a page with no capture at all: what the config says
 	// about an agent whose prompts are not ours.
@@ -37,8 +38,9 @@ type Agent struct {
 }
 
 // registry lists every agent the map documents, in page order. The
-// families are the code map's: A, the opencode loop modes the pinned
-// binary captures, then B, the direct factoryd and console clients.
+// families are the code map's: A, the opencode loop modes and the
+// harness's own calls the pinned binary captures, then B, the direct
+// factoryd and console clients.
 var registry = []Agent{
 	{ID: "coding", Pkg: "internal/factoryd", Family: "A", Job: "Implements the card: reads repo, edits, commits in sandbox", Runs: "agent-worker, the opencode loop in a gVisor pod", Loop: true, Calls: []string{"factoryd.(*Runner).RunSession"}},
 	{ID: "screening", Pkg: "internal/factoryd", Family: "A", Job: "Reads an issue pre-code, answers clear/suspect JSON", Runs: "agent-worker, report mode", Loop: true, Calls: []string{"factoryd.(*Runner).RunReport"}},
@@ -46,6 +48,7 @@ var registry = []Agent{
 	{ID: "planner", Pkg: "internal/factoryd", Family: "A", Job: "Reads repo, files a plan via the file_plan MCP tool", Runs: "agent-worker, report mode", Loop: true, Calls: []string{"factoryd.(*Runner).RunPlan"}},
 	{ID: "prover", Pkg: "internal/factoryd", Family: "A", Job: "Writes one blind test per criterion on main, files them via file_proofs", Runs: "agent-worker, report mode", Loop: true, Calls: []string{"factoryd.(*Runner).RunReport"}},
 	{ID: "message-responder", Pkg: "internal/factoryd", Family: "A", Job: "Answers POST /message pushes mid-session", Runs: "agent-worker, the session's next turn in the sandbox", Loop: true, Calls: []string{"factoryd.(*Runner).MessageSession"}},
+	{ID: "opencode-title", Pkg: "internal/factoryd", Family: "A", Job: "opencode's own call that titles a session from its first prompt", Runs: "inside opencode, at every session's first prompt, through the gateway", Loop: true, Calls: []string{"factoryd.(*Runner).RunSession", "factoryd.(*Runner).RunReport", "factoryd.(*Runner).RunPlan"}},
 	{ID: "opencode-subagents", Pkg: "internal/factoryd", Family: "A", Job: "opencode-internal task and explore delegation", Runs: "inside opencode, under the session config's agent block", Config: true},
 	{ID: "checkin", Pkg: "internal/factoryd", Family: "B", Job: "Decides continue, message, handover, human or replan on a session trip", Runs: "factoryd, in-process loop, tools executed in the sandbox", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect, Calls: []string{"factoryd.(*Runner).runCheckin"}},
 	{ID: "case-checkin", Pkg: "internal/factoryd", Family: "B", Job: "Judges a case at rung 1: acts on it, or hands it up with a recommendation", Runs: "factoryd, in-process loop on the project's chat task, tools read by factoryd", Answer: factoryd.AgentDocRungAnswer, Capture: factoryd.AgentDocDirect, Calls: []string{"factoryd.(*Runner).rungConversation"}},
