@@ -28,7 +28,6 @@
   },
   "permission": {
     "doom_loop": "allow",
-    "factory-tools_deployment_health": "deny",
     "factory-tools_file_plan": "deny",
     "factory-tools_file_proofs": "deny",
     "factory-tools_task_costs": "deny",

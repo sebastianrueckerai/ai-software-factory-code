@@ -90,8 +90,8 @@ func budgetOf(t *testing.T, step string) int {
 // The session steps keep the tool sets their map pages show: every
 // built-in tool, and the gateway's tools their classes grant.
 func TestSessionStepsKeepTheirToolSets(t *testing.T) {
-	analyzer := []string{"analyze_image", "digest", "escalate", "manual", "request_info", "web_scrape", "web_search"}
-	coder := []string{"analyze_image", "cloud_prices", "commission_server", "delegate", "digest", "escalate", "fal_run", "list_resources", "manual",
+	analyzer := []string{"analyze_image", "deployment_health", "digest", "escalate", "manual", "request_info", "web_scrape", "web_search"}
+	coder := []string{"analyze_image", "cloud_prices", "commission_server", "delegate", "deployment_health", "digest", "escalate", "fal_run", "list_resources", "manual",
 		"release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate", "web_scrape", "web_search"}
 	want := map[string][]string{
 		"sizing":      analyzer,

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -113,5 +114,73 @@ func TestPromptIsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A system text reaches a model through three sinks, each fed by a Prompt or
+// by a string one of them made: SystemMessage for the project agent's chat,
+// chatPayload for the supervisor model and checkinGateway.Call for a
+// check-in. No other function writes a system role.
+func TestSystemRoleHasThreeSinks(t *testing.T) {
+	got := map[string]bool{}
+	for _, tree := range []string{"../../internal", "../../cmd"} {
+		err := filepath.WalkDir(tree, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, path, src, 0)
+			if err != nil {
+				return err
+			}
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
+				ast.Inspect(fn, func(n ast.Node) bool {
+					kv, ok := n.(*ast.KeyValueExpr)
+					if !ok {
+						return true
+					}
+					v, ok := kv.Value.(*ast.BasicLit)
+					if !ok || v.Value != `"system"` {
+						return true
+					}
+					switch k := kv.Key.(type) {
+					case *ast.Ident:
+						if k.Name != "Role" {
+							return true
+						}
+					case *ast.BasicLit:
+						if k.Value != `"role"` {
+							return true
+						}
+					default:
+						return true
+					}
+					name := fn.Name.Name
+					if fn.Recv != nil {
+						if star, ok := fn.Recv.List[0].Type.(*ast.StarExpr); ok {
+							name = star.X.(*ast.Ident).Name + "." + name
+						}
+					}
+					got[filepath.Base(path)+" "+name] = true
+					return true
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]bool{"operator.go SystemMessage": true, "supervisor.go chatPayload": true, "checkin.go checkinGateway.Call": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("system role written in %v, want only %v", got, want)
 	}
 }
