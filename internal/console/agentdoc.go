@@ -14,10 +14,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +36,7 @@ const (
 
 // AgentDocConsoleIDs are the console agents the map captures.
 func AgentDocConsoleIDs() []string {
-	return []string{"project-agent", "compact", "vision"}
+	return []string{"project-agent", "compact", "vision", "research"}
 }
 
 // AgentDocConsole captures agent id's first model request through the
@@ -53,6 +51,8 @@ func AgentDocConsole(ctx context.Context, id, gwURL string, v policy.Version, hc
 		return agentDocCompact(ctx, op, v)
 	case "vision":
 		return agentDocVision(ctx, op)
+	case "research":
+		return agentDocResearch(ctx, op, v)
 	}
 	return nil, fmt.Errorf("no console agent %s", id)
 }
@@ -156,7 +156,7 @@ func agentDocCompact(ctx context.Context, op *factoryd.OperatorModel, v policy.V
 
 // agentDocVision drives the operator model's look at the fixture image.
 func agentDocVision(ctx context.Context, op *factoryd.OperatorModel) ([]agentdoc.Span, error) {
-	img, err := agentDocImage()
+	img, err := agentdoc.PNG()
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +171,37 @@ func agentDocVision(ctx context.Context, op *factoryd.OperatorModel) ([]agentdoc
 	}, nil
 }
 
+// agentDocQuestion is the project agent's question to the researcher.
+const agentDocQuestion = "Which file sets the staging deploy's budget, and what does it hold?"
+
+// agentDocResearch drives the chat's research loop on one question of the
+// project agent's: the researcher's brief and the reads it may drive are
+// the loop's own assembly, and the fixture answer, a report with no tool
+// call, ends the loop after its first call.
+func agentDocResearch(ctx context.Context, op *factoryd.OperatorModel, v policy.Version) ([]agentdoc.Span, error) {
+	chat := &agentDocChat{thread: factoryd.ChatConversation{Number: 1, Login: agentDocUser, State: factoryd.ThreadActive}}
+	c := agentDocConsole(op, chat, v)
+	r := httptest.NewRequest("POST", "/", nil)
+	t := &turn{c: c, r: r.WithContext(ctx), p: agentDocProject(), owner: agentDocUser, conv: 1, task: agentDocTask}
+	t.stream(func(string) error { return nil }, nil)
+	if _, _, err := t.research(agentDocQuestion); err != nil {
+		return nil, err
+	}
+	spans := []agentdoc.Span{
+		{Name: "the researcher's brief", Symbol: "researchPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: researchPrompt},
+		{Name: "the agent's question", Symbol: "(*turn).researchTool", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocQuestion},
+	}
+	for _, name := range researchTools {
+		tool, ok := c.chatTool(name)
+		if !ok {
+			return nil, fmt.Errorf("the research tool %s is none of the chat's tools", name)
+		}
+		spans = append(spans, agentdoc.Span{Name: "tool " + name, Symbol: "researchTools", Kind: agentdoc.KindBuilder,
+			Place: agentdoc.PlaceTools, Text: agentDocJSON(tool.def(false))})
+	}
+	return spans, nil
+}
+
 // agentDocProject is the fixture project: a coder project the human
 // writes, with a namespace its tools may read.
 func agentDocProject() factoryd.Project {
@@ -179,8 +210,11 @@ func agentDocProject() factoryd.Project {
 }
 
 // agentDocConsole wires the fixture Console: every store the drive
-// reaches is an in-memory fixture over an empty board.
+// reaches is an in-memory fixture over an empty board, and every door
+// factoryd wires that gates a chat tool is set, so the tools offered are
+// production's. The capture runs none of them.
 func agentDocConsole(op *factoryd.OperatorModel, chat Chat, v policy.Version) *Console {
+	noTool := errors.New("the capture runs no tools")
 	return &Console{turns: newTurnGate(), stops: newStopGate(), ended: make(chan struct{}), clock: time.Now, cfg: Config{
 		Chat: chat, Operator: op, Policies: agentDocPolicies{v}, Projects: agentDocProjects{},
 		Writers: func(context.Context) (string, map[string][]string, error) {
@@ -193,6 +227,14 @@ func agentDocConsole(op *factoryd.OperatorModel, chat Chat, v policy.Version) *C
 		Approvals: agentDocApprovals{},
 		CaseDesk:  func(context.Context, string) (factoryd.CaseDesk, error) { return factoryd.CaseDesk{}, nil },
 		PoolDrawn: func(context.Context, string, time.Time) (policy.Draw, error) { return policy.Draw{}, nil },
+		Steer:     func(context.Context, string, string, string) error { return noTool },
+		RequestImage: func(context.Context, string, string, string, string, string, func(string) error) (factoryd.ImageAsk, error) {
+			return factoryd.ImageAsk{}, noTool
+		},
+		GitHubSync: func(context.Context, string, string) (string, error) { return "", noTool },
+		Web:        struct{ Web }{},
+		Mirrors:    agentDocMirrors{},
+		Routines:   agentDocRoutines{},
 	}}
 }
 
@@ -224,17 +266,6 @@ func agentDocPost(ctx context.Context) (*http.Request, error) {
 		return nil, err
 	}
 	return agentDocRequest(ctx, "POST", "/projects/"+agentDocName+"/chat", &b, f.FormDataContentType()), nil
-}
-
-// agentDocImage is a one-pixel PNG, the vision call's fixture.
-func agentDocImage() ([]byte, error) {
-	var b bytes.Buffer
-	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
-	img.Set(0, 0, color.RGBA{R: 210, G: 120, B: 30, A: 255})
-	if err := png.Encode(&b, img); err != nil {
-		return nil, err
-	}
-	return b.Bytes(), nil
 }
 
 // agentDocJSON is v as it sits inside a marshalled request body; a value
@@ -373,6 +404,20 @@ func (agentDocCosts) ModelCalls(context.Context, string) ([]policy.ModelCall, er
 }
 
 func (agentDocCosts) CallTotals(context.Context, []string) (map[string]policy.CallTotals, error) {
+	return nil, nil
+}
+
+// agentDocMirrors: the fixture project keeps no GitHub export.
+type agentDocMirrors struct{ Mirrors }
+
+func (agentDocMirrors) Mirror(context.Context, string, string) (factoryd.Mirror, bool, error) {
+	return factoryd.Mirror{}, false, nil
+}
+
+// agentDocRoutines: the fixture project runs no routine.
+type agentDocRoutines struct{ Routines }
+
+func (agentDocRoutines) Views(context.Context, string) ([]factoryd.RoutineView, error) {
 	return nil, nil
 }
 

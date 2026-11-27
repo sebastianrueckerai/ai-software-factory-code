@@ -400,6 +400,14 @@ func (agentDocLoopAuth) Authenticate(r *http.Request) (gateway.Identity, error) 
 	}, nil
 }
 
+// agentDocLoopPrices serves the window the session asks of the gateway for
+// every model it declares before it starts: the fake gateway's one window.
+type agentDocLoopPrices struct{}
+
+func (agentDocLoopPrices) Price(context.Context, string) (policy.Price, error) {
+	return policy.Price{Window: agentdoc.Window}, nil
+}
+
 // agentDocLoopStore is the capture's task row and policy version: the
 // class the mode's session runs as, the repository whose project offers
 // the tools, the policy the tool list reads. Holds and audit rows never
@@ -508,6 +516,23 @@ func maskLoopRunTime(raw []byte, dir string) []byte {
 	return loopDayLine.ReplaceAll(raw, []byte("Today's date: the day of the run"))
 }
 
+// agentDocLoopMux is the gateway the mode's session talks to: the scripted
+// model on the chat door, and the real gateway's MCP tools and window ask,
+// the window each declared model's limits and compaction run by.
+func agentDocLoopMux(model *agentDocLoopModel, v policy.Version, id string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", model.serve)
+	gw := gateway.NewServer(gateway.ServerOptions{
+		Auth:   agentDocLoopAuth{},
+		Store:  agentDocLoopStore{v: v, class: agentDocLoopClass(id)},
+		Cloud:  &gateway.Cloud{},
+		Prices: agentDocLoopPrices{},
+	}).Routes("agentdoc")
+	mux.Handle("/mcp", gw)
+	mux.Handle("GET /v1/window/{alias}", gw)
+	return mux
+}
+
 // AgentDocLoop captures one loop mode's chosen request from the wire: the
 // pinned opencode binary runs the real session assembly — the brief, the
 // identity proxy, the gateway's MCP tool list — against the scripted
@@ -536,14 +561,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 		return nil, agentdoc.Recorded{}, err
 	}
 	model := &agentDocLoopModel{responder: id == "message-responder"}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", model.serve)
-	mux.Handle("/mcp", gateway.NewServer(gateway.ServerOptions{
-		Auth:  agentDocLoopAuth{},
-		Store: agentDocLoopStore{v: v, class: agentDocLoopClass(id)},
-		Cloud: &gateway.Cloud{},
-	}).Routes("agentdoc"))
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(agentDocLoopMux(model, v, id))
 	defer srv.Close()
 
 	model.oc = &Opencode{

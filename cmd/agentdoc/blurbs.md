@@ -10,6 +10,7 @@ changes.
 - message-responder: Answers a writer's message pushed into a running session. The message becomes the loop's next turn.
 - opencode-subagents: opencode's own general and explore subagents, set by the agent block in our session config. Their prompts live inside the pinned binary; the config sets their model and step cap.
 - checkin: Reads a session that stopped at a checkpoint short of done and answers one of continue, message, handover, human or replan.
+- case-checkin: Judges a case the factory's code could not settle, on the card's facts and the evidence it reads itself, and acts on it or hands it up with a recommendation.
 - model-review: Reads the change's diff with the card's objective and the opened proofs' original code, and answers a verdict with findings.
 - security-audit: Checks the change against the security checklist. No other agent makes this reading.
 - gate-supervisor: Reads the verdicts and answers approve or escalate. Nothing merges past this agent unjudged.
@@ -20,7 +21,12 @@ changes.
 - answer-screener: Screens a late answer from the issue's author before it changes the card.
 - brief-writer: Writes the brief of a resource request or a plan approval, the requests no case carries.
 - case-brief-writer: Reads a Needs-you case from its record and writes the background and the grounds of the recommendation for a human who opens it cold.
+- plan-namer: Names a plan in a few words when its first revision files. One cheap call, asked again while the name does not hold.
 - title: Names a chat thread from its first message. One cheap call.
+- digest: Summarises one big read under an ask, for a session's digest tool or the chat's reads. One cheap call, and no system prompt.
+- image-look: Looks at one image a session names, a workspace file or an image on the card, and answers the session's ask in words.
+- follow-liveness: Asks the small model for one word after a move rolls out, to prove the model route still answers. No one reads the answer.
 - project-agent: The always-on chat about the repository, with the project's tools. Its escalations file cards the factory then works.
+- research: Researches one question for the project agent through the chat's reads and the web, and hands back a report with its sources.
 - compact: Summarises a chat thread's older turns when the thread grows long. One cheap call.
 - vision: Describes an image a human attached, in words the text-only agents read.

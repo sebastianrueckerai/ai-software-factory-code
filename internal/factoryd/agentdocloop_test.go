@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -450,6 +451,25 @@ func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
 	}
 	if !bytes.Contains(recA.Raw, []byte("Working directory: /workspace\\n")) || !bytes.Contains(recA.Raw, []byte("Today's date: the day of the run\\n")) {
 		t.Errorf("the masks are missing from %s", recA.Raw)
+	}
+}
+
+// The capture's gateway answers the window ask a session makes of every
+// declared model before it starts, as the real gateway does, so the
+// session runs under its models' windows and the auto compaction they
+// turn on, never on the trust cap a refused ask leaves.
+func TestAgentDocLoopGatewayServesTheWindow(t *testing.T) {
+	srv := httptest.NewServer(agentDocLoopMux(&agentDocLoopModel{}, agentDocLoopPolicy(), "coding"))
+	defer srv.Close()
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte("agentdoc-dummy-jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oc := &Opencode{GatewayURL: srv.URL, TokenFile: token}
+	for _, alias := range []string{policy.Small, policy.Big, policy.Premium} {
+		if w, err := oc.servedWindow(context.Background(), alias); err != nil || w != 128000 {
+			t.Errorf("the window of %s: %d, %v, want 128000", alias, w, err)
+		}
 	}
 }
 

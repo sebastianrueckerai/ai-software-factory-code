@@ -8,10 +8,14 @@ package factoryd
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
@@ -20,6 +24,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // agentDocTask is the task id every capture bills under; the fake gateway
@@ -35,7 +40,8 @@ var agentDocClasses = []string{"coder"}
 func AgentDocDirectIDs() []string {
 	return []string{"checkin", "model-review", "security-audit", "gate-supervisor",
 		"judgement", "review-behaviours", "delta-planner", "holdout-proposer",
-		"answer-screener", "brief-writer", "case-brief-writer", "title"}
+		"answer-screener", "brief-writer", "case-brief-writer", "title",
+		"case-checkin", "plan-namer", "digest", "image-look", "follow-liveness"}
 }
 
 // AgentDocDirect drives agent id's first model call through the real
@@ -67,6 +73,16 @@ func AgentDocDirect(ctx context.Context, id, gwURL string, v policy.Version, hc 
 		return agentDocCaseBrief(ctx, gwURL, v, hc)
 	case "title":
 		return agentDocTitle(ctx, gwURL, hc)
+	case "case-checkin":
+		return agentDocCaseCheckin(ctx, gwURL, v, hc)
+	case "plan-namer":
+		return agentDocNamer(ctx, gwURL, v, hc)
+	case "digest":
+		return agentDocDigest(ctx, gwURL, v, hc)
+	case "image-look":
+		return agentDocImageLook(ctx, gwURL, v, hc)
+	case "follow-liveness":
+		return agentDocFollow(ctx, gwURL, v, hc)
 	}
 	return nil, fmt.Errorf("agentdoc: unknown factoryd agent %q", id)
 }
@@ -529,7 +545,7 @@ func agentDocCaseBrief(ctx context.Context, gwURL string, v policy.Version, hc *
 	}, nil
 }
 
-// agentDocTitle drives the naming call (roadmap 304): the cheap alias
+// agentDocTitle drives the naming call: the cheap alias
 // reads a chat thread's first message and answers the title alone. The
 // console fires it for threads the human just opened.
 func agentDocTitle(ctx context.Context, gwURL string, hc *http.Client) ([]agentdoc.Span, error) {
@@ -542,6 +558,217 @@ func agentDocTitle(ctx context.Context, gwURL string, hc *http.Client) ([]agentd
 	return []agentdoc.Span{
 		{Name: "the naming rules", Symbol: "factoryd.titlePrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: titlePrompt},
 		{Name: "the thread's first message", Symbol: "(*OperatorModel).Title", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: first},
+	}, nil
+}
+
+// agentDocFinding is the fixture case's one finding on the head.
+const agentDocFinding = "3f2a1c9b0e44"
+
+// AgentDocRungAnswer is the case check-in capture's scripted answer: rung
+// 1 hands the fixture case up with its recommendation, an answer the
+// case's facts parse, so the conversation ends on its first call.
+const AgentDocRungAnswer = `{"decision":"hand_up","reason_kind":"gate_stop","verdicts":{"` + agentDocFinding +
+	`":{"verdict":"confirmed","evidence":"internal/foo/bar.go:4 at the head: New still returns 1"}},"note":"",` +
+	`"recommendation":{"action":"successor","grounds":"the counter still skips the row the finding names"}}`
+
+// agentDocCaseCheckin drives rung 1's conversation on a fixture case, a
+// review that stopped the card on one finding: the statement, the
+// evidence tools and the answer schema are the rung's own assembly, handed
+// to runRung as rungConversation hands them, on the card's digest.
+func agentDocCaseCheckin(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
+	alias := v.Document.FactoryModel(agentDocClasses, policy.PurposeCheckin)
+	if alias == "" {
+		return nil, fmt.Errorf("agentdoc: the policy names no %s model for class %v", policy.PurposeCheckin, agentDocClasses)
+	}
+	c := Case{ID: 4, TaskID: agentDocTask, Repository: "owner/name", Kind: CaseGateStop, Status: CaseOpen,
+		Facts: map[string]any{"gate": "review", "reason": reviewConcernsMark}}
+	c.Problem = CaseFaces[CaseGateStop].Ask(Facts{Case: c})
+	f := CaseFacts{Kind: CaseGateStop, Gate: "review", Attempts: 1, SessionCap: 3, AgentTimeCapS: 3600,
+		BudgetEUR: 5, SpentEUR: 1, LeftEUR: 4, FloorEUR: 0.3, CeilingEUR: 7, MonthLeftEUR: 40, PROpen: true, Head: "c1", Checks: "green",
+		Findings:     []string{agentDocFinding},
+		FindingTexts: map[string]string{agentDocFinding: "New returns 1 where the counter needs the skipped rows counted"},
+		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
+		PoolLeft:     policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
+	r := &Runner{Scrub: redact.New()}
+	statement := r.rungStatement(c, f, DigestText(r.Scrub, agentDocLife(), nil), nil, 1)
+	limits := v.Document.Limits
+	callCap, timeCap := limits.CheckinCallCap(), limits.CheckinTimeCap()
+	out := r.runRung(ctx, &checkinGateway{URL: gwURL, Token: "agentdoc", HTTP: hc}, agentDocTask, alias, f, 1, rungPrompt, statement,
+		CaseEvidence(), agentDocPodTools{}, callCap, timeCap)
+	if out.Answer == nil {
+		return nil, fmt.Errorf("agentdoc: the fixture answer did not end rung 1's conversation: %s", out.Found)
+	}
+	spans := []agentdoc.Span{
+		{Name: "the case check-in prompt", Symbol: "factoryd.rungPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungPrompt},
+		{Name: "the check-in's role", Symbol: "factoryd.rungSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungSystem},
+		{Name: "the tools line", Symbol: "factoryd.rungToolsLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungToolsLine},
+		{Name: "the guide's forms", Symbol: "writingguide.For", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
+			Text: writingguide.For(writingguide.JobLine, writingguide.JobWhy)},
+		{Name: "the statement", Symbol: "factoryd.(*Runner).rungStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: statement},
+		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocLife().Render()},
+		{Name: "the calls left and the answer's due time", Symbol: "factoryd.converse", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: fmt.Sprintf("\nCalls left %d; your answer is due within %s.", callCap, checkinAnswerDue(timeCap, 0).Round(time.Second))},
+	}
+	for _, tool := range CaseEvidence() {
+		raw, err := json.Marshal(tool)
+		if err != nil {
+			return nil, err
+		}
+		spans = append(spans, agentdoc.Span{Name: "tool " + tool.Name, Symbol: "factoryd.CaseEvidence", Kind: agentdoc.KindBuilder,
+			Place: agentdoc.PlaceTools, Text: string(raw)})
+	}
+	answerTool, err := json.Marshal(rungAnswerTool(f, 1))
+	if err != nil {
+		return nil, err
+	}
+	return append(spans, agentdoc.Span{Name: "tool " + CheckinAnswerTool, Symbol: "factoryd.rungAnswerTool", Kind: agentdoc.KindBuilder,
+		Place: agentdoc.PlaceTools, Text: string(answerTool)}), nil
+}
+
+// AgentDocNamerAnswer is the plan namer capture's scripted answer: a name
+// that holds, so the naming ends on its first ask.
+const AgentDocNamerAnswer = `{"name":"Count skipped rows"}`
+
+// agentDocNameStore serves the namer the names of the project's other open
+// plans and takes the name it records.
+type agentDocNameStore struct {
+	NameStore
+	taken []string
+}
+
+func (s agentDocNameStore) OpenPlanNames(context.Context, string, string) ([]string, error) {
+	return s.taken, nil
+}
+
+func (agentDocNameStore) SetPlanName(context.Context, string, string) error { return nil }
+
+// agentDocNamer drives the plan namer on the fixture plan as its first
+// revision files, beside one other open plan of the project.
+func agentDocNamer(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
+	m, _, err := agentDocModel(gwURL, v, policy.PurposeTitle, hc)
+	if err != nil {
+		return nil, err
+	}
+	p, title, taken := agentDocPlan(), "Count the skipped rows", []string{"Nightly report"}
+	n := &Namer{Store: agentDocNameStore{taken: taken}, Model: m, Current: func() policy.Version { return v }}
+	if n.Name(ctx, agentDocCard(), title, p.Spec.Outcome, p.Summary) == "" {
+		return nil, errors.New("agentdoc: the fixture answer named no plan")
+	}
+	return []agentdoc.Span{
+		agentDocInputLead,
+		{Name: "the naming rules", Symbol: "factoryd.namerPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: namerPrompt},
+		{Name: "the plan's facts", Symbol: "factoryd.nameFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: agentDocJSON(nameFacts(title, p.Spec.Outcome, p.Summary, taken, 1))},
+	}, nil
+}
+
+// agentDocSessionStore serves a session tool's door the fixture card and
+// its running session.
+type agentDocSessionStore struct{ Store }
+
+func (agentDocSessionStore) Task(_ context.Context, id string) (Task, bool, error) {
+	return agentDocCard(), id == agentDocTask, nil
+}
+
+func (agentDocSessionStore) LiveSession(context.Context, string) (LiveSession, bool, error) {
+	return LiveSession{TaskID: agentDocTask, SessionID: "s-fixture-01", Namespace: "factory-agents-fixture", Pod: "agent-fixture",
+		MessageToken: "agentdoc"}, true, nil
+}
+
+// agentDocPod answers the session pod's address: the capture's loopback
+// worker.
+type agentDocPod struct{ Kube }
+
+func (agentDocPod) PodIP(context.Context, string, string) (string, error) { return "127.0.0.1", nil }
+
+// agentDocSessionTool drives door, a session tool's handler at factoryd,
+// on the call body the gateway hands it, with the session's worker
+// serving file out of its workspace.
+func agentDocSessionTool(ctx context.Context, v policy.Version, door func(*Runner) http.HandlerFunc, file []byte, body string) error {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(file) // #nosec G104 -- the capture's own reader, and a short write fails the call it serves
+	}))
+	defer worker.Close()
+	r := &Runner{store: agentDocSessionStore{}, kube: agentDocPod{}, workerPort: worker.Listener.Addr().(*net.TCPAddr).Port,
+		cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	rec := httptest.NewRecorder()
+	door(r)(rec, httptest.NewRequestWithContext(ctx, http.MethodPost, "/", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		return fmt.Errorf("agentdoc: the session tool answered %d: %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+	}
+	return nil
+}
+
+// agentDocDigestFile is the workspace file the fixture session digests.
+const agentDocDigestFile = "# The nightly job\n\nThe job counts the day's rows and writes the report at 02:00 UTC.\n" +
+	"A batch that fails is requeued once, and a second failure pages the human on call.\n"
+
+// agentDocDigest drives the session's digest tool at factoryd's door on a
+// workspace file, the ask left to the door's default.
+func agentDocDigest(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
+	op := &OperatorModel{GatewayURL: gwURL, Token: "agentdoc", HTTP: hc}
+	if err := agentDocSessionTool(ctx, v, func(r *Runner) http.HandlerFunc { return r.DigestHandler(op) }, []byte(agentDocDigestFile),
+		`{"task_id":"`+agentDocTask+`","path":"docs/runbook.md"}`); err != nil {
+		return nil, err
+	}
+	const ask = "Summarise this file."
+	return []agentdoc.Span{
+		{Name: "the digest's message", Symbol: "(*OperatorModel).Digest", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: ask + "\n\n" + agentDocDigestFile},
+		{Name: "the default ask", Symbol: "(*Runner).DigestHandler", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: ask},
+		{Name: "the file's text", Symbol: "factoryd.agentDocDigest", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocDigestFile},
+	}, nil
+}
+
+// agentDocImageLook drives the session's analyze_image tool at factoryd's
+// door on a workspace image, the ask left to the look's default.
+func agentDocImageLook(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
+	img, err := agentdoc.PNG()
+	if err != nil {
+		return nil, err
+	}
+	op := &OperatorModel{GatewayURL: gwURL, Token: "agentdoc", HTTP: hc}
+	if err := agentDocSessionTool(ctx, v, func(r *Runner) http.HandlerFunc { return r.ImageLookHandler(op) }, img,
+		`{"task_id":"`+agentDocTask+`","path":"screens/sizes.png"}`); err != nil {
+		return nil, err
+	}
+	return []agentdoc.Span{
+		{Name: "the default ask", Symbol: "(*OperatorModel).Vision", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: "Describe this image."},
+		{Name: "the image", Symbol: "factoryd.agentDocImageLook", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
+			Text: "data:image/png;base64," + base64.StdEncoding.EncodeToString(img)},
+	}, nil
+}
+
+// agentDocFollowStore serves the follow's liveness call the project's chat
+// task, the account it bills.
+type agentDocFollowStore struct{ Store }
+
+func (agentDocFollowStore) EnsureChatTask(_ context.Context, _, repository string, _ float64, _ time.Time) (Task, error) {
+	return Task{ID: agentDocTask, Repository: repository, RequiredCapabilities: []string{policy.ClassChat}}, nil
+}
+
+// agentDocRoutines serves the follow the fixture project.
+type agentDocRoutines struct{ RoutineRunStore }
+
+func (agentDocRoutines) Project(_ context.Context, name string) (Project, bool, error) {
+	return Project{Name: name, Repository: "owner/name"}, true, nil
+}
+
+// agentDocFollow drives the follow judgment's liveness call after a move
+// of the fixture project.
+func agentDocFollow(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
+	m, _, err := agentDocModel(gwURL, v, policy.PurposeDigest, hc)
+	if err != nil {
+		return nil, err
+	}
+	r := &Runner{store: agentDocFollowStore{}, Routines: agentDocRoutines{}, supervisor: m, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	if err := r.followModelAnswers(ctx, FollowMoveInput{Project: "fixture"}); err != nil {
+		return nil, err
+	}
+	return []agentdoc.Span{
+		agentDocInputLead,
+		{Name: "the liveness ask", Symbol: "factoryd.followModelSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: followModelSystem},
+		{Name: "the liveness input", Symbol: "(*Runner).followModelAnswers", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: `{"say":"ok"}`},
 	}, nil
 }
 

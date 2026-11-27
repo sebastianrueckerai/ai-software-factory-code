@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,15 +59,16 @@ func TestAgentDocConsoleCapturesEveryConsoleAgent(t *testing.T) {
 	}
 }
 
-// The project agent streams with its offered tools on the chat's class;
-// the compaction and vision calls ride the small or vision alias with
-// no tools and their own answer limits.
+// The project agent streams with its offered tools on the chat's class,
+// and the research loop with its reads on big. The compaction and vision
+// calls ride the small or vision alias with no tools and their own answer
+// limits.
 func TestAgentDocConsoleEnvelope(t *testing.T) {
-	toolsByID := map[string]bool{"project-agent": true}
+	toolsByID := map[string]bool{"project-agent": true, "research": true}
 	modelByID := map[string]string{"project-agent": policy.Big,
-		"compact": policy.Small, "vision": policy.DefaultChat.VisionModel}
+		"compact": policy.Small, "vision": policy.DefaultChat.VisionModel, "research": policy.Big}
 	tokensByID := map[string]int{"project-agent": factoryd.OperatorTokens,
-		"compact": 2048, "vision": factoryd.OperatorTokens}
+		"compact": 2048, "vision": factoryd.OperatorTokens, "research": 2048}
 	for _, id := range AgentDocConsoleIDs() {
 		t.Run(id, func(t *testing.T) {
 			g := agentdoc.NewGateway("The capture runs no tools.")
@@ -106,6 +108,7 @@ func TestAgentDocConsoleSendsThePurpose(t *testing.T) {
 		"project-agent": policy.PurposeOperator,
 		"compact":       policy.PurposeCompact,
 		"vision":        policy.PurposeVision,
+		"research":      policy.PurposeResearch,
 	}
 	for _, id := range AgentDocConsoleIDs() {
 		t.Run(id, func(t *testing.T) {
@@ -116,6 +119,38 @@ func TestAgentDocConsoleSendsThePurpose(t *testing.T) {
 			}
 			if rec := g.Bodies()[0]; rec.Purpose != purposeByID[id] {
 				t.Fatalf("purpose %q, want %q", rec.Purpose, purposeByID[id])
+			}
+		})
+	}
+}
+
+// The captures offer the tools production offers the fixture's writer:
+// the chat's config gates steer, request_image, the web tools and the
+// routine tools on doors factoryd always wires, so the fixture console
+// wires them too, and the research loop reads the web as the chat does.
+func TestAgentDocConsoleOffersTheProductionTools(t *testing.T) {
+	for id, want := range map[string][]string{
+		"project-agent": {"steer", "request_image", "web_search", "web_scrape", "routines", "routine_run", "routine_skip"},
+		"research":      {"tree", "grep", "file", "read_doc", "web_search", "web_scrape"},
+	} {
+		t.Run(id, func(t *testing.T) {
+			g := agentdoc.NewGateway("The capture runs no tools.")
+			defer g.Close()
+			if _, err := AgentDocConsole(context.Background(), id, g.URL, agentDocConsolePolicy(), nil); err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			b, err := agentdoc.ParseBody(g.Bodies()[0].Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, tl := range b.Tools {
+				names = append(names, tl.Name)
+			}
+			for _, name := range want {
+				if !slices.Contains(names, name) {
+					t.Errorf("the wire offers no %s: %q", name, names)
+				}
 			}
 		})
 	}

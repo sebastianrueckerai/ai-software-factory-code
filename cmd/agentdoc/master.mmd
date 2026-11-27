@@ -9,12 +9,15 @@ graph LR
     planner["planner"]
     prover["prover"]
     delta-planner["delta-planner"]
+    plan-namer["plan-namer"]
   end
   subgraph the-session["the session"]
     coding["coding"]
     message-responder["message-responder"]
     checkin["checkin"]
     opencode-subagents["opencode subagents"]
+    digest["digest"]
+    image-look["image-look"]
   end
   subgraph verification["verification"]
     judgement["judgement"]
@@ -26,26 +29,34 @@ graph LR
   end
   subgraph the-human["the human's page"]
     brief-writer["brief-writer"]
+    case-checkin["case-checkin"]
     case-brief-writer["case-brief-writer"]
     human["the human"]
   end
   subgraph console["console"]
     project-agent["project-agent"]
+    research["research"]
     title["title"]
     compact["compact"]
     vision["vision"]
   end
   deploy["merge and deploy"]
+  follow-liveness["follow-liveness"]
   telemetry["telemetry"]
 
   signals --> screening --> sizing --> planner --> coding
   signals -.-> answer-screener
   planner --> prover
+  planner -.-> plan-namer
   holdout-proposer -.-> prover
   coding -.-> opencode-subagents
+  coding -.-> digest
+  coding -.-> image-look
   message-responder --> coding
   coding --> checkin
   checkin -.-> coding
+  checkin -.-> case-checkin
+  case-checkin -.->|hands up| case-brief-writer
   model-review --> gate-supervisor
   security-audit --> gate-supervisor
   judgement --> gate-supervisor
@@ -56,3 +67,6 @@ graph LR
   gate-supervisor -->|escalate| case-brief-writer --> human
   brief-writer --> human
   deploy --> telemetry --> signals
+  deploy -.-> follow-liveness
+  project-agent -.-> research
+  project-agent -.-> digest

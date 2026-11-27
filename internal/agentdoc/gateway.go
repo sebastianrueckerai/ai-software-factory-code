@@ -1,14 +1,22 @@
 package agentdoc
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 )
+
+// Window is the context window the fake gateway serves for every alias,
+// the answer to a client's window ask.
+const Window = 128000
 
 // Recorded is one chat call as it crossed the wire: the literal POST body
 // plus the task and purpose headers the gateway bills by.
@@ -52,7 +60,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	// the window ask is no chat call: it is not recorded, and the served
 	// window answers it
 	if strings.HasPrefix(r.URL.Path, "/v1/window/") {
-		fmt.Fprint(w, `{"window":128000}`)
+		fmt.Fprintf(w, `{"window":%d}`, Window)
 		return
 	}
 	raw, err := io.ReadAll(r.Body)
@@ -80,4 +88,15 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	answer, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": g.content}}}})
 	w.Write(answer) // #nosec G104 -- a handler whose write fails has no reader to tell
+}
+
+// PNG is a one-pixel PNG, the image every look's capture shows its model.
+func PNG() ([]byte, error) {
+	var b bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 210, G: 120, B: 30, A: 255})
+	if err := png.Encode(&b, img); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }
