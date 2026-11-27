@@ -860,9 +860,10 @@ func (d Document) Detector(name string) time.Duration {
 const BoundDefault = "default"
 
 // DefaultBounds are the bounds a policy without them gets: a merge attempt is one API call under a 2-minute timeout, its
-// retries on workflow timers. The upstream copy and the follow and routine
-// activities are bound a minute under the timeouts factoryd's workflows
-// give them, so the watcher fires before the deadline ends the run.
+// retries on workflow timers. CopyUpstreamImages, FollowChecks, FollowLand,
+// FollowJudge, FollowReturn and RoutineRun are bound a minute under the
+// timeouts factoryd's workflows give them, so the watcher fires before the
+// deadline ends the run.
 // RunSession, RunReport, Screen, SuperviseGate, ModelReview and GateAudit
 // follow the limits (Bound). WaitChecks follows the waits row
 // (waits.checks), not a bounds default.
