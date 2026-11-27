@@ -43,6 +43,9 @@ type RiskClass struct {
 	// Human keeps a human on the merge of this class whatever the
 	// autonomy: no rung of the ladder approves it.
 	Human bool `yaml:"human,omitempty" json:"human"`
+	// Approvers, when set, are the only approvers of a project who may
+	// approve a merge of this class. It needs human: true.
+	Approvers []string `yaml:"approvers,omitempty" json:"approvers"`
 }
 
 // RiskRule: Paths are globs anchored at the repository root, "/"
@@ -84,6 +87,17 @@ func (r Risk) HumanClasses() []string {
 	return out
 }
 
+// ApproversOf are the approvers class names, nil for a class that names
+// none.
+func (r Risk) ApproversOf(class string) []string {
+	for _, c := range r.Classes {
+		if c.Name == class {
+			return c.Approvers
+		}
+	}
+	return nil
+}
+
 // ClassLarge is the built-in class of a pull request over LargeLines.
 const ClassLarge = "large"
 
@@ -117,6 +131,14 @@ func (r Risk) validate() error {
 		}
 		if c.Human && c.Outcome != OutcomeRequiresApproval {
 			return fmt.Errorf("policy: risk class %s has human: true with outcome %s: a human merge needs outcome %s, so set that, or drop human", c.Name, c.Outcome, OutcomeRequiresApproval)
+		}
+		if len(c.Approvers) > 0 && !c.Human {
+			return fmt.Errorf("policy: risk class %s has approvers with human: false: approvers keep a human on the merge, so set human: true, or drop approvers", c.Name)
+		}
+		for i, u := range c.Approvers {
+			if !forgejoLogin.MatchString(u) || slices.Contains(c.Approvers[:i], u) {
+				return fmt.Errorf("policy: risk class %s approvers %q: distinct Forgejo user names", c.Name, u)
+			}
 		}
 		if c.Outcome == OutcomeAuto && (c.Name != ClassNormal || c.Migration) {
 			return fmt.Errorf("policy: risk class %s: outcome auto is allowed on class %s only", c.Name, ClassNormal)

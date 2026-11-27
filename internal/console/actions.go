@@ -364,6 +364,49 @@ func (c *Console) approves(ctx context.Context, a actor, repository, what string
 	return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may %s.", c.projectName(ctx, repository), what))
 }
 
+// approvesMerge refuses a's approval of the merge of pull request number,
+// of risk class on repository's project, to anyone mergeApprover refuses:
+// a class that names its approvers is named with them.
+func (c *Console) approvesMerge(ctx context.Context, a actor, repository, class string, number int64) error {
+	if c.mergeApprover(ctx, a.s.user, repository, class) {
+		return nil
+	}
+	v, _ := c.inForce(ctx)
+	only := v.Document.Risk.ApproversOf(class)
+	if len(only) == 0 {
+		return c.approves(ctx, a, repository, fmt.Sprintf("approve the merge of pull request #%d", number))
+	}
+	log.Printf("console: %s is no approver of risk class %s: the merge of %s#%d refused", a.s.user, class, repository, number)
+	return refuse(http.StatusForbidden, fmt.Sprintf("Pull request #%d is risk class %s, and only %s may approve its merge. Leave the card waiting for them.",
+		number, class, textutil.AndList(only)))
+}
+
+// pullClass is the risk class the policy in force gives pull request
+// number of repo by the files it changes, read through a's token, as the
+// policy gate classifies them; "" with no read when no class names
+// approvers.
+func (c *Console) pullClass(ctx context.Context, a actor, repo factoryd.Repo, number int64) (string, error) {
+	v, _ := c.inForce(ctx)
+	if !slices.ContainsFunc(v.Document.Risk.Classes, func(k policy.RiskClass) bool { return len(k.Approvers) > 0 }) {
+		return "", nil
+	}
+	files, err := factoryd.GetPages[factoryd.PRFile](ctx, c.userCall(a.s),
+		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), number))
+	if err != nil {
+		return "", err
+	}
+	var paths []string
+	lines := 0
+	for _, f := range files {
+		paths = append(paths, f.Filename)
+		if f.PreviousFilename != "" {
+			paths = append(paths, f.PreviousFilename)
+		}
+		lines += f.Additions + f.Deletions
+	}
+	return v.Document.Risk.Classify(paths, lines).Class.Name, nil
+}
+
 // projectName is the name of the project of repository, the repository's
 // own when none is read.
 func (c *Console) projectName(ctx context.Context, repository string) string {
@@ -1799,6 +1842,13 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 				// a follow move's card merges the head its checks judged, no other
 				if t.Source == factoryd.SourceFollow && t.SHA != "" && head != t.SHA {
 					return 0, refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d is at %s, and its checks judged %s: the factory merges only the judged head. Read the pull request again, or close it and the next run opens its own.", t.PRNumber, factoryd.ShortSHA(head), factoryd.ShortSHA(t.SHA)))
+				}
+				class, err := c.pullClass(ctx, a, repo, t.PRNumber)
+				if err != nil {
+					return 0, &forgejoRefusal{what: fmt.Sprintf("read the files of pull request #%d", t.PRNumber), err: err}
+				}
+				if err := c.approvesMerge(ctx, a, t.Repository, class, t.PRNumber); err != nil {
+					return 0, err
 				}
 				return 0, c.mergeRead(ctx, a, repo, t.PRNumber, head)
 			}
@@ -3293,6 +3343,12 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 	var spec factoryd.MergeSpec
 	if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 		return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
+	}
+	// a class that names approvers has human: true, which keeps the agent off its merge
+	if !agent {
+		if err := c.approvesMerge(ctx, a, t.Repository, spec.RiskClass, q.PRNumber); err != nil {
+			return "", err
+		}
 	}
 	// a card the newest revision drops cannot merge (roadmap 291): the
 	// request opened before the revision landed
