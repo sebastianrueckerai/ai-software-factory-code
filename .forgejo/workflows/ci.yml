@@ -22,7 +22,7 @@ env:
   # keeps the image's digest. They mirror each Dockerfile's COPY lines and
   # the runner's warm-step mounts.
   GATEWAY_INPUTS: Dockerfile .dockerignore go.mod go.sum cmd internal pins.go upstream-files.txt upstream-images.txt factory/images.yaml
-  SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json pins.go upstream-files.txt upstream-images.txt factory/images.yaml
+  SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin pins.go upstream-files.txt upstream-images.txt factory/images.yaml
   # the sandbox's base stage copies nothing from the context
   SANDBOX_BASE_INPUTS: Dockerfile.sandbox
   RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance scripts proofs pins.go upstream-files.txt upstream-images.txt factory/images.yaml

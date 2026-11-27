@@ -81,6 +81,16 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "agentdoc: %v\n", err)
 		return 1
 	}
+	bake, err := os.MkdirTemp("", "agentdoc-bake-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentdoc: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(bake)
+	if err := factoryd.AgentDocBake(root, bake); err != nil {
+		fmt.Fprintf(os.Stderr, "agentdoc: the opencode bake: %v\n", err)
+		return 1
+	}
 	ctx := context.Background()
 	var failed bool
 	var rows []indexRow
@@ -106,7 +116,7 @@ func run() int {
 			raw = frag
 			row = configRow(a, frag)
 		case a.Loop:
-			spans, rec, err := factoryd.AgentDocLoop(ctx, a.ID, *opencode, v)
+			spans, rec, err := factoryd.AgentDocLoop(ctx, a.ID, *opencode, bake, v)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "agentdoc: %s: capture: %v\n", a.ID, err)
 				failed = true

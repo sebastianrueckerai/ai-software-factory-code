@@ -336,7 +336,7 @@ func TestAgentDocLoopRecord(t *testing.T) {
 	v := agentDocLoopPolicy()
 	for _, id := range AgentDocLoopIDs() {
 		t.Run(id, func(t *testing.T) {
-			spans, rec, err := AgentDocLoop(context.Background(), id, bin, v)
+			spans, rec, err := AgentDocLoop(context.Background(), id, bin, repoBake(t), v)
 			if err != nil {
 				t.Fatalf("capture: %v", err)
 			}
@@ -412,6 +412,67 @@ func TestAgentDocLoopRecord(t *testing.T) {
 	}
 }
 
+// repoBake is the opencode config directory the sandbox image bakes, as
+// the repository's files make it.
+func repoBake(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := AgentDocBake(filepath.Join("..", ".."), dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// The baked plugin gives a built-in tool the text of its file under
+// tool-text/ and leaves a tool without one its harness text: the coding
+// session's first request carries bash.md as bash's description, and
+// edit keeps opencode's own. OPENCODE_BAKE names a built bake, such as
+// the sandbox image's /opt/opencode-home/.config/opencode, in place of
+// the repository's plugins.
+func TestPluginReplacesABuiltinText(t *testing.T) {
+	bin := os.Getenv("OPENCODE_RECORD_BIN")
+	if bin == "" {
+		t.Skip("OPENCODE_RECORD_BIN not set")
+	}
+	var bake string
+	if from := os.Getenv("OPENCODE_BAKE"); from != "" {
+		bake = filepath.Join(t.TempDir(), "opencode")
+		if err := os.CopyFS(bake, os.DirFS(from)); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		bake = repoBake(t)
+	}
+	if err := os.MkdirAll(filepath.Join(bake, "tool-text"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bake, "tool-text", "bash.md"), []byte("Run one shell command.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, rec, err := AgentDocLoop(context.Background(), "coding", bin, bake, agentDocLoopPolicy())
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	var body struct {
+		Tools []struct {
+			Function struct{ Name, Description string } `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(rec.Raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, tl := range body.Tools {
+		got[tl.Function.Name] = tl.Function.Description
+	}
+	if got["bash"] != "Run one shell command." {
+		t.Errorf("bash's description = %q, want the text of tool-text/bash.md", got["bash"])
+	}
+	if want := "Performs exact string replacements in files."; !strings.HasPrefix(got["edit"], want) {
+		t.Errorf("edit's description = %q, want opencode's own, which opens %q", got["edit"], want)
+	}
+}
+
 // fakeCapture runs AgentDocLoop against the fake opencode in capture mode,
 // which writes day into the prompt's environment block.
 func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agentdoc.Span, agentdoc.Recorded) {
@@ -428,7 +489,7 @@ func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agent
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexec "+self+" -test.run '^TestFakeOpencodeServe$'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spans, rec, err := AgentDocLoop(context.Background(), id, stub, v)
+	spans, rec, err := AgentDocLoop(context.Background(), id, stub, repoBake(t), v)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}

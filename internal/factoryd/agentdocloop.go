@@ -467,11 +467,16 @@ func (s agentDocLoopStore) ReleaseHold(ctx context.Context, h policy.Hold, cost 
 
 // agentDocLoopEnv points opencode's own config, data and cache at a
 // throwaway home for the capture, so nothing of the machine's user or of
-// an earlier run leaks into the system prompt — the worker pod starts
-// equally empty. It hands back the restore.
-func agentDocLoopEnv() (func(), error) {
+// an earlier run leaks into the system prompt, and seeds the home's
+// .config/opencode from bake, the way the worker's useHarness fills the
+// pod's empty home from the image's. It hands back the restore.
+func agentDocLoopEnv(bake string) (func(), error) {
 	home, err := os.MkdirTemp("", "agentdoc-home-")
 	if err != nil {
+		return nil, err
+	}
+	if err := os.CopyFS(filepath.Join(home, ".config", "opencode"), os.DirFS(bake)); err != nil {
+		os.RemoveAll(home) // #nosec G104 -- best-effort scratch cleanup
 		return nil, err
 	}
 	keys := []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"}
@@ -499,6 +504,13 @@ func agentDocLoopEnv() (func(), error) {
 		}
 		os.RemoveAll(home) // #nosec G104 -- best-effort scratch cleanup
 	}, nil
+}
+
+// AgentDocBake fills dir with what the sandbox image bakes into
+// /opt/opencode-home/.config/opencode beside the npm packages: the
+// plugins of the repository at root.
+func AgentDocBake(root, dir string) error {
+	return os.CopyFS(filepath.Join(dir, "plugins"), os.DirFS(filepath.Join(root, "opencode-plugin", "plugins")))
 }
 
 // agentDocLoopSessionModel is the model the mode's session runs on, as the
@@ -554,12 +566,13 @@ func agentDocLoopMux(model *agentDocLoopModel, v policy.Version, id string) *htt
 // model above, and the capture comes back with the builders' spans plus
 // the wire parts read out of the recorded body. The responder's page is
 // the call after the writer's message; every other mode's is the first.
-func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agentdoc.Span, agentdoc.Recorded, error) {
+// bake is the opencode config directory the session's home starts with.
+func AgentDocLoop(ctx context.Context, id, bin, bake string, v policy.Version) ([]agentdoc.Span, agentdoc.Recorded, error) {
 	mode := id
 	if !slices.Contains(AgentDocLoopIDs(), mode) {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: no loop mode %q", id)
 	}
-	restore, err := agentDocLoopEnv()
+	restore, err := agentDocLoopEnv(bake)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, err
 	}
