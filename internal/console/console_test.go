@@ -2694,7 +2694,7 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 		"bad priority": {url.Values{"title": {"x"}, "track": {"direct"}, "priority": {"urgent"}, "project": {"ai-software-factory-code"}}, "unknown priority\n"},
 		"no project":   {url.Values{"title": {"x"}, "track": {"direct"}}, "choose a project agents work on\n"},
 		"agents none": {url.Values{"title": {"x"}, "track": {"human"}, "project": {"ai-software-factory-infra"}},
-			"Project ai-software-factory-infra runs no agents, so it takes no card filed here. Open an issue on sf/infra, where every issue goes to the human lane, or file on a project agents work on.\n"},
+			"Project ai-software-factory-infra runs no agents, so no card is filed on it here. A human opens an issue on sf/infra instead, and the issue goes to the human lane.\n"},
 	} {
 		r.fg.issues = nil
 		tc.form.Set("csrf", s.csrf)

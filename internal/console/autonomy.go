@@ -63,7 +63,8 @@ func autonomyRefusal(state string, queueCap int) string {
 // for the file's own, into its project file as the member, an approver,
 // through commitProjectFile. Full auto writes autonomous with merge_rule
 // auto; every other level writes merge_rule human.
-// The change records one event naming the member.
+// The change records one event naming the member. A project without
+// agents is refused: its level is what its file says.
 func (c *Console) doSetAutonomy(ctx context.Context, name, state string, queueCap int, a actor) error {
 	if line := autonomyRefusal(state, queueCap); line != "" {
 		return refuse(http.StatusBadRequest, line)
@@ -72,6 +73,10 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, queueCa
 	from, repo := policy.AutonomyManual, ""
 	if v, ok := c.inForce(ctx); ok {
 		if p, ok := v.Projects[name]; ok {
+			if p.Agents == policy.AgentsNone {
+				return refuse(http.StatusConflict, fmt.Sprintf("Project %s runs no agents, so its level is not set here: "+
+					"change autonomy in its project file, %s, by a reviewed commit.", name, policy.ProjectFile(name)))
+			}
 			from, repo = p.AutonomyState(), p.Repository
 		}
 	}

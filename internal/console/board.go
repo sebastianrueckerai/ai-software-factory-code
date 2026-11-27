@@ -1268,9 +1268,13 @@ type boardData struct {
 	Factory    bool // writes the factory's own code: the layout links the factory-level pages
 	// Autonomy is the shown project's autonomy state, which the chat's
 	// level control shows and an approver changes (roadmap 239, C14), and
-	// Levels the four states with their words; empty: no policy in force.
+	// Levels the four states with their words; empty: no policy in force,
+	// or a project without agents, whose level its project file sets.
 	Autonomy string
 	Levels   []level
+	// Agents: agents work on the shown project, so the chat header offers
+	// the intake switch, whose roadmap pull files their cards.
+	Agents bool
 	// IntakeClosed is the shown project's intake switch (the chat
 	// header's): closed stops exactly the roadmap pull, every other
 	// filing still files; IntakeBy and IntakeAt name its last change.
@@ -2111,7 +2115,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	d.Commands = policy.BuiltinCommands
 	if v, ok := c.inForce(ctx); ok {
 		d.Commands = v.ChatCommands()
-		if pc, ok := v.Projects[shown.Name]; ok && shown.Name != "" {
+		if pc, ok := v.Projects[shown.Name]; ok && shown.Coder() {
 			d.Autonomy = pc.AutonomyState()
 			for _, s := range policy.AutonomyStates {
 				d.Levels = append(d.Levels, level{Name: s, Words: policy.AutonomyMeaning[s]})
@@ -2122,7 +2126,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 	}
 	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != ""
-	if d.Chat {
+	d.Agents = shown.Coder()
+	if d.Chat && d.Agents {
 		if row, ok, err := c.cfg.Chat.ChatIntake(ctx, shown.Repository); err != nil {
 			log.Printf("console: the intake of %s: %v", shown.Name, err)
 		} else if ok {

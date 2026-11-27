@@ -492,8 +492,10 @@ resources page, a period that recurs and no instant.
   (`Runner.MessageSession`). The conversation
   is `chat_messages`, per project and human, each assistant row with its
   tool calls and their results; a turn's context is the project's status
-  line (for a project without a board, agents none or not worked on,
-  why it has none and its spend this month against its month cap), a
+  line (for a project without a board, one factoryd does not work on,
+  that it has none and its spend this month against its month cap; a
+  project with no agents has a board of human-lane cards, whose line it
+  reads), a
   line of its sandbox images (`Sandbox images:` the pins in force
   with their tools, and what a card without an image runs; none for a
   project without agents), the thread's
@@ -575,6 +577,8 @@ files; a change is a commit.
 The autonomy dial writes `autonomy` and `merge_rule` together through a pull
 request on the file: manual, assisted and autonomous write `merge_rule: human`,
 and only full auto writes `merge_rule: auto` (with `autonomy: autonomous`).
+A project with no agents has no dial and no intake switch: the dial's
+press and `set_autonomy` refuse it, and its level is what its file says.
 
 The factory's own repositories are projects like any other: no
 Go source names them (a test greps). Two settings replace the old special

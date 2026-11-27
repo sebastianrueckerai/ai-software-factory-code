@@ -473,8 +473,8 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 	case i < 0 || a.repository != "" && ps[i].Repository != a.repository:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "choose a project agents work on")
 	case !ps[i].Coder():
-		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s runs no agents, so it takes no card filed here. "+
-			"Open an issue on %s, where every issue goes to the human lane, or file on a project agents work on.", ps[i].Name, ps[i].Repository))
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s runs no agents, so no card is filed on it here. "+
+			"A human opens an issue on %s instead, and the issue goes to the human lane.", ps[i].Name, ps[i].Repository))
 	}
 	image, err = pinnedImage(ps[i], image)
 	if err != nil {

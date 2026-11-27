@@ -139,8 +139,8 @@ func TestTheLifeOfACardWithoutAgentsReads(t *testing.T) {
 // lane. No card of it waits on another: its cards wait on a human.
 func TestAProjectWithoutAgentsTakesNoFiledCardAndNoDependency(t *testing.T) {
 	r, ck, s, card := infraPR(t)
-	const want = "Project ai-software-factory-infra runs no agents, so it takes no card filed here. " +
-		"Open an issue on sf/infra, where every issue goes to the human lane, or file on a project agents work on.\n"
+	const want = "Project ai-software-factory-infra runs no agents, so no card is filed on it here. " +
+		"A human opens an issue on sf/infra instead, and the issue goes to the human lane.\n"
 	for _, track := range []string{policy.TrackDirect, factoryd.LabelHuman} {
 		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {infraProject}, "title": {"Rotate the token"}, "track": {track}}), ck)
 		if rec.Code != http.StatusBadRequest || rec.Body.String() != want || len(r.fg.issues) != 0 {
@@ -181,5 +181,56 @@ func TestTheChatReadsTheBoardOfAProjectWithoutAgents(t *testing.T) {
 	}
 	if found, err := r.c.foundText(req, r.projects.rows[i], a, q); err != nil || found != none {
 		t.Errorf("the find on a project factoryd does not work on = %q, %v; want %q", found, err, none)
+	}
+}
+
+// The chat header of a project without agents offers neither the intake
+// switch, whose roadmap pull files cards for agents, nor the level
+// control: full auto would write merge_rule auto into its file, and its
+// level stays what its project file says. The code project's header
+// offers both to its approver. The level's two doors, the control's
+// press and the chat's set_autonomy, refuse such a project and name its
+// project file.
+func TestTheChatHeaderOfAProjectWithoutAgentsOffersNoAgentControl(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.repoWriters["sf/infra"] = []string{"sebastian"}
+	r.forgetWriters()
+	r.ledger.files = map[string]policy.ProjectConfig{
+		"ai-software-factory-code": {Repository: "sf/code", MergeRule: policy.MergeHuman, Objects: policy.ObjectsSeed, Agents: policy.AgentsCoder, Process: "maintenance"},
+		infraProject:               {Repository: "sf/infra", MergeRule: policy.MergeHuman, Objects: policy.ObjectsSeed, Agents: policy.AgentsNone},
+	}
+	ck, s := r.loggedIn(t)
+	for project, offers := range map[string]bool{"ai-software-factory-code": true, infraProject: false} {
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+project, nil), ck).Body.String()
+		if !strings.Contains(body, `<span class="chat-who">project agent · `+project+`</span>`) {
+			t.Errorf("%s: the board has no chat with the project agent", project)
+		}
+		for _, control := range []string{`id="intake-btn"`, `id="level-btn"`} {
+			if strings.Contains(body, control) != offers {
+				t.Errorf("%s: the chat header holds %s: %t, want %t", project, control, !offers, offers)
+			}
+		}
+	}
+
+	const why = "Project ai-software-factory-infra runs no agents, so its level is not set here: " +
+		"change autonomy in its project file, projects/ai-software-factory-infra.yaml, by a reviewed commit."
+	if rec := r.do(post("/projects/"+infraProject+"/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {policy.AutonomyFullAuto}}), ck); rec.Code != http.StatusConflict || rec.Body.String() != why+"\n" {
+		t.Errorf("the level control's press = %d %q, want 409 %q", rec.Code, rec.Body, why)
+	}
+	tool, ok := r.c.chatTool("set_autonomy")
+	if !ok {
+		t.Fatal("there is no set_autonomy tool")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, s))
+	i := slices.IndexFunc(r.projects.rows, func(p factoryd.Project) bool { return p.Name == infraProject })
+	_, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/infra", via: factoryd.ViaChat, decider: "member"}, p: r.projects.rows[i]},
+		toolInput{Autonomy: policy.AutonomyFullAuto})
+	if no := refusedWith(err); no == nil || no.status != http.StatusConflict || no.msg != why {
+		t.Errorf("the chat's set_autonomy: %v, want 409 %q", err, why)
+	}
+	for _, e := range r.events.all() {
+		if e.Kind == factoryd.EventAutonomyChanged {
+			t.Errorf("a refused level change recorded %+v", e)
+		}
 	}
 }
