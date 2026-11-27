@@ -101,7 +101,8 @@ type ProofsFiled struct {
 	Findings []string `json:"findings"`
 }
 
-// AnswerFiler files a session's answer object (the file_screening tool):
+// AnswerFiler files a session's answer object (the file_screening and
+// file_size tools):
 // factoryd checks it and stores it as the session's answer. Implemented by
 // Factoryd; tests substitute a fake.
 type AnswerFiler interface {
@@ -657,6 +658,10 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 	mcp.AddTool(srv, filingTool[answers.ScreeningAnswer](policy.ToolFileScreening, "File your verdict on the issue. A refusal names what to fix: file again in this session. A stored verdict is your answer; end the session. Free."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.ScreeningAnswer) (*mcp.CallToolResult, any, error) {
 			return s.fileAnswer(ctx, c, policy.ToolFileScreening, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.SizeAnswer](policy.ToolFileSize, "File your size for the card. A refusal names what to fix: file again in this session. A stored size is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.SizeAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileSize, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {

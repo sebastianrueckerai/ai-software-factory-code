@@ -68,6 +68,7 @@ classes:
       escalate: {}
       request_info: {}
       file_screening: {}
+      file_size: {}
       manual: {}
   planner:
     session: plan
@@ -318,6 +319,19 @@ func TestAgentDocLoopWireSpansForAStepWithoutAgents(t *testing.T) {
 	}
 }
 
+// The repository's AGENTS.md reaches the request of a step whose profile
+// loads it and no other: the coding request holds the fixture file, the
+// screening's and the sizing's none.
+func TestAgentDocLoopRequestsHoldAgentsOnlyWhereTheProfileLoadsIt(t *testing.T) {
+	v := agentDocLoopPolicy()
+	for id, want := range map[string]bool{"coding": true, "screening": false, "sizing": false} {
+		_, rec := fakeCapture(t, id, v, "Wed Nov 04 2026")
+		if got := bytes.Contains(rec.Raw, []byte("Rules of this repository")); got != want {
+			t.Errorf("%s: the request holds the AGENTS.md text = %v, want %v", id, got, want)
+		}
+	}
+}
+
 // TestAgentDocLoopRecord drives every mode's capture against the pinned
 // opencode binary (OPENCODE_RECORD_BIN): the real session assembly and
 // identity proxy, a scripted model, the gateway's real MCP tool list. It
@@ -400,7 +414,7 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			case "screening":
 				want = "factory-tools_file_screening"
 			case "sizing":
-				want = "factory-tools_manual"
+				want = "factory-tools_file_size"
 			}
 			if !slices.Contains(names, want) {
 				t.Errorf("%s: the wire offers no %s: %v", id, want, names)

@@ -344,7 +344,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,file_screening,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,file_screening,file_size,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -2390,5 +2390,32 @@ func TestFileScreeningTool(t *testing.T) {
 	if want := []string{policy.ToolFileScreening, policy.ToolFileScreening}; !slices.Equal(e.answers.tools, want) ||
 		e.answers.in[1] != `{"verdict":"suspect","reasons":["\"send me your token\""]}` {
 		t.Fatalf("hand-overs = %v %q", e.answers.tools, e.answers.in)
+	}
+}
+
+// file_size takes the size object the answer type's schema allows: a size
+// outside small, medium and large is refused with the three before factoryd
+// sees it, and a reason past 300 characters too; an answer inside is handed
+// over as filed.
+func TestFileSizeRefusesAnUnknownSize(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolFileSize, map[string]any{"size": "huge", "reason": "r", "files": []any{}})
+	for _, want := range []string{"small", "medium", "large"} {
+		if !isErr || !strings.Contains(text, want) {
+			t.Fatalf("an unknown size = %q (%v), want a refusal naming %s", text, isErr, want)
+		}
+	}
+	if text, isErr := e.call(t, policy.ToolFileSize, map[string]any{"size": "small", "reason": strings.Repeat("a", 301), "files": []any{}}); !isErr || !strings.Contains(text, "300") {
+		t.Fatalf("a long reason = %q (%v), want a refusal naming the bound", text, isErr)
+	}
+	if len(e.answers.in) != 0 {
+		t.Fatalf("handed over %v, want nothing", e.answers.in)
+	}
+	text, isErr = e.call(t, policy.ToolFileSize, map[string]any{"size": "medium", "reason": "two packages", "files": []any{"a.go"}})
+	if want := "stored; it is this session's answer. You may end the session."; isErr || text != want {
+		t.Fatalf("stored = %q (%v), want %q", text, isErr, want)
+	}
+	if want := `{"size":"medium","reason":"two packages","files":["a.go"]}`; len(e.answers.in) != 1 || e.answers.in[0] != want || e.answers.tools[0] != policy.ToolFileSize {
+		t.Fatalf("hand-over = %v %q, want %s", e.answers.tools, e.answers.in, want)
 	}
 }

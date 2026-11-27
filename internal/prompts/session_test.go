@@ -24,8 +24,8 @@ budget_words: 1
 `
 
 // A harness session is offered only what its profile names: 4 of the 6
-// built-in tools a profile may keep, the 3 tools no step keeps and 22 of
-// the 23 gateway tools (4 paid, 19 free) are denied, 4 + 3 + 22 = 29
+// built-in tools a profile may keep, the 3 tools no step keeps and 23 of
+// the 24 gateway tools (4 paid, 20 free) are denied, 4 + 3 + 23 = 30
 // keys, and its standing text replaces the harness preamble.
 func TestSessionConfigDeniesWhatTheProfileDrops(t *testing.T) {
 	c, err := load(fstest.MapFS{"profiles/s.yaml": {Data: []byte(sessionProfile)}, "chunks/s.md": {Data: []byte("S\n")}}, testWriting)
@@ -40,8 +40,8 @@ func TestSessionConfigDeniesWhatTheProfileDrops(t *testing.T) {
 		t.Errorf("agent.build.prompt = %q, want S", got)
 	}
 	permission := cfg["permission"].(map[string]any)
-	if len(permission) != 29 {
-		t.Errorf("permission holds %d keys, want 29: %v", len(permission), permission)
+	if len(permission) != 30 {
+		t.Errorf("permission holds %d keys, want 30: %v", len(permission), permission)
 	}
 	for _, tool := range []string{"edit", "glob", "grep", "todowrite", "skill", "task", "webfetch", "factory-tools_web_search", "factory-tools_escalate"} {
 		if permission[tool] != "deny" {

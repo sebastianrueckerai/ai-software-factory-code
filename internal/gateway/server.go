@@ -93,7 +93,7 @@ type ServerOptions struct {
 	// ProofsFiler is the file_proofs tool's hand-over to factoryd.
 	ProofsFiler ProofsFiler
 	// AnswerFiler is the hand-over of the filing tools that store one answer
-	// object: file_screening.
+	// object: file_screening and file_size.
 	AnswerFiler AnswerFiler
 	// DeploymentReader is the deployment_health tool's read at factoryd.
 	DeploymentReader DeploymentReader

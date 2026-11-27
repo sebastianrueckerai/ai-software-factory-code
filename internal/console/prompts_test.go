@@ -152,7 +152,7 @@ var shippedClassTools = map[string][]string{
 	"coder": {"analyze_image", "cloud_prices", "commission_server", "delegate", "deployment_health", "digest", "escalate", "fal_run", "list_resources",
 		"manual", "release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate",
 		"web_scrape", "web_search"},
-	"analyzer":         {"analyze_image", "deployment_health", "digest", "escalate", "file_screening", "manual", "request_info", "web_scrape", "web_search"},
+	"analyzer":         {"analyze_image", "deployment_health", "digest", "escalate", "file_screening", "file_size", "manual", "request_info", "web_scrape", "web_search"},
 	"planner":          {"analyze_image", "digest", "escalate", "file_plan", "manual", "web_scrape", "web_search"},
 	policy.ClassProver: {"file_proofs", "manual"},
 }
@@ -193,15 +193,15 @@ func TestShippedClassToolsAreTheCopy(t *testing.T) {
 }
 
 // Each session step is offered the gateway tools its job uses: the coder
-// eleven, the planner six, the prover two, screening a look at an image, its
-// filing and the manual, and sizing a look at an image and the manual.
+// eleven, the planner six, the prover two, and screening and sizing a look
+// at an image, their filing and the manual.
 func TestSessionGatewaySets(t *testing.T) {
 	coder := []string{"analyze_image", "delegate", "deployment_health", "digest", "escalate", "manual", "request_cut", "request_info", "request_tool", "web_scrape", "web_search"}
 	want := map[string][]string{
 		"coding": coder, "coding-card": coder,
 		"planner":   {"analyze_image", "digest", "file_plan", "manual", "web_scrape", "web_search"},
 		"prover":    {"file_proofs", "manual"},
-		"sizing":    {"analyze_image", "manual"},
+		"sizing":    {"analyze_image", "file_size", "manual"},
 		"screening": {"analyze_image", "file_screening", "manual"},
 	}
 	for step, p := range sessionProfiles(t) {
@@ -567,5 +567,39 @@ func TestScreeningStandingWords(t *testing.T) {
 	}
 	if total := got[0] + got[1] + got[2] + got[3]; total != 290 {
 		t.Errorf("standing words = %d, want 290", total)
+	}
+}
+
+// A sizing reads an issue and edits nothing: no project config, so no
+// AGENTS.md, and no prompt text of the fixture's own.
+func TestSizingLoadsNoProjectConfig(t *testing.T) {
+	env, err := prompts.SessionEnv("sizing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "OPENCODE_DISABLE_PROJECT_CONFIG=1") {
+		t.Errorf("the sizing's environment is %q, want OPENCODE_DISABLE_PROJECT_CONFIG=1", env)
+	}
+	lacks(t, "sizing", "Rules of this repository", "You read: do not change code", "Answer with one JSON object")
+}
+
+// The line bounds are the sizing's facts, for a risk bound of 600.
+func TestSizingBoundsRenderAsFacts(t *testing.T) {
+	const want = "small is at most 180, medium at most 360, large anything more."
+	if p := built(t, "sizing"); !strings.Contains(p.Facts(), want) || strings.Contains(p.Standing(), "at most") {
+		t.Errorf("the sizing's facts lack %q or its standing names a bound:\n%s", want, p.Text())
+	}
+}
+
+// Standing words, counted from the files: the line form 71, factory 55 and
+// narration 59 (114 chunks), paragraph 102: 287.
+func TestSizingStandingWords(t *testing.T) {
+	parts := built(t, "sizing").Parts()
+	got := [4]int{parts.Guide, parts.Forms, parts.Chunks, parts.Paragraph}
+	if want := [4]int{0, 71, 114, 102}; got != want {
+		t.Errorf("guide, forms, chunks, paragraph = %v, want %v", got, want)
+	}
+	if total := got[0] + got[1] + got[2] + got[3]; total != 287 {
+		t.Errorf("standing words = %d, want 287", total)
 	}
 }

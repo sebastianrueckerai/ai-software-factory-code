@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/answers"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -559,28 +560,20 @@ func TestRunReportNamesAProviderRefusal(t *testing.T) {
 	}
 }
 
+// parseSizing reads the answer the session filed: whole JSON of a size a
+// card may have, nothing else.
 func TestParseSizing(t *testing.T) {
-	long := strings.Repeat("a", 400)
-	manyFiles := make([]string, 60)
-	for i := range manyFiles {
-		manyFiles[i] = "f.go"
-	}
-	manyJSON, _ := json.Marshal(manyFiles)
 	for name, tc := range map[string]struct {
 		text string
-		want sizeVerdict
+		want answers.SizeAnswer
 		ok   bool
 	}{
-		"fenced": {"I read it.\n```json\n{\"size\": \"medium\", \"reason\": \"touches the scheduler and the store\", \"files\": [\"internal/a.go\", \" \", \"internal/b.go\"]}\n```",
-			sizeVerdict{"medium", "touches the scheduler and the store", []string{"internal/a.go", "internal/b.go"}}, true},
-		"guide quoted before the answer": {"The audit is complete. The guide's answer `{\"size\": \"...\", \"reason\": \"...\", \"files\": [...]}` names small at most 300.\n\n```json\n{\"size\": \"small\", \"reason\": \"comments only\", \"files\": [\"a.go\", \"b.go\"]}\n```",
-			sizeVerdict{"small", "comments only", []string{"a.go", "b.go"}}, true},
-		"no reason":    {`{"size": "small"}`, sizeVerdict{Size: "small", Reason: "the sizing named no reason"}, true},
-		"unknown size": {`{"size": "huge", "reason": "x"}`, sizeVerdict{}, false},
-		"no object":    {"it is big", sizeVerdict{}, false},
-		"cut object":   {`{"size": `, sizeVerdict{}, false},
-		"long reason":  {`{"size": "large", "reason": "` + long + `"}`, sizeVerdict{Size: "large", Reason: strings.Repeat("a", 300) + "…"}, true},
-		"many files":   {`{"size": "large", "reason": "r", "files": ` + string(manyJSON) + `}`, sizeVerdict{"large", "r", manyFiles[:50]}, true},
+		"filed":        {`{"size":"medium","reason":"touches the scheduler and the store","files":["internal/a.go","internal/b.go"]}`, answers.SizeAnswer{Size: "medium", Reason: "touches the scheduler and the store", Files: []string{"internal/a.go", "internal/b.go"}}, true},
+		"no files":     {`{"size":"small","reason":"one handler","files":[]}`, answers.SizeAnswer{Size: "small", Reason: "one handler"}, true},
+		"unknown size": {`{"size":"huge","reason":"x"}`, answers.SizeAnswer{}, false},
+		"prose":        {"It is small.\n" + `{"size":"small","reason":"x"}`, answers.SizeAnswer{}, false},
+		"no answer":    {noFiledAnswer, answers.SizeAnswer{}, false},
+		"cut object":   {`{"size": `, answers.SizeAnswer{}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, ok := parseSizing(tc.text)
@@ -591,18 +584,62 @@ func TestParseSizing(t *testing.T) {
 	}
 }
 
-func TestSizingGuideNamesTheBounds(t *testing.T) {
-	g := sizingGuide(sizeLines(1000))
-	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`} {
-		if !strings.Contains(g, want) {
-			t.Fatalf("guide lacks %q:\n%s", want, g)
+// file_size stores the size canonical: the reason trimmed and cut at 300
+// bytes with the mark, blank files dropped, the files cut at 50 of 200
+// bytes each. It refuses a size no card may have and an empty reason.
+func TestFileSizeStoresTheSizeCanonical(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing,
+		RequiredCapabilities: []string{policy.ClassAnalyzer}, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	file := func(answer string) []string {
+		t.Helper()
+		found, err := runner.FileAnswer(ctx, "t1", policy.ToolFileSize, json.RawMessage(answer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	for answer, want := range map[string]string{
+		`{"size":"huge","reason":"x","files":[]}`:  `file_size: the size "huge" is none of small, medium, large: file one of them`,
+		`{"size":"small","reason":" ","files":[]}`: "file_size: the reason is empty: file the one line a person reads on the card",
+	} {
+		if found := file(answer); !slices.Equal(found, []string{want}) {
+			t.Errorf("%s: findings %q, want %q", answer, found, want)
 		}
 	}
-	if !strings.HasPrefix(g, "You size one card before any coding session runs on it.") {
-		t.Fatalf("guide starts %q", g[:40])
+	if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != "" {
+		t.Fatalf("a refused answer was stored: %q", got.AgentSummary)
 	}
-	if g := sizingGuide(sizeLines(500)); !strings.Contains(g, "small is at most 150, medium at most 300,") {
-		t.Fatalf("guide at 500 lines:\n%s", g)
+	files := make([]string, 60)
+	for i := range files {
+		files[i] = "f.go"
+	}
+	in, _ := json.Marshal(answers.SizeAnswer{Size: "large", Reason: "  " + strings.Repeat("a", 400) + "  ", Files: append([]string{" ", ""}, files...)})
+	if found := file(string(in)); len(found) != 0 {
+		t.Fatalf("a long answer: %q", found)
+	}
+	got, _, _ := store.Task(ctx, "t1")
+	v, ok := parseSizing(got.AgentSummary)
+	if !ok || v.Size != "large" || v.Reason != strings.Repeat("a", 300)+"…" || !slices.Equal(v.Files, files[:50]) {
+		t.Fatalf("stored %q, read %+v %v: want large, 300 bytes and the mark, 50 files", got.AgentSummary, v, ok)
+	}
+}
+
+// The sizing's one value of the call is its line bounds: 30 and 60 percent
+// of the risk bound, rounded.
+func TestSizingBoundsRenderAsFacts(t *testing.T) {
+	for bound, want := range map[int]string{
+		1000: "Sizes by changed lines: small is at most 300, medium at most 600, large anything more.",
+		500:  "Sizes by changed lines: small is at most 150, medium at most 300, large anything more.",
+		600:  "Sizes by changed lines: small is at most 180, medium at most 360, large anything more.",
+	} {
+		if got := sizingFacts(sizeLines(bound)); got != want {
+			t.Errorf("bound %d: %q, want %q", bound, got, want)
+		}
 	}
 }
 
@@ -622,7 +659,7 @@ func TestSizingTaskIsAReportOutsideTheWorkBound(t *testing.T) {
 	}
 }
 
-func TestRunReportOfASizingTaskCarriesTheSizingGuide(t *testing.T) {
+func TestRunReportOfASizingTaskCarriesTheBoundsAndStoresItsFiling(t *testing.T) {
 	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
 		Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
@@ -630,20 +667,22 @@ func TestRunReportOfASizingTaskCarriesTheSizingGuide(t *testing.T) {
 	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
 		t.Fatal(err)
 	}
-	answer := `{"size": "small", "reason": "one handler", "files": []}`
-	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": answer}}) + "\n" + resultLine(true, answer)
+	answer := `{"size":"small","reason":"one handler","files":[]}`
+	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "sized"}}) + "\n" + resultLine(true, "sized")
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 		done <- err
 	}()
 	awaitPod(t, kube, done)
+	if found, err := runner.FileAnswer(context.Background(), "t1", policy.ToolFileSize, json.RawMessage(answer)); err != nil || len(found) != 0 {
+		t.Fatalf("file_size = %v, %v", found, err)
+	}
 	kube.scriptPods(0, logs)
 	if err := <-done; err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
-	guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]
-	if !strings.HasPrefix(guide, "You size one card before any coding session runs on it.") || !strings.Contains(guide, "small is at most 300,") {
+	if guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]; !strings.Contains(guide, "small is at most 300,") || strings.Contains(guide, "do not change code") {
 		t.Fatalf("REPORT_GUIDE = %q", guide)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.AgentSummary != answer {

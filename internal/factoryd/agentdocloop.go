@@ -120,7 +120,7 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	case "screening":
 		b.ReportMode = true
 	case "sizing":
-		b.ReportMode, b.Report = true, sizingGuide(sizeLines(v.Document.Risk.LargeLines))
+		b.ReportMode, b.Report = true, sizingFacts(sizeLines(v.Document.Risk.LargeLines))
 	case "planner":
 		b.ReportMode, b.Report = true, planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
 	case "prover":
@@ -166,7 +166,7 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 		guide = workGuide(b.Tools, b.Image)
 	} else {
 		symbol = map[string]string{
-			"sizing":  "sizingGuide",
+			"sizing":  "sizingFacts",
 			"planner": "planGuide",
 			"prover":  "proverGuide",
 		}[id]

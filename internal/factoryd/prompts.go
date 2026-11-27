@@ -79,7 +79,7 @@ func init() {
 	prompts.RegisterStep("screening", []string{"factoryd.(*Runner).RunReport"},
 		sessionFixture("screening", harness.TaskBrief{ReportMode: true}))
 	prompts.RegisterStep("sizing", []string{"factoryd.(*Runner).RunReport"},
-		sessionFixture("sizing", harness.TaskBrief{ReportMode: true, Report: sizingGuide(sizeLines(600))}))
+		sessionFixture("sizing", harness.TaskBrief{ReportMode: true, Report: sizingFacts(sizeLines(600))}))
 	prompts.RegisterStep("message-responder", []string{"factoryd.(*Runner).MessageSession"}, sessionMessage("sebastian", "Why is the check red?"))
 	prompts.RegisterStep("supervisor-guidance", []string{"factoryd.(*Runner).message"}, "Run bash check changed before you end the session.")
 	prompts.RegisterStep("nudge", []string{"factoryd.(*Runner).nudge"}, Nudge{Tool: "bash", Call: "go test ./...", Count: 3}.Text())

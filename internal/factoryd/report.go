@@ -106,7 +106,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64,
 			if err != nil {
 				return ReportResult{}, err
 			}
-			guide = sizingGuide(sizeLines(doc.Risk.LargeLines))
+			guide = sizingFacts(sizeLines(doc.Risk.LargeLines))
 		case SourceProver:
 			step = "prover"
 			if session, err = r.proverSessionDue(ctx, t); err != nil {
@@ -148,14 +148,14 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64,
 			}
 		}
 		// the prover's answer is its filing, which outlives a session that
-		// ended without a last message; a screening's is the answer its
-		// session filed, if it filed one
+		// ended without a last message; a screening's and a sizing's is the
+		// answer its session filed, if it filed one
 		switch t.Source {
 		case SourceProver:
 			if text, err = r.proverSummary(ctx, t); err != nil {
 				return ReportResult{}, err
 			}
-		case SourceScreening:
+		case SourceScreening, SourceSizing:
 			if filed, _, err := r.task(ctx, t.ID); err != nil {
 				return ReportResult{}, err
 			} else {
@@ -435,8 +435,8 @@ func parseScreening(text string) ScreenResult {
 	return screenResult(v, invalid)
 }
 
-// FileAnswer is the hand-over of a filing tool that stores one answer
-// object: the running report task it answers for, its object checked and
+// FileAnswer is the hand-over of file_screening and file_size, the filing
+// tools that store one answer object: the running report task it answers for, its object checked and
 // kept as the task's summary, which the report's reader parses. The
 // findings are why a filing is refused, none when it is stored.
 func (r *Runner) FileAnswer(ctx context.Context, taskID, tool string, raw json.RawMessage) ([]string, error) {
@@ -449,6 +449,8 @@ func (r *Runner) FileAnswer(ctx context.Context, taskID, tool string, raw json.R
 	switch tool {
 	case policy.ToolFileScreening:
 		source, check = SourceScreening, checkScreeningFiling
+	case policy.ToolFileSize:
+		source, check = SourceSizing, checkSizeFiling
 	default:
 		return []string{tool + " files no answer"}, nil
 	}
@@ -633,58 +635,52 @@ func (r *Runner) ScreenAnswer(ctx context.Context, taskID, text string, pin int6
 	return res, nil
 }
 
-// sizeVerdict is the sizing's answer: the size, the one line a person
-// reads on the card, and the files the change touches.
-type sizeVerdict struct {
-	Size, Reason string
-	Files        []string
+// parseSizing reads the sizing's answer, the one its session filed (the
+// summary of the report task). ok only for an object whose size a card may
+// have.
+func parseSizing(text string) (answers.SizeAnswer, bool) {
+	var v answers.SizeAnswer
+	if err := json.Unmarshal([]byte(text), &v); err != nil || !slices.Contains(policy.CardSizes, v.Size) {
+		return answers.SizeAnswer{}, false
+	}
+	if len(v.Files) == 0 {
+		v.Files = nil
+	}
+	return v, true
 }
 
-const (
-	maxSizeReason = 300
-	maxSizeFiles  = 50
-	maxSizeFile   = 200
-)
-
-// parseSizing reads the sizing's answer, the JSON object in its last
-// message. A sizing that quotes the guide's answer form in its prose still
-// answers: objects are tried from the message's end, and the first that
-// parses with a size a card may have wins. ok only for such an object.
-func parseSizing(text string) (sizeVerdict, bool) {
-	for j := strings.LastIndex(text, "}"); j >= 0; j = strings.LastIndex(text[:j], "}") {
-		i := strings.LastIndex(text[:j], "{")
-		if i < 0 {
-			return sizeVerdict{}, false
-		}
-		var v struct {
-			Size   string   `json:"size"`
-			Reason string   `json:"reason"`
-			Files  []string `json:"files"`
-		}
-		if err := json.Unmarshal([]byte(text[i:j+1]), &v); err == nil && slices.Contains(policy.CardSizes, v.Size) {
-			res := sizeVerdict{Size: v.Size, Reason: textutil.Truncate(strings.TrimSpace(v.Reason), maxSizeReason)}
-			if res.Reason == "" {
-				res.Reason = "the sizing named no reason"
-			}
-			for _, f := range v.Files {
-				if f = strings.TrimSpace(f); f != "" && len(res.Files) < maxSizeFiles {
-					res.Files = append(res.Files, textutil.Truncate(f, maxSizeFile))
-				}
-			}
-			return res, true
+// checkSizeFiling is the sizing's filed answer checked, and the text it is
+// stored as: a size a card may have and a reason, the reason cut at its
+// bound and the files trimmed, blank ones dropped and the rest cut at theirs.
+func checkSizeFiling(raw json.RawMessage) (string, []string) {
+	var a answers.SizeAnswer
+	if found := decodeFiling(policy.ToolFileSize, raw, &a); found != nil {
+		return "", found
+	}
+	switch reason := strings.TrimSpace(a.Reason); {
+	case !slices.Contains(policy.CardSizes, a.Size):
+		return "", []string{fmt.Sprintf("file_size: the size %q is none of %s: file one of them", a.Size, strings.Join(policy.CardSizes, ", "))}
+	case reason == "":
+		return "", []string{"file_size: the reason is empty: file the one line a person reads on the card"}
+	default:
+		a.Reason = textutil.Truncate(reason, answers.MaxSizeReason)
+	}
+	files := []string{}
+	for _, f := range a.Files {
+		if f = strings.TrimSpace(f); f != "" && len(files) < answers.MaxSizeFiles {
+			files = append(files, textutil.Truncate(f, answers.MaxSizeFile))
 		}
 	}
-	return sizeVerdict{}, false
+	a.Files = files
+	b, err := json.Marshal(a)
+	if err != nil {
+		return "", []string{"file_size: " + err.Error()}
+	}
+	return string(b), nil
 }
 
-// sizingGuide is what a sizing session writes instead of code, with the
-// changed-line bounds of lines.
-func sizingGuide(lines map[string]int) string {
-	return fmt.Sprintf("You size one card before any coding session runs on it. You read: do not change code, commit or push. "+
-		"Read the issue, then search the repository for every place the change must touch, its tests included. "+
-		"Count the changed lines the whole change needs, added plus deleted: small is at most %d, medium at most %d, large anything more. "+
-		"A small card goes to a coding agent at once. A card that is not small goes to the planner, which cuts it into smaller cards. "+
-		"Answer small only when the change is obviously small. "+
-		`Answer with one JSON object and nothing else: {"size": "small|medium|large", "reason": "one line a person reads on the card", "files": ["each repository path the change touches"]}.`,
-		lines["small"], lines["medium"])
+// sizingFacts is the changed-line bounds of lines, the one value of the
+// sizing's call.
+func sizingFacts(lines map[string]int) string {
+	return fmt.Sprintf("Sizes by changed lines: small is at most %d, medium at most %d, large anything more.", lines["small"], lines["medium"])
 }
