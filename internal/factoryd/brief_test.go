@@ -460,7 +460,7 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 // description, the bounds the field's limits.
 func TestCaseBriefPromptWritesTheStoryAndNamesNoButton(t *testing.T) {
 	form, _ := writingguide.Form("line")
-	p := testPrompt(t, "case-brief-writer", caseBriefPrompt)
+	p := testPrompt(t, "case-brief-writer", caseBriefFacts{})
 	for _, want := range []string{"Name no button, answer or action", form} {
 		if !strings.Contains(p.Text(), want) {
 			t.Errorf("the prompt lacks %q", want)
@@ -1046,5 +1046,14 @@ func TestBriefWriterBriefsAHumanCardsRowAsThePolicysClassesBrief(t *testing.T) {
 	}
 	if model != "bb" || card != "alpha,beta,coder" || store.brief[7] != [2]string{"b", "d"} {
 		t.Fatalf("model %q card %q brief %v, want bb, alpha,beta,coder and the brief written", model, card, store.brief[7])
+	}
+}
+
+// The case writer is told of a refusal only when its message carries one.
+func TestCaseBriefPromptTellsOfLastRefusalOnlyWhenSet(t *testing.T) {
+	for refused, want := range map[bool]bool{false: false, true: true} {
+		if got := strings.Contains(testPrompt(t, "case-brief-writer", caseBriefFacts{Refused: refused}).Text(), "last_refusal"); got != want {
+			t.Errorf("refused %v: the prompt tells of it = %v, want %v", refused, got, want)
+		}
 	}
 }

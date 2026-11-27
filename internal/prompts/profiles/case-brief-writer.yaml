@@ -5,7 +5,7 @@ guide: false
 forms: [line]
 chunks: []
 paragraph: case-brief-writer
-facts: text
+facts: case-brief
 answer: case-brief
 tools:
   builtin: []

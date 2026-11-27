@@ -1344,7 +1344,11 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, p Plan, revisio
 // deltaSystem is the delta round's facts: the criteria's states, what the
 // card keeps to and the refusals of the round; the card's fields are the
 // answer type's.
-const deltaSystem = `Each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+const deltaSystem = `Each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else.`
+
+// deltaRefused is the delta round's sentence on its refused answers, told
+// once the input carries some.
+const deltaRefused = `refused holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
 
 // deltaAnswerTool is p's answer tool with the card's image closed to the
 // project's pinned images, and dropped where it pins none.
@@ -1353,12 +1357,20 @@ func deltaAnswerTool(p prompts.Prompt, pins map[string]policy.ImagePin) prompts.
 	return tool.WithEnum("card.image", slices.Sorted(maps.Keys(pins)))
 }
 
-// deltaFacts are the images the delta round's project pins.
-type deltaFacts struct{ Pins map[string]policy.ImagePin }
+// deltaFacts are the images the delta round's project pins, and whether
+// the input carries refused answers.
+type deltaFacts struct {
+	Pins    map[string]policy.ImagePin
+	Refused bool
+}
 
 // deltaPrompt is the delta round's text for a project pinning f.Pins.
 func deltaPrompt(f deltaFacts) (string, error) {
-	return strings.TrimSpace(deltaSystem + " " + imagesLine(f.Pins)), nil
+	text := deltaSystem
+	if f.Refused {
+		text += " " + deltaRefused
+	}
+	return strings.TrimSpace(text + " " + imagesLine(f.Pins)), nil
 }
 
 // deltaInput is the delta round's whole context.
@@ -1476,13 +1488,13 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	var merged Plan
 	why := ""
 	bound := r.cfg.Policy().Document.Limits.SupervisorTimeout
-	system, err := prompts.Build("delta-planner", deltaFacts{projectPins(r.cfg.Policy(), t.Repository)})
-	if err != nil {
-		r.refuseDelta(ctx, t, repo, dues, err.Error())
-		return
-	}
-	tool := deltaAnswerTool(system, projectPins(v, t.Repository))
 	for try := range deltaAttempts {
+		system, err := prompts.Build("delta-planner", deltaFacts{Pins: projectPins(r.cfg.Policy(), t.Repository), Refused: len(input.Refused) > 0})
+		if err != nil {
+			r.refuseDelta(ctx, t, repo, dues, err.Error())
+			return
+		}
+		tool := deltaAnswerTool(system, projectPins(v, t.Repository))
 		answer, _, err := answerWith[DeltaAnswer](ctx, r.supervisor, t.ID, alias, bound, system, tool, input)
 		var cut *cutAnswerError
 		var bad *badAnswerError

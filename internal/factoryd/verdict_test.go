@@ -254,7 +254,7 @@ func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
 	}
 	want := lead + deltaSystem +
 		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
-	if got := testPrompt(t, "delta-planner", deltaFacts{map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}}).Text(); got != want {
+	if got := testPrompt(t, "delta-planner", deltaFacts{Pins: map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}}).Text(); got != want {
 		t.Fatalf("deltaPrompt =\n%q\nwant\n%q", got, want)
 	}
 }
@@ -4326,5 +4326,14 @@ func TestDeltaToolOffersTheProjectsImages(t *testing.T) {
 	}
 	if got, ok := image(map[string]policy.ImagePin{"video": {}, "browser": {}}); !ok || !slices.Equal(got.([]string), []string{"browser", "video"}) {
 		t.Errorf("image enum = %v, want browser and video", got)
+	}
+}
+
+// The delta planner is told of refused answers only when its input carries some.
+func TestDeltaPromptTellsOfRefusedOnlyWhenSet(t *testing.T) {
+	for refused, want := range map[bool]bool{false: false, true: true} {
+		if got := strings.Contains(testPrompt(t, "delta-planner", deltaFacts{Refused: refused}).Text(), "refused holds your earlier answers"); got != want {
+			t.Errorf("refused %v: the prompt tells of them = %v, want %v", refused, got, want)
+		}
 	}
 }

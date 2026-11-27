@@ -256,7 +256,7 @@ func agentDocReview(ctx context.Context, gwURL string, v policy.Version, hc *htt
 		Concurrency: concurrencyBlock(concurrencySites(files)),
 		Gates:       reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction},
 	}
-	system, err := prompts.Build("model-review", reviewFacts{Gates: gates})
+	system, err := prompts.Build("model-review", reviewFacts{Gates: gates, Input: in})
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +400,7 @@ func agentDocDelta(ctx context.Context, gwURL string, v policy.Version, hc *http
 		Criteria: []deltaCriterion{{PlanCriterion: p.Criteria[0], Evidence: "the diff shows no test of the skipped row"}},
 		Cards:    p.Cards,
 	}
-	system, err := prompts.Build("delta-planner", deltaFacts{projectPins(v, "owner/name")})
+	system, err := prompts.Build("delta-planner", deltaFacts{Pins: projectPins(v, "owner/name")})
 	if err != nil {
 		return nil, err
 	}
@@ -581,13 +581,13 @@ func agentDocCaseBrief(ctx context.Context, gwURL string, v policy.Version, hc *
 		}
 	}
 	life := agentDocLife().Render()
-	system, err := prompts.Build("case-brief-writer", caseBriefPrompt)
+	system, err := prompts.Build("case-brief-writer", caseBriefFacts{})
 	if err != nil {
 		return nil, err
 	}
 	return agentDocWithAnswer(system, []agentdoc.Span{
 		agentDocStanding(system),
-		{Name: "the case brief prompt", Symbol: "factoryd.caseBriefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: caseBriefPrompt},
+		{Name: "the case brief prompt", Symbol: "factoryd.caseBriefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system.Facts()},
 		{Name: "the case's facts", Symbol: "factoryd.(*BriefWriter).caseFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: string(facts)},
 		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(life)},
 	})

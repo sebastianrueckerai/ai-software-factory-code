@@ -45,13 +45,14 @@ func init() {
 	prompts.RegisterFacts("judgement", judgementText)
 	prompts.RegisterFacts("answer", answerSystem)
 	prompts.RegisterFacts("brief", briefPrompt)
+	prompts.RegisterFacts("case-brief", caseBriefPrompt)
 
 	checkin := []string{"factoryd.(*Runner).runCheckin"}
 	prompts.RegisterStep("checkin-gate", checkin, "")
 	prompts.RegisterStep("checkin-session", checkin, "")
 	prompts.RegisterStep("checkin-dead", checkin, "")
 	prompts.RegisterStep("case-checkin", []string{"factoryd.(*Runner).rung1Converse"}, "")
-	prompts.RegisterStep("case-brief-writer", []string{"factoryd.(*BriefWriter).askCase"}, caseBriefPrompt)
+	prompts.RegisterStep("case-brief-writer", []string{"factoryd.(*BriefWriter).askCase"}, caseBriefFacts{})
 	prompts.RegisterStep("brief-writer", []string{"factoryd.(*BriefWriter).ask"}, briefKind{ApprovalResource})
 	review := []string{"factoryd.(*Runner).ModelReview"}
 	prompts.RegisterStep("model-review", review, reviewFacts{Gates: GateResults{ChecksPassed: true}})
