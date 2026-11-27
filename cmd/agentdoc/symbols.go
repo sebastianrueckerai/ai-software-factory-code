@@ -127,7 +127,8 @@ func (t *symbolTable) locate(pkgDir, symbol string) (string, int, bool) {
 	}
 	locs := t.names[key]
 	for _, l := range locs { // sorted by file, so the in-package hit is stable
-		if strings.HasPrefix(l.file, pkgDir+"/") {
+		// the package's own directory, not a subpackage under it
+		if filepath.Dir(l.file) == pkgDir {
 			return l.file, l.line, true
 		}
 	}

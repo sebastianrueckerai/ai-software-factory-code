@@ -36,6 +36,11 @@ func AgentDocLoopIDs() []string {
 	return []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}
 }
 
+// AgentDocTitleID is the page of the harness's own title call, which every
+// session's first prompt makes: its capture runs the coding session and
+// keeps that call.
+const AgentDocTitleID = "opencode-title"
+
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
 // ran on; it is the provenance of every wire part that is opencode's own.
 // It is upstream-files.txt's opencode line, the harness the sandbox image
@@ -286,6 +291,52 @@ func agentDocLoopWireSpans(b agentdoc.Body, agents string) ([]agentdoc.Span, err
 	return spans, nil
 }
 
+// agentDocTitleCall is the title page's capture: the coding session's title
+// call in dir, its run-time values masked as the loop's are, the harness's
+// own parts read out of its body, and the brief, which the call carries
+// whole as text, tiled by the brief's builders.
+func agentDocTitleCall(title *agentdoc.Recorded, dir string, brief harness.TaskBrief, text string) ([]agentdoc.Span, agentdoc.Recorded, error) {
+	if title == nil {
+		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: the session made no title call", AgentDocTitleID)
+	}
+	rec := *title
+	rec.Raw = maskLoopRunTime(rec.Raw, dir)
+	body, err := agentdoc.ParseBody(rec.Raw)
+	if err != nil {
+		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", AgentDocTitleID, err)
+	}
+	wire, err := agentDocTitleWireSpans(body, text)
+	if err != nil {
+		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", AgentDocTitleID, err)
+	}
+	return append(agentDocLoopSpans("coding", brief, agentDocLoopTag), wire...), rec, nil
+}
+
+// agentDocTitleWireSpans reads the title call's own parts out of its body:
+// the harness's title prompt and every user turn but the brief, its ask.
+// A title call that does not carry the brief text is a broken capture.
+func agentDocTitleWireSpans(b agentdoc.Body, brief string) ([]agentdoc.Span, error) {
+	var spans []agentdoc.Span
+	carried := false
+	for _, m := range b.Messages {
+		text := loopText(m)
+		switch {
+		case m.Role == "system":
+			spans = append(spans, agentdoc.Span{Name: "the harness's title prompt", Symbol: AgentDocOpencodeVersion,
+				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: text})
+		case text == brief:
+			carried = true
+		default:
+			spans = append(spans, agentdoc.Span{Name: "the harness's title ask", Symbol: AgentDocOpencodeVersion,
+				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceUser, Text: text})
+		}
+	}
+	if !carried {
+		return nil, errors.New("the title call carries no brief")
+	}
+	return spans, nil
+}
+
 // loopText is a message's text: its plain content, or its parts' texts in
 // order when the wire sent parts.
 func loopText(m agentdoc.Message) string {
@@ -336,13 +387,14 @@ func agentDocLoopAnswer(w http.ResponseWriter, stream bool, n int, tool, command
 // session's calls — the responder's first with a bash step, so its page
 // holds the turn after a writer's message; every kept call's last answer
 // a plain text that ends the session — and records each loop call's raw
-// body as it crossed the wire. Calls without tools (the harness's own
-// title call) are answered and dropped.
+// body as it crossed the wire. The first call without tools is the
+// harness's own title call: answered with a title and kept apart.
 type agentDocLoopModel struct {
 	oc        *Opencode
 	responder bool
 	mu        sync.Mutex
 	calls     []agentdoc.Recorded
+	title     *agentdoc.Recorded
 	pushErr   error
 }
 
@@ -365,12 +417,15 @@ func (f *agentDocLoopModel) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := 0
-	if len(req.Tools) > 0 {
-		f.mu.Lock()
+	f.mu.Lock()
+	switch {
+	case len(req.Tools) > 0:
 		f.calls = append(f.calls, agentdoc.Recorded{Raw: body, Task: agentDocTask, Purpose: "session"})
 		n = len(f.calls)
-		f.mu.Unlock()
+	case f.title == nil:
+		f.title = &agentdoc.Recorded{Raw: body, Task: agentDocTask, Purpose: "session"}
 	}
+	f.mu.Unlock()
 	switch {
 	case n == 0:
 		agentDocLoopAnswer(w, req.Stream, n, "", "", "Fixture title")
@@ -398,6 +453,14 @@ func (agentDocLoopAuth) Authenticate(r *http.Request) (gateway.Identity, error) 
 		Subject:   "system:serviceaccount:factory:task-" + agentDocTask,
 		Namespace: "factory", TaskID: agentDocTask,
 	}, nil
+}
+
+// agentDocLoopPrices serves the window the session asks of the gateway for
+// every model it declares before it starts: the fake gateway's one window.
+type agentDocLoopPrices struct{}
+
+func (agentDocLoopPrices) Price(context.Context, string) (policy.Price, error) {
+	return policy.Price{Window: agentdoc.Window}, nil
 }
 
 // agentDocLoopStore is the capture's task row and policy version: the
@@ -508,14 +571,36 @@ func maskLoopRunTime(raw []byte, dir string) []byte {
 	return loopDayLine.ReplaceAll(raw, []byte("Today's date: the day of the run"))
 }
 
+// agentDocLoopMux is the gateway the mode's session talks to: the scripted
+// model on the chat door, and the real gateway's MCP tools and window ask,
+// the window each declared model's limits and compaction run by.
+func agentDocLoopMux(model *agentDocLoopModel, v policy.Version, id string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", model.serve)
+	gw := gateway.NewServer(gateway.ServerOptions{
+		Auth:   agentDocLoopAuth{},
+		Store:  agentDocLoopStore{v: v, class: agentDocLoopClass(id)},
+		Cloud:  &gateway.Cloud{},
+		Prices: agentDocLoopPrices{},
+	}).Routes("agentdoc")
+	mux.Handle("/mcp", gw)
+	mux.Handle("GET /v1/window/{alias}", gw)
+	return mux
+}
+
 // AgentDocLoop captures one loop mode's chosen request from the wire: the
 // pinned opencode binary runs the real session assembly — the brief, the
 // identity proxy, the gateway's MCP tool list — against the scripted
 // model above, and the capture comes back with the builders' spans plus
 // the wire parts read out of the recorded body. The responder's page is
 // the call after the writer's message; every other mode's is the first.
+// The title page is the coding session's title call.
 func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agentdoc.Span, agentdoc.Recorded, error) {
-	if !slices.Contains(AgentDocLoopIDs(), id) {
+	mode := id
+	if id == AgentDocTitleID {
+		mode = "coding"
+	}
+	if !slices.Contains(AgentDocLoopIDs(), mode) {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: no loop mode %q", id)
 	}
 	restore, err := agentDocLoopEnv()
@@ -535,28 +620,22 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	if err := os.WriteFile(token, []byte("agentdoc-dummy-jwt"), 0o600); err != nil {
 		return nil, agentdoc.Recorded{}, err
 	}
-	model := &agentDocLoopModel{responder: id == "message-responder"}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", model.serve)
-	mux.Handle("/mcp", gateway.NewServer(gateway.ServerOptions{
-		Auth:  agentDocLoopAuth{},
-		Store: agentDocLoopStore{v: v, class: agentDocLoopClass(id)},
-		Cloud: &gateway.Cloud{},
-	}).Routes("agentdoc"))
-	srv := httptest.NewServer(mux)
+	model := &agentDocLoopModel{responder: mode == "message-responder"}
+	srv := httptest.NewServer(agentDocLoopMux(model, v, mode))
 	defer srv.Close()
 
 	model.oc = &Opencode{
 		Binary: bin, WorkDir: dir, TokenFile: token,
-		Model: agentDocLoopSessionModel(id, v), Stronger: "factory/" + policy.Big, Cheap: "factory/" + policy.Small,
+		Model: agentDocLoopSessionModel(mode, v), Stronger: "factory/" + policy.Big, Cheap: "factory/" + policy.Small,
 		Budget:     TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384},
 		Steps:      v.Document.Limits.Steps,
 		GatewayURL: srv.URL,
 	}
-	brief := agentDocLoopBrief(id, v)
+	brief := agentDocLoopBrief(mode, v)
 	restoreTag := randomTag
 	randomTag = func() string { return agentDocLoopTag }
-	res := model.oc.Run(ctx, model.oc.Text(brief), func(harness.Event) {})
+	text := model.oc.Text(brief)
+	res := model.oc.Run(ctx, text, func(harness.Event) {})
 	randomTag = restoreTag
 	if !res.Success {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: the session did not end well: %s", id, res.Summary)
@@ -573,6 +652,9 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	if len(model.calls) != want {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %d loop calls crossed the wire, want %d", id, len(model.calls), want)
 	}
+	if id == AgentDocTitleID {
+		return agentDocTitleCall(model.title, dir, brief, text)
+	}
 	rec := model.calls[want-1]
 	rec.Raw = maskLoopRunTime(rec.Raw, dir)
 	body, err := agentdoc.ParseBody(rec.Raw)
@@ -583,7 +665,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
 	}
-	spans := agentDocLoopSpans(id, brief, agentDocLoopTag)
+	spans := agentDocLoopSpans(mode, brief, agentDocLoopTag)
 	if model.responder {
 		_, msgSpans := agentDocLoopMessage()
 		spans = append(spans, msgSpans...)

@@ -277,6 +277,14 @@ func fakeModelCall(prompt []byte) {
 	json.Unmarshal(prompt, &p)
 	json.Unmarshal([]byte(os.Getenv("OPENCODE_CONFIG_CONTENT")), &cfg)
 	cwd, _ := os.Getwd()
+	// the harness's own title call first, with no tools, naming the run's
+	// directory and day as the real one may
+	title, _ := json.Marshal(map[string]any{
+		"model": p.Model.ModelID,
+		"messages": []map[string]string{
+			{"role": "system", "content": "You are a fake title generator.\nWorking directory: " + cwd + "\nToday's date: " + os.Getenv("FAKE_SERVE_DATE") + "\n"},
+			{"role": "user", "content": "Generate a title for this conversation:\n"}, {"role": "user", "content": p.Parts[0].Text}},
+	})
 	agents, _ := os.ReadFile("AGENTS.md")
 	sys := "You are a fake opencode.\n<env>\n  Working directory: " + cwd + "\n  Today's date: " + os.Getenv("FAKE_SERVE_DATE") +
 		"\n</env>\nInstructions from: " + cwd + "/AGENTS.md\n" + string(agents) + "\nEnd of the fake prompt.\n"
@@ -286,10 +294,12 @@ func fakeModelCall(prompt []byte) {
 		"tools":    []any{map[string]any{"type": "function", "function": map[string]any{"name": "bash"}}},
 	})
 	for _, prov := range cfg.Provider {
-		resp, err := http.Post(prov.Options.BaseURL+"/chat/completions", "application/json", bytes.NewReader(body))
-		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+		for _, call := range [][]byte{title, body} {
+			resp, err := http.Post(prov.Options.BaseURL+"/chat/completions", "application/json", bytes.NewReader(call))
+			if err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
 		}
 	}
 }

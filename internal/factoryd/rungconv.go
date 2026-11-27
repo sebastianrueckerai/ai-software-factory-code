@@ -47,7 +47,7 @@ func (r *Runner) runRung(ctx context.Context, chat checkinChat, taskID, alias st
 		System:    system,
 		Statement: statement,
 		Evidence:  evidence,
-		Answer:    CheckinTool{Name: CheckinAnswerTool, Description: "the rung's answer, one JSON object as this tool's arguments", Parameters: AnswerSchema(f, rung)},
+		Answer:    rungAnswerTool(f, rung),
 		Parse: func(text string) error {
 			a, err := ParseRungAnswer(f, rung, text)
 			parsed = a
@@ -82,6 +82,12 @@ func (r *Runner) runRung(ctx context.Context, chat checkinChat, taskID, alias st
 	}
 	out.HandedUp = true
 	return out
+}
+
+// rungAnswerTool is the answer tool every call of rung's step on f posts:
+// its schema the one AnswerSchema derives from f and rung.
+func rungAnswerTool(f CaseFacts, rung int) CheckinTool {
+	return CheckinTool{Name: CheckinAnswerTool, Description: "the rung's answer, one JSON object as this tool's arguments", Parameters: AnswerSchema(f, rung)}
 }
 
 // refusedText closes a cap's Found with the answers the rung had refused.

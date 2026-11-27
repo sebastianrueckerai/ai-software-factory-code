@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // indexRow is one agent's facts the index reads: the registry line, the
@@ -122,7 +123,7 @@ func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 func (d *doc) writeTrunk(md *strings.Builder, rows []indexRow) {
 	var loop []indexRow
 	for _, r := range rows {
-		if r.agent.Loop {
+		if r.agent.Loop && slices.Contains(factoryd.AgentDocLoopIDs(), r.agent.ID) {
 			loop = append(loop, r)
 		}
 	}

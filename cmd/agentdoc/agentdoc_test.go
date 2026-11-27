@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -27,10 +26,10 @@ func TestTitleAgentPageEndToEnd(t *testing.T) {
 	if a == nil {
 		t.Fatal("no agent titled title in the registry")
 	}
-	g := agentdoc.NewGateway(`{"decision":"continue"}`)
+	g := agentdoc.NewGateway(a.Answer(a.ID))
 	defer g.Close()
 	v := policy.Version{Commit: "fixture", Tree: policy.Tree{Document: policy.Document{Version: 1}}}
-	spans, err := factoryd.AgentDocDirect(context.Background(), "title", g.URL, v, nil)
+	spans, err := a.Capture(context.Background(), "title", g.URL, v, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +42,8 @@ func TestTitleAgentPageEndToEnd(t *testing.T) {
 		t.Fatalf("failures: %v", failures)
 	}
 	for _, want := range []string{
-		"factoryd.titlePrompt",
-		"(*OperatorModel).Title",
+		"factoryd.TitlePrompt",
+		"(*Console).nameThread",
 		"the thread's first message",
 		"Set the staging budget to 40 euros.",
 		"raw/title.json",

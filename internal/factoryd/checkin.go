@@ -1037,7 +1037,7 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 	due := func() time.Time { return start.Add(checkinAnswerDue(c.TimeCap, longest)) }
 	dueLine := func() string {
 		if c.DueOwnLine {
-			return fmt.Sprintf("\nCalls left %d; your answer is due within %s.", c.CallCap, max(0, time.Until(due())).Round(time.Second))
+			return dueOwnLine(c.CallCap, time.Until(due()))
 		}
 		return checkinDueLine(time.Until(due()))
 	}
@@ -1159,6 +1159,12 @@ func (r *Runner) scrub(s string) string {
 // evidence call.
 func checkinAnswerDue(timeCap, longest time.Duration) time.Duration {
 	return timeCap - min(timeCap/2, max(policy.CheckinCallTime, 2*longest))
+}
+
+// dueOwnLine is the line after a statement that ends at its own sentence:
+// the calls left and the time left for the answer.
+func dueOwnLine(calls int, left time.Duration) string {
+	return fmt.Sprintf("\nCalls left %d; your answer is due within %s.", calls, max(0, left).Round(time.Second))
 }
 
 // checkinDueLine closes the statement with the time left for the answer.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -273,6 +274,38 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 	}
 }
 
+// The harness's own title call reads its parts out of the recorded body:
+// its title prompt and the ask before the brief are the harness's, and the
+// brief, which rides the call whole, is left to its builders' spans. A
+// title call without the brief is a broken capture.
+func TestAgentDocTitleWireSpansReadTheBody(t *testing.T) {
+	raw := []byte(`{"model":"small","stream":true,"messages":[{"role":"system","content":"TITLE-PROMPT"},` +
+		`{"role":"user","content":"Generate a title for this conversation:\n"},{"role":"user","content":"THE-BRIEF"}]}`)
+	b, err := agentdoc.ParseBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spans, err := agentDocTitleWireSpans(b, "THE-BRIEF")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct{ place, name, symbol, kind, text string }
+	var got []row
+	for _, sp := range spans {
+		got = append(got, row{sp.Place, sp.Name, sp.Symbol, sp.Kind, sp.Text})
+	}
+	want := []row{
+		{"system", "the harness's title prompt", AgentDocOpencodeVersion, agentdoc.KindHarness, "TITLE-PROMPT"},
+		{"user", "the harness's title ask", AgentDocOpencodeVersion, agentdoc.KindHarness, "Generate a title for this conversation:\n"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wire spans:\n got %+v\nwant %+v", got, want)
+	}
+	if _, err := agentDocTitleWireSpans(b, "ANOTHER-BRIEF"); err == nil {
+		t.Fatal("a title call without the brief derived spans")
+	}
+}
+
 // The config the subagents run under is the same tree the session reads:
 // what buildOpencodeConfig tells opencode about general and explore, in
 // the policy's own steps and the ladder's cheap rung.
@@ -329,7 +362,7 @@ func TestAgentDocLoopRecord(t *testing.T) {
 		t.Skip("OPENCODE_RECORD_BIN not set")
 	}
 	v := agentDocLoopPolicy()
-	for _, id := range AgentDocLoopIDs() {
+	for _, id := range append(AgentDocLoopIDs(), AgentDocTitleID) {
 		t.Run(id, func(t *testing.T) {
 			spans, rec, err := AgentDocLoop(context.Background(), id, bin, v)
 			if err != nil {
@@ -390,6 +423,12 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			for _, tl := range b.Tools {
 				names = append(names, tl.Name)
 			}
+			if id == AgentDocTitleID {
+				if len(names) != 0 || b.Model != policy.Small {
+					t.Errorf("the title call offers %q on %s, want no tool on %s", names, b.Model, policy.Small)
+				}
+				return
+			}
 			want := "factory-tools_escalate"
 			switch id {
 			case "planner":
@@ -430,26 +469,50 @@ func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agent
 	return spans, rec
 }
 
-// Two captures of one mode, each in its own random directory and on its
-// own day, are the same bytes: the harness writes both into the prompt,
-// and neither belongs on the page.
+// Two captures of one page, each in its own random directory and on its
+// own day, are the same bytes: the harness writes both into the prompt of
+// the session's call and of its own title call, and neither belongs on
+// the page.
 func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
 	v := agentDocLoopPolicy()
-	spansA, recA := fakeCapture(t, "coding", v, "Wed Nov 04 2026")
-	spansB, recB := fakeCapture(t, "coding", v, "Thu Nov 12 2026")
-	if !bytes.Equal(recA.Raw, recB.Raw) {
-		t.Fatalf("the recorded bodies differ:\n%s\n%s", recA.Raw, recB.Raw)
+	for _, id := range []string{"coding", AgentDocTitleID} {
+		t.Run(id, func(t *testing.T) {
+			spansA, recA := fakeCapture(t, id, v, "Wed Nov 04 2026")
+			spansB, recB := fakeCapture(t, id, v, "Thu Nov 12 2026")
+			if !bytes.Equal(recA.Raw, recB.Raw) {
+				t.Fatalf("the recorded bodies differ:\n%s\n%s", recA.Raw, recB.Raw)
+			}
+			if !reflect.DeepEqual(spansA, spansB) {
+				t.Fatal("the spans differ between two captures")
+			}
+			for _, leak := range []string{"agentdoc-loop-", "Nov 04", "Nov 12"} {
+				if bytes.Contains(recA.Raw, []byte(leak)) {
+					t.Errorf("the body still carries %q", leak)
+				}
+			}
+			if !bytes.Contains(recA.Raw, []byte("Working directory: /workspace\\n")) || !bytes.Contains(recA.Raw, []byte("Today's date: the day of the run\\n")) {
+				t.Errorf("the masks are missing from %s", recA.Raw)
+			}
+		})
 	}
-	if !reflect.DeepEqual(spansA, spansB) {
-		t.Fatal("the spans differ between two captures")
+}
+
+// The capture's gateway answers the window ask a session makes of every
+// declared model before it starts, as the real gateway does, so the
+// session runs under its models' windows and the auto compaction they
+// turn on, never on the trust cap a refused ask leaves.
+func TestAgentDocLoopGatewayServesTheWindow(t *testing.T) {
+	srv := httptest.NewServer(agentDocLoopMux(&agentDocLoopModel{}, agentDocLoopPolicy(), "coding"))
+	defer srv.Close()
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte("agentdoc-dummy-jwt"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for _, leak := range []string{"agentdoc-loop-", "Nov 04", "Nov 12"} {
-		if bytes.Contains(recA.Raw, []byte(leak)) {
-			t.Errorf("the body still carries %q", leak)
+	oc := &Opencode{GatewayURL: srv.URL, TokenFile: token}
+	for _, alias := range []string{policy.Small, policy.Big, policy.Premium} {
+		if w, err := oc.servedWindow(context.Background(), alias); err != nil || w != 128000 {
+			t.Errorf("the window of %s: %d, %v, want 128000", alias, w, err)
 		}
-	}
-	if !bytes.Contains(recA.Raw, []byte("Working directory: /workspace\\n")) || !bytes.Contains(recA.Raw, []byte("Today's date: the day of the run\\n")) {
-		t.Errorf("the masks are missing from %s", recA.Raw)
 	}
 }
 

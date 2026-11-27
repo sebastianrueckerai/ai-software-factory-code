@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ func agentDocConsolePolicy() policy.Version {
 func TestAgentDocConsoleCapturesEveryConsoleAgent(t *testing.T) {
 	for _, id := range AgentDocConsoleIDs() {
 		t.Run(id, func(t *testing.T) {
-			g := agentdoc.NewGateway("The capture runs no tools.")
+			g := agentdoc.NewGateway(AgentDocConsoleAnswer(id))
 			defer g.Close()
 			spans, err := AgentDocConsole(context.Background(), id, g.URL, agentDocConsolePolicy(), nil)
 			if err != nil {
@@ -58,18 +59,19 @@ func TestAgentDocConsoleCapturesEveryConsoleAgent(t *testing.T) {
 	}
 }
 
-// The project agent streams with its offered tools on the chat's class;
-// the compaction and vision calls ride the small or vision alias with
-// no tools and their own answer limits.
+// The project agent streams with its offered tools on the chat's class,
+// and the research loop with its reads on big. The compaction, the
+// naming, the digests and the look ride the small or vision alias with no
+// tools and their own answer limits.
 func TestAgentDocConsoleEnvelope(t *testing.T) {
-	toolsByID := map[string]bool{"project-agent": true}
-	modelByID := map[string]string{"project-agent": policy.Big,
-		"compact": policy.Small, "vision": policy.DefaultChat.VisionModel}
-	tokensByID := map[string]int{"project-agent": factoryd.OperatorTokens,
-		"compact": 2048, "vision": factoryd.OperatorTokens}
+	toolsByID := map[string]bool{"project-agent": true, "research": true}
+	modelByID := map[string]string{"project-agent": policy.Big, "compact": policy.Small, "vision": policy.DefaultChat.VisionModel,
+		"research": policy.Big, "title": policy.Small, "attachment-digest": policy.Small, "read-digest": policy.Small}
+	tokensByID := map[string]int{"project-agent": factoryd.OperatorTokens, "compact": 2048, "vision": factoryd.OperatorTokens,
+		"research": 2048, "title": 200, "attachment-digest": 2048, "read-digest": 2048}
 	for _, id := range AgentDocConsoleIDs() {
 		t.Run(id, func(t *testing.T) {
-			g := agentdoc.NewGateway("The capture runs no tools.")
+			g := agentdoc.NewGateway(AgentDocConsoleAnswer(id))
 			defer g.Close()
 			if _, err := AgentDocConsole(context.Background(), id, g.URL, agentDocConsolePolicy(), nil); err != nil {
 				t.Fatalf("capture: %v", err)
@@ -103,19 +105,92 @@ func TestAgentDocConsoleEnvelope(t *testing.T) {
 // The purpose header rides every call; it is what the gateway bills by.
 func TestAgentDocConsoleSendsThePurpose(t *testing.T) {
 	purposeByID := map[string]string{
-		"project-agent": policy.PurposeOperator,
-		"compact":       policy.PurposeCompact,
-		"vision":        policy.PurposeVision,
+		"project-agent":     policy.PurposeOperator,
+		"compact":           policy.PurposeCompact,
+		"vision":            policy.PurposeVision,
+		"research":          policy.PurposeResearch,
+		"title":             policy.PurposeTitle,
+		"attachment-digest": policy.PurposeDigest,
+		"read-digest":       policy.PurposeDigest,
 	}
 	for _, id := range AgentDocConsoleIDs() {
 		t.Run(id, func(t *testing.T) {
-			g := agentdoc.NewGateway("The capture runs no tools.")
+			g := agentdoc.NewGateway(AgentDocConsoleAnswer(id))
 			defer g.Close()
 			if _, err := AgentDocConsole(context.Background(), id, g.URL, agentDocConsolePolicy(), nil); err != nil {
 				t.Fatalf("capture: %v", err)
 			}
 			if rec := g.Bodies()[0]; rec.Purpose != purposeByID[id] {
 				t.Fatalf("purpose %q, want %q", rec.Purpose, purposeByID[id])
+			}
+		})
+	}
+}
+
+// The captures offer the tools production offers the fixture's writer:
+// the chat's config gates steer, request_image, the web tools and the
+// routine tools on doors factoryd always wires, so the fixture console
+// wires them too, and the research loop reads the web as the chat does.
+func TestAgentDocConsoleOffersTheProductionTools(t *testing.T) {
+	for id, want := range map[string][]string{
+		"project-agent": {"steer", "request_image", "web_search", "web_scrape", "routines", "routine_run", "routine_skip"},
+		"research":      {"tree", "grep", "file", "read_doc", "web_search", "web_scrape"},
+	} {
+		t.Run(id, func(t *testing.T) {
+			g := agentdoc.NewGateway(AgentDocConsoleAnswer(id))
+			defer g.Close()
+			if _, err := AgentDocConsole(context.Background(), id, g.URL, agentDocConsolePolicy(), nil); err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			b, err := agentdoc.ParseBody(g.Bodies()[0].Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, tl := range b.Tools {
+				names = append(names, tl.Name)
+			}
+			for _, name := range want {
+				if !slices.Contains(names, name) {
+					t.Errorf("the wire offers no %s: %q", name, names)
+				}
+			}
+		})
+	}
+}
+
+// The naming, the digests and the look send what their tools send: the
+// naming rules over the thread's first message, each digest's default ask
+// over what it reads with no system prompt, the agent's ask beside the
+// attached image.
+func TestAgentDocConsoleMessages(t *testing.T) {
+	for id, want := range map[string][]string{
+		"title":             {"system", "You name a chat thread from its first message. ", "user", "Set the staging budget to 40 euros."},
+		"attachment-digest": {"user", "Summarise this document.\n\nStaging budget: 40 EUR a month, raised from 30 on 2026-11-02.\nThe deploy waits on the budget's OK.\n"},
+		"read-digest":       {"user", "Summarise this page.\n\nRelease notes 4.2\n\nThe staging deploy now waits for its budget's OK before it starts.\n"},
+		"vision":            {"user", "What blocks the staging deploy?data:image/png;base64,iVBORw0KGgo"},
+	} {
+		t.Run(id, func(t *testing.T) {
+			g := agentdoc.NewGateway(AgentDocConsoleAnswer(id))
+			defer g.Close()
+			if _, err := AgentDocConsole(context.Background(), id, g.URL, agentDocConsolePolicy(), nil); err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			b, err := agentdoc.ParseBody(g.Bodies()[0].Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(b.Messages)*2 != len(want) {
+				t.Fatalf("%d messages, want %d", len(b.Messages), len(want)/2)
+			}
+			for i, m := range b.Messages {
+				text := m.Content
+				for _, p := range m.Parts {
+					text += p.Text + p.ImageURL
+				}
+				if m.Role != want[2*i] || !strings.HasPrefix(text, want[2*i+1]) {
+					t.Errorf("message %d is %s %q, want %s from %q", i, m.Role, text, want[2*i], want[2*i+1])
+				}
 			}
 		})
 	}

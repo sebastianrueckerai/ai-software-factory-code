@@ -802,21 +802,27 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	}
 	steps = slices.DeleteFunc(steps, func(s CaseStep) bool { return s.ID == stepID })
 	d, derr := r.CardDigest(ctx, t.ID)
-	statement := r.rungStatement(c, f, DigestText(r.Scrub, d, derr), steps, 1)
-	v := r.cfg.Policy()
 	chat, err := r.JudgmentTask(ctx, t)
 	if err != nil {
 		return RungOutcome{}, err
 	}
 	tools := &CaseTools{r: r, t: t, c: c, f: f, repo: repo}
 	defer tools.close()
-	limits := v.Document.Limits
-	out := r.runRung(forCard(ctx, t), r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungPrompt, statement,
-		CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
+	out := r.rung1Converse(ctx, r.Checkin, chat.ID, t, c, f, DigestText(r.Scrub, d, derr), steps, tools)
 	for i := range out.Read {
 		out.Read[i].Args = r.scrub(out.Read[i].Args)
 	}
 	return out, nil
+}
+
+// rung1Converse is rung 1's conversation on case c once the card's reads
+// are in: the statement from f, the card's digest and the earlier steps,
+// the check-in's alias and caps under the policy in force, and the case's
+// evidence tools answered by tools, the calls booked on chat task chatID.
+func (r *Runner) rung1Converse(ctx context.Context, chat checkinChat, chatID string, t Task, c Case, f CaseFacts, digest string, steps []CaseStep, tools podTools) RungOutcome {
+	limits := r.cfg.Policy().Document.Limits
+	return r.runRung(forCard(ctx, t), chat, chatID, r.callModel(t, policy.PurposeCheckin), f, 1, rungPrompt,
+		r.rungStatement(c, f, digest, steps, 1), CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
 }
 
 // rungUp ends rung 1's step stepID handed up, with the recommendation its
