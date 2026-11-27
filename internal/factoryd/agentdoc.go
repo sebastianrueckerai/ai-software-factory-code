@@ -39,7 +39,7 @@ var agentDocClasses = []string{"coder"}
 // AgentDocDirectIDs lists the direct factoryd agents the map captures.
 func AgentDocDirectIDs() []string {
 	return []string{"checkin", "model-review", "security-audit", "gate-supervisor",
-		"judgement", "review-behaviours", "delta-planner", "holdout-proposer",
+		"judgement", "delta-planner", "holdout-proposer",
 		"answer-screener", "brief-writer", "case-brief-writer",
 		"case-checkin", "plan-namer", "digest", "image-look", "follow-liveness"}
 }
@@ -73,8 +73,6 @@ func AgentDocDirect(ctx context.Context, id, gwURL string, v policy.Version, hc 
 		return agentDocGateSupervisor(ctx, gwURL, v, hc)
 	case "judgement":
 		return agentDocJudgement(ctx, gwURL, v, hc)
-	case "review-behaviours":
-		return agentDocBehaviours(ctx, gwURL, v, hc)
 	case "delta-planner":
 		return agentDocDelta(ctx, gwURL, v, hc)
 	case "holdout-proposer":
@@ -337,7 +335,7 @@ func agentDocGateSupervisor(ctx context.Context, gwURL string, v policy.Version,
 	}, nil
 }
 
-// agentDocPlan is the fixture plan the behaviours, delta and hold-out
+// agentDocPlan is the fixture plan the delta, hold-out and prover
 // captures share.
 func agentDocPlan() Plan {
 	return Plan{
@@ -383,42 +381,6 @@ func agentDocJudgement(ctx context.Context, gwURL string, v policy.Version, hc *
 		{Name: "the criterion's prompt", Symbol: "factoryd.PlanCriterion.Prompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: c.Prompt},
 		{Name: "the answer's form", Symbol: "factoryd.judgementAnswer", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: judgementAnswer},
 		{Name: "the artifact", Symbol: "factoryd.GateArtifact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(call.Input())},
-	}, nil
-}
-
-// agentDocBehaviours drives the review's behaviours call.
-func agentDocBehaviours(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
-	m, alias, err := agentDocModel(gwURL, v, policy.PurposeReview, hc)
-	if err != nil {
-		return nil, err
-	}
-	p := agentDocPlan()
-	groups := [][]fileDiff{agentDocFiles()}
-	in := behavioursInput{
-		Objective: agentDocObjective().Objective, Criteria: p.Criteria,
-		Cards: []behaviourCard{{Key: "f1", Title: "Fix the counter", Brief: "Count skipped rows."}},
-		Files: fileList(groups, "card"), Names: newNameIndex(groups).All(),
-	}
-	system, err := prompts.Build("review-behaviours", reviewBehavioursPrompt)
-	if err != nil {
-		return nil, err
-	}
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
-		return nil, err
-	}
-	return []agentdoc.Span{
-		agentDocInputLead,
-		agentDocStanding(system),
-		{Name: "the behaviours prompt", Symbol: "factoryd.reviewBehavioursPrompt", Kind: agentdoc.KindBuilder,
-			Place: agentdoc.PlaceSystem, Text: reviewBehavioursPrompt},
-		{Name: "the behaviours call's facts", Symbol: "factoryd.behavioursInput", Kind: agentdoc.KindBuilder,
-			Place: agentdoc.PlaceUser, Text: marshalled(in)},
-		{Name: "the objective", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: agentDocJSON(in.Objective)},
-		{Name: "the criteria", Symbol: "factoryd.PlanCriterion", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: marshalled(p.Criteria)},
-		{Name: "the files list", Symbol: "factoryd.fileList", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: agentDocJSON(in.Files)},
 	}, nil
 }
 

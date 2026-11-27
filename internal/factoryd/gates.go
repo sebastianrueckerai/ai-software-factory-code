@@ -216,10 +216,6 @@ type Review struct {
 	// approve — the record keeps what the model itself said (never an
 	// answer field)
 	TurnedFrom string `json:"turned_from,omitempty"`
-	// Behaviours are the feature's behaviours the review that sees the
-	// whole feature notes: the integration card's, or a delta card's, from
-	// its own call (planCalls), never from a review answer.
-	Behaviours []string `json:"behaviours,omitempty"`
 	// GateCriteria are the plan's criteria that review (criteriaContext)
 	// leaves to the criteria gate (gateJudged), whether it ran or not; nil
 	// for any other review.
@@ -1789,7 +1785,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 	// call: the model sees their run facts in carried_runs, not the
 	// claims themselves
 	last.Pending, last.TurnedFrom = nil, ""
-	last.Behaviours, last.GateCriteria = nil, nil
+	last.GateCriteria = nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
 		byPart[k] = append(byPart[k], f)
@@ -1859,9 +1855,6 @@ func parseReviewWhy(content string) (Review, string) {
 	}
 	if rv.TurnedFrom != "" {
 		return invalid("turned_from is not an answer field")
-	}
-	if rv.Behaviours != nil {
-		return invalid("behaviours is not an answer field")
 	}
 	if rv.GateCriteria != nil {
 		return invalid("gate_criteria is not an answer field")
@@ -2089,10 +2082,9 @@ func (r *Runner) reviewOfTheHead(ctx context.Context, taskID, commit string, ear
 // one call each (callAll runs them in parallel), a file larger than a part
 // cut by hunks; the call on the first part carries the brief, the gates
 // and the concurrency summary of the whole diff. A review that answers the
-// plan's criteria (criteriaContext) adds the feature's calls along the
-// plan (planCalls): one per criterion over the diffs of the cards that
-// cite it, every delta card's and the card's own, and one for the
-// feature's behaviours. No answer of any call (a gateway refusal such as
+// plan's criteria (criteriaContext) judges no criterion and hands the
+// unmet ones no card cites to the planner (reviewCriteriaStep). No answer
+// of any call (a gateway refusal such as
 // refused_budget, a failed call, an invalid answer) is a note, which the
 // review stage puts on the card as a finding;
 // concerns are findings under the review stage's
@@ -2162,16 +2154,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	var feature []featureCard
-	if criteria != nil {
-		feature, err = r.featureCards(ctx, t, repo, criteria.plan, diffBytes(prFiles))
-		if errors.Is(err, ErrDiffTooLong) {
-			return notRun(err.Error())
-		}
-		if err != nil {
-			return Review{}, err
-		}
-	}
 	var rv Review
 	read := ""
 	limit := pinned.Limits.ReviewDiffBytes()
@@ -2239,14 +2221,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 			calls[i].Label = fmt.Sprintf("part %d of %d", i+1, len(parts))
 		}
 	}
-	if criteria != nil {
-		title, brief := cardText(criteria.plan, t)
-		behaviours, err := planCalls(criteria.plan, first.Brief.Objective, feature, featureCard{Key: t.PlanKey, Title: title, Brief: brief, Files: prFiles})
-		if err != nil {
-			return Review{}, err
-		}
-		calls = append(calls, behaviours...)
-	}
 	if why, err := r.unfunded(ctx, t.ID, model, policy.PurposeReview, calls); err != nil {
 		return Review{}, err
 	} else if why != "" {
@@ -2262,7 +2236,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	var answers []Review
 	low := false
-	for i, res := range results[:len(parts)] {
+	for i, res := range results {
 		a, aLow := reviewAnswer(res.Content, res.Err), res.Low
 		if a.Verdict == "" {
 			// an answer that does not parse — the model's JSON two
@@ -2303,10 +2277,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		low = low || aLow
 		answers = append(answers, a)
 	}
-	var behaviours []string
-	if rv.Note == "" && criteria != nil {
-		behaviours, rv.Note = readPlanCalls(results[len(parts):])
-	}
 	if rv.Note == "" {
 		rv = r.dropContradicted(ctx, t, repo, pr.Number, commit, pinned.Limits.SupervisorTimeout, wavesSince(began, pinned.Limits.SupervisorTimeout), combineReviews(answers), prFiles, carriedCache)
 		// a carried claim a run on this head refuted drops the finding
@@ -2315,14 +2285,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		rv = dropCarried(rv, carried)
 		turnVerdict(&rv)
 		if criteria != nil {
-			rv.Behaviours = behaviours
-			r.reviewCriteriaStep(ctx, t, repo, criteria.plan, criteria.revision, round, &rv)
+			r.reviewCriteriaStep(ctx, t, criteria.plan, criteria.revision, round)
 		}
-		read = fmt.Sprintf("Read in %s, %s, %d KiB", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(prFiles), "file", "files"), kib(diffBytes(prFiles)))
-		if len(calls) > len(parts) {
-			read += fmt.Sprintf(", in %d calls with the feature's behaviours", len(calls))
-		}
-		read += "."
+		read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(prFiles), "file", "files"), kib(diffBytes(prFiles)))
 	}
 	rv.GateCriteria = gate
 	rv.Commit = commit

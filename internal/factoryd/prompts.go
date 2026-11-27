@@ -63,7 +63,6 @@ func init() {
 	review := []string{"factoryd.(*Runner).ModelReview"}
 	prompts.RegisterStep("model-review", review, reviewFacts{Gates: GateResults{ChecksPassed: true}})
 	prompts.RegisterStep("model-review-part", review, reviewFacts{Part: true})
-	prompts.RegisterStep("review-behaviours", review, reviewBehavioursPrompt)
 	audit := []string{"factoryd.(*Runner).GateAudit"}
 	prompts.RegisterStep("security-audit", audit, auditFacts{})
 	prompts.RegisterStep("security-audit-part", audit, auditFacts{Part: true})

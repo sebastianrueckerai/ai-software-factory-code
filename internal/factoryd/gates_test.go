@@ -697,7 +697,7 @@ func TestParseReview(t *testing.T) {
 		"an overrule smuggled":   {`{"verdict":"approve","summary":"s","adjudicated":{"a.go: x":{"by":"sebastian"}}}`, Review{}, "adjudicated is not an answer field", false},
 		"a drop smuggled":        {`{"verdict":"approve","summary":"s","dropped":[{"finding":"x"}]}`, Review{}, "dropped is not an answer field", false},
 		"criteria smuggled":      {`{"verdict":"approve","summary":"s","criteria":[{"criterion":"c1","verdict":"met"}]}`, Review{}, `unknown field "criteria"`, false},
-		"behaviours smuggled":    {`{"verdict":"approve","summary":"s","behaviours":["it works"]}`, Review{}, "behaviours is not an answer field", false},
+		"behaviours smuggled":    {`{"verdict":"approve","summary":"s","behaviours":["it works"]}`, Review{}, `unknown field "behaviours"`, false},
 		"gate criteria smuggled": {`{"verdict":"approve","summary":"s","gate_criteria":{"ids":["c1"],"integration":true}}`, Review{}, "gate_criteria is not an answer field", false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -4036,16 +4036,11 @@ func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
 }
 
 // An integration card's review names the criteria it leaves to the gate
-// whether it ran or not: unfunded, a part or the behaviours call left
-// without an answer, or a review that ran. The why line then names them,
+// whether it ran or not: unfunded, a part left without an answer, or a
+// review that ran. The why line then names them,
 // and no missing reproduction.
 func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
-	valid := func(user string) string {
-		if callOf(user) == "behaviours" {
-			return `{"behaviours":["a request answers"]}`
-		}
-		return `{"verdict":"approve","summary":"ok"}`
-	}
+	valid := func(string) string { return `{"verdict":"approve","summary":"ok"}` }
 	for name, tc := range map[string]struct {
 		budget float64
 		answer func(string) string
@@ -4053,12 +4048,6 @@ func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 	}{
 		"unfunded":                 {0.01, valid, "model review not run: "},
 		"a part without an answer": {100, func(string) string { return "LGTM" }, "model review answer invalid"},
-		"the behaviours call without an answer": {100, func(user string) string {
-			if callOf(user) == "behaviours" {
-				return "LGTM"
-			}
-			return valid(user)
-		}, "behaviours: model review answer invalid"},
 		"a review that ran": {100, valid, ""},
 	} {
 		t.Run(name, func(t *testing.T) {

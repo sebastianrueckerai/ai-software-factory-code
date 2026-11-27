@@ -248,7 +248,7 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 	purposeByID := map[string]string{
 		"checkin": policy.PurposeCheckin, "model-review": policy.PurposeReview,
 		"security-audit": policy.PurposeAudit, "gate-supervisor": policy.PurposeGateSupervisor,
-		"judgement": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
+		"judgement": policy.PurposeReview,
 		"delta-planner": policy.PurposeReview, "holdout-proposer": policy.PurposeReview,
 		"answer-screener": policy.PurposeReview, "brief-writer": policy.PurposeBrief, "case-brief-writer": policy.PurposeBrief,
 		"case-checkin": policy.PurposeCheckin, "plan-namer": policy.PurposeTitle,

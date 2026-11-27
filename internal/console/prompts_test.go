@@ -16,7 +16,7 @@ import (
 // directSteps are the steps that call a model with a system text.
 var directSteps = []string{
 	"checkin-gate", "checkin-session", "checkin-dead", "case-checkin", "case-brief-writer", "brief-writer",
-	"model-review", "model-review-part", "review-behaviours", "security-audit", "security-audit-part",
+	"model-review", "model-review-part", "security-audit", "security-audit-part",
 	"gate-supervisor", "delta-planner", "holdout-proposer", "judgement", "answer-screener", "plan-namer",
 	"follow-liveness", "project-agent", "title", "compact", "research",
 }
@@ -277,7 +277,7 @@ var noPromptCalls = func() []struct{ Call, What, Why string } {
 		{"gateway.(*Server).replicate", "the replicate_predict tool's run of a hosted model", sessionTool},
 		{"gateway.(*Server).fal", "the fal_run tool's run of a hosted model", sessionTool},
 	}
-	for _, capture := range []string{"factoryd.agentDocAudit", "factoryd.agentDocBehaviours", "factoryd.agentDocDelta",
+	for _, capture := range []string{"factoryd.agentDocAudit", "factoryd.agentDocDelta",
 		"factoryd.agentDocGateSupervisor", "factoryd.agentDocJudgement", "factoryd.agentDocReview"} {
 		calls = append(calls, struct{ Call, What, Why string }{capture, "the agent map's capture",
 			"a capture of a step against a fake gateway, whose answer no one reads"})

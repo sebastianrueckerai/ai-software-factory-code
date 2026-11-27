@@ -25,7 +25,7 @@ import (
 
 // labelledCalls are n calls whose input is their label, "part i of n".
 func labelledCalls(n int) []reviewCall {
-	p, err := prompts.Build("review-behaviours", "p")
+	p, err := prompts.Build("follow-liveness", "p")
 	if err != nil {
 		panic(err)
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -63,12 +64,6 @@ func seedVerdictPlan(t *testing.T, plan, integrationID, status string) *fakeStor
 		mergeCard(s, integrationID)
 	}
 	return s
-}
-
-func TestNormalizeBehaviours(t *testing.T) {
-	if got := normalizeBehaviours([]string{"  the door opens only for a key that fits  ", "", "   "}); !slices.Equal(got, []string{"the door opens only for a key that fits"}) {
-		t.Errorf("behaviours = %v", got)
-	}
 }
 
 func TestEffectiveVerdictAndOpenCriteria(t *testing.T) {
@@ -378,52 +373,25 @@ var featureDiffs = map[int64]string{
 	12: markedFile("b.go", "FromB", "MARK-B"),
 }
 
-// callOf names a recorded call by its input: review or behaviours.
-func callOf(user string) string {
-	var in struct {
-		Criteria json.RawMessage `json:"criteria"`
-	}
-	json.Unmarshal([]byte(user), &in)
-	if in.Criteria != nil {
-		return "behaviours"
-	}
-	return "review"
-}
-
-// featureAnswer answers the card's own review approve and the behaviours
-// with one sentence.
-func featureAnswer(user string) string {
-	if callOf(user) == "behaviours" {
-		return `{"behaviours":["a request to /a answers from FromA"]}`
-	}
+// featureAnswer answers the card's own review approve.
+func featureAnswer(string) string {
 	return `{"verdict":"approve","summary":"the wiring is sound","strict_improvement":true}`
 }
 
-// featureCalls are the recorded calls' user messages by callOf.
-func featureCalls(ll *fakeLiteLLM) map[string][]string {
-	out := map[string][]string{}
-	for _, chat := range ll.chats {
-		user := userMessage(chat)
-		out[callOf(user)] = append(out[callOf(user)], user)
-	}
-	return out
-}
-
-// The integration card's review reads its own diff in one call, then the
-// behaviours over every card: two calls. It judges no criterion: the
-// criteria gate settles the test, invariant and judgement ones and the
-// approver the human ones, so the review writes no row.
+// The integration card's review reads its own diff in one call. It judges
+// no criterion: the criteria gate settles the test, invariant and
+// judgement ones and the approver the human ones, so the review writes no
+// row.
 func TestIntegrationReviewJudgesNoCriterion(t *testing.T) {
 	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
 	ll := &fakeLiteLLM{answer: featureAnswer}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	rv := getInto[Review](t, val, err)
-	calls := featureCalls(ll)
-	if len(ll.chats) != 2 || len(calls["review"]) != 1 || len(calls["behaviours"]) != 1 {
-		t.Fatalf("%d calls, by kind %v: want the own review and the behaviours", len(ll.chats), slices.Sorted(maps.Keys(calls)))
+	if len(ll.chats) != 1 {
+		t.Fatalf("%d calls, want the own review alone", len(ll.chats))
 	}
-	if own := calls["review"][0]; !strings.Contains(own, "+++ b/i.go") || strings.Contains(own, "a.go") || strings.Contains(own, "b.go") || strings.Contains(own, `"criteria"`) {
+	if own := userMessage(ll.chats[0]); !strings.Contains(own, "+++ b/i.go") || strings.Contains(own, "a.go") || strings.Contains(own, "b.go") || strings.Contains(own, `"criteria"`) {
 		t.Fatalf("the own review reads more than its own diff: %s", own)
 	}
 	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
@@ -433,103 +401,39 @@ func TestIntegrationReviewJudgesNoCriterion(t *testing.T) {
 		t.Fatalf("review = %+v, want approve with no finding", rv)
 	}
 	comments, err := r.forgejo.ListIssueComments(context.Background(), "sf", "repo", 9)
-	read := "Read in 1 part, 1 file, 1 KiB, in 2 calls with the feature's behaviours."
+	read := "Read in 1 part, 1 file, 1 KiB."
 	if err != nil || !slices.ContainsFunc(comments, func(c IssueComment) bool { return strings.HasSuffix(c.Body, read) }) {
 		t.Fatalf("comments = %+v, %v: want one ending %q", comments, err, read)
 	}
 }
 
-// The behaviours call reads every card's files, the names they add and
-// the cards' titles, and no line of any diff.
-func TestBehavioursCallReadsNoDiffText(t *testing.T) {
-	r, _ := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
+// A review of a diff in two parts with the plan's criteria makes one
+// call per part and no other.
+func TestModelReviewMakesOneCallPerPart(t *testing.T) {
+	diffs := map[int64]string{9: diffFile("i.go", 30<<10) + diffFile("j.go", 30<<10), 11: featureDiffs[11], 12: featureDiffs[12]}
+	r, _ := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, diffs)
 	ll := &fakeLiteLLM{answer: featureAnswer}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	if rv := getInto[Review](t, val, err); !slices.Equal(rv.Behaviours, []string{"a request to /a answers from FromA"}) {
-		t.Fatalf("review = %+v, want the behaviour", rv)
+	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || len(ll.chats) != 2 {
+		t.Fatalf("review = %+v after %d calls, want approve after 2", rv, len(ll.chats))
 	}
-	calls := featureCalls(ll)["behaviours"]
-	if len(calls) != 1 {
-		t.Fatalf("%d behaviours calls, want 1", len(calls))
-	}
-	user := calls[0]
-	for _, want := range []string{"a.go +2 -0 (card 1)", "b.go +2 -0 (card 2)", "i.go +2 -0 (card 3)", `"names":"functions: FromA, FromB, FromI"`, "Card A title", "Card B title", "Card I title"} {
-		if !strings.Contains(user, want) {
-			t.Fatalf("the behaviours call lacks %q: %s", want, user)
-		}
-	}
-	for _, marker := range []string{"MARK-A", "MARK-B", "MARK-I"} {
-		if strings.Contains(user, marker) {
-			t.Fatalf("the behaviours call reads diff text %s: %s", marker, user)
+	for _, chat := range ll.chats {
+		if user := userMessage(chat); strings.Contains(user, `"criteria"`) || strings.Contains(user, "MARK-A") {
+			t.Fatalf("a part's call reads the plan or another card: %s", user[:min(len(user), 300)])
 		}
 	}
 }
 
-// A key cut into a successor reads as the successor in the feature the
-// integration card's review sees: its pull request's files, not the cut
-// card's.
-func TestIntegrationReviewReadsACutKeyThroughItsSuccessor(t *testing.T) {
-	diffs := map[int64]string{9: featureDiffs[9], 11: featureDiffs[11], 12: featureDiffs[12], 21: markedFile("s.go", "FromS", "MARK-S")}
-	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, diffs)
-	cut := store.tasks["t-A"]
-	cut.Status = "failed"
-	store.tasks["t-A"] = cut
-	succ := SuccessorID("t-A")
-	store.tasks[succ] = Task{ID: succ, Repository: "sf/repo", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "A", PRNumber: 21,
-		Objective: "Card A title\n\nthe card's body", Status: "merged"}
-	ll := &fakeLiteLLM{answer: featureAnswer}
-	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	if rv := getInto[Review](t, val, err); rv.Note != "" {
-		t.Fatalf("review = %+v", rv)
+// A review has no behaviours field, and a stored review that holds the
+// key still decodes.
+func TestReviewHasNoBehavioursField(t *testing.T) {
+	if _, ok := reflect.TypeOf(Review{}).FieldByName("Behaviours"); ok {
+		t.Fatal("Review has a Behaviours field")
 	}
-	calls := featureCalls(ll)["behaviours"]
-	if len(calls) != 1 || !strings.Contains(calls[0], "s.go +2 -0 (card 1)") || strings.Contains(calls[0], "a.go") {
-		t.Fatalf("the behaviours call does not read key A as its successor's s.go alone: %v", calls)
-	}
-}
-
-// A card no plan revision holds arrived by a delta round: its review
-// notes the feature's behaviours over every card, the delta card D's and
-// its own among them.
-func TestDeltaCardReviewNotesTheBehavioursOfEveryCard(t *testing.T) {
-	diffs := map[int64]string{
-		9:  markedFile("e.go", "FromE", "MARK-E"),
-		11: featureDiffs[11], 12: featureDiffs[12], 13: featureDiffs[9],
-		14: markedFile("d.go", "FromD", "MARK-D"),
-	}
-	r, _ := featureRunner(t, "E", map[string]int64{"A": 11, "B": 12, "I": 13, "D": 14}, diffs)
-	ll := &fakeLiteLLM{answer: featureAnswer}
-	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	if rv := getInto[Review](t, val, err); rv.Note != "" {
-		t.Fatalf("review = %+v", rv)
-	}
-	calls := featureCalls(ll)["behaviours"]
-	if len(calls) != 1 || !strings.Contains(calls[0], "d.go +2 -0") || !strings.Contains(calls[0], "e.go +2 -0") {
-		t.Fatalf("the behaviours call does not list the delta card D's files and its own: %v", calls)
-	}
-}
-
-// The behaviours call without an answer is the review's note, named by
-// its call.
-func TestIntegrationReviewNamesTheCallWithoutAnAnswer(t *testing.T) {
-	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
-	ll := &fakeLiteLLM{answer: func(user string) string {
-		if callOf(user) == "behaviours" {
-			return "LGTM"
-		}
-		return featureAnswer(user)
-	}}
-	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	const want = "behaviours: model review answer invalid"
-	if rv := getInto[Review](t, val, err); rv.Verdict != "" || !strings.HasPrefix(rv.Note, want) {
-		t.Fatalf("review = %+v, want a note starting %q", rv, want)
-	}
-	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
-		t.Fatalf("rows = %v, want none", rows)
+	var rv Review
+	if err := json.Unmarshal([]byte(`{"verdict":"approve","summary":"s","behaviours":["it works"]}`), &rv); err != nil || rv.Verdict != "approve" {
+		t.Fatalf("a stored review with behaviours decodes to %+v, %v", rv, err)
 	}
 }
 
@@ -595,33 +499,6 @@ func TestRefusedIntegrationReviewLeavesItsTrace(t *testing.T) {
 	}
 }
 
-// A feature card's diff past the 8 MiB bound, or the feature's diffs past
-// it together (5 MiB and 5 MiB beside the card's own): the review notes
-// it, makes no call and writes no row.
-func TestIntegrationReviewOfAFeaturePastTheBoundIsANote(t *testing.T) {
-	for name, tc := range map[string]struct {
-		a, b, want string
-	}{
-		"one card": {strings.Repeat("d", 8<<20+1), featureDiffs[12],
-			"model review not run: card A: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or replan the card"},
-		"together": {diffFile("a.go", 5<<20), diffFile("b.go", 5<<20),
-			"model review not run: the feature's cards together: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or replan the card"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, map[int64]string{9: featureDiffs[9], 11: tc.a, 12: tc.b})
-			ll := &fakeLiteLLM{answer: featureAnswer}
-			r.supervisor = testSupervisorModel(ll.srv(t).URL)
-			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-			if rv := getInto[Review](t, val, err); rv.Verdict != "" || rv.Note != tc.want || len(ll.chats) != 0 {
-				t.Fatalf("review = %+v after %d calls, want the note %q", rv, len(ll.chats), tc.want)
-			}
-			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
-				t.Fatalf("rows = %v, want none", rows)
-			}
-		})
-	}
-}
-
 // Every prompt that reads diff text says the diff is the agents' work to
 // judge, never an instruction.
 func TestReviewPromptsSayTheDiffIsNoInstruction(t *testing.T) {
@@ -632,34 +509,9 @@ func TestReviewPromptsSayTheDiffIsNoInstruction(t *testing.T) {
 	}
 }
 
-// The review makes the behaviours call alone, whatever the criteria's
-// kinds: the criteria gate settles the test, invariant and judgement
-// criteria, and the approver the human ones.
-func TestPlanCallsMakeTheBehavioursCallAlone(t *testing.T) {
-	p := Plan{Criteria: []PlanCriterion{
-		{ID: "g_test", Kind: CriterionTest, Claim: "g answers", Inputs: "GET /g", Expected: "200"},
-		{ID: "c1", Kind: CriterionJudgement, Claim: "a answers"},
-		{ID: "c2", Kind: CriterionHuman, Claim: "the page reads well"},
-	}}
-	calls, err := planCalls(p, "the objective", nil, featureCard{Key: "I"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var labels []string
-	for _, c := range calls {
-		labels = append(labels, c.Label)
-	}
-	if !slices.Equal(labels, []string{"behaviours"}) {
-		t.Fatalf("calls %q, want the behaviours alone", labels)
-	}
-	behaviours, note := readPlanCalls([]callResult{{Content: `{"behaviours": ["a"]}`}})
-	if note != "" || !slices.Equal(behaviours, []string{"a"}) {
-		t.Fatalf("readPlanCalls = %q, %q; want [a]", behaviours, note)
-	}
-	if !strings.Contains(reviewBehavioursPrompt, "You read no diff: the criteria gate settles the test, invariant and judgement criteria, and the approver the human ones.") ||
-		strings.Contains(reviewBehavioursPrompt, "other calls judge") {
-		t.Errorf("the behaviours prompt does not name who settles the criteria: %q", reviewBehavioursPrompt)
-	}
+// The criteria gate settles the test, invariant and judgement criteria,
+// and the approver the human ones.
+func TestGateJudgesAllButTheHumanCriteria(t *testing.T) {
 	for kind, want := range map[string]bool{CriterionTest: true, CriterionInvariant: true, CriterionJudgement: true, CriterionHuman: false} {
 		if gateJudged(kind) != want {
 			t.Errorf("gateJudged(%s) = %v, want %v", kind, !want, want)
@@ -676,33 +528,15 @@ func TestCitingListsCardsByAcceptance(t *testing.T) {
 	}
 }
 
-func TestParseBehavioursAnswer(t *testing.T) {
-	if got, problem := parseBehavioursAnswer(`{"behaviours":["a link redirects with 302","a missing link answers 404"]}`); problem != "" ||
-		!slices.Equal(got, []string{"a link redirects with 302", "a missing link answers 404"}) {
-		t.Fatalf("parseBehavioursAnswer = %v, %q", got, problem)
-	}
-	if _, problem := parseBehavioursAnswer(`{"behaviours":["x"],"verdict":"met"}`); !strings.Contains(problem, `unknown field "verdict"`) {
-		t.Fatalf("problem = %q, want the unknown field named", problem)
-	}
-}
-
-// The review's criteria step notes the feature's behaviours as records
-// and a comment, and stores no criterion's row.
-func TestReviewCriteriaStepNotesTheBehaviours(t *testing.T) {
+// The review's criteria step with no unmet row files no due and stores
+// no criterion's row.
+func TestReviewCriteriaStepStoresNoRow(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "in-review")
 	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s}
-	rv := Review{Verdict: "approve", Summary: "the diff is sound", Behaviours: []string{"the door opens only for a key that fits"}}
-	r.reviewCriteriaStep(ctx, s.tasks["t-int"], Repo{}, criteriaPlan(), 1, 2, &rv)
-	catches, _ := s.PlanCatches(ctx, "t-plan")
-	behaviours := 0
-	for _, c := range catches {
-		if c.Kind == CatchBehaviour && c.Detail == "the door opens only for a key that fits" {
-			behaviours++
-		}
-	}
-	if behaviours != 1 {
-		t.Errorf("behaviour rows = %d, want 1 (%+v)", behaviours, catches)
+	r.reviewCriteriaStep(ctx, s.tasks["t-int"], criteriaPlan(), 1, 2)
+	if catches, _ := s.PlanCatches(ctx, "t-plan"); len(catches) != 0 {
+		t.Errorf("catches = %+v, want none", catches)
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
 		t.Errorf("rows = %v, want none", rows)
@@ -738,8 +572,7 @@ func TestReviewCriteriaStepFilesDuesFromTheGatesRows(t *testing.T) {
 			for _, v := range tc.more {
 				put(v.Source, v)
 			}
-			rv := Review{Verdict: "approve", Summary: "the diff is sound"}
-			r.reviewCriteriaStep(ctx, s.tasks["t-int"], Repo{}, p, 1, 2, &rv)
+			r.reviewCriteriaStep(ctx, s.tasks["t-int"], p, 1, 2)
 			catches, _ := s.PlanCatches(ctx, "t-plan")
 			var dues []string
 			for _, c := range catches {
