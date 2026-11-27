@@ -5297,7 +5297,7 @@ func TestRunSessionCheckinReplanStopsTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chat.calls != 1 || !strings.Contains(chat.gots[0].System, "|replan") || !strings.Contains(chat.gots[0].Input, "- replan:") {
+	if chat.calls != 1 || !slices.ContainsFunc(chat.gots[0].Tools, offersReplan) || !strings.Contains(chat.gots[0].Input, "\nreplan: the session stops") {
 		t.Fatalf("chat = %d calls %+v, want one conversation offered replan", chat.calls, chat.gots)
 	}
 	want := "The check-in decided replan after the size trip (the card's diff is 350 changed lines (added plus deleted), over the 300 its size plans): the rest is two packages"
@@ -5606,7 +5606,7 @@ func TestRunSessionCutGoesToTheCheckin(t *testing.T) {
 		t.Fatalf("chat = %d calls, want one conversation on the cut", chat.calls)
 	}
 	in := chat.gots[0].Input
-	for _, want := range []string{"the detector agent_cut tripped (" + cutDetail + ")", "- replan:",
+	for _, want := range []string{"the detector agent_cut tripped (" + cutDetail + ")", "\nreplan: the session stops",
 		"The agent asks to cut the card. Answer replan if the cut holds. Answer continue, with its guidance, if the card should finish as one card."} {
 		if !strings.Contains(in, want) {
 			t.Fatalf("check-in statement misses %q:\n%s", want, in)
@@ -7317,4 +7317,14 @@ func stepsOf(t *testing.T, r *Runner, id string, keys ...string) []map[string]an
 		out = append(out, m)
 	}
 	return out
+}
+
+// offersReplan is whether tool is the check-in's answer tool with replan
+// among its decisions.
+func offersReplan(tool CheckinTool) bool {
+	params, _ := tool.Parameters.(map[string]any)
+	props, _ := params["properties"].(map[string]any)
+	decision, _ := props["decision"].(map[string]any)
+	enum, _ := decision["enum"].([]string)
+	return tool.Name == CheckinAnswerTool && slices.Contains(enum, CheckReplan)
 }

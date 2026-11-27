@@ -167,7 +167,7 @@ func TestAgentDocDirectMessages(t *testing.T) {
 		messages []message
 		tools    []string
 	}{
-		"case-checkin": {messages: []message{{role: "system", prefix: testPrompt(t, "case-checkin", rungPrompt).Text(), suffix: rungPrompt},
+		"case-checkin": {messages: []message{{role: "system", prefix: testPrompt(t, "case-checkin", nil).Text(), suffix: "A human reads the grounds."},
 			{role: "user", prefix: "The review keeps raising findings on this card. How should it go on?\n",
 				suffix: "\nCalls left 20; your answer is due within 28m30s."}},
 			tools: []string{"transcript_search", "transcript_read", "card_facts", "card_step", "gates", "read_file", "grep", "cluster_facts", "answer"}},

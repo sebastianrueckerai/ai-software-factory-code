@@ -6,10 +6,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
-// checkinPersona is the check-in's ask, whose moment and decisions its
-// persona names.
-type checkinPersona struct{ Ask *CheckInAsk }
-
 // checkinPromptStep is the check-in's step at moment: checkin-gate,
 // checkin-session or checkin-dead.
 func checkinPromptStep(moment string) string { return "checkin-" + moment }
@@ -43,7 +39,6 @@ func sessionFixture(step string, b harness.TaskBrief) sessionBrief {
 
 func init() {
 	prompts.RegisterFacts("session", func(f sessionBrief) (string, error) { return briefText(f.Brief, f.Tag), nil })
-	prompts.RegisterFacts("checkin", func(f checkinPersona) (string, error) { return checkinSystemFor(f.Ask), nil })
 	prompts.RegisterFacts("audit", auditText)
 	prompts.RegisterFacts("review", reviewCallPrompt)
 	prompts.RegisterFacts("delta", deltaPrompt)
@@ -52,12 +47,10 @@ func init() {
 	prompts.RegisterFacts("brief", briefPrompt)
 
 	checkin := []string{"factoryd.(*Runner).runCheckin"}
-	prompts.RegisterStep("checkin-gate", checkin, checkinPersona{&CheckInAsk{Moment: CheckInGate,
-		Findings: []CheckFinding{{Text: "no test covers the handler", Source: "review"}}}})
-	prompts.RegisterStep("checkin-session", checkin, checkinPersona{&CheckInAsk{Moment: CheckInSession,
-		Trip: &TripReport{Detector: TripSize, Detail: "the card's remaining work"}}})
-	prompts.RegisterStep("checkin-dead", checkin, checkinPersona{&CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}})
-	prompts.RegisterStep("case-checkin", []string{"factoryd.(*Runner).rung1Converse"}, rungPrompt)
+	prompts.RegisterStep("checkin-gate", checkin, "")
+	prompts.RegisterStep("checkin-session", checkin, "")
+	prompts.RegisterStep("checkin-dead", checkin, "")
+	prompts.RegisterStep("case-checkin", []string{"factoryd.(*Runner).rung1Converse"}, "")
 	prompts.RegisterStep("case-brief-writer", []string{"factoryd.(*BriefWriter).askCase"}, caseBriefPrompt)
 	prompts.RegisterStep("brief-writer", []string{"factoryd.(*BriefWriter).ask"}, briefKind{ApprovalResource})
 	review := []string{"factoryd.(*Runner).ModelReview"}

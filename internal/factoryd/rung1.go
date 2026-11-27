@@ -363,13 +363,6 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 	return strings.Join(slices.Concat(before, after), "\n\n")
 }
 
-const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
-
-const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head, under a first line naming the path and the commit it read), grep (git grep at head or main for a fixed string as a whole word, under a first line naming the commit of each ref it searched), cluster_facts (what the cluster did to a session of the card, the newest by default, or the platform's incidents of a window)."
-
-// rungPrompt is rung 1's text: the check-in on a case and its tools.
-const rungPrompt = rungSystem + " " + rungToolsLine
-
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
 func CaseEvidence() []CheckinTool {
@@ -820,7 +813,7 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 // evidence tools answered by tools, the calls booked on chat task chatID.
 func (r *Runner) rung1Converse(ctx context.Context, chat checkinChat, chatID string, t Task, c Case, f CaseFacts, digest string, steps []CaseStep, tools podTools) RungOutcome {
 	limits := r.cfg.Policy().Document.Limits
-	system, err := prompts.Build("case-checkin", rungPrompt)
+	system, err := prompts.Build("case-checkin", nil)
 	if err != nil {
 		return RungOutcome{End: RungUnreadable, HandedUp: true, Found: "rung 1's prompt: " + err.Error()}
 	}

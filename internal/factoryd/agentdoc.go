@@ -183,14 +183,12 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	parent := []byte("2026-10-31T12:00:00Z agent message: the fix is half done\n")
 	const callsLeft, eurLeft, handoverCap = 3, 1.0, 800
 	timeCap := callsLeft * policy.CheckinCallTime
-	system, err := prompts.Build(checkinPromptStep(ask.Moment), checkinPersona{ask})
+	system, err := prompts.Build(checkinPromptStep(ask.Moment), nil)
 	if err != nil {
 		return nil, err
 	}
 	spans := []agentdoc.Span{
 		agentDocStanding(system),
-		{Name: "session persona", Symbol: "factoryd.checkinSystemFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: checkinSystemFor(ask)},
 		{Name: "the statement", Symbol: "factoryd.checkinStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
 		{Name: "the answer deadline", Symbol: "factoryd.checkinDueLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -627,15 +625,12 @@ func agentDocCaseCheckin(ctx context.Context, gwURL string, v policy.Version, hc
 	if out.Answer == nil {
 		return nil, fmt.Errorf("agentdoc: the fixture answer did not end rung 1's conversation: %s", out.Found)
 	}
-	system, err := prompts.Build("case-checkin", rungPrompt)
+	system, err := prompts.Build("case-checkin", nil)
 	if err != nil {
 		return nil, err
 	}
 	spans := []agentdoc.Span{
 		agentDocStanding(system),
-		{Name: "the case check-in prompt", Symbol: "factoryd.rungPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungPrompt},
-		{Name: "the check-in's role", Symbol: "factoryd.rungSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungSystem},
-		{Name: "the tools line", Symbol: "factoryd.rungToolsLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungToolsLine},
 		{Name: "the statement", Symbol: "factoryd.(*Runner).rungStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: r.rungStatement(c, f, digest, nil, 1)},
 		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocLife().Render()},

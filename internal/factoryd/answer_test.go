@@ -122,11 +122,13 @@ func TestMomentAnswerSchemaFromTheGenerator(t *testing.T) {
 	}
 	ask := &CheckInAsk{Moment: CheckInDead}
 	want := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"decision"}, "properties": map[string]any{
-		"decision":    map[string]any{"type": "string", "enum": []string{CheckHandover, RungHandUp}},
-		"guidance":    map[string]any{"type": "string"},
-		"reason_kind": map[string]any{"type": "string", "enum": []string{"", CheckGoalConflict, CheckSpend, CheckPolicyClass, CheckAccess}},
-		"reason":      map[string]any{"type": "string"},
-		"handover":    map[string]any{"type": "string"},
+		"decision": map[string]any{"type": "string", "enum": []string{CheckHandover, RungHandUp},
+			"description": "continue: the session runs on with your guidance. handover: the session stops and the next one starts from your note. hand_up: only a human can act."},
+		"guidance": map[string]any{"type": "string", "description": "the exact instruction the agent takes next"},
+		"reason_kind": map[string]any{"type": "string", "enum": []string{"", CheckGoalConflict, CheckSpend, CheckPolicyClass, CheckAccess},
+			"description": "why only a human can act"},
+		"reason":   map[string]any{"type": "string", "description": "one sentence with the state of the work"},
+		"handover": map[string]any{"type": "string", "description": "the note the next session starts from"},
 	}}
 	if got := momentAnswerSchema(ask); !reflect.DeepEqual(got, want) {
 		t.Errorf("the dead moment's schema =\n%#v\nwant\n%#v", got, want)

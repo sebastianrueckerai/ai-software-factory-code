@@ -2,10 +2,10 @@ step: checkin-dead
 purpose: checkin
 reader: human
 guide: false
-forms: [line, why]
-chunks: []
-paragraph: ""
-facts: checkin
+forms: [why]
+chunks: [factory]
+paragraph: checkin-dead
+facts: text
 answer: ""
 tools:
   builtin: []
