@@ -202,9 +202,9 @@ func TestPodsRequestTheirEmptyDirs(t *testing.T) {
 		want, cpu string
 		inits     bool
 	}{
-		"ci runner":       {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort", nil, false), "22Gi", "1", false},
-		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "22Gi", "1", true},
-		"ci smoke runner": {spawner.runnerPodSpec(ciJobKind{label: "demo-smoke", smoke: true, handle: "h-1"}, "", nil, false), "14Gi", "1", false},
+		"ci runner":       {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort", nil, false), "15Gi", "1", false},
+		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "15Gi", "1", true},
+		"ci smoke runner": {spawner.runnerPodSpec(ciJobKind{label: "demo-smoke", smoke: true, handle: "h-1"}, "", nil, false), "7Gi", "1", false},
 		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "22Gi", "250m", true},
 		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), "22Gi", "250m", true},
 	} {

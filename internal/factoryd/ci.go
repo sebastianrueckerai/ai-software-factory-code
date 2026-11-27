@@ -1427,7 +1427,8 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		map[string]any{"name": "registration", "mountPath": "/var/run/secrets/ci", "readOnly": true},
 	}
 	volumes := []any{
-		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
+		// the runner checks jobs out under home; the workspace holds only its own files
+		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
 		// main jobs run cold: GOCACHE, GOPATH and npm's
 		// cache live here, and a real app's cold checks pass 1 GiB (the

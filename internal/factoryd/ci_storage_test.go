@@ -19,7 +19,7 @@ import (
 const gi = int64(1) << 30
 
 // A runner pod without a project cache requests its three emptyDirs,
-// 8 + 2 + 4 + 8 (the cache volume) = 22 GiB. A node with 22 GiB free takes one pod, and the poll
+// 1 + 2 + 4 + 8 (the cache volume) = 15 GiB. A node with 15 GiB free takes one pod, and the poll
 // spends what it read: the second job stays queued. With the node's
 // storage taken by other pods or by a pod no node holds yet, or unreadable,
 // no job is spawned; with room for both, both are.
@@ -30,11 +30,11 @@ func TestCISpawnerSpawnsOnlyWhatFitsTheNodesStorage(t *testing.T) {
 		err      error
 		want     []bool
 	}{
-		"one pod's room":       {nodes: []NodeStorage{{Name: "n1", Allocatable: 40 * gi, Requested: 18 * gi}}, want: []bool{true, false}},
-		"room for both":        {nodes: []NodeStorage{{Name: "n1", Allocatable: 70 * gi, Requested: 18 * gi}}, want: []bool{true, true}},
-		"two nodes, one each":  {nodes: []NodeStorage{{Name: "n1", Allocatable: 22 * gi}, {Name: "n2", Allocatable: 22 * gi}}, want: []bool{true, true}},
-		"a pending pod's room": {nodes: []NodeStorage{{Name: "n1", Allocatable: 40 * gi, Requested: 18 * gi}}, unplaced: []int64{gi}, want: []bool{false, false}},
-		"no node has room":     {nodes: []NodeStorage{{Name: "n1", Allocatable: 40 * gi, Requested: 19 * gi}}, want: []bool{false, false}},
+		"one pod's room":       {nodes: []NodeStorage{{Name: "n1", Allocatable: 40 * gi, Requested: 25 * gi}}, want: []bool{true, false}},
+		"room for both":        {nodes: []NodeStorage{{Name: "n1", Allocatable: 55 * gi, Requested: 25 * gi}}, want: []bool{true, true}},
+		"two nodes, one each":  {nodes: []NodeStorage{{Name: "n1", Allocatable: 15 * gi}, {Name: "n2", Allocatable: 15 * gi}}, want: []bool{true, true}},
+		"a pending pod's room": {nodes: []NodeStorage{{Name: "n1", Allocatable: 40 * gi, Requested: 25 * gi}}, unplaced: []int64{gi}, want: []bool{false, false}},
+		"no node has room":     {nodes: []NodeStorage{{Name: "n1", Allocatable: 40 * gi, Requested: 26 * gi}}, want: []bool{false, false}},
 		"nodes unreadable":     {nodes: []NodeStorage{{Name: "n1", Allocatable: 1 << 50}}, err: fmt.Errorf("apiserver says no"), want: []bool{false, false}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -45,8 +45,8 @@ func TestCISpawnerSpawnsOnlyWhatFitsTheNodesStorage(t *testing.T) {
 				{ID: 2, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
 			}}
 			spawner := newTestCISpawner(t, kube, hub)
-			if got := spawner.podStorage(ciJobKind{label: "pr-untrusted"}, ""); got != 22*gi {
-				t.Fatalf("pod storage = %d GiB, want 22", got/gi)
+			if got := spawner.podStorage(ciJobKind{label: "pr-untrusted"}, ""); got != 15*gi {
+				t.Fatalf("pod storage = %d GiB, want 15", got/gi)
 			}
 			spawner.poll(context.Background())
 			for i, want := range tc.want {
@@ -62,7 +62,7 @@ func TestCISpawnerSpawnsOnlyWhatFitsTheNodesStorage(t *testing.T) {
 // The node-fit check reserves the 10 GiB cap of every cache the factory
 // runs (a project's CI cache and its agents' cache) on every node, once per
 // cache, whether or not a pod mounts it: the directory outlives its pods. A
-// pod of 22 GiB with one project's two caches needs 22 + 2 x 10 = 42 GiB.
+// pod of 15 GiB with one project's two caches needs 15 + 2 x 10 = 35 GiB.
 func TestCISpawnerReservesEveryCachesCapOnEveryNode(t *testing.T) {
 	demo := CIRepo{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo", AgentCache: "cache-agent-demo"}
 	for name, tc := range map[string]struct {
@@ -70,9 +70,9 @@ func TestCISpawnerReservesEveryCachesCapOnEveryNode(t *testing.T) {
 		node  int64 // allocatable, GiB
 		want  []bool
 	}{
-		"no room for the caps": {[]CIRepo{demo}, 41, []bool{false, false}},
-		"one pod, two caps":    {[]CIRepo{demo}, 63, []bool{true, false}},
-		"both pods, caps once": {[]CIRepo{demo}, 64, []bool{true, true}},
+		"no room for the caps": {[]CIRepo{demo}, 34, []bool{false, false}},
+		"one pod, two caps":    {[]CIRepo{demo}, 49, []bool{true, false}},
+		"both pods, caps once": {[]CIRepo{demo}, 50, []bool{true, true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			kube := newFakeKube()
@@ -96,7 +96,7 @@ func TestCISpawnerReservesEveryCachesCapOnEveryNode(t *testing.T) {
 
 // The runner pod is pinned to the node its fit check chose, with a required
 // node affinity on the node's name, so the scheduler cannot place it on
-// a node whose room the reserve took: the 22 GiB pod fits n2 (60 - 20 - 0 =
+// a node whose room the reserve took: the 15 GiB pod fits n2 (60 - 20 - 0 =
 // 40 free in the model) and not n1 (30 - 20 = 10).
 func TestCISpawnerPinsThePodToTheNodeItChose(t *testing.T) {
 	kube := newFakeKube()
@@ -122,14 +122,14 @@ func TestCISpawnerPinsThePodToTheNodeItChose(t *testing.T) {
 // When the caches' caps leave no node room for a runner pod that the
 // requests alone leave room for, the poll says so once, naming the caches
 // and the figures, and counts it on the CI metrics, whatever the number of
-// waiting jobs: the node has 41 GiB, the reserve is 2 x 10, the pod 22.
+// waiting jobs: the node has 34 GiB, the reserve is 2 x 10, the pod 15.
 func TestCISpawnerSaysWhenTheReserveLeavesNoRoom(t *testing.T) {
 	m, reader := testMetrics(t)
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	kube := newFakeKube()
-	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 41 * gi}}
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 34 * gi}}
 	hub := &ciHub{jobs: []CIJob{
 		{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
 		{ID: 2, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
@@ -140,7 +140,7 @@ func TestCISpawnerSaysWhenTheReserveLeavesNoRoom(t *testing.T) {
 		return []CIRepo{{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo", AgentCache: "cache-agent-demo"}}, nil
 	}
 	spawner.poll(context.Background())
-	want := "the caches' caps leave no node room for a pull request runner pod: 20 GiB reserved on every node for 2 caches (cache-ci-demo, cache-agent-demo), the roomiest node has 41 GiB free of requests and the pod requests 22 GiB; pull request jobs stay queued"
+	want := "the caches' caps leave no node room for a pull request runner pod: 20 GiB reserved on every node for 2 caches (cache-ci-demo, cache-agent-demo), the roomiest node has 34 GiB free of requests and the pod requests 15 GiB; pull request jobs stay queued"
 	if n := strings.Count(logs.String(), want); n != 1 {
 		t.Fatalf("the log says it %d times, want once:\n%s", n, logs.String())
 	}
@@ -150,13 +150,13 @@ func TestCISpawnerSaysWhenTheReserveLeavesNoRoom(t *testing.T) {
 }
 
 // A job no node has room for gets no pod, so the spawner raises the cause
-// itself once the job has waited 10 minutes: at 10:00 the node's 41 GiB
+// itself once the job has waited 10 minutes: at 10:00 the node's 34 GiB
 // leave no room, at 10:09 nothing is raised, at 10:10 the cause stands from
-// 10:10, and once the node has 63 GiB the job gets its pod and the cause
+// 10:10, and once the node has 35 GiB the job gets its pod and the cause
 // is gone.
 func TestCISpawnerRaisesAJobNoNodeHasRoomFor(t *testing.T) {
 	kube := newFakeKube()
-	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 41 * gi}}
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 34 * gi}}
 	hub := &ciHub{jobs: []CIJob{{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
 	spawner := newTestCISpawner(t, kube, hub)
 	spawner.cfg.Repos = func(context.Context) ([]CIRepo, error) {
@@ -182,7 +182,7 @@ func TestCISpawnerRaisesAJobNoNodeHasRoomFor(t *testing.T) {
 	if !reflect.DeepEqual(holds, want) {
 		t.Fatalf("after 10 minutes: holds %+v, want %+v", holds, want)
 	}
-	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 63 * gi}}
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 35 * gi}}
 	at = at.Add(time.Minute)
 	spawner.poll(context.Background())
 	if _, ok := kube.namespaces["factory-agents-ci-1"]; !ok || len(holds) != 0 {
@@ -347,13 +347,13 @@ func TestCISpawnerReadsNodesOnlyForAWaitingJob(t *testing.T) {
 	}
 }
 
-// A smoke runner requests 8 + 2 + 4 = 14 GiB (no cache volume). The node
+// A smoke runner requests 1 + 2 + 4 = 7 GiB (no cache volume). The node
 // keeps 10 GiB for the project's cache (the smoke test's repository names
-// one): with 24 GiB it takes the first waiting smoke job, and the second
+// one): with 23 GiB it takes the first waiting smoke job, and the second
 // stays queued.
 func TestCISpawnerFitsSmokeRunnersToo(t *testing.T) {
 	kube := newFakeKube()
-	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 24 * gi}}
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 23 * gi}}
 	hub := &smokeHub{jobs: []CIJob{smokeJob(11, "waiting", "h-11", 0), smokeJob(12, "waiting", "h-12", 0)},
 		tasks: []ActionTask{{ID: 501, RunNumber: 7}}, runs: demoRuns}
 	spawner, _ := hub.spawner(t, kube)
