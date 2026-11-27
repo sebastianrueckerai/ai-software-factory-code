@@ -37,11 +37,12 @@ var unreadTransports = map[string]string{
 
 // carriers hand a prompt their caller wrote on to a model call, so the
 // walk goes on to their callers: OperatorModel's methods, SupervisorModel's
-// Chat and the check-in's gateway, both over postChat, the review's
+// Chat, the typed ChatAnswer and the check-in's gateway, all over postChat, the review's
 // fan-out and retry, the check-in's conversation, the report session, and
 // the gateway's handler that relays each client's call to its provider.
 var carriers = []string{
-	"factoryd.(*SupervisorModel).Chat", "factoryd.(*SupervisorModel).chat", "factoryd.(*SupervisorModel).call", "factoryd.(*checkinGateway).Call",
+	"factoryd.(*SupervisorModel).Chat", "factoryd.(*SupervisorModel).chat", "factoryd.(*SupervisorModel).chatWith", "factoryd.(*SupervisorModel).call",
+	"factoryd.ChatAnswer", "factoryd.answerWith", "factoryd.(*checkinGateway).Call",
 	"factoryd.(*OperatorModel).call", "factoryd.(*OperatorModel).stream", "factoryd.(*OperatorModel).Stream",
 	"factoryd.(*OperatorModel).Compact", "factoryd.(*OperatorModel).Digest", "factoryd.(*OperatorModel).Research",
 	"factoryd.(*OperatorModel).Vision", "factoryd.(*OperatorModel).Title",
@@ -208,7 +209,15 @@ func readCallGraph(root string) (callGraph, error) {
 					return true
 				}
 				var name, recv string
-				switch fun := call.Fun.(type) {
+				callee := call.Fun
+				// a generic function's instantiation, f[T](...), calls f
+				switch x := callee.(type) {
+				case *ast.IndexExpr:
+					callee = x.X
+				case *ast.IndexListExpr:
+					callee = x.X
+				}
+				switch fun := callee.(type) {
 				case *ast.SelectorExpr:
 					x, isIdent := fun.X.(*ast.Ident)
 					switch {

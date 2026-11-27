@@ -183,6 +183,9 @@ type fakeLiteLLM struct {
 	// finishes are the answers' finish reasons in order of arrival; past
 	// the last, none
 	finishes []string
+	// arguments are answers given as the answer tool's arguments in order
+	// of arrival, an empty one and past the last as content
+	arguments []string
 	// ceiling, when set, clamps a call's max_tokens as the gateway does;
 	// the answer's output-limit header names the limit the call got
 	ceiling int
@@ -242,6 +245,10 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			if n <= len(f.finishes) {
 				finish = f.finishes[n-1]
 			}
+			args := ""
+			if n <= len(f.arguments) {
+				args = f.arguments[n-1]
+			}
 			if f.book != nil {
 				f.book(r.Header.Get(gateway.HeaderFactoryTask))
 			}
@@ -267,6 +274,10 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 				w.Header().Set(gateway.HeaderOutputLimit, fmt.Sprint(limit))
 			}
 			choice := map[string]any{"message": map[string]any{"content": content}}
+			if args != "" {
+				choice["message"] = map[string]any{"content": "", "tool_calls": []any{map[string]any{"type": "function",
+					"function": map[string]any{"name": prompts.AnswerToolName, "arguments": args}}}}
+			}
 			if finish != "" {
 				choice["finish_reason"] = finish
 			}

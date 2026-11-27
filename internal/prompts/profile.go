@@ -176,9 +176,6 @@ func (c *catalog) check(p Profile) error {
 	if p.BudgetWords <= 0 {
 		return bad("budget_words is %d, want the most words its fixture prompt holds", p.BudgetWords)
 	}
-	if p.Answer != "" {
-		return bad("answer %q is not a registered answer type", p.Answer)
-	}
 	for _, list := range []struct {
 		key   string
 		names []string

@@ -2,6 +2,7 @@ package prompts
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -10,6 +11,7 @@ type Prompt struct {
 	step, purpose   string
 	standing, facts string
 	parts           Parts
+	answer          *answerType
 }
 
 // Parts are the words of each part, whitespace-separated.
@@ -44,7 +46,16 @@ func (c *catalog) build(step string, facts any) (Prompt, error) {
 	if err != nil {
 		return Prompt{}, err
 	}
+	var answer *answerType
+	if p.Answer != "" {
+		a, ok := answerOf(p.Answer)
+		if !ok {
+			return Prompt{}, fmt.Errorf("step %s: answer %s is not a registered answer type: call prompts.RegisterAnswer beside the step's call", step, p.Answer)
+		}
+		answer = &a
+	}
 	return Prompt{
+		answer:   answer,
 		step:     step,
 		purpose:  p.Purpose,
 		standing: join(guide, join(forms...), join(chunks...), paragraph),
@@ -86,3 +97,20 @@ func (p Prompt) Facts() string { return p.facts }
 func (p Prompt) Text() string { return join(p.standing, p.facts) }
 
 func (p Prompt) Parts() Parts { return p.parts }
+
+// Answer is the answer tool of the prompt's step, if its profile names one.
+func (p Prompt) Answer() (Tool, bool) {
+	if p.answer == nil {
+		return Tool{}, false
+	}
+	return p.answer.tool, true
+}
+
+// AnswerType is the struct type the step's answer decodes into; nil
+// without an answer.
+func (p Prompt) AnswerType() reflect.Type {
+	if p.answer == nil {
+		return nil
+	}
+	return p.answer.want
+}

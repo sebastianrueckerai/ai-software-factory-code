@@ -71,7 +71,6 @@ func TestProfileRules(t *testing.T) {
 		"gateway with no harness":   {"gateway: []", "gateway: [digest]", "step x: tools.gateway needs tools.builtin: only a harness session calls the gateway's tools"},
 		"agents_md with no harness": {"agents_md: false", "agents_md: true", "step x: agents_md needs tools.builtin: only the harness loads AGENTS.md"},
 		"chat in a harness":         {"builtin: []\n  gateway: []\n  chat: []", "builtin: [read]\n  gateway: []\n  chat: [board]", "step x: tools.chat with tools.builtin: a harness session has no chat tools"},
-		"an answer type":            {`answer: ""`, "answer: verdict", `step x: answer "verdict" is not a registered answer type`},
 		"unknown chat tool":         {"chat: []", "chat: [teleport]", `step x: chat tool "teleport" is not one of policy.ChatTools`},
 		"a tool in two tiers":       {"chat: []", "chat: [card]\n  rare: [card]", `step x: chat tool "card" is in tools.chat and tools.rare`},
 		"rare with no core":         {"chat: []", "chat: []\n  rare: [board]", "step x: tools.rare and tools.attached need tools.chat and no tools.builtin: they are the console chat's tiers"},
