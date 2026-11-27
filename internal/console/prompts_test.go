@@ -491,3 +491,51 @@ func TestModelReviewKeepsTheFindingForm(t *testing.T) {
 		lacks(t, step, lineFormSentence)
 	}
 }
+
+// The standing text holds the first sentence of each of the project
+// agent's six forms.
+func TestProjectAgentKeepsItsForms(t *testing.T) {
+	standing := built(t, "project-agent").Standing()
+	for _, name := range []string{"chat", "title", "why", "summary", "brief", "ask"} {
+		form, ok := writingguide.Form(name)
+		if !ok {
+			t.Fatalf("form %s is missing", name)
+		}
+		first, _, _ := strings.Cut(strings.TrimSpace(form), ". ")
+		if !strings.Contains(standing, first) {
+			t.Errorf("the standing text lacks the first sentence of the %s form: %q", name, first)
+		}
+	}
+}
+
+func TestProjectAgentHasNoOwnSentences(t *testing.T) {
+	lacks(t, "project-agent", "You run no code and change no file", "Answer briefly.", "fix that and file again")
+}
+
+// Standing words, counted from the files: guide 948, the six forms
+// 228 chat + 71 title + 157 why + 162 summary + 358 brief + 434 ask = 1,410,
+// factory 55, paragraph 102: 2,515.
+func TestProjectAgentStandingWords(t *testing.T) {
+	parts := built(t, "project-agent").Parts()
+	got := [4]int{parts.Guide, parts.Forms, parts.Chunks, parts.Paragraph}
+	if want := [4]int{948, 1410, 55, 102}; got != want {
+		t.Errorf("guide, forms, chunks, paragraph = %v, want %v", got, want)
+	}
+	if total := got[0] + got[1] + got[2] + got[3]; total != 2515 {
+		t.Errorf("standing words = %d, want 2515", total)
+	}
+}
+
+// The line on starting and filing work stands only above manual.
+func TestProjectAgentAutonomyLine(t *testing.T) {
+	const line = "At assisted and above you start and file ready work yourself."
+	for level, want := range map[string]bool{policy.AutonomyManual: false, policy.AutonomyAssisted: true, policy.AutonomyAutonomous: true} {
+		p, err := prompts.Build("project-agent", agentFacts{Project: "app", Human: "sebastian", Level: level, Today: "2026-11-27", Now: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(p.Facts(), line); got != want {
+			t.Errorf("level %s: line present = %v, want %v", level, got, want)
+		}
+	}
+}

@@ -3,8 +3,8 @@ purpose: operator
 reader: human
 guide: true
 forms: [chat, title, why, summary, brief, ask]
-chunks: []
-paragraph: ""
+chunks: [factory]
+paragraph: project-agent
 facts: project-agent
 answer: ""
 tools:

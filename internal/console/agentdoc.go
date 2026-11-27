@@ -114,8 +114,8 @@ func agentDocChatAgent(ctx context.Context, op *factoryd.OperatorModel, v policy
 
 	spans := []agentdoc.Span{
 		agentDocStanding(system),
-		{Name: "persona", Symbol: "factoryd.ProjectAgentPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: factoryd.ProjectAgentPrompt(f.Project, f.Human, f.Level)},
+		{Name: "project, human and autonomy", Symbol: "agentIdentity", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
+			Text: agentIdentity(f)},
 		{Name: "the project now", Symbol: "agentText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
 			Text: "\n\nThe project now:\nToday is " + f.Today + " UTC.\n" + now},
 		{Name: "board status", Symbol: "(*turn).snapshot", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: status},

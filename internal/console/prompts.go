@@ -16,7 +16,7 @@ type agentFacts struct {
 }
 
 func agentText(f agentFacts) (string, error) {
-	text := factoryd.ProjectAgentPrompt(f.Project, f.Human, f.Level) + "\n\nThe project now:\nToday is " + f.Today + " UTC.\n" + f.Now
+	text := agentIdentity(f) + "\n\nThe project now:\nToday is " + f.Today + " UTC.\n" + f.Now
 	if f.Summary != "" {
 		text += "\n\nThis thread before its recent turns, summarised:\n" + f.Summary
 	}
@@ -24,6 +24,17 @@ func agentText(f agentFacts) (string, error) {
 		text += "\n\nA human asked a question the reply before this one may not have answered:\n" + f.Question + "\nAnswer it in this reply if it still stands."
 	}
 	return text, nil
+}
+
+// agentIdentity is the project, the human, the autonomy and how a card is
+// named; the line on starting and filing work stands only above manual.
+func agentIdentity(f agentFacts) string {
+	text := "Project: " + f.Project + "\nHuman: " + f.Human + "\nAutonomy: " + f.Level +
+		"\nA card is named to the human by its title with its issue number, as #12."
+	if f.Level != policy.AutonomyManual {
+		text += "\nAt assisted and above you start and file ready work yourself."
+	}
+	return text
 }
 
 func init() {
