@@ -280,17 +280,18 @@ func (c *Console) chatTools() []chatTool {
 	})
 }
 
-// imageTools are the chat's tools of sandbox images, which a project
-// without agents has none of.
-var imageTools = []string{"project_images", "request_image"}
+// agentTools are the chat's tools a project without agents has no use
+// for: its sandbox images, which it has none of, and its level, which its
+// project file sets.
+var agentTools = []string{"project_images", "request_image", "set_autonomy"}
 
 // offered are the schemas of the chat's tools the turn's member holds the
 // access table's roles for: the model is offered no tool the dispatch
-// would refuse them, and no image tool on a project without agents.
+// would refuse them, and no agent tool on a project without agents.
 func (t *turn) offered() []factoryd.OperatorTool {
 	var defs []factoryd.OperatorTool
 	for _, tool := range t.c.chatTools() {
-		if t.offers(tool.name) && (t.p.Agents != policy.AgentsNone || !slices.Contains(imageTools, tool.name)) {
+		if t.offers(tool.name) && (t.p.Agents != policy.AgentsNone || !slices.Contains(agentTools, tool.name)) {
 			defs = append(defs, tool.def(tool.memberOnly || slices.Contains(t.cfg.Confirm, tool.name)))
 		}
 	}

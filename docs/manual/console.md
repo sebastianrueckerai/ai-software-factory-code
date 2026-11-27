@@ -413,7 +413,7 @@ resources page, a period that recurs and no instant.
   nothing on a closed intake, and no ask files past the queue cap; a
   join files nothing and meets neither) and writes a `card_filed` row
   with the track, the reason for it, the title, image and tool. A project without agents offers
-  neither `project_images` nor `request_image`. Proposals and
+  none of `project_images`, `request_image` and `set_autonomy`. Proposals and
   undo tokens are the human's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
   another human's). The `ask` tool questions the thread's human in
@@ -577,8 +577,9 @@ files; a change is a commit.
 The autonomy dial writes `autonomy` and `merge_rule` together through a pull
 request on the file: manual, assisted and autonomous write `merge_rule: human`,
 and only full auto writes `merge_rule: auto` (with `autonomy: autonomous`).
-A project with no agents has no dial and no intake switch: the dial's
-press and `set_autonomy` refuse it, and its level is what its file says.
+A project with no agents has no dial, no intake switch and no
+`set_autonomy` in its chat: the level's door refuses it, and its level is
+what its file says.
 
 The factory's own repositories are projects like any other: no
 Go source names them (a test greps). Two settings replace the old special

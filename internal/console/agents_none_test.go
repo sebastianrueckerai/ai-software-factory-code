@@ -187,12 +187,12 @@ func TestTheChatReadsTheBoardOfAProjectWithoutAgents(t *testing.T) {
 // The chat header of a project without agents offers neither the intake
 // switch, whose roadmap pull files cards for agents, nor the level
 // control: full auto would write merge_rule auto into its file, and its
-// level stays what its project file says. The code project's header
-// offers both to its approver. The level's two doors, the control's
-// press and the chat's set_autonomy, refuse such a project and name its
-// project file.
+// level stays what its project file says, so its chat offers the model no
+// set_autonomy either. The code project offers all three to its approver.
+// The level's door guards both ways in, the control's press and the
+// tool's run: it refuses such a project and names its project file.
 func TestTheChatHeaderOfAProjectWithoutAgentsOffersNoAgentControl(t *testing.T) {
-	r, _, _ := newChatRig(t)
+	r, _, g := newChatRig(t)
 	r.repoWriters["sf/infra"] = []string{"sebastian"}
 	r.forgetWriters()
 	r.ledger.files = map[string]policy.ProjectConfig{
@@ -210,6 +210,15 @@ func TestTheChatHeaderOfAProjectWithoutAgentsOffersNoAgentControl(t *testing.T) 
 				t.Errorf("%s: the chat header holds %s: %t, want %t", project, control, !offers, offers)
 			}
 		}
+		g.project, g.replies = project, [][]string{{say("ok")}}
+		chatPost(t, r, ck, s, "/projects/"+project+"/chat", url.Values{"message": {"which level do you run at?"}})
+		calls := g.calls()
+		tools, _ := calls[len(calls)-1]["tools"].([]any)
+		if got := slices.ContainsFunc(tools, func(tool any) bool {
+			return tool.(map[string]any)["function"].(map[string]any)["name"] == "set_autonomy"
+		}); got != offers {
+			t.Errorf("%s: the chat offers set_autonomy: %t, want %t", project, got, offers)
+		}
 	}
 
 	const why = "Project ai-software-factory-infra runs no agents, so its level is not set here: " +
@@ -226,7 +235,7 @@ func TestTheChatHeaderOfAProjectWithoutAgentsOffersNoAgentControl(t *testing.T) 
 	_, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/infra", via: factoryd.ViaChat, decider: "member"}, p: r.projects.rows[i]},
 		toolInput{Autonomy: policy.AutonomyFullAuto})
 	if no := refusedWith(err); no == nil || no.status != http.StatusConflict || no.msg != why {
-		t.Errorf("the chat's set_autonomy: %v, want 409 %q", err, why)
+		t.Errorf("set_autonomy's run: %v, want 409 %q", err, why)
 	}
 	for _, e := range r.events.all() {
 		if e.Kind == factoryd.EventAutonomyChanged {
