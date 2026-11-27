@@ -20,6 +20,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // The cost and state block renders once, as the one JSON object both
@@ -303,6 +304,33 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// testPrompt is step's prompt on facts, as the step's call builds it.
+func testPrompt(t testing.TB, step string, facts any) prompts.Prompt {
+	t.Helper()
+	p, err := prompts.Build(step, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Chat sends the prompt's text as the system message, under the purpose
+// the step's profile names: the plan namer's is title.
+func TestChatTakesAPrompt(t *testing.T) {
+	p := testPrompt(t, "plan-namer", namerPrompt)
+	ll := &fakeLiteLLM{content: `{"name":"Count skipped rows"}`}
+	if _, _, err := testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "small", time.Minute, p, map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	system := ll.chats[0]["messages"].([]any)[0].(map[string]any)
+	if system["role"] != "system" || system["content"] != p.Text() {
+		t.Errorf("the system message = %v, want the prompt's text", system)
+	}
+	if ll.purposes[0] != policy.PurposeTitle {
+		t.Errorf("the purpose = %q, want %q", ll.purposes[0], policy.PurposeTitle)
+	}
+}
+
 func testSupervisorModel(url string) *SupervisorModel {
 	return &SupervisorModel{
 		GatewayURL: url,
@@ -320,7 +348,7 @@ func testSupervisorModel(url string) *SupervisorModel {
 // asked once, with neither field.
 func TestChatAsksACutAnswerOnceMoreAtLowThinkingDepth(t *testing.T) {
 	ll := &fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, `{"verdict":"clear"}`}}
-	got, _, low, err := testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
+	got, _, low, err := testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", time.Minute, testPrompt(t, "security-audit", auditFacts{}), map[string]any{})
 	if err != nil || got != `{"verdict":"clear"}` || !low || len(ll.chats) != 2 {
 		t.Fatalf("chat = %q, low %v, %v after %d calls; want the second answer, low", got, low, err, len(ll.chats))
 	}
@@ -332,7 +360,7 @@ func TestChatAsksACutAnswerOnceMoreAtLowThinkingDepth(t *testing.T) {
 		t.Fatalf("the call once more = %v, want 9000 tokens and reasoning_effort low, no allowed_openai_params", second)
 	}
 	ll = &fakeLiteLLM{finishes: []string{"stop"}, content: `{"verdict":"clear"}`}
-	got, _, low, err = testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", policy.PurposeAudit, time.Minute, "sys", map[string]any{})
+	got, _, low, err = testSupervisorModel(ll.srv(t).URL).chat(context.Background(), "t1", "big", time.Minute, testPrompt(t, "security-audit", auditFacts{}), map[string]any{})
 	if err != nil || got != `{"verdict":"clear"}` || low || len(ll.chats) != 1 || ll.chats[0]["max_tokens"] != 9000.0 ||
 		ll.chats[0]["reasoning_effort"] != nil || ll.chats[0]["allowed_openai_params"] != nil {
 		t.Fatalf("chat = %q, low %v, %v after calls %v; want the one answer at 9000 tokens with neither field", got, low, err, ll.chats)
@@ -358,7 +386,7 @@ func TestChatNamesTheAnswerLimitACutAnswerSpent(t *testing.T) {
 		"cut with no time left":      {soon, &fakeLiteLLM{finishes: []string{"length"}, content: `{"`}, 1, 9000},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, _, err := testSupervisorModel(tc.ll.srv(t).URL).Chat(tc.ctx, "t1", "big", policy.PurposeReview, time.Minute, "sys", map[string]any{})
+			got, _, err := testSupervisorModel(tc.ll.srv(t).URL).Chat(tc.ctx, "t1", "big", time.Minute, testPrompt(t, "model-review", reviewFacts{}), map[string]any{})
 			want := fmt.Sprintf("the model used its whole answer limit of %d tokens before it answered", tc.limit)
 			if err == nil || err.Error() != want || got != "" || len(tc.ll.chats) != tc.calls {
 				t.Fatalf("Chat = %q, %v after %d calls; want %q after %d", got, err, len(tc.ll.chats), want, tc.calls)
@@ -373,7 +401,7 @@ func TestChatTellsTheWatchOfTheCallOnceMore(t *testing.T) {
 	var told []time.Duration
 	ctx := context.WithValue(context.Background(), oneMoreKey{}, func(d time.Duration) { told = append(told, d) })
 	ll := &fakeLiteLLM{finishes: []string{"length", "stop"}, contents: []string{`{"`, `{}`}}
-	if _, _, err := testSupervisorModel(ll.srv(t).URL).Chat(ctx, "t1", "big", policy.PurposeReview, time.Minute, "sys", map[string]any{}); err != nil || !slices.Equal(told, []time.Duration{time.Minute}) {
+	if _, _, err := testSupervisorModel(ll.srv(t).URL).Chat(ctx, "t1", "big", time.Minute, testPrompt(t, "model-review", reviewFacts{}), map[string]any{}); err != nil || !slices.Equal(told, []time.Duration{time.Minute}) {
 		t.Fatalf("Chat: %v, told %v; want one more call of a minute told", err, told)
 	}
 }
@@ -382,7 +410,7 @@ func TestChatTellsTheWatchOfTheCallOnceMore(t *testing.T) {
 // exceeded for the callers that read one.
 func TestChatNamesItsTimeout(t *testing.T) {
 	ll := &fakeLiteLLM{content: `{}`, delay: time.Second}
-	_, _, err := testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "big", policy.PurposeReview, 50*time.Millisecond, "sys", map[string]any{})
+	_, _, err := testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "big", 50*time.Millisecond, testPrompt(t, "model-review", reviewFacts{}), map[string]any{})
 	if err == nil || err.Error() != "the model did not answer within 50ms" || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Chat = %v, want the timeout named and a deadline exceeded", err)
 	}

@@ -106,6 +106,51 @@ func TestParseHumanNeedsRequiresApproval(t *testing.T) {
 	}
 }
 
+// A class's approvers keep a human on its merge, so they need human: true,
+// and each is a distinct Forgejo login; ApproversOf reads them by class.
+func TestRiskClassApprovers(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	for name, tc := range map[string]struct{ class, want string }{
+		"no human":     {"{name: prompts, outcome: requires_approval, approvers: [sebastian]}", "risk class prompts has approvers with human: false"},
+		"twice":        {"{name: prompts, outcome: requires_approval, human: true, approvers: [a, a]}", `risk class prompts approvers "a": distinct Forgejo user names`},
+		"not a login":  {"{name: prompts, outcome: requires_approval, human: true, approvers: [\"not a login!\"]}", `risk class prompts approvers "not a login!": distinct Forgejo user names`},
+		"one approver": {"{name: prompts, outcome: requires_approval, human: true, approvers: [sebastian]}", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, err := Parse([]byte(base + "risk: {classes: [" + tc.class + ", {name: high, outcome: requires_approval}, {name: normal, outcome: auto}], default: normal}\n" + rest))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Parse: %v, want it accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
+			case tc.want == "":
+				if got := d.Risk.ApproversOf("prompts"); !reflect.DeepEqual(got, []string{"sebastian"}) {
+					t.Errorf("ApproversOf(prompts) = %v, want [sebastian]", got)
+				}
+				if got := d.Risk.ApproversOf("high"); got != nil {
+					t.Errorf("ApproversOf(high) = %v, want nil", got)
+				}
+			}
+		})
+	}
+}
+
+// The prompts and the writing guide are class prompts, and a pull request
+// that also changes the policy tree is class policy, which ranks higher.
+func TestClassifyPromptsPaths(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	d, err := Parse([]byte(base + infraRisk + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := d.Risk.Classify([]string{"internal/prompts/steps/x.md"}, 5); c.Class.Name != "prompts" {
+		t.Errorf("internal/prompts/steps/x.md is class %s, want prompts", c.Class.Name)
+	}
+	if c := d.Risk.Classify([]string{"internal/writingguide/forms/line.md", "factory/policy.yaml"}, 5); c.Class.Name != "policy" {
+		t.Errorf("the guide's form and the policy are class %s, want policy", c.Class.Name)
+	}
+}
+
 // auto merges without a human only on class normal: the
 // decoder refuses it on any other class.
 func TestParseAutoOnlyOnNormal(t *testing.T) {
@@ -143,6 +188,7 @@ const infraRisk = `risk:
     # factoryd's own mechanical pull requests (schema copy, template update,
     # revert, roll) carry code reviewed in the code repository and stay automatic
     - {name: policy, outcome: requires_approval, human: true}
+    - {name: prompts, outcome: requires_approval, human: true, approvers: [sebastian]}
     - {name: high, outcome: requires_approval}
     - {name: normal, outcome: auto}
   rules:
@@ -150,6 +196,7 @@ const infraRisk = `risk:
     - {class: migration, paths: ["**/migrations/**", "internal/policy/schema.sql"]}
     - {class: runner, paths: ["check", "scripts/pg-test.sh"]}
     - {class: policy, paths: ["factory/**"]}
+    - {class: prompts, paths: ["internal/prompts/**", "internal/writingguide/**"]}
     - class: high
       paths: ["k8s/**", "deploy/**", "**/Dockerfile*",
         "**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",

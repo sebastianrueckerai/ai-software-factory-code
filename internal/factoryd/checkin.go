@@ -16,9 +16,9 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The check-in at a gate return (the escalation ladder's plan D): one model
@@ -279,14 +279,8 @@ func applyVerdictGuards(findings []CheckFinding, verdicts map[string]CheckVerdic
 	return human, human == ""
 }
 
-// checkinForms are the guide's forms of the check-in's text at every
-// moment: its verdicts and grounds are short lines, and the reason it
-// stops a card is a why line.
-var checkinForms = writingguide.For(writingguide.JobLine, writingguide.JobWhy) + "\n\n"
-
 // checkinStatement builds the check-in's opening statement: the moment and
-// the task, the guide's forms, the rules with the evidence a drop stands
-// on and the human shapes, the findings with their history, the review
+// the task, the rules with the evidence a drop stands on and the human shapes, the findings with their history, the review
 // and the gates that raised them, the tools, the parent session's tail,
 // and the budget left.
 func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float64, handoverCap int) string {
@@ -294,7 +288,6 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	switch ask.Moment {
 	case CheckInSession:
 		fmt.Fprintf(&b, "You are the factory's check-in inside session %s: the detector %s tripped (%s), and you decide what happens before the session continues. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Trip.Detector, ask.Trip.Detail)
-		b.WriteString(checkinForms)
 		b.WriteString("Rules:\n")
 		b.WriteString("- continue: the session runs on, and may carry guidance: the exact instruction the agent should take next.\n")
 		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
@@ -335,10 +328,8 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	case CheckInDead:
 		fmt.Fprintf(&b, "You are the factory's check-in before a fresh session: the session %s ended without a result: %s. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Stop)
 		fmt.Fprintf(&b, "Your handover note to the next session is at most %d characters. It names: what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat. The agent's report per finding is the last message in its record; verify it, never take it on trust.\n\n", handoverCap)
-		b.WriteString(checkinForms)
 	default:
 		fmt.Fprintf(&b, "You are the factory's check-in at the %s moment: a round came back with findings, and you judge each one before the next session is bought. You never edit anything; you gather evidence and answer.\n\n", ask.Moment)
-		b.WriteString(checkinForms)
 		b.WriteString("Rules, one verdict per finding:\n")
 		b.WriteString("- confirmed: the finding is real and must be fixed.\n")
 		b.WriteString("- dropped: only with checkable evidence: a file and line at a ref, or a command and its output.\n")
@@ -913,8 +904,16 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
 	defer func() { rec.Duration = time.Since(start) }()
 	var parsed checkinAnswer
+	stop := func(kind, reason string) CheckInOutcome {
+		rec.Decision, rec.ReasonKind, rec.Reason = RungHandUp, kind, reason
+		return CheckInOutcome{Decision: RungHandUp, ReasonKind: kind, Reason: reason, Record: rec}
+	}
+	system, err := prompts.Build(checkinPromptStep(ask.Moment), checkinPersona{ask})
+	if err != nil {
+		return stop(CheckUnreadable, "check-in prompt: "+err.Error())
+	}
 	end := converse(ctx, chat, tools, taskID, alias, conversation{
-		System:    checkinSystemFor(ask),
+		System:    system,
 		Statement: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap),
 		Evidence:  checkinTools,
 		Answer:    momentAnswerTool(ask),
@@ -932,10 +931,6 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	rec.Calls = end.Calls
 	rec.ToolCalls = end.ToolCalls
 	rec.CostEUR = end.CostEUR
-	stop := func(kind, reason string) CheckInOutcome {
-		rec.Decision, rec.ReasonKind, rec.Reason = RungHandUp, kind, reason
-		return CheckInOutcome{Decision: RungHandUp, ReasonKind: kind, Reason: reason, Record: rec}
-	}
 	switch end.Kind {
 	case convTimeCap:
 		return stop(CheckTimeCap, CheckinTimeCapStop(timeCap))
@@ -972,13 +967,14 @@ const CheckinFrozenReason = "not run, the class is frozen until "
 // statement that opens it, the evidence tools every call posts beside the
 // answer tool, the parser of the answer's arguments, and the caps.
 type conversation struct {
-	System, Statement string
-	Evidence          []CheckinTool
-	Answer            CheckinTool
-	Parse             func(text string) error
-	CallCap           int
-	TimeCap           time.Duration
-	Scrub             func(string) string
+	System    prompts.Prompt
+	Statement string
+	Evidence  []CheckinTool
+	Answer    CheckinTool
+	Parse     func(text string) error
+	CallCap   int
+	TimeCap   time.Duration
+	Scrub     func(string) string
 	// RepairPastCap gives a refusal of the forced last call its one repair
 	// call past the call cap.
 	RepairPastCap bool
@@ -1062,7 +1058,7 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 			told = true
 			conv += "\n\nThis is your last call: answer now through the answer tool."
 		}
-		req := CheckinRequest{System: c.System, Input: conv}
+		req := CheckinRequest{System: c.System.Text(), Input: conv}
 		callCtx, cancelCall := ctx, context.CancelFunc(func() {})
 		if last {
 			req.Tools = []CheckinTool{c.Answer}

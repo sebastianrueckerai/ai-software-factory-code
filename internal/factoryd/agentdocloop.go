@@ -22,6 +22,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // The loop's six modes are one session shape — the same brief builder, the
@@ -35,11 +36,6 @@ import (
 func AgentDocLoopIDs() []string {
 	return []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}
 }
-
-// AgentDocTitleID is the page of the harness's own title call, which every
-// session's first prompt makes: its capture runs the coding session and
-// keeps that call.
-const AgentDocTitleID = "opencode-title"
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
 // ran on; it is the provenance of every wire part that is opencode's own.
@@ -104,6 +100,10 @@ func agentDocLoopPosters() (kept []string, notes []string) {
 // platform ended, so its findings hold the platform's line.
 func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	b := agentDocObjective()
+	b.Step = id
+	if id == "message-responder" {
+		b.Step = "coding"
+	}
 	b.IssueURL = "https://git.example/owner/name/issues/7"
 	b.Repository = agentDocLoopRepo
 	b.Tools = v.Document.Tools([]string{agentDocLoopClass(id)}, false)
@@ -224,23 +224,30 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 const agentDocLoopMessageText = "The counter fix reads well. Carry the skipped-row line into the release note before you end."
 
 // agentDocLoopMessage is the responder fixture's second user turn: a
-// writer's first message into the running coding session, the basics
-// preamble over it — the runner's own composer, fixture words.
-func agentDocLoopMessage() (string, []agentdoc.Span) {
-	msg := sessionMessage(agentDocTask, "fixture-writer", agentDocLoopMessageText, true)
-	return msg, []agentdoc.Span{
-		{Name: "the session's basics and the speaker", Symbol: "sessionMessage", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: msg[:len(msg)-len(agentDocLoopMessageText)]},
-		{Name: "the writer's message", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocLoopMessageText},
+// writer's first message into the running coding session, the guide and
+// the chat form over it, as the session reads them the first time — the
+// runner's own composer, fixture words.
+func agentDocLoopMessage() (prompts.Prompt, []agentdoc.Span, error) {
+	p, err := prompts.Build("message-responder", sessionMessage("fixture-writer", agentDocLoopMessageText))
+	if err != nil {
+		return p, nil, err
 	}
+	return p, []agentdoc.Span{
+		{Name: "the guide and the chat form", Symbol: "prompts.Build", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: p.Standing() + "\n\n"},
+		{Name: "the speaker", Symbol: "sessionMessage", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: strings.TrimSuffix(p.Facts(), agentDocLoopMessageText)},
+		{Name: "the writer's message", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocLoopMessageText},
+	}, nil
 }
 
-// agentDocLoopWireSpans reads the wire parts no builder of ours writes
-// straight out of the recorded body: the harness's system prompt split
-// around the repository's AGENTS.md, the scripted turns that follow the
-// brief, and the offered tools — opencode's own built-ins beside the
-// gateway's MCP ones. The page shows the wire, never a reconstruction.
-func agentDocLoopWireSpans(b agentdoc.Body, agents string) ([]agentdoc.Span, error) {
+// agentDocLoopWireSpans reads the wire parts of the recorded body: the
+// system prompt split around the session step's standing text, which
+// replaces the harness's preamble, and the repository's AGENTS.md, the
+// scripted turns that follow the brief, and the offered tools —
+// opencode's own built-ins beside the gateway's MCP ones. The page shows
+// the wire, never a reconstruction.
+func agentDocLoopWireSpans(b agentdoc.Body, standing, agents string) ([]agentdoc.Span, error) {
 	var spans []agentdoc.Span
 	for _, m := range b.Messages {
 		if m.Role != "system" {
@@ -251,9 +258,20 @@ func agentDocLoopWireSpans(b agentdoc.Body, agents string) ([]agentdoc.Span, err
 		if i < 0 {
 			return nil, errors.New("the system prompt holds no AGENTS.md")
 		}
-		if pre := sys[:i]; pre != "" {
-			spans = append(spans, agentdoc.Span{Name: "the harness preamble", Symbol: AgentDocOpencodeVersion,
-				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: pre})
+		pre := sys[:i]
+		j := strings.Index(pre, standing)
+		if j < 0 {
+			return nil, errors.New("the system prompt holds no standing text of the session's step")
+		}
+		if lead := pre[:j]; lead != "" {
+			spans = append(spans, agentdoc.Span{Name: "the harness's lead", Symbol: AgentDocOpencodeVersion,
+				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: lead})
+		}
+		spans = append(spans, agentdoc.Span{Name: "the profile's texts", Symbol: "prompts.Build",
+			Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: standing})
+		if env := pre[j+len(standing):]; env != "" {
+			spans = append(spans, agentdoc.Span{Name: "the harness's environment", Symbol: AgentDocOpencodeVersion,
+				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: env})
 		}
 		spans = append(spans, agentdoc.Span{Name: "AGENTS.md", Symbol: "AGENTS.md",
 			Kind: agentdoc.KindFile, Place: agentdoc.PlaceSystem, Text: agents})
@@ -287,52 +305,6 @@ func agentDocLoopWireSpans(b agentdoc.Body, agents string) ([]agentdoc.Span, err
 			sp.Symbol, sp.Kind = "gateway.Server.toolServer", agentdoc.KindGateway
 		}
 		spans = append(spans, sp)
-	}
-	return spans, nil
-}
-
-// agentDocTitleCall is the title page's capture: the coding session's title
-// call in dir, its run-time values masked as the loop's are, the harness's
-// own parts read out of its body, and the brief, which the call carries
-// whole as text, tiled by the brief's builders.
-func agentDocTitleCall(title *agentdoc.Recorded, dir string, brief harness.TaskBrief, text string) ([]agentdoc.Span, agentdoc.Recorded, error) {
-	if title == nil {
-		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: the session made no title call", AgentDocTitleID)
-	}
-	rec := *title
-	rec.Raw = maskLoopRunTime(rec.Raw, dir)
-	body, err := agentdoc.ParseBody(rec.Raw)
-	if err != nil {
-		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", AgentDocTitleID, err)
-	}
-	wire, err := agentDocTitleWireSpans(body, text)
-	if err != nil {
-		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", AgentDocTitleID, err)
-	}
-	return append(agentDocLoopSpans("coding", brief, agentDocLoopTag), wire...), rec, nil
-}
-
-// agentDocTitleWireSpans reads the title call's own parts out of its body:
-// the harness's title prompt and every user turn but the brief, its ask.
-// A title call that does not carry the brief text is a broken capture.
-func agentDocTitleWireSpans(b agentdoc.Body, brief string) ([]agentdoc.Span, error) {
-	var spans []agentdoc.Span
-	carried := false
-	for _, m := range b.Messages {
-		text := loopText(m)
-		switch {
-		case m.Role == "system":
-			spans = append(spans, agentdoc.Span{Name: "the harness's title prompt", Symbol: AgentDocOpencodeVersion,
-				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: text})
-		case text == brief:
-			carried = true
-		default:
-			spans = append(spans, agentdoc.Span{Name: "the harness's title ask", Symbol: AgentDocOpencodeVersion,
-				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceUser, Text: text})
-		}
-	}
-	if !carried {
-		return nil, errors.New("the title call carries no brief")
 	}
 	return spans, nil
 }
@@ -385,16 +357,14 @@ func agentDocLoopAnswer(w http.ResponseWriter, stream bool, n int, tool, command
 
 // agentDocLoopModel is the capture's scripted model: it answers the
 // session's calls — the responder's first with a bash step, so its page
-// holds the turn after a writer's message; every kept call's last answer
-// a plain text that ends the session — and records each loop call's raw
-// body as it crossed the wire. The first call without tools is the
-// harness's own title call: answered with a title and kept apart.
+// holds the turn after a writer's message; every call's last answer a
+// plain text that ends the session — and records each call's raw body as
+// it crossed the wire.
 type agentDocLoopModel struct {
 	oc        *Opencode
 	responder bool
 	mu        sync.Mutex
 	calls     []agentdoc.Recorded
-	title     *agentdoc.Recorded
 	pushErr   error
 }
 
@@ -406,32 +376,22 @@ func (f *agentDocLoopModel) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Stream bool `json:"stream"`
-		Tools  []struct {
-			Function struct {
-				Name string `json:"name"`
-			} `json:"function"`
-		} `json:"tools"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	n := 0
 	f.mu.Lock()
-	switch {
-	case len(req.Tools) > 0:
-		f.calls = append(f.calls, agentdoc.Recorded{Raw: body, Task: agentDocTask, Purpose: "session"})
-		n = len(f.calls)
-	case f.title == nil:
-		f.title = &agentdoc.Recorded{Raw: body, Task: agentDocTask, Purpose: "session"}
-	}
+	f.calls = append(f.calls, agentdoc.Recorded{Raw: body, Task: agentDocTask, Purpose: "session"})
+	n := len(f.calls)
 	f.mu.Unlock()
 	switch {
-	case n == 0:
-		agentDocLoopAnswer(w, req.Stream, n, "", "", "Fixture title")
 	case n == 1 && f.responder:
-		msg, _ := agentDocLoopMessage() // the runner's composer: basics over the writer's words
-		if err := f.oc.Message(r.Context(), msg); err != nil {
+		msg, _, err := agentDocLoopMessage() // the runner's composer over the writer's words
+		if err == nil {
+			err = f.oc.Message(r.Context(), msg)
+		}
+		if err != nil {
 			f.mu.Lock()
 			f.pushErr = err
 			f.mu.Unlock()
@@ -594,12 +554,8 @@ func agentDocLoopMux(model *agentDocLoopModel, v policy.Version, id string) *htt
 // model above, and the capture comes back with the builders' spans plus
 // the wire parts read out of the recorded body. The responder's page is
 // the call after the writer's message; every other mode's is the first.
-// The title page is the coding session's title call.
 func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agentdoc.Span, agentdoc.Recorded, error) {
 	mode := id
-	if id == AgentDocTitleID {
-		mode = "coding"
-	}
 	if !slices.Contains(AgentDocLoopIDs(), mode) {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: no loop mode %q", id)
 	}
@@ -634,9 +590,12 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	brief := agentDocLoopBrief(mode, v)
 	restoreTag := randomTag
 	randomTag = func() string { return agentDocLoopTag }
-	text := model.oc.Text(brief)
-	res := model.oc.Run(ctx, text, func(harness.Event) {})
+	prompt, err := model.oc.Text(brief)
 	randomTag = restoreTag
+	if err != nil {
+		return nil, agentdoc.Recorded{}, err
+	}
+	res := model.oc.Run(ctx, prompt, func(harness.Event) {})
 	if !res.Success {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: the session did not end well: %s", id, res.Summary)
 	}
@@ -652,39 +611,40 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	if len(model.calls) != want {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %d loop calls crossed the wire, want %d", id, len(model.calls), want)
 	}
-	if id == AgentDocTitleID {
-		return agentDocTitleCall(model.title, dir, brief, text)
-	}
 	rec := model.calls[want-1]
 	rec.Raw = maskLoopRunTime(rec.Raw, dir)
 	body, err := agentdoc.ParseBody(rec.Raw)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
 	}
-	wire, err := agentDocLoopWireSpans(body, agentDocLoopAgents)
+	wire, err := agentDocLoopWireSpans(body, prompt.Standing(), agentDocLoopAgents)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
 	}
 	spans := agentDocLoopSpans(mode, brief, agentDocLoopTag)
 	if model.responder {
-		_, msgSpans := agentDocLoopMessage()
+		_, msgSpans, err := agentDocLoopMessage()
+		if err != nil {
+			return nil, agentdoc.Recorded{}, err
+		}
 		spans = append(spans, msgSpans...)
 	}
 	return append(spans, wire...), rec, nil
 }
 
 // AgentDocAgentConfig answers the config's agent block verbatim: what
-// buildOpencodeConfig tells opencode about the build agent and the general
-// and explore subagents — their model and step cap, in the policy's own
-// steps and the ladder's cheap rung. Their prompts are opencode's own,
-// inside the binary; no first call of ours exists to capture, so this
-// fragment is the config-level page's whole substance.
+// buildOpencodeConfig tells opencode about a coding session's build agent,
+// the general and explore subagents and the title agent — their model
+// and step cap, in the policy's own steps and the ladder's cheap rung, the
+// build agent's prompt and the title call off. The subagents' prompts are
+// opencode's own, inside the binary; no first call of ours exists to
+// capture, so this fragment is the config-level page's whole substance.
 func AgentDocAgentConfig(v policy.Version) (json.RawMessage, error) {
 	limit, err := (TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384}).OutputLimit()
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := buildOpencodeConfig("https://gateway.invalid", "factory", policy.Small,
+	cfg, err := buildOpencodeConfig("coding", "https://gateway.invalid", "factory", policy.Small,
 		limit, v.Document.Limits.Steps, nil, "factory/"+policy.Small, policy.Big)
 	if err != nil {
 		return nil, err

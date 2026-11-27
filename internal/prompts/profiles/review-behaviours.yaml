@@ -1,0 +1,15 @@
+step: review-behaviours
+purpose: review
+reader: human
+guide: false
+forms: [line]
+chunks: []
+paragraph: ""
+facts: text
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 224

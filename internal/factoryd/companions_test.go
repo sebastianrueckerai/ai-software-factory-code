@@ -59,16 +59,16 @@ func TestSessionClonesTheProjectsCompanions(t *testing.T) {
 // be read, and says nothing for a project without any.
 func TestBriefSaysWhereTheCompanionsAre(t *testing.T) {
 	base := harness.TaskBrief{Objective: "fix it", Repository: "sf/x", AuthorStanding: harness.StandingWriter}
-	if got := objectiveText(base); strings.Contains(got, "companion") {
+	if got := firstTurn(t, base); strings.Contains(got, "companion") {
 		t.Fatalf("brief without companions mentions them:\n%s", got)
 	}
 	base.Companions = []string{"infra at /workspace/companions/infra"}
-	if got := objectiveText(base); !strings.Contains(got, "The project's companion repositories are cloned read-only, for reading; changes go in /workspace/repo") ||
+	if got := firstTurn(t, base); !strings.Contains(got, "The project's companion repositories are cloned read-only, for reading; changes go in /workspace/repo") ||
 		!strings.Contains(got, "- infra at /workspace/companions/infra") {
 		t.Fatalf("brief = %s, want the companions' place", got)
 	}
 	base.Companions = []string{"infra could not be read: git clone: repository not found"}
-	if got := objectiveText(base); !strings.Contains(got, "infra could not be read: git clone: repository not found") {
+	if got := firstTurn(t, base); !strings.Contains(got, "infra could not be read: git clone: repository not found") {
 		t.Fatalf("brief = %s, want the clone's failure", got)
 	}
 }

@@ -28,11 +28,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 func checkinHandler(t *testing.T, ck *checkinServe) http.Handler {
 	t.Helper()
-	return messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil }, ck, nil)
+	return messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, prompts.Prompt, string) error { return nil }, ck, nil)
 }
 
 func postTool(t *testing.T, h http.Handler, auth, body string) (int, string) {
@@ -345,11 +346,11 @@ func TestStartStoresTheSessionsText(t *testing.T) {
 	}
 	s.closeTelemetry()
 	s.stopMessages()
-	if got := gw.stored(); len(got) != 1 || got[0] != s.text {
-		t.Fatalf("stored %q, want the one text the run prompts, %q", got, s.text)
+	if got := gw.stored(); len(got) != 1 || got[0] != s.prompt.Facts() {
+		t.Fatalf("stored %q, want the one first turn the run prompts, %q", got, s.prompt.Facts())
 	}
 	for _, part := range []string{"Do it\n\nWhy: It is due.", "docs/: not in the repository", "FACTS: session 1 of 3", factoryd.SandboxFacts(nil, nil)} {
-		if !strings.Contains(s.text, part) {
+		if !strings.Contains(s.prompt.Facts(), part) {
 			t.Errorf("the session's text lacks %q", part)
 		}
 	}

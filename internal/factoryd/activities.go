@@ -47,6 +47,13 @@ func WorkflowDir(name string) (string, bool) {
 	return dir, slices.Contains(WorkflowDirs, dir)
 }
 
+// WorkflowDirMessage is what the worker tells a session at its first
+// change of file under the workflow directory dir: the push's refusal
+// before the push, so the agent reverts it while its work is in hand.
+func WorkflowDirMessage(dir, file string) string {
+	return fmt.Sprintf("you changed %s under %s/: the push will refuse it — refusing to push: %s/ differs from the base. Revert that file and do the work without touching it.", file, dir, dir)
+}
+
 // HeartbeatEvery is how often a long activity reports progress and the
 // longest the worker holds a heartbeat back (MaxHeartbeatThrottleInterval):
 // a workflow's cancel reaches a running activity in the answer to its next
@@ -1172,6 +1179,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		s.cardRole, s.directories = pc.Role, pc.Directories
 	case t.PlanCard():
 		s.cardRole = RoleFeature
+	}
+	s.step = "coding"
+	if s.cardRole != "" {
+		s.step = "coding-card"
 	}
 	opened, err := r.openedProofs(ctx, t, plan)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -169,13 +170,17 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 	if start == 0 {
 		return false, nil
 	}
+	system, err := prompts.Build("compact", factoryd.CompactPrompt)
+	if err != nil {
+		return false, err
+	}
 	summary := th.Summary
 	pieces := chunks(transcript(rows[:start]), compactChunk)
 	for len(pieces) > 0 {
 		piece := pieces[0]
 		pieces = pieces[1:]
 		so := cmp.Or(summary, "(none yet)")
-		msgs := []factoryd.OperatorMessage{{Role: "system", Content: factoryd.CompactPrompt},
+		msgs := []factoryd.OperatorMessage{factoryd.SystemMessage(system),
 			{Role: "user", Content: "The summary so far:\n" + so + "\n\nThe turns after it:\n" + piece}}
 		answer, err := t.c.cfg.Operator.Compact(ctx, taskID, t.threadRef(), msgs)
 		if err != nil {

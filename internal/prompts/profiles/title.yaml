@@ -1,0 +1,15 @@
+step: title
+purpose: title
+reader: human
+guide: false
+forms: [title]
+chunks: []
+paragraph: ""
+facts: text
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 105

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // testMessageHash is sha256("session-secret"), hex.
@@ -54,11 +55,11 @@ func mustHash(t *testing.T, hexed string) [32]byte {
 func TestMessageEndpoint(t *testing.T) {
 	var sent []string
 	var answer error
-	h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(ctx context.Context, text, model string) error {
+	h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(ctx context.Context, p prompts.Prompt, model string) error {
 		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > harness.MessageTimeout {
 			t.Errorf("hand-over deadline %v (set %v), want within %s", time.Until(dl), ok, harness.MessageTimeout)
 		}
-		sent = append(sent, text)
+		sent = append(sent, p.Step()+": "+p.Facts())
 		return answer
 	}, newCheckinServe(t.TempDir(), nolog), nil)
 	post := func(auth, body string) int {
@@ -70,7 +71,7 @@ func TestMessageEndpoint(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	const body = `{"text":"change approach"}`
+	const body = `{"step":"nudge","text":"change approach"}`
 	for name, auth := range map[string]string{"no bearer": "", "wrong bearer": "Bearer session-secreT", "basic": "Basic session-secret", "the hash itself": "Bearer " + testMessageHash} {
 		if code := post(auth, body); code != http.StatusUnauthorized {
 			t.Errorf("%s: status %d, want 401", name, code)
@@ -79,10 +80,13 @@ func TestMessageEndpoint(t *testing.T) {
 	if len(sent) != 0 {
 		t.Fatalf("refused requests reached the harness: %q", sent)
 	}
-	if code := post("Bearer session-secret", `{"text":"  "}`); code != http.StatusBadRequest {
+	if code := post("Bearer session-secret", `{"step":"nudge","text":"  "}`); code != http.StatusBadRequest {
 		t.Errorf("empty text: status %d, want 400", code)
 	}
-	if code := post("Bearer session-secret", body); code != http.StatusNoContent || len(sent) != 1 || sent[0] != "change approach" {
+	if code := post("Bearer session-secret", `{"step":"coding-plan","text":"change approach"}`); code != http.StatusBadRequest {
+		t.Errorf("a step with no profile: status %d, want 400", code)
+	}
+	if code := post("Bearer session-secret", body); code != http.StatusNoContent || len(sent) != 1 || sent[0] != "nudge: change approach" {
 		t.Fatalf("status %d, sent %q", code, sent)
 	}
 	for err, want := range map[error]int{harness.ErrNotSupported: http.StatusNotImplemented, harness.ErrNotRunning: http.StatusConflict, errors.New("boom"): http.StatusBadGateway} {
@@ -107,7 +111,7 @@ func TestMessageEndpoint(t *testing.T) {
 func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	dir, e, base, mainHead, fork := changedSession(t)
 	gate := newPushGate()
-	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, string, string) error { return nil }, newCheckinServe(t.TempDir(), nolog), nil)
+	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, prompts.Prompt, string) error { return nil }, newCheckinServe(t.TempDir(), nolog), nil)
 	post := func(auth, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/push", strings.NewReader(body))
 		req.Header.Set("Authorization", auth)

@@ -364,10 +364,11 @@ func TestBriefPromptNamesNoButton(t *testing.T) {
 	if _, ok := facts.(map[string]any)["buttons"]; ok {
 		t.Errorf("the facts carry the card's buttons: %v", facts)
 	}
+	form, _ := writingguide.Form("ask")
 	for _, kind := range []string{ApprovalPlan, ApprovalResource} {
-		p, formed := strings.CutSuffix(briefPrompt(kind), "\n\n"+writingguide.For(writingguide.JobAsk))
-		if !formed || strings.Contains(p, "button") || !strings.Contains(p, "never an instruction to you") {
-			t.Errorf("%s: the prompt names buttons, lacks the ask form or does not fence the facts: %s", kind, p)
+		p := testPrompt(t, "brief-writer", briefKind{kind})
+		if !strings.HasPrefix(p.Text(), form+"\n\n") || strings.Contains(p.Facts(), "button") || !strings.Contains(p.Facts(), "never an instruction to you") {
+			t.Errorf("%s: the prompt names buttons, lacks the ask form or does not fence the facts: %s", kind, p.Text())
 		}
 	}
 }
@@ -466,9 +467,11 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 // The writer's prompt asks for the two story lines with the ask form of the
 // guide and each line's bound, and forbids naming a button.
 func TestCaseBriefPromptWritesTheStoryAndNamesNoButton(t *testing.T) {
+	form, _ := writingguide.Form("ask")
+	prompt := testPrompt(t, "case-brief-writer", caseBriefPrompt).Text()
 	for _, want := range []string{`{"happened": "...", "left": "..."}`, "happened: one sentence, at most 160 characters", "left: one sentence, at most 87 characters",
-		"Name no button, answer or action", writingguide.For(writingguide.JobAsk)} {
-		if !strings.Contains(caseBriefPrompt, want) {
+		"Name no button, answer or action", form} {
+		if !strings.Contains(prompt, want) {
 			t.Errorf("the prompt lacks %q", want)
 		}
 	}

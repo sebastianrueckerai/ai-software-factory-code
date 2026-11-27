@@ -22,9 +22,9 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // agentDocTask is the task id every capture bills under; the fake gateway
@@ -127,6 +127,18 @@ func agentDocJSON(s string) string {
 var agentDocInputLead = agentdoc.Span{Name: "the input heading", Symbol: "factoryd.ChatInputLead", Kind: agentdoc.KindBuilder,
 	Place: agentdoc.PlaceUser, Text: ChatInputLead}
 
+// agentDocStanding is the span of what p's profile joins before its
+// facts: the guide, the forms, the chunks and the paragraph, and the blank
+// line Build puts before the facts.
+func agentDocStanding(p prompts.Prompt) agentdoc.Span {
+	text := p.Standing()
+	if text != "" && p.Facts() != "" {
+		text += "\n\n"
+	}
+	return agentdoc.Span{Name: "the profile's texts", Symbol: "prompts.Build", Kind: agentdoc.KindBuilder,
+		Place: agentdoc.PlaceSystem, Text: text}
+}
+
 // agentDocFiles is the fixture diff one file wide, the review and audit
 // captures both read.
 func agentDocFiles() []fileDiff {
@@ -173,15 +185,18 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	parent := []byte("2026-10-31T12:00:00Z agent message: the fix is half done\n")
 	const callsLeft, eurLeft, handoverCap = 3, 1.0, 800
 	timeCap := callsLeft * policy.CheckinCallTime
+	system, err := prompts.Build(checkinPromptStep(ask.Moment), checkinPersona{ask})
+	if err != nil {
+		return nil, err
+	}
 	spans := []agentdoc.Span{
+		agentDocStanding(system),
 		{Name: "session persona", Symbol: "factoryd.checkinSystemFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
 			Text: checkinSystemFor(ask)},
 		{Name: "the statement", Symbol: "factoryd.checkinStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
 		{Name: "the answer deadline", Symbol: "factoryd.checkinDueLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinDueLine(checkinAnswerDue(timeCap, 0))},
-		{Name: "the guide's forms", Symbol: "factoryd.checkinForms", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: checkinForms},
 		{Name: "the parent session's tail", Symbol: "factoryd.agentDocCheckin", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
 			Text: string(parent)},
 	}
@@ -232,14 +247,18 @@ func agentDocReview(ctx context.Context, gwURL string, v policy.Version, hc *htt
 		Concurrency: concurrencyBlock(concurrencySites(files)),
 		Gates:       reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction},
 	}
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout,
-		reviewCallPrompt(gates, false, nil, nil, false), in); err != nil {
+	system, err := prompts.Build("model-review", reviewFacts{Gates: gates})
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := m.Chat(ctx, agentDocTask, alias, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
+		agentDocStanding(system),
 		{Name: "the review prompt", Symbol: "factoryd.reviewCallPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: reviewCallPrompt(gates, false, nil, nil, false)},
+			Text: system.Facts()},
 		{Name: "the review's facts", Symbol: "factoryd.reviewInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
 		{Name: "the task brief", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -265,11 +284,16 @@ func agentDocAudit(ctx context.Context, gwURL string, v policy.Version, hc *http
 		Repository: "owner/name", PR: 4711, Commit: "fixture-head-sha", Diff: diff,
 		Concurrency: concurrencyBlock(concurrencySites(files)),
 	}
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, auditPrompt, in); err != nil {
+	system, err := prompts.Build("security-audit", auditFacts{})
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := m.Chat(ctx, agentDocTask, alias, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
+		agentDocStanding(system),
 		{Name: "the audit prompt", Symbol: "factoryd.auditPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: auditPrompt},
 		{Name: "the audit's facts", Symbol: "factoryd.auditInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
@@ -296,12 +320,16 @@ func agentDocGateSupervisor(ctx context.Context, gwURL string, v policy.Version,
 		Allowed:   []SupervisorAction{ActionWait, ActionCancel, ActionEscalate},
 	}
 	user := scrubbed(bundle, redact.New())
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeGateSupervisor, v.Document.Limits.SupervisorTimeout,
-		gateSupervisorPrompt, user); err != nil {
+	system, err := prompts.Build("gate-supervisor", gateSupervisorPrompt)
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := m.Chat(ctx, agentDocTask, alias, v.Document.Limits.SupervisorTimeout, system, user); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
+		agentDocStanding(system),
 		{Name: "the gate supervisor prompt", Symbol: "factoryd.gateSupervisorPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: gateSupervisorPrompt},
 		{Name: "the diagnosis bundle", Symbol: "factoryd.scrubbed", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -337,8 +365,11 @@ func agentDocJudgement(ctx context.Context, gwURL string, v policy.Version, hc *
 	c := PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "The sizes page reads calm", Inputs: "the sizes page with three sizes",
 		Prompt: "Does the page read calm? Answer met or unmet."}
 	a := GateArtifact{Criterion: c.ID, Name: "reads_calm.html", Head: "fixture-head-sha", Content: "<main><h1>Sizes</h1><p>S, M and L</p></main>"}
-	call := judgementCall(c, a)
-	results, err := (&Runner{supervisor: m}).callAll(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, time.Time{}, []reviewCall{call})
+	call, err := judgementCall(c, a)
+	if err != nil {
+		return nil, err
+	}
+	results, err := (&Runner{supervisor: m}).callAll(ctx, agentDocTask, alias, v.Document.Limits.SupervisorTimeout, time.Time{}, []reviewCall{call})
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +378,8 @@ func agentDocJudgement(ctx context.Context, gwURL string, v policy.Version, hc *
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the judgement prompt", Symbol: "factoryd.judgementCall", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: call.Prompt},
+		agentDocStanding(call.Prompt),
+		{Name: "the judgement prompt", Symbol: "factoryd.judgementText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: call.Prompt.Facts()},
 		{Name: "the criterion's prompt", Symbol: "factoryd.PlanCriterion.Prompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: c.Prompt},
 		{Name: "the answer's form", Symbol: "factoryd.judgementAnswer", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: judgementAnswer},
 		{Name: "the artifact", Symbol: "factoryd.GateArtifact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(call.Input())},
@@ -367,12 +399,16 @@ func agentDocBehaviours(ctx context.Context, gwURL string, v policy.Version, hc 
 		Cards: []behaviourCard{{Key: "f1", Title: "Fix the counter", Brief: "Count skipped rows."}},
 		Files: fileList(groups, "card"), Names: newNameIndex(groups).All(),
 	}
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout,
-		reviewBehavioursPrompt, in); err != nil {
+	system, err := prompts.Build("review-behaviours", reviewBehavioursPrompt)
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := m.Chat(ctx, agentDocTask, alias, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
+		agentDocStanding(system),
 		{Name: "the behaviours prompt", Symbol: "factoryd.reviewBehavioursPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: reviewBehavioursPrompt},
 		{Name: "the behaviours call's facts", Symbol: "factoryd.behavioursInput", Kind: agentdoc.KindBuilder,
@@ -398,13 +434,17 @@ func agentDocDelta(ctx context.Context, gwURL string, v policy.Version, hc *http
 		Criteria: []deltaCriterion{{PlanCriterion: p.Criteria[0], Evidence: "the diff shows no test of the skipped row"}},
 		Cards:    p.Cards,
 	}
-	system := deltaPrompt(projectPins(v, "owner/name"))
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
+	system, err := prompts.Build("delta-planner", deltaFacts{projectPins(v, "owner/name")})
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := m.Chat(ctx, agentDocTask, alias, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the delta prompt", Symbol: "factoryd.deltaPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
+		agentDocStanding(system),
+		{Name: "the delta prompt", Symbol: "factoryd.deltaPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system.Facts()},
 		{Name: "the delta call's facts", Symbol: "factoryd.deltaInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
 		{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(p.Spec)},
@@ -428,7 +468,12 @@ func agentDocHoldout(ctx context.Context, gwURL string, v policy.Version, hc *ht
 		PastFailures []string        `json:"past_failures"`
 		Max          int             `json:"max"`
 	}{Spec: p.Spec, Criteria: p.Criteria, PastFailures: reverts, Max: maxHoldouts}
+	system, err := prompts.Build("holdout-proposer", holdoutSystem)
+	if err != nil {
+		return nil, err
+	}
 	return []agentdoc.Span{
+		agentDocStanding(system),
 		{Name: "the proposer prompt", Symbol: "factoryd.holdoutSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: holdoutSystem},
 		{Name: "the hold-out call's facts", Symbol: "factoryd.(*Runner).proposeHoldouts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(input)},
@@ -459,11 +504,15 @@ func agentDocAnswer(ctx context.Context, gwURL string, v policy.Version, hc *htt
 	}
 	text := sanitize.Inbound(answer)
 	open, closing := "===ANSWER-"+agentDocAnswerTag, "ANSWER-"+agentDocAnswerTag+"==="
-	system := answerSystem(open, closing)
+	system, err := prompts.Build("answer-screener", screenMarkers{open, closing})
+	if err != nil {
+		return nil, err
+	}
 	in := answerInput{Repository: agentDocCard().Repository, Answer: open + "\n" + text + "\n" + closing}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the screening prompt", Symbol: "factoryd.answerSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
+		agentDocStanding(system),
+		{Name: "the screening prompt", Symbol: "factoryd.answerSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system.Facts()},
 		{Name: "the screening call's facts", Symbol: "factoryd.answerInput", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceUser, Text: marshalled(in)},
 		{Name: "the answer between markers", Symbol: "sanitize.Inbound", Kind: agentdoc.KindBuilder,
@@ -506,9 +555,14 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	if err != nil {
 		return nil, err
 	}
+	system, err := prompts.Build("brief-writer", briefKind{a.Kind})
+	if err != nil {
+		return nil, err
+	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the brief prompt", Symbol: "factoryd.briefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: briefPrompt(a.Kind)},
+		agentDocStanding(system),
+		{Name: "the brief prompt", Symbol: "factoryd.briefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system.Facts()},
 		{Name: "the request's facts", Symbol: "factoryd.briefFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: string(raw)},
 		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(life)},
 	}, nil
@@ -565,8 +619,13 @@ func agentDocCaseBrief(ctx context.Context, gwURL string, v policy.Version, hc *
 		}
 	}
 	life := agentDocLife().Render()
+	system, err := prompts.Build("case-brief-writer", caseBriefPrompt)
+	if err != nil {
+		return nil, err
+	}
 	return []agentdoc.Span{
 		agentDocInputLead,
+		agentDocStanding(system),
 		{Name: "the case brief prompt", Symbol: "factoryd.caseBriefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: caseBriefPrompt},
 		{Name: "the case's facts", Symbol: "factoryd.(*BriefWriter).caseFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: string(facts)},
 		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(life)},
@@ -606,12 +665,15 @@ func agentDocCaseCheckin(ctx context.Context, gwURL string, v policy.Version, hc
 	if out.Answer == nil {
 		return nil, fmt.Errorf("agentdoc: the fixture answer did not end rung 1's conversation: %s", out.Found)
 	}
+	system, err := prompts.Build("case-checkin", rungPrompt)
+	if err != nil {
+		return nil, err
+	}
 	spans := []agentdoc.Span{
+		agentDocStanding(system),
 		{Name: "the case check-in prompt", Symbol: "factoryd.rungPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungPrompt},
 		{Name: "the check-in's role", Symbol: "factoryd.rungSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungSystem},
 		{Name: "the tools line", Symbol: "factoryd.rungToolsLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: rungToolsLine},
-		{Name: "the guide's forms", Symbol: "writingguide.For", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: writingguide.For(writingguide.JobLine, writingguide.JobWhy)},
 		{Name: "the statement", Symbol: "factoryd.(*Runner).rungStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: r.rungStatement(c, f, digest, nil, 1)},
 		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocLife().Render()},
@@ -659,8 +721,13 @@ func agentDocNamer(ctx context.Context, gwURL string, v policy.Version, hc *http
 	if n.Name(ctx, agentDocCard(), title, p.Spec.Outcome, p.Summary) == "" {
 		return nil, errors.New("agentdoc: the fixture answer named no plan")
 	}
+	system, err := prompts.Build("plan-namer", namerPrompt)
+	if err != nil {
+		return nil, err
+	}
 	return []agentdoc.Span{
 		agentDocInputLead,
+		agentDocStanding(system),
 		{Name: "the naming rules", Symbol: "factoryd.namerPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: namerPrompt},
 		{Name: "the plan's facts", Symbol: "factoryd.nameFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: agentDocJSON(nameFacts(title, p.Spec.Outcome, p.Summary, taken, 1))},

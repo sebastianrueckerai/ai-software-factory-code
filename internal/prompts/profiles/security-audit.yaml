@@ -1,0 +1,15 @@
+step: security-audit
+purpose: audit
+reader: human
+guide: false
+forms: [finding]
+chunks: []
+paragraph: ""
+facts: audit
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 523

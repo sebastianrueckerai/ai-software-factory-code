@@ -247,14 +247,19 @@ func TestDecideCriterion(t *testing.T) {
 // pinned images as the planner's guide does, only when the project pins
 // images.
 func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
-	forms := "\n\n" + writingguide.For(writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief)
-	bare := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
-	if got := deltaPrompt(nil); got != bare+forms || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
-		t.Fatalf("no pins: %q, want deltaSystem without the image field", got)
+	var forms []string
+	for _, name := range []string{"title", "why", "summary", "brief"} {
+		form, _ := writingguide.Form(name)
+		forms = append(forms, form)
 	}
-	want := strings.Replace(bare, `"rung_reason": "..."}}`, `"rung_reason": "...", "image": "..."}}`, 1) +
-		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default." + forms
-	if got := deltaPrompt(map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}); got != want {
+	lead := strings.Join(forms, "\n\n") + "\n\n"
+	bare := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
+	if got := testPrompt(t, "delta-planner", deltaFacts{}).Text(); got != lead+bare || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
+		t.Fatalf("no pins: %q, want the forms and deltaSystem without the image field", got)
+	}
+	want := lead + strings.Replace(bare, `"rung_reason": "..."}}`, `"rung_reason": "...", "image": "..."}}`, 1) +
+		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
+	if got := testPrompt(t, "delta-planner", deltaFacts{map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}}).Text(); got != want {
 		t.Fatalf("deltaPrompt =\n%q\nwant\n%q", got, want)
 	}
 }
@@ -636,7 +641,10 @@ func TestPlanCallsMakeTheBehavioursCallAlone(t *testing.T) {
 		{ID: "c1", Kind: CriterionJudgement, Claim: "a answers"},
 		{ID: "c2", Kind: CriterionHuman, Claim: "the page reads well"},
 	}}
-	calls := planCalls(p, "the objective", nil, featureCard{Key: "I"})
+	calls, err := planCalls(p, "the objective", nil, featureCard{Key: "I"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var labels []string
 	for _, c := range calls {
 		labels = append(labels, c.Label)

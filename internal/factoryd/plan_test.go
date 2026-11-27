@@ -755,8 +755,8 @@ func TestPlanGuideRounds(t *testing.T) {
 			t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 		}
 	}
-	if !strings.HasSuffix(got, "with your last plan: answer it again.\n\n"+planForms) {
-		t.Fatalf("planGuide = %q, want it to end with the last plan answered again and the planner's forms", got)
+	if !strings.HasSuffix(got, "with your last plan: answer it again.") {
+		t.Fatalf("planGuide = %q, want it to end with the last plan answered again", got)
 	}
 }
 

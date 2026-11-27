@@ -1,0 +1,15 @@
+step: checkin-session
+purpose: checkin
+reader: human
+guide: false
+forms: [line, why]
+chunks: []
+paragraph: ""
+facts: checkin
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 353

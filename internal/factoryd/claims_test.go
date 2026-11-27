@@ -780,7 +780,7 @@ func TestReviewRetryTellsAWaveBeyondTheElapsedOnes(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	var told []int
 	ctx := context.WithValue(context.Background(), wavesKey{}, func(n int) { told = append(told, n) })
-	call := reviewCall{Prompt: "p", Input: func() any { return map[string]string{} }}
+	call := reviewCall{Prompt: testPrompt(t, "model-review", reviewFacts{}), Input: func() any { return map[string]string{} }}
 	r.reviewRetry(ctx, "t1", "big", 6*time.Minute, time.Now().Add(-10*time.Minute), call, "why")
 	if len(told) != 1 || told[0] != 3 {
 		t.Fatalf("told = %v, want 3 (two elapsed waves, and one for the retry)", told)

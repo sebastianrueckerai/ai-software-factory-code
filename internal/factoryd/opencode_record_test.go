@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // recordSteps is the step cap of the recorded run: the third model turn is
@@ -150,7 +151,7 @@ func TestRecordOpencodeFixture(t *testing.T) {
 	fake := &fakeOpenAI{}
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
-	cfgJSON, err := buildOpencodeConfig(srv.URL, "factory", "factory-main", 10000, recordSteps, nil, "")
+	cfgJSON, err := buildOpencodeConfig("coding", srv.URL, "factory", "factory-main", 10000, recordSteps, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +241,10 @@ func (f *fakeServeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	switch n {
 	case 1:
-		err := f.oc.Message(r.Context(), serveNudge)
+		p, err := prompts.Build("supervisor-guidance", serveNudge)
+		if err == nil {
+			err = f.oc.Message(r.Context(), p)
+		}
 		f.mu.Lock()
 		f.nudgeErr = err
 		f.mu.Unlock()
@@ -282,7 +286,7 @@ func TestRecordOpencodeServeFixture(t *testing.T) {
 	}
 
 	var events []harness.Event
-	res := oc.Run(context.Background(), oc.Text(harness.TaskBrief{Objective: "Write one.txt and two.txt."}), func(ev harness.Event) { events = append(events, ev) })
+	res := oc.Run(context.Background(), sessionPrompt(t, "Write one.txt and two.txt."), func(ev harness.Event) { events = append(events, ev) })
 	if !res.Success {
 		t.Fatalf("Run = %+v", res)
 	}
@@ -313,7 +317,7 @@ func TestRecordOpencodeServeFixture(t *testing.T) {
 	if !bytes.Contains(tap.Bytes(), []byte(`"type":"permission.asked"`)) {
 		t.Error("the recording holds no permission ask")
 	}
-	if oc.Message(context.Background(), "late") != harness.ErrNotRunning {
+	if oc.Message(context.Background(), pushedNote(t, "late")) != harness.ErrNotRunning {
 		t.Error("Message after the session accepted")
 	}
 	t.Logf("%d events, summary %q", len(events), res.Summary)

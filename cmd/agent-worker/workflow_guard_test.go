@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // The session learns the push rule at once: a file change under a workflow
@@ -33,7 +34,7 @@ func TestWorkflowDirGuardMessagesAtFirstWorkflowDirChange(t *testing.T) {
 		{"no path", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g := newWorkflowDirGuard("/workspace/repo", func(context.Context, string) error { return nil }, func(string, ...any) {})
+			g := newWorkflowDirGuard("/workspace/repo", func(context.Context, prompts.Prompt) error { return nil }, func(string, ...any) {})
 			sent := g.watch(t)
 			g.observe(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": tc.path}})
 			got := sent()
@@ -47,7 +48,7 @@ func TestWorkflowDirGuardMessagesAtFirstWorkflowDirChange(t *testing.T) {
 // The message goes once per file: a second change of the same file sends
 // nothing more, another file's first change does.
 func TestWorkflowDirGuardWarnsOncePerFile(t *testing.T) {
-	g := newWorkflowDirGuard("/workspace/repo", func(context.Context, string) error { return nil }, func(string, ...any) {})
+	g := newWorkflowDirGuard("/workspace/repo", func(context.Context, prompts.Prompt) error { return nil }, func(string, ...any) {})
 	sent := g.watch(t)
 	change := func(p string) {
 		g.observe(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": p}})
@@ -68,7 +69,7 @@ func TestWorkflowDirGuardWarnsOncePerFile(t *testing.T) {
 func TestWorkflowDirGuardWrapsTheEmitter(t *testing.T) {
 	var mu sync.Mutex
 	var seen []harness.Event
-	g := newWorkflowDirGuard("/workspace/repo", func(context.Context, string) error { return nil }, func(string, ...any) {})
+	g := newWorkflowDirGuard("/workspace/repo", func(context.Context, prompts.Prompt) error { return nil }, func(string, ...any) {})
 	done := g.watch(t)
 	emit := g.wrap(func(ev harness.Event) {
 		mu.Lock()
@@ -92,10 +93,10 @@ func (g *workflowDirGuard) watch(t *testing.T) func() string {
 	t.Helper()
 	var mu sync.Mutex
 	var texts []string
-	g.send = func(_ context.Context, text string) error {
+	g.send = func(_ context.Context, p prompts.Prompt) error {
 		mu.Lock()
 		defer mu.Unlock()
-		texts = append(texts, text)
+		texts = append(texts, p.Text())
 		return nil
 	}
 	return func() string {

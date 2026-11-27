@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"strings"
 	"time"
 )
@@ -41,7 +42,7 @@ type RungOutcome struct {
 // An answer outside the schema's enums is refused with the refusal named
 // and re-asked once, on a forced call past the call cap when it came on
 // the last one; a second refusal hands the rung up. It acts on nothing.
-func (r *Runner) runRung(ctx context.Context, chat checkinChat, taskID, alias string, f CaseFacts, rung int, system, statement string, evidence []CheckinTool, tools podTools, callCap int, timeCap time.Duration) RungOutcome {
+func (r *Runner) runRung(ctx context.Context, chat checkinChat, taskID, alias string, f CaseFacts, rung int, system prompts.Prompt, statement string, evidence []CheckinTool, tools podTools, callCap int, timeCap time.Duration) RungOutcome {
 	var parsed RungAnswer
 	end := converse(ctx, chat, tools, taskID, alias, conversation{
 		System:    system,

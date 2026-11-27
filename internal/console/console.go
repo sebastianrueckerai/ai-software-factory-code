@@ -1115,6 +1115,16 @@ func (c *Console) isApprover(ctx context.Context, user, repository string) bool 
 	return slices.Contains(v.ApproversOf(repository), user)
 }
 
+// mergeApprover reports whether the human logged in as user approves the
+// merge of a pull request of risk class on repository's project: an approver
+// of the project, and one of the class's approvers when it names any.
+// Unreadable policy: no.
+func (c *Console) mergeApprover(ctx context.Context, user, repository, class string) bool {
+	v, _ := c.inForce(ctx)
+	only := v.Document.Risk.ApproversOf(class)
+	return slices.Contains(v.ApproversOf(repository), user) && (len(only) == 0 || slices.Contains(only, user))
+}
+
 // inForce is the policy version being enforced; unreadable, an empty one
 // (no approvers, no processes) and false.
 func (c *Console) inForce(ctx context.Context) (policy.Version, bool) {

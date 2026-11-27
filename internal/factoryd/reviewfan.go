@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -25,7 +26,7 @@ const reviewParallel = 4
 // parts.
 type reviewCall struct {
 	Label  string
-	Prompt string
+	Prompt prompts.Prompt
 	Input  func() any
 }
 
@@ -50,7 +51,7 @@ type callResult struct {
 // the class's freeze refused holds the retries to the reset it named
 // (providerLimitUntil): the retry waits at the reset plus the margin.
 // Returns ctx.Err() when ctx ended.
-func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, timeout time.Duration, end time.Time, calls []reviewCall) ([]callResult, error) {
+func (r *Runner) callAll(ctx context.Context, taskID, model string, timeout time.Duration, end time.Time, calls []reviewCall) ([]callResult, error) {
 	waves := (len(calls) + reviewParallel - 1) / reviewParallel
 	boundByParts(ctx, waves)
 	results := make([]callResult, len(calls))
@@ -64,7 +65,7 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 				return
 			}
 		}
-		content, deployment, low, err := r.supervisor.chat(ctx, taskID, model, purpose, limit, calls[i].Prompt, calls[i].Input())
+		content, deployment, low, err := r.supervisor.chat(ctx, taskID, model, limit, calls[i].Prompt, calls[i].Input())
 		results[i] = callResult{content, deployment, low, err}
 	}
 	next := make(chan int, len(calls))
@@ -173,7 +174,7 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, ca
 	var big *callPrice
 	need := 0.0
 	for i, c := range calls {
-		body, err := chatBody(model, c.Prompt, c.Input(), limit)
+		body, err := chatBody(model, c.Prompt.Text(), c.Input(), limit)
 		if err != nil {
 			return "", err
 		}

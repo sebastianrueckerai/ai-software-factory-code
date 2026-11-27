@@ -922,7 +922,7 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 		// is the one on the review prompt
 		var first []any
 		for _, c := range ll.chats {
-			if msgs := c["messages"].([]any); strings.HasPrefix(msgs[0].(map[string]any)["content"].(string), "You review a pull request an autonomous") {
+			if msgs := c["messages"].([]any); strings.Contains(msgs[0].(map[string]any)["content"].(string), "You review a pull request an autonomous") {
 				first = append(first, msgs)
 			}
 		}
@@ -957,8 +957,8 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 			if !reflect.DeepEqual(in["opened_proofs"], want) || in["agent_summary"] != summary {
 				t.Fatalf("opened_proofs = %v, agent_summary %v; want %v and the summary", in["opened_proofs"], in["agent_summary"], want)
 			}
-			if !strings.HasSuffix(system, reviewOpenedProofs+"\n\n"+writingguide.For(writingguide.JobFinding)) {
-				t.Fatalf("system prompt ends %q, want reviewOpenedProofs and the finding form", system[max(0, len(system)-200):])
+			if !strings.HasSuffix(system, reviewOpenedProofs) {
+				t.Fatalf("system prompt ends %q, want reviewOpenedProofs", system[max(0, len(system)-200):])
 			}
 			if !slices.Equal(fj.rawRefs, []string{"c1"}) {
 				t.Fatalf("raw reads at %q, want the one at the head", fj.rawRefs)
@@ -1513,9 +1513,9 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				part, file, other, prompt string
 				keys                      []string
 			}{
-				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewCallPrompt(GateResults{}, false, nil, nil, false),
+				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", testPrompt(t, "model-review", reviewFacts{}).Text(),
 					[]string{"brief", "checks", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
-				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewCallPrompt(GateResults{}, true, nil, nil, false),
+				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", testPrompt(t, "model-review-part", reviewFacts{Part: true}).Text(),
 					[]string{"diff", "files", "objective", "part"}},
 			} {
 				user := userMessage(chats[i])
@@ -3729,11 +3729,12 @@ func TestReviewPromptStatesTheUntrustedRuleOnce(t *testing.T) {
 	}
 }
 
-// The finding form ends every review call's prompt once, after the
-// check-in's drops of a re-review and the opened proofs, so the review's
-// own instructions never land inside the form's examples.
-func TestReviewPromptEndsWithTheFindingForm(t *testing.T) {
-	form := "\n\n" + writingguide.For(writingguide.JobFinding)
+// The finding form opens every review call's prompt once, and the
+// review's text after it ends with the check-in's drops of a re-review
+// and the opened proofs, so the review's own instructions never land
+// inside the form's examples.
+func TestReviewPromptOpensWithTheFindingForm(t *testing.T) {
+	form, _ := writingguide.Form("finding")
 	last := &Review{Verdicts: map[string]CheckVerdict{"f1": {State: CheckDropped, Evidence: "bar.go:3 already guards it"}}}
 	for _, tc := range []struct {
 		name         string
@@ -3746,9 +3747,10 @@ func TestReviewPromptEndsWithTheFindingForm(t *testing.T) {
 		{"a card with opened proofs", false, true, nil, reviewOpenedProofs},
 		{"a re-review of a card with opened proofs", false, true, last, reviewOpenedProofs},
 	} {
-		p := reviewCallPrompt(GateResults{ChecksPassed: true}, tc.part, tc.last, []string{"f1"}, tc.opened)
-		if !strings.HasSuffix(p, tc.holds+form) || strings.Count(p, form) != 1 {
-			t.Errorf("%s: the prompt does not end with %q and then the finding form, once:\n%s", tc.name, tc.holds, p)
+		p := testPrompt(t, reviewStep(tc.part), reviewFacts{Gates: GateResults{ChecksPassed: true}, Part: tc.part, Last: tc.last,
+			PartFindings: []string{"f1"}, Opened: tc.opened}).Text()
+		if !strings.HasPrefix(p, form+"\n\n") || !strings.HasSuffix(p, tc.holds) || strings.Count(p, form) != 1 {
+			t.Errorf("%s: the prompt does not open with the finding form, once, and end with %q:\n%s", tc.name, tc.holds, p)
 		}
 	}
 }

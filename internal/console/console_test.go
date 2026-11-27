@@ -125,6 +125,9 @@ type fakeForgejo struct {
 	// head the merge pinned; a pinned head other than the pull request's
 	// own in issueReads is refused 409, as Forgejo refuses it
 	merged []string
+	// pullFiles are the changed files of pull requests other than the
+	// rig's own, by the files path, as one page's raw JSON
+	pullFiles map[string]string
 }
 
 // setPullHead makes the pull request at path read with head sha.
@@ -288,6 +291,12 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(files)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9" && f.pullHead != "":
 		json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": f.pullHead}})
+	case r.Method == http.MethodGet && f.pullFiles[r.URL.Path] != "":
+		page := "[]"
+		if r.URL.Query().Get("page") == "1" {
+			page = f.pullFiles[r.URL.Path]
+		}
+		w.Write([]byte(page))
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9/files":
 		pages := map[string]string{"1": `[{"filename":"a.go","status":"modified","additions":40,"deletions":3},` +
 			`{"filename":"b.go","status":"modified","additions":5,"deletions":5}]`}

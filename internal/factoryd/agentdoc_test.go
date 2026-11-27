@@ -167,11 +167,11 @@ func TestAgentDocDirectMessages(t *testing.T) {
 		messages []message
 		tools    []string
 	}{
-		"case-checkin": {messages: []message{{role: "system", prefix: rungPrompt, suffix: rungPrompt},
+		"case-checkin": {messages: []message{{role: "system", prefix: testPrompt(t, "case-checkin", rungPrompt).Text(), suffix: rungPrompt},
 			{role: "user", prefix: "The review keeps raising findings on this card. How should it go on?\n",
 				suffix: "\nCalls left 20; your answer is due within 28m30s."}},
 			tools: []string{"transcript_search", "transcript_read", "card_facts", "card_step", "gates", "read_file", "grep", "cluster_facts", "answer"}},
-		"plan-namer": {messages: []message{{role: "system", prefix: namerPrompt, suffix: namerPrompt},
+		"plan-namer": {messages: []message{{role: "system", prefix: testPrompt(t, "plan-namer", namerPrompt).Text(), suffix: namerPrompt},
 			{role: "user", prefix: "The input, as JSON:\n" + `"Issue title: Count the skipped rows\nSpec outcome: The counter counts every row the query returns, skipped ones included.\nSummary: One card fixes the counter; one criterion proves it.\nAlready taken by other open plans: Nightly report"`}}},
 		"digest": {messages: []message{{role: "user",
 			prefix: "Summarise this file.\n\n# The nightly job\n\nThe job counts the day's rows and writes the report at 02:00 UTC.\nA batch that fails is requeued once, and a second failure pages the human on call.\n"}}},

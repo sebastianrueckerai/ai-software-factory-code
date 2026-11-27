@@ -30,7 +30,7 @@ import (
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	for name, val := range map[string]string{
-		"TASK_ID": "t1", "REPOSITORY": "sf/repo",
+		"TASK_ID": "t1", "REPOSITORY": "sf/repo", "STEP": "coding",
 		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200", "LINE_BOUND": "100",
 		"MESSAGE_TOKEN_SHA256": testMessageHash, "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
@@ -362,7 +362,7 @@ func TestWorkerGitEnvironmentIsFixed(t *testing.T) {
 func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	for k, v := range map[string]string{
 		"TASK_ID": "t1", "REPOSITORY": "sf/r", "BRANCH": "b", "PUSH_URL": "https://example/fork.git",
-		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
+		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m", "STEP": "coding",
 		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "LINE_BOUND": "0", "MESSAGE_TOKEN_SHA256": testMessageHash,
 		"EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
 	} {

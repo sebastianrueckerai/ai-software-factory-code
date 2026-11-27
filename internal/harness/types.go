@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // TaskBrief is the whole task as data, handed to a harness adapter
@@ -14,6 +15,9 @@ import (
 // by the control plane when it picks the sandbox and mints credentials.
 // Policy stays outside the LLM, so a harness cannot ask for capabilities.
 type TaskBrief struct {
+	// Step is the session's prompt step (prompts.Profiles): which profile
+	// gives its system prompt, its tools and its first turn's renderer.
+	Step string `json:"step"`
 	// Objective is the card's part of the brief: factoryd's
 	// CardBrief.AgentText, which the worker reads from the gateway's GET
 	// /worker/brief and the model review from the store.
@@ -199,15 +203,18 @@ type SandboxEnv struct {
 // (architecture 6.2).
 type Harness interface {
 	Prepare(ctx context.Context, env SandboxEnv, brief TaskBrief) error
-	// Text is the session's first message, built from brief once: the
-	// worker stores it as what the session read, and Run prompts it.
-	Text(brief TaskBrief) string
-	Run(ctx context.Context, text string, emit func(Event)) Result
-	// Message puts text into the running session as the next user turn:
+	// Text is the session's prompt, built from brief once: the worker
+	// stores it as what the session read, and Run starts the session on
+	// it, its standing text as the system prompt and its facts as the
+	// first turn.
+	Text(brief TaskBrief) (prompts.Prompt, error)
+	Run(ctx context.Context, p prompts.Prompt, emit func(Event)) Result
+	// Message puts p into the running session as the next user turn, its
+	// standing text the first time the session reads p's step:
 	// ErrNotSupported from a harness without such a mode (factoryd then
 	// redirects to a fresh session with the text), ErrNotRunning when no
 	// session runs.
-	Message(ctx context.Context, text string) error
+	Message(ctx context.Context, p prompts.Prompt) error
 }
 
 // MessagePort is the worker's one listening port, where factoryd posts

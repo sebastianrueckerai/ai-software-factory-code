@@ -6,9 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -262,9 +267,10 @@ func TestOperatorTitles(t *testing.T) {
 		t.Fatalf("headers = %v", g.headers)
 	}
 	b, _ := json.Marshal(g.request)
-	system, _ := json.Marshal("You name a chat thread from its first message. " +
+	form, _ := writingguide.Form("title")
+	system, _ := json.Marshal(form + "\n\nYou name a chat thread from its first message. " +
 		"Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. " +
-		"Answer in the message's language.\n\n" + writingguide.For(writingguide.JobTitle))
+		"Answer in the message's language.")
 	want := `{"max_tokens":200,"messages":[{"content":` + string(system) + `,"role":"system"},` +
 		`{"content":"Can you find the cache bug?","role":"user"}],"model":"small","stream":true}`
 	if string(b) != want {
@@ -399,5 +405,46 @@ func TestCostSinkAddsOnlyAKnownCost(t *testing.T) {
 	}
 	if got := sink.Total(); got != 0.2 {
 		t.Fatalf("sink total %v, want 0.2", got)
+	}
+}
+
+// A system message comes from SystemMessage alone, so its text is a
+// prompts.Prompt: no code of the module writes the literal Role "system".
+func TestNoLiteralSystemMessage(t *testing.T) {
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case d.IsDir() && strings.HasPrefix(d.Name(), ".") && path != filepath.Join("..", ".."):
+			return filepath.SkipDir
+		case d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go"):
+			return nil
+		}
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "SystemMessage" {
+				continue
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				kv, ok := n.(*ast.KeyValueExpr)
+				if !ok {
+					return true
+				}
+				key, ok := kv.Key.(*ast.Ident)
+				value, isLit := kv.Value.(*ast.BasicLit)
+				if ok && isLit && key.Name == "Role" && value.Value == `"system"` {
+					t.Errorf("%s writes an OperatorMessage with Role \"system\": build it with factoryd.SystemMessage from a prompts.Prompt", fset.Position(kv.Pos()))
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

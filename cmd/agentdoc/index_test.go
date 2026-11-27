@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // indexFixture answers the smallest row set the index renders from: two
@@ -85,26 +86,6 @@ func TestIndexRendersInventoryMatrixSelfCheck(t *testing.T) {
 	}
 }
 
-// The trunk is the loop modes' own: the harness's title call is a loop
-// page that carries the brief beside a prompt of its own, and it neither
-// counts as a mode nor narrows what the modes share.
-func TestIndexTrunkHoldsTheLoopModesAlone(t *testing.T) {
-	rows := append(indexFixture(), indexRow{
-		agent: Agent{ID: "opencode-title", Family: "A", Job: "titles a session", Runs: "inside opencode", Loop: true},
-		model: "small", purpose: "session", task: "agentdoc-fixture", requestBytes: 15000,
-		spans: []agentdoc.Span{{Name: "the harness's title prompt", Symbol: "opencode 1.19.6", Kind: agentdoc.KindHarness,
-			Place: agentdoc.PlaceSystem, Text: "You are a title generator."}},
-	})
-	md, failures := index(rows, "deadbeef", "policyhash", "opencode 1.19.6")
-	if len(failures) != 0 {
-		t.Fatalf("failures: %v", failures)
-	}
-	trunk := md[strings.Index(md, "## The one loop"):]
-	if !strings.Contains(trunk, "The 2 loop pages") || !strings.Contains(trunk, "- the sandbox facts — ") {
-		t.Errorf("the trunk counts or narrows by the title page:\n%s", trunk)
-	}
-}
-
 // rowOf reads a capture's row facts from the wire body itself, and
 // configRow answers the config page's row: one span, no request.
 func TestRowOfReadsTheWire(t *testing.T) {
@@ -165,8 +146,9 @@ func TestIndexMatrixSkipsSingleCarrierBlocks(t *testing.T) {
 	}
 }
 
-// The config row has no request: its bytes cell says so, like the model
-// cell, instead of reading as a request of zero bytes.
+// The config row has no request: its bytes cell and its word cells say
+// so, like the model cell, instead of reading as a request of zero bytes,
+// and it names no profile.
 func TestIndexMarksTheConfigRowAsNoRequest(t *testing.T) {
 	md, failures := index(indexFixture(), "deadbeef", "policyhash", "opencode 1.18.32")
 	if len(failures) != 0 {
@@ -174,9 +156,72 @@ func TestIndexMarksTheConfigRowAsNoRequest(t *testing.T) {
 	}
 	for _, line := range strings.Split(md, "\n") {
 		if strings.HasPrefix(line, "|") && strings.Contains(line, "[opencode-subagents](opencode-subagents.md) |") {
-			if !strings.HasSuffix(line, "| 0 | — |") {
-				t.Fatalf("config row reads %q, want the request-bytes cell to say —", line)
+			if !strings.HasSuffix(line, "| inside opencode | 0 | — | none | — | — | — | — | — | — | — |") {
+				t.Fatalf("config row reads %q, want the request-bytes and word cells to say —", line)
 			}
 		}
+	}
+}
+
+// The inventory prints each agent's profile and its words by part beside
+// the words no profile made and the tools' words.
+func TestIndexPrintsWordsByPart(t *testing.T) {
+	rows := []indexRow{{
+		agent: Agent{ID: "fake", Family: "B", Job: "fakes", Runs: "nowhere", Steps: []string{"x"}},
+		model: "small", purpose: "review", task: "agentdoc-fixture", requestBytes: 100,
+		parts: prompts.Parts{Guide: 10, Forms: 20, Chunks: 3, Paragraph: 40, Facts: 7}, harness: 100, toolWords: 50,
+		spans: []agentdoc.Span{{Name: "the text", Symbol: "x", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: "text"}},
+	}}
+	md, failures := index(rows, "deadbeef", "policyhash", "opencode 1.19.6")
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	for _, want := range []string{
+		"| profile | harness words | guide words | forms words | chunks words | paragraph words | facts words | tool words |",
+		"| x | 100 | 10 | 20 | 3 | 40 | 7 | 50 |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("index lacks %q:\n%s", want, md)
+		}
+	}
+}
+
+// Every agent of the map names the steps its request is built from, or is
+// the config page, or sends no text of ours; every step it names is
+// registered.
+func TestEveryAgentNamesItsSteps(t *testing.T) {
+	registered := map[string]bool{}
+	for _, r := range prompts.Registered() {
+		registered[r.Step] = true
+	}
+	for _, a := range registry {
+		if len(a.Steps) == 0 && !a.Config && !a.NoPrompt {
+			t.Errorf("%s names no step: list the profiles its request is built from, or mark it NoPrompt", a.ID)
+		}
+		for _, step := range a.Steps {
+			if !registered[step] {
+				t.Errorf("%s names step %s, which no code registers", a.ID, step)
+			}
+		}
+	}
+}
+
+// A harness agent's words no profile made are its system text and its
+// harness's own tools less its standing text; the tool words are the
+// gateway's tools'. A direct agent's request is all its builders', and
+// every tool on its wire counts as a tool. A tool's words are its
+// description's and its parameters' descriptions'.
+func TestWireWordsSplitTheHarnessFromTheTools(t *testing.T) {
+	b, err := agentdoc.ParseBody([]byte(`{"messages":[{"role":"system","content":"one two three four five"},{"role":"user","content":"six seven"}],` +
+		`"tools":[{"type":"function","function":{"name":"bash","description":"runs a command","parameters":{"properties":{"command":{"description":"the command to run"}}}}},` +
+		`{"type":"function","function":{"name":"factory-tools_digest","description":"digests a file","parameters":{"properties":{"path":{"description":"the file"}}}}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if harness, tools := wireWords(Agent{Loop: true}, b, 2); harness != 10 || tools != 5 {
+		t.Errorf("a harness agent's words = %d, %d; want 5 + 7 - 2 = 10 and 5", harness, tools)
+	}
+	if harness, tools := wireWords(Agent{}, b, 0); harness != 0 || tools != 12 {
+		t.Errorf("a direct agent's words = %d, %d; want 0 and 7 + 5 = 12", harness, tools)
 	}
 }

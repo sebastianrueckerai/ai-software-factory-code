@@ -153,6 +153,75 @@ func TestMergeItTakesTheHeadTheHumanRead(t *testing.T) {
 	}
 }
 
+// A merge's risk class may name its approvers: of the project's two
+// approvers, only the one class prompts lists may approve its merge, and
+// the other is refused with the class and its approvers, on the merge
+// request's approval and on a factory pull request's Merge it alike. A
+// class that names none lets both approve.
+func TestMergeApproverReadsTheClass(t *testing.T) {
+	const refused = "Pull request #%d is risk class prompts, and only sebastian may approve its merge. Leave the card waiting for them."
+	all := facefixtures.All()
+	i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool {
+		return fx.Group == facefixtures.GroupCard && fx.Kind == "factory pull request on a project without agents"
+	})
+	seat := func(t *testing.T, user string, scene bool) (*rig, *http.Cookie, *session) {
+		t.Helper()
+		r := newRig(t)
+		if scene {
+			r.seedScene(fixtureScene(all[i], all))
+		}
+		r.repoWriters["sf/code"] = []string{"sebastian", "controller"}
+		r.forgetWriters()
+		r.ledger.approvers = []string{"sebastian", "controller"}
+		r.ledger.risk = policy.Risk{Classes: []policy.RiskClass{
+			{Name: "prompts", Outcome: policy.OutcomeRequiresApproval, Human: true, Approvers: []string{"sebastian"}},
+			{Name: policy.ClassNormal, Outcome: policy.OutcomeAuto}},
+			Rules:   []policy.RiskRule{{Class: "prompts", Paths: []string{"internal/prompts/**"}}},
+			Default: policy.ClassNormal}
+		ck, s := memberLogin(t, r, user)
+		return r, ck, s
+	}
+
+	approve := func(t *testing.T, user, class string) (*rig, *httptest.ResponseRecorder) {
+		t.Helper()
+		r, ck, s := seat(t, user, false)
+		q := r.approvals.get(4)
+		q.Spec = json.RawMessage(strings.Replace(string(q.Spec), `"risk_class":"high"`, `"risk_class":"`+class+`"`, 1))
+		r.approvals.rows[slices.IndexFunc(r.approvals.rows, func(o factoryd.ApprovalRequest) bool { return o.ID == 4 })] = q
+		r.fg.calls = nil
+		return r, r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActApproveMerge)), ck)
+	}
+	r, rec := approve(t, "controller", "prompts")
+	if want := fmt.Sprintf(refused, 9); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), want) || slices.ContainsFunc(r.fg.calls, func(c string) bool {
+		return strings.HasPrefix(c, "SIGNAL") || strings.Contains(c, "/reviews")
+	}) {
+		t.Errorf("controller's approval of class prompts = %d %q, calls %q; want 403 %q and no review or signal", rec.Code, rec.Body, r.fg.calls, want)
+	}
+	for _, tc := range []struct{ user, class string }{{"sebastian", "prompts"}, {"controller", policy.ClassNormal}, {"sebastian", policy.ClassNormal}} {
+		if r, rec := approve(t, tc.user, tc.class); rec.Code != http.StatusSeeOther || !slices.Contains(r.fg.calls, "SIGNAL approved t-m #9 by "+tc.user) {
+			t.Errorf("%s's approval of class %s = %d %q, calls %q; want the signal", tc.user, tc.class, rec.Code, rec.Body, r.fg.calls)
+		}
+	}
+
+	const pull = "/api/v1/repos/sf/code/pulls/14"
+	mergeIt := func(t *testing.T, user, file string) (*rig, *httptest.ResponseRecorder) {
+		t.Helper()
+		r, ck, s := seat(t, user, true)
+		r.fg.setPullHead(pull, "abc1234")
+		r.fg.pullFiles = map[string]string{pull + "/files": `[{"filename":"` + file + `","status":"modified","additions":3,"deletions":1}]`}
+		return r, r.do(post("/tasks/"+all[i].Task.ID+"/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.ActApproveMerge}, "head": {"abc1234"}}), ck)
+	}
+	r, rec = mergeIt(t, "controller", "internal/prompts/steps/x.md")
+	if want := fmt.Sprintf(refused, 14); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), want) || len(r.fg.merged) != 0 {
+		t.Errorf("controller's Merge it of class prompts = %d %q, merged %v; want 403 %q and no merge", rec.Code, rec.Body, r.fg.merged, want)
+	}
+	for _, tc := range []struct{ user, file string }{{"sebastian", "internal/prompts/steps/x.md"}, {"controller", "README.md"}, {"sebastian", "README.md"}} {
+		if r, rec := mergeIt(t, tc.user, tc.file); rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.merged, []string{pull + " abc1234"}) {
+			t.Errorf("%s's Merge it of %s = %d %q, merged %v; want the merge", tc.user, tc.file, rec.Code, rec.Body, r.fg.merged)
+		}
+	}
+}
+
 // End the card on a human card always runs through Act, which records how
 // the card ends: on a card that waits with no open case, every door's End
 // the card is refused with the line that says the case comes, and nothing

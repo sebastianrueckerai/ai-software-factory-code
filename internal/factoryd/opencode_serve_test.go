@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -256,8 +257,10 @@ func fakeServe(fixture string) int {
 
 // fakeModelCall is what the capture mode's server does on the first
 // prompt: one model call through the identity proxy, with a system prompt
-// that names the working directory and FAKE_SERVE_DATE the way the real
-// harness's environment block does, then AGENTS.md off the working tree.
+// that opens with the build agent's prompt, names the working directory
+// and FAKE_SERVE_DATE the way the real harness's environment block does,
+// then AGENTS.md off the working tree; and, unless the config turns it
+// off, the harness's own title call before it.
 func fakeModelCall(prompt []byte) {
 	var p struct {
 		Model struct {
@@ -268,6 +271,14 @@ func fakeModelCall(prompt []byte) {
 		} `json:"parts"`
 	}
 	var cfg struct {
+		Agent struct {
+			Build struct {
+				Prompt string `json:"prompt"`
+			} `json:"build"`
+			Title struct {
+				Disable bool `json:"disable"`
+			} `json:"title"`
+		} `json:"agent"`
 		Provider map[string]struct {
 			Options struct {
 				BaseURL string `json:"baseURL"`
@@ -286,15 +297,19 @@ func fakeModelCall(prompt []byte) {
 			{"role": "user", "content": "Generate a title for this conversation:\n"}, {"role": "user", "content": p.Parts[0].Text}},
 	})
 	agents, _ := os.ReadFile("AGENTS.md")
-	sys := "You are a fake opencode.\n<env>\n  Working directory: " + cwd + "\n  Today's date: " + os.Getenv("FAKE_SERVE_DATE") +
+	sys := cmp.Or(cfg.Agent.Build.Prompt, "You are a fake opencode.") + "\n<env>\n  Working directory: " + cwd + "\n  Today's date: " + os.Getenv("FAKE_SERVE_DATE") +
 		"\n</env>\nInstructions from: " + cwd + "/AGENTS.md\n" + string(agents) + "\nEnd of the fake prompt.\n"
 	body, _ := json.Marshal(map[string]any{
 		"model":    p.Model.ModelID,
 		"messages": []map[string]string{{"role": "system", "content": sys}, {"role": "user", "content": p.Parts[0].Text}},
 		"tools":    []any{map[string]any{"type": "function", "function": map[string]any{"name": "bash"}}},
 	})
+	calls := [][]byte{title, body}
+	if cfg.Agent.Title.Disable {
+		calls = calls[1:]
+	}
 	for _, prov := range cfg.Provider {
-		for _, call := range [][]byte{title, body} {
+		for _, call := range calls {
 			resp, err := http.Post(prov.Options.BaseURL+"/chat/completions", "application/json", bytes.NewReader(call))
 			if err == nil {
 				io.Copy(io.Discard, resp.Body)

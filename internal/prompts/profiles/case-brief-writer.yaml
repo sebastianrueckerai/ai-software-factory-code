@@ -1,0 +1,15 @@
+step: case-brief-writer
+purpose: brief
+reader: human
+guide: false
+forms: [ask]
+chunks: []
+paragraph: ""
+facts: text
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 625

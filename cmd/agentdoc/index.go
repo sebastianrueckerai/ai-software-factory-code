@@ -17,11 +17,12 @@ import (
 	"encoding/json"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // indexRow is one agent's facts the index reads: the registry line, the
-// capture's own numbers, and the spans the duplication matrix hashes.
+// capture's own numbers, the words by part of its profiles, and the spans
+// the duplication matrix hashes.
 type indexRow struct {
 	agent        Agent
 	model        string // the captured request's model alias; "" when no request exists
@@ -29,17 +30,26 @@ type indexRow struct {
 	task         string
 	tools        int
 	requestBytes int
+	parts        prompts.Parts // the profile's words, from Build(step, fixture)
+	harness      int           // words of the captured request that no profile made
+	toolWords    int           // words of the gateway and chat tools on the wire
 	spans        []agentdoc.Span
 }
 
-// rowOf reads one capture's row facts from the wire body itself.
+// rowOf reads one capture's row facts from the wire body itself, and the
+// words by part from the agent's profiles.
 func rowOf(a Agent, rec agentdoc.Recorded, spans []agentdoc.Span) (indexRow, error) {
 	b, err := agentdoc.ParseBody(rec.Raw)
 	if err != nil {
 		return indexRow{}, err
 	}
+	parts, standing, err := stepParts(a)
+	if err != nil {
+		return indexRow{}, err
+	}
+	harness, tools := wireWords(a, b, standing)
 	return indexRow{agent: a, model: b.Model, purpose: rec.Purpose, task: rec.Task,
-		tools: len(b.Tools), requestBytes: len(rec.Raw), spans: spans}, nil
+		tools: len(b.Tools), requestBytes: len(rec.Raw), parts: parts, harness: harness, toolWords: tools, spans: spans}, nil
 }
 
 // configRow is the config page's row: no request exists, the fragment is
@@ -100,7 +110,8 @@ func (d *doc) writeSelfCheck(md *strings.Builder, rows []indexRow, opencodeVersi
 
 func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 	md.WriteString("## The inventory\n\n")
-	md.WriteString("| agent | family | job | model | purpose | runs | tools | request bytes |\n|---|---|---|---|---|---|---|---|\n")
+	md.WriteString("| agent | family | job | model | purpose | runs | tools | request bytes | profile | harness words | guide words | forms words | chunks words | paragraph words | facts words | tool words |\n" +
+		"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rows {
 		model := r.model
 		if model == "" {
@@ -110,8 +121,17 @@ func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 		if r.requestBytes == 0 {
 			requestBytes = "—"
 		}
-		fmt.Fprintf(md, "| [%s](%s.md) | %s | %s | `%s` | `%s` | %s | %d | %s |\n",
-			r.agent.ID, r.agent.ID, r.agent.Family, r.agent.Job, model, r.purpose, r.agent.Runs, r.tools, requestBytes)
+		harness, toolWords := fmt.Sprintf("%d", r.harness), fmt.Sprintf("%d", r.toolWords)
+		if r.requestBytes == 0 {
+			harness, toolWords = "—", "—"
+		}
+		profile, parts := "none", "— | — | — | — | —"
+		if len(r.agent.Steps) > 0 {
+			p := r.parts
+			profile, parts = strings.Join(r.agent.Steps, ", "), fmt.Sprintf("%d | %d | %d | %d | %d", p.Guide, p.Forms, p.Chunks, p.Paragraph, p.Facts)
+		}
+		fmt.Fprintf(md, "| [%s](%s.md) | %s | %s | `%s` | `%s` | %s | %d | %s | %s | %s | %s | %s |\n",
+			r.agent.ID, r.agent.ID, r.agent.Family, r.agent.Job, model, r.purpose, r.agent.Runs, r.tools, requestBytes, profile, harness, parts, toolWords)
 	}
 	md.WriteString("\n")
 }
@@ -123,7 +143,7 @@ func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 func (d *doc) writeTrunk(md *strings.Builder, rows []indexRow) {
 	var loop []indexRow
 	for _, r := range rows {
-		if r.agent.Loop && slices.Contains(factoryd.AgentDocLoopIDs(), r.agent.ID) {
+		if r.agent.Loop {
 			loop = append(loop, r)
 		}
 	}

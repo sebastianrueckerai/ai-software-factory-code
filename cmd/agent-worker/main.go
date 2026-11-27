@@ -35,6 +35,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
@@ -92,9 +93,9 @@ type session struct {
 	repoDir        string
 	base, mainHead string
 	brief          harness.TaskBrief
-	// text is the session's first message, built from brief and stored
-	// before the run prompts it
-	text    string
+	// prompt is the session's prompt, built from brief and stored before
+	// the run starts on it
+	prompt  prompts.Prompt
 	oc      *factoryd.Opencode
 	gate    *pushGate
 	wip     *wipServe
@@ -145,7 +146,7 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	}()
 	endRun := s.tel.phase("run")
 	guard := newWorkflowDirGuard(s.repoDir, s.oc.Message, log)
-	res := s.oc.Run(runCtx, s.text, guard.wrap(s.emitter(stdout)))
+	res := s.oc.Run(runCtx, s.prompt, guard.wrap(s.emitter(stdout)))
 	stopped := runCtx.Err() != nil
 	stopCheckpoints()
 	<-ckDone
@@ -308,6 +309,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	s.env.title, _, _ = strings.Cut(card, "\n")
 	card, leftOut := fitCard(card, s.env.leftOut)
 	s.brief = harness.TaskBrief{
+		Step:           s.env.step,
 		Objective:      card,
 		Repository:     s.env.repository,
 		SHA:            s.env.repoSHA,
@@ -339,11 +341,11 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	checkin := newCheckinServe(ws, log)
 	wip := newWipServe(s.env, s.repoDir, s.base, s.mainHead, log)
 	s.wip = wip
-	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
+	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, p prompts.Prompt, model string) error {
 		if model != "" {
 			s.oc.SetModel(model)
 		}
-		return s.oc.Message(ctx, text)
+		return s.oc.Message(ctx, p)
 	}, checkin, wip, log)
 	if err != nil {
 		return s, startError{"message endpoint", err}
@@ -358,11 +360,14 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 			return s, startError{"checkpoint store", err}
 		}
 	}
-	// the start's last step: the text is the record of what the session
-	// reads, and no session runs on one the gateway did not keep
-	s.text = s.oc.Text(s.brief)
+	// the start's last step: the first turn is the record of what the
+	// session reads beside its step's standing text, and no session runs
+	// on one the gateway did not keep
+	if s.prompt, err = s.oc.Text(s.brief); err != nil {
+		return s, startError{"brief", err}
+	}
 	storeCtx, cancel := context.WithTimeout(ctx, briefWait)
-	err = s.oc.StoreText(storeCtx, s.text)
+	err = s.oc.StoreText(storeCtx, s.prompt.Facts())
 	cancel()
 	if err != nil {
 		return s, startError{"brief", transient{err}}
@@ -399,7 +404,7 @@ func runReport(ctx context.Context, s *session, stdout io.Writer, log func(strin
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
 	endRun := s.tel.phase("run")
-	res := s.oc.Run(runCtx, s.text, emit)
+	res := s.oc.Run(runCtx, s.prompt, emit)
 	if err := killOthers(); err != nil {
 		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
 	}
@@ -600,6 +605,9 @@ type workerEnv struct {
 	report string
 	// cardRole is a plan's card's role (CARD_ROLE)
 	cardRole string
+	// step is the session's prompt step (STEP), whose profile gives the
+	// session its system prompt, its tools and its first turn
+	step string
 	// directories are the card's (DIRECTORIES), for the brief's map
 	directories []string
 	// migrationGlobs are the policy's migration directory globs
@@ -663,12 +671,13 @@ func loadEnv() (workerEnv, error) {
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.cardRole = str("CARD_ROLE")
+	e.step = str("STEP")
 	e.docsDir = str("DOCS_DIR")
 	e.companionDirs = strings.Fields(str("COMPANION_DIRS"))
 	e.facts = str("FACTS")
 	e.egressCanary, e.egressDirectIP = str("EGRESS_CANARY"), str("EGRESS_DIRECT_IP")
 	required := map[string]string{
-		"TASK_ID": e.taskID, "REPOSITORY": e.repository,
+		"TASK_ID": e.taskID, "REPOSITORY": e.repository, "STEP": e.step,
 		"BRANCH": e.branch, "GATEWAY_URL": e.gatewayURL, "TOKEN_FILE": e.tokenFile, "MODEL": e.model,
 		"EGRESS_CANARY": e.egressCanary, "EGRESS_DIRECT_IP": e.egressDirectIP,
 	}
@@ -1335,13 +1344,13 @@ func refuseWorkflowDirChange(e workerEnv, own, base, head string) error {
 // the push rule itself stays as it is.
 type workflowDirGuard struct {
 	repoDir string
-	send    func(ctx context.Context, text string) error
+	send    func(ctx context.Context, p prompts.Prompt) error
 	log     func(string, ...any)
 	mu      sync.Mutex
 	warned  map[string]bool
 }
 
-func newWorkflowDirGuard(repoDir string, send func(ctx context.Context, text string) error, log func(string, ...any)) *workflowDirGuard {
+func newWorkflowDirGuard(repoDir string, send func(ctx context.Context, p prompts.Prompt) error, log func(string, ...any)) *workflowDirGuard {
 	return &workflowDirGuard{repoDir: repoDir, send: send, log: log, warned: map[string]bool{}}
 }
 
@@ -1385,7 +1394,11 @@ func (g *workflowDirGuard) observe(ev harness.Event) {
 		return
 	}
 	go func() {
-		if err := g.send(context.Background(), workflowDirMessage(dir, rel)); err != nil && !errors.Is(err, harness.ErrNotRunning) {
+		p, err := prompts.Build("workflow-warning", factoryd.WorkflowDirMessage(dir, rel))
+		if err == nil {
+			err = g.send(context.Background(), p)
+		}
+		if err != nil && !errors.Is(err, harness.ErrNotRunning) {
 			g.log("workflow dir warning for %s: %v", rel, err)
 		}
 	}()
@@ -1396,13 +1409,6 @@ func (g *workflowDirGuard) observe(ev harness.Event) {
 func workflowDirOf(rel string) (string, bool) {
 	top, _, _ := strings.Cut(rel, "/")
 	return factoryd.WorkflowDir(top)
-}
-
-// workflowDirMessage is the message the session gets at the first change
-// under dir: the file, and the push rule's sentence from
-// refuseWorkflowDirChange.
-func workflowDirMessage(dir, file string) string {
-	return fmt.Sprintf("you changed %s under %s/: the push will refuse it — refusing to push: %s/ differs from the base. Revert that file and do the work without touching it.", file, dir, dir)
 }
 
 // refuseMisnamedMigrations is the migration-naming rule, now factoryd's
