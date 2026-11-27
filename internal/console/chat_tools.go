@@ -281,9 +281,9 @@ func (c *Console) chatTools() []chatTool {
 }
 
 // agentTools are the chat's tools a project without agents has no use
-// for: its sandbox images, which it has none of, and its level, which its
-// project file sets.
-var agentTools = []string{"project_images", "request_image", "set_autonomy"}
+// for: its sandbox images, which it has none of, its level, which its
+// project file sets, and a new card, which a human files there as an issue.
+var agentTools = []string{"project_images", "request_image", "set_autonomy", "new_card"}
 
 // offered are the schemas of the chat's tools the turn's member holds the
 // access table's roles for: the model is offered no tool the dispatch

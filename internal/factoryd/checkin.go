@@ -896,12 +896,13 @@ func priorIDs(priors []PriorFinding) string {
 // arrives, and the guards turn that into the outcome. A provider that
 // refuses every call ends it as a handover with no note and no verdicts —
 // the round runs as if no check-in existed. An answer the runner cannot
-// read gets one repair round and then fails the check-in (checkin_unreadable), at once on the last call.
-// Every call posts the answer tool beside the evidence tools; the last
-// call posts only it and forces it with tool_choice, so the answer
-// arrives as its arguments against the moment's schema. A call of the
-// answer tool is the answer, parsed wherever it comes; any other tool
-// asked for on the last call is the call cap's stop (checkin_call_cap).
+// read gets one repair round and then fails the check-in
+// (checkin_unreadable). Every call posts the answer tool beside the
+// evidence tools; the last call posts only it and forces it with
+// tool_choice, so the answer arrives as its arguments against the moment's
+// schema. A call of the answer tool is the answer, parsed wherever it
+// comes; any other tool asked for on the last call is the call cap's stop
+// (checkin_call_cap).
 // The last call comes at the call cap or once an evidence call as long as
 // the longest so far would not end before the answer is due, whichever is
 // first, and an evidence call still running when the answer is due is

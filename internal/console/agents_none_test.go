@@ -188,9 +188,10 @@ func TestTheChatReadsTheBoardOfAProjectWithoutAgents(t *testing.T) {
 // switch, whose roadmap pull files cards for agents, nor the level
 // control: full auto would write merge_rule auto into its file, and its
 // level stays what its project file says, so its chat offers the model no
-// set_autonomy either. The code project offers all three to its approver.
-// The level's door guards both ways in, the control's press and the
-// tool's run: it refuses such a project and names its project file.
+// set_autonomy either, and no new_card, whose every track the filing
+// refuses on it. The code project offers all four to its approver. The
+// level's door guards both ways in, the control's press and the tool's
+// run: it refuses such a project and names its project file.
 func TestTheChatHeaderOfAProjectWithoutAgentsOffersNoAgentControl(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.repoWriters["sf/infra"] = []string{"sebastian"}
@@ -214,10 +215,12 @@ func TestTheChatHeaderOfAProjectWithoutAgentsOffersNoAgentControl(t *testing.T) 
 		chatPost(t, r, ck, s, "/projects/"+project+"/chat", url.Values{"message": {"which level do you run at?"}})
 		calls := g.calls()
 		tools, _ := calls[len(calls)-1]["tools"].([]any)
-		if got := slices.ContainsFunc(tools, func(tool any) bool {
-			return tool.(map[string]any)["function"].(map[string]any)["name"] == "set_autonomy"
-		}); got != offers {
-			t.Errorf("%s: the chat offers set_autonomy: %t, want %t", project, got, offers)
+		for _, name := range []string{"set_autonomy", "new_card"} {
+			if got := slices.ContainsFunc(tools, func(tool any) bool {
+				return tool.(map[string]any)["function"].(map[string]any)["name"] == name
+			}); got != offers {
+				t.Errorf("%s: the chat offers %s: %t, want %t", project, name, got, offers)
+			}
 		}
 	}
 

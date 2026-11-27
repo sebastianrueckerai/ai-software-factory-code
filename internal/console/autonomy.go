@@ -60,10 +60,10 @@ func autonomyRefusal(state string, queueCap int) string {
 }
 
 // doSetAutonomy writes project name's autonomy state and queue cap, 0
-// for the file's own, into its project file as the member, an approver,
+// for the file's own, into its project file as the human, an approver,
 // through commitProjectFile. Full auto writes autonomous with merge_rule
 // auto; every other level writes merge_rule human.
-// The change records one event naming the member. A project without
+// The change records one event naming the human. A project without
 // agents is refused: its level is what its file says.
 func (c *Console) doSetAutonomy(ctx context.Context, name, state string, queueCap int, a actor) error {
 	if line := autonomyRefusal(state, queueCap); line != "" {

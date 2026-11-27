@@ -349,11 +349,11 @@ func TestCISpawnerReadsNodesOnlyForAWaitingJob(t *testing.T) {
 
 // A smoke runner requests 1 + 2 + 4 = 7 GiB (no cache volume). The node
 // keeps 10 GiB for the project's cache (the smoke test's repository names
-// one): with 23 GiB it takes the first waiting smoke job, and the second
-// stays queued.
+// one): with 10 + 7 = 17 GiB it takes the first waiting smoke job, and the
+// second stays queued.
 func TestCISpawnerFitsSmokeRunnersToo(t *testing.T) {
 	kube := newFakeKube()
-	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 23 * gi}}
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 17 * gi}}
 	hub := &smokeHub{jobs: []CIJob{smokeJob(11, "waiting", "h-11", 0), smokeJob(12, "waiting", "h-12", 0)},
 		tasks: []ActionTask{{ID: 501, RunNumber: 7}}, runs: demoRuns}
 	spawner, _ := hub.spawner(t, kube)

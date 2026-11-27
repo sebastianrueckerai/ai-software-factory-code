@@ -416,7 +416,8 @@ resources page, a period that recurs and no instant.
   nothing on a closed intake, and no ask files past the queue cap; a
   join files nothing and meets neither) and writes a `card_filed` row
   with the track, the reason for it, the title, image and tool. A project without agents offers
-  none of `project_images`, `request_image` and `set_autonomy`. Proposals and
+  none of `project_images`, `request_image`, `set_autonomy` and
+  `new_card`. Proposals and
   undo tokens are the human's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
   another human's). The `ask` tool questions the thread's human in

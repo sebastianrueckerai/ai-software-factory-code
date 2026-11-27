@@ -41,6 +41,10 @@ type templateForgejo struct {
 	closedIssues []int64
 	// labels are each issue's labels by number, as PUT .../labels left them.
 	labels map[int64][]string
+
+	// the next branch delete (failDelete) or pull request close
+	// (failClose) answers 500
+	failDelete, failClose bool
 }
 
 type templateIssue struct {
@@ -125,6 +129,12 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			}
 		}
 		switch {
+		case r.Method == http.MethodDelete && strings.HasPrefix(p, fk+"/branches/") && s.failDelete:
+			s.failDelete = false
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.Method == http.MethodPatch && strings.HasPrefix(p, up+"/pulls/") && body["state"] == "closed" && s.failClose:
+			s.failClose = false
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, up+"/contents/") && q.Get("ref") == "main":
 			file(s.main, strings.TrimPrefix(p, up+"/contents/"))
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fk+"/contents/") && branch != nil:
@@ -755,6 +765,35 @@ func TestTemplateUpdateCommentsBeforeItCloses(t *testing.T) {
 	want := []string{"#1 by basic factory-agent: Closing this pull request: main's files equal the template's."}
 	if fj.prs[0].state != "closed" || !slices.Equal(fj.comments, want) {
 		t.Fatalf("after the retry: pull request %q, comments %q; want closed and %q", fj.prs[0].state, fj.comments, want)
+	}
+}
+
+// A close Forgejo refuses after the comment, at the branch's delete or at
+// the pull request's close, fails the call: the next call posts no second
+// comment and closes the pull request.
+func TestTemplateUpdateCommentsOnceWhenTheCloseFails(t *testing.T) {
+	for _, step := range []string{"the branch's delete", "the pull request's close"} {
+		fj, reg, store, _, _ := templateCardRig(t, stage15Main(), false)
+		ctx := context.Background()
+		p := store.m["demo-app"]
+		if _, err := reg.openTemplateUpdate(ctx, p, templateWant(t, p, reg), templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs"})); err != nil {
+			t.Fatal(err)
+		}
+		f := reg.Forgejo.As(reg.ProjectsUser, reg.Forgejo.ProjectsToken)
+		fj.failDelete, fj.failClose = step == "the branch's delete", step == "the pull request's close"
+		want := []string{"#1 by basic factory-agent: Closing this pull request: main's files equal the template's."}
+		if _, err := reg.closeTemplateUpdate(ctx, f, p.Repo(), 1, "main's files equal the template's"); err == nil {
+			t.Fatalf("%s refused: the close ended without an error", step)
+		}
+		if !slices.Equal(fj.comments, want) {
+			t.Fatalf("%s refused: comments %q, want %q", step, fj.comments, want)
+		}
+		if _, err := reg.closeTemplateUpdate(ctx, f, p.Repo(), 1, "main's files equal the template's"); err != nil {
+			t.Fatalf("%s refused, the next call: %v", step, err)
+		}
+		if fj.prs[0].state != "closed" || !slices.Equal(fj.comments, want) {
+			t.Errorf("%s refused, after the next call: pull request %q, comments %q; want closed and %q once", step, fj.prs[0].state, fj.comments, want)
+		}
 	}
 }
 
