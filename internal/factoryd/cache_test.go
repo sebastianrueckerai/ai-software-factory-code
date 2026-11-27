@@ -187,8 +187,9 @@ func TestPodCommandsNameAbsolutePaths(t *testing.T) {
 
 // Each sandbox and CI pod requests the ephemeral-storage its emptyDirs may
 // fill, so the scheduler counts them against a node's allocatable: a pull
-// request's CI pod workspace 8, home 2, tmp 4 and the module cache 8; a
-// smoke run's the same without the cache; an agent's workspace 4, home 1,
+// request's CI pod workspace 1, home 2, tmp 4 and the module cache 8; a
+// build job's the same with workspace 8; a smoke run's the same as a pull
+// request's without the cache; an agent's workspace 4, home 1,
 // tmp 4, the harness 1 and the module cache 8; a reproduction's the same
 // with its build directory 8 in the cache's place. An init container requests the same
 // as the container it copies, so the pod's request stays the sum; cpu and
@@ -203,7 +204,7 @@ func TestPodsRequestTheirEmptyDirs(t *testing.T) {
 		inits     bool
 	}{
 		"ci runner":       {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort", nil, false), "15Gi", "1", false},
-		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "15Gi", "1", true},
+		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "22Gi", "1", true},
 		"ci smoke runner": {spawner.runnerPodSpec(ciJobKind{label: "demo-smoke", smoke: true, handle: "h-1"}, "", nil, false), "7Gi", "1", false},
 		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "22Gi", "250m", true},
 		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), "22Gi", "250m", true},

@@ -1426,9 +1426,15 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		map[string]any{"name": "tmp", "mountPath": "/tmp"},
 		map[string]any{"name": "registration", "mountPath": "/var/run/secrets/ci", "readOnly": true},
 	}
+	// the runner checks jobs out under home: a build job writes its layer
+	// caches and image layouts to the workspace, any other job only the
+	// runner's own files
+	workspace := "1Gi"
+	if kind.build {
+		workspace = "8Gi"
+	}
 	volumes := []any{
-		// the runner checks jobs out under home; the workspace holds only its own files
-		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": workspace}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
 		// main jobs run cold: GOCACHE, GOPATH and npm's
 		// cache live here, and a real app's cold checks pass 1 GiB (the
