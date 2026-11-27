@@ -27,7 +27,7 @@ func TestRegistryShape(t *testing.T) {
 	ids := make([]string, 0, len(registry))
 	for _, a := range registry {
 		drivers := 0
-		for _, on := range []bool{a.Capture != nil, a.Loop, a.Config} {
+		for _, on := range []bool{a.Capture != nil, a.Loop} {
 			if on {
 				drivers++
 			}
@@ -61,9 +61,6 @@ func TestRegistryShape(t *testing.T) {
 		if a := agentByID(id); a == nil || a.Capture == nil {
 			t.Errorf("the direct capture %s has no page", id)
 		}
-	}
-	if agentByID("opencode-subagents") == nil {
-		t.Error("the opencode-internal subagents have no page")
 	}
 }
 
@@ -115,7 +112,7 @@ func TestRegistryHoldsEveryModelCall(t *testing.T) {
 	}
 	held := map[string]bool{}
 	for _, a := range registry {
-		if !a.Config && len(a.Calls) == 0 {
+		if len(a.Calls) == 0 {
 			t.Errorf("%s names no model call its capture drives", a.ID)
 		}
 		for _, c := range a.Calls {

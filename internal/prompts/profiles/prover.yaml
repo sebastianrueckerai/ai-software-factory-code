@@ -8,7 +8,7 @@ paragraph: ""
 facts: session
 answer: ""
 tools:
-  builtin: [bash, edit, glob, grep, read, task, todowrite, webfetch]
+  builtin: [bash, edit, glob, grep, read]
   gateway: [file_proofs, manual]
   chat: []
 agents_md: true

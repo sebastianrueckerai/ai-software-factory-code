@@ -267,13 +267,13 @@ var (
 )
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
-// order: steer only where factoryd can reach a session, request_image
-// where it files tool cards, github_export where it keeps exports,
+// order: request_image where factoryd files tool cards, github_export
+// where it keeps exports,
 // github_sync where it syncs them, the routine tools where it runs
 // routines.
 func (c *Console) chatTools() []chatTool {
 	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
-		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "request_image" && c.cfg.RequestImage == nil ||
+		return t.internal || t.name == "request_image" && c.cfg.RequestImage == nil ||
 			t.name == "github_export" && c.cfg.Mirrors == nil ||
 			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "web_") && c.cfg.Web == nil ||
 			strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
@@ -284,19 +284,6 @@ func (c *Console) chatTools() []chatTool {
 // for: its sandbox images, which it has none of, its level, which its
 // project file sets, and a new card, which a human files there as an issue.
 var agentTools = []string{"project_images", "request_image", "set_autonomy", "new_card"}
-
-// offered are the schemas of the chat's tools the turn's human holds the
-// access table's roles for: the model is offered no tool the dispatch
-// would refuse them, and no agent tool on a project without agents.
-func (t *turn) offered() []factoryd.OperatorTool {
-	var defs []factoryd.OperatorTool
-	for _, tool := range t.c.chatTools() {
-		if t.offers(tool.name) && (t.p.Agents != policy.AgentsNone || !slices.Contains(agentTools, tool.name)) {
-			defs = append(defs, tool.def(tool.memberOnly || slices.Contains(t.cfg.Confirm, tool.name)))
-		}
-	}
-	return defs
-}
 
 func (c *Console) chatTool(name string) (chatTool, bool) {
 	i := slices.IndexFunc(c.chatTools(), func(t chatTool) bool { return t.name == name })
@@ -1598,15 +1585,13 @@ func init() {
 		{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 			about: "One card in full: its steps and flags, the card that continues it, what it names, its model calls.",
 			run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
-		{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
-			about: "The project's events, newest first: what was done to which card, by whom and how.",
+		{name: "history", title: "Read the history", params: map[string]any{"task_id": taskParam, "n": nParam},
+			about: "The project's events, or one card's with task_id: what was done to which card, by whom and how.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, in.limit())
-				return eventLines(events), nil, err
-			}},
-		{name: "card_history", title: "Read a card's history", params: map[string]any{"task_id": taskParam, "n": nParam}, required: []string{"task_id"},
-			about: "One card's events, newest first.",
-			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				if in.TaskID == "" {
+					events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, in.limit())
+					return eventLines(events), nil, err
+				}
 				k, err := t.card(in)
 				if err != nil {
 					return "", nil, err
@@ -1914,13 +1899,6 @@ func init() {
 			about:    "Tell a card one text, routed by its state to its session, its merge request or its question.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
 				note, err := t.runTellCard(in)
-				return note, nil, err
-			}},
-		{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
-			required: []string{"task_id", "text"},
-			about:    "Send a running card's session a message.",
-			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				note, err := t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
 				return note, nil, err
 			}},
 		{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -2552,7 +2530,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
   new_card's tracks: direct builds a small change at once: before its first session, the factory sizes a direct card where the process has a plan track, and one that is not small turns plan-track; plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text. roadmap_item names the docs/roadmap.md item the card builds: the pull's own filings carry it, one card per item: a card that cites it holds it, open or done, unless it is closed or failed and refile_of names its issue, which takes the item over; a closed intake refuses it.
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
-  tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
+  tell_card routes by the card's state: to its running session as a message, at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   answer's action takes its args: handover a model, and retry and replan none.
   give_room gives a card sessions' worth of time and money, each raise worked out from the card's own sessions: at a cap it answers the stop, on a live card it gives room ahead of time, and at a question it is refused. On your own decision the month's escalation pool bounds it and counts it; once the human confirmed it, the pool does not. Its money never passes the project's money left this month.

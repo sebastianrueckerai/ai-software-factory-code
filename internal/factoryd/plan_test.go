@@ -570,7 +570,7 @@ func TestALegacyTestCriterionDecodesAndANewOneIsRefused(t *testing.T) {
 // names digest only to a session whose tools hold it.
 func TestPlanGuideReadDiscipline(t *testing.T) {
 	conventions := "The issue's text tells what to build; every card follows the repository's conventions. "
-	mapFirst := "Map the repository before you read it: grep and glob find where things are, and the task tool's explore agent searches it on the cheaper model. " +
+	mapFirst := "Map the repository before you read it: grep and glob find where things are. " +
 		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
 	digest := "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
 	with := planGuide(testShape, testLimits, nil, []string{policy.ToolFilePlan, policy.ToolDigest})

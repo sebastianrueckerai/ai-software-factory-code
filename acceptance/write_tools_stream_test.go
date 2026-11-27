@@ -86,9 +86,7 @@ var writeCases = []writeCase{
 		result: "Commented on #11.", undo: true, undoResult: "Deleted the comment on #11.", event: factoryd.EventCardCommented,
 		calls: []string{"POST /api/v1/repos/sf/code/issues/11/comments"}, undoCalls: []string{"DELETE /api/v1/repos/sf/code/issues/comments/1"}},
 	{name: "tell_card", tool: "tell_card", args: `{"task_id":"t-r","text":"Rebase on main first."}`, confirm: true,
-		result: "Told #11 (its session reads the message): The session of #11 has your message.", event: factoryd.EventCardSteered},
-	{name: "steer", tool: "steer", args: `{"task_id":"t-r","text":"Rebase on main first."}`, confirm: true,
-		result: "The session of #11 has your message.", event: factoryd.EventCardSteered,
+		result: "Told #11 (its session reads the message): The session of #11 has your message.", event: factoryd.EventCardSteered,
 		check: func(t *testing.T, r *AcceptanceRig, _ *AccDocs) {
 			equal(t, "the text the session was handed", r.Steered(), []string{"t-r sebastian: Rebase on main first."})
 		}},
@@ -343,12 +341,12 @@ func TestWriteToolsStream(t *testing.T) {
 				c.setup(r)
 			}
 			wroteBefore := len(effects(r))
-			r.Reply([]string{Call(1, c.tool, c.args)}, []string{Say("Done.")})
+			r.Reply([]string{fetchCall(1, c.tool, c.args)}, []string{Say("Done.")})
 			code, body := postChat(t, r, path, ck, url.Values{"message": {"do it"}, "csrf": {csrf}})
 			if code != http.StatusOK {
 				t.Fatalf("POST the chat = %d:\n%s", code, body)
 			}
-			stream := streamOf(t, body)
+			stream := afterFetchSSE(t, streamOf(t, body), c.tool)
 			var did []sseEvent
 			var doneBody string
 			if c.confirm {
@@ -454,12 +452,12 @@ func TestWriteToolsRefuse(t *testing.T) {
 			r, _, path := NewAcceptanceRig(t, true, nil)
 			ck, csrf := r.Login(t)
 			args := strings.Replace(c.args, `"task_id":"`+firstTask(c.args)+`"`, `"task_id":"#99"`, 1)
-			r.Reply([]string{Call(1, c.tool, args)}, []string{Say("Done.")})
+			r.Reply([]string{fetchCall(1, c.tool, args)}, []string{Say("Done.")})
 			code, body := postChat(t, r, path, ck, url.Values{"message": {"do it"}, "csrf": {csrf}})
 			if code != http.StatusOK {
 				t.Fatalf("POST the chat = %d:\n%s", code, body)
 			}
-			stream := streamOf(t, body)
+			stream := afterFetchSSE(t, streamOf(t, body), c.tool)
 			if k := kindsOf(stream); slices.Contains(k, "proposal") || slices.Contains(k, "applied") {
 				t.Fatalf("the events = %v, want no proposal and no applied", k)
 			}
@@ -488,18 +486,18 @@ func firstTask(args string) string {
 // longer has are moved apart.
 var (
 	writeTools = []string{"promote_resource", "release_resource", "new_card", "request_image", "answer", "comment",
-		"tell_card", "steer", "retry", "request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria",
+		"tell_card", "retry", "request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria",
 		"set_accent", "invite", "github_export", "github_sync", "close", "edit", "give_room",
 		"set_dependency", "hold_card", "release_hold", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",
 		"routine_skip", "notes_write", "escalate", "attach_analysis"}
 	// readTools are the tools that change nothing; with writeTools they
 	// are every tool the policy names.
-	readTools = []string{"system", "board", "find_cards", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
+	readTools = []string{"system", "board", "find_cards", "card", "history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
 		"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
 		"alerts", "deployment_health", "cluster_facts", "resources", "settings", "policy", "project_images", "read_doc", "show_doc", "routines",
 		"notes_read", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card",
 		"set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}
-	removedTools = []string{"move_card", "start_plan", "accept_plan", "reject_plan"}
+	removedTools = []string{"steer", "card_history", "move_card", "start_plan", "accept_plan", "reject_plan"}
 )
 
 // TestWriteToolsTable keeps the table whole: every write tool has a case,

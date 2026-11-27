@@ -2579,8 +2579,8 @@ func TestRekeyFailureStays502WhenConnected(t *testing.T) {
 	}
 }
 
-// A cheaper alias of the class runs on the session's key (a subagent's
-// calls, roadmap 222, item 6): its calls cost at most the session's, so
+// A cheaper alias of the class runs on the session's key (the agent's
+// own calls): its calls cost at most the session's, so
 // the session's hold bounds them. A dearer alias stays refused.
 func TestAgentCallsACheaperAliasOfTheClass(t *testing.T) {
 	stub := newStubUpstream(t)

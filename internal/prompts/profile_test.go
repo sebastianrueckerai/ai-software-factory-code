@@ -65,12 +65,17 @@ func TestProfileRules(t *testing.T) {
 		"builtin twice":             {"builtin: []", "builtin: [read, read]", `step x: tools.builtin name "read" twice`},
 		"gateway twice":             {"builtin: []\n  gateway: []", "builtin: [read]\n  gateway: [digest, digest]", `step x: tools.gateway name "digest" twice`},
 		"chat twice":                {"chat: []", "chat: [board, board]", `step x: tools.chat name "board" twice`},
-		"unknown builtin":           {"builtin: []", "builtin: [skill]", `step x: builtin tool "skill" is not one of [bash edit glob grep read task todowrite webfetch]`},
+		"unknown builtin":           {"builtin: []", "builtin: [patch]", `step x: builtin tool "patch" is not one of [bash edit glob grep read todowrite]`},
+		"an always denied builtin":  {"builtin: []", "builtin: [task]", `step x: builtin tool "task" is not one of [bash edit glob grep read todowrite]`},
 		"unknown gateway":           {"builtin: []\n  gateway: []", "builtin: [read]\n  gateway: [teleport]", `step x: gateway tool "teleport" is not a policy tool`},
 		"gateway with no harness":   {"gateway: []", "gateway: [digest]", "step x: tools.gateway needs tools.builtin: only a harness session calls the gateway's tools"},
 		"agents_md with no harness": {"agents_md: false", "agents_md: true", "step x: agents_md needs tools.builtin: only the harness loads AGENTS.md"},
 		"chat in a harness":         {"builtin: []\n  gateway: []\n  chat: []", "builtin: [read]\n  gateway: []\n  chat: [board]", "step x: tools.chat with tools.builtin: a harness session has no chat tools"},
-		"an answer type":            {`answer: ""`, "answer: verdict", `step x: answer "verdict" is not a registered answer type`},
+		"unknown chat tool":         {"chat: []", "chat: [teleport]", `step x: chat tool "teleport" is not one of policy.ChatTools`},
+		"a tool in two tiers":       {"chat: []", "chat: [card]\n  rare: [card]", `step x: chat tool "card" is in tools.chat and tools.rare`},
+		"rare with no core":         {"chat: []", "chat: []\n  rare: [board]", "step x: tools.rare and tools.attached need tools.chat and no tools.builtin: they are the console chat's tiers"},
+		"chat with no tool budget":  {"chat: []", "chat: [card]", "step x: budget_tool_words is 0 with 1 chat tools, want the most words its chat tools hold, and 0 without chat tools"},
+		"a tool budget, no chat":    {"budget_words: 10", "budget_words: 10\nbudget_tool_words: 5", "step x: budget_tool_words is 5 with 0 chat tools, want the most words its chat tools hold, and 0 without chat tools"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(validProfile, row.from) {

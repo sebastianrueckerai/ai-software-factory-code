@@ -8,8 +8,8 @@ paragraph: ""
 facts: session
 answer: ""
 tools:
-  builtin: [bash, edit, glob, grep, read, task, todowrite, webfetch]
-  gateway: [analyze_image, digest, escalate, file_plan, manual, web_scrape, web_search]
+  builtin: [bash, glob, grep, read]
+  gateway: [analyze_image, digest, file_plan, manual, web_scrape, web_search]
   chat: []
 agents_md: true
 budget_words: 2556

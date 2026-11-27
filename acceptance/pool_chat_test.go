@@ -44,12 +44,12 @@ const accPool18 = accPoolBase + "    eur: 18\n"
 // on the stream, nothing written.
 func poolOffer(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, args string) (string, string, factoryd.PoolPreview) {
 	t.Helper()
-	r.Reply([]string{Call(1, "set_pool", args)})
+	r.Reply([]string{fetchCall(1, "set_pool", args)})
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"please change the pool"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
 	}
-	events := eventsOf(t, body)
+	events := afterFetch(t, eventsOf(t, body), "set_pool")
 	var kinds []string
 	for _, e := range events {
 		k, _, _ := strings.Cut(e, " ")
@@ -275,7 +275,13 @@ func TestPoolConfirmationAccess(t *testing.T) {
 	// a writer of the repository without the approvers' authority offers
 	// nothing: the streamed refusal with the typed status its row keeps
 	bk, bcsrf := r.LoginAs(t, "bob")
-	equal(t, "the non-approver's offer", agentCall(t, r, path, bk, bcsrf, "set_pool", args, "Understood."), []string{
+	// set_pool is not offered to bob, so its fetch is answered with the
+	// list of the rare tools and the call itself meets the approvers' refusal
+	events := agentCall(t, r, path, bk, bcsrf, "set_pool", args, "Understood.")
+	if wantFetch := `tool {"arguments":{"name":"set_pool"},"duration_ms":0,"name":"tool_schema","result":"There is no rare tool set_pool. The rare tools are: `; len(events) == 0 || !strings.HasPrefix(events[0], wantFetch) {
+		t.Fatalf("the non-approver's fetch of set_pool = %v, want it to open with %s", events, wantFetch)
+	}
+	equal(t, "the non-approver's offer", events[1:], []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: Only the approvers of project ` + accProjectName + ` may change the escalation pool."}`,
 		`text {"text":"Understood."}`, `done {}`})
 	equal(t, "the non-approver's offer status", lastToolRow(t, r, "bob", "set_pool").Status, http.StatusForbidden)

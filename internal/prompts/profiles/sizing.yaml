@@ -8,8 +8,8 @@ paragraph: ""
 facts: session
 answer: ""
 tools:
-  builtin: [bash, edit, glob, grep, read, task, todowrite, webfetch]
-  gateway: [analyze_image, deployment_health, digest, escalate, manual, request_info, web_scrape, web_search]
+  builtin: [glob, grep, read]
+  gateway: [analyze_image, manual]
   chat: []
 agents_md: true
 budget_words: 302

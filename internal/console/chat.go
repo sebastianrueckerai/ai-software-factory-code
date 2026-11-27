@@ -161,6 +161,11 @@ type turn struct {
 	// ask is the ask row the tool's run left for the answer's own row,
 	// which the turn ends on; nil until an ask runs.
 	ask *factoryd.ChatMessage
+	// fetched are the rare tools the thread's schemas are fetched for, in
+	// ChatTools order, and attached says a row of the thread carries an
+	// attachment: both derive from the rows context reads.
+	fetched  []string
+	attached bool
 	// parked are the tools this thread's open ask bindings name: their
 	// call refuses while the binding stands, for the member's press runs
 	// the bound tool, not the model's reading of a typed reply.
@@ -1287,7 +1292,6 @@ func (t *turn) run(id, notice string) {
 		}
 		t.send("text", map[string]string{"text": notice + "\n\n"})
 	}
-	defs := t.offered()
 	t.parked = map[string]bool{}
 	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, t.owner, t.conv, time.Now()); err != nil {
 		log.Printf("console: the ask bindings of %s on %s: %v", t.owner, t.p.Name, err)
@@ -1302,6 +1306,8 @@ func (t *turn) run(id, notice string) {
 			t.stopEnd("")
 			return
 		}
+		// the thread's rows and this turn's fetches decide the tool list
+		defs := t.offered()
 		out := &unstamper{send: func(s string) { t.send("text", map[string]string{"text": s}) }}
 		// the reasoning rides the bus only (the session_said rule): the
 		// fold reads it live, no row keeps it
@@ -1561,8 +1567,12 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 		args = tool.normalized(args)
 	}
 	switch {
+	case call.Name == ToolSchemaName:
+		result = t.toolSchema(cmp.Or(args, "{}"))
 	case !ok:
 		result = "There is no tool " + call.Name + "."
+	case t.unfetched(call.Name):
+		result, status = fmt.Sprintf("Refused: %s is a rare tool and its schema is not in this thread. Call %s with name %q, then call %s.", call.Name, ToolSchemaName, call.Name, call.Name), http.StatusConflict
 	case t.parked[call.Name]:
 		result = "Refused: an open ask of this thread binds " + call.Name + "; the human's press runs it, a press answers it, and in a thread of their own so does their message."
 	case json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) != nil:
@@ -2204,6 +2214,9 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 		return nil, err
 	}
 	t.attachRows(t.r.Context(), history)
+	t.attached = slices.ContainsFunc(history, func(m factoryd.ChatMessage) bool { return len(m.Attachments) > 0 })
+	live := liveRows(th, history)
+	t.fetched = threadTools(live)
 	now := status
 	if line := imagesFact(t.p); line != "" {
 		now += "\n" + line
@@ -2221,7 +2234,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]factoryd.OperatorMessage{factoryd.SystemMessage(system)}, t.replay(liveRows(th, history))...), nil
+	return append([]factoryd.OperatorMessage{factoryd.SystemMessage(system)}, t.replay(live)...), nil
 }
 
 // replay is rows as the turn's context holds them, each tool call
@@ -2278,6 +2291,9 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
 			result := call.Result
+			if earlier && call.Name == ToolSchemaName {
+				result = "[fetched in an earlier turn: the schema stands in your tool list]"
+			}
 			if earlier && isRead(call.Name) && !isPriced(call.Name) && !asked(call.Arguments) {
 				if call.Name == "read_attachment" {
 					result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out; the document is unchanged, call read_attachment again for the same words]"

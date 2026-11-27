@@ -34,3 +34,18 @@ func TestModelCallsReadNoneOfTheWalk(t *testing.T) {
 		}
 	}
 }
+
+// A generic function's instantiation is a call of the function: the walk
+// reads the typed ChatAnswer[T] as a caller of answerWith.
+func TestModelCallsFollowAGenericCall(t *testing.T) {
+	g, err := readCallGraph(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range g.callers["answerWith"] {
+		if c.fn == "factoryd.ChatAnswer" {
+			return
+		}
+	}
+	t.Errorf("the walk reads no call of answerWith from factoryd.ChatAnswer: %v", g.callers["answerWith"])
+}

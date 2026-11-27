@@ -62,12 +62,11 @@ type Opencode struct {
 	TokenFile  string // projected ServiceAccount JWT, re-read per request
 	Model      string // default "factory/factory-main"
 	// Stronger is the ladder's stronger model, declared beside Model so a
-	// running session can switch to it (SetModel, roadmap 222, item 5);
-	// Cheap is the ladder's start, the subagents' model (item 6)
-	Stronger, Cheap string
-	Budget          TokenBudget
-	Steps           int // the agent's step cap, policy limits.steps
-	HTTP            *http.Client
+	// running session can switch to it (SetModel, roadmap 222, item 5)
+	Stronger string
+	Budget   TokenBudget
+	Steps    int // the agent's step cap, policy limits.steps
+	HTTP     *http.Client
 
 	mu        sync.Mutex
 	base      string    // the running server's URL
@@ -166,14 +165,8 @@ func (o *Opencode) Run(ctx context.Context, p prompts.Prompt, emit func(harness.
 
 	provider, modelID := o.model()
 	var more []string
-	subagent := ""
-	for _, m := range []string{o.Stronger, o.Cheap} {
-		if p, id := splitModel(m); m != "" && p == provider && id != modelID && !slices.Contains(more, id) {
-			more = append(more, id)
-		}
-	}
-	if p, id := splitModel(o.Cheap); o.Cheap != "" && p == provider {
-		subagent = p + "/" + id
+	if p, id := splitModel(o.Stronger); o.Stronger != "" && p == provider && id != modelID {
+		more = append(more, id)
 	}
 	// every declared model's served window, asked of the gateway before
 	// the server starts, all under one deadline: a gateway that answers
@@ -193,7 +186,7 @@ func (o *Opencode) Run(ctx context.Context, p prompts.Prompt, emit func(harness.
 			windows[id] = w
 		}
 	}
-	cfg, err := buildOpencodeConfig(p.Step(), "http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, windows, subagent, more...)
+	cfg, err := buildOpencodeConfig(p.Step(), "http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, windows, more...)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -327,7 +320,7 @@ func (o *Opencode) serve(ctx context.Context, base string, prompt prompts.Prompt
 		return fmt.Errorf("prompt: %w", err)
 	}
 
-	m := &serveMapper{session: created.ID, sessions: map[string]bool{created.ID: true}}
+	m := &serveMapper{session: created.ID}
 	var replyErr error
 	lines := &lineWriter{
 		line: func(b []byte) {
@@ -446,9 +439,8 @@ func serveCall(ctx context.Context, u string, body, out any) error {
 // serveMapper turns the server's events for one session into the JSON
 // lines `opencode run --format json` prints for them (run.ts:697-820).
 type serveMapper struct {
-	session  string
-	sessions map[string]bool // the session and its subagents' sessions
-	idle     bool
+	session string
+	idle    bool
 	// started are the session's tool calls whose start went out: opencode
 	// sends running again as a call's output streams
 	started map[string]bool
@@ -472,29 +464,18 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 			Status    struct {
 				Type string `json:"type"`
 			} `json:"status"`
-			Info struct {
-				ID       string `json:"id"`
-				ParentID string `json:"parentID"`
-			} `json:"info"`
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(data, &ev); err != nil {
 		return served{}
 	}
 	pr := ev.Properties
-	runLine := func(typ string, key string, v json.RawMessage, subagent bool) served {
+	runLine := func(typ string, key string, v json.RawMessage) served {
 		fields := map[string]any{"type": typ, "timestamp": at.UnixMilli(), "sessionID": m.session, key: v}
-		if subagent {
-			fields["subagent"] = true
-		}
 		line, _ := json.Marshal(fields)
 		return served{line: line}
 	}
 	switch ev.Type {
-	case "session.created":
-		if m.sessions[pr.Info.ParentID] {
-			m.sessions[pr.Info.ID] = true
-		}
 	case "message.part.updated":
 		var part struct {
 			ID        string `json:"id"`
@@ -511,46 +492,40 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 			return served{}
 		}
 		if part.SessionID != m.session {
-			// a subagent's tool calls reach the supervisor marked: its writes
-			// keep the write clock (roadmap 222, item 6), its run counts once
-			// for repetition, as the session's task call
-			if m.sessions[part.SessionID] && part.Type == "tool" && (part.State.Status == "completed" || part.State.Status == "error") {
-				return runLine("tool_use", "part", pr.Part, true)
-			}
 			return served{}
 		}
 		switch {
 		case part.Type == "tool" && (part.State.Status == "completed" || part.State.Status == "error"):
-			return runLine("tool_use", "part", pr.Part, false)
+			return runLine("tool_use", "part", pr.Part)
 		case part.Type == "tool" && part.State.Status == "running" && part.ID != "" && !m.started[part.ID]:
 			if m.started == nil {
 				m.started = map[string]bool{}
 			}
 			m.started[part.ID] = true
-			return runLine("tool_running", "part", pr.Part, false)
+			return runLine("tool_running", "part", pr.Part)
 		case part.Type == "step-start":
-			return runLine("step_start", "part", pr.Part, false)
+			return runLine("step_start", "part", pr.Part)
 		case part.Type == "step-finish":
-			return runLine("step_finish", "part", pr.Part, false)
+			return runLine("step_finish", "part", pr.Part)
 		case part.Type == "text" && part.Time.End != 0:
-			return runLine("text", "part", pr.Part, false)
+			return runLine("text", "part", pr.Part)
 		}
 	case "session.error":
 		if pr.SessionID == m.session && len(pr.Error) > 0 && string(pr.Error) != "null" {
-			return runLine("error", "error", pr.Error, false)
+			return runLine("error", "error", pr.Error)
 		}
 	case "session.compacted":
 		// the bus carries the session id alone: no token figures ride it
 		if pr.SessionID == m.session {
 			id, _ := json.Marshal(pr.SessionID)
-			return runLine("compacted", "session", id, false)
+			return runLine("compacted", "session", id)
 		}
 	case "session.status":
 		if pr.SessionID == m.session && pr.Status.Type == "idle" {
 			m.idle = true
 		}
 	case "permission.asked":
-		if m.sessions[pr.SessionID] {
+		if pr.SessionID == m.session {
 			return served{permission: pr.ID}
 		}
 	}
@@ -892,7 +867,7 @@ func workGuide(tools []string, m *imagegen.Manifest) string {
 		"If you fix a fault you could not reproduce exactly, " +
 		"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. " + noAnswer
 	if slices.Contains(tools, policy.ToolDelegate) {
-		g += downARung
+		g += delegateLine
 	}
 	return g + guideEnd(m, tools)
 }
@@ -901,11 +876,8 @@ func workGuide(tools []string, m *imagegen.Manifest) string {
 // whom, the ask tools' descriptions say.
 const noAnswer = "Nobody answers a question in a message. "
 
-// downARung is the one rule for the two cheaper forms (roadmap 222, item
-// 6): the task tool's subagents in this session, delegate after it; what
-// delegate files, its description says.
-const downARung = "Routine, well-specified work goes down a rung: in this session, the task tool's general or explore agent runs on the cheaper model and its result returns to you; " +
-	"for work after this card, call delegate. "
+// delegateLine points at the delegate tool; what it files, its description says.
+const delegateLine = "For work after this card, call delegate. "
 
 // guideEnd closes every coding guide on image m (nil: the factory's) with
 // the session's tools: the checks, the push, the sandbox, the last
@@ -1065,16 +1037,14 @@ func (o *Opencode) gatewayCall(ctx context.Context, method, path, body string) (
 // profile gives the build agent's prompt, which replaces the harness's
 // own, and denies every tool the profile does not name; the skill tool
 // and the title call are off for every step.
-// subagent, when set, is the model (provider/id) the general and explore
-// agents run on: the cheap rung under a frontier session (roadmap 222,
-// item 6); more lists further model ids to declare.
+// more lists further model ids to declare.
 // windows maps each declared model's served context window; a model with
 // one runs under the smaller of it and the trust cap with limit.input at
 // 75 percent of that, and the session's own model having one turns the
 // auto compaction on (overflow.ts at v1.18.32 compacts at limit.input
 // with reserved 0). A model without a window keeps the trust cap and
 // opencode's own threshold.
-func buildOpencodeConfig(step, proxyURL, provider, modelID string, outputLimit, steps int, windows map[string]int, subagent string, more ...string) ([]byte, error) {
+func buildOpencodeConfig(step, proxyURL, provider, modelID string, outputLimit, steps int, windows map[string]int, more ...string) ([]byte, error) {
 	if steps <= 0 {
 		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
 	}
@@ -1084,10 +1054,6 @@ func buildOpencodeConfig(step, proxyURL, provider, modelID string, outputLimit, 
 	}
 	baseURL := proxyURL + "/v1"
 	capped := map[string]any{"steps": steps}
-	sub := map[string]any{"steps": steps}
-	if subagent != "" {
-		sub["model"] = subagent
-	}
 	models := map[string]any{}
 	for _, id := range append([]string{modelID}, more...) {
 		if id == "" {
@@ -1110,9 +1076,9 @@ func buildOpencodeConfig(step, proxyURL, provider, modelID string, outputLimit, 
 	}
 	capped["prompt"] = session["agent"].(map[string]any)["build"].(map[string]any)["prompt"]
 	permission := session["permission"].(map[string]any)
-	permission["question"], permission["doom_loop"], permission["skill"] = "deny", "allow", "deny"
+	permission["question"], permission["doom_loop"] = "deny", "allow"
 	cfg := map[string]any{
-		"agent":        map[string]any{"build": capped, "general": sub, "explore": sub, "title": map[string]any{"disable": true}},
+		"agent":        map[string]any{"build": capped, "title": map[string]any{"disable": true}},
 		"permission":   permission,
 		"experimental": map[string]any{"continue_loop_on_deny": true},
 		"mcp": map[string]any{
@@ -1181,7 +1147,6 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 		Timestamp int64           `json:"timestamp"`
 		Part      json.RawMessage `json:"part"`
 		Error     json.RawMessage `json:"error"`
-		Subagent  bool            `json:"subagent"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		p.errMsg = fmt.Sprintf("unparseable opencode line: %s", b)
@@ -1197,7 +1162,7 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 	case "compacted":
 		emit(harness.Event{Time: at, Kind: harness.EventCompacted})
 	case "tool_use":
-		p.toolUse(raw.Part, at, raw.Subagent, emit)
+		p.toolUse(raw.Part, at, emit)
 	case "tool_running":
 		p.toolRunning(raw.Part, at, emit)
 	case "text":
@@ -1245,7 +1210,7 @@ func (p *opencodeParser) toolRunning(partJSON []byte, at time.Time, emit func(ha
 		"call_id": part.ID, "tool": part.Tool, "started": part.State.Time.Start}})
 }
 
-func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, emit func(harness.Event)) {
+func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, emit func(harness.Event)) {
 	var part struct {
 		ID    string `json:"id"`
 		Tool  string `json:"tool"`
@@ -1276,9 +1241,6 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 	next := emit
 	emit = func(ev harness.Event) {
 		ev.Detail["call_id"] = part.ID
-		if subagent {
-			ev.Detail["subagent"] = true
-		}
 		next(ev)
 	}
 	duration := part.State.Time.End - part.State.Time.Start
@@ -1331,9 +1293,6 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 			"args_sha256": argsHash(part.State.Input),
 			"duration_ms": duration,
 		}
-		if part.Tool == "task" {
-			detail["result"] = textutil.Truncate(part.State.Output, maxTaskResult)
-		}
 		emit(harness.Event{Time: at, Kind: harness.EventToolCall, Detail: detail})
 	}
 }
@@ -1380,7 +1339,6 @@ func (p *opencodeParser) fileChange(path, tool string, duration int64, at time.T
 const (
 	maxOutputTail = 4 << 10  // bytes of a command's output an event carries
 	maxArgString  = 512      // bytes of one string argument an event carries
-	maxTaskResult = 32 << 10 // bytes of a subagent's report an event carries
 	maxHashedFile = 64 << 20 // larger files get no content hash
 )
 

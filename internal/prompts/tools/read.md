@@ -1,0 +1,1 @@
+Read a file or a directory. `filePath` is absolute. It returns up to 2000 lines, from line `offset` (1-indexed) when set, and `limit` sets how many. Each line comes as `N: text`, and a line over 2000 characters is cut. A directory lists one entry per line, a subdirectory with a trailing `/`. Images and PDFs return as attachments.

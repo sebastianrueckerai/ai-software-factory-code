@@ -80,7 +80,7 @@ func TestTokenStampsEveryDecisionEvent(t *testing.T) {
 		t.Run(tc.tool, func(t *testing.T) {
 			r, g := tc.rig(t)
 			session := tokenSessionOf(t, r, tc.login, tc.repository)
-			g.replies = [][]string{{call(1, tc.tool, tc.args)}}
+			g.replies = [][]string{{fetchCall(1, tc.tool, tc.args)}}
 			id := raised(t, session, "do it")
 			before := r.events.count()
 			g.replies = [][]string{}

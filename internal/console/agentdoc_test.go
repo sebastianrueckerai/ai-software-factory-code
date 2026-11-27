@@ -128,12 +128,13 @@ func TestAgentDocConsoleSendsThePurpose(t *testing.T) {
 }
 
 // The captures offer the tools production offers the fixture's writer:
-// the chat's config gates steer, request_image, the web tools and the
+// the chat's config gates request_image, the web tools and the
 // routine tools on doors factoryd always wires, so the fixture console
 // wires them too, and the research loop reads the web as the chat does.
+// The chat's rare tools stand in tool_schema's index, not as schemas.
 func TestAgentDocConsoleOffersTheProductionTools(t *testing.T) {
 	for id, want := range map[string][]string{
-		"project-agent": {"steer", "request_image", "web_search", "web_scrape", "routines", "routine_run", "routine_skip"},
+		"project-agent": {"web_search", "web_scrape", ToolSchemaName},
 		"research":      {"tree", "grep", "file", "read_doc", "web_search", "web_scrape"},
 	} {
 		t.Run(id, func(t *testing.T) {
@@ -147,12 +148,23 @@ func TestAgentDocConsoleOffersTheProductionTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			var names []string
+			var index string
 			for _, tl := range b.Tools {
 				names = append(names, tl.Name)
+				if tl.Name == ToolSchemaName {
+					index = string(tl.Raw)
+				}
 			}
 			for _, name := range want {
 				if !slices.Contains(names, name) {
 					t.Errorf("the wire offers no %s: %q", name, names)
+				}
+			}
+			if id == "project-agent" {
+				for _, name := range []string{"request_image", "routines", "routine_run", "routine_skip"} {
+					if slices.Contains(names, name) || !strings.Contains(index, `\n`+name+`: `) {
+						t.Errorf("%s is not a line of tool_schema's index alone: %q", name, index)
+					}
 				}
 			}
 		})

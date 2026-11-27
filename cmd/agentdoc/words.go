@@ -69,36 +69,18 @@ func messageText(m agentdoc.Message) string {
 	return text
 }
 
-// toolWords are the words of a tool schema's description and of every
-// description under its parameters.
+// toolWords are a wire tool's words, as prompts.ToolWords counts them.
 func toolWords(raw json.RawMessage) int {
 	var tool struct {
 		Function struct {
-			Description string `json:"description"`
-			Parameters  any    `json:"parameters"`
+			Name        string         `json:"name"`
+			Description string         `json:"description"`
+			Parameters  map[string]any `json:"parameters"`
 		} `json:"function"`
 	}
 	if json.Unmarshal(raw, &tool) != nil {
 		return 0
 	}
-	return len(strings.Fields(tool.Function.Description)) + descriptionWords(tool.Function.Parameters)
-}
-
-func descriptionWords(v any) int {
-	n := 0
-	switch x := v.(type) {
-	case map[string]any:
-		for k, e := range x {
-			if s, ok := e.(string); ok && k == "description" {
-				n += len(strings.Fields(s))
-			} else {
-				n += descriptionWords(e)
-			}
-		}
-	case []any:
-		for _, e := range x {
-			n += descriptionWords(e)
-		}
-	}
-	return n
+	f := tool.Function
+	return prompts.ToolWords(prompts.Tool{Name: f.Name, Description: f.Description, Parameters: f.Parameters})
 }

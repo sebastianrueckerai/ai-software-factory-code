@@ -48,10 +48,10 @@ func TestLabScenarioOpensAPlan(t *testing.T) {
 
 	// the scenario's open rides the rig's own stream
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(0, "show_doc", `{"path":"docs/plans/2026-09-24-build-plan.md"}`)}, {say("The plan is open.")}}
+	g.replies = [][]string{{fetchCall(0, "show_doc", `{"path":"docs/plans/2026-09-24-build-plan.md"}`)}, {say("The plan is open.")}}
 	_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"show the build plan"}})
 	at := slices.IndexFunc(ev, func(e string) bool {
-		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"show_doc"`)
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"duration_ms":0,"name":"show_doc"`)
 	})
 	if at < 0 {
 		t.Fatalf("the turn holds no show_doc tool block:\n%s", strings.Join(ev, "\n"))

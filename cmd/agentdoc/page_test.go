@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // pageFixture is one captured request, hand-built: a system message a
@@ -176,5 +182,110 @@ func TestPageFailsWhenARegisteredPlaceNeverCrossedTheWire(t *testing.T) {
 	md, failures := page(pageAgent(), "deadbeef", "policyhash", syms, rec, spans)
 	if len(failures) == 0 {
 		t.Fatalf("a missing system message shipped %d bytes without a failure", len(md))
+	}
+}
+
+// A built-in tool whose text the plugin put in place names its file; one
+// with the harness's own text says so, and a gateway tool names the
+// gateway's description.
+func TestPageProvenanceNamesThePluginText(t *testing.T) {
+	_, syms := writeFixtureModule(t)
+	text, ok := prompts.ToolText("bash")
+	if !ok {
+		t.Fatal("internal/prompts/tools holds no bash.md")
+	}
+	desc, _ := json.Marshal(text)
+	bash := `{"type":"function","function":{"name":"bash","description":` + string(desc) + `,"parameters":{"type":"object"}}}`
+	list := `{"type":"function","function":{"name":"list","description":"lists it","parameters":{"type":"object"}}}`
+	rec := agentdoc.Recorded{Raw: []byte(`{"model":"big","messages":[{"role":"system","content":"SYS-A"}],"tools":[` + bash + `,` + list + `]}`), Task: "t-fixture", Purpose: "session"}
+	spans := []agentdoc.Span{
+		{Name: "the rules", Symbol: "(*R).M", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: "SYS-A"},
+		{Name: "tool bash", Symbol: "opencode 1.19.6", Kind: agentdoc.KindHarness, Place: agentdoc.PlaceTools, Text: bash},
+		{Name: "tool list", Symbol: "opencode 1.19.6", Kind: agentdoc.KindHarness, Place: agentdoc.PlaceTools, Text: list},
+	}
+	md, failures := page(pageAgent(), "deadbeef", "policyhash", syms, rec, spans)
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("### bash\n\n`opencode 1.19.6` · text from internal/prompts/tools/bash.md · %d bytes\n", len(bash)),
+		fmt.Sprintf("### list\n\n`opencode 1.19.6` · the harness's own text · %d bytes\n", len(list)),
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
+// captureAgent runs agent id's real capture against the fake gateway and
+// renders its page against this repository's symbols.
+func captureAgent(t *testing.T, id string) (string, []string, agentdoc.Recorded, []agentdoc.Span) {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syms, err := loadSymbols(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := agentByID(id)
+	if a == nil {
+		t.Fatalf("no agent %s in the registry", id)
+	}
+	g := agentdoc.NewGateway(a.Answer(a.ID))
+	defer g.Close()
+	v := policy.Version{Commit: "fixture", Tree: policy.Tree{Document: policy.Document{Version: 1}}}
+	spans, err := a.Capture(context.Background(), id, g.URL, v, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs := g.Bodies()
+	if len(recs) != 1 {
+		t.Fatalf("one call crosses the wire, got %d", len(recs))
+	}
+	md, failures := page(*a, "localsha", "policyhash", syms, recs[0], spans)
+	return md, failures, recs[0], spans
+}
+
+// The project agent's page lists the rare tools behind tool_schema, one
+// line each: the 21 of the 30 its fixture human, a writer who approves
+// nothing, is offered (TestIndexPrintsToolTiers names the 9 others).
+func TestPageListsRareToolsBehindToolSchema(t *testing.T) {
+	md, failures, _, _ := captureAgent(t, "project-agent")
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	i := strings.Index(md, "## Behind tool_schema\n")
+	if i < 0 {
+		t.Fatal("the page has no section Behind tool_schema")
+	}
+	section := md[i:]
+	if j := strings.Index(section[1:], "\n## "); j >= 0 {
+		section = section[:j+1]
+	}
+	if n := strings.Count(section, "\n- `"); n != 21 {
+		t.Errorf("the section lists %d tools, want 21:\n%s", n, section)
+	}
+	if !strings.Contains(section, "\n- `board`: ") || strings.Contains(section, "\n- `card`: ") {
+		t.Errorf("the section does not list the rare board alone of the two:\n%s", section)
+	}
+}
+
+// Every tool on a chat page's wire is labelled, and each carries its tier.
+func TestEveryWireToolHasAProvenance(t *testing.T) {
+	for _, id := range []string{"project-agent", "research"} {
+		md, failures, _, spans := captureAgent(t, id)
+		if len(failures) != 0 {
+			t.Fatalf("%s: failures: %v", id, failures)
+		}
+		for _, sp := range spans {
+			if sp.Place == agentdoc.PlaceTools && sp.Tier == "" {
+				t.Errorf("%s: %s has no tier", id, sp.Name)
+			}
+		}
+		if strings.Contains(md, "the step's own schema") {
+			t.Errorf("%s: a chat tool's origin is no tier", id)
+		}
 	}
 }

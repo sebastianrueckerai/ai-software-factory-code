@@ -130,11 +130,11 @@ func TestSupervisorTheOlderOpenCallDecides(t *testing.T) {
 }
 
 // Events that keep coming keep the session live, however old an open call
-// is: a parent waits on a subagent's task call while the subagent works.
+// is: a long bash call stays open while the session works.
 func TestSupervisorEventsBesideAnOldCallKeepItLive(t *testing.T) {
 	s := openSupervisor(t, 1000)
 	t0 := time.Unix(0, 0)
-	s.Event(callStart("c1", "task"), t0)
+	s.Event(callStart("c1", "bash"), t0)
 	for m := 4; m <= 40; m += 4 {
 		s.Event(harness.Event{Kind: harness.EventModelCall}, t0.Add(time.Duration(m)*time.Minute))
 	}
@@ -1457,8 +1457,7 @@ func TestAWriteBeforeTheMessageIsStillAWrite(t *testing.T) {
 }
 
 // A check that newly passes during the check-in is progress like a write:
-// it resets churn and proves a pending return held; a subagent's command
-// stays no evidence. A checkpoint made then still sets the diff's baseline.
+// it resets churn and proves a pending return held. A checkpoint made then still sets the diff's baseline.
 func TestProgressBeforeTheAnswerCounts(t *testing.T) {
 	const check = "go test ./..."
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour, Churn: 3}
@@ -1479,16 +1478,6 @@ func TestProgressBeforeTheAnswerCounts(t *testing.T) {
 	s.Event(podAt(4, cmdEvent(check, 0, "ok")), minute(5.1))
 	if trip := s.Event(podAt(6, fileEvent("a.go", "h3")), minute(6)); trip != nil {
 		t.Fatalf("write after a pass made during the conversation = %+v, want none", trip)
-	}
-
-	sub := failing()
-	pass := podAt(4, cmdEvent(check, 0, "ok"))
-	pass.Detail["subagent"] = true
-	sub.Event(pass, minute(5.1))
-	trip := sub.Event(podAt(6, fileEvent("a.go", "h3")), minute(6))
-	if trip == nil || trip.Kind != TripChurn ||
-		trip.Detail != "3 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes" {
-		t.Fatalf("write after a subagent's pass = %+v, want churn", trip)
 	}
 
 	// h1, h2, a failing check, h1 again: a return; the check passes during
@@ -1589,83 +1578,6 @@ func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
 	if d := s3.traces; len(d.calls) != 0 || len(d.runs) != 0 || len(d.failed) != 0 || len(d.contents) == 0 || d.churn == 0 || d.streak != 0 ||
 		d.lastDiff == "" || d.maxDiff != 3 || d.nudged["kept"] != 1 {
 		t.Fatalf("trace counters after the message: %+v", d)
-	}
-}
-
-func subagentEvent(tool string, args map[string]any) harness.Event {
-	ev := toolEvent(tool, args)
-	ev.Detail["subagent"] = true
-	return ev
-}
-
-// A subagent's run counts once for repetition, as the session's task call:
-// its reads add nothing, its writes still reset the count.
-func TestSubagentCallsCountOnce(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 3, NoWriteAfter: time.Hour}
-	read := func(path string) harness.Event { return toolEvent("read", map[string]any{"filePath": path}) }
-	s, _ := NewSupervisor(cfg, minute(0), minute(0))
-	for i := range 5 {
-		if trip := s.Event(subagentEvent("read", map[string]any{"filePath": fmt.Sprintf("s%d.go", i)}), minute(1)); trip != nil {
-			t.Fatalf("subagent read %d tripped: %+v", i, trip)
-		}
-	}
-	if trip := s.Event(read("a.go"), minute(2)); trip != nil {
-		t.Fatalf("the first own read tripped: %+v", trip)
-	}
-	s.Event(read("b.go"), minute(2))
-	trip := s.Event(read("c.go"), minute(2))
-	if trip == nil || trip.Kind != TripRepetition || trip.Detail != "3 tool calls and commands without a file change" {
-		t.Fatalf("trip = %+v, want repetition at the third own call", trip)
-	}
-
-	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
-	s2.Event(read("a.go"), minute(1))
-	s2.Event(read("b.go"), minute(1))
-	write := fileEvent("a.go", "h1")
-	write.Detail["subagent"] = true
-	s2.Event(write, minute(2))
-	for _, path := range []string{"c.go", "d.go"} {
-		if trip := s2.Event(read(path), minute(3)); trip != nil {
-			t.Fatalf("a read after the subagent's write tripped: %+v", trip)
-		}
-	}
-}
-
-// A nudge or trip about a subagent's call would reach the main agent, which
-// did not make it: six identical subagent reads, past the nudge (3 in a row)
-// and same_call (4), leave no trace; six identical own reads after them get
-// the nudge at the third and the trip at the sixth.
-func TestSubagentCallsFeedNoTraceDetector(t *testing.T) {
-	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
-	t0 := time.Unix(0, 0)
-	args := map[string]any{"filePath": "/w/a.go"}
-	for i := range 6 {
-		if trip := s.Event(subagentEvent("read", args), t0); trip != nil {
-			t.Fatalf("subagent read %d tripped: %+v", i, trip)
-		}
-		if n := s.TakeNudge(); n != nil {
-			t.Fatalf("subagent read %d nudged: %+v", i, n)
-		}
-	}
-	for i := 1; i <= 5; i++ {
-		if trip := s.Event(toolEvent("read", args), t0); trip != nil {
-			t.Fatalf("own read %d tripped: %+v", i, trip)
-		}
-		n := s.TakeNudge()
-		if i != 3 {
-			if n != nil {
-				t.Fatalf("own read %d nudged: %+v", i, n)
-			}
-			continue
-		}
-		if n == nil || n.Tool != "read" || n.Count != 3 {
-			t.Fatalf("nudge = %+v, want read after 3", n)
-		}
-		s.NudgeSent(*n)
-	}
-	trip := s.Event(toolEvent("read", args), t0)
-	if trip == nil || trip.Kind != TripSameCall || trip.Detail != "read: the same call 3 times in a row after 1 nudge" {
-		t.Fatalf("the sixth own read: trip = %+v, want same_call", trip)
 	}
 }
 

@@ -202,10 +202,10 @@ func TestReplanCard(t *testing.T) {
 	// off main reaches factoryd from the button and the tool
 	rec = r.do(replan("t-ch", url.Values{"replan.note": {note}, "replan.off_main": {"yes"}}), ck)
 	equal(t, "the off main button", []any{rec.Code, asked[len(asked)-1]}, []any{http.StatusSeeOther, "t-ch by sebastian: " + note + " (off main)"})
-	g.replies = [][]string{{call(1, "replan", `{"note":"`+note+`","off_main":true,"task_id":"t-ch"}`)}}
+	g.replies = [][]string{{fetchCall(1, "replan", `{"note":"`+note+`","off_main":true,"task_id":"t-ch"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #51 off main"}})
-	if !strings.Contains(events[0], `"description":"Replan a card, #51 t-ch \"The plan's card.\", note `+note+`, off_main"`) {
-		t.Errorf("the proposal does not name off_main: %s", events[0])
+	if !strings.Contains(events[1], `"description":"Replan a card, #51 t-ch \"The plan's card.\", note `+note+`, off_main"`) {
+		t.Errorf("the proposal does not name off_main: %s", events[1])
 	}
 	calls = len(asked)
 	chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
@@ -269,6 +269,7 @@ func TestAnAgentsOffMainReplanIsRefusedAtEveryLevel(t *testing.T) {
 			if err := trn.begin(); err != nil {
 				t.Fatal(err)
 			}
+			fetchIn(t, trn, "replan")
 			res, _, _ := trn.call(factoryd.OperatorCall{Name: "replan", Arguments: c.args})
 			if c.want == refusal && (res != refusal || len(asked) != 0) || c.want != refusal && (!strings.Contains(res, c.want) || len(asked) != 1) {
 				t.Errorf("result %q, replans asked %v; want %q", res, asked, c.want)

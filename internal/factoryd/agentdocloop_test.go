@@ -278,39 +278,6 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 	}
 }
 
-// The config the subagents run under is the same tree the session reads:
-// what buildOpencodeConfig tells opencode about general and explore, in
-// the policy's own steps and the ladder's cheap rung.
-func TestAgentDocAgentConfigAnswersTheAgentBlock(t *testing.T) {
-	frag, err := AgentDocAgentConfig(agentDocLoopPolicy())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var agent struct {
-		Build   map[string]any `json:"build"`
-		General map[string]any `json:"general"`
-		Explore map[string]any `json:"explore"`
-	}
-	if err := json.Unmarshal(frag, &agent); err != nil {
-		t.Fatal(err)
-	}
-	if agent.General["model"] != "factory/"+policy.Small ||
-		agent.Explore["model"] != "factory/"+policy.Small {
-		t.Fatalf("the subagents are not on the cheap rung: %s", frag)
-	}
-	for _, sub := range []map[string]any{agent.General, agent.Explore} {
-		if sub["steps"] != float64(1500) {
-			t.Fatalf("the subagents' step cap is not the policy's steps: %s", frag)
-		}
-	}
-	if _, ok := agent.Build["model"]; ok {
-		t.Fatalf("the build agent carries a model the session does not set: %s", frag)
-	}
-	if string(mustJSON(agent.General)) != string(mustJSON(agent.Explore)) {
-		t.Fatalf("general and explore differ though the config sets them alike: %s", frag)
-	}
-}
-
 // The system prompt without the repository's AGENTS.md is a broken
 // capture, not a page with a hole.
 func TestAgentDocLoopWireSpansWantTheAgentsFile(t *testing.T) {
@@ -327,7 +294,8 @@ func TestAgentDocLoopWireSpansWantTheAgentsFile(t *testing.T) {
 // opencode binary (OPENCODE_RECORD_BIN): the real session assembly and
 // identity proxy, a scripted model, the gateway's real MCP tool list. It
 // proves the captures the pages regenerate from: the chosen request tiles
-// with no unlabelled byte, and the delegation's tools are on the wire.
+// with no unlabelled byte, the mode's gateway tool is on the wire, and
+// every built-in tool carries its text from internal/prompts/tools.
 func TestAgentDocLoopRecord(t *testing.T) {
 	bin := os.Getenv("OPENCODE_RECORD_BIN")
 	if bin == "" {
@@ -336,7 +304,7 @@ func TestAgentDocLoopRecord(t *testing.T) {
 	v := agentDocLoopPolicy()
 	for _, id := range AgentDocLoopIDs() {
 		t.Run(id, func(t *testing.T) {
-			spans, rec, err := AgentDocLoop(context.Background(), id, bin, v)
+			spans, rec, err := AgentDocLoop(context.Background(), id, bin, repoBake(t), v)
 			if err != nil {
 				t.Fatalf("capture: %v", err)
 			}
@@ -401,14 +369,96 @@ func TestAgentDocLoopRecord(t *testing.T) {
 				want = "factory-tools_file_plan"
 			case "prover":
 				want = "factory-tools_file_proofs"
+			case "screening", "sizing":
+				want = "factory-tools_manual"
 			}
 			if !slices.Contains(names, want) {
 				t.Errorf("%s: the wire offers no %s: %v", id, want, names)
+			}
+			for _, tl := range b.Tools {
+				if strings.HasPrefix(tl.Name, "factory-tools_") {
+					continue
+				}
+				text, err := os.ReadFile(filepath.Join("..", "prompts", "tools", tl.Name+".md"))
+				if err != nil {
+					t.Errorf("%s: built-in %s has no text of ours: %v", id, tl.Name, err)
+					continue
+				}
+				var tool struct {
+					Function struct{ Description string } `json:"function"`
+				}
+				if err := json.Unmarshal(tl.Raw, &tool); err != nil || tool.Function.Description != strings.TrimSpace(string(text)) {
+					t.Errorf("%s: built-in %s's description = %q, want internal/prompts/tools/%s.md", id, tl.Name, tool.Function.Description, tl.Name)
+				}
 			}
 			if id == "message-responder" && !strings.Contains(userText, "A message from fixture-writer, a writer of this project") {
 				t.Error("the responder's captured call holds no writer's message")
 			}
 		})
+	}
+}
+
+// repoBake is the opencode config directory the sandbox image bakes, as
+// the repository's files make it.
+func repoBake(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := AgentDocBake(filepath.Join("..", ".."), dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// The baked plugin gives a built-in tool the text of its file under
+// tool-text/ and leaves a tool without one its harness text: the coding
+// session's first request carries bash.md as bash's description, and
+// edit keeps opencode's own. OPENCODE_BAKE names a built bake, such as
+// the sandbox image's /opt/opencode-home/.config/opencode, in place of
+// the repository's plugins.
+func TestPluginReplacesABuiltinText(t *testing.T) {
+	bin := os.Getenv("OPENCODE_RECORD_BIN")
+	if bin == "" {
+		t.Skip("OPENCODE_RECORD_BIN not set")
+	}
+	var bake string
+	if from := os.Getenv("OPENCODE_BAKE"); from != "" {
+		bake = filepath.Join(t.TempDir(), "opencode")
+		if err := os.CopyFS(bake, os.DirFS(from)); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		bake = repoBake(t)
+	}
+	if err := os.RemoveAll(filepath.Join(bake, "tool-text")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(bake, "tool-text"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bake, "tool-text", "bash.md"), []byte("Run one shell command.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, rec, err := AgentDocLoop(context.Background(), "coding", bin, bake, agentDocLoopPolicy())
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	var body struct {
+		Tools []struct {
+			Function struct{ Name, Description string } `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(rec.Raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, tl := range body.Tools {
+		got[tl.Function.Name] = tl.Function.Description
+	}
+	if got["bash"] != "Run one shell command." {
+		t.Errorf("bash's description = %q, want the text of tool-text/bash.md", got["bash"])
+	}
+	if want := "Performs exact string replacements in files."; !strings.HasPrefix(got["edit"], want) {
+		t.Errorf("edit's description = %q, want opencode's own, which opens %q", got["edit"], want)
 	}
 }
 
@@ -428,7 +478,7 @@ func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agent
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexec "+self+" -test.run '^TestFakeOpencodeServe$'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spans, rec, err := AgentDocLoop(context.Background(), id, stub, v)
+	spans, rec, err := AgentDocLoop(context.Background(), id, stub, repoBake(t), v)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}

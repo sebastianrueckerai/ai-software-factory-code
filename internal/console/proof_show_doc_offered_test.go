@@ -12,18 +12,21 @@ import (
 // show_doc exactly once, beside read_doc and write_doc, its parameters
 // the path with the optional heading — the path required, as the reads'
 // schemas require it — and its description the member's own document
-// view.
+// view. show_doc and write_doc are rare tools: they stand in tool_schema's
+// index until the agent fetches show_doc, whose schema then stands in the
+// list once.
 func TestShowDocOfferedBesideReads(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{say("ok")}}
+	g.replies = [][]string{{call(1, ToolSchemaName, `{"name":"show_doc"}`)}, {say("ok")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
-	if len(g.calls()) == 0 {
-		t.Fatal("the turn made no model call")
+	if len(g.calls()) != 2 {
+		t.Fatalf("the turn made %d model calls, want 2", len(g.calls()))
 	}
+	before, after := g.calls()[0]["tools"].([]any), g.calls()[1]["tools"].([]any)
 	var names []string
 	offered := map[string]map[string]any{}
-	for _, d := range g.calls()[0]["tools"].([]any) {
+	for _, d := range after {
 		fn := d.(map[string]any)["function"].(map[string]any)
 		name := fn["name"].(string)
 		names = append(names, name)
@@ -32,10 +35,13 @@ func TestShowDocOfferedBesideReads(t *testing.T) {
 	if got := strings.Count(strings.Join(names, ","), "show_doc"); got != 1 {
 		t.Errorf("the offered tools hold show_doc %d times: %s", got, strings.Join(names, " "))
 	}
-	for _, beside := range []string{"read_doc", "write_doc", "show_doc"} {
+	for _, beside := range []string{"read_doc", "show_doc"} {
 		if !slices.Contains(names, beside) {
 			t.Errorf("the offered tools hold no %s: %s", beside, strings.Join(names, " "))
 		}
+	}
+	if !inIndex(before, "show_doc") || !inIndex(before, "write_doc") || inIndex(after, "show_doc") || !inIndex(after, "write_doc") {
+		t.Errorf("show_doc and write_doc stand in the index before the fetch and write_doc alone after it")
 	}
 	fn, ok := offered["show_doc"]
 	if !ok {

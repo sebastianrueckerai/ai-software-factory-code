@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -606,38 +607,28 @@ func ForcedToolChoice(name string) map[string]any {
 	return map[string]any{"type": "function", "function": map[string]any{"name": name}}
 }
 
-// momentAnswerSchema is the moments' answer schema: the same mechanism as
-// the rung's AnswerSchema, on the moment's own vocabulary — the decision
-// and the reason kind closed enums, the verdicts closed where findings
-// are judged, the note, the reason and the guidance as text.
+// The moments' answer tools, derived from their answer types: a session
+// or a dead session's moment answers a sessionAnswer, a gate's the whole
+// checkinAnswer with its findings.
+var (
+	sessionAnswerTool = prompts.AnswerTool(reflect.TypeFor[sessionAnswer]())
+	gateAnswerTool    = prompts.AnswerTool(reflect.TypeFor[checkinAnswer]())
+)
+
+// momentAnswerSchema is the moments' answer schema on the moment's own
+// vocabulary: the decision and the reason kind closed enums, the verdicts
+// closed where findings are judged and repeats closed to the earlier
+// findings' ids, absent with none.
 func momentAnswerSchema(ask *CheckInAsk) map[string]any {
-	props := map[string]any{
-		"decision":    map[string]any{"type": "string", "enum": askDecisions(ask)},
-		"reason_kind": map[string]any{"type": "string", "enum": slices.Clone(checkReasonKinds)},
-		"reason":      map[string]any{"type": "string"},
-		"handover":    map[string]any{"type": "string"},
-		"guidance":    map[string]any{"type": "string"},
+	if ask.Moment == CheckInSession || ask.Moment == CheckInDead {
+		return sessionAnswerTool.WithEnum("decision", askDecisions(ask)).WithEnum("reason_kind", checkReasonKinds).Parameters
 	}
-	if ask.Moment != CheckInSession && ask.Moment != CheckInDead {
-		item := map[string]any{
-			"id":       map[string]any{"type": "string"},
-			"text":     map[string]any{"type": "string"},
-			"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
-			"evidence": map[string]any{"type": "string"},
-		}
-		items := map[string]any{"type": "object", "properties": item}
-		if len(ask.Priors) == 0 {
-			items["additionalProperties"] = false
-		} else {
-			ids := make([]string, len(ask.Priors))
-			for i, p := range ask.Priors {
-				ids[i] = p.ID
-			}
-			item["repeats"] = map[string]any{"type": "string", "enum": ids, "description": "the id of an earlier finding that this one repeats in other words"}
-		}
-		props["findings"] = map[string]any{"type": "array", "items": items}
+	ids := make([]string, len(ask.Priors))
+	for i, p := range ask.Priors {
+		ids[i] = p.ID
 	}
-	return map[string]any{"type": "object", "properties": props, "required": []string{"decision"}, "additionalProperties": false}
+	return gateAnswerTool.WithEnum("decision", askDecisions(ask)).WithEnum("reason_kind", checkReasonKinds).
+		WithEnum("findings.verdict", checkVerdicts).WithEnum("findings.repeats", ids).Parameters
 }
 
 // momentAnswerTool is the answer tool the check-in's calls post.
@@ -708,21 +699,27 @@ func toolSchema(props map[string]any, required ...string) map[string]any {
 // checkinAnswerFinding is one finding's verdict as the model answers it:
 // named by the finding's id when it echoes one, with the text beside it.
 type checkinAnswerFinding struct {
-	ID       string `json:"id"`
-	Text     string `json:"text"`
-	Verdict  string `json:"verdict"`
-	Evidence string `json:"evidence"`
-	Repeats  string `json:"repeats"`
+	ID       string `json:"id,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Verdict  string `json:"verdict,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+	Repeats  string `json:"repeats,omitempty" desc:"the id of an earlier finding that this one repeats in other words"`
 }
 
-// checkinAnswer is the final answer's JSON shape.
+// sessionAnswer is a session or a dead session's moment's final answer.
+type sessionAnswer struct {
+	Decision   string `json:"decision"`
+	Guidance   string `json:"guidance,omitempty"`
+	ReasonKind string `json:"reason_kind,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Handover   string `json:"handover,omitempty"`
+}
+
+// checkinAnswer is the final answer's JSON shape: a gate's moment judges
+// the findings beside it.
 type checkinAnswer struct {
-	Findings   []checkinAnswerFinding `json:"findings"`
-	Decision   string                 `json:"decision"`
-	Guidance   string                 `json:"guidance"`
-	ReasonKind string                 `json:"reason_kind"`
-	Reason     string                 `json:"reason"`
-	Handover   string                 `json:"handover"`
+	sessionAnswer
+	Findings []checkinAnswerFinding `json:"findings,omitempty"`
 }
 
 // findingKey is one finding's stable short id: its place in the ask, f1 on

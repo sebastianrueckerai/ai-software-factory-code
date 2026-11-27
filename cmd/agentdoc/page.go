@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // codeBase is the code repo's web home; permalinks point at the SHA the
@@ -62,6 +64,7 @@ func page(a Agent, sha, policyCommit string, syms *symbolTable, rec agentdoc.Rec
 	md.WriteString("\n```\n\n")
 	d.writeRequest(&md, spans)
 	d.writeTools(&md, spans)
+	d.writeBehind(&md)
 	md.WriteString(d.footer())
 	return md.String(), d.failures
 }
@@ -262,8 +265,41 @@ func (d *doc) provenance(sp agentdoc.Span) string {
 	return fmt.Sprintf("[`%s`](%s/blob/%s/%s#L%d) · %s:%d", sp.Symbol, codeBase, d.sha, rel, line, rel, line)
 }
 
-// writeTools renders the offered tools, each with its provenance and the
-// full schema JSON collapsed.
+// toolServer is a wire tool's server: the harness, or the builder that
+// offered it as a permalink.
+func (d *doc) toolServer(sp agentdoc.Span) string {
+	if sp.Kind == agentdoc.KindHarness {
+		return "`" + sp.Symbol + "`"
+	}
+	return d.provenance(sp)
+}
+
+// toolOrigin is where a wire tool's text comes from: a built-in's text
+// from internal/prompts/tools when the plugin put it in place, else the
+// harness's own; the gateway's description; or the chat tool's tier.
+func toolOrigin(sp agentdoc.Span, name, description string) string {
+	switch {
+	case sp.Kind == agentdoc.KindHarness:
+		if text, ok := prompts.ToolText(name); ok && text == description {
+			return "text from internal/prompts/tools/" + name + ".md"
+		}
+		return "the harness's own text"
+	case sp.Kind == agentdoc.KindGateway:
+		return "the gateway's description"
+	case name == console.ToolSchemaName:
+		return "a core chat tool: the index of the rare tools"
+	case sp.Tier == agentdoc.TierCore:
+		return "a core chat tool"
+	case sp.Tier == agentdoc.TierRare:
+		return "a rare chat tool, its schema fetched with " + console.ToolSchemaName
+	case sp.Tier == agentdoc.TierAttached:
+		return "a chat tool the thread's attachment brings"
+	}
+	return "the step's own schema"
+}
+
+// writeTools renders the offered tools, each with its server, its text's
+// origin and its size, and the full schema JSON collapsed.
 func (d *doc) writeTools(md *strings.Builder, spans []agentdoc.Span) {
 	if len(d.body.Tools) == 0 {
 		return
@@ -277,13 +313,6 @@ func (d *doc) writeTools(md *strings.Builder, spans []agentdoc.Span) {
 	}
 	for _, t := range d.body.Tools {
 		fmt.Fprintf(md, "### %s\n\n", t.Name)
-		sp, ok := byText[string(t.Raw)]
-		if !ok {
-			d.fail("%s: tool %s is unlabelled", d.agent.ID, t.Name)
-		} else {
-			delete(byText, sp.Text)
-			fmt.Fprintf(md, "%s · %d bytes\n\n", d.provenance(sp), len(t.Raw))
-		}
 		var schema struct {
 			Function struct {
 				Description string `json:"description"`
@@ -291,6 +320,13 @@ func (d *doc) writeTools(md *strings.Builder, spans []agentdoc.Span) {
 		}
 		if err := json.Unmarshal(t.Raw, &schema); err != nil {
 			d.fail("%s: tool %s's schema is unreadable: %v", d.agent.ID, t.Name, err)
+		}
+		sp, ok := byText[string(t.Raw)]
+		if !ok {
+			d.fail("%s: tool %s is unlabelled", d.agent.ID, t.Name)
+		} else {
+			delete(byText, sp.Text)
+			fmt.Fprintf(md, "%s · %s · %d bytes\n\n", d.toolServer(sp), toolOrigin(sp, t.Name, schema.Function.Description), len(t.Raw))
 		}
 		if schema.Function.Description != "" {
 			fmt.Fprintf(md, "%s\n\n", schema.Function.Description)
@@ -322,4 +358,39 @@ func clip(text string) string {
 		return text[:48] + "…"
 	}
 	return text
+}
+
+// behindToolSchema are the index lines of the request's tool_schema: one
+// rare tool each, name: about, whose schema is not on the wire.
+func behindToolSchema(b agentdoc.Body) []string {
+	for _, t := range b.Tools {
+		if t.Name != console.ToolSchemaName {
+			continue
+		}
+		var schema struct {
+			Function struct {
+				Description string `json:"description"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(t.Raw, &schema) != nil {
+			return nil
+		}
+		return strings.Split(schema.Function.Description, "\n")[1:]
+	}
+	return nil
+}
+
+// writeBehind lists the rare tools behind tool_schema, one line each.
+func (d *doc) writeBehind(md *strings.Builder) {
+	lines := behindToolSchema(d.body)
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintf(md, "## Behind tool_schema\n\n%d rare tools, each one line of %s's description until a fetch puts its schema on the wire.\n\n",
+		len(lines), console.ToolSchemaName)
+	for _, l := range lines {
+		name, about, _ := strings.Cut(l, ": ")
+		fmt.Fprintf(md, "- `%s`: %s\n", name, about)
+	}
+	md.WriteString("\n")
 }

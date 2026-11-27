@@ -191,12 +191,12 @@ func TestDocumentsShowDocOpenRidesTurn(t *testing.T) {
 
 	run := func(args string) []string {
 		t.Helper()
-		r.Reply([]string{Call(1, "show_doc", args)}, []string{Say("Done.")})
+		r.Reply([]string{fetchCall(1, "show_doc", args)}, []string{Say("Done.")})
 		code, body := postChat(t, r, chatPath, ck, url.Values{"message": {"show me the roadmap"}, "csrf": {csrf}})
 		if code != http.StatusOK {
 			t.Fatalf("POST the chat = %d:\n%s", code, body)
 		}
-		return eventsOf(t, body)
+		return afterFetch(t, eventsOf(t, body), "show_doc")
 	}
 
 	events := run(`{"path":"docs/roadmap.md"}`)
@@ -242,7 +242,7 @@ func TestDocumentsWriteThenShow(t *testing.T) {
 	r, docs, chatPath, docsPath, ck, csrf := docsRig(t)
 
 	written := strings.Replace(documentsRoadmap, "Where it stands: in progress.", "Where it stands: in review.", 1)
-	r.Reply([]string{Call(1, "write_doc",
+	r.Reply([]string{fetchCall(1, "write_doc",
 		`{"path":"docs/roadmap.md","old":"Where it stands: in progress.","new":"Where it stands: in review.","base_sha256":"`+
 			factoryd.ContentHash(documentsRoadmap)+`"}`)})
 	code, body := postChat(t, r, chatPath, ck, url.Values{"message": {"mark item 7 in review"}, "csrf": {csrf}})
@@ -260,7 +260,7 @@ func TestDocumentsWriteThenShow(t *testing.T) {
 		t.Fatalf("the write_doc did not land:\n%s", strings.Join(events, "\n"))
 	}
 
-	r.Reply([]string{Call(1, "show_doc", `{"path":"docs/roadmap.md"}`)}, []string{Say("Done.")})
+	r.Reply([]string{fetchCall(1, "show_doc", `{"path":"docs/roadmap.md"}`)}, []string{Say("Done.")})
 	code, body = postChat(t, r, chatPath, ck, url.Values{"message": {"show it"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
@@ -376,7 +376,7 @@ func TestDocumentsEndToEnd(t *testing.T) {
 	// The chat's agent edits other lines: the proposal, his Do it, one
 	// commit and its row via chat.
 	theirs := strings.Replace(mine, "Where it stands: in progress.", "Where it stands: in review.", 1)
-	events := agentWrites(t, r, chatPath, ck, csrf, Call(1, "write_doc",
+	events := agentWrites(t, r, chatPath, ck, csrf, fetchCall(1, "write_doc",
 		`{"path":"docs/roadmap.md","old":"Where it stands: in progress.","new":"Where it stands: in review.","base_sha256":"`+
 			factoryd.ContentHash(mine)+`"}`), "mark item 7 in review")
 	want := "Committed c0ffee00 to sf/docs@master: docs/roadmap.md, now base_sha256 " + factoryd.ContentHash(theirs) + "."
@@ -420,7 +420,7 @@ func TestDocumentsConflictEndToEnd(t *testing.T) {
 	// The agent edits the same lines he is typing on: one commit, and the
 	// push raised exactly one doc_written.
 	theirs := strings.Replace(documentsRoadmap, "Where it stands: done.", "Where it stands: in review.", 1)
-	events := agentWrites(t, r, chatPath, ck, csrf, Call(1, "write_doc",
+	events := agentWrites(t, r, chatPath, ck, csrf, fetchCall(1, "write_doc",
 		`{"path":"docs/roadmap.md","old":"Where it stands: done.","new":"Where it stands: in review.","base_sha256":"`+
 			factoryd.ContentHash(documentsRoadmap)+`"}`), "mark item 8 in review")
 	if !hasToolResult(events, "write_doc",

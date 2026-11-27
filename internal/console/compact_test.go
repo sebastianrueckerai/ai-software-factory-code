@@ -255,7 +255,7 @@ func TestChatCompactionWeighsTheTurnsReads(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	seedTurns(t, chat, "a", "b")
-	g.replies = [][]string{{call(1, "board", `{}`)}, {refuseContext}, {refuseContext}, {say("done")}}
+	g.replies = [][]string{{fetchCall(1, "board", `{}`)}, {refuseContext}, {refuseContext}, {say("done")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"c1"}})
 	equal(t, "the folded rows", compactedRows(t, events), []int{2, 2})
 	var last struct{ After int }
@@ -266,9 +266,10 @@ func TestChatCompactionWeighsTheTurnsReads(t *testing.T) {
 			}
 		}
 	}
-	// the second summary, the member's c1, the call's board and {}, and
-	// its result
-	equal(t, "the kept rows' estimate", last.After, (len("summary 2"+"c1"+"board"+"{}"+boardText)+3)/4)
+	// the second summary, the human's c1, the fetch's tool_schema, its
+	// arguments and its result, the call's board and {}, and its result
+	schema := schemaResult(t, r, "ai-software-factory-code", "board")
+	equal(t, "the kept rows' estimate", last.After, (len("summary 2"+"c1"+"tool_schema"+`{"name":"board"}`+schema+"board"+"{}"+boardText)+3)/4)
 }
 
 // A forced retry knows the turn's own rows by the row the turn started
@@ -279,13 +280,14 @@ func TestChatRetryKeepsTheTurnsOwnRows(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	seedTurns(t, chat, "a", "b")
-	g.replies = [][]string{{say("Let me look."), call(1, "board", `{}`)}, {refuseContext}, {say("done")}}
+	g.replies = [][]string{{say("Let me look."), fetchCall(1, "board", `{}`)}, {refuseContext}, {say("done")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"c1"}})
 	calls := g.calls()
 	if len(calls) != 3 {
 		t.Fatalf("%d model calls, want 3", len(calls))
 	}
-	equal(t, "the retry", contents(t, calls[2]), []string{"user b1", "assistant " + earlier("b2"), "user c1", "assistant Let me look.", "tool " + boardText})
+	equal(t, "the retry", contents(t, calls[2]), []string{"user b1", "assistant " + earlier("b2"), "user c1", "assistant Let me look.",
+		"tool " + schemaResult(t, r, "ai-software-factory-code", "board"), "tool " + boardText})
 }
 
 // A command of the config tree's sends its message: the turn stores and

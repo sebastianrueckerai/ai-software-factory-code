@@ -174,7 +174,7 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, ca
 	var big *callPrice
 	need := 0.0
 	for i, c := range calls {
-		body, err := chatBody(model, c.Prompt.Text(), c.Input(), limit)
+		body, err := chatBody(model, c.Prompt, c.Input(), limit)
 		if err != nil {
 			return "", err
 		}

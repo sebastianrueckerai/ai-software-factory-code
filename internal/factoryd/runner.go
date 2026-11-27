@@ -2980,7 +2980,7 @@ func (f *envFit) text(name, s, what string) string {
 const workerContainer = "worker"
 
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
-	tools := s.policy.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage))
+	tools := prompts.Offered(s.step, s.policy.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
 	if s.report != "" {
 		// a report session's card restarts on no image
 		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestTool })
@@ -2999,7 +2999,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
 		{"name": "MODEL", "value": s.model},
 		{"name": "STRONGER_MODEL", "value": r.cfg.Models.Stronger},
-		{"name": "CHEAP_MODEL", "value": r.cfg.Models.Start},
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},

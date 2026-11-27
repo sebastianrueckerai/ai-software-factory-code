@@ -296,7 +296,6 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		TokenFile:  s.env.tokenFile,
 		Model:      s.env.model,
 		Stronger:   s.env.strongerModel,
-		Cheap:      s.env.cheapModel,
 		Budget:     factoryd.TokenBudget{AnswerTokens: s.env.answerTokens, HeadroomTokens: s.env.headroomTokens},
 		Steps:      s.env.steps,
 	}
@@ -588,7 +587,6 @@ type workerEnv struct {
 	repoURL, repoToken, pushURL, pushToken string
 	gatewayURL, tokenFile, model           string
 	strongerModel                          string
-	cheapModel                             string
 	answerTokens, headroomTokens           int
 	steps                                  int
 	// lineBound is the card's line bound, LINE_BOUND: the changed lines the
@@ -667,7 +665,6 @@ func loadEnv() (workerEnv, error) {
 	e.tokenFile = str("TOKEN_FILE")
 	e.model = str("MODEL")
 	e.strongerModel = str("STRONGER_MODEL")
-	e.cheapModel = str("CHEAP_MODEL")
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.cardRole = str("CARD_ROLE")

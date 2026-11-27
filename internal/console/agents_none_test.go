@@ -218,7 +218,7 @@ func TestTheChatHeaderOfAProjectWithoutAgentsOffersNoAgentControl(t *testing.T) 
 		for _, name := range []string{"set_autonomy", "new_card"} {
 			if got := slices.ContainsFunc(tools, func(tool any) bool {
 				return tool.(map[string]any)["function"].(map[string]any)["name"] == name
-			}); got != offers {
+			}) || inIndex(tools, name); got != offers {
 				t.Errorf("%s: the chat offers %s: %t, want %t", project, name, got, offers)
 			}
 		}

@@ -27,6 +27,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
@@ -1444,11 +1445,11 @@ func againLine(k Task) string {
 		"(git diff %s^1 %s shows them), make it build green, and land it.", k.IssueNumber, k.PlanKey, k.MergeCommit, k.MergeCommit)
 }
 
-// mapFirst is the planner's read discipline: discovery by grep, glob and
-// the cheap explore agent, a whole read kept for what the plan needs;
+// mapFirst is the planner's read discipline: discovery by grep and glob,
+// a whole read kept for what the plan needs;
 // digestBig its digest, for a session whose tools hold it.
 const (
-	mapFirst = "Map the repository before you read it: grep and glob find where things are, and the task tool's explore agent searches it on the cheaper model. " +
+	mapFirst = "Map the repository before you read it: grep and glob find where things are. " +
 		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
 	digestBig = "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
 )
@@ -2945,7 +2946,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	r.newBriefSession(taskID)
 	began := time.Now()
-	tools := v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage))
+	tools := prompts.Offered("planner", v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
 	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), "planner", pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
 	if err != nil {
 		return PlanResult{}, err

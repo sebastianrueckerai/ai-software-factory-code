@@ -221,7 +221,7 @@ func TestTellCardIsAChatTool(t *testing.T) {
 	equal(t, "tell_card's sentence", about, "Tell a card one text, routed by its state to its session, its merge request or its question (needs OK).")
 	msgs := messages(t, g.calls()[1])
 	sys, _ := msgs[len(msgs)-1]["content"].(string)
-	if want := "\n  tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), " +
+	if want := "\n  tell_card routes by the card's state: to its running session as a message, at its pending merge request as changes requested (deny_merge), " +
 		"to the question it waits on as the answer (answer).\n"; !strings.Contains(sys, want) {
 		t.Errorf("the manual lacks %q:\n%s", want, sys)
 	}

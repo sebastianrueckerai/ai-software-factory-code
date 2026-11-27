@@ -17,7 +17,7 @@ func TestChatDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := ChatConfig{Model: Big, MCPModel: Big, WakeModel: Big, VisionModel: "vision", MonthlyEUR: 10,
-		Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
+		Confirm: []string{"new_card", "request_image", "answer", "tell_card", "retry", "request_changes",
 			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "give_room", "set_dependency", "replan",
 			"promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
 	if got := tree.Document.ChatOf(tree.Projects["linkshort"]); !reflect.DeepEqual(got, want) {

@@ -20,6 +20,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sealed"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // door is a client of the console's /mcp: the header and the cookie it
@@ -512,7 +513,7 @@ func TestMCPChatSendFirstTurnsShareOneThread(t *testing.T) {
 func TestMCPChatSendRaisesProposal(t *testing.T) {
 	r, g := newWritesRig(t)
 	args := `{"task_id":"t-b","depends_on":"t-a"}`
-	g.replies = [][]string{{call(1, "set_dependency", args)}}
+	g.replies = [][]string{{fetchCall(1, "set_dependency", args)}}
 	session := tokenSession(t, r)
 	before := time.Now()
 	var a struct {
@@ -520,15 +521,16 @@ func TestMCPChatSendRaisesProposal(t *testing.T) {
 			ID, Tool, What string
 			Expires        time.Time
 		}
-		Tools, Applied []any
-		Reply          string
-		Ended          bool
+		Tools   []struct{ Name string }
+		Applied []any
+		Reply   string
+		Ended   bool
 	}
 	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "#22 waits on #21"})), &a); err != nil {
 		t.Fatal(err)
 	}
-	if len(a.Proposals) != 1 || len(a.Tools) != 0 || len(a.Applied) != 0 || a.Reply != "" || !a.Ended {
-		t.Fatalf("chat_send = %+v, want one proposal, no tool, nothing applied, ended", a)
+	if len(a.Proposals) != 1 || len(a.Tools) != 1 || a.Tools[0].Name != ToolSchemaName || len(a.Applied) != 0 || a.Reply != "" || !a.Ended {
+		t.Fatalf("chat_send = %+v, want one proposal, the fetch as the one tool, nothing applied, ended", a)
 	}
 	p := a.Proposals[0]
 	stored, ok := r.chat.proposal(p.ID)
@@ -980,7 +982,7 @@ func TestMCPChatSendLeavesWithItsRequest(t *testing.T) {
 func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 	r, _, g := newChatRig(t)
 	g.replies = [][]string{
-		{call(1, "card", `{"task_id":"t-m"}`, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
+		{fetchCall(1, "card", `{"task_id":"t-m"}`, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
 	var a struct {
@@ -1000,7 +1002,8 @@ func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 		Tools   []map[string]string
 		Applied []map[string]string
 		Ended   bool
-	}{"Done.", []map[string]string{{"name": "card", "result": card}, {"name": "set_accent", "result": "The accent of #5 is set."}},
+	}{"Done.", []map[string]string{{"name": ToolSchemaName, "result": textutil.Truncate(schemaResult(t, r, "ai-software-factory-code", "set_accent"), 300)},
+		{"name": "card", "result": card}, {"name": "set_accent", "result": "The accent of #5 is set."}},
 		[]map[string]string{{"tool": "set_accent", "result": "The accent of #5 is set."}}, true})
 	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "blue" {
 		t.Fatalf("accent = %q, want blue", k.Accent)
@@ -1009,7 +1012,7 @@ func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 
 func TestMCPChatReadTwoProposalsOnARow(t *testing.T) {
 	r, g := newWritesRig(t)
-	g.replies = [][]string{{call(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`,
+	g.replies = [][]string{{fetchCall(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`,
 		"new_card", `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`)}}
 	session := tokenSession(t, r)
 	var a struct{ Proposals []struct{ ID string } }
@@ -1399,7 +1402,7 @@ func TestMCPChatConfirmRefusesOtherHumansProposal(t *testing.T) {
 
 func TestMCPChatConfirmPoolWithARefusedForgejoToken(t *testing.T) {
 	r, g, infra := poolChatRig(t, 8, 3)
-	g.replies = [][]string{{call(1, "set_pool", `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`)}}
+	g.replies = [][]string{{fetchCall(1, "set_pool", `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`)}}
 	session := tokenSession(t, r)
 	id := raised(t, session, "a pool for the findings")
 	infra.revoked = "fj-sebastian"
@@ -1418,7 +1421,7 @@ func TestMCPChatConfirmPoolWithARefusedForgejoToken(t *testing.T) {
 func TestMCPPoolProposalCarriesItsPreview(t *testing.T) {
 	r, g, _ := poolChatRig(t, 10, 3)
 	poolChatReload(r, 15)
-	g.replies = [][]string{{call(1, "set_pool", `{"action":"top_up","eur":5,"reason":"a second finding"}`)}}
+	g.replies = [][]string{{fetchCall(1, "set_pool", `{"action":"top_up","eur":5,"reason":"a second finding"}`)}}
 	session := tokenSession(t, r)
 	var a sendAnswer
 	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "top the pool up"})), &a); err != nil {
@@ -1457,8 +1460,8 @@ func TestMCPPoolProposalCarriesItsPreview(t *testing.T) {
 func TestMCPChatConfirmPoolAgainstItsCapture(t *testing.T) {
 	r, g, infra := poolChatRig(t, 10, 3)
 	poolChatReload(r, 15)
-	topUp := call(1, "set_pool", `{"action":"top_up","eur":5,"reason":"a second finding"}`)
-	g.replies = [][]string{{topUp}}
+	const topUpArgs = `{"action":"top_up","eur":5,"reason":"a second finding"}`
+	g.replies = [][]string{{fetchCall(1, "set_pool", topUpArgs)}}
 	session := tokenSession(t, r)
 	id := raised(t, session, "top the pool up")
 	const landed = "The pool of ai-software-factory-code is 15.00 EUR now, was 10.00 EUR: sf/infra#12 carries the change and the policy in force holds it."
@@ -1468,7 +1471,7 @@ func TestMCPChatConfirmPoolAgainstItsCapture(t *testing.T) {
 		t.Fatalf("the confirm wrote %d commits, want 1", len(infra.contents))
 	}
 
-	g.replies = [][]string{{topUp}}
+	g.replies = [][]string{{call(1, "set_pool", topUpArgs)}}
 	id = raised(t, session, "top the pool up again")
 	infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob2"}
 	text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": id})

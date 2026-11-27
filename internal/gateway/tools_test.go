@@ -376,7 +376,7 @@ func TestAskToolsSayWhenToCallThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	for tool, want := range map[string]string{
-		policy.ToolRequestInfo: "Ask the issue's author for information, instead of guessing, when you could not reproduce the problem and found no fault",
+		policy.ToolRequestInfo: "Ask the issue's author for information instead of guessing, when you could not reproduce the problem",
 		policy.ToolEscalate:    "Escalate when the task cannot be completed without a decision, access or information you lack.",
 	} {
 		i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == tool })
@@ -925,9 +925,8 @@ func TestRequestTool(t *testing.T) {
 	if i < 0 {
 		t.Fatal("no request_tool")
 	}
-	if want := "Ask for a tool this sandbox lacks, such as a browser, ffmpeg or a language runtime, instead of trying to install it: the sandbox refuses installs. " +
-		"Your work in progress is pushed, a card adds the tool to one of the project's images, and this card restarts on that image from its branch once the image is built. " +
-		"Name the tool by its Debian package or binary name (chromium, ffmpeg, python3), and what you need it for."; res.Tools[i].Description != want {
+	if want := "Ask for a tool the sandbox lacks, such as chromium, ffmpeg or python3, instead of installing it. " +
+		"Your work is pushed, a card adds the tool to a project image, and this card restarts on it. Name the Debian package or binary and why."; res.Tools[i].Description != want {
 		t.Fatalf("description = %q, want %q", res.Tools[i].Description, want)
 	}
 	b, _ := json.Marshal(res.Tools[i].InputSchema)
@@ -1037,9 +1036,8 @@ func TestRequestCut(t *testing.T) {
 	if i < 0 {
 		t.Fatal("no request_cut")
 	}
-	if want := "Ask to cut this card when its work is bigger than one card should be: name why and the 2 to 5 parts you propose. The check-in judges it. " +
-		"If it decides to cut, this session stops, your work in progress is pushed, and the planner plans the rest on top of it; otherwise it answers you with a message. " +
-		"Go on with the work meanwhile. Free."; res.Tools[i].Description != want {
+	if want := "Ask to cut this card when its work is bigger than one card should be: give why and 2 to 5 parts. The check-in judges it. " +
+		"If it cuts, this session stops, your work is pushed and the planner plans the rest. Free."; res.Tools[i].Description != want {
 		t.Fatalf("description = %q, want %q", res.Tools[i].Description, want)
 	}
 	b, _ := json.Marshal(res.Tools[i].InputSchema)

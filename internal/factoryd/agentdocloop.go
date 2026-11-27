@@ -106,7 +106,7 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	}
 	b.IssueURL = "https://git.example/owner/name/issues/7"
 	b.Repository = agentDocLoopRepo
-	b.Tools = v.Document.Tools([]string{agentDocLoopClass(id)}, false)
+	b.Tools = prompts.Offered(b.Step, v.Document.Tools([]string{agentDocLoopClass(id)}, false))
 	b.PosterInfo, b.LeftOut = agentDocLoopPosters()
 	if id == "coding" || id == "message-responder" {
 		b.Facts = SessionFacts{BudgetEUR: 5, SpentEUR: 1.25, ReserveEUR: v.Document.Limits.GateReserve(), TimeLeft: 97 * time.Minute,
@@ -467,11 +467,16 @@ func (s agentDocLoopStore) ReleaseHold(ctx context.Context, h policy.Hold, cost 
 
 // agentDocLoopEnv points opencode's own config, data and cache at a
 // throwaway home for the capture, so nothing of the machine's user or of
-// an earlier run leaks into the system prompt — the worker pod starts
-// equally empty. It hands back the restore.
-func agentDocLoopEnv() (func(), error) {
+// an earlier run leaks into the system prompt, and seeds the home's
+// .config/opencode from bake, the way the worker's useHarness fills the
+// pod's empty home from the image's. It hands back the restore.
+func agentDocLoopEnv(bake string) (func(), error) {
 	home, err := os.MkdirTemp("", "agentdoc-home-")
 	if err != nil {
+		return nil, err
+	}
+	if err := os.CopyFS(filepath.Join(home, ".config", "opencode"), os.DirFS(bake)); err != nil {
+		os.RemoveAll(home) // #nosec G104 -- best-effort scratch cleanup
 		return nil, err
 	}
 	keys := []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"}
@@ -499,6 +504,16 @@ func agentDocLoopEnv() (func(), error) {
 		}
 		os.RemoveAll(home) // #nosec G104 -- best-effort scratch cleanup
 	}, nil
+}
+
+// AgentDocBake fills dir with what the sandbox image bakes into
+// /opt/opencode-home/.config/opencode beside the npm packages: the
+// plugins of the repository at root and the built-in tools' texts.
+func AgentDocBake(root, dir string) error {
+	if err := os.CopyFS(filepath.Join(dir, "plugins"), os.DirFS(filepath.Join(root, "opencode-plugin", "plugins"))); err != nil {
+		return err
+	}
+	return os.CopyFS(filepath.Join(dir, "tool-text"), os.DirFS(filepath.Join(root, "internal", "prompts", "tools")))
 }
 
 // agentDocLoopSessionModel is the model the mode's session runs on, as the
@@ -554,12 +569,13 @@ func agentDocLoopMux(model *agentDocLoopModel, v policy.Version, id string) *htt
 // model above, and the capture comes back with the builders' spans plus
 // the wire parts read out of the recorded body. The responder's page is
 // the call after the writer's message; every other mode's is the first.
-func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agentdoc.Span, agentdoc.Recorded, error) {
+// bake is the opencode config directory the session's home starts with.
+func AgentDocLoop(ctx context.Context, id, bin, bake string, v policy.Version) ([]agentdoc.Span, agentdoc.Recorded, error) {
 	mode := id
 	if !slices.Contains(AgentDocLoopIDs(), mode) {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: no loop mode %q", id)
 	}
-	restore, err := agentDocLoopEnv()
+	restore, err := agentDocLoopEnv(bake)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, err
 	}
@@ -582,7 +598,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 
 	model.oc = &Opencode{
 		Binary: bin, WorkDir: dir, TokenFile: token,
-		Model: agentDocLoopSessionModel(mode, v), Stronger: "factory/" + policy.Big, Cheap: "factory/" + policy.Small,
+		Model: agentDocLoopSessionModel(mode, v), Stronger: "factory/" + policy.Big,
 		Budget:     TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384},
 		Steps:      v.Document.Limits.Steps,
 		GatewayURL: srv.URL,
@@ -630,30 +646,4 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 		spans = append(spans, msgSpans...)
 	}
 	return append(spans, wire...), rec, nil
-}
-
-// AgentDocAgentConfig answers the config's agent block verbatim: what
-// buildOpencodeConfig tells opencode about a coding session's build agent,
-// the general and explore subagents and the title agent — their model
-// and step cap, in the policy's own steps and the ladder's cheap rung, the
-// build agent's prompt and the title call off. The subagents' prompts are
-// opencode's own, inside the binary; no first call of ours exists to
-// capture, so this fragment is the config-level page's whole substance.
-func AgentDocAgentConfig(v policy.Version) (json.RawMessage, error) {
-	limit, err := (TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384}).OutputLimit()
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := buildOpencodeConfig("coding", "https://gateway.invalid", "factory", policy.Small,
-		limit, v.Document.Limits.Steps, nil, "factory/"+policy.Small, policy.Big)
-	if err != nil {
-		return nil, err
-	}
-	var whole struct {
-		Agent json.RawMessage `json:"agent"`
-	}
-	if err := json.Unmarshal(cfg, &whole); err != nil {
-		return nil, err
-	}
-	return whole.Agent, nil
 }

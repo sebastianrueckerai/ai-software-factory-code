@@ -74,9 +74,9 @@ func freshRig(t *testing.T) *rig {
 func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	r := freshRig(t)
 	r.gateway.replies = [][]string{
-		{call(1, "set_accent", `{"task_id":"#5","accent":"blue"}`)},
+		{fetchCall(1, "set_accent", `{"task_id":"#5","accent":"blue"}`)},
 		{say("marked it.")},
-		{call(2, "card", `{"task_id":5}`)},
+		{call(3, "card", `{"task_id":5}`)},
 		{say("it is blue now.")},
 	}
 	if code, events := r.post("mark #5 blue"); code != http.StatusOK {
@@ -190,9 +190,9 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	r.gateway.replies = [][]string{
 		{call(1, "card", `{"task_id":"#5"}`)},
 		{say("read it.")},
-		{call(2, "set_accent", `{"task_id":5,"accent":"blue"}`)},
+		{fetchCall(2, "set_accent", `{"task_id":5,"accent":"blue"}`)},
 		{say("marked it.")},
-		{call(3, "card", `{"task_id":"#5"}`)},
+		{call(4, "card", `{"task_id":"#5"}`)},
 		{say("it is blue now.")},
 	}
 	if code, events := r.post("what about #5?"); code != http.StatusOK {
@@ -223,14 +223,15 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 			results[m["tool_call_id"].(string)] = content
 		}
 	}
-	if !strings.HasPrefix(results["call_3"], newCardHead) {
-		t.Errorf("the turn's fresh card read lacks the card's new state %q:\n%s", newCardHead, results["call_3"])
+	if !strings.HasPrefix(results["call_4"], newCardHead) {
+		t.Errorf("the turn's fresh card read lacks the card's new state %q:\n%s", newCardHead, results["call_4"])
 	}
-	delete(results, "call_3")
+	delete(results, "call_4")
 	want := map[string]string{
 		"call_1": "[read at " + readAt.UTC().Format("2006-01-02 15:04 UTC") +
 			", 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]",
-		"call_2": accentNote + " The human may undo it.",
+		"call_2": "[fetched in an earlier turn: the schema stands in your tool list]",
+		"call_3": accentNote + " The human may undo it.",
 	}
 	if !reflect.DeepEqual(results, want) {
 		t.Errorf("the replayed results =\n%q\nwant\n%q", results, want)

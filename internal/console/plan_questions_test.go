@@ -986,6 +986,7 @@ func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 				trn.a.s, trn.a.wake, trn.a.birth = s, true, factoryd.EventCaseClimbed
 			}
 			humanTurn(t, r, trn, c.turn == "absorbed")
+			fetchIn(t, trn, c.tool)
 			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
 			posts := slices.DeleteFunc(slices.Clone(r.fg.calls), func(s string) bool { return !strings.HasPrefix(s, comments) })
 			if c.token == "" {

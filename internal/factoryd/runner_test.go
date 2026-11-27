@@ -1484,7 +1484,7 @@ func TestReportSessionGetsNoRequestTool(t *testing.T) {
 	doc.Classes["coder"] = coder
 	task := Task{ID: "t1", Repository: "sf/repo", RequiredCapabilities: []string{"coder"}, Track: "direct"}
 	for report, want := range map[string]string{"": `["request_info","request_tool"]`, "the guide": `["request_info"]`} {
-		pod := r.workerPodSpec(task, sessionSpec{id: "s-1", policy: doc, report: report})
+		pod := r.workerPodSpec(task, sessionSpec{id: "s-1", step: "coding", policy: doc, report: report})
 		if got := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["TOOLS"]; got != want {
 			t.Errorf("report %q: TOOLS = %s, want %s", report, got, want)
 		}
@@ -5888,9 +5888,9 @@ func TestWorkerOffersRequestCutOnlyWhereTheCardCanBeCut(t *testing.T) {
 		s    sessionSpec
 		want string
 	}{
-		"a plan track":  {sessionSpec{id: "s-1", policy: doc, planTrack: true}, `["request_cut","request_info"]`},
-		"no plan track": {sessionSpec{id: "s-1", policy: doc}, `["request_info"]`},
-		"a report":      {sessionSpec{id: "s-1", policy: doc, planTrack: true, report: "the guide"}, `["request_info"]`},
+		"a plan track":  {sessionSpec{id: "s-1", step: "coding", policy: doc, planTrack: true}, `["request_cut","request_info"]`},
+		"no plan track": {sessionSpec{id: "s-1", step: "coding", policy: doc}, `["request_info"]`},
+		"a report":      {sessionSpec{id: "s-1", step: "coding", policy: doc, planTrack: true, report: "the guide"}, `["request_info"]`},
 	} {
 		pod := r.workerPodSpec(task, tc.s)
 		if got := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["TOOLS"]; got != tc.want {
@@ -6574,7 +6574,7 @@ func TestRunSessionRaisesTheBoundByTheOpenedProofsLines(t *testing.T) {
 func prevRig(t *testing.T, answer string) (*Runner, *fakeWorkerEndpoint) {
 	t.Helper()
 	runner, _, _, worker, _, _, objects := checkinRig(t, answer)
-	rec := carryRecord(t, todoEv(false, [2]string{"in_progress", "fix the gate"}), fileEv("/workspace/repo/g.go"))
+	rec := carryRecord(t, todoEv([2]string{"in_progress", "fix the gate"}), fileEv("/workspace/repo/g.go"))
 	if err := objects.Put(t.Context(), "sessions/t2/s-prev.jsonl", rec); err != nil {
 		t.Fatal(err)
 	}

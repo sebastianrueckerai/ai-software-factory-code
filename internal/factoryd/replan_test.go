@@ -2055,9 +2055,9 @@ func oldCardsRig(t *testing.T, step map[string]any) (*Runner, *fakeStore, *fakeK
 		at  time.Time
 		rec []byte
 	}{
-		{"s-ui-1", replanAt.Add(-2 * time.Hour), carryRecord(t, todoEv(false, [2]string{"in_progress", "page the list"}))},
+		{"s-ui-1", replanAt.Add(-2 * time.Hour), carryRecord(t, todoEv([2]string{"in_progress", "page the list"}))},
 		{"s-ui-2", replanAt.Add(-time.Hour), carryRecord(t, readEvent("/workspace/repo/ui.go"))},
-		{"s-ui-3", replanAt.Add(time.Hour), carryRecord(t, todoEv(false, [2]string{"pending", "after the replan"}))},
+		{"s-ui-3", replanAt.Add(time.Hour), carryRecord(t, todoEv([2]string{"pending", "after the replan"}))},
 	} {
 		if err := store.InsertSession(ctx, Session{ID: s.id, TaskID: "t-ui", CreatedAt: s.at}); err != nil {
 			t.Fatal(err)
@@ -2176,7 +2176,7 @@ func TestReplanRecord(t *testing.T) {
 		if err := store.InsertSession(ctx, Session{ID: s.id, TaskID: "t-plan", CreatedAt: s.at}); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.objects.Put(ctx, "sessions/t-plan/"+s.id+".jsonl", carryRecord(t, todoEv(false, [2]string{"pending", s.todo}))); err != nil {
+		if err := r.objects.Put(ctx, "sessions/t-plan/"+s.id+".jsonl", carryRecord(t, todoEv([2]string{"pending", s.todo}))); err != nil {
 			t.Fatal(err)
 		}
 	}

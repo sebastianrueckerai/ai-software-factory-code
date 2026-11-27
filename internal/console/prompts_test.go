@@ -2,11 +2,13 @@ package console
 
 import (
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -87,33 +89,174 @@ func budgetOf(t *testing.T, step string) int {
 	return 0
 }
 
-// The session steps keep the tool sets their map pages show: every
-// built-in tool, and the gateway's tools their classes grant.
-func TestSessionStepsKeepTheirToolSets(t *testing.T) {
-	analyzer := []string{"analyze_image", "deployment_health", "digest", "escalate", "manual", "request_info", "web_scrape", "web_search"}
-	coder := []string{"analyze_image", "cloud_prices", "commission_server", "delegate", "deployment_health", "digest", "escalate", "fal_run", "list_resources", "manual",
-		"release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate", "web_scrape", "web_search"}
-	want := map[string][]string{
-		"sizing":      analyzer,
-		"screening":   analyzer,
-		"planner":     {"analyze_image", "digest", "escalate", "file_plan", "manual", "web_scrape", "web_search"},
-		"prover":      {"file_proofs", "manual"},
-		"coding":      coder,
-		"coding-card": coder,
-	}
-	profiles := map[string]prompts.Profile{}
+// sessionProfiles are the profiles of the six session steps, by step.
+func sessionProfiles(t *testing.T) map[string]prompts.Profile {
+	t.Helper()
+	out := map[string]prompts.Profile{}
 	for _, p := range prompts.Profiles() {
-		profiles[p.Step] = p
+		if len(p.Tools.Builtin) > 0 {
+			out[p.Step] = p
+		}
 	}
-	for step, gateway := range want {
-		p, ok := profiles[step]
-		switch {
-		case !ok:
-			t.Errorf("step %s has no profile", step)
-		case !slices.Equal(p.Tools.Gateway, gateway):
-			t.Errorf("step %s: tools.gateway = %q, want %q", step, p.Tools.Gateway, gateway)
-		case !slices.Equal(p.Tools.Builtin, prompts.BuiltinTools):
-			t.Errorf("step %s: tools.builtin = %q, want every built-in tool", step, p.Tools.Builtin)
+	if want := []string{"coding", "coding-card", "planner", "prover", "screening", "sizing"}; !slices.Equal(slices.Sorted(maps.Keys(out)), want) {
+		t.Fatalf("the session steps are %q, want %q", slices.Sorted(maps.Keys(out)), want)
+	}
+	return out
+}
+
+// Each session step keeps the built-in tools its job uses: the coder
+// all six, the prover no todo list, the planner no edit, and screening
+// and sizing only the three that read.
+func TestSessionToolSets(t *testing.T) {
+	want := map[string][]string{
+		"coding":      {"bash", "edit", "glob", "grep", "read", "todowrite"},
+		"coding-card": {"bash", "edit", "glob", "grep", "read", "todowrite"},
+		"prover":      {"bash", "edit", "glob", "grep", "read"},
+		"planner":     {"bash", "glob", "grep", "read"},
+		"sizing":      {"glob", "grep", "read"},
+		"screening":   {"glob", "grep", "read"},
+	}
+	for step, p := range sessionProfiles(t) {
+		if got := slices.Sorted(slices.Values(p.Tools.Builtin)); !slices.Equal(got, want[step]) {
+			t.Errorf("step %s: tools.builtin = %q, want %q", step, got, want[step])
+		}
+	}
+}
+
+// The steps that only read cannot write: screening, sizing and the
+// planner have no edit, and screening and sizing, which read text an
+// outsider wrote, no shell.
+func TestReadOnlyStepsCannotWrite(t *testing.T) {
+	profiles := sessionProfiles(t)
+	for _, step := range []string{"screening", "sizing", "planner"} {
+		if slices.Contains(profiles[step].Tools.Builtin, "edit") {
+			t.Errorf("step %s keeps edit", step)
+		}
+	}
+	for _, step := range []string{"screening", "sizing"} {
+		if slices.Contains(profiles[step].Tools.Builtin, "bash") {
+			t.Errorf("step %s keeps bash", step)
+		}
+	}
+}
+
+// stepClass is the policy class each session step runs as.
+var stepClass = map[string]string{
+	"coding": "coder", "coding-card": "coder", "planner": "planner", "prover": policy.ClassProver,
+	"screening": "analyzer", "sizing": "analyzer",
+}
+
+// shippedClassTools are the gateway tools of the session classes in the
+// infra repository's factory/policy.yaml.
+var shippedClassTools = map[string][]string{
+	"coder": {"analyze_image", "cloud_prices", "commission_server", "delegate", "deployment_health", "digest", "escalate", "fal_run", "list_resources",
+		"manual", "release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate",
+		"web_scrape", "web_search"},
+	"analyzer":         {"analyze_image", "deployment_health", "digest", "escalate", "manual", "request_info", "web_scrape", "web_search"},
+	"planner":          {"analyze_image", "digest", "escalate", "file_plan", "manual", "web_scrape", "web_search"},
+	policy.ClassProver: {"file_proofs", "manual"},
+}
+
+// shippedDocument is a policy whose session classes list the shipped tools.
+func shippedDocument() policy.Document {
+	d := policy.Document{Classes: map[string]policy.Class{}}
+	for class, tools := range shippedClassTools {
+		caps := map[string]policy.ToolCap{}
+		for _, tool := range tools {
+			caps[tool] = policy.ToolCap{}
+		}
+		d.Classes[class] = policy.Class{Tools: caps}
+	}
+	return d
+}
+
+// The copy above is the infra repository's: with INFRA_FACTORY_DIR set to
+// its factory/ directory, each session class lists the same tools.
+func TestShippedClassToolsAreTheCopy(t *testing.T) {
+	dir := os.Getenv("INFRA_FACTORY_DIR")
+	if dir == "" {
+		t.Skip("INFRA_FACTORY_DIR unset")
+	}
+	files, err := policy.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for class, want := range shippedClassTools {
+		if got := slices.Sorted(maps.Keys(tree.Document.Classes[class].Tools)); !slices.Equal(got, want) {
+			t.Errorf("class %s: the infra repository lists %q, the copy %q", class, got, want)
+		}
+	}
+}
+
+// Each session step is offered the gateway tools its job uses: the coder
+// eleven, the planner six, the prover two, and screening and sizing a look
+// at an image and the manual.
+func TestSessionGatewaySets(t *testing.T) {
+	coder := []string{"analyze_image", "delegate", "deployment_health", "digest", "escalate", "manual", "request_cut", "request_info", "request_tool", "web_scrape", "web_search"}
+	want := map[string][]string{
+		"coding": coder, "coding-card": coder,
+		"planner":   {"analyze_image", "digest", "file_plan", "manual", "web_scrape", "web_search"},
+		"prover":    {"file_proofs", "manual"},
+		"sizing":    {"analyze_image", "manual"},
+		"screening": {"analyze_image", "manual"},
+	}
+	for step, p := range sessionProfiles(t) {
+		if got := slices.Sorted(slices.Values(p.Tools.Gateway)); !slices.Equal(got, want[step]) {
+			t.Errorf("step %s: tools.gateway = %q, want %q", step, got, want[step])
+		}
+	}
+}
+
+// A bug-fix card rents no server and runs no hosted model: the coder's
+// profiles name none of the resource tools, the hosted-model runners or
+// task_costs.
+func TestCodingDropsTheEightTools(t *testing.T) {
+	profiles := sessionProfiles(t)
+	for _, step := range []string{"coding", "coding-card"} {
+		for _, tool := range []string{"cloud_prices", "commission_server", "list_resources", "release_resource", "resource_request_status",
+			"ssh_certificate", "replicate_predict", "fal_run", "task_costs"} {
+			if slices.Contains(profiles[step].Tools.Gateway, tool) {
+				t.Errorf("step %s lists %s", step, tool)
+			}
+		}
+	}
+}
+
+// Every gateway tool a session step names is one its shipped class lists:
+// the class is the ceiling, the profile the offer.
+func TestProfileToolsAreListedByAClass(t *testing.T) {
+	for step, p := range sessionProfiles(t) {
+		for _, tool := range p.Tools.Gateway {
+			if !slices.Contains(shippedClassTools[stepClass[step]], tool) {
+				t.Errorf("step %s names %s, which its class %s does not list", step, tool, stepClass[step])
+			}
+		}
+	}
+}
+
+// The harness offers what the brief names: the gateway tools a session's
+// config leaves undenied, within its shipped class, are Offered's list.
+func TestOfferedMatchesTheHarness(t *testing.T) {
+	d := shippedDocument()
+	for step := range sessionProfiles(t) {
+		allowed := d.Tools([]string{stepClass[step]}, false)
+		cfg, err := prompts.SessionConfig(step)
+		if err != nil {
+			t.Fatalf("step %s: %v", step, err)
+		}
+		permission := cfg["permission"].(map[string]any)
+		var undenied []string
+		for _, tool := range allowed {
+			if permission["factory-tools_"+tool] != "deny" {
+				undenied = append(undenied, tool)
+			}
+		}
+		if got := prompts.Offered(step, allowed); !slices.Equal(got, undenied) || len(got) == 0 {
+			t.Errorf("step %s: Offered = %q, the harness leaves %q", step, got, undenied)
 		}
 	}
 }

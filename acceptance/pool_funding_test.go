@@ -76,7 +76,7 @@ func lastAct(t *testing.T, r *AcceptanceRig) []any {
 // events; the model's closing reply follows the call.
 func agentCall(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, tool, args, closing string) []string {
 	t.Helper()
-	r.Reply([]string{Call(1, tool, args)}, []string{Say(closing)})
+	r.Reply([]string{fetchCall(1, tool, args)}, []string{Say(closing)})
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"the card waits on money"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
@@ -129,7 +129,7 @@ func lastToolRow(t *testing.T, r *AcceptanceRig, login, tool string) factoryd.Ch
 // result, whole where the stream truncates it.
 func chatRead(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, login, tool string) string {
 	t.Helper()
-	r.Reply([]string{Call(1, tool, `{}`)}, []string{Say("read")})
+	r.Reply([]string{fetchCall(1, tool, `{}`)}, []string{Say("read")})
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"read the pool"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)

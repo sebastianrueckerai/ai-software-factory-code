@@ -293,6 +293,20 @@ func TestPageWritesRefuseNonWriters(t *testing.T) {
 		}
 	}
 	r.c.cfg.Policies = r.ledger
+	// bob's chat does not offer the tools, so he cannot fetch them, and a
+	// call of one meets its own refusal
+	for _, name := range []string{"promote_resource", "release_resource"} {
+		args := `{"id":11}`
+		g.replies = [][]string{{call(1, ToolSchemaName, `{"name":"`+name+`"}`, name, args)}, {say("Refused.")}}
+		_, events, _ := chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"do it"}})
+		equal(t, name+" by bob with no fetch", len(events), 4)
+		_, _, fetch := toolEvent(t, events[0])
+		if !strings.HasPrefix(fetch, "There is no rare tool "+name+". The rare tools are: ") {
+			t.Errorf("bob's fetch of %s = %q, want no such rare tool", name, fetch)
+		}
+		_, _, run := toolEvent(t, events[1])
+		equal(t, name+" by bob with no fetch", run, "Refused: "+words)
+	}
 	for _, confirm := range [][]string{nil, {}} {
 		if confirm != nil {
 			r.ledger.chat = &policy.ChatConfig{Confirm: confirm}
@@ -410,6 +424,14 @@ func TestDeploymentHealthIsRefusedToAProjectWithoutNamespaces(t *testing.T) {
 		Agents: "coder", Process: "maintenance"}}
 	g.project = "demo"
 	ck, s := memberLogin(t, r, "bob")
+	// the chat does not offer the tool there, so the fetch is refused
+	g.replies = [][]string{{call(1, ToolSchemaName, `{"name":"deployment_health"}`, "deployment_health", `{"deployment":"web"}`)}, {say("ok")}}
+	_, events, _ := chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"is web up?"}})
+	_, _, fetch := toolEvent(t, events[0])
+	if !strings.HasPrefix(fetch, "There is no rare tool deployment_health. The rare tools are: ") || strings.Contains(fetch, "deployment_health,") {
+		t.Errorf("the fetch = %q, want no such rare tool", fetch)
+	}
+	// a call of it meets the tool's own refusal
 	g.replies = [][]string{{call(1, "deployment_health", `{"deployment":"web"}`)}, {say("ok")}}
 	chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"is web up?"}})
 	calls := g.calls()
@@ -451,7 +473,7 @@ func TestChatClusterFactsWindowNeedsTheFactorysAccess(t *testing.T) {
 		At: time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC), Node: "n1", KillSource: "guard"}}
 	g.project = "demo"
 	ck, s := memberLogin(t, r, "bob")
-	g.replies = [][]string{{call(1, "cluster_facts", `{"task_id":"t-dm","n":1}`,
+	g.replies = [][]string{{fetchCall(1, "cluster_facts", `{"task_id":"t-dm","n":1}`,
 		"cluster_facts", `{"since":"2026-10-22T09:00:00Z","until":"2026-10-22T10:00:00Z"}`)}, {say("ok")}}
 	chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"what did the cluster do?"}})
 	calls := g.calls()

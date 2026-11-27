@@ -98,6 +98,8 @@ COPY opencode-plugin/package.json opencode-plugin/package-lock.json ./
 COPY --from=npm-cache /npm-cache /npm-cache
 RUN npm ci --offline --cache /npm-cache --no-audit --no-fund \
       && test "$(node -p "require('./node_modules/@opencode-ai/plugin/package.json').version")" = "${OPENCODE_VERSION#v}"
+COPY opencode-plugin/plugins/ plugins/
+COPY internal/prompts/tools/ tool-text/
 
 # The sandbox without the harness and the stack, pushed as sf/sandbox-base:
 # project images build FROM it and apt-get install from its sources.

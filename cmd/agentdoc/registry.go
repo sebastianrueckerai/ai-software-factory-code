@@ -32,9 +32,6 @@ type Agent struct {
 	// factoryd.AgentDocLoop, not an in-process client: an opencode loop
 	// mode.
 	Loop bool
-	// Config marks a page with no capture at all: what the config says
-	// about an agent whose prompts are not ours.
-	Config bool
 	// Steps are the profile names the agent's request is built from.
 	Steps []string
 	// NoPrompt marks an agent whose request carries no prompt a profile
@@ -53,7 +50,6 @@ var registry = []Agent{
 	{ID: "planner", Steps: []string{"planner"}, Pkg: "internal/factoryd", Family: "A", Job: "Reads repo, files a plan via the file_plan MCP tool", Runs: "agent-worker, report mode", Loop: true, Calls: []string{"factoryd.(*Runner).RunPlan"}},
 	{ID: "prover", Steps: []string{"prover"}, Pkg: "internal/factoryd", Family: "A", Job: "Writes one blind test per criterion on main, files them via file_proofs", Runs: "agent-worker, report mode", Loop: true, Calls: []string{"factoryd.(*Runner).RunReport"}},
 	{ID: "message-responder", Steps: []string{"coding", "message-responder"}, Pkg: "internal/factoryd", Family: "A", Job: "Answers POST /message pushes mid-session", Runs: "agent-worker, the session's next turn in the sandbox", Loop: true, Calls: []string{"factoryd.(*Runner).MessageSession"}},
-	{ID: "opencode-subagents", Pkg: "internal/factoryd", Family: "A", Job: "opencode-internal task and explore delegation", Runs: "inside opencode, under the session config's agent block", Config: true},
 	{ID: "checkin", Steps: []string{"checkin-session"}, Pkg: "internal/factoryd", Family: "B", Job: "Decides continue, message, handover, human or replan on a session trip", Runs: "factoryd, in-process loop, tools executed in the sandbox", Answer: factoryd.AgentDocDirectAnswer, Capture: factoryd.AgentDocDirect, Calls: []string{"factoryd.(*Runner).runCheckin"}},
 	{ID: "case-checkin", Steps: []string{"case-checkin"}, Pkg: "internal/factoryd", Family: "B", Job: "Judges a case at rung 1: acts on it, or hands it up with a recommendation", Runs: "factoryd, in-process loop on the project's chat task, tools read by factoryd", Answer: factoryd.AgentDocDirectAnswer, Capture: factoryd.AgentDocDirect, Calls: []string{"factoryd.(*Runner).rung1Converse"}},
 	{ID: "model-review", Steps: []string{"model-review"}, Pkg: "internal/factoryd", Family: "B", Job: "Reviews a diff part against the card's objective", Runs: "factoryd direct", Answer: factoryd.AgentDocDirectAnswer, Capture: factoryd.AgentDocDirect, Calls: []string{"factoryd.(*Runner).ModelReview"}},

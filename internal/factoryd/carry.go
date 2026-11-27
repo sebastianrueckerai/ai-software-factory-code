@@ -14,19 +14,17 @@ import (
 )
 
 const (
-	carryTodoBytes   = 1 << 10
-	carryReportBytes = 4 << 10
-	carryMaxReports  = 8
-	carryMaxFiles    = 30
-	carryStopBytes   = 200
+	carryTodoBytes = 1 << 10
+	carryMaxFiles  = 30
+	carryStopBytes = 200
 )
 
 // carryState is what the next session is handed from a stopped one: the
-// working state for its brief and the full subagent reports for the worker
-// to write to files.
+// working state for its brief and, after a replan, the record files of
+// its cards for the worker to write beside the brief.
 type carryState struct {
 	Prior harness.PriorState
-	Files []harness.ReportFile
+	Files []harness.RecordFile
 }
 
 type carryFrom struct {
@@ -35,8 +33,6 @@ type carryFrom struct {
 	Trip                  string
 	DeadEnd               bool
 }
-
-type carryTask struct{ desc, result string }
 
 // priorState is the record s is handed: its own (s.record, a planner's)
 // when it has one, else the working state it continues from, copied from
@@ -59,14 +55,13 @@ func priorState(s sessionSpec, record func() ([]byte, error)) *carryState {
 }
 
 // workingState builds the carried state from a session's record; nil when
-// the record holds no todo list, no own task call and no file change. The
+// the record holds no todo list and no file change. The
 // heading holds only what factoryd owns; the stop reason, often the
 // agent's own last message, is the body's first line.
 func workingState(record []byte, from carryFrom) *carryState {
 	var (
 		last    time.Time
 		todos   []string
-		tasks   []carryTask
 		files   []string
 		seen    = map[string]bool{}
 		scanner = bufio.NewScanner(bytes.NewReader(record))
@@ -82,9 +77,6 @@ func workingState(record []byte, from carryFrom) *carryState {
 		}
 		switch ev.Kind {
 		case harness.EventToolCall:
-			if detailBool(ev, "subagent") {
-				continue
-			}
 			args, _ := ev.Detail["args"].(map[string]any)
 			switch detailString(ev, "tool") {
 			case "todowrite":
@@ -99,9 +91,6 @@ func workingState(record []byte, from carryFrom) *carryState {
 					}
 					todos = append(todos, "- "+status+content)
 				}
-			case "task":
-				desc, _ := args["description"].(string)
-				tasks = append(tasks, carryTask{desc, detailString(ev, "result")})
 			}
 		case harness.EventFileChange:
 			p := strings.TrimPrefix(detailString(ev, "path"), "/workspace/repo/")
@@ -111,7 +100,7 @@ func workingState(record []byte, from carryFrom) *carryState {
 			}
 		}
 	}
-	if len(todos) == 0 && len(tasks) == 0 && len(files) == 0 {
+	if len(todos) == 0 && len(files) == 0 {
 		return nil
 	}
 
@@ -147,27 +136,6 @@ func workingState(record []byte, from carryFrom) *carryState {
 		sections = append(sections, title+"\n"+textutil.Truncate(strings.Join(todos, "\n"), carryTodoBytes))
 	}
 
-	var reportFiles []harness.ReportFile
-	if len(tasks) > 0 {
-		skipped := max(len(tasks)-carryMaxReports, 0)
-		tasks = tasks[skipped:]
-		lines := []string{"Subagent reports (excerpts; the full text is in the files named):"}
-		if skipped > 0 {
-			lines = append(lines, fmt.Sprintf("%d earlier subagent calls are left out.", skipped))
-		}
-		for i, tk := range tasks {
-			text := reportText(tk.result)
-			if text == "" {
-				lines = append(lines, fmt.Sprintf("- %q: no report was recorded.", tk.desc))
-				continue
-			}
-			name := fmt.Sprintf("report-%d.md", i+1)
-			reportFiles = append(reportFiles, harness.ReportFile{Name: name, Text: sanitize.Inbound("# " + tk.desc + "\n\n" + tk.result)})
-			lines = append(lines, fmt.Sprintf("- %s, %q:", name, tk.desc), textutil.Truncate(text, carryReportBytes/len(tasks)))
-		}
-		sections = append(sections, strings.Join(lines, "\n"))
-	}
-
 	if len(files) > 0 {
 		lines := []string{"Files the session changed:"}
 		for i, f := range files {
@@ -182,7 +150,6 @@ func workingState(record []byte, from carryFrom) *carryState {
 
 	return &carryState{
 		Prior: harness.PriorState{Session: from.Session, Heading: heading, Body: strings.Join(sections, "\n\n")},
-		Files: reportFiles,
 	}
 }
 
@@ -190,15 +157,4 @@ func workingState(record []byte, from carryFrom) *carryState {
 // one line and cut at carryStopBytes.
 func stopLine(s string) string {
 	return textutil.Truncate(strings.Join(strings.Fields(sanitize.Inbound(s)), " "), carryStopBytes)
-}
-
-// reportText strips the task tool's wrapper from a subagent's result: a
-// leading task_id line and the task_result tags.
-func reportText(s string) string {
-	if first, rest, ok := strings.Cut(s, "\n"); ok && strings.HasPrefix(first, "task_id:") {
-		s = rest
-	}
-	s = strings.ReplaceAll(s, "<task_result>", "")
-	s = strings.ReplaceAll(s, "</task_result>", "")
-	return strings.TrimSpace(s)
 }

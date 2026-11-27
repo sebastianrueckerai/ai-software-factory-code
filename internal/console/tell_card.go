@@ -14,8 +14,9 @@ import (
 // tell_card is the chat's one tell-the-card (roadmap 183): the member's
 // text to a card, which the server routes by the card's state — steer for
 // a running session, deny_merge with request_changes at the approval gate,
-// answer at waiting-human. The agent has no wrong choice to make; steer,
-// answer and deny_merge stay as they were.
+// answer at waiting-human. The agent has no wrong choice to make: answer
+// and deny_merge stay chat tools of their own, and a running session is
+// reached through tell_card alone.
 
 // tellKey is one row of the routing table: the card's state, as the
 // routing reads it (an in-review card with a pending merge request is at

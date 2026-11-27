@@ -44,30 +44,6 @@ func TestPageCarriesTheAuthoredLayer(t *testing.T) {
 	}
 }
 
-// The config page carries the same authored layer as the captured pages.
-func TestConfigPageCarriesTheAuthoredLayer(t *testing.T) {
-	_, syms := writeFixtureModule(t)
-	a := Agent{
-		ID: "opencode-subagents", Pkg: "internal/fixture", Family: "A",
-		Job: "opencode-internal task and explore delegation", Runs: "inside opencode, under the session config's agent block",
-	}
-	frag := []byte(`{"build":{"steps":1500}}`)
-	md, failures := configPage(a, "deadbeef", "policyhash", syms, frag)
-	if len(failures) != 0 {
-		t.Fatalf("failures: %v", failures)
-	}
-	blurb, _ := blurbOf("opencode-subagents")
-	for _, want := range []string{
-		blurb,
-		"## Where this agent sits",
-		"style opencode-subagents stroke-width:3px",
-	} {
-		if !strings.Contains(md, want) {
-			t.Errorf("config page lacks %q", want)
-		}
-	}
-}
-
 // The index carries every agent's one-liner and the master diagram; the
 // generated skeleton is gone.
 func TestIndexCarriesTheAuthoredLayer(t *testing.T) {
@@ -75,7 +51,7 @@ func TestIndexCarriesTheAuthoredLayer(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
-	for _, id := range []string{"coding", "screening", "checkin", "opencode-subagents"} {
+	for _, id := range []string{"coding", "screening", "checkin"} {
 		blurb, ok := blurbOf(id)
 		if !ok {
 			t.Fatalf("%s: no blurb", id)
@@ -103,7 +79,7 @@ func TestHasNodeBoundsIds(t *testing.T) {
 	}{
 		{"screening", true},
 		{"screen", false},
-		{"opencode-subagents", true},
+		{"checkin", true},
 		{"answer", false},
 	} {
 		if got := hasNode(d, tc.id); got != tc.want {

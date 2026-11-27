@@ -42,7 +42,16 @@ type Span struct {
 	Kind   string
 	Place  string
 	Text   string
+	Tier   string // a chat tool's tier: TierCore, TierRare or TierAttached; "" for a span that is no chat tool
 }
+
+// A chat tool's tiers: full schema on every request, behind tool_schema
+// until fetched, or there while the thread holds an attachment.
+const (
+	TierCore     = "core"
+	TierRare     = "rare"
+	TierAttached = "attached"
+)
 
 // Claim is a span located inside a captured request, with its byte range:
 // Start and End are offsets in the string (or raw body) it was located in.
