@@ -3,25 +3,10 @@ package factoryd
 import (
 	"maps"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
-
-// Every writer's prompt carries the forms of its jobs.
-func TestEveryWriterCarriesItsForms(t *testing.T) {
-	for _, w := range Writers {
-		if len(w.Jobs) == 0 {
-			t.Errorf("writer %s has no job", w.Name)
-			continue
-		}
-		if !strings.Contains(w.Prompt(), writingguide.For(w.Jobs...)) {
-			t.Errorf("the prompt of writer %s lacks the forms of %v", w.Name, w.Jobs)
-		}
-	}
-}
 
 // agentOnlyCalls are the model calls whose text only agents read: the
 // function that makes the call, which call, and why.

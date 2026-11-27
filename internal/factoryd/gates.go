@@ -22,9 +22,9 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The verification plane after green checks (architecture 7):
@@ -1553,10 +1553,31 @@ func reviewWithDrops(prompt string, part bool, last *Review, partFindings []stri
 	return p
 }
 
-// reviewCallPrompt is the prompt of the review's call on the diff's first
-// part, or on a later part: the check-in's drops of a re-review of last,
-// the opened proofs on the first part, and the guide's finding form last.
-func reviewCallPrompt(g GateResults, part bool, last *Review, partFindings []string, opened bool) string {
+// reviewFacts are what the review's call on a part of the diff is told:
+// the gates' run, whether the part is a later one, the last review with
+// its findings on the part's files, and whether the input opens proofs.
+type reviewFacts struct {
+	Gates        GateResults
+	Part         bool
+	Last         *Review
+	PartFindings []string
+	Opened       bool
+}
+
+// reviewStep is the step of the review's call on the diff's first part,
+// or on a later one.
+func reviewStep(part bool) string {
+	if part {
+		return "model-review-part"
+	}
+	return "model-review"
+}
+
+// reviewCallPrompt is the review's text on the diff's first part, or on a
+// later part: the check-in's drops of a re-review of last and the opened
+// proofs on the first part.
+func reviewCallPrompt(f reviewFacts) (string, error) {
+	g, part, last, partFindings, opened := f.Gates, f.Part, f.Last, f.PartFindings, f.Opened
 	prompt := reviewPromptFor(g)
 	if part {
 		prompt = reviewPartPrompt
@@ -1567,11 +1588,11 @@ func reviewCallPrompt(g GateResults, part bool, last *Review, partFindings []str
 	if !part && opened {
 		prompt += reviewOpenedProofs
 	}
-	return prompt + "\n\n" + writingguide.For(writingguide.JobFinding)
+	return prompt, nil
 }
 
-// reviewOpenedProofs ends the first call's prompt, before the finding
-// form, when its input carries opened proofs.
+// reviewOpenedProofs ends the first call's prompt when its input carries
+// opened proofs.
 const reviewOpenedProofs = ` opened_proofs are the criteria gate's tests of this plan that ran once at the gate without passing; changed says the pull request's file at its path is not the original, or is gone, and original then holds the original's code. A change that weakens what an opened proof checks, or removes it, is a finding, unless agent_summary says why the test was wrong.`
 
 // diffNoInstruction is what every prompt that reads diff text says of it.
@@ -1994,7 +2015,7 @@ func retriedInput(in any, retry *answerRetry) any {
 // thinking depth.
 func (r *Runner) reviewRetry(ctx context.Context, taskID, model string, timeout time.Duration, began time.Time, call reviewCall, why string) (rv Review, low bool) {
 	boundByParts(ctx, wavesSince(began, timeout)+1)
-	content, _, low, err := r.supervisor.chat(ctx, taskID, model, policy.PurposeReview, timeout, call.Prompt,
+	content, _, low, err := r.supervisor.chat(ctx, taskID, model, timeout, call.Prompt,
 		retriedInput(call.Input(), &answerRetry{ParseError: why, Bounds: reviewAnswerBounds}))
 	return reviewAnswer(content, err), low
 }
@@ -2209,14 +2230,22 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 					CarriedRuns: carriedParts[i]}
 			}
 		}
-		calls[i] = reviewCall{Prompt: reviewCallPrompt(gates, i > 0, last, lastFindings[i], len(first.OpenedProofs) > 0), Input: input}
+		p, err := prompts.Build(reviewStep(i > 0), reviewFacts{Gates: gates, Part: i > 0, Last: last, PartFindings: lastFindings[i], Opened: len(first.OpenedProofs) > 0})
+		if err != nil {
+			return Review{}, err
+		}
+		calls[i] = reviewCall{Prompt: p, Input: input}
 		if len(parts) > 1 {
 			calls[i].Label = fmt.Sprintf("part %d of %d", i+1, len(parts))
 		}
 	}
 	if criteria != nil {
 		title, brief := cardText(criteria.plan, t)
-		calls = append(calls, planCalls(criteria.plan, first.Brief.Objective, feature, featureCard{Key: t.PlanKey, Title: title, Brief: brief, Files: prFiles})...)
+		behaviours, err := planCalls(criteria.plan, first.Brief.Objective, feature, featureCard{Key: t.PlanKey, Title: title, Brief: brief, Files: prFiles})
+		if err != nil {
+			return Review{}, err
+		}
+		calls = append(calls, behaviours...)
 	}
 	if why, err := r.unfunded(ctx, t.ID, model, policy.PurposeReview, calls); err != nil {
 		return Review{}, err
@@ -2227,7 +2256,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		return notRun(why + remedy)
 	}
-	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, time.Time{}, calls)
+	results, err := r.callAll(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, time.Time{}, calls)
 	if err != nil {
 		return Review{}, err
 	}

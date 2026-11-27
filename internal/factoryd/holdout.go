@@ -11,8 +11,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The hold-outs (the spec-intake concept, piece 6): criteria the confirmed
@@ -199,8 +199,11 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 		PastFailures []string        `json:"past_failures"`
 		Max          int             `json:"max"`
 	}{Spec: spec, Criteria: p.Criteria, PastFailures: reverts, Max: maxHoldouts}
-	content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
-		r.cfg.Policy().Document.Limits.SupervisorTimeout, holdoutSystem, input)
+	system, err := prompts.Build("holdout-proposer", holdoutSystem)
+	if err != nil {
+		return nil, err
+	}
+	content, _, err := r.supervisor.Chat(ctx, t.ID, alias, r.cfg.Policy().Document.Limits.SupervisorTimeout, system, input)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +270,7 @@ Rules:
 - The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no question, no compound of sentences. State the behaviour, not why it matters.
 - State each claim at the feature's surface: what it does for a caller through its HTTP API, its command line, its store or the files it writes.
 - A hold-out may come from one of the project's past failures; a gap in the spec itself is drafted from the spec.
-Answer one JSON object: {"holdouts":[{"id","claim","inputs","expected"}]}.` + "\n\n" + writingguide.For(writingguide.JobLine)
+Answer one JSON object: {"holdouts":[{"id","claim","inputs","expected"}]}.`
 
 // DecideHoldout is the console's okay or drop of hold-out idx of round
 // round of plan id, as a writer of its project: the round must be the

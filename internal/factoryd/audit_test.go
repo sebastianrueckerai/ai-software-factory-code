@@ -725,11 +725,14 @@ func TestGateAuditReadsABigFileInPieces(t *testing.T) {
 	}
 }
 
-// Every audit call reads the whole checklist: no call sees another's.
+// Every audit call reads the finding form and then the whole checklist:
+// no call sees another's.
 func TestAuditPromptsCarryTheChecklist(t *testing.T) {
-	for name, prompt := range map[string]string{"first": auditPrompt, "part": auditPartPrompt} {
-		if !strings.HasSuffix(prompt, auditChecklist+"\n\n"+writingguide.For(writingguide.JobFinding)) || !strings.Contains(auditChecklist, "\n6. sandbox contract: ") {
-			t.Errorf("the %s prompt does not end with the checklist and the finding form", name)
+	form, _ := writingguide.Form("finding")
+	for step, part := range map[string]bool{"security-audit": false, "security-audit-part": true} {
+		prompt := testPrompt(t, step, auditFacts{part}).Text()
+		if !strings.HasPrefix(prompt, form+"\n\n") || !strings.HasSuffix(prompt, auditChecklist) || !strings.Contains(auditChecklist, "\n6. sandbox contract: ") {
+			t.Errorf("the %s prompt does not open with the finding form and end with the checklist", step)
 		}
 	}
 }
@@ -758,8 +761,8 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 		part, prompt string
 		keys         []string
 	}{
-		{`"part":"file 1 of 2, part 1 of 2"`, auditPrompt, []string{"concurrency", "diff", "head", "part", "pull_request", "repository"}},
-		{`"part":"file 2 of 2, part 2 of 2"`, auditPartPrompt, []string{"diff", "part"}},
+		{`"part":"file 1 of 2, part 1 of 2"`, testPrompt(t, "security-audit", auditFacts{}).Text(), []string{"concurrency", "diff", "head", "part", "pull_request", "repository"}},
+		{`"part":"file 2 of 2, part 2 of 2"`, testPrompt(t, "security-audit-part", auditFacts{Part: true}).Text(), []string{"diff", "part"}},
 	} {
 		if user := userMessage(chats[i]); !strings.Contains(user, want.part) {
 			t.Fatalf("call %d lacks its part", i+1)

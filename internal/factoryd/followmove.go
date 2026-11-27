@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // The memo keys of a move's workflow: the input it started with, and the
@@ -464,7 +465,11 @@ func (r *Runner) followModelAnswers(ctx context.Context, in FollowMoveInput) err
 	if err != nil {
 		return err
 	}
-	out, _, err := r.supervisor.Chat(ctx, task.ID, policy.Small, policy.PurposeDigest, v.Document.Limits.SupervisorTimeout, followModelSystem, followModelInput)
+	system, err := prompts.Build("follow-liveness", followModelSystem)
+	if err != nil {
+		return err
+	}
+	out, _, err := r.supervisor.Chat(ctx, task.ID, policy.Small, v.Document.Limits.SupervisorTimeout, system, followModelInput)
 	if err != nil {
 		return err
 	}

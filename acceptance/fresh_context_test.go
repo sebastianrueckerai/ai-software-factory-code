@@ -24,6 +24,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 const (
@@ -66,7 +67,8 @@ func freshRig(t *testing.T) *rig {
 // change between them: the first turn sets #5's accent through the
 // agent's own tool and the fixture board, naming it
 // "#5", the second reads it as 5, with no board read between. Each
-// turn's system message ends with the status and images lines and holds
+// turn's system message opens with the guide, ends with the status and
+// images lines and holds
 // no card; the
 // second turn's card read answers the card in its new state.
 func TestAcceptanceFreshContextPerTurn(t *testing.T) {
@@ -94,8 +96,8 @@ func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	statusEnd := statusHead + time.Now().UTC().Format("2006-01-02") + statusTail
 	for i, call := range calls {
 		sys, _ := messagesOf(call)[0]["content"].(string)
-		if !strings.HasPrefix(sys, "You are the project agent of project ai-software-factory-code") || !strings.HasSuffix(sys, statusEnd) {
-			t.Errorf("call %d's system message is not the prompt, the status line and the images line alone:\n%s", i, sys)
+		if !strings.HasPrefix(sys, strings.TrimSpace(writingguide.Guide)) || !strings.Contains(sys, "\n\nYou are the project agent of project ai-software-factory-code") || !strings.HasSuffix(sys, statusEnd) {
+			t.Errorf("call %d's system message is not the guide and forms, the prompt, the status line and the images line alone:\n%s", i, sys)
 		}
 	}
 }

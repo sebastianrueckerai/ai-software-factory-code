@@ -160,12 +160,12 @@ func TestAgentDocConsoleOffersTheProductionTools(t *testing.T) {
 }
 
 // The naming, the digests and the look send what their tools send: the
-// naming rules over the thread's first message, each digest's default ask
+// title form and the naming rules over the thread's first message, each digest's default ask
 // over what it reads with no system prompt, the agent's ask beside the
 // attached image.
 func TestAgentDocConsoleMessages(t *testing.T) {
 	for id, want := range map[string][]string{
-		"title":             {"system", "You name a chat thread from its first message. ", "user", "Set the staging budget to 40 euros."},
+		"title":             {"system", "# Title\n\nA title names the work", "user", "Set the staging budget to 40 euros."},
 		"attachment-digest": {"user", "Summarise this document.\n\nStaging budget: 40 EUR a month, raised from 30 on 2026-11-02.\nThe deploy waits on the budget's OK.\n"},
 		"read-digest":       {"user", "Summarise this page.\n\nRelease notes 4.2\n\nThe staging deploy now waits for its budget's OK before it starts.\n"},
 		"vision":            {"user", "What blocks the staging deploy?data:image/png;base64,iVBORw0KGgo"},

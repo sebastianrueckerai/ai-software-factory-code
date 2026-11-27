@@ -24,6 +24,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 const (
@@ -98,7 +99,11 @@ func agentDocChatAgent(ctx context.Context, op *factoryd.OperatorModel, v policy
 	}
 	// the same day the drive stamps into the prompt; a capture that
 	// crosses midnight fails its own location and is simply run again
-	date := time.Now().UTC().Format("2006-01-02")
+	f := pt.agentFacts(now)
+	system, err := prompts.Build("project-agent", f)
+	if err != nil {
+		return nil, err
+	}
 	defs := pt.offered()
 
 	r, err := agentDocPost(ctx)
@@ -108,15 +113,17 @@ func agentDocChatAgent(ctx context.Context, op *factoryd.OperatorModel, v policy
 	c.chatPost(httptest.NewRecorder(), r)
 
 	spans := []agentdoc.Span{
-		{Name: "persona", Symbol: "(*turn).prompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: pt.prompt()},
-		{Name: "the project now", Symbol: "(*turn).context", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: "\n\nThe project now:\nToday is " + date + " UTC.\n" + now},
+		agentDocStanding(system),
+		{Name: "persona", Symbol: "factoryd.ProjectAgentPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
+			Text: factoryd.ProjectAgentPrompt(f.Project, f.Human, f.Level)},
+		{Name: "the project now", Symbol: "agentText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
+			Text: "\n\nThe project now:\nToday is " + f.Today + " UTC.\n" + now},
 		{Name: "board status", Symbol: "(*turn).snapshot", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: status},
 		{Name: "sandbox images", Symbol: "imagesFact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: images},
 		{Name: "the human's message", Symbol: "(*Console).chatPost", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocAsk},
 	}
 	if images == "" {
-		spans = append(spans[:3], spans[4:]...)
+		spans = append(spans[:4], spans[5:]...)
 	}
 	for _, d := range defs {
 		spans = append(spans, agentdoc.Span{Name: "tool " + d.Name, Symbol: "(*turn).offered",
@@ -157,7 +164,12 @@ func agentDocCompact(ctx context.Context, op *factoryd.OperatorModel, v policy.V
 	if len(chunk) != 1 {
 		return nil, fmt.Errorf("the fixture thread folds into %d calls, want one", len(chunk))
 	}
+	system, err := prompts.Build("compact", factoryd.CompactPrompt)
+	if err != nil {
+		return nil, err
+	}
 	return []agentdoc.Span{
+		agentDocStanding(system),
 		{Name: "the summariser's rules", Symbol: "factoryd.CompactPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: factoryd.CompactPrompt},
 		{Name: "the compaction frame", Symbol: "(*turn).compact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: "The summary so far:\n(none yet)\n\nThe turns after it:\n"},
@@ -189,7 +201,12 @@ func agentDocVision(ctx context.Context, op *factoryd.OperatorModel, v policy.Ve
 func agentDocTitle(ctx context.Context, op *factoryd.OperatorModel, v policy.Version) ([]agentdoc.Span, error) {
 	const first = "Set the staging budget to 40 euros."
 	agentDocConsole(op, &agentDocChat{}, v).nameThread(ctx, agentDocRepo, agentDocUser, 1, agentDocTask, first)
+	system, err := prompts.Build("title", factoryd.TitlePrompt)
+	if err != nil {
+		return nil, err
+	}
 	return []agentdoc.Span{
+		agentDocStanding(system),
 		{Name: "the naming rules", Symbol: "factoryd.TitlePrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: factoryd.TitlePrompt},
 		{Name: "the thread's first message", Symbol: "(*Console).nameThread", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: first},
 	}, nil
@@ -359,6 +376,18 @@ func agentDocPost(ctx context.Context) (*http.Request, error) {
 		return nil, err
 	}
 	return agentDocRequest(ctx, "POST", "/projects/"+agentDocName+"/chat", &b, f.FormDataContentType()), nil
+}
+
+// agentDocStanding is the span of what p's profile joins before its
+// facts: the guide, the forms, the chunks and the paragraph, and the blank
+// line Build puts before the facts.
+func agentDocStanding(p prompts.Prompt) agentdoc.Span {
+	text := p.Standing()
+	if text != "" && p.Facts() != "" {
+		text += "\n\n"
+	}
+	return agentdoc.Span{Name: "the profile's texts", Symbol: "prompts.Build", Kind: agentdoc.KindBuilder,
+		Place: agentdoc.PlaceSystem, Text: text}
 }
 
 // agentDocJSON is v as it sits inside a marshalled request body; a value

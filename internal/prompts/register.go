@@ -27,6 +27,10 @@ var registry struct {
 	steps     map[string]Registration
 }
 
+// text renders a plain string: the facts of a step whose prompt is one
+// fixed text or one pushed message.
+func init() { RegisterFacts("text", func(s string) (string, error) { return s, nil }) }
+
 // RegisterFacts names a typed renderer. A renderer prints values and
 // conditions. It is called at init and panics on a duplicate name.
 func RegisterFacts[T any](name string, render func(T) (string, error)) {

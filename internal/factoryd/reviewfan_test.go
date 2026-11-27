@@ -20,14 +20,19 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // labelledCalls are n calls whose input is their label, "part i of n".
 func labelledCalls(n int) []reviewCall {
+	p, err := prompts.Build("review-behaviours", "p")
+	if err != nil {
+		panic(err)
+	}
 	calls := make([]reviewCall, n)
 	for i := range calls {
 		label := fmt.Sprintf("part %d of %d", i+1, n)
-		calls[i] = reviewCall{Label: label, Prompt: "p", Input: func() any { return label }}
+		calls[i] = reviewCall{Label: label, Prompt: p, Input: func() any { return label }}
 	}
 	return calls
 }
@@ -52,7 +57,7 @@ func TestCallAllRunsFourAtOnce(t *testing.T) {
 	ll := &fakeLiteLLM{delay: 100 * time.Millisecond, answer: echo}
 	calls := labelledCalls(8)
 	ctx, told := toldWaves()
-	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, calls)
+	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", time.Minute, time.Time{}, calls)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +81,7 @@ func TestCallAllRetriesHeadroomRefusalsOneByOne(t *testing.T) {
 		t.Run(decision, func(t *testing.T) {
 			ll := &fakeLiteLLM{delay: 100 * time.Millisecond, answer: echo, status: http.StatusTooManyRequests, decision: decision, crowded: true}
 			calls := labelledCalls(6)
-			results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, calls)
+			results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", time.Minute, time.Time{}, calls)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -98,7 +103,7 @@ func TestCallAllRetriesHeadroomRefusalsOneByOne(t *testing.T) {
 func TestCallAllStopsAtTheFirstRefusalOfTheRetry(t *testing.T) {
 	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedBudget}
 	ctx, told := toldWaves()
-	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(5))
+	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", time.Minute, time.Time{}, labelledCalls(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +124,7 @@ func TestCallAllStopsAtTheFirstRefusalOfTheRetry(t *testing.T) {
 // A failed call that no headroom refused is its result, not retried.
 func TestCallAllKeepsOtherErrors(t *testing.T) {
 	ll := &fakeLiteLLM{status: http.StatusBadGateway}
-	results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(5))
+	results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", time.Minute, time.Time{}, labelledCalls(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +152,7 @@ func TestCallAllCancelReturnsContextError(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		results, err := r.callAll(ctx, "t1", "big", policy.PurposeReview, time.Hour, time.Time{}, labelledCalls(6))
+		results, err := r.callAll(ctx, "t1", "big", time.Hour, time.Time{}, labelledCalls(6))
 		done <- outcome{results, err}
 	}()
 	for deadline := time.Now().Add(5 * time.Second); ll.running() < 4; time.Sleep(5 * time.Millisecond) {
@@ -304,7 +309,7 @@ func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
 
 	// both calls of the wave are refused, the retry waits the freeze out
 	// in one uncapped wait and re-calls each once, at the reset
-	results, err := r.callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(2))
+	results, err := r.callAll(context.Background(), "t1", "big", time.Minute, time.Time{}, labelledCalls(2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +359,7 @@ func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
 	}))
 	defer srv2.Close()
 	r2 := &Runner{supervisor: testSupervisorModel(srv2.URL)}
-	if _, err := r2.callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(2)); !errors.Is(err, context.Canceled) {
+	if _, err := r2.callAll(ctx, "t1", "big", time.Minute, time.Time{}, labelledCalls(2)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the attempt inside the freeze = %v, want context.Canceled", err)
 	}
 	mu.Lock()

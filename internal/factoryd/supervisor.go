@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -353,8 +354,8 @@ func chatBody(alias, system string, input any, limit int) ([]byte, error) {
 }
 
 // Chat is one JSON-mode call of alias through the gateway on the task's
-// account for purpose, with system as the system prompt and input,
-// compact JSON, as the user message, cut after timeout (the task's
+// account for the purpose p's profile names, with p's text as the system
+// prompt and input, compact JSON, as the user message, cut after timeout (the task's
 // limits.supervisor_timeout: a reasoning model thinks before it answers);
 // deployment is the one that answered, as the gateway names it. A gateway
 // refusal is a *policy.Refusal in the chain; alias "" (the policy names
@@ -364,8 +365,8 @@ func chatBody(alias, system string, input any, limit int) ([]byte, error) {
 // ctx's deadline. A second cut answer, or a first with no time left for
 // another call, is a *cutAnswerError; a call its timeout cut is an
 // answerTimeout.
-func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, input any) (content, deployment string, err error) {
-	content, deployment, _, err = m.chat(ctx, taskID, alias, purpose, timeout, system, input)
+func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias string, timeout time.Duration, p prompts.Prompt, input any) (content, deployment string, err error) {
+	content, deployment, _, err = m.chat(ctx, taskID, alias, timeout, p, input)
 	return content, deployment, err
 }
 
@@ -375,7 +376,8 @@ const thinkingLow = "low"
 
 // chat is Chat with low: the answer came from the call once more at low
 // thinking depth, which a gate records beside its model.
-func (m *SupervisorModel) chat(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, input any) (content, deployment string, low bool, err error) {
+func (m *SupervisorModel) chat(ctx context.Context, taskID, alias string, timeout time.Duration, p prompts.Prompt, input any) (content, deployment string, low bool, err error) {
+	purpose, system := p.Purpose(), p.Text()
 	if alias == "" {
 		return "", "", false, fmt.Errorf("the policy names no %s model for the task's capability classes", purpose)
 	}

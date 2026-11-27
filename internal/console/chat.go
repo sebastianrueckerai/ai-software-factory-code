@@ -28,6 +28,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -2207,18 +2208,20 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if line := imagesFact(t.p); line != "" {
 		now += "\n" + line
 	}
-	system := t.prompt() + "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\n" + sanitize.Inbound(now)
-	if th.Summary != "" {
-		system += "\n\nThis thread before its recent turns, summarised:\n" + th.Summary
-	}
+	f := t.agentFacts(sanitize.Inbound(now))
+	f.Summary = th.Summary
 	t.carriedQuestion, t.carried = "", false
 	if q, passed, err := t.c.cfg.Chat.ChatOpenQuestion(t.r.Context(), t.p.Repository, t.owner, t.conv); err != nil {
 		log.Printf("console: the open question of %s on %s: %v", t.owner, t.p.Repository, err)
 	} else if q != "" && passed {
 		t.carriedQuestion, t.carried = q, true
-		system += "\n\nA human asked a question the reply before this one may not have answered:\n" + q + "\nAnswer it in this reply if it still stands."
+		f.Question = q
 	}
-	return append([]factoryd.OperatorMessage{{Role: "system", Content: system}}, t.replay(liveRows(th, history))...), nil
+	system, err := prompts.Build("project-agent", f)
+	if err != nil {
+		return nil, err
+	}
+	return append([]factoryd.OperatorMessage{factoryd.SystemMessage(system)}, t.replay(liveRows(th, history))...), nil
 }
 
 // replay is rows as the turn's context holds them, each tool call
@@ -2595,9 +2598,11 @@ func (u *unstamper) flush() {
 	}
 }
 
-// prompt is the agent's standing instructions.
-func (t *turn) prompt() string {
-	return factoryd.ProjectAgentPrompt(t.p.Name, t.a.s.user, cmp.Or(t.a.level, policy.AutonomyManual))
+// agentFacts are the project agent's facts at the turn's start, now the
+// project's status as the context reads it.
+func (t *turn) agentFacts(now string) agentFacts {
+	return agentFacts{Project: t.p.Name, Human: t.a.s.user, Level: cmp.Or(t.a.level, policy.AutonomyManual),
+		Today: time.Now().UTC().Format("2006-01-02"), Now: now}
 }
 
 // imagesFact is the context's line on project p's sandbox images, pins in

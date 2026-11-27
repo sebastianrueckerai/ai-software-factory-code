@@ -1,0 +1,15 @@
+step: delta-planner
+purpose: review
+reader: human
+guide: false
+forms: [title, why, summary, brief]
+chunks: []
+paragraph: ""
+facts: delta
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 960

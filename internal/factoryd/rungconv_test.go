@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
@@ -54,8 +55,17 @@ func answerCall(t *testing.T, over map[string]any) CheckinResponse {
 	return CheckinResponse{ToolName: CheckinAnswerTool, ToolArgs: args}
 }
 
+// rungTestPrompt is rung 1's prompt on the text "system".
+func rungTestPrompt() prompts.Prompt {
+	p, err := prompts.Build("case-checkin", "system")
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
 func runRungWith(chat checkinChat, tools podTools, callCap int) RungOutcome {
-	return new(Runner).runRung(context.Background(), chat, "t-1", "rung", rungFacts, 1, "system", "statement",
+	return new(Runner).runRung(context.Background(), chat, "t-1", "rung", rungFacts, 1, rungTestPrompt(), "statement",
 		checkinTools[:2], tools, callCap, time.Hour)
 }
 
@@ -204,7 +214,7 @@ func TestRungEndsAreTyped(t *testing.T) {
 
 func TestRungTimeCapEndsItHandedUp(t *testing.T) {
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "transcript_search"}}}
-	out := new(Runner).runRung(context.Background(), chat, "t-1", "rung", rungFacts, 1, "system", "statement", checkinTools[:2], scriptedTools{}, 12, 20*time.Millisecond)
+	out := new(Runner).runRung(context.Background(), chat, "t-1", "rung", rungFacts, 1, rungTestPrompt(), "statement", checkinTools[:2], scriptedTools{}, 12, 20*time.Millisecond)
 	if !out.HandedUp || out.End != RungTimeCap || out.Answer != nil || out.Found != "the rung's time cap of 20ms ended it before an answer" {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -324,7 +334,7 @@ func TestRungScrubsWhatTheDaemonScrubs(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef01234567"
 	r := &Runner{Scrub: redact.New(token, "hunter2secretvalue")}
 	err := errors.New("forgejo: 401 for header Authorization: token " + token + "; database password hunter2secretvalue")
-	out := r.runRung(context.Background(), &errChat{err}, "t-1", "rung", rungFacts, 1, "system", "statement", nil, scriptedTools{}, 6, time.Hour)
+	out := r.runRung(context.Background(), &errChat{err}, "t-1", "rung", rungFacts, 1, rungTestPrompt(), "statement", nil, scriptedTools{}, 6, time.Hour)
 	const want = "not judged: the model provider refused: forgejo: 401 for header Authorization: token [redacted]; database password [redacted]"
 	if out.Found != want {
 		t.Fatalf("found %q, want %q", out.Found, want)

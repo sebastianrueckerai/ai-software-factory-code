@@ -1,116 +1,68 @@
 package factoryd
 
-import (
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
-)
+import "github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 
-// Writer is a model call whose text a human reads. Its prompt carries the
-// guide's forms of its jobs (writingguide.For). Calls are the functions
-// that make the call, each named by its package, receiver and name.
+// Writer is a model call whose text a human reads, with the guide's forms
+// of its jobs. Calls are the functions that make the call, each named by
+// its package, receiver and name.
 type Writer struct {
-	Name   string
-	Prompt func() string
-	Jobs   []writingguide.Job
-	Calls  []string
+	Name  string
+	Jobs  []writingguide.Job
+	Calls []string
 }
 
-// Writers are every model call whose text a human reads, each with a
-// prompt built as its call builds it.
+// Writers are every model call whose text a human reads.
 var Writers = []Writer{
 	{Name: "planner and replanner", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk},
-		Calls: []string{"factoryd.(*Runner).RunPlan"},
-		Prompt: func() string {
-			return planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil, nil)
-		}},
+		Calls: []string{"factoryd.(*Runner).RunPlan"}},
 	{Name: "delta planner", Jobs: []writingguide.Job{writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief},
-		Calls:  []string{"factoryd.(*Runner).draftDelta"},
-		Prompt: func() string { return deltaPrompt(nil) }},
+		Calls: []string{"factoryd.(*Runner).draftDelta"}},
 	{Name: "coding agent", Jobs: []writingguide.Job{writingguide.JobSummary, writingguide.JobAsk, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobBrief},
-		Calls: []string{"factoryd.(*Runner).RunSession"},
-		Prompt: func() string {
-			return briefText(harness.TaskBrief{Objective: "Count the skipped rows.", Tools: []string{policy.ToolEscalate, policy.ToolRequestInfo, policy.ToolDelegate}}, "T")
-		}},
+		Calls: []string{"factoryd.(*Runner).RunSession"}},
 	{Name: "coding agent on a plan's card", Jobs: []writingguide.Job{writingguide.JobSummary, writingguide.JobAsk, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobBrief},
-		Calls: []string{"factoryd.(*Runner).RunSession"},
-		Prompt: func() string {
-			return briefText(harness.TaskBrief{Objective: "Count the skipped rows.", CardRole: RoleFeature, Tools: []string{policy.ToolEscalate, policy.ToolRequestInfo, policy.ToolDelegate}}, "T")
-		}},
+		Calls: []string{"factoryd.(*Runner).RunSession"}},
 	{Name: "message responder", Jobs: []writingguide.Job{writingguide.JobChat},
-		Calls:  []string{"factoryd.(*Runner).MessageSession"},
-		Prompt: func() string { return sessionMessage("t-1", "sebastian", "Why is the check red?", true) }},
+		Calls: []string{"factoryd.(*Runner).MessageSession"}},
 	{Name: "project agent", Jobs: []writingguide.Job{writingguide.JobChat, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk},
-		Calls:  []string{"console.(*turn).run"},
-		Prompt: func() string { return ProjectAgentPrompt("app", "sebastian", policy.AutonomyManual) }},
+		Calls: []string{"console.(*turn).run"}},
 	{Name: "check-in at the gate", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
-		Calls: []string{"factoryd.(*Runner).runCheckin"},
-		Prompt: func() string {
-			return checkinStatement(&CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "no test covers the handler", Source: "review"}}},
-				nil, 3, 1, 800)
-		}},
+		Calls: []string{"factoryd.(*Runner).runCheckin"}},
 	{Name: "check-in in a session", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
-		Calls: []string{"factoryd.(*Runner).runCheckin"},
-		Prompt: func() string {
-			return checkinStatement(&CheckInAsk{Moment: CheckInSession, Trip: &TripReport{Detector: TripSize, Detail: "the card's remaining work"}},
-				nil, 3, 1, 800)
-		}},
+		Calls: []string{"factoryd.(*Runner).runCheckin"}},
 	{Name: "check-in before a fresh session", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
-		Calls: []string{"factoryd.(*Runner).runCheckin"},
-		Prompt: func() string {
-			return checkinStatement(&CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}, nil, 3, 1, 800)
-		}},
+		Calls: []string{"factoryd.(*Runner).runCheckin"}},
 	{Name: "check-in on a case", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
-		Calls:  []string{"factoryd.(*Runner).rung1Converse"},
-		Prompt: func() string { return rungPrompt }},
+		Calls: []string{"factoryd.(*Runner).rung1Converse"}},
 	{Name: "case story writer", Jobs: []writingguide.Job{writingguide.JobAsk},
-		Calls:  []string{"factoryd.(*BriefWriter).askCase"},
-		Prompt: func() string { return caseBriefPrompt }},
+		Calls: []string{"factoryd.(*BriefWriter).askCase"}},
 	{Name: "approval brief writer", Jobs: []writingguide.Job{writingguide.JobAsk},
-		Calls:  []string{"factoryd.(*BriefWriter).ask"},
-		Prompt: func() string { return briefPrompt(ApprovalResource) }},
+		Calls: []string{"factoryd.(*BriefWriter).ask"}},
 	{Name: "model review", Jobs: []writingguide.Job{writingguide.JobFinding},
-		Calls:  []string{"factoryd.(*Runner).ModelReview"},
-		Prompt: func() string { return reviewCallPrompt(GateResults{ChecksPassed: true}, false, nil, nil, false) }},
+		Calls: []string{"factoryd.(*Runner).ModelReview"}},
 	{Name: "model review of a later part", Jobs: []writingguide.Job{writingguide.JobFinding},
-		Calls:  []string{"factoryd.(*Runner).ModelReview"},
-		Prompt: func() string { return reviewCallPrompt(GateResults{}, true, nil, nil, false) }},
+		Calls: []string{"factoryd.(*Runner).ModelReview"}},
 	{Name: "the review's behaviours", Jobs: []writingguide.Job{writingguide.JobLine},
-		Calls:  []string{"factoryd.(*Runner).ModelReview"},
-		Prompt: func() string { return reviewBehavioursPrompt }},
+		Calls: []string{"factoryd.(*Runner).ModelReview"}},
 	{Name: "audit", Jobs: []writingguide.Job{writingguide.JobFinding},
-		Calls:  []string{"factoryd.(*Runner).GateAudit"},
-		Prompt: func() string { return auditPrompt }},
+		Calls: []string{"factoryd.(*Runner).GateAudit"}},
 	{Name: "audit of a later part", Jobs: []writingguide.Job{writingguide.JobFinding},
-		Calls:  []string{"factoryd.(*Runner).GateAudit"},
-		Prompt: func() string { return auditPartPrompt }},
+		Calls: []string{"factoryd.(*Runner).GateAudit"}},
 	{Name: "gate supervisor", Jobs: []writingguide.Job{writingguide.JobFinding},
-		Calls:  []string{"factoryd.(*Runner).SuperviseGate"},
-		Prompt: func() string { return gateSupervisorPrompt }},
+		Calls: []string{"factoryd.(*Runner).SuperviseGate"}},
 	{Name: "hold-out proposer", Jobs: []writingguide.Job{writingguide.JobLine},
-		Calls:  []string{"factoryd.(*Runner).proposeHoldouts"},
-		Prompt: func() string { return holdoutSystem }},
+		Calls: []string{"factoryd.(*Runner).proposeHoldouts"}},
 	{Name: "judgement", Jobs: []writingguide.Job{writingguide.JobLine},
-		Calls: []string{"factoryd.(*Runner).judgeArtifacts"},
-		Prompt: func() string {
-			return judgementCall(PlanCriterion{ID: "reads_calm", Prompt: "Does the page read calm?"}, GateArtifact{Name: "page.txt"}).Prompt
-		}},
+		Calls: []string{"factoryd.(*Runner).judgeArtifacts"}},
 	{Name: "answer screener", Jobs: []writingguide.Job{writingguide.JobLine},
-		Calls:  []string{"factoryd.(*Runner).ScreenAnswer"},
-		Prompt: func() string { return answerSystem("===ANSWER-T", "ANSWER-T===") }},
+		Calls: []string{"factoryd.(*Runner).ScreenAnswer"}},
 	{Name: "plan namer", Jobs: []writingguide.Job{writingguide.JobTitle},
-		Calls:  []string{"factoryd.(*Namer).Name"},
-		Prompt: func() string { return namerPrompt }},
+		Calls: []string{"factoryd.(*Namer).Name"}},
 	{Name: "chat thread title", Jobs: []writingguide.Job{writingguide.JobTitle},
-		Calls:  []string{"console.(*Console).nameThread"},
-		Prompt: func() string { return TitlePrompt }},
+		Calls: []string{"console.(*Console).nameThread"}},
 	{Name: "chat compaction", Jobs: []writingguide.Job{writingguide.JobLine},
-		Calls:  []string{"console.(*turn).compact"},
-		Prompt: func() string { return CompactPrompt }},
+		Calls: []string{"console.(*turn).compact"}},
 	{Name: "screening", Jobs: []writingguide.Job{writingguide.JobLine},
-		Calls:  []string{"factoryd.(*Runner).RunReport"},
-		Prompt: func() string { return (&Runner{}).reportGuide() }},
+		Calls: []string{"factoryd.(*Runner).RunReport"}},
 	{Name: "sizing", Jobs: []writingguide.Job{writingguide.JobLine},
-		Calls:  []string{"factoryd.(*Runner).RunReport"},
-		Prompt: func() string { return sizingGuide(sizeLines(600)) }},
+		Calls: []string{"factoryd.(*Runner).RunReport"}},
 }

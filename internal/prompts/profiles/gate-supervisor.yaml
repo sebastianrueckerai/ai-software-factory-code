@@ -1,0 +1,15 @@
+step: gate-supervisor
+purpose: gate-supervisor
+reader: human
+guide: false
+forms: [finding]
+chunks: []
+paragraph: ""
+facts: text
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 482

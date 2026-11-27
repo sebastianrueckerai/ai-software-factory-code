@@ -1,0 +1,15 @@
+step: judgement
+purpose: review
+reader: human
+guide: false
+forms: [line]
+chunks: []
+paragraph: ""
+facts: judgement
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 110

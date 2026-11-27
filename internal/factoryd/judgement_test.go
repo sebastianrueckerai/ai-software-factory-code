@@ -18,6 +18,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // readsCalm is a judgement criterion whose proof writes the sizes page;
@@ -70,8 +71,9 @@ func withSupervisorTimeout(d time.Duration) func() policy.Version {
 	}
 }
 
-// The judgement is one call of the review model: the criterion's pinned
-// prompt with the answer's form as the system prompt, the artifact's name
+// The judgement is one call of the review model: the guide's line form,
+// then the criterion's pinned prompt with the answer's form as the system
+// prompt, the artifact's name
 // and content alone as the input, no tool. Its row names the model and the
 // prompt's hash; its line adds the verdict, the reason and the task's
 // spend booked since the call began.
@@ -89,7 +91,8 @@ func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 	if len(ll.chats) != 1 || !slices.Equal(ll.purposes, []string{policy.PurposeReview}) || ll.chats[0]["model"] != "big" || ll.chats[0]["tools"] != nil {
 		t.Fatalf("chats %v, purposes %v: want one review call on big with no tools", ll.chats, ll.purposes)
 	}
-	if got, want := systemMessage(ll.chats[0]), readsCalm.Prompt+"\n\n"+judgementAnswer; got != want {
+	line, _ := writingguide.Form("line")
+	if got, want := systemMessage(ll.chats[0]), line+"\n\n"+readsCalm.Prompt+"\n\n"+judgementAnswer; got != want {
 		t.Fatalf("system prompt =\n%s\nwant\n%s", got, want)
 	}
 	var in map[string]string

@@ -154,7 +154,6 @@ func TestCheckinStatement(t *testing.T) {
 	for _, want := range []string{
 		"at the gate moment",
 		"before the next session is bought",
-		writingguide.For(writingguide.JobLine, writingguide.JobWhy),
 		"the finding is real and must be fixed",
 		"a file and line at a ref, or a command and its output",
 		"say it, block nothing",
@@ -186,6 +185,9 @@ func TestCheckinStatement(t *testing.T) {
 	}
 	if strings.Contains(s, "<parent>") {
 		t.Errorf("statement names the placeholder, not the concrete record:\n%s", s)
+	}
+	if system := testPrompt(t, "checkin-gate", checkinPersona{ask}).Text(); !strings.HasPrefix(system, checkinForms()+"\n\n") || strings.Contains(s, checkinForms()) {
+		t.Errorf("the forms of a line and a why line do not open the system prompt alone:\n%s", system)
 	}
 	order := []string{
 		"at the gate moment",
@@ -910,7 +912,6 @@ func TestCheckinStatementMoments(t *testing.T) {
 		"Guidance delivered to the agent this session:\n- stop rewriting the table; write the test first",
 		"at most 2000 characters",
 		"The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.",
-		writingguide.For(writingguide.JobLine, writingguide.JobWhy),
 	} {
 		if !strings.Contains(session, want) {
 			t.Errorf("session statement lacks %q:\n%s", want, session)
@@ -939,8 +940,10 @@ func TestCheckinStatementMoments(t *testing.T) {
 	if !strings.Contains(dead, "/workspace/.factory/sessions/s-dead-2.jsonl") {
 		t.Errorf("dead statement does not name the pushed parent record:\n%s", dead)
 	}
-	if !strings.Contains(dead, writingguide.For(writingguide.JobLine, writingguide.JobWhy)) {
-		t.Errorf("dead statement lacks the guide's forms of a finding and a why line:\n%s", dead)
+	for _, statement := range []string{session, dead} {
+		if strings.Contains(statement, checkinForms()) {
+			t.Errorf("a statement carries the guide's forms, which open the system prompt:\n%s", statement)
+		}
 	}
 
 	for _, s := range []struct{ name, text string }{{"gate", gate}, {"session", session}, {"dead", dead}} {
@@ -1885,4 +1888,12 @@ func TestStageMemoryKeepsTheReviewsClaimResults(t *testing.T) {
 	if len(st.Reviews) != 1 || !reflect.DeepEqual(st.Reviews[0], want) {
 		t.Fatalf("reviews = %+v, want %+v", st.Reviews, want)
 	}
+}
+
+// checkinForms are the forms the check-in's profiles name: a short line
+// and a why line.
+func checkinForms() string {
+	line, _ := writingguide.Form("line")
+	why, _ := writingguide.Form("why")
+	return line + "\n\n" + why
 }

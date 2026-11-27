@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // humanOnlyReasons are the reason kinds of a check-in's hand to the human
@@ -367,9 +367,8 @@ const rungSystem = `You are the factory's check-in, judging one case on a card: 
 
 const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head, under a first line naming the path and the commit it read), grep (git grep at head or main for a fixed string as a whole word, under a first line naming the commit of each ref it searched), cluster_facts (what the cluster did to a session of the card, the newest by default, or the platform's incidents of a window)."
 
-// rungPrompt is rung 1's system prompt: the check-in on a case, its
-// tools, and the guide's forms of its grounds and its reason to hand up.
-var rungPrompt = rungSystem + " " + rungToolsLine + "\n\n" + writingguide.For(writingguide.JobLine, writingguide.JobWhy)
+// rungPrompt is rung 1's text: the check-in on a case and its tools.
+const rungPrompt = rungSystem + " " + rungToolsLine
 
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
@@ -821,7 +820,11 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 // evidence tools answered by tools, the calls booked on chat task chatID.
 func (r *Runner) rung1Converse(ctx context.Context, chat checkinChat, chatID string, t Task, c Case, f CaseFacts, digest string, steps []CaseStep, tools podTools) RungOutcome {
 	limits := r.cfg.Policy().Document.Limits
-	return r.runRung(forCard(ctx, t), chat, chatID, r.callModel(t, policy.PurposeCheckin), f, 1, rungPrompt,
+	system, err := prompts.Build("case-checkin", rungPrompt)
+	if err != nil {
+		return RungOutcome{End: RungUnreadable, HandedUp: true, Found: "rung 1's prompt: " + err.Error()}
+	}
+	return r.runRung(forCard(ctx, t), chat, chatID, r.callModel(t, policy.PurposeCheckin), f, 1, system,
 		r.rungStatement(c, f, digest, steps, 1), CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
 }
 

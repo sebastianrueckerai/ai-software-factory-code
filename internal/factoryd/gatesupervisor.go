@@ -17,9 +17,9 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The gate supervisor's actions on a machine gate past its bound;
@@ -135,7 +135,7 @@ var gateSupervisorPrompt = `You supervise the machine gates of an autonomous sof
 - "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
 - "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
 - "escalate": a human must decide or act (access, infrastructure, a judgement). The task waits for a human with your diagnosis and recommendation.
-Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "...", "answer": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters. answer is optional: the key of the one of human_answers you recommend.` + "\n\n" + writingguide.For(writingguide.JobFinding)
+Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "...", "answer": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters. answer is optional: the key of the one of human_answers you recommend.`
 
 // SuperviseGate asks the supervisor model what to do with a long gate's
 // attempt past its bound, acts on that attempt when it still runs here
@@ -171,8 +171,12 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		readCtx, cancel := context.WithTimeout(ctx, bundleReads)
 		bundle, secrets := r.gateBundle(readCtx, t, workflowID, in, pinned)
 		cancel()
-		content, _, err := r.supervisor.Chat(ctx, t.ID, r.callModel(t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor,
-			pinned.Limits.SupervisorTimeout, gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
+		system, err := prompts.Build("gate-supervisor", gateSupervisorPrompt)
+		if err != nil {
+			return GateDecision{}, err
+		}
+		content, _, err := r.supervisor.Chat(ctx, t.ID, r.callModel(t, policy.PurposeGateSupervisor),
+			pinned.Limits.SupervisorTimeout, system, scrubbed(bundle, redact.New(secrets...)))
 		if err != nil {
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
 				Recommendation: fmt.Sprintf("look at %s of task %s yourself", in.Trip.Activity, t.ID)}

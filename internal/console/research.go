@@ -13,6 +13,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -75,7 +76,11 @@ func (t *turn) research(question string) (string, string, error) {
 			defs = append(defs, tool.def(false))
 		}
 	}
-	msgs := []factoryd.OperatorMessage{{Role: "system", Content: researchPrompt}, {Role: "user", Content: question}}
+	system, err := prompts.Build("research", researchPrompt)
+	if err != nil {
+		return "", "", err
+	}
+	msgs := []factoryd.OperatorMessage{factoryd.SystemMessage(system), {Role: "user", Content: question}}
 	var trail strings.Builder
 	for step := 1; ; step++ {
 		answer, err := t.c.cfg.Operator.Research(ctx, t.task, t.threadRef(), msgs, defs)

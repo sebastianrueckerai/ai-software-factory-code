@@ -72,7 +72,7 @@ type catalog struct {
 	paragraphs map[string]string
 }
 
-//go:embed chunks
+//go:embed chunks profiles
 var embedded embed.FS
 
 var texts = func() *catalog {
