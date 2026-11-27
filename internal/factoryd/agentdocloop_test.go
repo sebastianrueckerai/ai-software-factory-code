@@ -144,7 +144,11 @@ func TestAgentDocLoopBriefLabelsTheUserTurn(t *testing.T) {
 	for _, id := range AgentDocLoopIDs() {
 		t.Run(id, func(t *testing.T) {
 			b := agentDocLoopBrief(id, v)
-			text := objectiveText(b)
+			p, err := objectiveText(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := p.Facts()
 			claims, err := agentdoc.Locate(text, agentDocLoopSpans(id, b, agentDocLoopTag))
 			if err != nil {
 				t.Fatalf("locate: %v", err)
@@ -158,10 +162,15 @@ func TestAgentDocLoopBriefLabelsTheUserTurn(t *testing.T) {
 	}
 }
 
-// The responder's turn is the writer's message under the session's basics
-// preamble: the preamble is the runner's, the writer's words are fixture.
+// The responder's turn is the writer's message under the guide and the
+// chat form, as the session reads them the first time: the speaker is
+// the runner's, the writer's words are fixture.
 func TestAgentDocLoopMessageLabelsTheRespondersTurn(t *testing.T) {
-	text, spans := agentDocLoopMessage()
+	p, spans, err := agentDocLoopMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := p.Text()
 	claims, err := agentdoc.Locate(text, spans)
 	if err != nil {
 		t.Fatalf("locate: %v", err)
@@ -216,20 +225,13 @@ func TestAgentDocLoopCodingShowsThePlatformsLine(t *testing.T) {
 }
 
 // sessionMessage is the one composer of a writer's message into a running
-// session: the first one carries the basics, later ones do not, and the
-// project agent's names the project agent, never a writer.
+// session: it names the speaker, and the project agent's names the project
+// agent, never a writer.
 func TestSessionMessage(t *testing.T) {
-	first := sessionMessage("t-1", "Ann", "carry on", true)
-	again := sessionMessage("t-1", "Ann", "and again", false)
-	if !strings.Contains(first, "You are the agent session of card t-1") ||
-		!strings.Contains(first, "A message from Ann, a writer of this project: carry on") {
-		t.Fatalf("the first message lacks its basics or its wrapper: %q", first)
+	if got := sessionMessage("Ann", "carry on"); got != "A message from Ann, a writer of this project: carry on" {
+		t.Fatalf("a writer's message = %q, want it named as the writer's", got)
 	}
-	if strings.Contains(again, "You are the agent session") ||
-		!strings.Contains(again, "A message from Ann, a writer of this project: and again") {
-		t.Fatalf("a later message carries the basics: %q", again)
-	}
-	if got := sessionMessage("t-1", ChatUser, "rebase first", false); got != "A message from the project agent: rebase first" {
+	if got := sessionMessage(ChatUser, "rebase first"); got != "A message from the project agent: rebase first" {
 		t.Fatalf("the project agent's message = %q, want it named as the project agent's", got)
 	}
 }
@@ -239,7 +241,7 @@ func TestSessionMessage(t *testing.T) {
 // responder's later call — are read out of the recorded body itself: the
 // page shows the wire, not a reconstruction of it.
 func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
-	sys := strconv.Quote("PREAMBLE" + agentDocLoopAgents + "TAIL")
+	sys := strconv.Quote("LEADSTANDINGENV" + agentDocLoopAgents + "TAIL")
 	builtin := `{"type":"function","function":{"name":"bash","description":"runs it"}}`
 	factory := `{"type":"function","function":{"name":"factory-tools_escalate","description":"asks"}}`
 	call := `{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"echo fixture-answer\"}"}}`
@@ -251,7 +253,7 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans, err := agentDocLoopWireSpans(b, agentDocLoopAgents)
+	spans, err := agentDocLoopWireSpans(b, "STANDING", agentDocLoopAgents)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +263,9 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 		got = append(got, row{sp.Place, sp.Name, sp.Symbol, sp.Kind, sp.Text})
 	}
 	want := []row{
-		{"system", "the harness preamble", AgentDocOpencodeVersion, agentdoc.KindHarness, "PREAMBLE"},
+		{"system", "the harness's lead", AgentDocOpencodeVersion, agentdoc.KindHarness, "LEAD"},
+		{"system", "the profile's texts", "prompts.Build", agentdoc.KindBuilder, "STANDING"},
+		{"system", "the harness's environment", AgentDocOpencodeVersion, agentdoc.KindHarness, "ENV"},
 		{"system", "AGENTS.md", "AGENTS.md", agentdoc.KindFile, agentDocLoopAgents},
 		{"system", "the harness tail", AgentDocOpencodeVersion, agentdoc.KindHarness, "TAIL"},
 		{"user", "the scripted tool call", "", agentdoc.KindFixture, call},
@@ -271,38 +275,6 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("wire spans:\n got %+v\nwant %+v", got, want)
-	}
-}
-
-// The harness's own title call reads its parts out of the recorded body:
-// its title prompt and the ask before the brief are the harness's, and the
-// brief, which rides the call whole, is left to its builders' spans. A
-// title call without the brief is a broken capture.
-func TestAgentDocTitleWireSpansReadTheBody(t *testing.T) {
-	raw := []byte(`{"model":"small","stream":true,"messages":[{"role":"system","content":"TITLE-PROMPT"},` +
-		`{"role":"user","content":"Generate a title for this conversation:\n"},{"role":"user","content":"THE-BRIEF"}]}`)
-	b, err := agentdoc.ParseBody(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spans, err := agentDocTitleWireSpans(b, "THE-BRIEF")
-	if err != nil {
-		t.Fatal(err)
-	}
-	type row struct{ place, name, symbol, kind, text string }
-	var got []row
-	for _, sp := range spans {
-		got = append(got, row{sp.Place, sp.Name, sp.Symbol, sp.Kind, sp.Text})
-	}
-	want := []row{
-		{"system", "the harness's title prompt", AgentDocOpencodeVersion, agentdoc.KindHarness, "TITLE-PROMPT"},
-		{"user", "the harness's title ask", AgentDocOpencodeVersion, agentdoc.KindHarness, "Generate a title for this conversation:\n"},
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("wire spans:\n got %+v\nwant %+v", got, want)
-	}
-	if _, err := agentDocTitleWireSpans(b, "ANOTHER-BRIEF"); err == nil {
-		t.Fatal("a title call without the brief derived spans")
 	}
 }
 
@@ -346,7 +318,7 @@ func TestAgentDocLoopWireSpansWantTheAgentsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agentDocLoopWireSpans(b, agentDocLoopAgents); err == nil {
+	if _, err := agentDocLoopWireSpans(b, "only the harness", agentDocLoopAgents); err == nil {
 		t.Fatal("a system prompt without AGENTS.md derived spans")
 	}
 }
@@ -362,7 +334,7 @@ func TestAgentDocLoopRecord(t *testing.T) {
 		t.Skip("OPENCODE_RECORD_BIN not set")
 	}
 	v := agentDocLoopPolicy()
-	for _, id := range append(AgentDocLoopIDs(), AgentDocTitleID) {
+	for _, id := range AgentDocLoopIDs() {
 		t.Run(id, func(t *testing.T) {
 			spans, rec, err := AgentDocLoop(context.Background(), id, bin, v)
 			if err != nil {
@@ -423,12 +395,6 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			for _, tl := range b.Tools {
 				names = append(names, tl.Name)
 			}
-			if id == AgentDocTitleID {
-				if len(names) != 0 || b.Model != policy.Small {
-					t.Errorf("the title call offers %q on %s, want no tool on %s", names, b.Model, policy.Small)
-				}
-				return
-			}
 			want := "factory-tools_escalate"
 			switch id {
 			case "planner":
@@ -471,11 +437,10 @@ func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agent
 
 // Two captures of one page, each in its own random directory and on its
 // own day, are the same bytes: the harness writes both into the prompt of
-// the session's call and of its own title call, and neither belongs on
-// the page.
+// the session's call, and neither belongs on the page.
 func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
 	v := agentDocLoopPolicy()
-	for _, id := range []string{"coding", AgentDocTitleID} {
+	for _, id := range []string{"coding"} {
 		t.Run(id, func(t *testing.T) {
 			spansA, recA := fakeCapture(t, id, v, "Wed Nov 04 2026")
 			spansB, recB := fakeCapture(t, id, v, "Thu Nov 12 2026")

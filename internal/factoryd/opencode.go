@@ -27,9 +27,9 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // TokenBudget is the caller-side answer-token budget for one task. A model
@@ -74,6 +74,9 @@ type Opencode struct {
 	sessionID string    // the running session; "" when none runs
 	eventTap  io.Writer // the fixture recorder's copy of the event stream
 	switched  string    // the model every later prompt names, after SetModel
+	// read are the steps whose standing text the running session holds:
+	// its own, in its system prompt, and each pushed step's once sent
+	read map[string]bool
 }
 
 var _ harness.Harness = (*Opencode)(nil)
@@ -127,20 +130,21 @@ func (o *Opencode) Prepare(ctx context.Context, env harness.SandboxEnv, brief ha
 	return os.WriteFile(filepath.Join(o.WorkDir, "brief.json"), briefJSON, 0o600)
 }
 
-// Text is the session's first message (objectiveText): each call draws
-// its own markers' tag, so the text a session stores and prompts is one
-// call's.
-func (o *Opencode) Text(brief harness.TaskBrief) string { return objectiveText(brief) }
+// Text is the session's prompt (objectiveText): each call draws its own
+// markers' tag, so the text a session stores and prompts is one call's.
+func (o *Opencode) Text(brief harness.TaskBrief) (prompts.Prompt, error) { return objectiveText(brief) }
 
 // Run drives the pinned opencode's server, `opencode serve` on 127.0.0.1,
 // the way `opencode run --format json --auto` drives its in-process one
 // (packages/opencode/src/cli/cmd/run.ts:697-906 at v1.18.32): it subscribes
-// to /event, creates the session with run's deny rules, prompts text,
+// to /event, creates the session with run's deny rules, prompts p's facts,
 // answers every permission ask "once", and hands each event to the parser
 // as the JSON line run would print, until the session goes idle. Message
-// queues text for the running session's next turn. The returned Result is
-// the adapter's verdict; the final finished event is synthesized here.
-func (o *Opencode) Run(ctx context.Context, text string, emit func(harness.Event)) harness.Result {
+// queues text for the running session's next turn. The config carries p's
+// standing text as the build agent's prompt and p's step's tools, and the
+// process the step's environment. The returned Result is the adapter's
+// verdict; the final finished event is synthesized here.
+func (o *Opencode) Run(ctx context.Context, p prompts.Prompt, emit func(harness.Event)) harness.Result {
 	outputLimit, err := o.Budget.OutputLimit()
 	if err != nil {
 		return o.finish(emit, false, err.Error())
@@ -189,7 +193,11 @@ func (o *Opencode) Run(ctx context.Context, text string, emit func(harness.Event
 			windows[id] = w
 		}
 	}
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, windows, subagent, more...)
+	cfg, err := buildOpencodeConfig(p.Step(), "http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, windows, subagent, more...)
+	if err != nil {
+		return o.finish(emit, false, err.Error())
+	}
+	stepEnv, err := prompts.SessionEnv(p.Step())
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -211,7 +219,7 @@ func (o *Opencode) Run(ctx context.Context, text string, emit func(harness.Event
 	// the server takes its directory from the process's cwd
 	// (server/routes/instance/httpapi/middleware/workspace-routing.ts:87);
 	// PWD keeps an inherited one from pointing the agent elsewhere
-	cmd.Env = append(os.Environ(), "PWD="+o.WorkDir, "OPENCODE_CONFIG_CONTENT="+string(cfg))
+	cmd.Env = append(append(os.Environ(), "PWD="+o.WorkDir, "OPENCODE_CONFIG_CONTENT="+string(cfg)), stepEnv...)
 	cmd.Stdout = stdout
 	stderr := &capWriter{max: 64 << 10}
 	cmd.Stderr = stderr
@@ -228,11 +236,11 @@ func (o *Opencode) Run(ctx context.Context, text string, emit func(harness.Event
 	exited := make(chan struct{})
 	go func() { waitErr = cmd.Wait(); close(exited) }()
 
-	p := &opencodeParser{workDir: o.WorkDir}
+	parser := &opencodeParser{workDir: o.WorkDir}
 	var serveErr error
 	select {
 	case base := <-listening:
-		serveErr = o.serve(ctx, base, text, p, emit, exited)
+		serveErr = o.serve(ctx, base, p, parser, emit, exited)
 	case <-exited:
 		serveErr = fmt.Errorf("exited before it listened: %v", waitErr)
 	case <-time.After(serveStartTimeout):
@@ -248,9 +256,9 @@ func (o *Opencode) Run(ctx context.Context, text string, emit func(harness.Event
 		serveErr = ctx.Err()
 	}
 
-	success := serveErr == nil && p.stopped && p.errMessage() == ""
-	summary := p.summary()
-	if msg := p.errMessage(); msg != "" {
+	success := serveErr == nil && parser.stopped && parser.errMessage() == ""
+	summary := parser.summary()
+	if msg := parser.errMessage(); msg != "" {
 		summary = msg
 	} else if serveErr != nil {
 		summary = fmt.Sprintf("opencode serve: %v", serveErr)
@@ -277,9 +285,9 @@ var runDenies = []map[string]string{
 	{"permission": "plan_exit", "action": "deny", "pattern": "*"},
 }
 
-// serve runs one session on the server at base until it goes idle, ctx
-// ends or the server exits.
-func (o *Opencode) serve(ctx context.Context, base, text string, p *opencodeParser, emit func(harness.Event), exited <-chan struct{}) error {
+// serve runs one session on the server at base, prompted with p's facts,
+// until it goes idle, ctx ends or the server exits.
+func (o *Opencode) serve(ctx context.Context, base string, prompt prompts.Prompt, p *opencodeParser, emit func(harness.Event), exited <-chan struct{}) error {
 	evCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(evCtx, http.MethodGet, base+"/event", nil)
@@ -307,6 +315,7 @@ func (o *Opencode) serve(ctx context.Context, base, text string, p *opencodePars
 	}
 	o.mu.Lock()
 	o.base, o.sessionID = base, created.ID
+	o.read = map[string]bool{prompt.Step(): true}
 	o.mu.Unlock()
 	ended := func() {
 		o.mu.Lock()
@@ -314,7 +323,7 @@ func (o *Opencode) serve(ctx context.Context, base, text string, p *opencodePars
 		o.mu.Unlock()
 	}
 	defer ended()
-	if err := o.Message(ctx, text); err != nil {
+	if err := o.Message(ctx, prompt); err != nil {
 		return fmt.Errorf("prompt: %w", err)
 	}
 
@@ -373,23 +382,33 @@ func (o *Opencode) serve(ctx context.Context, base, text string, p *opencodePars
 	return fmt.Errorf("the event stream ended mid-session: %v", copyErr)
 }
 
-// Message queues text as a user message for the running session's next
+// Message queues p as a user message for the running session's next
 // turn (POST /session/:id/prompt_async, handlers/session.ts:307-325): the
 // agent loop reads the newest user message on every turn
 // (session/prompt.ts:1089-1096), so a message sent while the agent works
-// reaches its next model call.
-func (o *Opencode) Message(ctx context.Context, text string) error {
+// reaches its next model call. The message is p's text the first time the
+// session reads p's step, its facts alone after that.
+func (o *Opencode) Message(ctx context.Context, p prompts.Prompt) error {
 	o.mu.Lock()
-	base, id := o.base, o.sessionID
+	base, id, text := o.base, o.sessionID, p.Facts()
+	if !o.read[p.Step()] {
+		text = p.Text()
+	}
 	o.mu.Unlock()
 	if id == "" {
 		return harness.ErrNotRunning
 	}
 	provider, modelID := o.model()
-	return serveCall(ctx, base+"/session/"+url.PathEscape(id)+"/prompt_async", map[string]any{
+	err := serveCall(ctx, base+"/session/"+url.PathEscape(id)+"/prompt_async", map[string]any{
 		"model": map[string]string{"providerID": provider, "modelID": modelID},
 		"parts": []map[string]string{{"type": "text", "text": text}},
 	}, nil)
+	if err == nil {
+		o.mu.Lock()
+		o.read[p.Step()] = true
+		o.mu.Unlock()
+	}
+	return err
 }
 
 // loopback talks to opencode's own server; the event stream has no end
@@ -679,12 +698,13 @@ func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
 	return b
 }
 
-// objectiveText is the brief the agent reads. The card's brief and every
-// answer to an information request, the handover,
-// the earlier session's working state and its last message stand between
-// markers with a random tag none of them can know, so none of it can pass
-// for the standing line or for the brief's own sections.
-func objectiveText(brief harness.TaskBrief) string {
+// objectiveText is the prompt of brief's step, its facts the brief the
+// agent reads. The card's brief and every answer to an information
+// request, the handover, the earlier session's working state and its last
+// message stand between markers with a random tag none of them can know,
+// so none of it can pass for the standing line or for the brief's own
+// sections.
+func objectiveText(brief harness.TaskBrief) (prompts.Prompt, error) {
 	brief = InboundBrief(brief)
 	texts := slices.Concat([]string{brief.Objective, brief.Handover, brief.Digest}, brief.PosterInfo, brief.Findings)
 	if brief.Prior != nil {
@@ -693,7 +713,7 @@ func objectiveText(brief harness.TaskBrief) string {
 	for {
 		tag := randomTag()
 		if !slices.ContainsFunc(texts, func(s string) bool { return strings.Contains(s, tag) }) {
-			return briefText(brief, tag)
+			return prompts.Build(brief.Step, sessionBrief{brief, tag})
 		}
 	}
 }
@@ -896,20 +916,7 @@ func guideEnd(m *imagegen.Manifest, tools []string) string {
 		"When your round landed no changes, bash check static stops before the tests and answers faster. " +
 		"When you end, the factory commits your working tree, pushes it and opens the pull request. " +
 		installLine(m, tools) + "Give a command that may run over two minutes a timeout of up to 600000 ms. " +
-		"End with a short last message: what you changed, and whether you recommend merging it and why." +
-		"\n\n" + writingguide.For(codingJobs(tools)...)
-}
-
-// codingJobs are the writing jobs of a coding session with tools: its
-// last message, a summary; its asks to a human, which the guide names
-// whatever ask tools are open (roadmap 201); the card it files through
-// delegate.
-func codingJobs(tools []string) []writingguide.Job {
-	jobs := []writingguide.Job{writingguide.JobSummary, writingguide.JobAsk}
-	if slices.Contains(tools, policy.ToolDelegate) {
-		jobs = append(jobs, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobBrief)
-	}
-	return jobs
+		"End with a short last message: what you changed, and whether you recommend merging it and why."
 }
 
 // installLine is guideEnd's sentence on what the checks need: go install
@@ -1054,7 +1061,10 @@ func (o *Opencode) gatewayCall(ctx context.Context, method, path, body string) (
 // hides the tool from the model, so the only ask path is the gateway's
 // request_info and escalate; doom_loop is allowed, since a denied
 // one fails the stream and ends the session unseen by the model; a rejected
-// tool call continues the loop as an error the model sees.
+// tool call continues the loop as an error the model sees. step's
+// profile gives the build agent's prompt, which replaces the harness's
+// own, and denies every tool the profile does not name; the skill tool
+// and the title call are off for every step.
 // subagent, when set, is the model (provider/id) the general and explore
 // agents run on: the cheap rung under a frontier session (roadmap 222,
 // item 6); more lists further model ids to declare.
@@ -1064,9 +1074,13 @@ func (o *Opencode) gatewayCall(ctx context.Context, method, path, body string) (
 // auto compaction on (overflow.ts at v1.18.32 compacts at limit.input
 // with reserved 0). A model without a window keeps the trust cap and
 // opencode's own threshold.
-func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int, windows map[string]int, subagent string, more ...string) ([]byte, error) {
+func buildOpencodeConfig(step, proxyURL, provider, modelID string, outputLimit, steps int, windows map[string]int, subagent string, more ...string) ([]byte, error) {
 	if steps <= 0 {
 		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
+	}
+	session, err := prompts.SessionConfig(step)
+	if err != nil {
+		return nil, err
 	}
 	baseURL := proxyURL + "/v1"
 	capped := map[string]any{"steps": steps}
@@ -1094,9 +1108,12 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps 
 			"limit": limit,
 		}
 	}
+	capped["prompt"] = session["agent"].(map[string]any)["build"].(map[string]any)["prompt"]
+	permission := session["permission"].(map[string]any)
+	permission["question"], permission["doom_loop"], permission["skill"] = "deny", "allow", "deny"
 	cfg := map[string]any{
-		"agent":        map[string]any{"build": capped, "general": sub, "explore": sub},
-		"permission":   map[string]any{"question": "deny", "doom_loop": "allow"},
+		"agent":        map[string]any{"build": capped, "general": sub, "explore": sub, "title": map[string]any{"disable": true}},
+		"permission":   permission,
 		"experimental": map[string]any{"continue_loop_on_deny": true},
 		"mcp": map[string]any{
 			"factory-tools": map[string]any{

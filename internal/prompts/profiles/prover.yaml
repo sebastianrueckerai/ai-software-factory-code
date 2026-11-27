@@ -1,0 +1,15 @@
+step: prover
+purpose: session
+reader: model
+guide: false
+forms: []
+chunks: [factory]
+paragraph: ""
+facts: session
+answer: ""
+tools:
+  builtin: [bash, edit, glob, grep, read, task, todowrite, webfetch]
+  gateway: [file_proofs, manual]
+  chat: []
+agents_md: true
+budget_words: 411

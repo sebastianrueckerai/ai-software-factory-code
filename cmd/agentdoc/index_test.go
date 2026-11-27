@@ -85,26 +85,6 @@ func TestIndexRendersInventoryMatrixSelfCheck(t *testing.T) {
 	}
 }
 
-// The trunk is the loop modes' own: the harness's title call is a loop
-// page that carries the brief beside a prompt of its own, and it neither
-// counts as a mode nor narrows what the modes share.
-func TestIndexTrunkHoldsTheLoopModesAlone(t *testing.T) {
-	rows := append(indexFixture(), indexRow{
-		agent: Agent{ID: "opencode-title", Family: "A", Job: "titles a session", Runs: "inside opencode", Loop: true},
-		model: "small", purpose: "session", task: "agentdoc-fixture", requestBytes: 15000,
-		spans: []agentdoc.Span{{Name: "the harness's title prompt", Symbol: "opencode 1.19.6", Kind: agentdoc.KindHarness,
-			Place: agentdoc.PlaceSystem, Text: "You are a title generator."}},
-	})
-	md, failures := index(rows, "deadbeef", "policyhash", "opencode 1.19.6")
-	if len(failures) != 0 {
-		t.Fatalf("failures: %v", failures)
-	}
-	trunk := md[strings.Index(md, "## The one loop"):]
-	if !strings.Contains(trunk, "The 2 loop pages") || !strings.Contains(trunk, "- the sandbox facts — ") {
-		t.Errorf("the trunk counts or narrows by the title page:\n%s", trunk)
-	}
-}
-
 // rowOf reads a capture's row facts from the wire body itself, and
 // configRow answers the config page's row: one span, no request.
 func TestRowOfReadsTheWire(t *testing.T) {

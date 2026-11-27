@@ -1530,13 +1530,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card whose round lands no changes names bash check static in its brief, not bash check changed, and every brief keeps the shell tool's bounds: " +
 		"no command and no timeout it names may exceed the shell tool's 600000 ms maximum. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
-		"answer it again.\n\n" + planForms
+		"answer it again."
 }
-
-// planForms are the guide's forms of what a planner writes: each card's
-// title, why line, summary and brief, the plan's summary, and its
-// questions to the human.
-var planForms = writingguide.For(writingguide.JobLine, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk)
 
 // imageField is a card's image field in the plan's shape where the
 // project pins images, "" where it pins none.
@@ -2951,7 +2946,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	r.newBriefSession(taskID)
 	began := time.Now()
 	tools := v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage))
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), "planner", pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
 	if err != nil {
 		return PlanResult{}, err
 	}

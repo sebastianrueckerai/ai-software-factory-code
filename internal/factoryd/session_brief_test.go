@@ -37,10 +37,10 @@ func (a tokenAuth) Authenticate(r *http.Request) (gateway.Identity, error) {
 	return gateway.Identity{}, errors.New("not a session's token")
 }
 
-// The worker's harness builds the session's text, stores it through the
-// gateway on the session's own token, and prompts the model with it. The
-// card's sessions then read one row: the text the first model call got,
-// the repository map and the sandbox facts among it.
+// The worker's harness builds the session's prompt, stores its first turn
+// through the gateway on the session's own token, and prompts the model
+// with it. The card's sessions then read one row: the turn the first
+// model call got, the repository map and the sandbox facts among it.
 func TestRunSessionStoresItsBrief(t *testing.T) {
 	ctx := context.Background()
 	s := pgSessionStore(t)
@@ -63,12 +63,15 @@ func TestRunSessionStoresItsBrief(t *testing.T) {
 	oc, dir := fakeServeOpencode(t, "")
 	oc.GatewayURL = gwSrv.URL
 	const repoMap = "Repository map of the card's directories (guidance, not a boundary):\ncmd/report/: main.go"
-	text := oc.Text(harness.TaskBrief{Objective: "Count the skipped rows\n\nWhy: The nightly report undercounts.", Repository: "sf/r", SHA: "abc123",
+	p, err := oc.Text(harness.TaskBrief{Step: "coding", Objective: "Count the skipped rows\n\nWhy: The nightly report undercounts.", Repository: "sf/r", SHA: "abc123",
 		Facts: "FACTS: session 1 of 3", Map: repoMap})
-	if err := oc.StoreText(ctx, text); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
-	if res := oc.Run(ctx, text, func(harness.Event) {}); !res.Success {
+	if err := oc.StoreText(ctx, p.Facts()); err != nil {
+		t.Fatal(err)
+	}
+	if res := oc.Run(ctx, p, func(harness.Event) {}); !res.Success {
 		t.Fatalf("Run = %+v", res)
 	}
 	var prompted string

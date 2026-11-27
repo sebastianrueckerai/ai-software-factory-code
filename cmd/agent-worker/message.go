@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // parseHash decodes MESSAGE_TOKEN_SHA256: the worker holds only the hash of
@@ -46,12 +47,11 @@ func bearer(tokenSHA256 [32]byte, w http.ResponseWriter, r *http.Request) bool {
 }
 
 // messageHandler serves factoryd's requests into the pod, each with the
-// session's bearer: POST /message {text}, handed to send, the harness's
-// Message, and POST /push {token, name}, which gate takes.
-// messageHandler serves factoryd's messages: text for the agent's next
-// turn, with model when the session continues on another model from then
-// on (roadmap 222, item 5).
-func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe) http.Handler {
+// session's bearer: POST /message {step, text}, the prompt of step on
+// text handed to send, the harness's Message, with model when the session
+// continues on another model from then on (roadmap 222, item 5), and POST
+// /push {token, name}, which gate takes.
+func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, p prompts.Prompt, model string) error, ck *checkinServe, wip *wipServe) http.Handler {
 	mux := http.NewServeMux()
 	authorized := func(w http.ResponseWriter, r *http.Request) bool { return bearer(tokenSHA256, w, r) }
 	mux.HandleFunc("POST /message", func(w http.ResponseWriter, r *http.Request) {
@@ -59,16 +59,22 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.
 			return
 		}
 		var in struct {
+			Step  string `json:"step"`
 			Text  string `json:"text"`
 			Model string `json:"model"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil || strings.TrimSpace(in.Text) == "" {
-			http.Error(w, "want {\"text\": \"...\"}", http.StatusBadRequest)
+			http.Error(w, "want {\"step\": \"...\", \"text\": \"...\"}", http.StatusBadRequest)
+			return
+		}
+		p, err := prompts.Build(in.Step, in.Text)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), harness.MessageTimeout)
 		defer cancel()
-		switch err := send(ctx, in.Text, in.Model); {
+		switch err := send(ctx, p, in.Model); {
 		case err == nil:
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, harness.ErrNotSupported):
@@ -187,7 +193,7 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (pushCred
 }
 
 // serveMessages serves the session's messageHandler until the returned stop.
-func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, log func(string, ...any)) (stop func(), err error) {
+func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, p prompts.Prompt, model string) error, ck *checkinServe, wip *wipServe, log func(string, ...any)) (stop func(), err error) {
 	return servePort(messageHandler(tokenSHA256, gate, send, ck, wip), log)
 }
 

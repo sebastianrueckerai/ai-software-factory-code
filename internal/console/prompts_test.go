@@ -1,6 +1,7 @@
 package console
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
@@ -80,4 +81,35 @@ func budgetOf(t *testing.T, step string) int {
 	}
 	t.Fatalf("step %s has no profile", step)
 	return 0
+}
+
+// The session steps keep the tool sets their map pages show: every
+// built-in tool, and the gateway's tools their classes grant.
+func TestSessionStepsKeepTheirToolSets(t *testing.T) {
+	analyzer := []string{"analyze_image", "digest", "escalate", "manual", "request_info", "web_scrape", "web_search"}
+	coder := []string{"analyze_image", "cloud_prices", "commission_server", "delegate", "digest", "escalate", "fal_run", "list_resources", "manual",
+		"release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate", "web_scrape", "web_search"}
+	want := map[string][]string{
+		"sizing":      analyzer,
+		"screening":   analyzer,
+		"planner":     {"analyze_image", "digest", "escalate", "file_plan", "manual", "web_scrape", "web_search"},
+		"prover":      {"file_proofs", "manual"},
+		"coding":      coder,
+		"coding-card": coder,
+	}
+	profiles := map[string]prompts.Profile{}
+	for _, p := range prompts.Profiles() {
+		profiles[p.Step] = p
+	}
+	for step, gateway := range want {
+		p, ok := profiles[step]
+		switch {
+		case !ok:
+			t.Errorf("step %s has no profile", step)
+		case !slices.Equal(p.Tools.Gateway, gateway):
+			t.Errorf("step %s: tools.gateway = %q, want %q", step, p.Tools.Gateway, gateway)
+		case !slices.Equal(p.Tools.Builtin, prompts.BuiltinTools):
+			t.Errorf("step %s: tools.builtin = %q, want every built-in tool", step, p.Tools.Builtin)
+		}
+	}
 }

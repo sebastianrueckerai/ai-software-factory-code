@@ -58,15 +58,15 @@ func TestSessionReadsTheProjectsDocumentRepository(t *testing.T) {
 // be read, and says nothing for a project without any.
 func TestBriefSaysWhereTheDocumentsAre(t *testing.T) {
 	base := harness.TaskBrief{Objective: "fix it", Repository: "sf/x", AuthorStanding: harness.StandingWriter}
-	if got := objectiveText(base); strings.Contains(got, "/workspace/docs") || strings.Contains(got, "document repository") {
+	if got := firstTurn(t, base); strings.Contains(got, "/workspace/docs") || strings.Contains(got, "document repository") {
 		t.Fatalf("brief without documents mentions them:\n%s", got)
 	}
 	base.Docs = true
-	if got := objectiveText(base); !strings.Contains(got, "is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.") {
+	if got := firstTurn(t, base); !strings.Contains(got, "is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.") {
 		t.Fatalf("brief = %s, want the documents' place", got)
 	}
 	base.Docs, base.DocsFailed = false, "git clone: repository not found"
-	got := objectiveText(base)
+	got := firstTurn(t, base)
 	if !strings.Contains(got, "could not be read: git clone: repository not found") || strings.Contains(got, "/workspace/docs") {
 		t.Fatalf("brief = %s, want the clone's failure", got)
 	}

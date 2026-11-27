@@ -24,6 +24,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
 // fakeWorkerEndpoint is a worker's message endpoint answering status. It
@@ -35,6 +36,8 @@ type fakeWorkerEndpoint struct {
 	status int
 	auth   []string
 	texts  []string
+	// steps are the prompt steps of the messages, in order
+	steps  []string
 	briefs []string // the raw body of each POST /brief
 	lists  []string // the raw body of each POST /proofs
 	onPush func()
@@ -52,6 +55,7 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
+			Step     string         `json:"step"`
 			Text     string         `json:"text"`
 			Token    string         `json:"token"`
 			Session  string         `json:"session"`
@@ -65,6 +69,9 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 		f.mu.Lock()
 		f.auth = append(f.auth, req.Header.Get("Authorization"))
 		f.texts = append(f.texts, req.Method+" "+req.URL.Path+" "+in.Text+in.Token+in.Session+in.Record+in.Handover+in.Name)
+		if req.URL.Path == "/message" {
+			f.steps = append(f.steps, in.Step)
+		}
 		switch req.URL.Path {
 		case "/brief":
 			f.briefs = append(f.briefs, string(b))
@@ -201,7 +208,7 @@ func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
 	detail := "three nudges without new file content in between: read `{\"filePath\":\"/w/a.go\"}` 3 times; " +
 		"read `{\"filePath\":\"/w/b.go\"}` 3 times; read `{\"filePath\":\"/w/c.go\"}` 3 times"
 	line := "the previous session ended in a loop after " + detail
-	if !slices.Contains(res.Findings, line) || !strings.Contains(objectiveText(harness.TaskBrief{Findings: res.Findings}), "\n- "+line+"\n") {
+	if !slices.Contains(res.Findings, line) || !strings.Contains(firstTurn(t, harness.TaskBrief{Findings: res.Findings}), "\n- "+line+"\n") {
 		t.Fatalf("findings = %q, want the loop line %q", res.Findings, line)
 	}
 	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
@@ -1068,9 +1075,9 @@ func TestPushAnsweredDuringACheckin(t *testing.T) {
 }
 
 // A writer's steer reaches the task's running session on the message path:
-// the worker gets the text, marked as the writer's, with the session's
-// bearer, and the timeline a message step naming the writer. A task with
-// no session running here is refused.
+// the worker gets the text, marked as the writer's, under the message
+// responder's step with the session's bearer, and the timeline a message
+// step naming the writer. A task with no session running here is refused.
 func TestMessageSessionReachesTheRunningSession(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
@@ -1084,12 +1091,11 @@ func TestMessageSessionReachesTheRunningSession(t *testing.T) {
 		t.Fatalf("MessageSession = %v", err)
 	}
 	worker.mu.Lock()
-	texts, auth := worker.texts, worker.auth
+	texts, steps, auth := worker.texts, worker.steps, worker.auth
 	worker.mu.Unlock()
-	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message You are the agent session of card t2") ||
-		!strings.HasSuffix(texts[0], "A message from anna, a writer of this project: rebase on main first") ||
-		!slices.Equal(auth, []string{"Bearer bearer-1"}) {
-		t.Fatalf("worker got %q with %q", texts, auth)
+	if !slices.Equal(texts, []string{"POST /message A message from anna, a writer of this project: rebase on main first"}) ||
+		!slices.Equal(steps, []string{"message-responder"}) || !slices.Equal(auth, []string{"Bearer bearer-1"}) {
+		t.Fatalf("worker got %q under %q with %q", texts, steps, auth)
 	}
 	b, err := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
 	if err != nil {
@@ -1146,10 +1152,11 @@ func TestMessageSessionNamesAStartingSession(t *testing.T) {
 	}
 }
 
-// The first message a writer sends through the card's chat carries the
-// factory basics, once: the session reads them before the writer's text.
-// Later messages go in bare, and so does every supervisor message.
-func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
+// Every message a writer sends through the card's chat goes to the worker
+// as the writer's words under the message responder's step, and every
+// supervisor message under the guidance's: the harness puts a step's
+// standing text before the first message of that step.
+func TestMessagesGoUnderTheirSteps(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
@@ -1163,28 +1170,16 @@ func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
 	if err := runner.MessageSession(t.Context(), "t2", "anna", "and push"); err != nil {
 		t.Fatalf("second MessageSession = %v", err)
 	}
-	worker.mu.Lock()
-	texts := slices.Clone(worker.texts)
-	worker.mu.Unlock()
-	if len(texts) != 2 {
-		t.Fatalf("worker got %d messages, want 2", len(texts))
-	}
-	if !strings.HasPrefix(texts[0], "POST /message You are the agent session of card t2") ||
-		!strings.Contains(texts[0], "Signals and humans file cards") ||
-		!strings.HasSuffix(texts[0], "A message from anna, a writer of this project: rebase on main first") {
-		t.Fatalf("first message = %q", texts[0])
-	}
-	if texts[1] != "POST /message A message from anna, a writer of this project: and push" {
-		t.Fatalf("second message = %q", texts[1])
-	}
 	if err := runner.message(t.Context(), supervisedTask("t2"), sessionSpec{id: "s1", messageToken: "bearer-1"}, "agent-t2", "worker-t2", "periodic check-in"); err != nil {
 		t.Fatalf("supervisor message = %v", err)
 	}
 	worker.mu.Lock()
-	texts = slices.Clone(worker.texts)
+	texts, steps := slices.Clone(worker.texts), slices.Clone(worker.steps)
 	worker.mu.Unlock()
-	if len(texts) != 3 || texts[2] != "POST /message periodic check-in" {
-		t.Fatalf("supervisor messages = %q, want the check-in bare", texts[2:])
+	want := []string{"POST /message A message from anna, a writer of this project: rebase on main first",
+		"POST /message A message from anna, a writer of this project: and push", "POST /message periodic check-in"}
+	if !slices.Equal(texts, want) || !slices.Equal(steps, []string{"message-responder", "message-responder", "supervisor-guidance"}) {
+		t.Fatalf("worker got %q under %q, want %q", texts, steps, want)
 	}
 }
 
@@ -1216,5 +1211,20 @@ func TestReconcileRevokesEveryPushTokenOfTheCardAlone(t *testing.T) {
 	}
 	if len(hub.tokens) != 3 {
 		t.Fatalf("live tokens = %v, want the other card's read token and both its asks' push tokens still working", hub.tokens)
+	}
+}
+
+// The texts factoryd pushes into a running session are prompts its
+// profiles build, and the ones only the agent reads carry no guide and
+// no form.
+func TestSessionStepsTakeNoTextOfOurs(t *testing.T) {
+	var _ func(*Runner, context.Context, string, string, string, prompts.Prompt) error = (*Runner).messageWorker
+	for _, p := range prompts.Profiles() {
+		switch p.Step {
+		case "supervisor-guidance", "nudge", "limit-note", "workflow-warning":
+			if p.Reader != prompts.ReaderModel || p.Guide || len(p.Forms) > 0 {
+				t.Errorf("step %s: reader %s, guide %v, forms %v; want a model's text with neither", p.Step, p.Reader, p.Guide, p.Forms)
+			}
+		}
 	}
 }

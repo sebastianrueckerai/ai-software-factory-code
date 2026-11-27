@@ -3,7 +3,7 @@ package factoryd
 import "github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 
 // The statuses and gates and their meanings live in internal/manual, the
-// one source the gateway's manual tool and the workers' basics read too.
+// one source the gateway's manual tool and the console's manual read too.
 var (
 	FinalStatuses = manual.FinalStatuses
 	Statuses      = manual.Statuses

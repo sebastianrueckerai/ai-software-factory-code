@@ -1,0 +1,15 @@
+step: limit-note
+purpose: session
+reader: model
+guide: false
+forms: []
+chunks: []
+paragraph: ""
+facts: text
+answer: ""
+tools:
+  builtin: []
+  gateway: []
+  chat: []
+agents_md: false
+budget_words: 19

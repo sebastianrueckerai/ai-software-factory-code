@@ -15,9 +15,8 @@ import (
 	"strconv"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // messageTokenHash is what the worker pod gets of the session's message
@@ -48,11 +47,12 @@ func podTransport() *http.Transport {
 // of the pod's choosing.
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
-// messageWorker posts text to the running worker's POST /message, which
-// hands it to the harness. The worker's 501 is harness.ErrNotSupported,
-// its 409 (the session has ended) harness.ErrNotRunning.
-func (r *Runner) messageWorker(ctx context.Context, ns, pod, token, text string) error {
-	return r.postWorker(ctx, ns, pod, token, "/message", map[string]string{"text": text})
+// messageWorker posts p's step and facts to the running worker's POST
+// /message, which builds the prompt again and hands it to the harness.
+// The worker's 501 is harness.ErrNotSupported, its 409 (the session has
+// ended) harness.ErrNotRunning.
+func (r *Runner) messageWorker(ctx context.Context, ns, pod, token string, p prompts.Prompt) error {
+	return r.postWorker(ctx, ns, pod, token, "/message", map[string]string{"step": p.Step(), "text": p.Facts()})
 }
 
 // answerPush answers the worker asking for its push token, which it does
@@ -166,7 +166,10 @@ func (r *Runner) messagePort() int {
 // nudge closes. A session that ended meanwhile needs none.
 func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervisor, ns, pod, token string, n Nudge) *Trip {
 	detail := map[string]any{"session": s.id, "tool": n.Tool, "count": n.Count}
-	err := r.messageWorker(ctx, ns, pod, token, n.Text())
+	p, err := prompts.Build("nudge", n.Text())
+	if err == nil {
+		err = r.messageWorker(ctx, ns, pod, token, p)
+	}
 	var loop *Trip
 	switch {
 	case err == nil:
@@ -194,10 +197,6 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
 	since, starting := r.starting[taskID]
-	basics := ok && !ls.basics
-	if basics {
-		ls.basics = true
-	}
 	r.liveMu.Unlock()
 	switch {
 	case !ok && starting:
@@ -206,7 +205,10 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 		return ErrNoLiveSession
 	}
 	w := ls.worker
-	err := r.messageWorker(ctx, w.ns, w.pod, w.token, sessionMessage(taskID, user, text, basics))
+	p, err := prompts.Build("message-responder", sessionMessage(user, text))
+	if err == nil {
+		err = r.messageWorker(ctx, w.ns, w.pod, w.token, p)
+	}
 	detail := map[string]any{"session": w.session, "from": user}
 	if err != nil {
 		detail["error"] = r.Scrub.String(err.Error())
@@ -216,28 +218,23 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 }
 
 // sessionMessage is the one composer of what a writer's message looks
-// like inside the session: the wrapper that names who speaks, and, on a
-// session's first message, the basics preamble that tells the session
-// what it is.
-func sessionMessage(taskID, user, text string, basics bool) string {
+// like inside the session: the wrapper that names who speaks. The guide
+// and the chat form ride the session's first message (Harness.Message).
+func sessionMessage(user, text string) string {
 	from := user + ", a writer of this project"
 	if user == ChatUser {
 		from = "the project agent"
 	}
-	msg := "A message from " + from + ": " + text
-	if basics {
-		msg = "You are the agent session of card " + taskID + " in the AI software factory. " + manual.Loop +
-			". When you end, the factory commits your working tree, pushes it and opens the pull request. " +
-			"A writer of this project talks to you through the card's chat; the gates judge what you push. " +
-			"The manual tool reads the rest.\n\n" + writingguide.For(writingguide.JobChat) + "\n\n" + msg
-	}
-	return msg
+	return "A message from " + from + ": " + text
 }
 
 // message sends the supervisor's guidance into the running session and
 // records it on the timeline.
 func (r *Runner) message(ctx context.Context, t Task, s sessionSpec, ns, pod, text string) error {
-	err := r.messageWorker(ctx, ns, pod, s.messageToken, text)
+	p, err := prompts.Build("supervisor-guidance", text)
+	if err == nil {
+		err = r.messageWorker(ctx, ns, pod, s.messageToken, p)
+	}
 	detail := map[string]any{"session": s.id}
 	if err != nil {
 		detail["error"] = r.Scrub.String(err.Error())

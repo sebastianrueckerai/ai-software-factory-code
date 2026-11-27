@@ -1,0 +1,15 @@
+step: coding
+purpose: session
+reader: human
+guide: false
+forms: [title, why, summary, brief, ask]
+chunks: [factory]
+paragraph: ""
+facts: session
+answer: ""
+tools:
+  builtin: [bash, edit, glob, grep, read, task, todowrite, webfetch]
+  gateway: [analyze_image, cloud_prices, commission_server, delegate, digest, escalate, fal_run, list_resources, manual, release_resource, replicate_predict, request_cut, request_info, request_tool, resource_request_status, ssh_certificate, web_scrape, web_search]
+  chat: []
+agents_md: true
+budget_words: 1640

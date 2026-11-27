@@ -35,6 +35,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -268,9 +269,6 @@ type liveSession struct {
 	ch     chan AgentAsk
 	done   chan struct{}
 	worker sessionWorker
-	// basics records that the session was given the factory basics on its
-	// first human-sourced message.
-	basics bool
 	// replan, hold: an ask of that kind is on its way to the session or
 	// was taken.
 	replan, hold bool
@@ -708,6 +706,9 @@ type sessionSpec struct {
 	// session took, a reattached session's live row's, else the card's
 	added  time.Duration
 	budget float64
+	// step is the session's prompt step (prompts.Profiles), which the
+	// worker builds its prompt with
+	step string
 	// report is a report session's guide; "" for a coding
 	// session
 	report string
@@ -3051,6 +3052,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if t.PRNumber != 0 {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "TASK_PR", "value": strconv.FormatInt(t.PRNumber, 10)})
 	}
+	env = append(env, map[string]any{"name": "STEP", "value": s.step})
 	if s.report != "" {
 		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.report, "the report's guide")})
 		if len(s.branches) > 0 {
@@ -3662,7 +3664,10 @@ func (r *Runner) takeRaise(ctx context.Context, t Task, s sessionSpec, w *limitW
 // timeline. Then the spend check.
 func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor, cur Task) *Trip {
 	for _, wn := range w.due(cur.EnforcedSpent(), cur.BudgetEUR, time.Now()) {
-		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)
+		p, err := prompts.Build("limit-note", wn.text)
+		if err == nil {
+			err = r.messageWorker(ctx, ns, pod, s.messageToken, p)
+		}
 		if err == nil || !w.failed[wn.kind] {
 			detail := map[string]any{"session": s.id}
 			if err != nil {
