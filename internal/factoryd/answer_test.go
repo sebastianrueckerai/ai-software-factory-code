@@ -24,7 +24,7 @@ var screenTool = prompts.AnswerTool(reflect.TypeFor[screenAnswer]())
 func typedCall(t *testing.T, ll *fakeLiteLLM) (screenAnswer, string, error) {
 	t.Helper()
 	return answerWith[screenAnswer](context.Background(), testSupervisorModel(ll.srv(t).URL), "t1", "small", time.Minute,
-		testPrompt(t, "plan-namer", namerPrompt), screenTool, map[string]any{"title": "Count rows"})
+		testPrompt(t, "plan-namer", ""), screenTool, map[string]any{"title": "Count rows"})
 }
 
 // A call with an answer tool sends that tool and forces it: no JSON mode,
@@ -92,8 +92,8 @@ func TestAnswerCutAnswerRetriesAtLowDepth(t *testing.T) {
 func TestChatAnswerNeedsTheStepsAnswerType(t *testing.T) {
 	ll := &fakeLiteLLM{}
 	_, _, err := ChatAnswer[screenAnswer](context.Background(), testSupervisorModel(ll.srv(t).URL), "t1", "small", time.Minute,
-		testPrompt(t, "plan-namer", namerPrompt), map[string]any{})
-	if want := "step plan-namer: its profile names no answer type"; err == nil || err.Error() != want || len(ll.chats) != 0 {
+		testPrompt(t, "checkin-gate", nil), map[string]any{})
+	if want := "step checkin-gate: its profile names no answer type"; err == nil || err.Error() != want || len(ll.chats) != 0 {
 		t.Fatalf("ChatAnswer = %v after %d calls, want %s and no call", err, len(ll.chats), want)
 	}
 }

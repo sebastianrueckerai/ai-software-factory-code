@@ -17,7 +17,7 @@ func TestReviewSummaryIsCutAt500(t *testing.T) {
 }
 
 func TestAuditWhyIsCutAt300AndFileKeeps500(t *testing.T) {
-	answer := `{"verdict":"findings","findings":[{"item":1,"file":"` + strings.Repeat("f", 400) + `","line":3,"why":"` + strings.Repeat("w", 400) + `"}]}`
+	answer := `{"findings":[{"item":1,"file":"` + strings.Repeat("f", 400) + `","line":3,"why":"` + strings.Repeat("w", 400) + `"}]}`
 	fs, why := parseAudit(answer)
 	if len(fs) != 1 {
 		t.Fatalf("parseAudit = %v, %q, want one finding", fs, why)
@@ -32,7 +32,7 @@ func TestAuditWhyIsCutAt300AndFileKeeps500(t *testing.T) {
 
 func TestGateDecisionTextIsCutAt1000(t *testing.T) {
 	long := strings.Repeat("d", 1500)
-	d := parseGateDecision(`{"action":"escalate","diagnosis":"`+long+`","recommendation":"`+long+`"}`, []SupervisorAction{ActionEscalate}, nil)
+	d := checkGateDecision(GateDecisionAnswer{Action: "escalate", Diagnosis: long, Recommendation: long}, []SupervisorAction{ActionEscalate}, nil)
 	if d.Diagnosis != cutAt('d', 1000) || d.Recommendation != cutAt('d', 1000) {
 		t.Errorf("1500 characters parsed to %d and %d runes, want 1000 and the mark each", len([]rune(d.Diagnosis)), len([]rune(d.Recommendation)))
 	}

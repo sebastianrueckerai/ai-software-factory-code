@@ -1341,17 +1341,24 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, p Plan, revisio
 	r.record(ctx, t.ID, "criteria_verdicts", map[string]any{"round": round, "dues": planner})
 }
 
-// deltaSystem is the delta round's system prompt: one card under the open
-// plan that closes the named criteria; %s is the card's image field
-// (imageField).
-const deltaSystem = `Each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. Answer with one JSON object and nothing else: {"card": {"title": "...", "why": "...", "summary": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+// deltaSystem is the delta round's facts: the criteria's states, what the
+// card keeps to and the refusals of the round; the card's fields are the
+// answer type's.
+const deltaSystem = `Each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+
+// deltaAnswerTool is p's answer tool with the card's image closed to the
+// project's pinned images, and dropped where it pins none.
+func deltaAnswerTool(p prompts.Prompt, pins map[string]policy.ImagePin) prompts.Tool {
+	tool, _ := p.Answer()
+	return tool.WithEnum("card.image", slices.Sorted(maps.Keys(pins)))
+}
 
 // deltaFacts are the images the delta round's project pins.
 type deltaFacts struct{ Pins map[string]policy.ImagePin }
 
 // deltaPrompt is the delta round's text for a project pinning f.Pins.
 func deltaPrompt(f deltaFacts) (string, error) {
-	return strings.TrimSpace(fmt.Sprintf(deltaSystem, imageField(f.Pins)) + " " + imagesLine(f.Pins)), nil
+	return strings.TrimSpace(deltaSystem + " " + imagesLine(f.Pins)), nil
 }
 
 // deltaInput is the delta round's whole context.
@@ -1474,10 +1481,14 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		r.refuseDelta(ctx, t, repo, dues, err.Error())
 		return
 	}
+	tool := deltaAnswerTool(system, projectPins(v, t.Repository))
 	for try := range deltaAttempts {
-		content, _, err := r.supervisor.Chat(ctx, t.ID, alias, bound, system, input)
+		answer, _, err := answerWith[DeltaAnswer](ctx, r.supervisor, t.ID, alias, bound, system, tool, input)
 		var cut *cutAnswerError
+		var bad *badAnswerError
 		switch {
+		case errors.As(err, &bad):
+			why = "the answer is not a card: " + bad.Error()
 		case errors.Is(err, context.DeadlineExceeded):
 			why = fmt.Sprintf("the model call ran past its bound of %s", DurationText(bound))
 		case errors.As(err, &cut):
@@ -1490,7 +1501,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 			log.Printf("plan %s: the delta round: %s", t.ID, why)
 			continue
 		}
-		if card, merged, why = judgeDelta(p, deltaKey(t.ID, revision, dues), content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
+		if card, merged, why = judgeDelta(p, deltaKey(t.ID, revision, dues), answer, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
 			refs, err := botRefsOf(ctx, r.forgejo, v.Tree, t.Repository)
 			if err != nil {
 				r.refuseDelta(ctx, t, repo, dues, err.Error())
@@ -1510,7 +1521,8 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 			}
 		}
 		log.Printf("plan %s: the delta round's answer: %s", t.ID, why)
-		input.Refused = append(input.Refused, deltaRefusal{Answer: content, Why: why})
+		shown, _ := json.Marshal(answer)
+		input.Refused = append(input.Refused, deltaRefusal{Answer: string(shown), Why: why})
 	}
 	if why != "" {
 		r.refuseDelta(ctx, t, repo, dues, why)
@@ -1562,30 +1574,22 @@ type deltaRefusal struct {
 	Why    string `json:"why"`
 }
 
-// judgeDelta reads content as the delta card of plan p and judges p with
+// judgeDelta reads answer as the delta card of plan p and judges p with
 // it: the card, the plan it joins and "", or why the plan rules refuse it.
 // The card is a feature card of p's round whatever role it names, and its
 // key is key whatever key it names.
-func judgeDelta(p Plan, key, content string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (PlanCard, Plan, string) {
-	var answer struct {
-		Card PlanCard `json:"card"`
-	}
-	dec := json.NewDecoder(strings.NewReader(content))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&answer); err != nil {
-		return PlanCard{}, Plan{}, "the answer is not a card: " + err.Error()
-	}
-	answer.Card.Key = key
-	answer.Card.Role = RoleFeature
-	answer.Card.Round = p.Round
+func judgeDelta(p Plan, key string, answer DeltaAnswer, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (PlanCard, Plan, string) {
+	c := answer.Card
+	card := PlanCard{Key: key, Role: RoleFeature, Round: p.Round, Title: c.Title, Why: c.Why, Summary: c.Summary, Brief: c.Brief,
+		Directories: c.Directories, DependsOn: c.DependsOn, Acceptance: c.Acceptance, Size: c.Size, Rung: c.Rung, RungReason: c.RungReason, Image: c.Image}
 	merged := p
-	merged.Cards = append(slices.Clone(p.Cards), answer.Card)
+	merged.Cards = append(slices.Clone(p.Cards), card)
 	shape.Foundation = false
-	merged, findings := judgePlanWith(merged, shape, limits, pins, answer.Card.Key)
+	merged, findings := judgePlanWith(merged, shape, limits, pins, card.Key)
 	if len(findings) > 0 {
 		return PlanCard{}, Plan{}, "the card broke the plan rules: " + strings.Join(findings, "; ")
 	}
-	return answer.Card, merged, ""
+	return card, merged, ""
 }
 
 // refuseDelta marks the dues refused and says so on the plan's issue: the

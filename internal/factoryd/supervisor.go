@@ -309,41 +309,28 @@ type SupervisorModel struct {
 	HTTP       *http.Client // nil = http.DefaultClient
 }
 
-// ChatInputLead opens every JSON-mode call's user message: OpenAI refuses
-// JSON mode when no input message names JSON, and an input's own JSON
-// does not always hold the word.
-const ChatInputLead = "The input, as JSON:\n"
+// wireTool is t as a request's tools list carries it, in the OpenAI form.
+func wireTool(t prompts.Tool) map[string]any {
+	return map[string]any{"type": "function", "function": map[string]any{
+		"name": t.Name, "description": t.Description, "parameters": t.Parameters}}
+}
 
 // chatPayload builds one call's body; low asks the model to think at low
-// depth (reasoning_effort low). With answer the call forces that tool and
-// the user message is the input alone; without, it is a JSON-mode call.
-func chatPayload(alias, system string, user []byte, limit int, low bool, answer *prompts.Tool) ([]byte, error) {
-	body := map[string]any{"model": alias, "max_tokens": limit}
-	lead := ChatInputLead
-	if answer != nil {
-		lead = ""
-		body["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{
-			"name": answer.Name, "description": answer.Description, "parameters": answer.Parameters}}}
-		body["tool_choice"] = ForcedToolChoice(answer.Name)
-	} else {
-		body["response_format"] = map[string]string{"type": "json_object"}
-	}
-	body["messages"] = []map[string]string{
-		{"role": "system", "content": system},
-		{"role": "user", "content": lead + string(user)},
+// depth (reasoning_effort low). The call forces the answer tool, and the
+// user message is the input alone.
+func chatPayload(alias, system string, user []byte, limit int, low bool, answer prompts.Tool) ([]byte, error) {
+	body := map[string]any{"model": alias, "max_tokens": limit,
+		"tools":       []any{wireTool(answer)},
+		"tool_choice": ForcedToolChoice(answer.Name),
+		"messages": []map[string]string{
+			{"role": "system", "content": system},
+			{"role": "user", "content": string(user)},
+		},
 	}
 	if low {
 		body["reasoning_effort"] = thinkingLow
 	}
 	return json.Marshal(body)
-}
-
-// promptAnswer is p's answer tool, nil when its step names none.
-func promptAnswer(p prompts.Prompt) *prompts.Tool {
-	if tool, ok := p.Answer(); ok {
-		return &tool
-	}
-	return nil
 }
 
 // chatBody is the body of Chat's call on p: input, compact JSON, as the
@@ -353,12 +340,23 @@ func chatBody(alias string, p prompts.Prompt, input any, limit int) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	return chatPayload(alias, p.Text(), user, limit, false, promptAnswer(p))
+	tool, ok := p.Answer()
+	if !ok {
+		return nil, noAnswerType(p)
+	}
+	return chatPayload(alias, p.Text(), user, limit, false, tool)
 }
 
-// Chat is one JSON-mode call of alias through the gateway on the task's
-// account for the purpose p's profile names, with p's text as the system
-// prompt and input, compact JSON, as the user message, cut after timeout (the task's
+// noAnswerType is the error of a direct call on a step whose profile names
+// no answer type.
+func noAnswerType(p prompts.Prompt) error {
+	return fmt.Errorf("step %s: its profile names no answer type", p.Step())
+}
+
+// Chat is one call of alias through the gateway on the task's account for
+// the purpose p's profile names, forcing the answer tool of p's step: its
+// arguments are the content. p's text is the system prompt and input,
+// compact JSON, the user message, cut after timeout (the task's
 // limits.supervisor_timeout: a reasoning model thinks before it answers);
 // deployment is the one that answered, as the gateway names it. A gateway
 // refusal is a *policy.Refusal in the chain; alias "" (the policy names
@@ -380,12 +378,16 @@ const thinkingLow = "low"
 // chat is Chat with low: the answer came from the call once more at low
 // thinking depth, which a gate records beside its model.
 func (m *SupervisorModel) chat(ctx context.Context, taskID, alias string, timeout time.Duration, p prompts.Prompt, input any) (content, deployment string, low bool, err error) {
-	return m.chatWith(ctx, taskID, alias, timeout, p, promptAnswer(p), input)
+	tool, ok := p.Answer()
+	if !ok {
+		return "", "", false, noAnswerType(p)
+	}
+	return m.chatWith(ctx, taskID, alias, timeout, p, tool, input)
 }
 
-// chatWith is chat forcing answer when it is set: its arguments are the
-// content, and an answer in text is an error that names the step.
-func (m *SupervisorModel) chatWith(ctx context.Context, taskID, alias string, timeout time.Duration, p prompts.Prompt, answer *prompts.Tool, input any) (content, deployment string, low bool, err error) {
+// chatWith is chat forcing answer: its arguments are the content, and an
+// answer in text is an error that names the step.
+func (m *SupervisorModel) chatWith(ctx context.Context, taskID, alias string, timeout time.Duration, p prompts.Prompt, answer prompts.Tool, input any) (content, deployment string, low bool, err error) {
 	purpose, system := p.Purpose(), p.Text()
 	if alias == "" {
 		return "", "", false, fmt.Errorf("the policy names no %s model for the task's capability classes", purpose)
@@ -429,7 +431,7 @@ func (m *SupervisorModel) chatWith(ctx context.Context, taskID, alias string, ti
 
 // call is one call of Chat asking limit output tokens, low at low
 // thinking depth, cut after timeout.
-func (m *SupervisorModel) call(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, user []byte, limit int, low bool, answer *prompts.Tool) (completion, string, error) {
+func (m *SupervisorModel) call(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, user []byte, limit int, low bool, answer prompts.Tool) (completion, string, error) {
 	payload, err := chatPayload(alias, system, user, limit, low, answer)
 	if err != nil {
 		return completion{}, "", err
@@ -468,18 +470,14 @@ type completion struct {
 // cut says the answer stopped at its output limit (finish_reason length).
 func (c completion) cut() bool { return c.Choices[0].FinishReason == "length" }
 
-// content is the answer: the first tool call's arguments when one came,
-// else the message's text. A call that forced answer and got text alone
-// is an error that names step.
-func (c completion) content(step string, answer *prompts.Tool) (string, error) {
+// content is the answer: the first tool call's arguments. A call that
+// forced answer and got text alone is an error that names step.
+func (c completion) content(step string, answer prompts.Tool) (string, error) {
 	msg := c.Choices[0].Message
-	switch {
-	case len(msg.ToolCalls) > 0:
-		return msg.ToolCalls[0].Function.Arguments, nil
-	case answer != nil:
-		return "", fmt.Errorf("step %s answered in text, not through its %s tool: %s", step, answer.Name, textutil.Truncate(msg.Content, 300))
+	if len(msg.ToolCalls) == 0 {
+		return "", &badAnswerError{fmt.Sprintf("step %s answered in text, not through its %s tool: %s", step, answer.Name, textutil.Truncate(msg.Content, 300))}
 	}
-	return msg.Content, nil
+	return msg.ToolCalls[0].Function.Arguments, nil
 }
 
 // limit is the output limit the call got, asked when the gateway named

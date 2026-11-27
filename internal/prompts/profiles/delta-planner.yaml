@@ -6,7 +6,7 @@ forms: [title, why, summary, brief]
 chunks: [factory]
 paragraph: delta-planner
 facts: delta
-answer: ""
+answer: delta
 tools:
   builtin: []
   gateway: []

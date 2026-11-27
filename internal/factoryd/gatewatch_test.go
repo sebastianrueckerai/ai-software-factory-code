@@ -265,8 +265,8 @@ func TestReviewAndAuditBoundThemselvesByTheirWaves(t *testing.T) {
 	}{
 		{"a review of four parts", ActivityModelReview, fourParts, `{"verdict":"approve","summary":"ok"}`, []int{3, 1}},
 		{"a review of five parts", ActivityModelReview, five, `{"verdict":"approve","summary":"ok"}`, []int{3, 2}},
-		{"an audit of four parts", ActivityGateAudit, fourParts, `{"verdict":"clear"}`, []int{3, 1}},
-		{"an audit of five parts", ActivityGateAudit, five, `{"verdict":"clear"}`, []int{3, 2}},
+		{"an audit of four parts", ActivityGateAudit, fourParts, `{"findings":[]}`, []int{3, 1}},
+		{"an audit of five parts", ActivityGateAudit, five, `{"findings":[]}`, []int{3, 2}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := newAuditRunner(t, &gateForgejo{diff: tc.diff}, &fakeLiteLLM{content: tc.answer}, true)

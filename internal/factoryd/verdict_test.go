@@ -168,18 +168,17 @@ func TestStandingRowSkipsARowOfAnotherKind(t *testing.T) {
 // says what the card's tests prove, and the prompt names no criterion's
 // test.
 func TestTheDeltaPromptReadsTheNewFields(t *testing.T) {
-	delta := fmt.Sprintf(deltaSystem, "")
-	for _, want := range []string{
-		`"text": "what the card's tests prove, with the inputs and the numbers`,
-		`{"card": {"title": "...", "why": "...", "summary": "...", "brief": "..."`,
-		"acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers.",
-	} {
-		if !strings.Contains(delta, want) {
-			t.Errorf("deltaSystem lacks %q", want)
-		}
+	delta, _ := testPrompt(t, "delta-planner", deltaFacts{}).Answer()
+	card := delta.Parameters["properties"].(map[string]any)["card"].(map[string]any)["properties"].(map[string]any)
+	item := card["acceptance"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["text"].(map[string]any)
+	if d, _ := item["description"].(string); d != "what the card's tests prove, with the inputs and the numbers they expect" {
+		t.Errorf("the acceptance text's description = %q, want what the card's tests prove", d)
 	}
-	if strings.Contains(delta, "its command the criterion's test") {
-		t.Errorf("deltaSystem still asks for the criterion's test: %q", delta)
+	if want := "acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers."; !strings.Contains(deltaSystem, want) {
+		t.Errorf("deltaSystem lacks %q", want)
+	}
+	if strings.Contains(deltaSystem, "its command the criterion's test") {
+		t.Errorf("deltaSystem still asks for the criterion's test: %q", deltaSystem)
 	}
 }
 
@@ -250,11 +249,10 @@ func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
 		t.Fatalf("the delta planner's forms do not open its prompt:\n%s", standing)
 	}
 	lead := standing + "\n\n"
-	bare := fmt.Sprintf(deltaSystem, "")
-	if got := testPrompt(t, "delta-planner", deltaFacts{}).Text(); got != lead+bare || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
-		t.Fatalf("no pins: %q, want the forms and deltaSystem without the image field", got)
+	if got := testPrompt(t, "delta-planner", deltaFacts{}).Text(); got != lead+deltaSystem {
+		t.Fatalf("no pins: %q, want the forms and deltaSystem alone", got)
 	}
-	want := lead + strings.Replace(bare, `"rung_reason": "..."}}`, `"rung_reason": "...", "image": "..."}}`, 1) +
+	want := lead + deltaSystem +
 		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
 	if got := testPrompt(t, "delta-planner", deltaFacts{map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}}).Text(); got != want {
 		t.Fatalf("deltaPrompt =\n%q\nwant\n%q", got, want)
@@ -4311,5 +4309,22 @@ func TestCriteriaGatePassKeepsThePendingBoundAcrossARestart(t *testing.T) {
 	sweep(ctx, r)
 	if *calls != 2 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
 		t.Fatalf("calls %d, outcomes %v; want the gate run once more and ended as ran, not a new pending", *calls, gateOutcomes(s))
+	}
+}
+
+// The card's image is a field of the delta tool only where the project
+// pins images, and then one of them.
+func TestDeltaToolOffersTheProjectsImages(t *testing.T) {
+	p := testPrompt(t, "delta-planner", deltaFacts{})
+	image := func(pins map[string]policy.ImagePin) (any, bool) {
+		card := deltaAnswerTool(p, pins).Parameters["properties"].(map[string]any)["card"].(map[string]any)["properties"].(map[string]any)
+		f, ok := card["image"].(map[string]any)
+		return f["enum"], ok
+	}
+	if _, ok := image(nil); ok {
+		t.Error("a project with no pinned images is offered an image field")
+	}
+	if got, ok := image(map[string]policy.ImagePin{"video": {}, "browser": {}}); !ok || !slices.Equal(got.([]string), []string{"browser", "video"}) {
+		t.Errorf("image enum = %v, want browser and video", got)
 	}
 }

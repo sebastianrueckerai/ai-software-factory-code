@@ -80,32 +80,13 @@ const (
 	maxAuditWhy        = 300
 )
 
-// auditPartPrompt is the prompt of the call on each later part of a diff
-// in parts.
-var auditPartPrompt = `part names the part you read. ` + auditChecklist
+// auditPartFacts tells a later part's call what its part is.
+const auditPartFacts = "part names the part you read."
 
-// auditItems is the audit's fixed checklist: the model answers an item by
-// its number, and a finding holds the item's name.
-var auditItems = []struct{ Name, Rule string }{
-	{"secrets", "keys, passwords, bearer tokens, API tokens, private keys, connection strings with credentials, in code, configuration or tests (a credential-shaped literal in a test counts: the human decides whether it is a fixture)."},
-	{"network egress", "new hosts or URLs the code reaches, NetworkPolicies, egress allowlists, proxies."},
-	{"RBAC and ServiceAccounts", "Roles, ClusterRoles, bindings, ServiceAccounts, service account tokens."},
-	{"policy and workflow files", "by path, the factory's policy, workflow and project files (factory/**), CI workflows (.forgejo/**, .gitea/**, .github/**), CODEOWNERS, the agents' instruction and harness files (AGENTS.md, CLAUDE.md, opencode.json). Source code is not this item, even code that names policy, workflow or risk types, functions or constants: the model review judges code."},
-	{"migrations", "only those that drop or widen (DROP TABLE or COLUMN, a widened or removed CHECK, removed NOT NULL, UNIQUE or foreign key constraints, widened grants)."},
-	{"sandbox contract", "the worker image, pod specs, securityContext (privileged, capabilities, runAsNonRoot, readOnlyRootFilesystem), host paths and mounts, the agent harness configuration."},
-}
-
-// auditChecklist is what every audit call checks its part against: each
-// call reads it, as no call sees another's.
-var auditChecklist = func() string {
-	var b strings.Builder
-	b.WriteString("Check the diff against this fixed checklist and nothing else, and report every change that touches an item, even one that looks intended:\n")
-	for i, item := range auditItems {
-		fmt.Fprintf(&b, "%d. %s: %s\n", i+1, item.Name, item.Rule)
-	}
-	fmt.Fprintf(&b, `Never quote a secret's value; name its file and line. Answer with one JSON object and nothing else: {"verdict": "clear|findings", "findings": [{"item": <the checklist item's number, 1 to %d>, "file": "<path>", "line": <line in the new file, 0 for none>, "why": "..."}]}. verdict clear with no findings when the diff touches no item; findings with at least one entry otherwise.`, len(auditItems))
-	return b.String()
-}()
+// auditItems are the audit's fixed checklist: the model answers an item by
+// its number, and a finding holds the item's name. The rules are the
+// answer's item description (AuditAnswerFinding).
+var auditItems = []string{"secrets", "network egress", "RBAC and ServiceAccounts", "policy and workflow files", "migrations", "sandbox contract"}
 
 // auditInput is the call on the diff's first part, a diff of one part's
 // only call: it alone carries the pull request and the whole diff's
@@ -126,14 +107,13 @@ type auditPartInput struct {
 }
 
 // parseAudit reads the model's answer: its findings, or why it gave no
-// verdict. A clear verdict that lists findings is findings.
+// verdict. No finding is a clear audit.
 func parseAudit(content string) ([]AuditFinding, string) {
 	s := strings.TrimSpace(content)
 	if strings.HasPrefix(s, "```") && strings.HasSuffix(s, "```") && len(s) >= 6 {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
 	}
 	var answer struct {
-		Verdict  string `json:"verdict"`
 		Findings []struct {
 			Item json.RawMessage `json:"item"`
 			File string          `json:"file"`
@@ -148,19 +128,13 @@ func parseAudit(content string) ([]AuditFinding, string) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, "the answer is not one JSON object: text after it"
 	}
-	if answer.Verdict != AuditClear && answer.Verdict != AuditFindings {
-		return nil, fmt.Sprintf("unknown verdict %q", answer.Verdict)
-	}
 	var out []AuditFinding
 	for _, f := range answer.Findings {
 		var n int
 		if json.Unmarshal(f.Item, &n) != nil || n < 1 || n > len(auditItems) {
 			return nil, fmt.Sprintf("the answer named checklist item %s, which is not a number from 1 to %d", cmp.Or(string(f.Item), "none"), len(auditItems))
 		}
-		out = append(out, AuditFinding{Item: auditItems[n-1].Name, File: strings.TrimSpace(f.File), Line: max(f.Line, 0), Why: textutil.Truncate(strings.TrimSpace(f.Why), maxAuditWhy)})
-	}
-	if answer.Verdict == AuditFindings && len(out) == 0 {
-		return nil, "verdict findings names none"
+		out = append(out, AuditFinding{Item: auditItems[n-1], File: strings.TrimSpace(f.File), Line: max(f.Line, 0), Why: textutil.Truncate(strings.TrimSpace(f.Why), maxAuditWhy)})
 	}
 	return out, ""
 }

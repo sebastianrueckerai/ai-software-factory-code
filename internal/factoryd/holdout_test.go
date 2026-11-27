@@ -64,8 +64,8 @@ func TestAskHoldoutsProposesClaimsWithoutCode(t *testing.T) {
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, holdoutPlanTask(), kube, objects)
 	store.tasks["r1"] = Task{ID: "r1", Repository: "sf/repo", Source: SourceRevert, Objective: "the slug broke on BAD000\nsecond line"}
-	ll := &fakeLiteLLM{contents: []string{"```json\n{\"holdouts\":[{\"id\":\"door_state\",\"claim\":\"The door stays shut until a key that fits turns the lock\",\"inputs\":\"POST /doors/1/open with key 9\",\"expected\":\"403 and the door row still shut\"}," +
-		"{\"id\":\"slug_403\",\"claim\":\"The issue names no replacement for the slug. Is the 403 the right answer?\",\"inputs\":\"GET /slugs/gone\",\"expected\":\"403\"}]}\n```"}}
+	ll := &fakeLiteLLM{contents: []string{"{\"holdouts\":[{\"id\":\"door_state\",\"claim\":\"The door stays shut until a key that fits turns the lock\",\"inputs\":\"POST /doors/1/open with key 9\",\"expected\":\"403 and the door row still shut\"}," +
+		"{\"id\":\"slug_403\",\"claim\":\"The issue names no replacement for the slug. Is the 403 the right answer?\",\"inputs\":\"GET /slugs/gone\",\"expected\":\"403\"}]}"}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, holdoutCriteriaPlan()); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestAskHoldoutsRecordsARefusalAndLeavesTheRoundEmpty(t *testing.T) {
 	if len(kube.podOrder) != 0 || len(ll.chats) != 1 {
 		t.Fatalf("pods %d, chats %d", len(kube.podOrder), len(ll.chats))
 	}
-	if reason, _ := timelineStep(t, objects, "plan1", "holdouts_not_drafted")["reason"].(string); !strings.HasPrefix(reason, "the answer is not the hold-outs json: ") {
+	if reason, _ := timelineStep(t, objects, "plan1", "holdouts_not_drafted")["reason"].(string); !strings.HasPrefix(reason, "step holdout-proposer answered in text, not through its answer tool: ") {
 		t.Fatalf("reason = %q", reason)
 	}
 }

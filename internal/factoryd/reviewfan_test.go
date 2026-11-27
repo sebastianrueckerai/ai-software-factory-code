@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -247,10 +246,9 @@ func TestReviewAndAuditHeapOfAnEightMiBDiff(t *testing.T) {
 		io.Copy(io.Discard, r.Body)
 		content := `{"verdict":"approve","summary":"ok"}`
 		if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeAudit {
-			content = `{"verdict":"clear"}`
+			content = `{"findings":[]}`
 		}
-		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}}}})
-		w.Write(out)
+		io.WriteString(w, answerReply(content))
 	}))
 	defer gw.Close()
 	defer debug.SetGCPercent(debug.SetGCPercent(10))
@@ -302,7 +300,7 @@ func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
 			fmt.Fprintf(w, `{"error":{"message":"Usage limit reached for 5 hour"},"reset":%q}`, reset.Format(time.RFC3339))
 			return
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"review answer"}}]}`))
+		_, _ = w.Write([]byte(answerReply("review answer")))
 	}))
 	defer srv.Close()
 	r := &Runner{supervisor: testSupervisorModel(srv.URL)}

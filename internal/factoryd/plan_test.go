@@ -521,9 +521,9 @@ func TestFilingRefusesAnUncarriedTestCriterion(t *testing.T) {
 	}
 	joined := one
 	joined.Round, joined.Cards[0].Round = 1, 1
-	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], "directories": ["internal/links"], ` +
+	answer := `{"card": {"title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], "directories": ["internal/links"], ` +
 		`"acceptance": [{"criterion": "links_crud", "text": "TestCreateLink in internal/links: POST /api/links: 201 and the row in the store"}], "size": "small"}}`
-	if _, _, why := judgeDelta(joined, "delta-1", answer, testShape, testLimits, nil); !strings.Contains(why, refusal) {
+	if _, _, why := judgeDelta(joined, "delta-1", deltaAnswerOf(t, answer), testShape, testLimits, nil); !strings.Contains(why, refusal) {
 		t.Fatalf("a delta card that depends on the round's sole integration card: %q, want the refusal %q", why, refusal)
 	}
 	leftOut := testPlan()

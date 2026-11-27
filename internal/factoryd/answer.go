@@ -27,14 +27,21 @@ func ChatAnswer[T any](ctx context.Context, m *SupervisorModel, taskID, alias st
 
 // answerWith is ChatAnswer's call forcing tool and its decode.
 func answerWith[T any](ctx context.Context, m *SupervisorModel, taskID, alias string, timeout time.Duration, p prompts.Prompt, tool prompts.Tool, input any) (out T, deployment string, err error) {
-	content, deployment, _, err := m.chatWith(ctx, taskID, alias, timeout, p, &tool, input)
+	content, deployment, _, err := m.chatWith(ctx, taskID, alias, timeout, p, tool, input)
 	if err != nil {
 		return out, "", err
 	}
 	dec := json.NewDecoder(strings.NewReader(content))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&out); err != nil {
-		return out, "", fmt.Errorf("step %s: its answer does not decode: %w", p.Step(), err)
+		return out, "", &badAnswerError{fmt.Sprintf("step %s: its answer does not decode: %v", p.Step(), err)}
 	}
 	return out, deployment, nil
 }
+
+// badAnswerError is an answer that is no answer of the step's type: text
+// where the tool was forced, or arguments that do not decode. A step's
+// caller reads it as no verdict, not as a failed call.
+type badAnswerError struct{ msg string }
+
+func (e *badAnswerError) Error() string { return e.msg }

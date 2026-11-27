@@ -6,10 +6,10 @@ forms: [title]
 chunks: []
 paragraph: plan-namer
 facts: text
-answer: ""
+answer: plan-name
 tools:
   builtin: []
   gateway: []
   chat: []
 agents_md: false
-budget_words: 110
+budget_words: 84

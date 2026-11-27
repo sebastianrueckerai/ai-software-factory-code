@@ -6,10 +6,10 @@ forms: [line]
 chunks: []
 paragraph: gate-supervisor
 facts: text
-answer: ""
+answer: gate-decision
 tools:
   builtin: []
   gateway: []
   chat: []
 agents_md: false
-budget_words: 381
+budget_words: 238

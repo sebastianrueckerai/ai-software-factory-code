@@ -109,7 +109,7 @@ func filePlanCard(t *testing.T, r *Runner, store *fakeStore, b BriefText) (strin
 // deltaAnswer is a delta round's answer of the card fix-stats under b.
 func deltaAnswer(t *testing.T, b BriefText) string {
 	t.Helper()
-	card, err := json.Marshal(map[string]any{"key": "fix-stats", "title": b.Title, "why": b.Why, "summary": b.Summary, "brief": "Count each redirect once.",
+	card, err := json.Marshal(map[string]any{"title": b.Title, "why": b.Why, "summary": b.Summary, "brief": "Count each redirect once.",
 		"depends_on": []string{"stats"}, "size": "small",
 		"acceptance": []map[string]string{{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}}})
 	if err != nil {

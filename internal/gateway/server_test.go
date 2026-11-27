@@ -3860,3 +3860,39 @@ func eventKinds(rows []EventRow) []string {
 	}
 	return out
 }
+
+// A direct step's forced answer tool crosses the chat door for every
+// purpose these steps use, and reaches the upstream with its tools and its
+// tool_choice as sent: nothing in the door looks at the purpose before it
+// checks the tools.
+func TestFactorydForcedAnswerToolPassesForEveryDirectPurpose(t *testing.T) {
+	const forced = `{"max_tokens":100,"messages":[{"content":"hi","role":"user"}],"model":"%s","tool_choice":{"function":{"name":"answer"},"type":"function"},"tools":[{"function":{"description":"d","name":"answer","parameters":{"type":"object"}},"type":"function"}]}`
+	for purpose, tc := range map[string]struct {
+		alias string
+		task  Task
+	}{
+		policy.PurposeReview:         {policy.Big, Task{Classes: []string{"coder"}, ModelAlias: "big", ID: "42", BudgetEUR: 5, Status: "running"}},
+		policy.PurposeAudit:          {policy.Big, Task{Classes: []string{"coder"}, ModelAlias: "big", ID: "42", BudgetEUR: 5, Status: "running"}},
+		policy.PurposeGateSupervisor: {"supervisor", Task{Classes: []string{"coder"}, ModelAlias: "big", ID: "42", BudgetEUR: 5, Status: "running"}},
+		policy.PurposeTitle:          {policy.Small, Task{Classes: []string{"coder"}, ModelAlias: "big", ID: "42", BudgetEUR: 5, Status: "running"}},
+		policy.PurposeBrief:          {"supervisor", Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-11", BudgetEUR: 5, Status: "running"}},
+		policy.PurposeDigest:         {policy.Small, Task{Classes: []string{"coder"}, ModelAlias: "big", ID: "42", BudgetEUR: 5, Status: "running"}},
+	} {
+		t.Run(purpose, func(t *testing.T) {
+			stub := newStubUpstream(t)
+			stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0001"}})
+			store := newMemStore(tc.task)
+			store.setPolicy(factoryPolicy())
+			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+				LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+				Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice}})
+			body := fmt.Sprintf(forced, tc.alias)
+			if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, tc.task.ID, purpose, body); rr.Code != http.StatusOK {
+				t.Fatalf("the forced tool call = %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+			}
+			if len(stub.bodies) != 1 || stub.bodies[0] != body {
+				t.Fatalf("upstream bodies = %q, want the request as sent: %s", stub.bodies, body)
+			}
+		})
+	}
+}

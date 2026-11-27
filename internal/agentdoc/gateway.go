@@ -29,7 +29,8 @@ type Recorded struct {
 // Gateway is an in-process stand-in for the real model gateway. It records
 // every /v1/chat/completions POST verbatim and answers with the scripted
 // content — as a completion for unstreamed requests, as an SSE stream ending
-// on [DONE] for streamed ones — so the real client completes its call.
+// on [DONE] for streamed ones, as the arguments of the tool a request
+// forces — so the real client completes its call.
 type Gateway struct {
 	URL     string
 	content string
@@ -72,7 +73,12 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	g.recs = append(g.recs, Recorded{Raw: raw, Task: r.Header.Get("X-Factory-Task"), Purpose: r.Header.Get("X-Factory-Purpose")})
 	g.mu.Unlock()
 	var req struct {
-		Stream bool `json:"stream"`
+		Stream     bool `json:"stream"`
+		ToolChoice struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tool_choice"`
 	}
 	stream := json.Unmarshal(raw, &req) == nil && req.Stream
 	w.Header().Set("Content-Type", "application/json")
@@ -86,7 +92,12 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		return
 	}
-	answer, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": g.content}}}})
+	message := map[string]any{"content": g.content}
+	if name := req.ToolChoice.Function.Name; name != "" {
+		message = map[string]any{"content": nil, "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
+			"function": map[string]any{"name": name, "arguments": g.content}}}}
+	}
+	answer, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": message}}})
 	w.Write(answer) // #nosec G104 -- a handler whose write fails has no reader to tell
 }
 

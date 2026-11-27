@@ -25,12 +25,12 @@ import (
 // a ref (Symbol is the test's name, Package its directory, Ref base or head,
 // Outcome pass or fail). Finding indexes the review's findings.
 type Claim struct {
-	Finding int    `json:"finding"`
-	Kind    string `json:"kind"`
-	Symbol  string `json:"symbol"`
-	Package string `json:"package,omitempty"`
-	Ref     string `json:"ref,omitempty"`
-	Outcome string `json:"outcome,omitempty"`
+	Finding int    `json:"finding" desc:"the index of the finding in findings, from 0"`
+	Kind    string `json:"kind" enum:"undefined,uncalled,test" desc:"undefined: the symbol is defined nowhere in the repository. uncalled: it is defined and nothing calls it. test: the finding says a named test passes or fails at the base or at the head"`
+	Symbol  string `json:"symbol" desc:"the bare identifier, or for kind test the Go test's name, a subtest as Test/sub"`
+	Package string `json:"package,omitempty" desc:"kind test only: the test's package directory, relative to the repository root"`
+	Ref     string `json:"ref,omitempty" enum:"base,head" desc:"kind test only"`
+	Outcome string `json:"outcome,omitempty" enum:"pass,fail" desc:"kind test only: what the finding says the test does at the ref"`
 }
 
 const (

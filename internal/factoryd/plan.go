@@ -188,8 +188,8 @@ type PlanCriterion struct {
 // list can drift out of step (the spec-intake concept, piece 2). The
 // criterion is empty where none is cited: a foundation card's contracts.
 type PlanItem struct {
-	Criterion string `json:"criterion,omitempty"`
-	Text      string `json:"text"`
+	Criterion string `json:"criterion,omitempty" desc:"the criterion id"`
+	Text      string `json:"text" desc:"what the card's tests prove, with the inputs and the numbers they expect"`
 }
 
 // PlanQuestion is an open point the spec leaves to the member, with the

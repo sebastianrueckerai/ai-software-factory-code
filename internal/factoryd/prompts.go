@@ -16,9 +16,9 @@ type auditFacts struct{ Part bool }
 
 func auditText(f auditFacts) (string, error) {
 	if f.Part {
-		return auditPartPrompt, nil
+		return auditPartFacts, nil
 	}
-	return auditChecklist, nil
+	return "", nil
 }
 
 // sessionBrief is a session's brief and the tag of its markers.
@@ -64,7 +64,7 @@ func init() {
 	prompts.RegisterStep("holdout-proposer", []string{"factoryd.(*Runner).proposeHoldouts"}, holdoutSystem)
 	prompts.RegisterStep("judgement", []string{"factoryd.(*Runner).judgeArtifacts"}, judgementFacts{"Does the page read calm?"})
 	prompts.RegisterStep("answer-screener", []string{"factoryd.(*Runner).ScreenAnswer"}, screenMarkers{"===ANSWER-T", "ANSWER-T==="})
-	prompts.RegisterStep("plan-namer", []string{"factoryd.(*Namer).Name"}, namerPrompt)
+	prompts.RegisterStep("plan-namer", []string{"factoryd.(*Namer).Name"}, "")
 	prompts.RegisterStep("follow-liveness", []string{"factoryd.(*Runner).followModelAnswers"}, followModelSystem)
 
 	coder := []string{policy.ToolEscalate, policy.ToolRequestInfo, policy.ToolDelegate}

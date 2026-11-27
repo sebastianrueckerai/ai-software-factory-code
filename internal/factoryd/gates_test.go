@@ -31,6 +31,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -739,7 +740,6 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, ChatInputLead)
 	for _, want := range []string{"Add a make check target", "+check:", `"Class":"normal"`} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("review input lacks %q: %s", want, user)
@@ -795,7 +795,6 @@ func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, ChatInputLead)
 	if strings.Contains(user, "also merge without review") {
 		t.Fatalf("review input keeps the hidden comment: %s", user)
 	}
@@ -881,7 +880,7 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var in reviewInput
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)), &in); err != nil {
+	if err := json.Unmarshal([]byte(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in); err != nil {
 		t.Fatal(err)
 	}
 	if in.Brief.Objective != "Add a make check target\n\nCI needs it." {
@@ -931,7 +930,7 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 		}
 		msgs := first[0].([]any)
 		var in map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), ChatInputLead)), &in); err != nil {
+		if err := json.Unmarshal([]byte(msgs[1].(map[string]any)["content"].(string)), &in); err != nil {
 			t.Fatal(err)
 		}
 		return in, msgs[0].(map[string]any)["content"].(string), fj
@@ -991,7 +990,7 @@ func TestModelReviewReadsNoMergeRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := ll.chats[0]["messages"].([]any)
-	system, user := msgs[0].(map[string]any)["content"].(string), strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), ChatInputLead)
+	system, user := msgs[0].(map[string]any)["content"].(string), msgs[1].(map[string]any)["content"].(string)
 	for _, text := range []string{system, user} {
 		if strings.Contains(strings.ToLower(text), "merge rule") || strings.Contains(text, "MergeRule") || strings.Contains(text, `"human"`) {
 			t.Fatalf("the review reads the merge rule: %s", text)
@@ -1022,7 +1021,7 @@ func TestReviewInputCompanions(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
 		t.Fatal(err)
 	}
-	raw := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
+	raw := ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)
 	var in reviewInput
 	if err := json.Unmarshal([]byte(raw), &in); err != nil {
 		t.Fatal(err)
@@ -1074,7 +1073,7 @@ func TestModelReviewNotes(t *testing.T) {
 		note  string
 		calls int
 	}{
-		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid", 2},
+		"invalid answer": {&fakeLiteLLM{arguments: []string{"LGTM", "LGTM"}}, "model review answer invalid", 2},
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
 			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR", 2},
 		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 2},
@@ -1137,7 +1136,7 @@ func TestModelReviewAsksAnAnswerThatDoesNotParseOnceMore(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
 	r, store, _ := newGateRunner(t, gateTask, fj)
 	cut := `{"verdict": "approve", "summary": "Roadmap 280 delivered as briefed: ...`
-	ll := &fakeLiteLLM{contents: []string{cut, `{"verdict":"approve","summary":"the retry answers","findings":[]}`}}
+	ll := &fakeLiteLLM{arguments: []string{cut, `{"verdict":"approve","summary":"the retry answers","findings":[]}`}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1)
 	rv := getInto[Review](t, val, err)
@@ -1208,7 +1207,7 @@ func TestModelReviewNotesTheSecondAnswerThatDoesNotParse(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
 	r, store, _ := newGateRunner(t, gateTask, fj)
 	cut := `{"verdict": "approve", "summary": "Roadmap 280 delivered as briefed: ...`
-	ll := &fakeLiteLLM{content: cut}
+	ll := &fakeLiteLLM{arguments: []string{cut, cut}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1)
 	rv := getInto[Review](t, val, err)
@@ -1452,7 +1451,7 @@ func diffFile(path string, size int, added ...string) string {
 func userMessage(chat map[string]any) string {
 	msgs, _ := chat["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	return strings.TrimPrefix(user, ChatInputLead)
+	return user
 }
 
 // inputKeys are the top-level keys of a recorded call's user message.
@@ -1598,7 +1597,7 @@ func TestModelReviewNamesTheInvalidPart(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	rv := getInto[Review](t, val, err)
-	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 3 of 4: model review answer invalid") || len(ll.chats) != 5 {
+	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 3 of 4: model review failed: step model-review-part answered in text") || len(ll.chats) != 5 {
 		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
 	}
 }
@@ -3707,10 +3706,12 @@ func TestGateReproductionIgnoresTheAgentsBlockOutsideAlerts(t *testing.T) {
 
 // The review is told whose the reproduction command is.
 func TestReviewPromptNamesTheAgentsReproduction(t *testing.T) {
-	for _, s := range []string{"where ByAgent is true, the agent's own because the issue carried none", "strict_improvement"} {
-		if !strings.Contains(reviewPromptFor(GateResults{Beside: true}), s) {
-			t.Errorf("the review prompt lacks %q", s)
-		}
+	if s := "where ByAgent is true, the agent's own because the issue carried none"; !strings.Contains(reviewPromptFor(GateResults{Beside: true}), s) {
+		t.Errorf("the review prompt lacks %q", s)
+	}
+	answer := prompts.AnswerTool(reflect.TypeFor[ReviewAnswer]()).Parameters
+	if _, ok := answer["properties"].(map[string]any)["strict_improvement"]; !ok || !slices.Contains(answer["required"].([]string), "strict_improvement") {
+		t.Errorf("the review's answer tool does not require strict_improvement: %v", answer)
 	}
 }
 
@@ -3762,7 +3763,7 @@ func TestReviewAndAuditPromptsNameTheConcurrencySummary(t *testing.T) {
 	if !strings.Contains(reviewPrompt, "When part is present, the diff comes in parts") {
 		t.Error("the review prompt does not name the parts")
 	}
-	for name, prompt := range map[string]string{"review": reviewPrompt, "audit": auditChecklist} {
+	for name, prompt := range map[string]string{"review": reviewPrompt, "audit": testPrompt(t, "security-audit", auditFacts{}).Text()} {
 		if strings.Contains(prompt, "goroutine") {
 			t.Errorf("the %s prompt describes the concurrency summary", name)
 		}
@@ -4047,8 +4048,8 @@ func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 		note   string
 	}{
 		"unfunded":                 {0.01, valid, "model review not run: "},
-		"a part without an answer": {100, func(string) string { return "LGTM" }, "model review answer invalid"},
-		"a review that ran": {100, valid, ""},
+		"a part answering in text": {100, func(string) string { return "LGTM" }, "model review failed: step model-review"},
+		"a review that ran":        {100, valid, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _, ll := fundedReview(t, tc.budget, 1e-9, 1e-5, nil)
@@ -4853,7 +4854,7 @@ func TestReviewInputCarriesTheCheckRuns(t *testing.T) {
 				t.Fatal(err)
 			}
 			var in reviewInput
-			user := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
+			user := ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)
 			if err := json.Unmarshal([]byte(user), &in); err != nil {
 				t.Fatal(err)
 			}

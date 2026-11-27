@@ -72,29 +72,28 @@ func withSupervisorTimeout(d time.Duration) func() policy.Version {
 }
 
 // The judgement is one call of the review model: the guide's line form,
-// then the criterion's pinned prompt with the answer's form as the system
-// prompt, the artifact's name
-// and content alone as the input, no tool. Its row names the model and the
+// then the criterion's pinned prompt as the system prompt, the artifact's
+// name and content alone as the input, the answer tool forced. Its row names the model and the
 // prompt's hash; its line adds the verdict, the reason and the task's
 // spend booked since the call began.
 func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 	objects := &fakeObjectStore{}
 	r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
 	store.spendSince = 0.04
-	ll := &fakeLiteLLM{content: "```json\n{\"verdict\":\"met\",\"reason\":\"the page names every size\"}\n```"}
+	ll := &fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	before := time.Now()
 	findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
 	if err != nil || len(findings) != 0 || len(card) != 0 || met != 1 {
 		t.Fatalf("judgeArtifacts = %q, %q, %d, %v; want one met and no line", findings, card, met, err)
 	}
-	if len(ll.chats) != 1 || !slices.Equal(ll.purposes, []string{policy.PurposeReview}) || ll.chats[0]["model"] != "big" || ll.chats[0]["tools"] != nil {
-		t.Fatalf("chats %v, purposes %v: want one review call on big with no tools", ll.chats, ll.purposes)
+	if len(ll.chats) != 1 || !slices.Equal(ll.purposes, []string{policy.PurposeReview}) || ll.chats[0]["model"] != "big" || ll.chats[0]["tool_choice"] == nil {
+		t.Fatalf("chats %v, purposes %v: want one review call on big forcing the answer tool", ll.chats, ll.purposes)
 	}
 	line, _ := writingguide.Form("line")
 	got := systemMessage(ll.chats[0])
-	if !strings.HasPrefix(got, line+"\n\nYou judge one criterion of a plan.") || !strings.HasSuffix(got, "\n\n"+readsCalm.Prompt+"\n\n"+judgementAnswer) {
-		t.Fatalf("system prompt =\n%s\nwant the line form, the paragraph, the pinned prompt and the answer's form", got)
+	if !strings.HasPrefix(got, line+"\n\nYou judge one criterion of a plan.") || !strings.HasSuffix(got, "\n\n"+readsCalm.Prompt) {
+		t.Fatalf("system prompt =\n%s\nwant the line form, the paragraph, the pinned prompt", got)
 	}
 	var in map[string]string
 	if err := json.Unmarshal([]byte(userMessage(ll.chats[0])), &in); err != nil {
@@ -131,10 +130,11 @@ func TestJudgeWithoutAVerdictLeavesNoRow(t *testing.T) {
 		reason string
 		prefix bool
 	}{
-		"prose":      {&fakeLiteLLM{content: "it reads calm"}, "the answer is not the verdict json: ", true},
-		"partly":     {&fakeLiteLLM{content: `{"verdict": "partly"}`}, `the verdict "partly" is neither met nor unmet`, false},
-		"no gateway": {&fakeLiteLLM{status: http.StatusInternalServerError}, `status 500: {"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`, false},
-		"timed out":  {&fakeLiteLLM{content: `{"verdict":"met","reason":"late"}`, delay: 5 * time.Second}, "timed out", false},
+		"prose":           {&fakeLiteLLM{content: "it reads calm"}, "step judgement answered in text, not through its answer tool: ", true},
+		"not the verdict": {&fakeLiteLLM{arguments: []string{`{"verdict":"met","why":"x"}`}}, "the answer is not the verdict json: ", true},
+		"partly":          {&fakeLiteLLM{content: `{"verdict": "partly"}`}, `the verdict "partly" is neither met nor unmet`, false},
+		"no gateway":      {&fakeLiteLLM{status: http.StatusInternalServerError}, `status 500: {"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`, false},
+		"timed out":       {&fakeLiteLLM{content: `{"verdict":"met","reason":"late"}`, delay: 5 * time.Second}, "timed out", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			objects := &fakeObjectStore{}
@@ -216,7 +216,7 @@ func TestJudgeArtifactsCallsAtOnce(t *testing.T) {
 		case <-req.Context().Done():
 			return
 		}
-		io.WriteString(w, `{"choices":[{"message":{"content":"{\"verdict\":\"met\",\"reason\":\"calm\"}"}}]}`)
+		io.WriteString(w, answerReply(`{"verdict":"met","reason":"calm"}`))
 	}))
 	t.Cleanup(srv.Close)
 	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
@@ -417,7 +417,7 @@ func TestGateCriteriaLeavesAJudgementTheCallFailedUnsettled(t *testing.T) {
 	if got := rowsOf(store, "reads_calm"); len(got) != 0 {
 		t.Fatalf("reads_calm rows = %+v, want none", got)
 	}
-	const line = "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: the answer is not the verdict json: "
+	const line = "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: step judgement answered in text, not through its answer tool: "
 	if !slices.ContainsFunc(res.Card, func(l string) bool { return strings.HasPrefix(l, line) }) ||
 		slices.ContainsFunc(res.Findings, func(f string) bool { return strings.Contains(f, "judgement over") }) {
 		t.Fatalf("card %q, findings %q: want the failed call on the card alone", res.Card, res.Findings)

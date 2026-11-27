@@ -38,14 +38,11 @@ func promptHash(prompt string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// judgementAnswer is appended to the criterion's pinned prompt.
-var judgementAnswer = `Answer with one JSON object and nothing else: {"verdict": "met|unmet", "reason": "one sentence on what the artifact shows"}.`
-
 // judgementFacts are a judgement criterion's pinned prompt.
 type judgementFacts struct{ Prompt string }
 
-// judgementText is the criterion's pinned prompt, then the answer's form.
-func judgementText(f judgementFacts) (string, error) { return f.Prompt + "\n\n" + judgementAnswer, nil }
+// judgementText is the criterion's pinned prompt.
+func judgementText(f judgementFacts) (string, error) { return f.Prompt, nil }
 
 // judgementCall is the one call over a's content with c's pinned prompt:
 // the artifact alone as its input, no tool.
@@ -64,10 +61,7 @@ func judgementCall(c PlanCriterion, a GateArtifact) (reviewCall, error) {
 func judge(c PlanCriterion, a GateArtifact, model string, res callResult) (CriterionVerdict, map[string]any) {
 	hash := promptHash(c.Prompt)
 	detail := map[string]any{"criterion": c.ID, "artifact": a.Name, "model": model, "prompt_hash": hash, "verdict": "", "reason": ""}
-	var answer struct {
-		Verdict string `json:"verdict"`
-		Reason  string `json:"reason"`
-	}
+	var answer JudgementAnswer
 	err := res.Err
 	if err == nil {
 		if err = decodeAnswer(res.Content, &answer); err != nil {

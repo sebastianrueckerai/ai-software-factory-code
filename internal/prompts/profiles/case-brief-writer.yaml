@@ -6,10 +6,10 @@ forms: [line]
 chunks: []
 paragraph: case-brief-writer
 facts: text
-answer: ""
+answer: case-brief
 tools:
   builtin: []
   gateway: []
   chat: []
 agents_md: false
-budget_words: 230
+budget_words: 168
