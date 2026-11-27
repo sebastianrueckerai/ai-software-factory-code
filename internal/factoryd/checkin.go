@@ -540,7 +540,12 @@ func checkinSystemFor(ask *CheckInAsk) string {
 	if slices.Contains(offered, ActReverify) {
 		reverify = ` "reverify" drops every finding and verifies the head again.`
 	}
-	return `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"` + decisions + `","reason_kind":"...","reason":"...","handover":"..."}.` + reverify + ` Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+	repeats, repeatsNote := "", ""
+	if len(ask.Priors) > 0 {
+		repeats = `,"repeats":"<id>"`
+		repeatsNote = ` repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id.`
+	}
+	return `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"..."` + repeats + `}],"decision":"` + decisions + `","reason_kind":"...","reason":"...","handover":"..."}.` + reverify + ` Each finding is named by the id the findings list gave it, f1 on down, not by its text.` + repeatsNote + ` When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 }
 
 // checkinToolsLine is the statement's tool line: the evidence tools the
@@ -629,14 +634,17 @@ func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 			"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
 			"evidence": map[string]any{"type": "string"},
 		}
-		if len(ask.Priors) > 0 {
+		items := map[string]any{"type": "object", "properties": item}
+		if len(ask.Priors) == 0 {
+			items["additionalProperties"] = false
+		} else {
 			ids := make([]string, len(ask.Priors))
 			for i, p := range ask.Priors {
 				ids[i] = p.ID
 			}
 			item["repeats"] = map[string]any{"type": "string", "enum": ids, "description": "the id of an earlier finding that this one repeats in other words"}
 		}
-		props["findings"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": item}}
+		props["findings"] = map[string]any{"type": "array", "items": items}
 	}
 	return map[string]any{"type": "object", "properties": props, "required": []string{"decision"}, "additionalProperties": false}
 }
@@ -914,9 +922,10 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			parsed = a
 			return err
 		},
-		CallCap: callsLeft,
-		TimeCap: timeCap,
-		Scrub:   r.scrub,
+		CallCap:       callsLeft,
+		TimeCap:       timeCap,
+		Scrub:         r.scrub,
+		RepairPastCap: true,
 	})
 	rec.StatementBytes = end.StatementBytes
 	rec.Calls = end.Calls
