@@ -194,9 +194,7 @@ func (s *Server) addCloudTools(srv *mcp.Server, c *toolCaller) {
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ CloudPricesIn) (*mcp.CallToolResult, any, error) {
 			return s.cloudPrices(ctx, c), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolCommission, Description: "Commission a throwaway server (Debian 12, public IPv4, SSH as root by certificate only, from this sandbox only) " +
-		"for lease_minutes. Its cost is reserved against the task budget and charged per started hour; release it when done. " +
-		"A request beyond the project's envelope becomes a human approval request."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolCommission, Description: "Commission a throwaway Debian 12 server for lease_minutes, reachable by SSH certificate from this sandbox only. Its cost is reserved on the task budget. Release it when done. Beyond the envelope it becomes a human approval request."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in CommissionIn) (*mcp.CallToolResult, any, error) {
 			return s.commission(ctx, c, in), nil, nil
 		})

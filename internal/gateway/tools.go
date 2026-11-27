@@ -597,26 +597,19 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in EscalateIn) (*mcp.CallToolResult, any, error) {
 			return s.escalate(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestInfo, Description: "Ask the issue's author for information, instead of guessing, when you could not reproduce the problem and found no fault: " +
-		"what you tried and what you need. This session ends; the task resumes with the author's answer, or the issue closes as not reproducible after 14 days. Free."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestInfo, Description: "Ask the issue's author for information instead of guessing, when you could not reproduce the problem: what you tried and what you need. This session ends. The task resumes with the answer or closes after 14 days. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestInfoIn) (*mcp.CallToolResult, any, error) {
 			return s.requestInfo(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestTool, Description: "Ask for a tool this sandbox lacks, such as a browser, ffmpeg or a language runtime, instead of trying to install it: " +
-		"the sandbox refuses installs. Your work in progress is pushed, a card adds the tool to one of the project's images, and this card restarts on that image " +
-		"from its branch once the image is built. Name the tool by its Debian package or binary name (chromium, ffmpeg, python3), and what you need it for."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestTool, Description: "Ask for a tool the sandbox lacks, such as chromium, ffmpeg or python3, instead of installing it. Your work is pushed, a card adds the tool to a project image, and this card restarts on it. Name the Debian package or binary and why."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestToolIn) (*mcp.CallToolResult, any, error) {
 			return s.requestTool(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestCut, Description: "Ask to cut this card when its work is bigger than one card should be: name why and the 2 to 5 parts you propose. " +
-		"The check-in judges it. If it decides to cut, this session stops, your work in progress is pushed, and the planner plans the rest on top of it; " +
-		"otherwise it answers you with a message. Go on with the work meanwhile. Free.", InputSchema: cutSchema},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestCut, Description: "Ask to cut this card when its work is bigger than one card should be: give why and 2 to 5 parts. The check-in judges it. If it cuts, this session stops, your work is pushed and the planner plans the rest. Free.", InputSchema: cutSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestCutIn) (*mcp.CallToolResult, any, error) {
 			return s.requestCut(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDelegate, Description: "File a small follow-up card on the cheap model rung that starts when this card has landed: " +
-		"routine, well-specified work this card need not do itself. Give it a title, a why line, a summary and a brief a weaker model acts on alone: the files, the change, how to check it. " +
-		"The card depends on this one and builds on its merge. Free.", InputSchema: delegateSchema},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDelegate, Description: "File a follow-up card for routine work this card need not do. It runs on the cheap rung after this card lands and builds on its merge. Give a title, why, summary and a brief a weaker model acts on alone. Free.", InputSchema: delegateSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DelegateIn) (*mcp.CallToolResult, any, error) {
 			return s.delegate(ctx, c, in), nil, nil
 		})
@@ -625,10 +618,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
 			return s.filePlan(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFileProofs, Description: "File the proofs: one test per criterion and hold-out your brief lists, " +
-		"each with its path, suite, name, whole code, and what your own run of bash check test on main showed. " +
-		"The set is checked at once; a refusal names every finding: correct it and file again in this session, three filings at most. " +
-		"The last filing that passes stands, and factoryd runs it on main after the session. Free.", InputSchema: proofsSchema},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFileProofs, Description: "File one test per criterion and hold-out, each with path, suite, name, whole code and what your run of bash check test on main showed. A refusal names every finding: fix it and file again, three filings at most. The last passing one stands.", InputSchema: proofsSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ProofsIn) (*mcp.CallToolResult, any, error) {
 			return s.fileProofs(ctx, c, in), nil, nil
 		})
@@ -641,21 +631,15 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in TaskCostsIn) (*mcp.CallToolResult, any, error) {
 			return s.taskCosts(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDeploymentHealth, Description: "Read a Deployment of this card's project as the cluster reports it right now: the Deployment's replicas, " +
-		"its pods with each container's restart count, state and last termination (reason, exit code, time), and the Kubernetes events of the last hour for the Deployment, its ReplicaSets and pods. " +
-		"No logs and no Secrets. The namespace may be omitted: factoryd looks in each of the project's namespaces. Free."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDeploymentHealth, Description: "Read a Deployment of this card's project as the cluster reports it now: replicas, pods with each container's restarts, state and last termination, and the last hour's events. No logs, no Secrets. Omit namespace to search the project's namespaces."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DeploymentHealthIn) (*mcp.CallToolResult, any, error) {
 			return s.deploymentHealth(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolAnalyzeImage, Description: "Have a vision model look at one image and answer in words: a file in your workspace, " +
-		"such as a screenshot of the page you built, or an image on the card's issue, such as a screenshot the card was filed with. " +
-		"Name exactly one of path and card_image; ask says what to look for. PNG, JPEG, WebP or GIF of at most 8 MiB. Spends on the card's budget as a model call."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolAnalyzeImage, Description: "Have a vision model describe one image: a workspace file or an image of the card's issue. Name exactly one of path and card_image. ask says what to look for. PNG, JPEG, WebP or GIF, at most 8 MiB. Books as a model call."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in AnalyzeImageIn) (*mcp.CallToolResult, any, error) {
 			return s.analyzeImage(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDigest, Description: "Have a small model read one text file of your workspace and answer your ask about it: " +
-		"only its answer enters your context, never the file's text. Use it on a big file with a pointed ask, such as what a function returns or which cards a plan names, " +
-		"and read raw only the part its answer points at. UTF-8 text of at most 128 KiB. Books as a call of the cheap model on the card's account."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDigest, Description: "Have a small model read one UTF-8 text file of your workspace, at most 128 KiB, and answer your ask. Only the answer enters your context. Use it on a big file with a pointed ask. Books as a cheap-model call."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DigestIn) (*mcp.CallToolResult, any, error) {
 			return s.digest(ctx, c, in), nil, nil
 		})
