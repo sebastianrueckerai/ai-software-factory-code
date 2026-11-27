@@ -180,9 +180,12 @@ func (m *OperatorModel) Compact(ctx context.Context, taskID, thread string, mess
 // text, bounded like a compaction's.
 func (m *OperatorModel) Digest(ctx context.Context, taskID, thread, ask, text string) (string, error) {
 	answer, err := m.stream(ctx, policy.PurposeDigest, compactTokens, taskID, policy.Small, thread,
-		[]OperatorMessage{{Role: "user", Content: ask + "\n\n" + text}}, nil, func(string) {}, nil)
+		[]OperatorMessage{{Role: "user", Content: DigestMessage(ask, text)}}, nil, func(string) {}, nil)
 	return answer.Content, err
 }
+
+// DigestMessage is a digest call's one message: the ask over the content.
+func DigestMessage(ask, text string) string { return ask + "\n\n" + text }
 
 // researchTokens bounds a research loop's answer: the report's cut.
 const researchTokens = 2048
@@ -194,12 +197,15 @@ func (m *OperatorModel) Research(ctx context.Context, taskID, thread string, mes
 	return m.stream(ctx, policy.PurposeResearch, researchTokens, taskID, policy.Big, thread, messages, tools, func(string) {}, nil)
 }
 
+// VisionAsk is a look's ask when its caller gives none.
+const VisionAsk = "Describe this image."
+
 // Vision is one look at image, ask's answer by the vision alias on chat
 // task taskID's account, purpose vision; an empty ask asks what the
 // image shows. A gateway refusal is a *policy.Refusal in the chain, as
 // Stream's.
 func (m *OperatorModel) Vision(ctx context.Context, taskID, alias, thread, ask string, image []byte, contentType string) (string, error) {
-	parts := []map[string]any{{"type": "text", "text": cmp.Or(ask, "Describe this image.")},
+	parts := []map[string]any{{"type": "text", "text": cmp.Or(ask, VisionAsk)},
 		{"type": "image_url", "image_url": map[string]any{"url": "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image)}}}
 	answer, err := m.call(ctx, policy.PurposeVision, taskID, thread, map[string]any{
 		"model": alias, "stream": true, "max_tokens": OperatorTokens,
@@ -237,9 +243,9 @@ Answer with the summary alone, as short paragraphs, at most 400 words.` + "\n\n"
 // title is a few words.
 const titleTokens = 200
 
-// titlePrompt is the naming call's system prompt (roadmap 304): the
+// TitlePrompt is the naming call's system prompt (roadmap 304): the
 // answer must work as a thread title in the switcher.
-var titlePrompt = "You name a chat thread from its first message. " +
+var TitlePrompt = "You name a chat thread from its first message. " +
 	"Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. " +
 	"Answer in the message's language.\n\n" + writingguide.For(writingguide.JobTitle)
 
@@ -248,7 +254,7 @@ var titlePrompt = "You name a chat thread from its first message. " +
 // message's head, its answer is the title before the console cleans it.
 func (m *OperatorModel) Title(ctx context.Context, taskID, thread, first string) (string, error) {
 	answer, err := m.stream(ctx, policy.PurposeTitle, titleTokens, taskID, policy.Small, thread,
-		[]OperatorMessage{{Role: "system", Content: titlePrompt}, {Role: "user", Content: first}}, nil, func(string) {}, nil)
+		[]OperatorMessage{{Role: "system", Content: TitlePrompt}, {Role: "user", Content: first}}, nil, func(string) {}, nil)
 	return answer.Content, err
 }
 

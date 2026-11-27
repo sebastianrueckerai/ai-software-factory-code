@@ -24,10 +24,12 @@ changes.
 - case-brief-writer: Reads a Needs-you case from its record and writes the background and the grounds of the recommendation for a human who opens it cold.
 - plan-namer: Names a plan in a few words when its first revision files. One cheap call, asked again while the name does not hold.
 - title: Names a chat thread from its first message. One cheap call.
-- digest: Summarises one big read under an ask, for a session's digest tool or the chat's reads. One cheap call, and no system prompt.
+- digest: Summarises one file a session names under the session's ask, for its digest tool. One cheap call, and no system prompt.
 - image-look: Looks at one image a session names, a workspace file or an image on the card, and answers the session's ask in words.
 - follow-liveness: Asks the small model for one word after a move rolls out, to prove the model route still answers. No one reads the answer.
 - project-agent: The always-on chat about the repository, with the project's tools. Its escalations file cards the factory then works.
 - research: Researches one question for the project agent through the chat's reads and the web, and hands back a report with its sources.
+- attachment-digest: Summarises a document the human attached, for the project agent. One cheap call, and no system prompt.
+- read-digest: Summarises one big read of the chat, a file, a document or a web page, under the project agent's ask. One cheap call, and no system prompt.
 - compact: Summarises a chat thread's older turns when the thread grows long. One cheap call.
 - vision: Describes an image a human attached, in words the text-only agents read.

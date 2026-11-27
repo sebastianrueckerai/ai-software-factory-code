@@ -61,7 +61,7 @@ var Writers = []Writer{
 			return checkinStatement(&CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}, nil, 3, 1, 800)
 		}},
 	{Name: "check-in on a case", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
-		Calls:  []string{"factoryd.(*Runner).rungConversation"},
+		Calls:  []string{"factoryd.(*Runner).rung1Converse"},
 		Prompt: func() string { return rungPrompt }},
 	{Name: "case story writer", Jobs: []writingguide.Job{writingguide.JobAsk},
 		Calls:  []string{"factoryd.(*BriefWriter).askCase"},
@@ -103,7 +103,7 @@ var Writers = []Writer{
 		Prompt: func() string { return namerPrompt }},
 	{Name: "chat thread title", Jobs: []writingguide.Job{writingguide.JobTitle},
 		Calls:  []string{"console.(*Console).nameThread"},
-		Prompt: func() string { return titlePrompt }},
+		Prompt: func() string { return TitlePrompt }},
 	{Name: "chat compaction", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls:  []string{"console.(*turn).compact"},
 		Prompt: func() string { return CompactPrompt }},

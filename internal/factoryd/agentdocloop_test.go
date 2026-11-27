@@ -469,26 +469,31 @@ func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agent
 	return spans, rec
 }
 
-// Two captures of one mode, each in its own random directory and on its
-// own day, are the same bytes: the harness writes both into the prompt,
-// and neither belongs on the page.
+// Two captures of one page, each in its own random directory and on its
+// own day, are the same bytes: the harness writes both into the prompt of
+// the session's call and of its own title call, and neither belongs on
+// the page.
 func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
 	v := agentDocLoopPolicy()
-	spansA, recA := fakeCapture(t, "coding", v, "Wed Nov 04 2026")
-	spansB, recB := fakeCapture(t, "coding", v, "Thu Nov 12 2026")
-	if !bytes.Equal(recA.Raw, recB.Raw) {
-		t.Fatalf("the recorded bodies differ:\n%s\n%s", recA.Raw, recB.Raw)
-	}
-	if !reflect.DeepEqual(spansA, spansB) {
-		t.Fatal("the spans differ between two captures")
-	}
-	for _, leak := range []string{"agentdoc-loop-", "Nov 04", "Nov 12"} {
-		if bytes.Contains(recA.Raw, []byte(leak)) {
-			t.Errorf("the body still carries %q", leak)
-		}
-	}
-	if !bytes.Contains(recA.Raw, []byte("Working directory: /workspace\\n")) || !bytes.Contains(recA.Raw, []byte("Today's date: the day of the run\\n")) {
-		t.Errorf("the masks are missing from %s", recA.Raw)
+	for _, id := range []string{"coding", AgentDocTitleID} {
+		t.Run(id, func(t *testing.T) {
+			spansA, recA := fakeCapture(t, id, v, "Wed Nov 04 2026")
+			spansB, recB := fakeCapture(t, id, v, "Thu Nov 12 2026")
+			if !bytes.Equal(recA.Raw, recB.Raw) {
+				t.Fatalf("the recorded bodies differ:\n%s\n%s", recA.Raw, recB.Raw)
+			}
+			if !reflect.DeepEqual(spansA, spansB) {
+				t.Fatal("the spans differ between two captures")
+			}
+			for _, leak := range []string{"agentdoc-loop-", "Nov 04", "Nov 12"} {
+				if bytes.Contains(recA.Raw, []byte(leak)) {
+					t.Errorf("the body still carries %q", leak)
+				}
+			}
+			if !bytes.Contains(recA.Raw, []byte("Working directory: /workspace\\n")) || !bytes.Contains(recA.Raw, []byte("Today's date: the day of the run\\n")) {
+				t.Errorf("the masks are missing from %s", recA.Raw)
+			}
+		})
 	}
 }
 

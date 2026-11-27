@@ -34,6 +34,9 @@ func refusedSentence(what string, refused *policy.Refusal) string {
 	return s
 }
 
+// fileDigestAsk is a session's digest's ask when the session gives none.
+const fileDigestAsk = "Summarise this file."
+
 // DigestHandler is POST /internal/digest, the gateway's hand-over of a
 // session's digest: {task_id, path, ask} answers {"text"}, the path and
 // what the Small model answered over the file's text, read from the
@@ -83,7 +86,7 @@ func (r *Runner) DigestHandler(d Digester) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("the session's sandbox did not answer the read of %s: try again shortly", in.Path), http.StatusBadGateway)
 			return
 		}
-		text, err := d.Digest(ctx, t.ID, "", cmp.Or(in.Ask, "Summarise this file."), string(data))
+		text, err := d.Digest(ctx, t.ID, "", cmp.Or(in.Ask, fileDigestAsk), string(data))
 		var refused *policy.Refusal
 		switch {
 		case errors.As(err, &refused):

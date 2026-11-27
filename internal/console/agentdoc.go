@@ -36,8 +36,13 @@ const (
 
 // AgentDocConsoleIDs are the console agents the map captures.
 func AgentDocConsoleIDs() []string {
-	return []string{"project-agent", "compact", "vision", "research"}
+	return []string{"project-agent", "compact", "vision", "research", "title", "attachment-digest", "read-digest"}
 }
+
+// AgentDocConsoleAnswer is the answer the fake gateway scripts for every
+// console agent: plain text, which ends a tool loop and is any look's,
+// digest's or title's answer.
+func AgentDocConsoleAnswer(string) string { return "The capture runs no tools." }
 
 // AgentDocConsole captures agent id's first model request through the
 // real console code against the fake gateway at gwURL, under policy
@@ -50,9 +55,15 @@ func AgentDocConsole(ctx context.Context, id, gwURL string, v policy.Version, hc
 	case "compact":
 		return agentDocCompact(ctx, op, v)
 	case "vision":
-		return agentDocVision(ctx, op)
+		return agentDocVision(ctx, op, v)
 	case "research":
 		return agentDocResearch(ctx, op, v)
+	case "title":
+		return agentDocTitle(ctx, op, v)
+	case "attachment-digest":
+		return agentDocAttachmentDigest(ctx, op, v)
+	case "read-digest":
+		return agentDocReadDigest(ctx, op, v)
 	}
 	return nil, fmt.Errorf("no console agent %s", id)
 }
@@ -154,21 +165,106 @@ func agentDocCompact(ctx context.Context, op *factoryd.OperatorModel, v policy.V
 	}, nil
 }
 
-// agentDocVision drives the operator model's look at the fixture image.
-func agentDocVision(ctx context.Context, op *factoryd.OperatorModel) ([]agentdoc.Span, error) {
+// agentDocVision drives the chat's analyze_image tool on the image the
+// human attached to the thread.
+func agentDocVision(ctx context.Context, op *factoryd.OperatorModel, v policy.Version) ([]agentdoc.Span, error) {
 	img, err := agentdoc.PNG()
 	if err != nil {
 		return nil, err
 	}
-	thread := agentDocRepo + ":" + agentDocUser + ":1"
-	if _, err := op.Vision(ctx, agentDocTask, policy.DefaultChat.VisionModel, thread, agentDocAsk, img, "image/png"); err != nil {
+	t := agentDocAttached(ctx, op, v, factoryd.ChatAttachment{ID: 7, Conversation: 1, Name: "sizes", FileName: "sizes.png",
+		ContentType: "image/png", Bytes: int64(len(img))}, img)
+	if _, err := t.lookImage(toolInput{Name: "sizes", Ask: agentDocAsk}); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
-		{Name: "the ask", Symbol: "(*OperatorModel).Vision", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocAsk},
-		{Name: "the image", Symbol: "(*OperatorModel).Vision", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
+		{Name: "the agent's ask", Symbol: "(*turn).lookImage", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocAsk},
+		{Name: "the image", Symbol: "(*turn).lookImage", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
 			Text: "data:image/png;base64," + base64.StdEncoding.EncodeToString(img)},
 	}, nil
+}
+
+// agentDocTitle drives the naming of a thread the human just opened with
+// its first message.
+func agentDocTitle(ctx context.Context, op *factoryd.OperatorModel, v policy.Version) ([]agentdoc.Span, error) {
+	const first = "Set the staging budget to 40 euros."
+	agentDocConsole(op, &agentDocChat{}, v).nameThread(ctx, agentDocRepo, agentDocUser, 1, agentDocTask, first)
+	return []agentdoc.Span{
+		{Name: "the naming rules", Symbol: "factoryd.TitlePrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: factoryd.TitlePrompt},
+		{Name: "the thread's first message", Symbol: "(*Console).nameThread", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: first},
+	}, nil
+}
+
+// agentDocDocument is the document the human attached, which the
+// attachment's digest reads.
+const agentDocDocument = "Staging budget: 40 EUR a month, raised from 30 on 2026-11-02.\nThe deploy waits on the budget's OK.\n"
+
+// agentDocAttachmentDigest drives the chat's summarize_attachment tool on
+// the document the human attached, the ask left to the tool's default.
+func agentDocAttachmentDigest(ctx context.Context, op *factoryd.OperatorModel, v policy.Version) ([]agentdoc.Span, error) {
+	t := agentDocAttached(ctx, op, v, factoryd.ChatAttachment{ID: 8, Conversation: 1, Name: "budget", FileName: "budget.txt",
+		ContentType: "text/plain", Bytes: int64(len(agentDocDocument))}, []byte(agentDocDocument))
+	if _, err := t.summarizeAttachment(toolInput{Name: "budget"}); err != nil {
+		return nil, err
+	}
+	return []agentdoc.Span{
+		{Name: "the digest's message", Symbol: "factoryd.DigestMessage", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: factoryd.DigestMessage(documentDigestAsk, agentDocDocument)},
+		{Name: "the default ask", Symbol: "documentDigestAsk", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: documentDigestAsk},
+		{Name: "the document", Symbol: "(*turn).summarizeAttachment", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocDocument},
+	}, nil
+}
+
+// agentDocPage is the web page the read's digest reads.
+const agentDocPage = "Release notes 4.2\n\nThe staging deploy now waits for its budget's OK before it starts.\n"
+
+// agentDocWeb serves the web read the fixture page.
+type agentDocWeb struct{ Web }
+
+func (agentDocWeb) Scrape(context.Context, string, string) (string, error) { return agentDocPage, nil }
+
+// agentDocReadDigest drives the chat's web_scrape read, whose page goes
+// into one digest call, the ask left to the read's default.
+func agentDocReadDigest(ctx context.Context, op *factoryd.OperatorModel, v policy.Version) ([]agentdoc.Span, error) {
+	t := agentDocAttached(ctx, op, v, factoryd.ChatAttachment{}, nil)
+	t.c.cfg.Web = agentDocWeb{}
+	if _, err := t.webScrape(toolInput{URL: "https://example.org/release-notes"}); err != nil {
+		return nil, err
+	}
+	return []agentdoc.Span{
+		{Name: "the digest's message", Symbol: "factoryd.DigestMessage", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: factoryd.DigestMessage(pageDigestAsk, agentDocPage)},
+		{Name: "the default ask", Symbol: "pageDigestAsk", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: pageDigestAsk},
+		{Name: "the page", Symbol: "(*turn).webScrape", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocPage},
+	}, nil
+}
+
+// agentDocAttached is a turn of the fixture human on a thread that holds
+// att, whose bytes body the attachment store keeps, under the project's
+// chat config as the turn reads it.
+func agentDocAttached(ctx context.Context, op *factoryd.OperatorModel, v policy.Version, att factoryd.ChatAttachment, body []byte) *turn {
+	chat := &agentDocChat{thread: factoryd.ChatConversation{Number: 1, Login: agentDocUser, State: factoryd.ThreadActive}}
+	if att.Name != "" {
+		chat.atts = []factoryd.ChatAttachment{att}
+	}
+	c := agentDocConsole(op, chat, v)
+	c.cfg.Timelines = agentDocObjects{fmt.Sprintf("attachments/%d/%d", att.Conversation, att.ID): body}
+	p := agentDocProject()
+	t := &turn{c: c, r: httptest.NewRequest("POST", "/", nil).WithContext(ctx), p: p, owner: agentDocUser, conv: 1, task: agentDocTask,
+		cfg: v.Document.ChatOf(v.Projects[p.Name])}
+	t.stream(func(string) error { return nil }, nil)
+	return t
+}
+
+// agentDocObjects is the attachment store: each object's body by its key.
+type agentDocObjects map[string][]byte
+
+func (o agentDocObjects) Get(_ context.Context, key string) ([]byte, error) { return o[key], nil }
+func (agentDocObjects) Put(context.Context, string, []byte) error {
+	return errors.New("the capture stores nothing")
+}
+func (agentDocObjects) Delete(context.Context, string) error {
+	return errors.New("the capture deletes nothing")
 }
 
 // agentDocQuestion is the project agent's question to the researcher.
@@ -179,11 +275,8 @@ const agentDocQuestion = "Which file sets the staging deploy's budget, and what 
 // the loop's own assembly, and the fixture answer, a report with no tool
 // call, ends the loop after its first call.
 func agentDocResearch(ctx context.Context, op *factoryd.OperatorModel, v policy.Version) ([]agentdoc.Span, error) {
-	chat := &agentDocChat{thread: factoryd.ChatConversation{Number: 1, Login: agentDocUser, State: factoryd.ThreadActive}}
-	c := agentDocConsole(op, chat, v)
-	r := httptest.NewRequest("POST", "/", nil)
-	t := &turn{c: c, r: r.WithContext(ctx), p: agentDocProject(), owner: agentDocUser, conv: 1, task: agentDocTask}
-	t.stream(func(string) error { return nil }, nil)
+	t := agentDocAttached(ctx, op, v, factoryd.ChatAttachment{}, nil)
+	c := t.c
 	if _, _, err := t.research(agentDocQuestion); err != nil {
 		return nil, err
 	}
@@ -285,6 +378,7 @@ type agentDocChat struct {
 	Chat
 	thread factoryd.ChatConversation
 	rows   []factoryd.ChatMessage
+	atts   []factoryd.ChatAttachment
 	next   int64
 }
 
@@ -322,7 +416,11 @@ func (s *agentDocChat) LiveAskBinds(context.Context, string, string, int64, time
 }
 
 func (s *agentDocChat) ChatAttachments(context.Context, string, string, int64) ([]factoryd.ChatAttachment, error) {
-	return nil, nil
+	return s.atts, nil
+}
+
+func (s *agentDocChat) ModelTitle(context.Context, string, string, int64, string, string) (bool, error) {
+	return true, nil
 }
 
 func (s *agentDocChat) CurrentConversation(context.Context, string, string) (int64, error) {

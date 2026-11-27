@@ -37,6 +37,8 @@ graph LR
   subgraph console["console"]
     project-agent["project-agent"]
     research["research"]
+    attachment-digest["attachment-digest"]
+    read-digest["read-digest"]
     title["title"]
     compact["compact"]
     vision["vision"]
@@ -71,4 +73,5 @@ graph LR
   deploy --> telemetry --> signals
   deploy -.-> follow-liveness
   project-agent -.-> research
-  project-agent -.-> digest
+  project-agent -.-> attachment-digest
+  project-agent -.-> read-digest

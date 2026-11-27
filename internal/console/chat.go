@@ -2480,6 +2480,9 @@ func (t *turn) readAttachment(in toolInput) (string, error) {
 // past it.
 const docSummarize = 48 << 10
 
+// documentDigestAsk is a document's summary's ask when the agent gives none.
+const documentDigestAsk = "Summarise this document."
+
 // summarizeAttachment is the summarize_attachment tool's run: the
 // conversation's newest document under in.Name handed to one model call
 // of the ask on the chat task's account, its first docSummarize bytes at
@@ -2496,7 +2499,7 @@ func (t *turn) summarizeAttachment(in toolInput) (string, error) {
 		label = fmt.Sprintf("%s (%s, the first %s of %s)", found.Name, found.FileName, imageSize(int64(len(cut))), imageSize(int64(len(b))))
 		b = cut
 	}
-	answer, err := t.c.cfg.Operator.Digest(t.r.Context(), t.task, t.threadRef(), cmp.Or(in.Ask, "Summarise this document."), string(b))
+	answer, err := t.c.cfg.Operator.Digest(t.r.Context(), t.task, t.threadRef(), cmp.Or(in.Ask, documentDigestAsk), string(b))
 	if err != nil {
 		return "", err
 	}

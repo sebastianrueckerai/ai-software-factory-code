@@ -305,6 +305,9 @@ func (r *Runner) FollowLand(ctx context.Context, in FollowMoveInput) (FollowLand
 // with one word.
 const followModelSystem = `Answer with a JSON object {"ok": true}.`
 
+// followModelInput is the judgment's one call's input.
+var followModelInput = map[string]string{"say": "ok"}
+
 // FollowJudge judges the merge commit of a move. The Flux statuses that the
 // project's chain requires are success on it, a failure at once, none by
 // rolloutCap a failure of that status; then the dependency probes answer and
@@ -461,7 +464,7 @@ func (r *Runner) followModelAnswers(ctx context.Context, in FollowMoveInput) err
 	if err != nil {
 		return err
 	}
-	out, _, err := r.supervisor.Chat(ctx, task.ID, policy.Small, policy.PurposeDigest, v.Document.Limits.SupervisorTimeout, followModelSystem, map[string]string{"say": "ok"})
+	out, _, err := r.supervisor.Chat(ctx, task.ID, policy.Small, policy.PurposeDigest, v.Document.Limits.SupervisorTimeout, followModelSystem, followModelInput)
 	if err != nil {
 		return err
 	}

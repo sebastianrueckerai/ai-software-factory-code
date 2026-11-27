@@ -46,9 +46,8 @@ var agentOnlyCalls = func() []struct{ Call, What, Why string } {
 		{"factoryd.(*Runner).RunReport", "the prover's session", "it files tests, and factoryd writes its summary"},
 		{"factoryd.(*Runner).followModelAnswers", "the follow judgment's liveness call", "its answer is only checked for being there, and no one reads it"},
 	}
-	for _, capture := range []string{"console.agentDocVision", "factoryd.agentDocAnswer", "factoryd.agentDocAudit", "factoryd.agentDocBehaviours", "factoryd.agentDocCaseCheckin",
-		"factoryd.agentDocBrief", "factoryd.agentDocDelta", "factoryd.agentDocGateSupervisor", "factoryd.agentDocHoldout",
-		"factoryd.agentDocJudgement", "factoryd.agentDocReview", "factoryd.agentDocTitle"} {
+	for _, capture := range []string{"factoryd.agentDocAudit", "factoryd.agentDocBehaviours", "factoryd.agentDocDelta",
+		"factoryd.agentDocGateSupervisor", "factoryd.agentDocJudgement", "factoryd.agentDocReview"} {
 		calls = append(calls, struct{ Call, What, Why string }{capture, "the agent map's capture",
 			"a capture of a writer against a fake gateway, whose answer no one reads"})
 	}
@@ -81,7 +80,7 @@ func TestWritersHoldsEveryModelCall(t *testing.T) {
 	for _, c := range slices.Sorted(maps.Keys(sites)) {
 		if !held[c] {
 			t.Errorf("%s makes a model call at %s: add it to Writers with the forms of its job, to agentOnlyCalls with why only agents read its text, "+
-				"or to agentdoc's carriers when it hands its caller's prompt on", c, sites[c])
+				"or to agentdoc's carriers when it hands its caller's prompt on", c, sites[c].Pos)
 		}
 	}
 }

@@ -121,7 +121,7 @@ func run() int {
 				continue
 			}
 		default:
-			g := agentdoc.NewGateway(a.Answer)
+			g := agentdoc.NewGateway(a.Answer(a.ID))
 			spans, err := a.Capture(ctx, a.ID, g.URL, v, nil)
 			recs := g.Bodies()
 			g.Close()

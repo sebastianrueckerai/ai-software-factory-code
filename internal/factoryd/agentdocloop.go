@@ -292,12 +292,15 @@ func agentDocLoopWireSpans(b agentdoc.Body, agents string) ([]agentdoc.Span, err
 }
 
 // agentDocTitleCall is the title page's capture: the coding session's title
-// call, the harness's own parts read out of its body, and the brief, which
-// the call carries whole as text, tiled by the brief's builders.
-func agentDocTitleCall(rec *agentdoc.Recorded, brief harness.TaskBrief, text string) ([]agentdoc.Span, agentdoc.Recorded, error) {
-	if rec == nil {
+// call in dir, its run-time values masked as the loop's are, the harness's
+// own parts read out of its body, and the brief, which the call carries
+// whole as text, tiled by the brief's builders.
+func agentDocTitleCall(title *agentdoc.Recorded, dir string, brief harness.TaskBrief, text string) ([]agentdoc.Span, agentdoc.Recorded, error) {
+	if title == nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: the session made no title call", AgentDocTitleID)
 	}
+	rec := *title
+	rec.Raw = maskLoopRunTime(rec.Raw, dir)
 	body, err := agentdoc.ParseBody(rec.Raw)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", AgentDocTitleID, err)
@@ -306,7 +309,7 @@ func agentDocTitleCall(rec *agentdoc.Recorded, brief harness.TaskBrief, text str
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", AgentDocTitleID, err)
 	}
-	return append(agentDocLoopSpans("coding", brief, agentDocLoopTag), wire...), *rec, nil
+	return append(agentDocLoopSpans("coding", brief, agentDocLoopTag), wire...), rec, nil
 }
 
 // agentDocTitleWireSpans reads the title call's own parts out of its body:
@@ -650,7 +653,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %d loop calls crossed the wire, want %d", id, len(model.calls), want)
 	}
 	if id == AgentDocTitleID {
-		return agentDocTitleCall(model.title, brief, text)
+		return agentDocTitleCall(model.title, dir, brief, text)
 	}
 	rec := model.calls[want-1]
 	rec.Raw = maskLoopRunTime(rec.Raw, dir)

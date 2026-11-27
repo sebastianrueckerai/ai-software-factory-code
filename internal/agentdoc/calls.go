@@ -50,6 +50,14 @@ var carriers = []string{
 	"gateway.(*Server).handleChat",
 }
 
+// walkPackage is the walk's own package, which it does not read: its lists
+// name model paths as data, and the map's tooling makes no model call.
+const walkPackage = "agentdoc"
+
+// Site is a function that makes a model call: Pos the place of one call,
+// Via the transport the walk reached it from.
+type Site struct{ Pos, Via string }
+
 // callGraph is what the walk reads of the code's functions, each named by
 // its package's directory under internal/ (cmd/ keeps its prefix), its
 // receiver and its name: who calls a name, which paths a function sends
@@ -115,6 +123,9 @@ func readCallGraph(root string) (callGraph, error) {
 				return err
 			}
 			pkg := strings.TrimPrefix(filepath.ToSlash(filepath.Dir(rel)), "internal/")
+			if pkg == walkPackage {
+				return nil
+			}
 			files = append(files, file{pkg, f})
 			for _, decl := range f.Decls {
 				if gd, ok := decl.(*ast.GenDecl); ok {
@@ -277,8 +288,9 @@ func (g callGraph) route(pkg string, call *ast.CallExpr, imports map[string]bool
 }
 
 // ModelCalls are the functions of the module at root that make a model
-// call, each with the place of one call. The walk starts at
-// the transports: a function that sends a request to a model path, an
+// call, each with the place of one call and the transport it reaches.
+// The walk starts at the transports: a function that sends a request to a
+// model path, an
 // unread transport, and a function that sends a request to a path the
 // module serves with a function the walk reached, such as the gateway's
 // relay to factoryd's digest. From a transport or a carrier it
@@ -289,7 +301,7 @@ func (g callGraph) route(pkg string, call *ast.CallExpr, imports map[string]bool
 // any other caller is a site. An unread transport the code does not
 // declare, or a carrier the walk never passed, is an error: the lists
 // name the code as it is.
-func ModelCalls(root string) (map[string]string, error) {
+func ModelCalls(root string) (map[string]Site, error) {
 	g, err := readCallGraph(root)
 	if err != nil {
 		return nil, err
@@ -310,8 +322,12 @@ func ModelCalls(root string) (map[string]string, error) {
 		}
 	}
 	for {
-		sites, passed := map[string]string{}, map[string]bool{}
+		sites, passed := map[string]Site{}, map[string]bool{}
 		queue := slices.Sorted(maps.Keys(transports))
+		via := map[string]string{}
+		for _, fn := range queue {
+			via[fn] = fn
+		}
 		for len(queue) > 0 {
 			fn := queue[0]
 			queue = queue[1:]
@@ -327,8 +343,11 @@ func ModelCalls(root string) (map[string]string, error) {
 							passed[s.fn] = true
 							queue = append(queue, s.fn)
 						}
-					default:
-						sites[s.fn] = s.pos
+						if via[s.fn] == "" {
+							via[s.fn] = via[fn]
+						}
+					case sites[s.fn].Pos == "":
+						sites[s.fn] = Site{s.pos, via[fn]}
 					}
 				}
 			}

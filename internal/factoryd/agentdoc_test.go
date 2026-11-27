@@ -28,18 +28,6 @@ func agentDocPolicy() policy.Version {
 	}
 }
 
-// agentDocAnswerOf is the answer the fake gateway scripts for direct agent
-// id, the registry's: the one answer that ends its call after one call.
-func agentDocAnswerOf(id string) string {
-	switch id {
-	case "case-checkin":
-		return AgentDocRungAnswer
-	case "plan-namer":
-		return AgentDocNamerAnswer
-	}
-	return `{"decision":"continue"}`
-}
-
 // agentDocSections are a body's messages as the page locates them: each
 // message's text, its parts' texts and images in order when it sent parts.
 func agentDocSections(b agentdoc.Body) []string {
@@ -62,7 +50,7 @@ func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
 	toolsByID := map[string]bool{"checkin": true, "case-checkin": true}
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {
-			g := agentdoc.NewGateway(agentDocAnswerOf(id))
+			g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
 			defer g.Close()
 			spans, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil)
 			if err != nil {
@@ -127,14 +115,14 @@ func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
 
 // The supervisor-family agents call in JSON mode on the task's account,
 // the plan namer and the follow's liveness call on the small alias. The
-// check-ins call unstreamed with tools and no response format. The thread
-// naming and the digest stream on the small alias with a short answer, the
-// look on the class's vision alias with the operator's.
+// check-ins call unstreamed with tools and no response format. The digest
+// streams on the small alias with a short answer, the look on the class's
+// vision alias with the operator's.
 func TestAgentDocDirectEnvelope(t *testing.T) {
 	jsonModel := map[string]string{"plan-namer": policy.Small, "follow-liveness": policy.Small}
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {
-			g := agentdoc.NewGateway(agentDocAnswerOf(id))
+			g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
 			defer g.Close()
 			if _, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil); err != nil {
 				t.Fatalf("capture: %v", err)
@@ -147,11 +135,6 @@ func TestAgentDocDirectEnvelope(t *testing.T) {
 			case "checkin", "case-checkin":
 				if b.Stream || b.ResponseFormat != "" || b.MaxTokens != 0 || b.Model != "big" {
 					t.Fatalf("the check-in calls big unstreamed with no format and no limit, got %+v", b)
-				}
-				return
-			case "title":
-				if !b.Stream || b.ResponseFormat != "" || b.MaxTokens != titleTokens || b.Model != policy.Small {
-					t.Fatalf("the naming call streams on the small alias with a %d-token answer, got %+v", titleTokens, b)
 				}
 				return
 			case "digest":
@@ -172,7 +155,7 @@ func TestAgentDocDirectEnvelope(t *testing.T) {
 	}
 }
 
-// The steps the map once missed send what their real assembly sends: rung
+// Each capture sends what its real assembly sends: rung
 // 1's statement on the case opens with its problem and closes with the
 // calls left and the answer's due time beside the case's evidence tools,
 // the namer asks on the plan's facts, the session's digest and look carry
@@ -197,7 +180,7 @@ func TestAgentDocDirectMessages(t *testing.T) {
 			{role: "user", prefix: "The input, as JSON:\n" + `{"say":"ok"}`}}},
 	} {
 		t.Run(id, func(t *testing.T) {
-			g := agentdoc.NewGateway(agentDocAnswerOf(id))
+			g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
 			defer g.Close()
 			if _, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil); err != nil {
 				t.Fatalf("capture: %v", err)
@@ -268,12 +251,12 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 		"judgement": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
 		"delta-planner": policy.PurposeReview, "holdout-proposer": policy.PurposeReview,
 		"answer-screener": policy.PurposeReview, "brief-writer": policy.PurposeBrief, "case-brief-writer": policy.PurposeBrief,
-		"title": policy.PurposeTitle, "case-checkin": policy.PurposeCheckin, "plan-namer": policy.PurposeTitle,
+		"case-checkin": policy.PurposeCheckin, "plan-namer": policy.PurposeTitle,
 		"digest": policy.PurposeDigest, "image-look": policy.PurposeVision, "follow-liveness": policy.PurposeDigest,
 	}
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {
-			g := agentdoc.NewGateway(agentDocAnswerOf(id))
+			g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
 			defer g.Close()
 			if _, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil); err != nil {
 				t.Fatalf("capture: %v", err)
@@ -291,13 +274,13 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 // agree span for span.
 func TestAgentDocDirectIsDeterministic(t *testing.T) {
 	for _, id := range AgentDocDirectIDs() {
-		g := agentdoc.NewGateway(agentDocAnswerOf(id))
+		g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
 		first, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil)
 		g.Close()
 		if err != nil {
 			t.Fatalf("%s: capture: %v", id, err)
 		}
-		g = agentdoc.NewGateway(agentDocAnswerOf(id))
+		g = agentdoc.NewGateway(AgentDocDirectAnswer(id))
 		second, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil)
 		g.Close()
 		if err != nil {

@@ -982,6 +982,9 @@ func (t *turn) webSearch(in toolInput) (string, error) {
 	return string(cutText([]byte(text), pageLimit)), nil
 }
 
+// pageDigestAsk is a web page's digest's ask when the agent gives none.
+const pageDigestAsk = "Summarise this page."
+
 // webScrape is one paid page fetch on the chat task's account: the page
 // never enters the thread, one digest call on the cheap alias answers the
 // ask under the page's url as its label.
@@ -999,7 +1002,7 @@ func (t *turn) webScrape(in toolInput) (string, error) {
 	if len(page) > pageLimit {
 		page = string(cutText([]byte(page), pageLimit)) + "\n\n(the page was cut at 64 KiB)"
 	}
-	return t.withDigest(in.URL, cmp.Or(in.Ask, "Summarise this page."), page)
+	return t.withDigest(in.URL, cmp.Or(in.Ask, pageDigestAsk), page)
 }
 
 // webErr words a web door failure for the member: a refusal the policy
