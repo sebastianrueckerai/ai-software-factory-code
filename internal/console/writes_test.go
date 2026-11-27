@@ -468,7 +468,7 @@ func TestChatSetDependency(t *testing.T) {
 	}{
 		{toolInput{TaskID: "t-k2", DependsOn: "t-k1"}, http.StatusConflict, "#31 already waits on #32, through its dependencies or a hold, so #32 cannot depend on #31."},
 		{toolInput{TaskID: "t-r", DependsOn: "t-a"}, http.StatusConflict,
-			"Card #11 runs an agent session, not a card that has not started: a message to it reaches its session, and its pull request comes when the session ends."},
+			"Card #11 runs an agent session, not a card that has not started: send it a message, which reaches its session, and its pull request comes when the session ends."},
 		{toolInput{TaskID: "t-m", DependsOn: "t-a"}, http.StatusConflict, "Process maintenance has no dependencies block: its cards do not wait on others."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already waits on #21, through its dependencies or a hold, so #21 cannot depend on #22."},
 		{toolInput{TaskID: "t-b", DependsOn: "t-a"}, http.StatusConflict, "#22 already depends on #21."},

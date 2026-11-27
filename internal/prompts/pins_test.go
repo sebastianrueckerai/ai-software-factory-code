@@ -18,8 +18,9 @@ import (
 // sumsFile pins every text a prompt joins; its paths are from internal/.
 const sumsFile = "texts.sha256"
 
-// pinned are the text files the sums file covers, from internal/.
-var pinned = []string{"writingguide/writing-guide.md", "writingguide/forms/*.md", "prompts/chunks/*.md", "prompts/steps/*.md", "prompts/tools/*.md"}
+// pinned are the text files the sums file covers, from internal/, and the
+// plugin that hands the tool texts to the harness.
+var pinned = []string{"writingguide/writing-guide.md", "writingguide/forms/*.md", "prompts/chunks/*.md", "prompts/steps/*.md", "prompts/tools/*.md", "../opencode-plugin/plugins/tool-text.js"}
 
 // A text changes only with its new sum in the same commit, so its review
 // sees the change.

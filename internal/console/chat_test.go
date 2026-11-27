@@ -2664,7 +2664,7 @@ func TestChatUndoOfAnEdgeTheCardStarted(t *testing.T) {
 	before := r.events.count()
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
 	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_dependency","result":"Refused: Card #22 runs an agent session, ` +
-		`not a card that has not started: a message to it reaches its session, and its pull request comes when the session ends."}`, `done {}`})
+		`not a card that has not started: send it a message, which reaches its session, and its pull request comes when the session ends."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
 }
@@ -5290,7 +5290,7 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 		return "proposal " + string(b)
 	}
 	refused := `tool {"arguments":{"task_id":"t-c1"},"duration_ms":0,"name":"approve_merge","result":"Refused: Card #21 runs an agent session, ` +
-		`not a pending merge request: a message to it reaches its session, and its pull request comes when the session ends."}`
+		`not a pending merge request: send it a message, which reaches its session, and its pull request comes when the session ends."}`
 	equal(t, "stream", events, []string{proposal("t-r", r11), proposal("t-m", r5), proposal("t-e", r13), refused, `done {}`})
 	stored, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "what the agent reads of the first", stored[0].ToolCalls[0].Result, "Proposed to sebastian: "+r11+" Nothing runs until they press Do it.")
