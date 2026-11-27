@@ -294,7 +294,8 @@ func TestAgentDocLoopWireSpansWantTheAgentsFile(t *testing.T) {
 // opencode binary (OPENCODE_RECORD_BIN): the real session assembly and
 // identity proxy, a scripted model, the gateway's real MCP tool list. It
 // proves the captures the pages regenerate from: the chosen request tiles
-// with no unlabelled byte, and the delegation's tools are on the wire.
+// with no unlabelled byte, the mode's gateway tool is on the wire, and
+// every built-in tool carries its text from internal/prompts/tools.
 func TestAgentDocLoopRecord(t *testing.T) {
 	bin := os.Getenv("OPENCODE_RECORD_BIN")
 	if bin == "" {
@@ -374,6 +375,22 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			if !slices.Contains(names, want) {
 				t.Errorf("%s: the wire offers no %s: %v", id, want, names)
 			}
+			for _, tl := range b.Tools {
+				if strings.HasPrefix(tl.Name, "factory-tools_") {
+					continue
+				}
+				text, err := os.ReadFile(filepath.Join("..", "prompts", "tools", tl.Name+".md"))
+				if err != nil {
+					t.Errorf("%s: built-in %s has no text of ours: %v", id, tl.Name, err)
+					continue
+				}
+				var tool struct {
+					Function struct{ Description string } `json:"function"`
+				}
+				if err := json.Unmarshal(tl.Raw, &tool); err != nil || tool.Function.Description != strings.TrimSpace(string(text)) {
+					t.Errorf("%s: built-in %s's description = %q, want internal/prompts/tools/%s.md", id, tl.Name, tool.Function.Description, tl.Name)
+				}
+			}
 			if id == "message-responder" && !strings.Contains(userText, "A message from fixture-writer, a writer of this project") {
 				t.Error("the responder's captured call holds no writer's message")
 			}
@@ -411,6 +428,9 @@ func TestPluginReplacesABuiltinText(t *testing.T) {
 		}
 	} else {
 		bake = repoBake(t)
+	}
+	if err := os.RemoveAll(filepath.Join(bake, "tool-text")); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(bake, "tool-text"), 0o750); err != nil {
 		t.Fatal(err)

@@ -1,0 +1,1 @@
+Search file contents with a regular expression, such as `log.*Error` or `func\s+\w+`. `include` keeps the files that match a pattern, such as `*.go` or `*.{ts,tsx}`, and `path` is the directory to search, by default the working directory. It returns each matching file with its matching lines and their numbers.

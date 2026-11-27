@@ -508,9 +508,12 @@ func agentDocLoopEnv(bake string) (func(), error) {
 
 // AgentDocBake fills dir with what the sandbox image bakes into
 // /opt/opencode-home/.config/opencode beside the npm packages: the
-// plugins of the repository at root.
+// plugins of the repository at root and the built-in tools' texts.
 func AgentDocBake(root, dir string) error {
-	return os.CopyFS(filepath.Join(dir, "plugins"), os.DirFS(filepath.Join(root, "opencode-plugin", "plugins")))
+	if err := os.CopyFS(filepath.Join(dir, "plugins"), os.DirFS(filepath.Join(root, "opencode-plugin", "plugins"))); err != nil {
+		return err
+	}
+	return os.CopyFS(filepath.Join(dir, "tool-text"), os.DirFS(filepath.Join(root, "internal", "prompts", "tools")))
 }
 
 // agentDocLoopSessionModel is the model the mode's session runs on, as the

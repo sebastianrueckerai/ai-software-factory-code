@@ -19,7 +19,7 @@ import (
 const sumsFile = "texts.sha256"
 
 // pinned are the text files the sums file covers, from internal/.
-var pinned = []string{"writingguide/writing-guide.md", "writingguide/forms/*.md", "prompts/chunks/*.md", "prompts/steps/*.md"}
+var pinned = []string{"writingguide/writing-guide.md", "writingguide/forms/*.md", "prompts/chunks/*.md", "prompts/steps/*.md", "prompts/tools/*.md"}
 
 // A text changes only with its new sum in the same commit, so its review
 // sees the change.
