@@ -21,8 +21,10 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/answers"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -99,6 +101,19 @@ type ProofsFiled struct {
 	Findings []string `json:"findings"`
 }
 
+// AnswerFiler files a session's answer object (the file_screening tool):
+// factoryd checks it and stores it as the session's answer. Implemented by
+// Factoryd; tests substitute a fake.
+type AnswerFiler interface {
+	FileAnswer(ctx context.Context, taskID, tool string, answer json.RawMessage) (AnswerFiled, error)
+}
+
+// AnswerFiled is an answer filing's result: the findings that refused it,
+// none when it is stored.
+type AnswerFiled struct {
+	Findings []string `json:"findings"`
+}
+
 // DeploymentReader reads a Deployment of the task's project as the cluster
 // reports it (the deployment_health tool). Implemented by Factoryd; tests
 // substitute a fake.
@@ -159,6 +174,7 @@ var (
 	_ Escalator        = (*Factoryd)(nil)
 	_ PlanFiler        = (*Factoryd)(nil)
 	_ ProofsFiler      = (*Factoryd)(nil)
+	_ AnswerFiler      = (*Factoryd)(nil)
 	_ DeploymentReader = (*Factoryd)(nil)
 	_ ImageLooker      = (*Factoryd)(nil)
 	_ Digester         = (*Factoryd)(nil)
@@ -252,6 +268,22 @@ func (f *Factoryd) FileProofs(ctx context.Context, taskID string, proofs []Proof
 			TaskID string    `json:"task_id"`
 			Proofs []ProofIn `json:"proofs"`
 		}{taskID, proofs})
+	if err != nil {
+		return res, err
+	}
+	err = json.Unmarshal(b, &res)
+	return res, err
+}
+
+func (f *Factoryd) FileAnswer(ctx context.Context, taskID, tool string, answer json.RawMessage) (AnswerFiled, error) {
+	var res AnswerFiled
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/answers",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string          `json:"task_id"`
+			Tool   string          `json:"tool"`
+			Answer json.RawMessage `json:"answer"`
+		}{taskID, tool, answer})
 	if err != nil {
 		return res, err
 	}
@@ -621,6 +653,10 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFileProofs, Description: "File one test per criterion and hold-out, each with path, suite, name, whole code and what your run of bash check test on main showed. A refusal names every finding: fix it and file again, three filings at most. The last passing one stands.", InputSchema: proofsSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ProofsIn) (*mcp.CallToolResult, any, error) {
 			return s.fileProofs(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.ScreeningAnswer](policy.ToolFileScreening, "File your verdict on the issue. A refusal names what to fix: file again in this session. A stored verdict is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.ScreeningAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileScreening, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
@@ -1484,6 +1520,53 @@ func (s *Server) fileProofs(ctx context.Context, c *toolCaller, in ProofsIn) *mc
 	s.auditTool(c, tool, "proofs_filed", fmt.Sprintf("filing %d, %d proofs", res.Filing, len(in.Proofs)), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
 		Text: fmt.Sprintf("filing %d stands; factoryd runs every test on main after this session. Filings left: %d. You may end the session.", res.Filing, res.Left)}}}
+}
+
+// filingTool is the tool name files a T answer through: its schema is the
+// answer tool's of T.
+func filingTool[T any](name, description string) *mcp.Tool {
+	b, err := json.Marshal(prompts.AnswerTool(reflect.TypeFor[T]()).Parameters)
+	if err != nil {
+		panic(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(b, &schema); err != nil {
+		panic(err)
+	}
+	return &mcp.Tool{Name: name, Description: description, InputSchema: &schema}
+}
+
+// fileAnswer hands a session's answer to factoryd, which checks it against
+// the task it answers for: a refusal carries every finding back into the
+// session, a stored answer is the session's answer. Free, for the classes
+// that list the tool.
+func (s *Server) fileAnswer(ctx context.Context, c *toolCaller, tool string, answer any) *mcp.CallToolResult {
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	if s.opts.AnswerFiler == nil {
+		return s.refuseTool(c, tool, "refused_capability", "no answer hand-over is wired")
+	}
+	raw, err := json.Marshal(answer)
+	if err != nil {
+		return s.refuseTool(c, tool, "refused_arguments", err.Error())
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
+	defer cancel()
+	res, err := s.opts.AnswerFiler.FileAnswer(ctx, c.task.ID, tool, raw)
+	if err != nil {
+		s.auditTool(c, tool, "error_answer", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError("the answer did not reach factoryd: " + err.Error())
+	}
+	if len(res.Findings) > 0 {
+		s.auditTool(c, tool, "answer_refused", fmt.Sprintf("%d findings", len(res.Findings)), &c.task.SpentEUR, nil)
+		return toolError("the answer was refused:\n- " + strings.Join(res.Findings, "\n- ") + "\ncorrect it and file it again in this session")
+	}
+	s.auditTool(c, tool, "answer_stored", "", &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "stored; it is this session's answer. You may end the session."}}}
 }
 
 // delegate files the child card with factoryd; the session goes on.

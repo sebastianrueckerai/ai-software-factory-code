@@ -1483,10 +1483,10 @@ func TestReportSessionGetsNoRequestTool(t *testing.T) {
 	coder.Tools = map[string]policy.ToolCap{policy.ToolRequestTool: {}, policy.ToolRequestInfo: {}}
 	doc.Classes["coder"] = coder
 	task := Task{ID: "t1", Repository: "sf/repo", RequiredCapabilities: []string{"coder"}, Track: "direct"}
-	for report, want := range map[string]string{"": `["request_info","request_tool"]`, "the guide": `["request_info"]`} {
+	for report, want := range map[bool]string{false: `["request_info","request_tool"]`, true: `["request_info"]`} {
 		pod := r.workerPodSpec(task, sessionSpec{id: "s-1", step: "coding", policy: doc, report: report})
 		if got := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["TOOLS"]; got != want {
-			t.Errorf("report %q: TOOLS = %s, want %s", report, got, want)
+			t.Errorf("report %v: TOOLS = %s, want %s", report, got, want)
 		}
 	}
 }
@@ -4106,7 +4106,7 @@ func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
 		{"DIRECTORIES whole", Task{}, sessionSpec{directories: slices.Concat(full, z(2959))}, "DIRECTORIES", jsonOf(slices.Concat(full, z(2959))), nil},
 		{"DIRECTORIES one byte over", Task{}, sessionSpec{directories: slices.Concat(full, z(2960))}, "DIRECTORIES", jsonOf(full),
 			[]string{"1 of the 33 directories, the last"}},
-		{"REPORT_GUIDE cut", Task{}, sessionSpec{report: a("a", 131059)}, "REPORT_GUIDE", a("a", 131055) + "…",
+		{"REPORT_GUIDE cut", Task{}, sessionSpec{report: true, guide: a("a", 131059)}, "REPORT_GUIDE", a("a", 131055) + "…",
 			[]string{"the report's guide past its first 131055 of 131059 bytes"}},
 	} {
 		tc.task.ID, tc.s.id = "t1", "s-1"
@@ -5890,7 +5890,7 @@ func TestWorkerOffersRequestCutOnlyWhereTheCardCanBeCut(t *testing.T) {
 	}{
 		"a plan track":  {sessionSpec{id: "s-1", step: "coding", policy: doc, planTrack: true}, `["request_cut","request_info"]`},
 		"no plan track": {sessionSpec{id: "s-1", step: "coding", policy: doc}, `["request_info"]`},
-		"a report":      {sessionSpec{id: "s-1", step: "coding", policy: doc, planTrack: true, report: "the guide"}, `["request_info"]`},
+		"a report":      {sessionSpec{id: "s-1", step: "coding", policy: doc, planTrack: true, report: true}, `["request_info"]`},
 	} {
 		pod := r.workerPodSpec(task, tc.s)
 		if got := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["TOOLS"]; got != tc.want {
@@ -5977,7 +5977,7 @@ func TestCuttable(t *testing.T) {
 		"a direct card's successor":          {Task{Kind: "agent", Source: SourceSuccessor}, sessionSpec{}, false},
 		"a direct card with a plan track":    {direct, sessionSpec{planTrack: true}, true},
 		"a direct card without a plan track": {direct, sessionSpec{}, false},
-		"a report session":                   {child, sessionSpec{report: "the guide"}, false},
+		"a report session":                   {child, sessionSpec{report: true}, false},
 		"a planner session":                  {child, sessionSpec{planner: true}, false},
 		"a human card":                       {Task{Kind: "human"}, sessionSpec{planTrack: true}, false},
 		"an unbound sizing card":             {Task{Kind: "agent", Source: SourceSizing}, sessionSpec{planTrack: true}, false},

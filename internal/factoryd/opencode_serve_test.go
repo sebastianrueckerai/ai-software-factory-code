@@ -260,7 +260,7 @@ func fakeServe(fixture string) int {
 // prompt: one model call through the identity proxy, with a system prompt
 // that opens with the build agent's prompt, names the working directory
 // and FAKE_SERVE_DATE the way the real harness's environment block does,
-// then AGENTS.md off the working tree; and, unless the config turns it
+// then AGENTS.md off the working tree unless OPENCODE_DISABLE_PROJECT_CONFIG is set; and, unless the config turns it
 // off, the harness's own title call before it.
 func fakeModelCall(prompt []byte) {
 	var p struct {
@@ -298,6 +298,9 @@ func fakeModelCall(prompt []byte) {
 			{"role": "user", "content": "Generate a title for this conversation:\n"}, {"role": "user", "content": p.Parts[0].Text}},
 	})
 	agents, _ := os.ReadFile("AGENTS.md")
+	if os.Getenv("OPENCODE_DISABLE_PROJECT_CONFIG") != "" {
+		agents = nil
+	}
 	sys := cmp.Or(cfg.Agent.Build.Prompt, "You are a fake opencode.") + "\n<env>\n  Working directory: " + cwd + "\n  Today's date: " + os.Getenv("FAKE_SERVE_DATE") +
 		"\n</env>\nInstructions from: " + cwd + "/AGENTS.md\n" + string(agents) + "\nEnd of the fake prompt.\n"
 	body, _ := json.Marshal(map[string]any{

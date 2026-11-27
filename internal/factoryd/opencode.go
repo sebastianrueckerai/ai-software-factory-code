@@ -827,7 +827,7 @@ func briefText(brief harness.TaskBrief, tag string) string {
 	}
 	guide := brief.Report
 	switch {
-	case guide != "":
+	case brief.ReportMode:
 	case brief.CardRole != "":
 		guide = featureGuide(brief.CardRole, brief.Image, brief.Tools)
 	default:
@@ -838,7 +838,7 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		b.WriteString(toolsLine + "\n")
 	}
 	b.WriteString(guide)
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // answersHeading opens the brief's section of the escalations' answers,

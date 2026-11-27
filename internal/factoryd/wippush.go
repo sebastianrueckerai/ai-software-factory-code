@@ -126,7 +126,7 @@ const stopUnpushed = "the session's work at the stop was not pushed: "
 // outcome carries it; where no push can land the outcome says the
 // unpushed work in the open, never a silent bare no-result.
 func (r *Runner) takeStopWork(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}, stoppedAt time.Time) wipOutcome {
-	if s.report != "" || !wipCommitID.MatchString(s.startRef) {
+	if s.report || !wipCommitID.MatchString(s.startRef) {
 		return wipOutcome{}
 	}
 	if stoppedAt.IsZero() {
@@ -165,7 +165,7 @@ func (r *Runner) takeStopWork(ctx context.Context, t Task, s sessionSpec, ns, po
 // askWip is the interim push's ask of the pod: the WIP commit and the
 // bundle the pod shipped, or no bundle and the outcome that says why.
 func (r *Runner) askWip(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) (string, string, wipOutcome) {
-	if s.report != "" || !wipCommitID.MatchString(s.startRef) {
+	if s.report || !wipCommitID.MatchString(s.startRef) {
 		return "", "", wipOutcome{}
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)

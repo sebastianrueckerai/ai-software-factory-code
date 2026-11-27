@@ -67,6 +67,7 @@ classes:
     tools:
       escalate: {}
       request_info: {}
+      file_screening: {}
       manual: {}
   planner:
     session: plan
@@ -253,7 +254,7 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans, err := agentDocLoopWireSpans(b, "STANDING", agentDocLoopAgents)
+	spans, err := agentDocLoopWireSpans(b, "STANDING", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,8 +286,35 @@ func TestAgentDocLoopWireSpansWantTheAgentsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agentDocLoopWireSpans(b, "only the harness", agentDocLoopAgents); err == nil {
+	if _, err := agentDocLoopWireSpans(b, "only the harness", true); err == nil {
 		t.Fatal("a system prompt without AGENTS.md derived spans")
+	}
+}
+
+// A step whose profile loads no AGENTS.md has none on the wire: the page
+// holds the harness around the standing text, and a body that holds the
+// file is a broken capture.
+func TestAgentDocLoopWireSpansForAStepWithoutAgents(t *testing.T) {
+	read := func(system string) ([]agentdoc.Span, error) {
+		b, err := agentdoc.ParseBody([]byte(`{"messages":[{"role":"system","content":` + strconv.Quote(system) + `}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentDocLoopWireSpans(b, "STANDING", false)
+	}
+	spans, err := read("LEADSTANDINGENV")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, sp := range spans {
+		names = append(names, sp.Name)
+	}
+	if want := []string{"the harness's lead", "the profile's texts", "the harness's environment"}; !slices.Equal(names, want) {
+		t.Errorf("spans = %q, want %q", names, want)
+	}
+	if _, err := read("LEADSTANDING" + agentDocLoopAgents); err == nil {
+		t.Error("a system prompt holding AGENTS.md derived spans for a step that loads none")
 	}
 }
 
@@ -369,7 +397,9 @@ func TestAgentDocLoopRecord(t *testing.T) {
 				want = "factory-tools_file_plan"
 			case "prover":
 				want = "factory-tools_file_proofs"
-			case "screening", "sizing":
+			case "screening":
+				want = "factory-tools_file_screening"
+			case "sizing":
 				want = "factory-tools_manual"
 			}
 			if !slices.Contains(names, want) {

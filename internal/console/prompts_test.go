@@ -152,7 +152,7 @@ var shippedClassTools = map[string][]string{
 	"coder": {"analyze_image", "cloud_prices", "commission_server", "delegate", "deployment_health", "digest", "escalate", "fal_run", "list_resources",
 		"manual", "release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate",
 		"web_scrape", "web_search"},
-	"analyzer":         {"analyze_image", "deployment_health", "digest", "escalate", "manual", "request_info", "web_scrape", "web_search"},
+	"analyzer":         {"analyze_image", "deployment_health", "digest", "escalate", "file_screening", "manual", "request_info", "web_scrape", "web_search"},
 	"planner":          {"analyze_image", "digest", "escalate", "file_plan", "manual", "web_scrape", "web_search"},
 	policy.ClassProver: {"file_proofs", "manual"},
 }
@@ -193,8 +193,8 @@ func TestShippedClassToolsAreTheCopy(t *testing.T) {
 }
 
 // Each session step is offered the gateway tools its job uses: the coder
-// eleven, the planner six, the prover two, and screening and sizing a look
-// at an image and the manual.
+// eleven, the planner six, the prover two, screening a look at an image, its
+// filing and the manual, and sizing a look at an image and the manual.
 func TestSessionGatewaySets(t *testing.T) {
 	coder := []string{"analyze_image", "delegate", "deployment_health", "digest", "escalate", "manual", "request_cut", "request_info", "request_tool", "web_scrape", "web_search"}
 	want := map[string][]string{
@@ -202,7 +202,7 @@ func TestSessionGatewaySets(t *testing.T) {
 		"planner":   {"analyze_image", "digest", "file_plan", "manual", "web_scrape", "web_search"},
 		"prover":    {"file_proofs", "manual"},
 		"sizing":    {"analyze_image", "manual"},
-		"screening": {"analyze_image", "manual"},
+		"screening": {"analyze_image", "file_screening", "manual"},
 	}
 	for step, p := range sessionProfiles(t) {
 		if got := slices.Sorted(slices.Values(p.Tools.Gateway)); !slices.Equal(got, want[step]) {
@@ -537,5 +537,35 @@ func TestProjectAgentAutonomyLine(t *testing.T) {
 		if got := strings.Contains(p.Facts(), line); got != want {
 			t.Errorf("level %s: line present = %v, want %v", level, got, want)
 		}
+	}
+}
+
+// A screening reads an issue and edits nothing: opencode loads no project
+// config, so no AGENTS.md.
+func TestScreeningLoadsNoProjectConfig(t *testing.T) {
+	env, err := prompts.SessionEnv("screening")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "OPENCODE_DISABLE_PROJECT_CONFIG=1") {
+		t.Errorf("the screening's environment is %q, want OPENCODE_DISABLE_PROJECT_CONFIG=1", env)
+	}
+}
+
+// The verdict's shape is file_screening's schema, not the prompt's.
+func TestScreeningPromptHasNoShape(t *testing.T) {
+	lacks(t, "screening", "clear|suspect", "Answer with one JSON object", "You are an analyzer")
+}
+
+// Standing words, counted from the files: the line form 71, factory 55 and
+// narration 59 (114 chunks), paragraph 105: 290.
+func TestScreeningStandingWords(t *testing.T) {
+	parts := built(t, "screening").Parts()
+	got := [4]int{parts.Guide, parts.Forms, parts.Chunks, parts.Paragraph}
+	if want := [4]int{0, 71, 114, 105}; got != want {
+		t.Errorf("guide, forms, chunks, paragraph = %v, want %v", got, want)
+	}
+	if total := got[0] + got[1] + got[2] + got[3]; total != 290 {
+		t.Errorf("standing words = %d, want 290", total)
 	}
 }

@@ -38,9 +38,11 @@ type TaskBrief struct {
 	Author         string   `json:"author,omitempty"`
 	AuthorStanding string   `json:"author_standing,omitempty"`
 	Artifacts      []string `json:"artifacts,omitempty"`
-	// Report is a report session's guide: what to write in
-	// the last message instead of changing code; "" for a coding session.
-	Report string `json:"report,omitempty"`
+	// ReportMode marks a report session, which writes its answer through a
+	// filing tool or its last message instead of changing code. Report is
+	// the text its brief ends with, "" for none.
+	ReportMode bool   `json:"report_mode,omitempty"`
+	Report     string `json:"report,omitempty"`
 	// CardRole is a plan's card's role in the plan, whose guide the brief
 	// ends with; "" for any other task.
 	CardRole string `json:"card_role,omitempty"`

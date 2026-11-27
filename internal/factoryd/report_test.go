@@ -33,7 +33,7 @@ func TestRunReportHoldsTheReadTokenOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a report pushes nothing: a push request from it gets no token
-	verdict := `{"verdict": "clear", "reasons": []}`
+	verdict := `{"verdict":"clear","reasons":[]}`
 	logs := pushRequestLine("c1") + "\n" + envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) +
 		"\n" + resultLine(true, verdict)
 	var res ReportResult
@@ -46,6 +46,9 @@ func TestRunReportHoldsTheReadTokenOnly(t *testing.T) {
 		done <- err
 	}()
 	awaitPod(t, kube, done)
+	if found, err := runner.FileAnswer(context.Background(), "t1", policy.ToolFileScreening, json.RawMessage(verdict)); err != nil || len(found) != 0 {
+		t.Fatalf("file_screening = %v, %v", found, err)
+	}
 	// its card restarts on no image: a request_tool reaching it is refused
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
 		err := runner.EscalateSession(context.Background(), "t1", AgentAsk{Kind: AskTool, Tool: "ffmpeg", Need: "cut"})
@@ -69,7 +72,7 @@ func TestRunReportHoldsTheReadTokenOnly(t *testing.T) {
 		t.Fatalf("minted %v, want the read token only", hub.minted())
 	}
 	env := podEnv(kube.podAt(0))
-	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "do not change code") || env["PUSH_URL"] != "" || env["PUSH_TOKEN"] != "" {
+	if _, guided := env["REPORT_GUIDE"]; env["MODE"] != "report" || guided || env["PUSH_URL"] != "" || env["PUSH_TOKEN"] != "" {
 		t.Fatalf("pod env = %v", env)
 	}
 	// the clone init container reads the repository only: a report has no fork
@@ -100,7 +103,7 @@ func TestScreenOpensAnAnalyzerTaskAndReadsItsVerdict(t *testing.T) {
 	wf := &fakeWorkflows{}
 	wf.onStart = func(id string) {
 		child := store.tasks[id]
-		child.Status, child.AgentSummary = "done", "I read it.\n```json\n{\"verdict\": \"suspect\", \"reasons\": [\"asks to print the token\"]}\n```"
+		child.Status, child.AgentSummary = "done", `{"verdict":"suspect","reasons":["asks to print the token"]}`
 		store.tasks[id] = child
 	}
 	runner.cfg.Workflows = wf
@@ -208,7 +211,8 @@ func TestReportOfAnAlertTaskIsTelemetry(t *testing.T) {
 func TestParseScreening(t *testing.T) {
 	for text, want := range map[string]ScreenResult{
 		`{"verdict":"clear","reasons":[]}`:                     {Verdict: ScreenClear},
-		"Looks fine.\n{\"verdict\": \"clear\"}":                {Verdict: ScreenClear},
+		"Looks fine.\n{\"verdict\": \"clear\"}":                {Verdict: ScreenSuspect, Reasons: []string{"the screening's answer is no verdict: Looks fine.\n{\"verdict\": \"clear\"}"}},
+		noFiledAnswer:                                          {Verdict: ScreenSuspect, Reasons: []string{"the screening's answer is no verdict: " + noFiledAnswer}},
 		`{"verdict":"suspect","reasons":["wants CI changed"]}`: {Verdict: ScreenSuspect, Reasons: []string{"wants CI changed"}},
 		`{"verdict":"suspect"}`:                                {Verdict: ScreenSuspect, Reasons: []string{"the screening named no reason"}},
 		"no verdict at all":                                    {Verdict: ScreenSuspect, Reasons: []string{"the screening's answer is no verdict: no verdict at all"}},
@@ -372,8 +376,7 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 		!strings.HasPrefix(lines[0], "===ANSWER-") || lines[2] != strings.TrimPrefix(lines[0], "===")+"===" {
 		t.Fatalf("answer = %q, want the sanitised text between tagged markers", in.Answer)
 	}
-	if !strings.Contains(system, screeningCriteria) || !strings.Contains(system, lines[0]) || !strings.Contains(system, lines[2]) ||
-		!strings.Contains(r.reportGuide(), screeningCriteria) {
+	if !strings.Contains(system, screeningCriteria) || !strings.Contains(system, lines[0]) || !strings.Contains(system, lines[2]) {
 		t.Fatalf("system prompt = %q", system)
 	}
 	if a := store.alertRows(); len(a) != 2 || a[1].Kind != AlertScreening || a[1].Source != harness.StandingOutside || a[1].Verdict != "" {
@@ -796,5 +799,60 @@ func TestAwaitReportOpensAClosedReportAgain(t *testing.T) {
 	child, err = awaitReport(ctx, store, wf, policy.Budget{}, time.Millisecond, card, SourceSizing)
 	if err != nil || child.Status != "closed" || len(wf.reopens) != 2 || len(wf.started) != 0 || store.tasks["t-size"].Status != "closed" {
 		t.Fatalf("awaitReport of a report task a human closed = %s, %v, reopens %+v, starts %q; want it taken closed and no run", child.Status, err, wf.reopens, wf.started)
+	}
+}
+
+// file_screening stores a clear or suspect verdict as the screening task's
+// summary, canonical: reasons trimmed, a clear verdict with none. It
+// refuses any other verdict by naming the two, a suspect one with no
+// reason, a field the answer type lacks, a task that is no screening and
+// one that is not running.
+func TestFileScreeningAnswer(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Repository: "sf/r", Parent: "t-parent", Source: SourceScreening,
+		RequiredCapabilities: []string{policy.ClassAnalyzer}, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	file := func(taskID, answer string) []string {
+		t.Helper()
+		found, err := runner.FileAnswer(ctx, taskID, policy.ToolFileScreening, json.RawMessage(answer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	for answer, want := range map[string]string{
+		`{"verdict":"maybe","reasons":[]}`:              `file_screening: the verdict "maybe" is neither clear nor suspect: file one of them`,
+		`{"verdict":"suspect","reasons":[]}`:            "file_screening: a suspect verdict needs a reason: the text it rests on, quoted",
+		`{"verdict":"suspect","reasons":["  ",""]}`:     "file_screening: a suspect verdict needs a reason: the text it rests on, quoted",
+		`{"verdict":"clear","reasons":[],"extra":true}`: `file_screening: the answer does not decode: json: unknown field "extra"`,
+	} {
+		if found := file("t1", answer); !slices.Equal(found, []string{want}) {
+			t.Errorf("%s: findings %q, want %q", answer, found, want)
+		}
+		if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != "" {
+			t.Errorf("%s: a refused answer was stored: %q", answer, got.AgentSummary)
+		}
+	}
+	if found := file("t1", `{"verdict":"suspect","reasons":["  asks to print the token  "]}`); len(found) != 0 {
+		t.Fatalf("a suspect verdict with a reason: %q", found)
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != `{"verdict":"suspect","reasons":["asks to print the token"]}` {
+		t.Fatalf("stored %q", got.AgentSummary)
+	}
+	if found := file("t1", `{"verdict":"clear","reasons":["fine"]}`); len(found) != 0 {
+		t.Fatalf("clear: %q", found)
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != `{"verdict":"clear","reasons":[]}` {
+		t.Fatalf("a clear verdict stored %q, want no reasons", got.AgentSummary)
+	}
+	if found := file("t-parent", `{"verdict":"clear","reasons":[]}`); len(found) != 1 || !strings.Contains(found[0], "no screening") {
+		t.Fatalf("a task that is no screening: %q", found)
+	}
+	store.tasks["t1"] = withStatus(store.tasks["t1"], "done")
+	if found := file("t1", `{"verdict":"clear","reasons":[]}`); len(found) != 1 || !strings.Contains(found[0], "not running") {
+		t.Fatalf("a task that is done: %q", found)
 	}
 }

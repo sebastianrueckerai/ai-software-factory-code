@@ -1189,9 +1189,19 @@ func TestBriefOutsiderTextSanitised(t *testing.T) {
 
 // A report session's brief ends with its guide, not the coding guide.
 func TestBriefTextOfAReportEndsWithItsGuide(t *testing.T) {
-	got := briefText(harness.TaskBrief{Objective: "o", Report: "Write, do not code."}, "T")
+	got := briefText(harness.TaskBrief{Objective: "o", ReportMode: true, Report: "Write, do not code."}, "T")
 	if want := SandboxFacts(nil, nil) + "\n" +
 		"The task is the card's brief between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\no\nISSUE-T>>>\n\n" + "Write, do not code."; got != want {
+		t.Fatalf("brief =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A report session with no guide ends its brief on the card's brief: no
+// coding guide follows and no blank line trails.
+func TestBriefTextOfAReportWithoutAGuideEndsWithTheBrief(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "o", ReportMode: true}, "T")
+	if want := SandboxFacts(nil, nil) + "\n" +
+		"The task is the card's brief between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\no\nISSUE-T>>>"; got != want {
 		t.Fatalf("brief =\n%s\nwant\n%s", got, want)
 	}
 }

@@ -68,7 +68,7 @@ func (r *Runner) messageWorker(ctx context.Context, ns, pod, token string, p pro
 // re-post the same token instead of minting again. The worker's 409 (no
 // push waits) is harness.ErrNotRunning.
 func (r *Runner) answerPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, minted map[int]string, ask harness.PushRequest) error {
-	if s.report != "" {
+	if s.report {
 		return errors.New("a report session pushes nothing")
 	}
 	if ask.Own < 1 {

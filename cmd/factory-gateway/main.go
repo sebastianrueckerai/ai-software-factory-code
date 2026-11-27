@@ -104,6 +104,7 @@ func main() {
 		Escalator:        factoryd,
 		PlanFiler:        factoryd,
 		ProofsFiler:      factoryd,
+		AnswerFiler:      factoryd,
 		Delegator:        factoryd,
 		DeploymentReader: factoryd,
 		ImageLooker:      factoryd,

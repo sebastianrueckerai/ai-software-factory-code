@@ -43,7 +43,7 @@ func priorState(s sessionSpec, record func() ([]byte, error)) *carryState {
 	if s.record != nil {
 		return s.record
 	}
-	if s.parent == "" || s.report != "" || s.planner || s.parentOutcome == OutcomePushed {
+	if s.parent == "" || s.report || s.planner || s.parentOutcome == OutcomePushed {
 		return nil
 	}
 	rec, err := record()

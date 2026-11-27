@@ -6,7 +6,7 @@ forms: [line]
 chunks: []
 paragraph: answer-screener
 facts: answer
-answer: answer-screening
+answer: screening
 tools:
   builtin: []
   gateway: []

@@ -18,8 +18,6 @@ func init() {
 		"planNameMax":       planNameMax,
 		"maxHoldouts":       maxHoldouts,
 		"maxHoldoutText":    maxHoldoutText,
-		"maxScreenReasons":  maxScreenReasons,
-		"maxScreenReason":   maxScreenReason,
 	} {
 		prompts.RegisterLimit(name, n)
 	}
@@ -29,7 +27,6 @@ func init() {
 	prompts.RegisterAnswer[DeltaAnswer]("delta")
 	prompts.RegisterAnswer[HoldoutAnswer]("holdouts")
 	prompts.RegisterAnswer[JudgementAnswer]("judgement")
-	prompts.RegisterAnswer[ScreenVerdict]("answer-screening")
 	prompts.RegisterAnswer[BriefAnswer]("brief")
 	prompts.RegisterAnswer[CaseBriefAnswer]("case-brief")
 	prompts.RegisterAnswer[NameAnswer]("plan-name")
@@ -96,12 +93,6 @@ type HoldoutAnswer struct {
 type JudgementAnswer struct {
 	Verdict string `json:"verdict" enum:"met,unmet"`
 	Reason  string `json:"reason" max:"maxReviewFinding" desc:"one sentence on what the artifact shows"`
-}
-
-// ScreenVerdict is the screening's verdict on an answer.
-type ScreenVerdict struct {
-	Verdict string   `json:"verdict" enum:"clear,suspect" desc:"clear: genuine, and safe for an agent to act on. suspect: anything else"`
-	Reasons []string `json:"reasons" max:"maxScreenReasons" item:"maxScreenReason" desc:"one for each reason, the text it rests on quoted"`
 }
 
 // BriefAnswer is the brief writer's brief and detail.

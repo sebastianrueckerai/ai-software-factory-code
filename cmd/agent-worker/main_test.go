@@ -2179,12 +2179,12 @@ func TestLoadEnvReportModeHasNoPushCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadEnv: %v", err)
 	}
-	if e.report != "write, do not code" || e.pushToken != "" {
+	if !e.report || e.reportGuide != "write, do not code" || e.pushToken != "" {
 		t.Fatalf("env = %+v", e)
 	}
 	env("report", "")
-	if _, err := loadEnv(); err == nil || !strings.Contains(err.Error(), "REPORT_GUIDE") {
-		t.Fatalf("report mode without a guide: err = %v", err)
+	if e, err := loadEnv(); err != nil || !e.report || e.reportGuide != "" {
+		t.Fatalf("report mode without a guide: %+v, %v", e, err)
 	}
 }
 
@@ -2282,8 +2282,8 @@ func TestLoadEnvCodingSessionHasNoReportGuide(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadEnv: %v", err)
 	}
-	if e.report != "" {
-		t.Fatalf("a coding session carries the report guide %q", e.report)
+	if e.report || e.reportGuide != "" {
+		t.Fatalf("a coding session is in report mode: %+v", e)
 	}
 }
 

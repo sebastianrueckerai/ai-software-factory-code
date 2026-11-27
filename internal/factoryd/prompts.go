@@ -73,13 +73,13 @@ func init() {
 	prompts.RegisterStep("coding-card", []string{"factoryd.(*Runner).RunSession"},
 		sessionFixture("coding-card", harness.TaskBrief{Tools: coder, CardRole: RoleFeature}))
 	prompts.RegisterStep("planner", []string{"factoryd.(*Runner).RunPlan"},
-		sessionFixture("planner", harness.TaskBrief{Report: planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil, nil)}))
+		sessionFixture("planner", harness.TaskBrief{ReportMode: true, Report: planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil, nil)}))
 	prompts.RegisterStep("prover", []string{"factoryd.(*Runner).RunReport"},
-		sessionFixture("prover", harness.TaskBrief{Report: proverGuide(agentDocPlan(), nil, nil)}))
+		sessionFixture("prover", harness.TaskBrief{ReportMode: true, Report: proverGuide(agentDocPlan(), nil, nil)}))
 	prompts.RegisterStep("screening", []string{"factoryd.(*Runner).RunReport"},
-		sessionFixture("screening", harness.TaskBrief{Report: (&Runner{}).reportGuide()}))
+		sessionFixture("screening", harness.TaskBrief{ReportMode: true}))
 	prompts.RegisterStep("sizing", []string{"factoryd.(*Runner).RunReport"},
-		sessionFixture("sizing", harness.TaskBrief{Report: sizingGuide(sizeLines(600))}))
+		sessionFixture("sizing", harness.TaskBrief{ReportMode: true, Report: sizingGuide(sizeLines(600))}))
 	prompts.RegisterStep("message-responder", []string{"factoryd.(*Runner).MessageSession"}, sessionMessage("sebastian", "Why is the check red?"))
 	prompts.RegisterStep("supervisor-guidance", []string{"factoryd.(*Runner).message"}, "Run bash check changed before you end the session.")
 	prompts.RegisterStep("nudge", []string{"factoryd.(*Runner).nudge"}, Nudge{Tool: "bash", Call: "go test ./...", Count: 3}.Text())

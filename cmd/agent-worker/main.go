@@ -123,7 +123,7 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 		s.writeResult(stdout, startFailed(err))
 		return 1
 	}
-	if s.env.report != "" {
+	if s.env.report {
 		return runReport(ctx, s, stdout, log)
 	}
 	emit := s.emitter(stdout)
@@ -317,7 +317,8 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		PosterInfo:     s.env.posterInfo,
 		Author:         s.env.author,
 		AuthorStanding: s.env.authorStanding,
-		Report:         s.env.report,
+		Report:         s.env.reportGuide,
+		ReportMode:     s.env.report,
 		Tools:          s.env.tools,
 		CardRole:       s.env.cardRole,
 		LeftOut:        leftOut,
@@ -354,7 +355,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	// one arrives within the wait, is the brief's first section
 	push := checkin.waitBrief(log)
 	s.brief.Handover, s.brief.Digest, s.brief.Prior, s.brief.Proofs = push.Handover, push.Digest, push.Prior, push.InClone
-	if s.env.report == "" {
+	if !s.env.report {
 		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base, s.mainHead); err != nil {
 			return s, startError{"checkpoint store", err}
 		}
@@ -598,9 +599,11 @@ type workerEnv struct {
 	// messageHash is sha256 of the session's message bearer, which only
 	// factoryd holds
 	messageHash [32]byte
-	// report is a report session's guide (MODE report): no
-	// push URL or token, nothing pushed, the last message the result
-	report string
+	// report marks a report session (MODE report): no push URL or token,
+	// nothing pushed, the last message the result; reportGuide is the text
+	// its brief ends with (REPORT_GUIDE), "" for none
+	report      bool
+	reportGuide string
 	// cardRole is a plan's card's role (CARD_ROLE)
 	cardRole string
 	// step is the session's prompt step (STEP), whose profile gives the
@@ -679,8 +682,7 @@ func loadEnv() (workerEnv, error) {
 		"EGRESS_CANARY": e.egressCanary, "EGRESS_DIRECT_IP": e.egressDirectIP,
 	}
 	if str("MODE") == "report" {
-		e.report = str("REPORT_GUIDE")
-		required["REPORT_GUIDE"] = e.report
+		e.report, e.reportGuide = true, str("REPORT_GUIDE")
 	} else {
 		required["PUSH_URL"] = e.pushURL
 	}

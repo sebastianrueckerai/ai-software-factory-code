@@ -118,13 +118,13 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	case "coding":
 		b.Findings = agentDocDeathLines()
 	case "screening":
-		b.Report = (&Runner{}).reportGuide()
+		b.ReportMode = true
 	case "sizing":
-		b.Report = sizingGuide(sizeLines(v.Document.Risk.LargeLines))
+		b.ReportMode, b.Report = true, sizingGuide(sizeLines(v.Document.Risk.LargeLines))
 	case "planner":
-		b.Report = planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
+		b.ReportMode, b.Report = true, planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
 	case "prover":
-		b.Report = proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
+		b.ReportMode, b.Report = true, proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
 			Claim: "The counter counts a row the query skips twice.", Inputs: "a table with two skipped rows", Expected: "a count of 2", State: ProofOkayed}}, nil)
 	}
 	return b
@@ -166,10 +166,9 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 		guide = workGuide(b.Tools, b.Image)
 	} else {
 		symbol = map[string]string{
-			"screening": "(*Runner).reportGuide",
-			"sizing":    "sizingGuide",
-			"planner":   "planGuide",
-			"prover":    "proverGuide",
+			"sizing":  "sizingGuide",
+			"planner": "planGuide",
+			"prover":  "proverGuide",
 		}[id]
 	}
 	s := []agentdoc.Span{
@@ -214,7 +213,10 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 	}
 	if len(b.Tools) > 0 {
 		s = append(s, agentdoc.Span{Name: "the tools line", Symbol: "toolsLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: "\n\n" + toolsLine + "\n"})
+			Text: "\n\n" + toolsLine + strings.Repeat("\n", min(len(guide), 1))})
+	}
+	if guide == "" {
+		return s
 	}
 	return append(s, agentdoc.Span{Name: "the guide", Symbol: symbol, Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: guide})
 }
@@ -243,20 +245,26 @@ func agentDocLoopMessage() (prompts.Prompt, []agentdoc.Span, error) {
 
 // agentDocLoopWireSpans reads the wire parts of the recorded body: the
 // system prompt split around the session step's standing text, which
-// replaces the harness's preamble, and the repository's AGENTS.md, the
-// scripted turns that follow the brief, and the offered tools —
+// replaces the harness's preamble, and the repository's AGENTS.md when the
+// step's profile loads it (agents; a step that does not must hold none),
+// the scripted turns that follow the brief, and the offered tools —
 // opencode's own built-ins beside the gateway's MCP ones. The page shows
 // the wire, never a reconstruction.
-func agentDocLoopWireSpans(b agentdoc.Body, standing, agents string) ([]agentdoc.Span, error) {
+func agentDocLoopWireSpans(b agentdoc.Body, standing string, agents bool) ([]agentdoc.Span, error) {
 	var spans []agentdoc.Span
 	for _, m := range b.Messages {
 		if m.Role != "system" {
 			continue
 		}
 		sys := loopText(m)
-		i := strings.Index(sys, agents)
-		if i < 0 {
+		i := strings.Index(sys, agentDocLoopAgents)
+		switch {
+		case agents && i < 0:
 			return nil, errors.New("the system prompt holds no AGENTS.md")
+		case !agents && i >= 0:
+			return nil, errors.New("the system prompt holds the repository's AGENTS.md, which the step's profile does not load")
+		case !agents:
+			i = len(sys)
 		}
 		pre := sys[:i]
 		j := strings.Index(pre, standing)
@@ -273,9 +281,12 @@ func agentDocLoopWireSpans(b agentdoc.Body, standing, agents string) ([]agentdoc
 			spans = append(spans, agentdoc.Span{Name: "the harness's environment", Symbol: AgentDocOpencodeVersion,
 				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: env})
 		}
+		if !agents {
+			continue
+		}
 		spans = append(spans, agentdoc.Span{Name: "AGENTS.md", Symbol: "AGENTS.md",
-			Kind: agentdoc.KindFile, Place: agentdoc.PlaceSystem, Text: agents})
-		if tail := sys[i+len(agents):]; tail != "" {
+			Kind: agentdoc.KindFile, Place: agentdoc.PlaceSystem, Text: agentDocLoopAgents})
+		if tail := sys[i+len(agentDocLoopAgents):]; tail != "" {
 			spans = append(spans, agentdoc.Span{Name: "the harness tail", Symbol: AgentDocOpencodeVersion,
 				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: tail})
 		}
@@ -633,7 +644,8 @@ func AgentDocLoop(ctx context.Context, id, bin, bake string, v policy.Version) (
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
 	}
-	wire, err := agentDocLoopWireSpans(body, prompt.Standing(), agentDocLoopAgents)
+	profile, _ := prompts.ProfileOf(brief.Step)
+	wire, err := agentDocLoopWireSpans(body, prompt.Standing(), profile.AgentsMD)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
 	}

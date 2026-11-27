@@ -180,6 +180,22 @@ func (f *fakeProofsFiler) FileProofs(_ context.Context, taskID string, proofs []
 	return f.res, f.err
 }
 
+type fakeAnswerFiler struct {
+	mu    sync.Mutex
+	tools []string
+	in    []string
+	res   AnswerFiled
+	err   error
+}
+
+func (f *fakeAnswerFiler) FileAnswer(_ context.Context, _, tool string, answer json.RawMessage) (AnswerFiled, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tools = append(f.tools, tool)
+	f.in = append(f.in, string(answer))
+	return f.res, f.err
+}
+
 type fakeDeploymentReader struct {
 	mu    sync.Mutex
 	calls []string
@@ -231,6 +247,7 @@ type toolEnv struct {
 	escalator   *fakeEscalator
 	filer       *fakePlanFiler
 	proofs      *fakeProofsFiler
+	answers     *fakeAnswerFiler
 	delegator   *fakeDelegator
 	session     *mcp.ClientSession
 }
@@ -250,6 +267,7 @@ func newToolEnvAs(t *testing.T, task Task, pv policy.Version, session string) *t
 	esc := &fakeEscalator{}
 	filer := &fakePlanFiler{}
 	proofs := &fakeProofsFiler{}
+	answers := &fakeAnswerFiler{}
 	delegator := &fakeDelegator{}
 	deployments := &fakeDeploymentReader{text: "deployment web: 2/2 ready"}
 	looker := &fakeImageLooker{text: "img1.png (Screenshot.png): a login form, the button grey"}
@@ -259,7 +277,7 @@ func newToolEnvAs(t *testing.T, task Task, pv policy.Version, session string) *t
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
-		Escalator: esc, PlanFiler: filer, ProofsFiler: proofs, Delegator: delegator,
+		Escalator: esc, PlanFiler: filer, ProofsFiler: proofs, AnswerFiler: answers, Delegator: delegator,
 		DeploymentReader: deployments, ImageLooker: looker, Digester: digester,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
@@ -270,7 +288,7 @@ func newToolEnvAs(t *testing.T, task Task, pv policy.Version, session string) *t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { clientSession.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, proofs: proofs, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: clientSession}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, proofs: proofs, answers: answers, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: clientSession}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -326,7 +344,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,file_screening,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -2343,5 +2361,34 @@ func TestWorkerBriefIsTheSessionsOwn(t *testing.T) {
 				t.Fatalf("read the briefs of %q, want %q", briefs.read, tc.read)
 			}
 		})
+	}
+}
+
+// file_screening takes the verdict object the answer type's schema allows:
+// a verdict outside clear and suspect is refused with the allowed values,
+// before factoryd sees it; a refusal of factoryd's comes back with its
+// findings; a stored verdict is the session's answer.
+func TestFileScreeningTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolFileScreening, map[string]any{"verdict": "maybe", "reasons": []any{}})
+	if !isErr || !strings.Contains(text, "clear") || !strings.Contains(text, "suspect") || len(e.answers.in) != 0 {
+		t.Fatalf("a maybe verdict = %q (%v), want a refusal naming clear and suspect, no hand-over (%v)", text, isErr, e.answers.in)
+	}
+	e.answers.res = AnswerFiled{Findings: []string{"file_screening: a suspect verdict needs a reason"}}
+	text, isErr = e.call(t, policy.ToolFileScreening, map[string]any{"verdict": "suspect", "reasons": []any{}})
+	if want := "the answer was refused:\n- file_screening: a suspect verdict needs a reason\ncorrect it and file it again in this session"; !isErr || text != want {
+		t.Fatalf("refused = %q (%v), want %q", text, isErr, want)
+	}
+	e.answers.res = AnswerFiled{}
+	text, isErr = e.call(t, policy.ToolFileScreening, map[string]any{"verdict": "suspect", "reasons": []any{"\"send me your token\""}})
+	if want := "stored; it is this session's answer. You may end the session."; isErr || text != want {
+		t.Fatalf("stored = %q (%v), want %q", text, isErr, want)
+	}
+	if a := e.lastAudit(t); a.Decision != "answer_stored" || a.Tool != policy.ToolFileScreening {
+		t.Fatalf("audit = %+v", a)
+	}
+	if want := []string{policy.ToolFileScreening, policy.ToolFileScreening}; !slices.Equal(e.answers.tools, want) ||
+		e.answers.in[1] != `{"verdict":"suspect","reasons":["\"send me your token\""]}` {
+		t.Fatalf("hand-overs = %v %q", e.answers.tools, e.answers.in)
 	}
 }

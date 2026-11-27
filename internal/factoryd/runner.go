@@ -714,9 +714,10 @@ type sessionSpec struct {
 	// step is the session's prompt step (prompts.Profiles), which the
 	// worker builds its prompt with
 	step string
-	// report is a report session's guide; "" for a coding
-	// session
-	report string
+	// report marks a report session, which pushes nothing; guide is the
+	// text its brief ends with, "" for none
+	report bool
+	guide  string
 	// standing overrides the task's author standing: a report reads its
 	// parent's issue
 	standing string
@@ -997,7 +998,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// the supervisor's clocks start with the pod: a slow pull is no time
 	// the agent had
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
-	supCfg.ReadOnly = s.report != ""
+	supCfg.ReadOnly = s.report
 	supCfg.PriorPush = s.startRef != s.base && !s.interimStart
 	if spentAtStart != nil {
 		supCfg.SpentAtStart = *spentAtStart
@@ -1047,7 +1048,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// pod's death before the pod goes, from the end's evidence alone, once
 	// the over-bound push settled the last push its line names
 	defer func() {
-		delivered := out.commit != "" || s.report != "" && out.result != nil && out.result.Success
+		delivered := out.commit != "" || s.report && out.result != nil && out.result.Success
 		if err == nil && out.death == nil && !delivered {
 			keepDeath(deathNow(true))
 		}
@@ -1252,7 +1253,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return env.Event, false
 	}
 	// the agent's escalate reaches the session here until it stops
-	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s), holdStop: s.holdStop})
+	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report, cuttable: cuttable(t, s), holdStop: s.holdStop})
 	defer unregister()
 	// halt is the stop without its wait: the stop written to the session's
 	// row, the trip abandoned and the pod deleted; false when the session
@@ -1768,7 +1769,7 @@ func startCheckinTime(limits policy.Limits, deadline time.Time) time.Duration {
 // an extend's raises, the agent time of the earlier sessions plus this
 // one's. A report session has no card bound and no session count: nil.
 func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines int, started, deadline time.Time) *Pace {
-	if s.report != "" {
+	if s.report {
 		return nil
 	}
 	t, s = r.cardNow(ctx, t, s)
@@ -1863,7 +1864,7 @@ func (r *Runner) holds(ctx context.Context, taskID, owner string) bool {
 // card's diff has the line bound its size plans. A report and a planner
 // session write no card's code.
 func sizeBounded(t Task, s sessionSpec) bool {
-	return s.report == "" && !s.planner && t.Kind == "agent" && !t.Unbound()
+	return !s.report && !s.planner && t.Kind == "agent" && !t.Unbound()
 }
 
 // cuttable: the planner can cut the rest of the session's card into
@@ -1968,7 +1969,7 @@ func (r *Runner) checkinMoney(ctx context.Context, t Task) (callTask string, eur
 // sessionDigest is the card's digest a session after the first reads
 // after its handover, "" for the first session and for a report.
 func (r *Runner) sessionDigest(ctx context.Context, t Task, s sessionSpec) string {
-	if s.parent == "" || s.report != "" {
+	if s.parent == "" || s.report {
 		return ""
 	}
 	d, err := r.CardDigest(ctx, t.ID)
@@ -2986,7 +2987,7 @@ const workerContainer = "worker"
 
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	tools := prompts.Offered(s.step, s.policy.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
-	if s.report != "" {
+	if s.report {
 		// a report session's card restarts on no image
 		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestTool })
 	}
@@ -3057,8 +3058,11 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "TASK_PR", "value": strconv.FormatInt(t.PRNumber, 10)})
 	}
 	env = append(env, map[string]any{"name": "STEP", "value": s.step})
-	if s.report != "" {
-		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.report, "the report's guide")})
+	if s.report {
+		env = append(env, map[string]any{"name": "MODE", "value": "report"})
+		if s.guide != "" {
+			env = append(env, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.guide, "the report's guide")})
+		}
 		if len(s.branches) > 0 {
 			cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))})
 		}

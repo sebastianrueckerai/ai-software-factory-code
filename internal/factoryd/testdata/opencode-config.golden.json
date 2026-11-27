@@ -27,6 +27,7 @@
     "factory-tools_fal_run": "deny",
     "factory-tools_file_plan": "deny",
     "factory-tools_file_proofs": "deny",
+    "factory-tools_file_screening": "deny",
     "factory-tools_list_resources": "deny",
     "factory-tools_release_resource": "deny",
     "factory-tools_replicate_predict": "deny",
