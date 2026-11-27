@@ -27,6 +27,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
@@ -2945,7 +2946,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	r.newBriefSession(taskID)
 	began := time.Now()
-	tools := v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage))
+	tools := prompts.Offered("planner", v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
 	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), "planner", pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
 	if err != nil {
 		return PlanResult{}, err

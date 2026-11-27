@@ -368,6 +368,8 @@ func TestAgentDocLoopRecord(t *testing.T) {
 				want = "factory-tools_file_plan"
 			case "prover":
 				want = "factory-tools_file_proofs"
+			case "screening", "sizing":
+				want = "factory-tools_manual"
 			}
 			if !slices.Contains(names, want) {
 				t.Errorf("%s: the wire offers no %s: %v", id, want, names)
