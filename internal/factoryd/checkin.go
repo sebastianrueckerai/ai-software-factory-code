@@ -1020,14 +1020,13 @@ type convEnd struct {
 // repair round, then ends the conversation unreadable; a refusal on the
 // last call ends it at once unless RepairPastCap gives it one repair call
 // past the call cap. Every call posts the answer tool beside the evidence
-// tools; the
-// last call posts only it and forces it with tool_choice. Any other tool
-// asked for on the last call is the call cap's end. The last call comes at
-// the call cap or once an evidence call as long as the longest so far
-// would not end before the answer is due, whichever is first, and an
-// evidence call still running when the answer is due is cut. A call the
-// time cap cuts ends it at the time cap. A provider that refuses a call
-// ends it refused. Every call lands in the result.
+// tools; the last call posts only it and forces it with tool_choice. Any
+// other tool asked for on the last call is the call cap's end. The last
+// call comes at the call cap or once an evidence call as long as the
+// longest so far would not end before the answer is due, whichever is
+// first, and an evidence call still running when the answer is due is cut.
+// A call the time cap cuts ends it at the time cap. A provider that refuses
+// a call ends it refused. Every call lands in the result.
 func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, alias string, c conversation) convEnd {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, c.TimeCap)

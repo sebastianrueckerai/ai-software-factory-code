@@ -1041,13 +1041,14 @@ const gatePersona = `You are the factory's check-in at a gate return. Judge each
 // against any property it does not name.
 func TestCheckinSystemOffersRepeatsOnlyWithPriors(t *testing.T) {
 	bare := &CheckInAsk{Moment: CheckInGate}
+	got := checkinSystemFor(bare)
 	for _, banned := range []string{`"repeats"`, "repeats is optional"} {
-		if got := checkinSystemFor(bare); strings.Contains(got, banned) {
+		if strings.Contains(got, banned) {
 			t.Errorf("no priors: persona holds %q:\n%s", banned, got)
 		}
 	}
 	with := &CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "f1", Text: "p"}}}
-	if got := checkinSystemFor(with); !strings.Contains(got, `"repeats":"<id>"`) {
+	if got = checkinSystemFor(with); !strings.Contains(got, `"repeats":"<id>"`) {
 		t.Errorf("priors: persona lacks the repeats example:\n%s", got)
 	}
 	item := func(a *CheckInAsk) map[string]any {
