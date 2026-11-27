@@ -596,7 +596,7 @@ func documentScene(now time.Time) labScene {
 	)
 	s.open, s.seen[4] = 4, int64(len(s.chat))
 	s.replies = []labReply{
-		{{Call: [][2]string{{"show_doc", `{"path":"docs/plans/2026-09-24-build-plan.md"}`}}}},
+		{{Call: [][2]string{{ToolSchemaName, `{"name":"show_doc"}`}, {"show_doc", `{"path":"docs/plans/2026-09-24-build-plan.md"}`}}}},
 		{{Say: "The build plan is open in your document view."}},
 	}
 	return s
@@ -2124,7 +2124,7 @@ func TestLabDocumentScene(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"open it"}})
 	at := slices.IndexFunc(ev, func(e string) bool {
-		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"show_doc"`)
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"duration_ms":0,"name":"show_doc"`)
 	})
 	if at < 0 {
 		t.Fatalf("the turn holds no show_doc block:\n%s", strings.Join(ev, "\n"))

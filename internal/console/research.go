@@ -36,10 +36,14 @@ const (
 // researchWall bounds one research call's whole run; a test shortens it.
 var researchWall = 5 * time.Minute
 
-// researchTools are the reads the researcher may drive, in the menu's
-// order: the same run funcs the chat's own dispatch runs, so the digest
-// wrapper on big reads and pages rides along. No sandbox, no writes.
-var researchTools = []string{"tree", "grep", "file", "read_doc", "web_search", "web_scrape"}
+// researchTools are the reads the researcher may drive, its profile's
+// chat tools in the menu's order: the same run funcs the chat's own
+// dispatch runs, so the digest wrapper on big reads and pages rides
+// along. No sandbox, no writes.
+func researchTools() []string {
+	p, _ := prompts.ProfileOf("research")
+	return p.Tools.Chat
+}
 
 // researchPrompt is the researcher's whole brief.
 const researchPrompt = "You research one question for the project agent. Work alone: call a tool, read its answer, decide the next. " +
@@ -71,7 +75,7 @@ func (t *turn) research(question string) (string, string, error) {
 		}
 	}()
 	var defs []factoryd.OperatorTool
-	for _, name := range researchTools {
+	for _, name := range researchTools() {
 		if tool, ok := t.c.chatTool(name); ok {
 			defs = append(defs, tool.def(false))
 		}
@@ -126,7 +130,7 @@ func (t *turn) researchTool(in toolInput) (string, *inverse, error) {
 // trail.
 func (t *turn) researchCall(call factoryd.OperatorCall, trail *strings.Builder) string {
 	tool, ok := t.c.chatTool(call.Name)
-	if !ok || !slices.Contains(researchTools, call.Name) {
+	if !ok || !slices.Contains(researchTools(), call.Name) {
 		return call.Name + " is not one of the research tools."
 	}
 	var in toolInput

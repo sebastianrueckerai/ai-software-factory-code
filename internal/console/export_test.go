@@ -167,11 +167,11 @@ func TestChatGithubExport(t *testing.T) {
 		return `tool {"arguments":` + ran + `,"duration_ms":0,"name":"github_export","result":"` + result + `"}`
 	}
 	none := "Refused: demo-app has no GitHub token for an export. Set the export's token on the settings page: https://console.example/settings?project=demo-app#export-demo-app"
-	g.replies = [][]string{{call(1, "github_export", args)}, {say("Set it first.")}}
+	g.replies = [][]string{{fetchCall(1, "github_export", args)}, {say("Set it first.")}}
 	_, events, _ := chatPost(t, r, ck, s, demo, url.Values{"message": {"export to acme/app"}})
-	equal(t, "without a token", events, []string{tool(none), `text {"text":"Set it first."}`, `done {}`})
+	equal(t, "without a token", events, []string{schemaEvent(t, r, "demo-app", "github_export"), tool(none), `text {"text":"Set it first."}`, `done {}`})
 	var params any
-	for _, d := range g.calls()[0]["tools"].([]any) {
+	for _, d := range g.calls()[1]["tools"].([]any) {
 		if f := d.(map[string]any)["function"].(map[string]any); f["name"] == "github_export" {
 			params = f["parameters"]
 		}
@@ -213,9 +213,10 @@ func TestChatGithubExport(t *testing.T) {
 		`text {"text":"Ask an approver."}`, `done {}`})
 
 	g.project = ""
-	g.replies = [][]string{{call(1, "github_export", args)}, {say("It is the factory's own.")}}
+	g.replies = [][]string{{fetchCall(1, "github_export", args)}, {say("It is the factory's own.")}}
 	_, seed, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"export the factory"}})
 	equal(t, "the seed project's", seed, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "github_export"),
 		tool("Refused: ai-software-factory-code is the factory's own: infra's push-mirrors CronJob mirrors it"),
 		`text {"text":"It is the factory's own."}`, `done {}`})
 	equal(t, "Forgejo calls of the refused", r.mirrors.took(), []string(nil))

@@ -52,13 +52,13 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 			t.Errorf("%s: the system message does not end with %q:\n%s", tc.agents, want+tc.line, system)
 		}
 		var offered []string
-		for _, tool := range call["tools"].([]any) {
-			if name := tool.(map[string]any)["function"].(map[string]any)["name"].(string); name == "project_images" || name == "request_image" {
+		for _, name := range []string{"project_images", "request_image"} {
+			if inIndex(call["tools"].([]any), name) {
 				offered = append(offered, name)
 			}
 		}
 		if want := map[string][]string{policy.AgentsCoder: {"project_images", "request_image"}}[tc.agents]; !slices.Equal(offered, want) {
-			t.Errorf("%s: the image tools offered are %v, want %v", tc.agents, offered, want)
+			t.Errorf("%s: the image tools indexed are %v, want %v", tc.agents, offered, want)
 		}
 	}
 }
@@ -219,9 +219,12 @@ func TestChatRequestImageAtAssisted(t *testing.T) {
 		Target: "ffmpeg", Filed: true}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("Asked.")}}
+	g.replies = [][]string{{fetchCall(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("Asked.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"we need ffmpeg"}})
-	if !strings.Contains(events[0], `"result":"Filed tool card #50 t-tool`) {
+	if name, _, _ := toolEvent(t, events[0]); name != ToolSchemaName {
+		t.Fatalf("the ask is not behind its fetch: %v", events)
+	}
+	if !strings.Contains(events[1], `"result":"Filed tool card #50 t-tool`) {
 		t.Fatalf("the unconfirmed ask did not run: %v", events)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-tool", IssueNumber: 50, Kind: factoryd.EventCardFiled,
@@ -241,7 +244,7 @@ func TestChatRequestImageAdmission(t *testing.T) {
 	if rec := r.do(post("/projects/ai-software-factory-code/intake", url.Values{"csrf": {s.csrf}, "intake": {"closed"}}), ck); rec.Code != http.StatusNoContent {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
 	}
-	g.replies = [][]string{{call(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("Filed.")}}
+	g.replies = [][]string{{fetchCall(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("Filed.")}}
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
@@ -259,7 +262,7 @@ func TestChatRequestImageAdmission(t *testing.T) {
 			results = append(results, tc.Result)
 		}
 	}
-	equal(t, "the wake's ask", results, []string{
+	equal(t, "the wake's ask", results, []string{schemaResult(t, r, "ai-software-factory-code", "request_image"),
 		`Filed tool card #50 t-tool "Add ffmpeg to image ffmpeg". After it merges, the factory builds, signs and pins the image; cards can then name it in image. It cannot be undone.`})
 	before := r.events.count()
 

@@ -1626,7 +1626,7 @@ func TestChatTextReply(t *testing.T) {
 	for _, tool := range calls[0]["tools"].([]any) {
 		tools = append(tools, tool.(map[string]any)["function"].(map[string]any)["name"].(string))
 	}
-	equal(t, "tools", tools, policy.ChatTools)
+	equal(t, "tools", tools, append(slices.Clone(coreTools), ToolSchemaName))
 	task, ok, _ := r.tasks.Task(t.Context(), factoryd.ChatTaskID("ai-software-factory-code", time.Now()))
 	if !ok || task.Kind != factoryd.KindChat || task.Status != "running" || task.BudgetEUR != 10 || task.Repository != "sf/code" {
 		t.Fatalf("chat task = %v %+v, want kind chat, running, budget 10 on sf/code", ok, task)
@@ -1996,23 +1996,28 @@ func phrases(schema map[string]any) []param {
 // carries the suffix (needs OK) and no other does. Every parameter is one
 // short phrase of at most 60 characters; a parameter with a default
 // carries it in its schema and is not required, and answer's revision,
-// which only a plan's question takes, is not required either.
+// which only a plan's question takes, is not required either. The thread
+// of the turn has fetched every rare tool and carries an attachment, so
+// every tool's schema stands in the list.
 func TestChatToolSentences(t *testing.T) {
-	offered := func(r *rig, g *chatGateway) []map[string]any {
+	offered := func(r *rig, chat *fakeChat, g *chatGateway) []map[string]any {
 		t.Helper()
 		ck, s := r.loggedIn(t)
+		seedFetch(t, chat, "sf/code", "sebastian", chatTiers().Rare...)
 		g.replies = [][]string{{say("ok")}}
-		chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+		chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}}, testFile{name: "spec.md", data: []byte("one line\n")})
 		var fs []map[string]any
 		for _, d := range g.calls()[0]["tools"].([]any) {
 			fs = append(fs, d.(map[string]any)["function"].(map[string]any))
 		}
 		return fs
 	}
-	r, _, g := newChatRig(t)
+	r, chat, g := newChatRig(t)
 	var marked []string
 	required, defaults := map[string]any{}, map[string]any{}
-	for _, f := range offered(r, g) {
+	all := offered(r, chat, g)
+	equal(t, "the tools offered", len(all), len(policy.ChatTools))
+	for _, f := range all {
 		name, about := f["name"].(string), f["description"].(string)
 		sentence, ok := strings.CutSuffix(about, " (needs OK).")
 		if ok {
@@ -2035,10 +2040,9 @@ func TestChatToolSentences(t *testing.T) {
 			}
 		}
 	}
-	equal(t, "the tools marked (needs OK)", marked, []string{"promote_resource", "release_resource", "new_card", "request_image",
-		"answer", "tell_card", "retry", "request_changes", "approve_merge", "deny_merge", "invite",
-		"github_export", "github_sync", "close", "edit", "give_room", "set_dependency", "replan", "set_pool", "write_doc", "set_autonomy",
-		"routine_write", "routine_delete", "routine_run", "routine_skip"})
+	equal(t, "the tools marked (needs OK)", marked, []string{"new_card", "answer", "tell_card", "retry", "request_changes", "approve_merge", "deny_merge",
+		"close", "edit", "give_room", "promote_resource", "release_resource", "request_image", "invite", "github_export", "github_sync", "set_dependency",
+		"replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"})
 	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["edit"], required["set_accent"],
 		required["session_step"], required["answer"]},
 		[]any{[]any{"title", "why", "track", "track_reason"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
@@ -2047,9 +2051,9 @@ func TestChatToolSentences(t *testing.T) {
 		[]any{nil, "request_changes", "mirror", nil, float64(20), float64(1), float64(1), true})
 
 	// an empty confirm list marks only the always-confirm set
-	r, _, g = newChatRig(t)
+	r, chat, g = newChatRig(t)
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
-	for _, f := range offered(r, g) {
+	for _, f := range offered(r, chat, g) {
 		about := f["description"].(string)
 		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)) || f["name"] == "give_room"; always != strings.Contains(about, "(needs OK)") {
 			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and give_room, nothing else", f["name"], about)
@@ -2062,26 +2066,24 @@ func TestChatToolSentences(t *testing.T) {
 // refuse: alice writes and approves the factory's code and is offered
 // every tool; controller writes it and approves nothing, so the
 // approvers' tools go; bob writes demo, which alice approves, so the
-// factory's tools go too.
+// factory's tools go too. The core tools stand in the list, the rare ones
+// in tool_schema's index.
 func TestChatOffersTheMembersTools(t *testing.T) {
+	without := func(names []string, drop ...string) []string {
+		return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return slices.Contains(drop, n) })
+	}
 	for _, c := range []struct {
-		who, project string
-		want         []string
+		who, project  string
+		core, indexed []string
 	}{
-		{"alice", "ai-software-factory-code", policy.ChatTools},
-		{"controller", "ai-software-factory-code", []string{"system", "board", "find_cards", "card", "history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
-			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "cluster_facts", "resources",
-			"settings", "policy",
-			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
-			"rerun_checks", "set_accent", "close", "edit", "give_room", "set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines",
-			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
-			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
+		{"alice", "ai-software-factory-code", coreTools, rareTools},
+		{"controller", "ai-software-factory-code", without(coreTools, "retry", "approve_merge", "answer_criteria"),
+			[]string{"board", "ci", "alerts", "deployment_health", "cluster_facts", "resources", "settings", "policy", "project_images", "release_resource", "request_image",
+				"rerun_checks", "set_accent", "set_dependency", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "board_view", "board_view_reset"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
-		{"bob", "demo", []string{"system", "board", "find_cards", "card", "history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
-			"session_steps", "session_step", "session_search", "ci", "cluster_facts", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
-			"request_changes", "deny_merge", "rerun_checks", "set_accent", "close", "edit", "give_room",
-			"set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
-			"attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
+		{"bob", "demo", without(coreTools, "costs", "retry", "approve_merge", "answer_criteria"),
+			[]string{"board", "ci", "cluster_facts", "project_images", "request_image", "rerun_checks", "set_accent", "set_dependency", "write_doc", "show_doc", "routines",
+				"routine_run", "routine_skip", "board_view", "board_view_reset"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -2091,11 +2093,14 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		ck, s := memberLogin(t, r, c.who)
 		g.replies = [][]string{{say("ok")}}
 		chatPost(t, r, ck, s, "/projects/"+c.project+"/chat", url.Values{"message": {"what is open?"}})
-		var got []string
-		for _, d := range g.calls()[0]["tools"].([]any) {
-			got = append(got, d.(map[string]any)["function"].(map[string]any)["name"].(string))
+		names, byName := requestTools(t, g.calls()[0])
+		equal(t, c.who+"'s tools", names, append(slices.Clone(c.core), ToolSchemaName))
+		var indexed []string
+		for _, l := range indexLines(t, byName) {
+			name, _, _ := strings.Cut(l, ": ")
+			indexed = append(indexed, name)
 		}
-		equal(t, c.who+"'s tools", got, c.want)
+		equal(t, c.who+"'s indexed tools", indexed, c.indexed)
 	}
 }
 
@@ -2113,13 +2118,14 @@ func TestChatNamesACardByItsIssue(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "done", Repository: "sf/code",
 		IssueNumber: 3, Objective: "Add the schema.", FinishedAt: &finished}})
 	r.tasks.mu.Unlock()
-	g.replies = [][]string{{call(1, "history", `{"task_id":"#5"}`, "history", `{"task_id":5}`, "history", `{"task_id":"#3"}`,
+	g.replies = [][]string{{fetchCall(1, "history", `{"task_id":"#5"}`, "history", `{"task_id":5}`, "history", `{"task_id":"#3"}`,
 		"card", `{"task_id":"#99"}`, "close", `{"task_id":"#5"}`, "set_dependency", `{"task_id":"5","depends_on":11}`)}}
 	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-m",
 		IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton})
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	moved := "2026-10-11 09:30 #5 t-m card_retried by sebastian via button"
 	equal(t, "stream", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_dependency"),
 		`tool {"arguments":{"n":20,"task_id":"#5"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
 		`tool {"arguments":{"n":20,"task_id":"5"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
 		`tool {"arguments":{"n":20,"task_id":"#3"},"duration_ms":0,"name":"history","result":"No events."}`,
@@ -2146,7 +2152,7 @@ func TestChatNamesACardByItsConsoleLink(t *testing.T) {
 	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-m",
 		IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton})
 	link := "https://console.aisoftwarefactory.world/#card="
-	g.replies = [][]string{{call(1, "history", `{"task_id":"`+link+`t-m"}`, "history", `{"task_id":"#card=t-m:receipt"}`,
+	g.replies = [][]string{{fetchCall(1, "history", `{"task_id":"`+link+`t-m"}`, "history", `{"task_id":"#card=t-m:receipt"}`,
 		"card", `{"task_id":"https://elsewhere.example/#card=t-x"}`,
 		"hold_card", `{"task_id":"`+link+`t-k1","release_card":"#card=t-d","reason":"it needs the lone card"}`,
 		"close", `{"task_id":" `+link+`t-m "}`, "set_dependency", `{"task_id":"#card=t-m","depends_on":"`+link+`t-r"}`)}}
@@ -2154,6 +2160,7 @@ func TestChatNamesACardByItsConsoleLink(t *testing.T) {
 	moved := "2026-10-11 09:30 #5 t-m card_retried by sebastian via button"
 	held := "#31 is on hold until #33 is merged or done, or a human releases it."
 	equal(t, "stream", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_dependency"),
 		`tool {"arguments":{"n":20,"task_id":"` + link + `t-m"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
 		`tool {"arguments":{"n":20,"task_id":"#card=t-m:receipt"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
 		`tool {"arguments":{"task_id":"https://elsewhere.example/#card=t-x"},"duration_ms":0,"name":"card","result":"Refused: There is no card t-x in this project."}`,
@@ -2269,7 +2276,7 @@ func TestChatOpeningContextRestatesNoRead(t *testing.T) {
 	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 12, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-r",
 		IssueNumber: 11, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton})
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "board", `{}`, "history", `{}`)}, {say("Read.")}}
+	g.replies = [][]string{{fetchCall(1, "board", `{}`, "history", `{}`)}, {say("Read.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what moved?"}})
 	msgs := messages(t, g.calls()[1])
 	system, _ := msgs[0]["content"].(string)
@@ -2432,7 +2439,7 @@ func TestChatThreadBeforeItsFirstMessageHasNoTimes(t *testing.T) {
 func boardRead(t *testing.T, r *rig, g *chatGateway) (string, string) {
 	t.Helper()
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "board", `{}`)}, {say("Read.")}}
+	g.replies = [][]string{{fetchCall(1, "board", `{}`)}, {say("Read.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs?"}})
 	calls := g.calls()
 	if len(calls) != 2 {
@@ -2601,9 +2608,10 @@ func TestChatProposalRunsOnDoIt(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	args := `{"task_id":"t-b","depends_on":"t-a"}`
-	g.replies = [][]string{{call(1, "set_dependency", args)}}
+	g.replies = [][]string{{fetchCall(1, "set_dependency", args)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"#22 waits on #21"}})
 	equal(t, "stream", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_dependency"),
 		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI.\", depends on #21 t-a \"Add the API.\"","expires":"EXPIRES","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
 	chatRows(t, r.events, before, "sebastian")
@@ -2643,7 +2651,7 @@ func TestChatProposalRunsOnDoIt(t *testing.T) {
 func TestChatUndoOfAnEdgeTheCardStarted(t *testing.T) {
 	r, g := newWritesRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`)}}
+	g.replies = [][]string{{fetchCall(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"#22 waits on #21"}})
 	_, _, undo := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	r.tasks.mu.Lock()
@@ -2671,20 +2679,22 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	g.replies = [][]string{
-		{say("Let me look."), call(1, "board", "{}")},
-		{say("Setting it."), call(2, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
+		{say("Let me look."), fetchCall(1, "board", "{}")},
+		{say("Setting it."), fetchCall(3, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"mark #5 blue"}})
-	if len(events) != 7 {
-		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
+	if len(events) != 9 {
+		t.Fatalf("stream length = %d, want 9; events: %v", len(events), events)
 	}
 	equal(t, "stream text before board", events[0], `text {"text":"Let me look."}`)
-	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nNeeds you (2):`) {
-		t.Errorf("board tool line prefix mismatch: %s", events[1])
+	equal(t, "the board's fetch", events[1], schemaEvent(t, r, "ai-software-factory-code", "board"))
+	if !strings.HasPrefix(events[2], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nNeeds you (2):`) {
+		t.Errorf("board tool line prefix mismatch: %s", events[2])
 	}
-	equal(t, "stream after board", events[2:], []string{
+	equal(t, "stream after board", events[3:], []string{
 		`text {"text":"Setting it."}`,
+		schemaEvent(t, r, "ai-software-factory-code", "set_accent"),
 		`tool {"arguments":{"task_id":"t-m","accent":"blue"},"duration_ms":0,"name":"set_accent","result":"The accent of #5 is set."}`,
 		`applied {"result":"The accent of #5 is set.","tool":"set_accent","undo":"TOKEN"}`,
 		`text {"text":"Done."}`, `done {}`})
@@ -2726,13 +2736,15 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := rows[1].ToolCalls[0].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
+	read := rows[1].ToolCalls[1].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
 	equal(t, "the next turn's conversation", shape, []string{
 		`user "mark #5 blue"`,
-		fmt.Sprintf("assistant %q calls call_1 board {}", earlier("Let me look.")),
-		`tool call_1 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
-		fmt.Sprintf(`assistant %q calls call_2 set_accent {"task_id":"t-m","accent":"blue"}`, earlier("Setting it.")),
-		`tool call_2 "The accent of #5 is set. The human may undo it."`,
+		fmt.Sprintf(`assistant %q calls call_1 tool_schema {"name":"board"}`, earlier("Let me look.")),
+		`tool call_1 "[fetched in an earlier turn: the schema stands in your tool list]"`,
+		`tool call_2 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
+		fmt.Sprintf(`assistant %q calls call_3 tool_schema {"name":"set_accent"}`, earlier("Setting it.")),
+		`tool call_3 "[fetched in an earlier turn: the schema stands in your tool list]"`,
+		`tool call_4 "The accent of #5 is set. The human may undo it."`,
 		fmt.Sprintf("assistant %q", earlier("Done.")),
 		fmt.Sprintf("assistant %q", earlier(`Undo of set_accent: The accent of #5 is back to "".`)),
 		`user "and now?"`,
@@ -2747,9 +2759,10 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	for _, m := range got {
 		roles = append(roles, m.Role+" "+m.Content+fmt.Sprint(len(m.ToolCalls)))
 	}
-	equal(t, "GET", roles, []string{"user mark #5 blue0", "assistant Let me look.1", "assistant Setting it.1", "assistant Done.0",
+	equal(t, "GET", roles, []string{"user mark #5 blue0", "assistant Let me look.2", "assistant Setting it.2", "assistant Done.0",
 		"assistant Undo of set_accent: The accent of #5 is back to \"\".0", "user and now?0", "assistant Fine.0"})
-	stored := got[2].ToolCalls
+	equal(t, "the set_accent's fetch", []string{got[2].ToolCalls[0].Name, got[2].ToolCalls[0].Arguments}, []string{ToolSchemaName, `{"name":"set_accent"}`})
+	stored := got[2].ToolCalls[1:]
 	if stored[0].ReadAt.Before(time.Now().Add(-time.Minute)) {
 		t.Errorf("the stored call's ReadAt = %v, want a fresh read", stored[0].ReadAt)
 	}
@@ -2757,7 +2770,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		t.Errorf("the stored call's at = %v, want the turn's time", stored[0].At)
 	}
 	stored[0].ReadAt, stored[0].At, stored[0].Ms = time.Time{}, time.Time{}, 0
-	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_accent",
+	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_4", Name: "set_accent",
 		Arguments: `{"task_id":"t-m","accent":"blue"}`, Result: "The accent of #5 is set. The human may undo it."}})
 }
 
@@ -2796,11 +2809,12 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	chatTask := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
-	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "session", `{"task_id":"t-ls"}`,
+	g.replies = [][]string{{fetchCall(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "session", `{"task_id":"t-ls"}`,
 		"session_search", `{"task_id":"t-ls","query":"go"}`, "set_accent", `{"task_id":"t-ls","accent":"red"}`,
 		"close", `{"task_id":"t-ls"}`, "history", `{"task_id":"`+chatTask+`"}`)}, {say("None is here.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look at linkshort's card"}})
 	equal(t, "stream", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_accent"),
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"card","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"plan","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"pr","result":"Refused: There is no card t-ls in this project."}`,
@@ -2826,7 +2840,7 @@ func TestChatBoardView(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	post := func(view, args string) []string {
-		g.replies = [][]string{{call(0, "board_view", args)}, {say("done")}}
+		g.replies = [][]string{{fetchCall(0, "board_view", args)}, {say("done")}}
 		_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"work the board"}, "view": {view}})
 		return ev
 	}
@@ -2834,7 +2848,7 @@ func TestChatBoardView(t *testing.T) {
 	// period rides along, and the event follows the tool's block
 	ev := post("?project=ai-software-factory-code&q=cache&progress=oldest", `{"routines":"within","within":2,"unit":"hours"}`)
 	at := slices.IndexFunc(ev, func(e string) bool {
-		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"board_view"`)
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"duration_ms":0,"name":"board_view"`)
 	})
 	if at < 0 {
 		t.Fatalf("the turn holds no board_view tool block:\n%s", strings.Join(ev, "\n"))
@@ -2850,7 +2864,7 @@ func TestChatBoardView(t *testing.T) {
 	// defaults apply, as the page query's path gives them
 	ev = post("?project=ai-software-factory-code", `{"routines":"within","within":2}`)
 	at = slices.IndexFunc(ev, func(e string) bool {
-		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"board_view"`)
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"duration_ms":0,"name":"board_view"`)
 	})
 	if at < 0 || ev[at+1] != `view {"query":"?project=ai-software-factory-code\u0026routines=within\u0026unit=days\u0026within=2"}` {
 		t.Errorf("routines within without a unit does not take days:\n%s", strings.Join(ev, "\n"))
@@ -2900,7 +2914,7 @@ func TestChatBoardView(t *testing.T) {
 		t.Errorf("a view word the board does not carry rides along:\n%s", strings.Join(ev, "\n"))
 	}
 	// reset clears every control and closes the drawer
-	g.replies = [][]string{{call(0, "board_view_reset", `{}`)}, {say("done")}}
+	g.replies = [][]string{{fetchCall(0, "board_view_reset", `{}`)}, {say("done")}}
 	_, ev, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"reset the view"},
 		"view": {"?project=ai-software-factory-code&q=cache&routines=none&queued=oldest"}})
 	if !slices.Contains(ev, `view {"card":"","query":"?project=ai-software-factory-code"}`) {
@@ -2922,13 +2936,13 @@ func TestChatShowDoc(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
 	ck, s := r.loggedIn(t)
 	open := func(args string) []string {
-		g.replies = [][]string{{call(0, "show_doc", args)}, {say("done")}}
+		g.replies = [][]string{{fetchCall(0, "show_doc", args)}, {say("done")}}
 		_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"show me the plan"}})
 		return ev
 	}
 	ev := open(`{"path":"docs/roadmap.md"}`)
 	at := slices.IndexFunc(ev, func(e string) bool {
-		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"show_doc"`)
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"duration_ms":0,"name":"show_doc"`)
 	})
 	if at < 0 {
 		t.Fatalf("the turn holds no show_doc tool block:\n%s", strings.Join(ev, "\n"))
@@ -2982,11 +2996,11 @@ func TestChatBoardViewRefusals(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	refuse := func(args, want string) {
 		t.Helper()
-		g.replies = [][]string{{call(0, "board_view", args)}, {say("done")}}
+		g.replies = [][]string{{fetchCall(0, "board_view", args)}, {say("done")}}
 		_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"work the board"}, "view": {""}})
 		blocks := 0
 		for _, e := range ev {
-			if !strings.HasPrefix(e, "tool ") {
+			if !strings.HasPrefix(e, "tool ") || strings.Contains(e, `,"name":"`+ToolSchemaName+`","result"`) {
 				continue
 			}
 			blocks++
@@ -3016,8 +3030,9 @@ func TestChatBoardViewRefusals(t *testing.T) {
 // ones toolInput decodes (282), so a call that follows the schema works
 // every control: the show keys carry underscores, no hyphen.
 func TestChatBoardViewSchema(t *testing.T) {
-	r, _, g := newChatRig(t)
+	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
+	seedFetch(t, chat, "sf/code", "sebastian", "board_view")
 	g.replies = [][]string{{say("ok")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hi"}})
 	var def map[string]any
@@ -4414,7 +4429,7 @@ func TestChatUndoIsData(t *testing.T) {
 	r.tasks.tasks[0].Accent = "blue"
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "set_accent", `{"task_id":"t-m","accent":"red"}`, "comment", `{"task_id":"t-m","text":"Looks right."}`,
+	g.replies = [][]string{{fetchCall(1, "set_accent", `{"task_id":"t-m","accent":"red"}`, "comment", `{"task_id":"t-m","text":"Looks right."}`,
 		"set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"mark #5 red, say it looks right and make #22 wait on #21"}})
 	_, _, undo := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[2], nil)
@@ -4455,7 +4470,7 @@ func TestChatTokenOfTheOtherKind(t *testing.T) {
 	r, g := newWritesRig(t)
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`)}}
+	g.replies = [][]string{{fetchCall(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"#22 waits on #21"}})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
 		t.Fatalf("a proposal posted as an undo = %d %q, want 404", code, body)
@@ -4485,7 +4500,7 @@ func TestChatProposalSurvivesARestart(t *testing.T) {
 	r, g := newWritesRig(t)
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`)}}
+	g.replies = [][]string{{fetchCall(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"#22 waits on #21"}})
 	restart := func() {
 		t.Helper()
@@ -4813,7 +4828,11 @@ func TestChatTurnRunsPastEightCalls(t *testing.T) {
 	}
 	replies := make([][]string, 0, 9)
 	for i := 0; i < 8; i++ {
-		replies = append(replies, []string{call(i, "routines", "{}")})
+		if i == 0 {
+			replies = append(replies, []string{fetchCall(0, "routines", "{}")})
+		} else {
+			replies = append(replies, []string{call(i+1, "routines", "{}")})
+		}
 	}
 	g.replies = append(replies, []string{say("All routines listed.")})
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"list the routines"}})
@@ -5325,7 +5344,7 @@ func TestChatToolResultCarriesReadAt(t *testing.T) {
 func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "board", `{}`, "set_accent", `{"task_id":"t-m","accent":"red"}`)}, {say("#5 waits for a work slot.")}}
+	g.replies = [][]string{{fetchCall(1, "board", `{}`, "set_accent", `{"task_id":"t-m","accent":"red"}`)}, {say("#5 waits for a work slot.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is on the board?"}})
 	then := time.Now().Add(-2 * time.Hour)
 	r.chat.mu.Lock()
@@ -5372,7 +5391,7 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	}
 	var oldBoard string
 	for _, m := range messages(t, calls[1]) {
-		if m["tool_call_id"] == "call_1" {
+		if m["tool_call_id"] == "call_3" {
 			oldBoard, _ = m["content"].(string)
 		}
 	}
@@ -5391,6 +5410,8 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	equal(t, "the second turn's replay", replayed, []string{
 		"user what is on the board?",
 		"assistant ",
+		"tool [fetched in an earlier turn: the schema stands in your tool list]",
+		"tool [fetched in an earlier turn: the schema stands in your tool list]",
 		"tool [read at " + stamp + ", in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]",
 		"tool The accent of #5 is set. The human may undo it.",
 		"assistant [said at " + stamp + "] #5 waits for a work slot.",

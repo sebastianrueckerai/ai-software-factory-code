@@ -10,6 +10,9 @@ answer: ""
 tools:
   builtin: []
   gateway: []
-  chat: [system, board, find_cards, card, history, card_history, card_step, board_digest, costs, diff, plan, pr, file, tree, grep, web_search, web_scrape, research, session, session_steps, session_step, session_search, ci, alerts, deployment_health, cluster_facts, resources, settings, policy, project_images, release_resource, new_card, request_image, answer, comment, tell_card, steer, request_changes, deny_merge, rerun_checks, set_accent, close, edit, give_room, set_dependency, hold_card, release_hold, read_doc, write_doc, show_doc, routines, routine_run, routine_skip, notes_read, notes_write, escalate, attach_analysis, active_threads, chat_search, inbox, board_view, board_view_reset, watch_card, unwatch_card, set_timer, analyze_image, read_attachment, summarize_attachment, ask]
+  chat: [system, find_cards, card, history, card_step, board_digest, costs, diff, plan, pr, file, tree, grep, web_search, web_scrape, research, session, session_steps, session_step, session_search, new_card, answer, comment, tell_card, retry, request_changes, approve_merge, deny_merge, answer_criteria, close, edit, give_room, hold_card, release_hold, read_doc, notes_read, notes_write, escalate, attach_analysis, active_threads, chat_search, inbox, watch_card, unwatch_card, set_timer, ask]
+  rare: [board, ci, alerts, deployment_health, cluster_facts, resources, settings, policy, project_images, promote_resource, release_resource, request_image, rerun_checks, set_accent, invite, github_export, github_sync, set_dependency, replan, set_pool, write_doc, show_doc, set_autonomy, routines, routine_write, routine_delete, routine_run, routine_skip, board_view, board_view_reset]
+  attached: [analyze_image, read_attachment, summarize_attachment]
 agents_md: false
 budget_words: 2643
+budget_tool_words: 2230

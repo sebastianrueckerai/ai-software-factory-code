@@ -658,6 +658,7 @@ func TestPoolProposalDisplay(t *testing.T) {
 		return p.Pool
 	}
 
+	seedFetch(t, r.chat, "sf/code", "sebastian", "set_pool")
 	// a set of EUR 10 against the standing EUR 10, then a top-up of
 	// +EUR 5 against the same pool: each live event and each restored
 	// state carry the typed preview, the top-up's ceiling EUR 15

@@ -75,11 +75,12 @@ func newReadsRig(t *testing.T) (*rig, *chatGateway) {
 
 // reads runs the calls (name, arguments, ...) in one round of a chat
 // turn and answers what the agent reads of each; a read records no event.
+// A rare tool is fetched first by a tool_schema call ahead of it.
 func reads(t *testing.T, r *rig, g *chatGateway, nameArgs ...string) []string {
 	t.Helper()
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, nameArgs...)}, {say("Read.")}}
+	g.replies = [][]string{{fetchCall(1, nameArgs...)}, {say("Read.")}}
 	if code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"read"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
 		t.Fatalf("turn = %d %v", code, events)
 	}

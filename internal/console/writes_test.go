@@ -71,15 +71,19 @@ func withPlan(r *rig) {
 
 // proposeAndDo has the agent call tool with args, which proposes, and the
 // member press Do it: it answers the proposal's stream, the Do it's and
-// the Do it's undo tokens.
+// the Do it's undo tokens. A rare tool's call follows the tool_schema call
+// that fetches it, whose stream line is not in proposed.
 func proposeAndDo(t *testing.T, r *rig, g *chatGateway, tool, args string, corrective ...string) (proposed, done, undo []string) {
 	t.Helper()
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, tool, args)}}
+	g.replies = [][]string{{fetchCall(1, tool, args)}}
 	for _, c := range corrective {
 		g.replies = append(g.replies, []string{say(c)})
 	}
 	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"do it"}})
+	proposed = slices.DeleteFunc(proposed, func(e string) bool {
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `,"name":"`+ToolSchemaName+`","result"`)
+	})
 	if len(tokens) != 1 {
 		t.Fatalf("%s proposed %v", tool, proposed)
 	}
@@ -741,9 +745,10 @@ func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", QueueCap: 5}}
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`, "set_autonomy", `{"autonomy":"assisted","queue_cap":3}`)}}
+	g.replies = [][]string{{fetchCall(1, "set_autonomy", `{"autonomy":"assisted"}`, "set_autonomy", `{"autonomy":"assisted","queue_cap":3}`)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go assisted"}})
 	equal(t, "proposals", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_autonomy"),
 		`proposal {"arguments":{"autonomy":"assisted"},"description":"Set the autonomy level, autonomy assisted, queue cap 5 stays","expires":"EXPIRES","id":"TOKEN","tool":"set_autonomy"}`,
 		`proposal {"arguments":{"autonomy":"assisted","queue_cap":3},"description":"Set the autonomy level, autonomy assisted, queue cap 3","expires":"EXPIRES","id":"TOKEN","tool":"set_autonomy"}`,
 		`done {}`})
@@ -878,9 +883,10 @@ func TestPoolProposal(t *testing.T) {
 	poolChatReload(r, 12)
 	ck, s := r.loggedIn(t)
 	args := `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`
-	g.replies = [][]string{{call(1, "set_pool", args)}}
+	g.replies = [][]string{{fetchCall(1, "set_pool", args)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
 	equal(t, "the proposal", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_pool"),
 		`proposal {"arguments":{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"},` +
 			`"description":"Set the pool, the pool stands at 8.00 EUR, set it at 10.00 EUR, reason Allow two small verified follow-ups, it would stand at 10.00 EUR",` +
 			`"expires":"EXPIRES","id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":8,"to_eur":10,"reason":"Allow two small verified follow-ups"},` +
@@ -926,6 +932,7 @@ func TestPoolProposal(t *testing.T) {
 	infra.mu.Unlock()
 	r.ledger.files["ai-software-factory-code"].Escalation.Pool.EUR = 12
 	poolChatReload(r, 12)
+	seedFetch(t, r.chat, "sf/code", "sebastian", "set_pool")
 	for _, row := range []struct {
 		name   string
 		seat   func(*testing.T)
@@ -1035,9 +1042,10 @@ func TestPoolProposalAccess(t *testing.T) {
 
 	// at full auto the call still proposes; nothing runs
 	ck, s := memberLogin(t, r, "alice")
-	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
+	g.replies = [][]string{{fetchCall(1, "set_pool", setArgs)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
 	equal(t, "the proposal at full auto", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_pool"),
 		`proposal {"arguments":` + setArgs + `,"description":"Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR",` +
 			`"expires":"EXPIRES","id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":10,"to_eur":10,"reason":"the findings cost money"},` +
 			`"tool":"set_pool"}`,
@@ -1050,6 +1058,7 @@ func TestPoolProposalAccess(t *testing.T) {
 	custom := &turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, owner: "alice",
 		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, cfg: policy.ChatConfig{Confirm: []string{}}}
 	custom.stream(func(string) error { return nil }, nil)
+	fetchIn(t, custom, "set_pool")
 	result, customToken, customCode := custom.call(factoryd.OperatorCall{ID: "call_1", Name: "set_pool", Arguments: setArgs})
 	if customToken == "" || customCode != 0 || result != "Proposed to alice: Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR. Nothing runs until they press Do it." {
 		t.Fatalf("a custom confirm list that omits set_pool: %q %q %d", result, customToken, customCode)
@@ -1131,7 +1140,7 @@ func TestPoolProposalAccess(t *testing.T) {
 	equal(t, "the event", []any{e.Kind, e.Actor}, []any{factoryd.EventPoolChanged, "alice"})
 
 	// a press against another tool's proposal corrects nothing
-	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`)}}
+	g.replies = [][]string{{fetchCall(1, "set_autonomy", `{"autonomy":"assisted"}`)}}
 	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go assisted"}})
 	if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`); code != http.StatusBadRequest ||
 		body[0] != "A set_autonomy proposal takes no correction: only the pool's amount may be corrected." {
@@ -1192,9 +1201,10 @@ func TestPoolProposalTopUp(t *testing.T) {
 	poolChatReload(r, 14)
 	ck, s := r.loggedIn(t)
 	args := `{"action":"top_up","eur":5,"reason":"a second finding"}`
-	g.replies = [][]string{{call(1, "set_pool", args)}}
+	g.replies = [][]string{{fetchCall(1, "set_pool", args)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"top the pool up"}})
 	equal(t, "the proposal", events, []string{
+		schemaEvent(t, r, "ai-software-factory-code", "set_pool"),
 		`proposal {"arguments":` + args + `,` +
 			`"description":"Set the pool, the pool stands at 10.00 EUR, top it up by 5.00 EUR, reason a second finding, it would stand at 15.00 EUR",` +
 			`"expires":"EXPIRES","id":"TOKEN","pool":{"action":"top_up","eur":5,"from_eur":10,"to_eur":15,"reason":"a second finding"},` +

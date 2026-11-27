@@ -103,9 +103,9 @@ func TestRoutineWriteProposesThenCommitsTheProjectFile(t *testing.T) {
 	before := r.events.count()
 	original := string(files["projects/demo-app.yaml"])
 	args := `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"0 6 * * 4"}],"files":"agent","skill":"deps"}`
-	g.replies = [][]string{{call(1, "routine_write", args)}}
+	g.replies = [][]string{{fetchCall(1, "routine_write", args)}}
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"Every Thursday at six, update the dependencies"}})
-	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, new in projects/demo-app.yaml:\n\n` +
+	equal(t, "the proposal", proposed, []string{schemaEvent(t, r, "demo-app", "routine_write"), `proposal {"arguments":` + args + `,"description":"Write a routine, new in projects/demo-app.yaml:\n\n` +
 		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: agent\n  skill: deps","expires":"EXPIRES","id":"TOKEN","tool":"routine_write"}`,
 		`done {}`})
 	if len(infra.contents) != 0 {
@@ -166,6 +166,7 @@ func TestRoutineWriteRefusesABadSchedule(t *testing.T) {
 	r, g, infra, _ := routineRig(t)
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
+	seedFetch(t, r.chat, "demo-app/demo-app", "sebastian", "routine_write")
 	for schedule, why := range map[string]string{
 		`[{"cron":"every monday"}]`: `cron \"every monday\": five fields, minute hour day-of-month month day-of-week, in policy.yaml's time_zone`,
 		`[{}]`:                      `a trigger is one of cron, merges or on`,
@@ -199,9 +200,9 @@ func TestRoutineDeleteRemovesTheRoutineAndItsBrief(t *testing.T) {
 	before := r.events.count()
 
 	args := `{"name":"dependency-update"}`
-	g.replies = [][]string{{call(1, "routine_delete", args)}}
+	g.replies = [][]string{{fetchCall(1, "routine_delete", args)}}
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"stop updating the dependencies"}})
-	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Delete a routine, out of projects/demo-app.yaml:\n\n` +
+	equal(t, "the proposal", proposed, []string{schemaEvent(t, r, "demo-app", "routine_delete"), `proposal {"arguments":` + args + `,"description":"Delete a routine, out of projects/demo-app.yaml:\n\n` +
 		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: agent\n  brief: routines/demo-app.dependency-update.md\n  skill: deps` +
 		`\n\nIts brief, routines/demo-app.dependency-update.md, goes too.","expires":"EXPIRES","id":"TOKEN","tool":"routine_delete"}`, `done {}`})
 	_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
@@ -261,7 +262,7 @@ func TestRoutinesReadListsTheProject(t *testing.T) {
 		g.project = project
 		ck, s := r.loggedIn(t)
 		before := len(g.calls())
-		g.replies = [][]string{{call(1, "routines", `{}`)}, {say("Read them.")}}
+		g.replies = [][]string{{fetchCall(1, "routines", `{}`)}, {say("Read them.")}}
 		chatPost(t, r, ck, s, "/projects/"+project+"/chat", url.Values{"message": {"what runs on its own?"}})
 		msgs := messages(t, g.calls()[before+1])
 		return msgs[len(msgs)-1]["content"].(string)
@@ -357,6 +358,7 @@ func TestRoutineWriteKeepsTheKeysItLeavesOut(t *testing.T) {
 	files["projects/demo-app.yaml"] = []byte(original + routine("0 6 * * 4"))
 	headAt(t, r, infra, files)
 	before := r.events.count()
+	seedFetch(t, r.chat, "demo-app/demo-app", "sebastian", "routine_write")
 	write := func(cron string) []string {
 		t.Helper()
 		args := `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"` + cron + `"}],"files":"agent"}`
@@ -389,9 +391,9 @@ func TestRoutineWriteMovesItsBrief(t *testing.T) {
 	files["routines/deps.md"] = []byte("Update them.\n")
 	headAt(t, r, infra, files)
 	args := `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"0 6 * * 4"}],"files":"human","brief_text":"Update them and run the tests."}`
-	g.replies = [][]string{{call(1, "routine_write", args)}}
+	g.replies = [][]string{{fetchCall(1, "routine_write", args)}}
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"give it a better brief"}})
-	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, in place of dependency-update in projects/demo-app.yaml:\n\n` +
+	equal(t, "the proposal", proposed, []string{schemaEvent(t, r, "demo-app", "routine_write"), `proposal {"arguments":` + args + `,"description":"Write a routine, in place of dependency-update in projects/demo-app.yaml:\n\n` +
 		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: human\n  brief: routines/demo-app.dependency-update.md` +
 		`\n\nIts brief, routines/demo-app.dependency-update.md:\n\nUpdate them and run the tests.\n\nIts old brief, routines/deps.md, goes.","expires":"EXPIRES","id":"TOKEN","tool":"routine_write"}`,
 		`done {}`})

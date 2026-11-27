@@ -285,19 +285,6 @@ func (c *Console) chatTools() []chatTool {
 // project file sets, and a new card, which a human files there as an issue.
 var agentTools = []string{"project_images", "request_image", "set_autonomy", "new_card"}
 
-// offered are the schemas of the chat's tools the turn's human holds the
-// access table's roles for: the model is offered no tool the dispatch
-// would refuse them, and no agent tool on a project without agents.
-func (t *turn) offered() []factoryd.OperatorTool {
-	var defs []factoryd.OperatorTool
-	for _, tool := range t.c.chatTools() {
-		if t.offers(tool.name) && (t.p.Agents != policy.AgentsNone || !slices.Contains(agentTools, tool.name)) {
-			defs = append(defs, tool.def(tool.memberOnly || slices.Contains(t.cfg.Confirm, tool.name)))
-		}
-	}
-	return defs
-}
-
 func (c *Console) chatTool(name string) (chatTool, bool) {
 	i := slices.IndexFunc(c.chatTools(), func(t chatTool) bool { return t.name == name })
 	if i < 0 {

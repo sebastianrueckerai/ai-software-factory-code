@@ -341,12 +341,12 @@ func TestWriteToolsStream(t *testing.T) {
 				c.setup(r)
 			}
 			wroteBefore := len(effects(r))
-			r.Reply([]string{Call(1, c.tool, c.args)}, []string{Say("Done.")})
+			r.Reply([]string{fetchCall(1, c.tool, c.args)}, []string{Say("Done.")})
 			code, body := postChat(t, r, path, ck, url.Values{"message": {"do it"}, "csrf": {csrf}})
 			if code != http.StatusOK {
 				t.Fatalf("POST the chat = %d:\n%s", code, body)
 			}
-			stream := streamOf(t, body)
+			stream := afterFetchSSE(t, streamOf(t, body), c.tool)
 			var did []sseEvent
 			var doneBody string
 			if c.confirm {
@@ -452,12 +452,12 @@ func TestWriteToolsRefuse(t *testing.T) {
 			r, _, path := NewAcceptanceRig(t, true, nil)
 			ck, csrf := r.Login(t)
 			args := strings.Replace(c.args, `"task_id":"`+firstTask(c.args)+`"`, `"task_id":"#99"`, 1)
-			r.Reply([]string{Call(1, c.tool, args)}, []string{Say("Done.")})
+			r.Reply([]string{fetchCall(1, c.tool, args)}, []string{Say("Done.")})
 			code, body := postChat(t, r, path, ck, url.Values{"message": {"do it"}, "csrf": {csrf}})
 			if code != http.StatusOK {
 				t.Fatalf("POST the chat = %d:\n%s", code, body)
 			}
-			stream := streamOf(t, body)
+			stream := afterFetchSSE(t, streamOf(t, body), c.tool)
 			if k := kindsOf(stream); slices.Contains(k, "proposal") || slices.Contains(k, "applied") {
 				t.Fatalf("the events = %v, want no proposal and no applied", k)
 			}

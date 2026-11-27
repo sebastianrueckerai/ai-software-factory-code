@@ -714,10 +714,10 @@ func TestDocWrittenForEveryDoorWrite(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	edited := strings.Replace(docsPlan, "one week", "two weeks", 1)
-	g.replies = [][]string{{call(1, "write_doc", `{"path":"docs/plans/cache.md","old":"one week","new":"two weeks","base_sha256":"`+
+	g.replies = [][]string{{fetchCall(1, "write_doc", `{"path":"docs/plans/cache.md","old":"one week","new":"two weeks","base_sha256":"`+
 		factoryd.ContentHash(docsPlan)+`"}`)}, {say("Done.")}}
 	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"edit the plan"}})
-	if len(tokens) != 1 || !strings.Contains(proposed[0], `"tool":"write_doc"`) {
+	if len(tokens) != 1 || !strings.Contains(proposed[1], `"tool":"write_doc"`) {
 		t.Fatalf("the write_doc proposed: %v", proposed)
 	}
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)

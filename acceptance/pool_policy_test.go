@@ -86,7 +86,7 @@ func poolToken(t *testing.T, events []string) string {
 // it answers the proposal's token.
 func proposePool(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, args string) string {
 	t.Helper()
-	r.Reply([]string{Call(1, "set_pool", args)})
+	r.Reply([]string{fetchCall(1, "set_pool", args)})
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"please change the pool"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
@@ -149,12 +149,12 @@ func poolRowStatus(t *testing.T, r *AcceptanceRig) int {
 // proposal. corrective is the agent's reply to the refusal.
 func offerRefusal(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, args, corrective, refusal string, status int) {
 	t.Helper()
-	r.Reply([]string{Call(1, "set_pool", args)}, []string{Say(corrective)})
+	r.Reply([]string{fetchCall(1, "set_pool", args)}, []string{Say(corrective)})
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"please change the pool"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
 	}
-	events := eventsOf(t, body)
+	events := afterFetch(t, eventsOf(t, body), "set_pool")
 	for _, e := range events {
 		if strings.HasPrefix(e, "proposal ") {
 			t.Fatalf("the refused offer %s still proposed:\n%v", args, events)

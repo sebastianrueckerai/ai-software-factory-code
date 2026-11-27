@@ -36,14 +36,19 @@ type Profile struct {
 	Tools       Tools    `yaml:"tools"`
 	AgentsMD    bool     `yaml:"agents_md"`    // the harness loads the repository's AGENTS.md
 	BudgetWords int      `yaml:"budget_words"` // the most words the step's fixture prompt holds
+	// BudgetToolWords is the most words the step's chat tools offered on a
+	// fresh thread hold, by ToolWords; 0 for a step with no chat tools.
+	BudgetToolWords int `yaml:"budget_tool_words"`
 }
 
 // Tools are the tools a step may use. Every list is complete: a tool not
 // named is not offered.
 type Tools struct {
-	Builtin []string `yaml:"builtin"` // a subset of BuiltinTools. Non-empty marks a harness session.
-	Gateway []string `yaml:"gateway"` // a subset of policy.PaidTools and policy.FreeTools
-	Chat    []string `yaml:"chat"`    // console chat tool names, for the project agent and research
+	Builtin  []string `yaml:"builtin"`  // a subset of BuiltinTools. Non-empty marks a harness session.
+	Gateway  []string `yaml:"gateway"`  // a subset of policy.PaidTools and policy.FreeTools
+	Chat     []string `yaml:"chat"`     // core chat tools: full schema on every turn
+	Rare     []string `yaml:"rare"`     // chat tools behind tool_schema: one index line until fetched
+	Attached []string `yaml:"attached"` // chat tools offered only while the thread holds an attachment
 }
 
 const (
@@ -85,6 +90,12 @@ var texts = func() *catalog {
 
 // Profiles returns every profile, sorted by step.
 func Profiles() []Profile { return texts.sorted() }
+
+// ProfileOf is step's profile, and whether it has one.
+func ProfileOf(step string) (Profile, bool) {
+	p, ok := texts.profiles[step]
+	return p, ok
+}
 
 func (c *catalog) sorted() []Profile {
 	var out []Profile
@@ -171,7 +182,8 @@ func (c *catalog) check(p Profile) error {
 	for _, list := range []struct {
 		key   string
 		names []string
-	}{{"forms", p.Forms}, {"chunks", p.Chunks}, {"tools.builtin", p.Tools.Builtin}, {"tools.gateway", p.Tools.Gateway}, {"tools.chat", p.Tools.Chat}} {
+	}{{"forms", p.Forms}, {"chunks", p.Chunks}, {"tools.builtin", p.Tools.Builtin}, {"tools.gateway", p.Tools.Gateway},
+		{"tools.chat", p.Tools.Chat}, {"tools.rare", p.Tools.Rare}, {"tools.attached", p.Tools.Attached}} {
 		for i, name := range list.names {
 			if slices.Contains(list.names[:i], name) {
 				return bad("%s name %q twice", list.key, name)
@@ -209,14 +221,31 @@ func (c *catalog) check(p Profile) error {
 			return bad("gateway tool %q is not a policy tool", tool)
 		}
 	}
+	for _, tool := range slices.Concat(p.Tools.Chat, p.Tools.Rare, p.Tools.Attached) {
+		if !slices.Contains(policy.ChatTools, tool) {
+			return bad("chat tool %q is not one of policy.ChatTools", tool)
+		}
+	}
+	for _, pair := range [][2]string{{"chat", "rare"}, {"chat", "attached"}, {"rare", "attached"}} {
+		lists := map[string][]string{"chat": p.Tools.Chat, "rare": p.Tools.Rare, "attached": p.Tools.Attached}
+		for _, tool := range lists[pair[0]] {
+			if slices.Contains(lists[pair[1]], tool) {
+				return bad("chat tool %q is in tools.%s and tools.%s", tool, pair[0], pair[1])
+			}
+		}
+	}
 	harness := len(p.Tools.Builtin) > 0
 	switch {
+	case len(p.Tools.Rare)+len(p.Tools.Attached) > 0 && (len(p.Tools.Chat) == 0 || harness):
+		return bad("tools.rare and tools.attached need tools.chat and no tools.builtin: they are the console chat's tiers")
 	case len(p.Tools.Gateway) > 0 && !harness:
 		return bad("tools.gateway needs tools.builtin: only a harness session calls the gateway's tools")
 	case p.AgentsMD && !harness:
 		return bad("agents_md needs tools.builtin: only the harness loads AGENTS.md")
 	case len(p.Tools.Chat) > 0 && harness:
 		return bad("tools.chat with tools.builtin: a harness session has no chat tools")
+	case p.BudgetToolWords < 0 || (p.BudgetToolWords > 0) != (len(p.Tools.Chat) > 0):
+		return bad("budget_tool_words is %d with %d chat tools, want the most words its chat tools hold, and 0 without chat tools", p.BudgetToolWords, len(p.Tools.Chat))
 	}
 	return nil
 }

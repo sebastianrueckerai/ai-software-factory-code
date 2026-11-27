@@ -56,24 +56,30 @@ func agentCalls(t *testing.T, r *rig, g *chatGateway, path string, calls ...stri
 
 // agentRounds has the agent answer each round's calls in a model response
 // of its own, in one turn of path's chat: the result of each call as the
-// agent read it, "" for a call that proposed, and the proposals' tokens.
+// agent read it, "" for a call that proposed, and the proposals' tokens. A
+// rare tool's call follows the tool_schema call that fetches it, whose
+// result is not among the results.
 func agentRounds(t *testing.T, r *rig, g *chatGateway, path string, rounds ...[]string) ([]string, []string) {
 	t.Helper()
 	ck, s := r.loggedIn(t)
 	g.replies = nil
-	for first, round := 1, 0; round < len(rounds); first, round = first+len(rounds[round])/2, round+1 {
-		g.replies = append(g.replies, []string{call(first, rounds[round]...)})
+	for first, round := 1, 0; round < len(rounds); round++ {
+		nameArgs := withFetches(rounds[round])
+		g.replies = append(g.replies, []string{call(first, nameArgs...)})
+		first += len(nameArgs) / 2
 	}
 	g.replies = append(g.replies, []string{say("ok")})
 	_, events, tokens := chatPost(t, r, ck, s, path, url.Values{"message": {"file it"}})
 	var results []string
 	for _, e := range events {
 		if rest, ok := strings.CutPrefix(e, "tool "); ok {
-			var v struct{ Result string }
+			var v struct{ Name, Result string }
 			if err := json.Unmarshal([]byte(rest), &v); err != nil {
 				t.Fatal(err)
 			}
-			results = append(results, v.Result)
+			if v.Name != ToolSchemaName {
+				results = append(results, v.Result)
+			}
 		}
 		if strings.HasPrefix(e, "proposal ") {
 			results = append(results, "")

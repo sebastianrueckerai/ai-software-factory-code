@@ -261,6 +261,7 @@ func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 		trn := r.chatTurnOf(t, s, &events)
 		trn.cfg.Confirm = []string{"answer", "give_room", "retry", "set_autonomy"}
 		trn.a.wake, trn.a.birth = tc.wake, tc.birth
+		fetchIn(t, trn, tc.tool)
 		_, proposal, _ := trn.call(factoryd.OperatorCall{Name: tc.tool, Arguments: tc.args})
 		if (proposal != "") != tc.propose {
 			t.Errorf("%s: proposal %q, want a proposal: %v", tc.name, proposal, tc.propose)

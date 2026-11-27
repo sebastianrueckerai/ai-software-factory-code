@@ -415,7 +415,7 @@ func TestChatAnswerWaitsBehindTheTurn(t *testing.T) {
 	}
 
 	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
-	g.replies = [][]string{{say("Let me look."), call(1, "board", `{}`)}, {refuseContext}, {say("done")}}
+	g.replies = [][]string{{say("Let me look."), fetchCall(1, "board", `{}`)}, {refuseContext}, {say("done")}}
 	turn := make(chan error, 1)
 	go func() {
 		_, _, _, err := postStream(r, ck, s, chatPath, url.Values{"conversation": {"1"}, "message": {"c1"}})
@@ -441,7 +441,7 @@ func TestChatAnswerWaitsBehindTheTurn(t *testing.T) {
 		t.Fatalf("%d model calls, want 3", len(calls))
 	}
 	equal(t, "the retry", contents(t, calls[2]), []string{"user b1", "assistant " + earlier("b2"), "assistant " + earlier("#11 needs you: rebase?"),
-		"user c1", "assistant Let me look.", "tool " + boardText})
+		"user c1", "assistant Let me look.", "tool " + schemaResult(t, r, "ai-software-factory-code", "board"), "tool " + boardText})
 	waitUntil(t, "the answer's rows landed", func() bool { return !strings.Contains(strings.Join(said(), "\n"), "queued true") })
 	equal(t, "the thread", said()[5:], []string{
 		"user : c1 (queued false)",
@@ -556,7 +556,7 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
 	equal(t, "the inbox's poke", rows[len(rows)-1].Content, "Running the checks of pull request #9 again; the card asks again once they settle.")
 
-	g.replies = [][]string{{call(1, "rerun_checks", `{"task_id":"t-m"}`)}, {say("They run again.")}}
+	g.replies = [][]string{{fetchCall(1, "rerun_checks", `{"task_id":"t-m"}`)}, {say("They run again.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"run #5's checks again"}})
 	// the card's read of the head's current checks lands between: the tool describes the
 	// card before it acts. The tool runs unconfirmed, so the agent decided
