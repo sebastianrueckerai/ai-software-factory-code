@@ -529,19 +529,19 @@ func (r *Roller) endRevertCard(ctx context.Context, pause QueuePause, green stri
 	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, rev, green+": main is green without this revert. Closing this issue.")
 }
 
-// closeRevertPR closes human-lane revert card t's pull request as the bot
-// while it is open, then leaves comment on it; one a person merged or
-// closed is left.
+// closeRevertPR closes human-lane revert card t's pull request as the
+// bot while it is open, commenting first and once, so a failed comment or
+// close is retried without a second comment; one a person merged or closed
+// is left.
 func (r *Roller) closeRevertPR(ctx context.Context, t Task, comment string) error {
 	st, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber)
 	if err != nil || st.State != "open" {
 		return err
 	}
-	if err := r.Forgejo.ClosePullRequest(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber); err != nil {
+	if err := r.Forgejo.CommentOnce(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber, comment); err != nil {
 		return err
 	}
-	_, err = r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber, comment)
-	return err
+	return r.Forgejo.ClosePullRequest(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber)
 }
 
 // lostRunners answers, for each of run's failed statuses, the job's link

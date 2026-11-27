@@ -584,8 +584,8 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 	case err != nil:
 		return 0, err
 	case cut:
-		return 0, ErrNoRetry(fmt.Sprintf("Card #%d was cut into successor #%d (%s), which carries its work and its dependents: answer that card instead.",
-			old.IssueNumber, succ.IssueNumber, succ.ID))
+		return 0, ErrNoRetry(fmt.Sprintf("Card #%d was cut into successor #%d, which carries its work and its dependents: answer that card instead.",
+			old.IssueNumber, succ.IssueNumber))
 	}
 	tl, err := r.objects.Get(ctx, "sessions/"+old.ID+"/timeline.jsonl")
 	if err != nil {

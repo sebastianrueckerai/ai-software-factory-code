@@ -411,6 +411,7 @@ type rollForgejo struct {
 	issues      []string // "title\n\nbody"
 	comments    []string // "#n body"
 	commentsOff bool     // the issue comments answer 500
+	commentFail string   // the issue whose next comment answers 500
 	commits     []map[string]any
 	synced      int
 	calls       []string
@@ -444,6 +445,7 @@ type rollForgejo struct {
 	cuts          []string         // "<branch> at <commit>" of every fork branch cut
 	prs           map[int64]string // pull request number -> its head branch
 	closedPRs     []int64          // the numbers of the pull requests closed
+	closeFail     int64            // the pull request whose next close answers 500
 	mergedPRs     []int64          // the pull requests a person merged on the forge
 	refusedCloses []string         // the issues whose close Forgejo refuses (422)
 	titles        map[int64]string // pull request number -> its title
@@ -702,6 +704,11 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
 			n, _ := strconv.ParseInt(strings.TrimPrefix(p, "/pulls/"), 10, 64)
+			if in["state"] == "closed" && n == f.closeFail {
+				f.closeFail = 0
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			if in["state"] == "closed" {
 				f.closedPRs = append(f.closedPRs, n)
 			}
@@ -752,6 +759,9 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 		case (r.Method == "PUT" || r.Method == "GET") && strings.HasSuffix(p, "/labels"):
 			reply([]any{})
 		case f.commentsOff && strings.HasSuffix(p, "/comments"):
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.Method == "POST" && f.commentFail != "" && p == "/issues/"+f.commentFail+"/comments":
+			f.commentFail = ""
 			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
 			n := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments")

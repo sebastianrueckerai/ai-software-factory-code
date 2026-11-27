@@ -2616,13 +2616,14 @@ func imagesFact(p factoryd.Project) string {
 }
 
 // snapshot is the project's status line, as the board shows it. A
-// project without a board, one no agent works on, gets a line of its own
-// facts: why it has none, and its spend this month against its month cap.
+// project without a board, one factoryd does not work on, gets a line of
+// its own facts: that it has none, and its spend this month against its
+// month cap.
 func (t *turn) snapshot() (string, error) {
 	d, err := t.c.boardOf(t.r, boardFilter{Project: t.p.Name}, t.a)
 	if errors.Is(err, errNoProject) {
 		spend, err := t.c.spendLine(t.r.Context(), t.p)
-		return "Status: " + noBoard(t.p) + "; " + spend, err
+		return "Status: " + noBoard + "; " + spend, err
 	}
 	if err != nil {
 		return "", err
@@ -2637,15 +2638,9 @@ func (t *turn) snapshot() (string, error) {
 	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap, t.c.clock()), pool, github), nil
 }
 
-// noBoard is the status of project p, which has no board: with agents
-// none every issue goes to the human lane, as the settings page says;
-// else factoryd does not work on its repository (Project.Active).
-func noBoard(p factoryd.Project) string {
-	if p.Agents == policy.AgentsNone {
-		return "agents none, every issue goes to the human lane"
-	}
-	return "no board, factoryd does not work on its repository"
-}
+// noBoard is the status of a project without a board: factoryd does not
+// work on its repository (Project.Active).
+const noBoard = "no board, factoryd does not work on its repository"
 
 // spendLine is project p's spend this UTC month against its month cap,
 // the chat's own part apart under its file's cap.

@@ -606,6 +606,69 @@ func TestRollerEndsTheRevertWhenMainTurnsGreenWithoutIt(t *testing.T) {
 	}
 }
 
+// A comment Forgejo refuses on a human revert's pull request leaves it
+// open, so the next pass still finds it and ends it with its one comment.
+func TestRollerCommentsBeforeItClosesTheRevert(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(59, commitC2, "success"), pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+		commentFail: "43",
+	}
+	roller, store, _ := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["rev1"] = Task{ID: "rev1", Source: SourceRevert, Kind: "human", Status: "waiting-human", Repository: codeRepo, IssueNumber: 42, PRNumber: 43}
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-3 * time.Hour), RevertTask: "rev1"}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err == nil {
+		t.Fatal("the refused comment ended the poll without an error")
+	}
+	if len(f.closedPRs) != 0 || len(f.comments) != 0 {
+		t.Fatalf("after the refused comment: closed pull requests %v, comments %q; want none", f.closedPRs, f.comments)
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"43 CI run 0 on main, at commit " + ShortSHA(commitC2) + ", is green (https://git.example/" + codeRepo + "/actions/runs/0): main is green without this revert. Closing this pull request."}
+	if !slices.Equal(f.closedPRs, []int64{43}) || !slices.Equal(f.comments, want) {
+		t.Fatalf("after the retry: closed pull requests %v, comments %q; want #43 closed with %q", f.closedPRs, f.comments, want)
+	}
+}
+
+// A close Forgejo refuses after the comment on a human revert's pull
+// request leaves it open: the next pass posts no second comment and closes
+// it.
+func TestRollerCommentsOnceWhenTheRevertsCloseFails(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(59, commitC2, "success"), pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+		closeFail: 43,
+	}
+	roller, store, _ := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["rev1"] = Task{ID: "rev1", Source: SourceRevert, Kind: "human", Status: "waiting-human", Repository: codeRepo, IssueNumber: 42, PRNumber: 43}
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-3 * time.Hour), RevertTask: "rev1"}}
+	want := []string{"43 CI run 0 on main, at commit " + ShortSHA(commitC2) + ", is green (https://git.example/" + codeRepo + "/actions/runs/0): main is green without this revert. Closing this pull request."}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err == nil {
+		t.Fatal("the refused close ended the poll without an error")
+	}
+	if len(f.closedPRs) != 0 || !slices.Equal(f.comments, want) {
+		t.Fatalf("after the refused close: closed pull requests %v, comments %q; want none closed and %q", f.closedPRs, f.comments, want)
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.closedPRs, []int64{43}) || !slices.Equal(f.comments, want) {
+		t.Fatalf("after the retry: closed pull requests %v, comments %q; want #43 closed with %q once", f.closedPRs, f.comments, want)
+	}
+}
+
 // endPauseCard ends the pause's two cards each on its own: a close
 // Forgejo refuses on the fix-forward card keeps the revert from nothing,
 // and the answer joins the error.

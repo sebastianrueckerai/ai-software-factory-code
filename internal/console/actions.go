@@ -463,14 +463,18 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 	case rung != "" && strings.TrimSpace(rungReason) == "":
 		return factoryd.Repo{}, 0, refuseAgent(http.StatusBadRequest, "`rung` needs its one-line reason")
 	}
-	ps, err := c.coderProjects(ctx)
+	ps, err := c.cfg.Projects.Projects(ctx)
 	if err != nil {
 		log.Printf("console: projects: %v", err)
 		return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the projects")
 	}
-	i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == project })
-	if i < 0 || a.repository != "" && ps[i].Repository != a.repository {
+	i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == project && p.Active() })
+	switch {
+	case i < 0 || a.repository != "" && ps[i].Repository != a.repository:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "choose a project agents work on")
+	case !ps[i].Coder():
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s runs no agents, so no card is filed on it here. "+
+			"A human opens an issue on %s instead, and the issue goes to the human lane.", ps[i].Name, ps[i].Repository))
 	}
 	image, err = pinnedImage(ps[i], image)
 	if err != nil {

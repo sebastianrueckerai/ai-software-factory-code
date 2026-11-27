@@ -705,11 +705,12 @@ func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	}
 }
 
-// An unreadable answer on the last call leaves no room for the repair
-// round: the outcome is the unreadable answer's human ask, not the cap's.
+// An unreadable answer on the last call gets one repair call past the cap;
+// a second unreadable answer is the unreadable answer's human ask, not the
+// cap's.
 func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
-	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}}}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}, {Text: "still fine"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000, time.Hour)
 	if out.Decision != RungHandUp || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || strings.HasPrefix(out.Reason, checkinCallCapStop) {
 		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
@@ -717,8 +718,8 @@ func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	if out.ReasonKind != CheckUnreadable || out.Record.Reason != out.Reason {
 		t.Fatalf("outcome kind %q, record reason %q; want the unreadable kind, not a spend kind, and the reason recorded", out.ReasonKind, out.Record.Reason)
 	}
-	if chat.calls != 1 {
-		t.Fatalf("calls = %d, want the one call", chat.calls)
+	if chat.calls != 2 {
+		t.Fatalf("calls = %d, want the last call and its one repair", chat.calls)
 	}
 }
 
@@ -1035,12 +1036,55 @@ func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
 // for word as it read before the decisions came from the ask.
 const gatePersona = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|reverify|hand_up","reason_kind":"...","reason":"...","handover":"..."}. "reverify" drops every finding and verifies the head again. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 
+// The check-in offers repeats only when earlier findings exist: the persona
+// and the finding item's schema leave it out otherwise, the schema closed
+// against any property it does not name.
+func TestCheckinSystemOffersRepeatsOnlyWithPriors(t *testing.T) {
+	bare := &CheckInAsk{Moment: CheckInGate}
+	got := checkinSystemFor(bare)
+	for _, banned := range []string{`"repeats"`, "repeats is optional"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("no priors: persona holds %q:\n%s", banned, got)
+		}
+	}
+	with := &CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "f1", Text: "p"}}}
+	if got = checkinSystemFor(with); !strings.Contains(got, `"repeats":"<id>"`) {
+		t.Errorf("priors: persona lacks the repeats example:\n%s", got)
+	}
+	item := func(a *CheckInAsk) map[string]any {
+		return momentAnswerSchema(a)["properties"].(map[string]any)["findings"].(map[string]any)["items"].(map[string]any)
+	}
+	if got := item(bare)["additionalProperties"]; got != false {
+		t.Errorf("no priors: finding item additionalProperties = %v, want false", got)
+	}
+	if _, ok := item(bare)["properties"].(map[string]any)["repeats"]; ok {
+		t.Errorf("no priors: finding item offers repeats")
+	}
+	if _, ok := item(with)["properties"].(map[string]any)["repeats"]; !ok {
+		t.Errorf("priors: finding item lacks repeats")
+	}
+}
+
+// A last call refused for a repeats the ask never offered still gets its
+// repair call, and the repaired answer ends the check-in.
+func TestCheckinRepairsALastCallRefusal(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-1", Findings: []CheckFinding{{Text: "f", Source: "review"}}}
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"findings":[{"id":"f1","verdict":"confirmed","evidence":"e","repeats":"f2"}],"decision":"handover","handover":"n"}`},
+		{Text: `{"findings":[{"id":"f1","verdict":"confirmed","evidence":"e"}],"decision":"handover","handover":"n"}`},
+	}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000, time.Hour)
+	if out.Decision != CheckHandover || chat.calls != 2 {
+		t.Fatalf("decision %q after %d calls (%+v), want handover after 2", out.Decision, chat.calls, out)
+	}
+}
+
 // The gate persona reads as it did while the reverify is offered; the
 // session and dead personas name the rungs' action names, the session's
 // continue carrying the message's guidance, and none names the gate's
 // verdict vocabulary.
 func TestCheckinSystemPerMoment(t *testing.T) {
-	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInGate}); got != gatePersona {
+	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "f1", Text: "p"}}}); got != gatePersona {
 		t.Fatalf("the gate persona = %q, want it as it read", got)
 	}
 	session := checkinSystemFor(&CheckInAsk{Moment: CheckInSession})
@@ -1468,8 +1512,8 @@ func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
 }
 
 // A malformed answer in the answer tool's arguments reaches the parser as
-// text: one repair round, then the human, never the silent handover of a
-// refused call.
+// text: one repair round, last call or not, then the human, never the
+// silent handover of a refused call.
 func TestCheckinGatewayTruncatedAnswerArgumentsGetTheRepairRound(t *testing.T) {
 	var bodies [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1486,8 +1530,8 @@ func TestCheckinGatewayTruncatedAnswerArgumentsGetTheRepairRound(t *testing.T) {
 		if out.Decision != RungHandUp || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
 			t.Fatalf("callsLeft %d: outcome = %+v, want the human with the unreadable answer", callsLeft, out)
 		}
-		if want := map[int]int{1: 1, 12: 2}[callsLeft]; len(bodies) != want {
-			t.Fatalf("callsLeft %d: %d calls, want %d (a repair round only before the last call)", callsLeft, len(bodies), want)
+		if len(bodies) != 2 {
+			t.Fatalf("callsLeft %d: %d calls, want 2 (one repair round, past the cap too)", callsLeft, len(bodies))
 		}
 	}
 }
@@ -1710,7 +1754,7 @@ func TestMomentAnswerSchemaOffersRepeatsOnlyWithPriors(t *testing.T) {
 	if !reflect.DeepEqual(got["enum"], []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb"}) {
 		t.Fatalf("repeats = %v, want the enum of the listed ids", got)
 	}
-	if !strings.Contains(checkinSystemFor(&CheckInAsk{Moment: CheckInGate}), `"repeats":"<id>"`) {
+	if !strings.Contains(checkinSystemFor(&CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "aaaaaaaaaaaa"}}}), `"repeats":"<id>"`) {
 		t.Fatal("the persona's answer shape omits repeats")
 	}
 }

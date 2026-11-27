@@ -796,7 +796,6 @@ func TestRetryRefusesACardCutIntoASuccessor(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := newRetryRig(t)
 	setStatus(store, "t-a", "running")
-	id := SuccessorID("t-a")
 	_, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
 	if err != nil {
 		t.Fatal(err)
@@ -804,8 +803,9 @@ func TestRetryRefusesACardCutIntoASuccessor(t *testing.T) {
 	setStatus(store, "t-a", "failed")
 	_, err = r.RetryCard(ctx, "t-a", "alice")
 	var no ErrNoRetry
-	if !errors.As(err, &no) || !strings.Contains(err.Error(), "successor #9 ("+id+")") {
-		t.Fatalf("RetryCard = %v, want the refusal naming successor #9", err)
+	const want = "Card #5 was cut into successor #9, which carries its work and its dependents: answer that card instead."
+	if !errors.As(err, &no) || err.Error() != want {
+		t.Fatalf("RetryCard = %v, want the refusal %q", err, want)
 	}
 	if _, found := store.tasks[RetryID("t-a")]; found {
 		t.Fatal("the refused retry filed a replacement")

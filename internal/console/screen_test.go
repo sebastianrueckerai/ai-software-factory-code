@@ -389,13 +389,25 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 		!strings.Contains(face, `<strong class="title">fix the cache</strong>`) || strings.Contains(face, `class="open"`) {
 		t.Errorf("alice reading the code project does not follow its stream, or a card offers her its drawer:\n%s", face)
 	}
-	// bob writes the infra project alone, which agents do not work on
+	// bob writes the infra project alone, which runs no agents: his board
+	// is its board
 	r.repoWriters["sf/infra"] = []string{"bob"}
 	bk, _ := memberLogin(t, r, "bob")
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), bk).Body.String()
-	if !strings.Contains(body, `<p class="problem" role="alert">You write none of the projects agents work on.</p>`) ||
+	if !strings.Contains(body, `<select id="project-filter" name="project">
+<option value="ai-software-factory-infra" selected>ai-software-factory-infra</option>
+</select>`) || !strings.Contains(body, `data-project="ai-software-factory-infra"`) || !strings.Contains(body, "status-line") {
+		t.Error("bob's board is not the infra project's alone")
+	}
+	// carol writes only the repository of a project whose registration has
+	// not run, which factoryd does not work on yet
+	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "unborn", Repository: "unborn/unborn", MergeRule: "human", Objects: "factory", Agents: "coder", File: true})
+	r.repoWriters["unborn/unborn"] = []string{"carol"}
+	cc, _ := memberLogin(t, r, "carol")
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), cc).Body.String()
+	if !strings.Contains(body, `<p class="problem" role="alert">You write none of the projects factoryd works on.</p>`) ||
 		!strings.Contains(body, `data-project=""`) || strings.Contains(body, "status-line") || strings.Contains(body, "data-card") {
-		t.Error("bob, who writes no project, does not see why his board is empty")
+		t.Error("carol, who writes none of the projects factoryd works on, does not see why her board is empty")
 	}
 }
 

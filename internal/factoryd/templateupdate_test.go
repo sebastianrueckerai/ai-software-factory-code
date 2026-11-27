@@ -32,6 +32,7 @@ type templateForgejo struct {
 	prs      []*templatePR
 	closes   int
 	comments []string
+	failNext bool // the next comment answers 500
 	written  []string
 	writes   []string
 	// issues are the card issues POST /issues made, in order; closedIssues
@@ -40,6 +41,10 @@ type templateForgejo struct {
 	closedIssues []int64
 	// labels are each issue's labels by number, as PUT .../labels left them.
 	labels map[int64][]string
+
+	// the next branch delete (failDelete) or pull request close
+	// (failClose) answers 500
+	failDelete, failClose bool
 }
 
 type templateIssue struct {
@@ -124,6 +129,12 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			}
 		}
 		switch {
+		case r.Method == http.MethodDelete && strings.HasPrefix(p, fk+"/branches/") && s.failDelete:
+			s.failDelete = false
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.Method == http.MethodPatch && strings.HasPrefix(p, up+"/pulls/") && body["state"] == "closed" && s.failClose:
+			s.failClose = false
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, up+"/contents/") && q.Get("ref") == "main":
 			file(s.main, strings.TrimPrefix(p, up+"/contents/"))
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fk+"/contents/") && branch != nil:
@@ -237,6 +248,9 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 				}
 			}
 			json.NewEncoder(w).Encode(out)
+		case r.Method == http.MethodPost && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/comments") && s.failNext:
+			s.failNext = false
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPost && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/comments"):
 			var n int64
 			fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d", &n)
@@ -720,10 +734,66 @@ func TestTemplateUpdateCloseClosesCard(t *testing.T) {
 		t.Fatalf("pull request %+v, comments %q; want %q", fj.prs[0], fj.comments, comments)
 	}
 	want := []string{"PATCH /api/v1/repos/demo-app/demo-app/issues/1 by basic factory-agent",
+		"POST /api/v1/repos/demo-app/demo-app/issues/1/comments by basic factory-agent",
 		"DELETE /api/v1/repos/factory-projects/demo-app/branches/factory/template-update by token projects-tok",
 		"PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by token projects-tok"}
-	if got := fj.writes[len(fj.writes)-4 : len(fj.writes)-1]; !slices.Equal(got, want) {
-		t.Fatalf("writes %q\nwant %q: the card closes before the branch and the pull request", got, want)
+	if got := fj.writes[len(fj.writes)-4:]; !slices.Equal(got, want) {
+		t.Fatalf("writes %q\nwant %q: the card closes first, then the comment comes before the branch's delete and the pull request's close", got, want)
+	}
+}
+
+// A comment Forgejo refuses leaves the pull request open, so the next call
+// still finds it and ends it with its one comment.
+func TestTemplateUpdateCommentsBeforeItCloses(t *testing.T) {
+	fj, reg, store, _, _ := templateCardRig(t, stage15Main(), false)
+	ctx := context.Background()
+	p := store.m["demo-app"]
+	if _, err := reg.openTemplateUpdate(ctx, p, templateWant(t, p, reg), templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs"})); err != nil {
+		t.Fatal(err)
+	}
+	f := reg.Forgejo.As(reg.ProjectsUser, reg.Forgejo.ProjectsToken)
+	fj.failNext = true
+	if _, err := reg.closeTemplateUpdate(ctx, f, p.Repo(), 1, "main's files equal the template's"); err == nil {
+		t.Fatal("the refused comment ended the close without an error")
+	}
+	if fj.prs[0].state != "open" || len(fj.comments) != 0 {
+		t.Fatalf("after the refused comment: pull request %q, comments %q; want open and none", fj.prs[0].state, fj.comments)
+	}
+	if _, err := reg.closeTemplateUpdate(ctx, f, p.Repo(), 1, "main's files equal the template's"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"#1 by basic factory-agent: Closing this pull request: main's files equal the template's."}
+	if fj.prs[0].state != "closed" || !slices.Equal(fj.comments, want) {
+		t.Fatalf("after the retry: pull request %q, comments %q; want closed and %q", fj.prs[0].state, fj.comments, want)
+	}
+}
+
+// A close Forgejo refuses after the comment, at the branch's delete or at
+// the pull request's close, fails the call: the next call posts no second
+// comment and closes the pull request.
+func TestTemplateUpdateCommentsOnceWhenTheCloseFails(t *testing.T) {
+	for _, step := range []string{"the branch's delete", "the pull request's close"} {
+		fj, reg, store, _, _ := templateCardRig(t, stage15Main(), false)
+		ctx := context.Background()
+		p := store.m["demo-app"]
+		if _, err := reg.openTemplateUpdate(ctx, p, templateWant(t, p, reg), templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs"})); err != nil {
+			t.Fatal(err)
+		}
+		f := reg.Forgejo.As(reg.ProjectsUser, reg.Forgejo.ProjectsToken)
+		fj.failDelete, fj.failClose = step == "the branch's delete", step == "the pull request's close"
+		want := []string{"#1 by basic factory-agent: Closing this pull request: main's files equal the template's."}
+		if _, err := reg.closeTemplateUpdate(ctx, f, p.Repo(), 1, "main's files equal the template's"); err == nil {
+			t.Fatalf("%s refused: the close ended without an error", step)
+		}
+		if !slices.Equal(fj.comments, want) {
+			t.Fatalf("%s refused: comments %q, want %q", step, fj.comments, want)
+		}
+		if _, err := reg.closeTemplateUpdate(ctx, f, p.Repo(), 1, "main's files equal the template's"); err != nil {
+			t.Fatalf("%s refused, the next call: %v", step, err)
+		}
+		if fj.prs[0].state != "closed" || !slices.Equal(fj.comments, want) {
+			t.Errorf("%s refused, after the next call: pull request %q, comments %q; want closed and %q once", step, fj.prs[0].state, fj.comments, want)
+		}
 	}
 }
 
@@ -895,8 +965,8 @@ func TestTemplateUpdateKeepsItsPullRequest(t *testing.T) {
 }
 
 // Files on main that now equal the render close the open pull request:
-// its branch goes, then the close, then the bot's comment, so a failed
-// close repeats no comment.
+// the bot's comment comes first, then its branch goes, then the close, so
+// a failed comment leaves the pull request open for the next pass.
 func TestTemplateUpdateClosesWhenMainEquals(t *testing.T) {
 	fj, reg, _ := templateRig(t, stage15Main())
 	ctx := context.Background()
@@ -905,8 +975,9 @@ func TestTemplateUpdateClosesWhenMainEquals(t *testing.T) {
 	fj.main["deploy/smoke.sh"] = renderedSmoke
 	writes, logs := len(fj.writes), captureLog(t)
 	reg.TemplateUpdates(ctx)
-	if want := []string{"DELETE /api/v1/repos/factory-projects/demo-app/branches/factory/template-update by token projects-tok",
-		"PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by token projects-tok", "POST /api/v1/repos/demo-app/demo-app/issues/1/comments by basic factory-agent"}; !slices.Equal(fj.writes[writes:], want) {
+	if want := []string{"POST /api/v1/repos/demo-app/demo-app/issues/1/comments by basic factory-agent",
+		"DELETE /api/v1/repos/factory-projects/demo-app/branches/factory/template-update by token projects-tok",
+		"PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by token projects-tok"}; !slices.Equal(fj.writes[writes:], want) {
 		t.Errorf("writes %q\nwant %q", fj.writes[writes:], want)
 	}
 	if fj.prs[0].state != "closed" || fj.branches[TemplateUpdateBranch] != nil {

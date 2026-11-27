@@ -1,6 +1,6 @@
 # Recorded histories
 
-`unmarked-*.json` is a live run exported from Temporal that holds no marker of the cases change: the one test that pins its refusal with the version error reads it. `history-*.json` is a live run exported from Temporal after the roll, with every marker: the replay and decode-guard test reads each one. `devserver-*.json` are runs recorded on a local dev server under stub activities. Their identity fields hold a placeholder instead of the recording machine, such as `recorder@devserver`, `1@devserver@` or `1@host@`.
+`devserver-*.json` are runs recorded on a local dev server under stub activities; `TestWorkflowReplaysDevServerHistories` replays each one against `TaskWorkflow`, and the tests of single changes read the ones they name. Their identity fields hold a placeholder instead of the recording machine, such as `recorder@devserver`, `1@devserver@` or `1@host@`. The corpus holds no live recording beyond `unmarked-*.json`: a live run exported from Temporal that holds no marker of the cases change, which the one test that pins its refusal with the version error reads. The replay test also reads `history-*.json` when one exists, a live run exported after a roll with every marker; none is kept now.
 
 Record a run again:
 

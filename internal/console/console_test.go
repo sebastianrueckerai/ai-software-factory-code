@@ -400,7 +400,7 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(raw, &body)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"title": cmp.Or(body["title"], "Fix the cache"), "body": cmp.Or(body["body"], "It drops entries.")})
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
 		var body struct {
 			Head string `json:"head_commit_id"`
 		}
@@ -412,7 +412,7 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.merged = append(f.merged, pull+" "+body.Head)
 		w.WriteHeader(http.StatusOK)
-	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/"):
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") && strings.Contains(r.URL.Path, "/pulls/"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
 		f.closed = append(f.closed, r.URL.Path+" "+body["state"])
@@ -2693,7 +2693,8 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 			"Project ai-software-factory-code follows process maintenance, which has no plan track: file the card on track direct.\n"},
 		"bad priority": {url.Values{"title": {"x"}, "track": {"direct"}, "priority": {"urgent"}, "project": {"ai-software-factory-code"}}, "unknown priority\n"},
 		"no project":   {url.Values{"title": {"x"}, "track": {"direct"}}, "choose a project agents work on\n"},
-		"agents none":  {url.Values{"title": {"x"}, "track": {"human"}, "project": {"ai-software-factory-infra"}}, "choose a project agents work on\n"},
+		"agents none": {url.Values{"title": {"x"}, "track": {"human"}, "project": {"ai-software-factory-infra"}},
+			"Project ai-software-factory-infra runs no agents, so no card is filed on it here. A human opens an issue on sf/infra instead, and the issue goes to the human lane.\n"},
 	} {
 		r.fg.issues = nil
 		tc.form.Set("csrf", s.csrf)

@@ -1840,8 +1840,8 @@ func TestWorkflowTerminalSessionErrorFinishes(t *testing.T) {
 	}
 }
 
-// Histories a dev server recorded under stub activities (devserver-*.json) and
-// live histories exported after the roll (history-*.json) replay: each holds
+// Histories a dev server recorded under stub activities (devserver-*.json),
+// and any history-*.json file (none is kept), replay: each holds
 // the markers of the changes whose minimum the workflow keeps at their
 // version, so a run that waits in review takes today's end. The newest input
 // each activity recorded across them decodes into today's activity of that

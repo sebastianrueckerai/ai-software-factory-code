@@ -16,8 +16,8 @@ import (
 // The chat's default context names the project's sandbox images, the pins
 // in force with their tools, and what a card without an image runs: the
 // factory image, or image default where the project pins it. A project
-// without agents has no board and runs no card in a sandbox: its status
-// line says so with its real spend against its month cap, its context
+// without agents runs no card in a sandbox: its status line is its board's,
+// as any project's, with its real spend against its month cap, its context
 // names no images, and its agent is offered neither project_images nor
 // request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
@@ -39,8 +39,8 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 		want := status
 		if tc.agents == policy.AgentsNone {
 			r.ledger.enforced = policy.Enforced{Month: 3.75}
-			want = "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: agents none, every issue goes to the human lane; " +
-				"spend this month 3.75 of 50.00 EUR, the factory's whole ledger"
+			want = "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; " +
+				"spend this month 3.75 of 50.00 EUR, the factory's whole ledger; pool: " + noDraws
 		}
 		r.projects.rows[0].Agents, r.projects.rows[0].Images = tc.agents, tc.pins
 		ck, s := r.loggedIn(t)

@@ -394,13 +394,16 @@ func fileChanges(ctx context.Context, f *Forgejo, repo Repo, ref string, files m
 	return out, nil
 }
 
-// closeTemplateUpdate deletes pull request number's branch, so none
-// outlives a close of factoryd's own (leftBranch), closes it, which
-// Forgejo also does for a deleted branch, and only then says why in a
-// comment by the bot (factory-projects' token has no issue scope): no
-// comment is posted twice. It closes the card's issue first when one
-// exists, as factoryd's recorded close with why as its comment (roadmap
-// 187): the close ends the card as an approver's would.
+// closeTemplateUpdate says why in a comment by the bot (factory-projects'
+// token has no issue scope), then deletes pull request number's branch, so
+// none outlives a close of factoryd's own (leftBranch), and closes it,
+// which Forgejo also does for a deleted branch. The comment comes first:
+// once the branch is gone the pull request reads as closed and a comment
+// that failed is not made again. A call after a failed delete or close
+// finds the comment and posts no second one. It closes the card's issue
+// before all of these when one exists, as factoryd's recorded close with
+// why as its comment (roadmap 187): the close ends the card as an
+// approver's would.
 func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Repo, number int64, why string) (Change, error) {
 	fork := f.Fork(repo)
 	if task, ok, err := r.cardByPR(ctx, repo, number); err != nil {
@@ -410,13 +413,13 @@ func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Re
 			return "", fmt.Errorf("close card %s: %w", task.ID, err)
 		}
 	}
+	if err := r.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, number, "Closing this pull request: "+why+"."); err != nil {
+		return "", err
+	}
 	if err := f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch); err != nil {
 		return "", err
 	}
 	if err := f.ClosePullRequest(ctx, repo.Owner, repo.Name, number); err != nil {
-		return "", err
-	}
-	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, "Closing this pull request: "+why+"."); err != nil {
 		return "", err
 	}
 	return Change(fmt.Sprintf("closed pull request #%d: %s", number, why)), nil

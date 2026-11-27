@@ -214,9 +214,12 @@ resources page, a period that recurs and no instant.
   activity still running at its policy bound, written once per run by the
   `GateWatch` worker interceptor (the policy's `bounds` section, seconds
   per activity and `default`; without it RunSession 1260, WaitChecks 3000,
-  GateReproduction 900, ModelReview 180, Merge 90, SuperviseGate 360,
-  every other activity 120). `supervisor_trip` is every detector trip the
-  supervisor decided; `continue` is `noise`, any other action `real`. The
+  GateReproduction, GateCriteria and ProofsAtMain 900, ModelReview 180,
+  Merge 90, SuperviseGate 360, CopyUpstreamImages, RoutineRun and the
+  follow move's FollowChecks, FollowLand, FollowJudge and FollowReturn a
+  minute under their timeouts, every other activity 120).
+  `supervisor_trip` is every detector trip the supervisor decided;
+  `continue` is `noise`, any other action `real`. The
   timeline shows both on its `supervisor` and `gate_supervisor` steps.
   An escalation writes no alert: its case is its record, and it shows as a
   needs-you card.
@@ -413,7 +416,8 @@ resources page, a period that recurs and no instant.
   nothing on a closed intake, and no ask files past the queue cap; a
   join files nothing and meets neither) and writes a `card_filed` row
   with the track, the reason for it, the title, image and tool. A project without agents offers
-  neither `project_images` nor `request_image`. Proposals and
+  none of `project_images`, `request_image`, `set_autonomy` and
+  `new_card`. Proposals and
   undo tokens are the human's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
   another human's). The `ask` tool questions the thread's human in
@@ -492,8 +496,10 @@ resources page, a period that recurs and no instant.
   (`Runner.MessageSession`). The conversation
   is `chat_messages`, per project and human, each assistant row with its
   tool calls and their results; a turn's context is the project's status
-  line (for a project without a board, agents none or not worked on,
-  why it has none and its spend this month against its month cap), a
+  line (for a project without a board, one factoryd does not work on,
+  that it has none and its spend this month against its month cap; a
+  project with no agents has a board of human-lane cards, whose line it
+  reads), a
   line of its sandbox images (`Sandbox images:` the pins in force
   with their tools, and what a card without an image runs; none for a
   project without agents), the thread's
@@ -575,6 +581,9 @@ files; a change is a commit.
 The autonomy dial writes `autonomy` and `merge_rule` together through a pull
 request on the file: manual, assisted and autonomous write `merge_rule: human`,
 and only full auto writes `merge_rule: auto` (with `autonomy: autonomous`).
+A project with no agents has no dial, no intake switch and no
+`set_autonomy` in its chat: the level's door refuses it, and its level is
+what its file says.
 
 The factory's own repositories are projects like any other: no
 Go source names them (a test greps). Two settings replace the old special

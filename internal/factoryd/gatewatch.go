@@ -82,10 +82,10 @@ var activityGates = map[string]string{
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does
-// not name: they take the policy's default bound, RunPlan a session's,
-// SizeCard a screening's.
-// Naming one there would change the configuration tree's schema, which
-// only an infra commit follows.
+// not name: RunPlan takes a session's bound, SizeCard a screening's, one
+// with a policy.DefaultBounds entry that entry, and the rest the policy's
+// default bound. Naming one in BoundActivities would change the
+// configuration tree's schema, which only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan,
 	ActivityEnterQueue, ActivityAdmitResume, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityChangeSet, ActivityScreenAnswer,
 	ActivityAwaitRollout, ActivityProviderWait, ActivityOpenPlanQuestions,

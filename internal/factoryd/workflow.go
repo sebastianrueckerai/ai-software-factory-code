@@ -4035,6 +4035,9 @@ func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptio
 	}
 }
 
+// copyUpstreamTimeout is how long one copy of the build inputs may run.
+const copyUpstreamTimeout = 30 * time.Minute
+
 // copyUpstream copies what commit adds to the build inputs into the store
 // (versionUpstreamCopy); a line the copy cannot make is the card's finding,
 // and the run goes on.
@@ -4043,7 +4046,7 @@ func (t *taskRun) copyUpstream(commit string) error {
 		return nil
 	}
 	ctx := workflow.WithActivityOptions(t.ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: time.Duration(policy.DefaultBounds[ActivityCopyUpstreamImages]) * time.Second,
+		StartToCloseTimeout: copyUpstreamTimeout,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,
 			MaximumAttempts:        3,
