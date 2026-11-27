@@ -1003,7 +1003,7 @@ func (c *Console) foundText(r *http.Request, p factoryd.Project, a actor, q stri
 	}
 	d, err := c.boardOf(r, boardFilter{Project: p.Name, Q: q, Ever: true}, a)
 	if errors.Is(err, errNoProject) {
-		return "Project " + p.Name + " takes no agent cards: it has no board.", nil
+		return "Project " + p.Name + ": " + noBoard + ".", nil
 	}
 	if err != nil {
 		return "", err
@@ -1046,7 +1046,7 @@ func foundWords(project, q string, cards []card) string {
 func (c *Console) boardText(r *http.Request, p factoryd.Project, a actor) (string, error) {
 	d, err := c.boardOf(r, boardFilter{Project: p.Name}, a)
 	if errors.Is(err, errNoProject) {
-		return "Project " + p.Name + " takes no agent cards: it has no board.", nil
+		return "Project " + p.Name + ": " + noBoard + ".", nil
 	}
 	if err != nil {
 		return "", err

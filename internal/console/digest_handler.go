@@ -68,7 +68,7 @@ func (c *Console) mayReadCard(ctx context.Context, r *http.Request, id string) b
 	if err != nil || !ok {
 		return false
 	}
-	projects, err := c.coderProjects(ctx)
+	projects, err := c.activeProjects(ctx)
 	if err != nil {
 		return false
 	}

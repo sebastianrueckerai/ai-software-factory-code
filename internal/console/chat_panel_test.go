@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // The project agent's panel beside the board: a writer's project page
@@ -19,8 +21,9 @@ import (
 // tabs of a narrow screen under the status line, which spans both, the
 // chat's keys and its script; a reader's (a project they see but do not
 // write) holds it without the input, the history it may not read or the
-// keys; a human who writes no project and a console without the chat's
-// model get no panel.
+// keys; a project without agents has its panel as any project; a human
+// who writes none of the projects factoryd works on and a console without
+// the chat's model get no panel.
 func TestChatPanel(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
@@ -108,6 +111,12 @@ func TestChatPanel(t *testing.T) {
 
 	r.repoWriters["sf/infra"] = []string{"bob"}
 	bk, _ := memberLogin(t, r, "bob")
+	if body := page(bk, "/"); !strings.Contains(body, `id="chat"`) || !strings.Contains(body, `<span class="chat-who">project agent · ai-software-factory-infra</span>`) {
+		t.Error("bob, who writes the infra project, has no panel with its agent")
+	}
+	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "unborn", Repository: "unborn/unborn", MergeRule: "human", Objects: "factory", Agents: "coder", File: true})
+	r.repoWriters["unborn/unborn"] = []string{"carol"}
+	cc, _ := memberLogin(t, r, "carol")
 	none := func(who, body string) {
 		t.Helper()
 		for _, unwanted := range []string{`id="chat"`, "with-chat", "chat.js"} {
@@ -116,7 +125,7 @@ func TestChatPanel(t *testing.T) {
 			}
 		}
 	}
-	none("bob, who writes no project agents work on", page(bk, "/"))
+	none("carol, who writes none of the projects factoryd works on", page(cc, "/"))
 	r.c.cfg.Operator = nil
 	none("a console without the model", page(ck, code))
 }

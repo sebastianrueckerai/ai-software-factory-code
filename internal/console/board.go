@@ -1563,7 +1563,8 @@ func span(d time.Duration) string {
 	return minutes(d)
 }
 
-// errNoProject: the board was asked for a project agents do not work on.
+// errNoProject: the board was asked for a project factoryd does not work
+// on, or one the viewer may not read.
 var errNoProject = errors.New("no such project")
 
 // board renders the whole page, or only the board for htmx's poll.
@@ -1585,7 +1586,7 @@ func (c *Console) readBoard(w http.ResponseWriter, r *http.Request, f boardFilte
 	d, err := c.boardOf(r, f, button(r))
 	switch {
 	case errors.Is(err, errNoProject):
-		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
+		http.Error(w, "No project "+f.Project+" has a board you may read. Choose one in the project select.", http.StatusNotFound)
 		return d, false
 	case err != nil:
 		log.Printf("console: board: %v", err)
@@ -1641,7 +1642,7 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 	}
 	shown, _, _, err := c.shownProject(ctx, r, v, all, f)
 	if errors.Is(err, errNoProject) {
-		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
+		http.Error(w, "No project "+f.Project+" has a board you may read. Choose one in the project select.", http.StatusNotFound)
 		return column{}, false
 	}
 	col, ok := finishedColumn(f.Col)
@@ -1698,7 +1699,7 @@ func (c *Console) pressed(w http.ResponseWriter, r *http.Request, err error) {
 // boardView is what the cards of one render share: the viewer, the
 // policy in force, the board's filter (which every
 // card's forms carry back),
-// the projects agents work on by repository, the tasks read so far by id,
+// the tasks read so far by id,
 // the pending approval requests and the tasks they card (planned: by a
 // plan's request). boardOf fills it for the whole board, cardFragment for
 // one card; problems are what the board says it could not do.
@@ -1731,8 +1732,8 @@ type boardView struct {
 	rooms map[string]factoryd.CaseFacts
 }
 
-// viewOf reads what every card of a render shares, and the projects agents
-// work on, by name.
+// viewOf reads what every card of a render shares, and the projects
+// factoryd works on, by name.
 func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	v, all, err := c.projectsOf(r, f)
 	if err != nil {
@@ -1750,14 +1751,14 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	return v, all, nil
 }
 
-// projectsOf reads the view's policy and the projects agents work on, by
-// name: what a page of finished cards reads, whose cards never wait on an
-// approval.
+// projectsOf reads the view's policy and the projects factoryd works on,
+// by name: what a page of finished cards reads, whose cards never wait on
+// an approval.
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
-	all, err := c.coderProjects(ctx)
+	all, err := c.activeProjects(ctx)
 	if err != nil {
 		return v, nil, fmt.Errorf("projects: %w", err)
 	}
@@ -2039,7 +2040,7 @@ func callsLine(t policy.CallTotals) string {
 }
 
 // shownProject is the board's shown project under f among all, the
-// projects agents work on — f.Project's, else the first the viewer
+// projects factoryd works on — f.Project's, else the first the viewer
 // writes — with projects, the top bar's select choices, every project the
 // viewer writes and the shown one, and writable saying each project by
 // name. A project whose writers could not be checked is offered, its
@@ -2101,7 +2102,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	}
 	d.Projects = projects
 	if shown.Name == "" {
-		d.Problems = append(d.Problems, "You write none of the projects agents work on.")
+		d.Problems = append(d.Problems, "You write none of the projects factoryd works on.")
 	} else if !slices.Contains(d.Projects, shown.Name) {
 		d.Projects = append(d.Projects, shown.Name)
 	}
@@ -2935,6 +2936,13 @@ func (c *Console) coderProjects(ctx context.Context) ([]factoryd.Project, error)
 	return slices.DeleteFunc(ps, func(p factoryd.Project) bool { return !p.Coder() }), err
 }
 
+// activeProjects are the projects factoryd works on (Project.Active), by
+// name: each has its board, a project without agents too.
+func (c *Console) activeProjects(ctx context.Context) ([]factoryd.Project, error) {
+	ps, err := c.cfg.Projects.Projects(ctx)
+	return slices.DeleteFunc(ps, func(p factoryd.Project) bool { return !p.Active() }), err
+}
+
 // newTask is the New task form's values, kept when the form answers the
 // findings of a first submit with the text as the member wrote it
 // (roadmap 125).
@@ -3222,7 +3230,7 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	} else {
 		v.cases = cs
 		if cs.holds(bt.Task) {
-			all, _ := c.coderProjects(ctx)
+			all, _ := c.activeProjects(ctx)
 			if i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Repository == bt.Repository }); i >= 0 {
 				v.filter.Project = all[i].Name
 			}
