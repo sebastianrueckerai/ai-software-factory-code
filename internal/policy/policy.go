@@ -1075,7 +1075,7 @@ const (
 	// cheap call that writes the thread's title from its first message,
 	// and a plan's, which names the plan from its first revision.
 	PurposeTitle = "title"
-	// PurposeResearch is the chat's research subagent: the bounded loop
+	// PurposeResearch is the chat's research loop: the bounded loop
 	// behind the research tool, on the class below premium, hard-coded.
 	PurposeResearch = "research"
 	// PurposeBrief is a needs-you card's brief, on the

@@ -23,9 +23,10 @@ agents_md: false
 budget_words: 1
 `
 
-// A harness session is offered only what its profile names: 6 of the 8
-// built-in tools and 21 of the 22 gateway tools (4 paid, 18 free) are
-// denied, 27 keys, and its standing text replaces the harness preamble.
+// A harness session is offered only what its profile names: 4 of the 6
+// built-in tools a profile may keep, the 3 tools no step keeps and 21 of
+// the 22 gateway tools (4 paid, 18 free) are denied, 4 + 3 + 21 = 28
+// keys, and its standing text replaces the harness preamble.
 func TestSessionConfigDeniesWhatTheProfileDrops(t *testing.T) {
 	c, err := load(fstest.MapFS{"profiles/s.yaml": {Data: []byte(sessionProfile)}, "chunks/s.md": {Data: []byte("S\n")}}, testWriting)
 	if err != nil {
@@ -39,10 +40,10 @@ func TestSessionConfigDeniesWhatTheProfileDrops(t *testing.T) {
 		t.Errorf("agent.build.prompt = %q, want S", got)
 	}
 	permission := cfg["permission"].(map[string]any)
-	if len(permission) != 27 {
-		t.Errorf("permission holds %d keys, want 27: %v", len(permission), permission)
+	if len(permission) != 28 {
+		t.Errorf("permission holds %d keys, want 28: %v", len(permission), permission)
 	}
-	for _, tool := range []string{"edit", "glob", "grep", "task", "todowrite", "webfetch", "factory-tools_web_search", "factory-tools_escalate"} {
+	for _, tool := range []string{"edit", "glob", "grep", "todowrite", "skill", "task", "webfetch", "factory-tools_web_search", "factory-tools_escalate"} {
 		if permission[tool] != "deny" {
 			t.Errorf("permission %s = %v, want deny", tool, permission[tool])
 		}
@@ -59,5 +60,30 @@ func TestSessionConfigDeniesWhatTheProfileDrops(t *testing.T) {
 	c.profiles["s"] = Profile{Step: "s", Tools: Tools{Builtin: []string{"bash"}}, AgentsMD: true}
 	if env, err := c.sessionEnv("s"); err != nil || len(env) != 0 {
 		t.Errorf("sessionEnv with agents_md = %q, %v; want none", env, err)
+	}
+}
+
+// skill, task and webfetch are off in every harness session, whatever
+// its profile lists.
+func TestSessionConfigAlwaysDeniesTheConstants(t *testing.T) {
+	sessions := 0
+	for _, p := range Profiles() {
+		if len(p.Tools.Builtin) == 0 {
+			continue
+		}
+		sessions++
+		cfg, err := SessionConfig(p.Step)
+		if err != nil {
+			t.Fatalf("step %s: %v", p.Step, err)
+		}
+		permission := cfg["permission"].(map[string]any)
+		for _, tool := range []string{"skill", "task", "webfetch"} {
+			if permission[tool] != "deny" {
+				t.Errorf("step %s: permission %s = %v, want deny", p.Step, tool, permission[tool])
+			}
+		}
+	}
+	if sessions != 6 {
+		t.Errorf("%d profiles list built-in tools, want the 6 session steps", sessions)
 	}
 }

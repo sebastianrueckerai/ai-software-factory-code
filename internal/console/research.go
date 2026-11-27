@@ -18,7 +18,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The chat's research subagent (2026-10-31): one bounded loop on the mid
+// The chat's research loop (2026-10-31): one bounded loop on the mid
 // tier behind one tool. The researcher drives the chat's own reads, the
 // premium thread sees only the report, and the trail of its steps lands
 // beside the thread for the human's audit.

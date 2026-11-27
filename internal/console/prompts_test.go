@@ -87,33 +87,53 @@ func budgetOf(t *testing.T, step string) int {
 	return 0
 }
 
-// The session steps keep the tool sets their map pages show: every
-// built-in tool, and the gateway's tools their classes grant.
-func TestSessionStepsKeepTheirToolSets(t *testing.T) {
-	analyzer := []string{"analyze_image", "deployment_health", "digest", "escalate", "manual", "request_info", "web_scrape", "web_search"}
-	coder := []string{"analyze_image", "cloud_prices", "commission_server", "delegate", "deployment_health", "digest", "escalate", "fal_run", "list_resources", "manual",
-		"release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate", "web_scrape", "web_search"}
-	want := map[string][]string{
-		"sizing":      analyzer,
-		"screening":   analyzer,
-		"planner":     {"analyze_image", "digest", "escalate", "file_plan", "manual", "web_scrape", "web_search"},
-		"prover":      {"file_proofs", "manual"},
-		"coding":      coder,
-		"coding-card": coder,
-	}
-	profiles := map[string]prompts.Profile{}
+// sessionProfiles are the profiles of the six session steps, by step.
+func sessionProfiles(t *testing.T) map[string]prompts.Profile {
+	t.Helper()
+	out := map[string]prompts.Profile{}
 	for _, p := range prompts.Profiles() {
-		profiles[p.Step] = p
+		if len(p.Tools.Builtin) > 0 {
+			out[p.Step] = p
+		}
 	}
-	for step, gateway := range want {
-		p, ok := profiles[step]
-		switch {
-		case !ok:
-			t.Errorf("step %s has no profile", step)
-		case !slices.Equal(p.Tools.Gateway, gateway):
-			t.Errorf("step %s: tools.gateway = %q, want %q", step, p.Tools.Gateway, gateway)
-		case !slices.Equal(p.Tools.Builtin, prompts.BuiltinTools):
-			t.Errorf("step %s: tools.builtin = %q, want every built-in tool", step, p.Tools.Builtin)
+	if want := []string{"coding", "coding-card", "planner", "prover", "screening", "sizing"}; !slices.Equal(slices.Sorted(maps.Keys(out)), want) {
+		t.Fatalf("the session steps are %q, want %q", slices.Sorted(maps.Keys(out)), want)
+	}
+	return out
+}
+
+// Each session step keeps the built-in tools its job uses: the coder
+// all six, the prover no todo list, the planner no edit, and screening
+// and sizing only the three that read.
+func TestSessionToolSets(t *testing.T) {
+	want := map[string][]string{
+		"coding":      {"bash", "edit", "glob", "grep", "read", "todowrite"},
+		"coding-card": {"bash", "edit", "glob", "grep", "read", "todowrite"},
+		"prover":      {"bash", "edit", "glob", "grep", "read"},
+		"planner":     {"bash", "glob", "grep", "read"},
+		"sizing":      {"glob", "grep", "read"},
+		"screening":   {"glob", "grep", "read"},
+	}
+	for step, p := range sessionProfiles(t) {
+		if got := slices.Sorted(slices.Values(p.Tools.Builtin)); !slices.Equal(got, want[step]) {
+			t.Errorf("step %s: tools.builtin = %q, want %q", step, got, want[step])
+		}
+	}
+}
+
+// The steps that only read cannot write: screening, sizing and the
+// planner have no edit, and screening and sizing, which read text an
+// outsider wrote, no shell.
+func TestReadOnlyStepsCannotWrite(t *testing.T) {
+	profiles := sessionProfiles(t)
+	for _, step := range []string{"screening", "sizing", "planner"} {
+		if slices.Contains(profiles[step].Tools.Builtin, "edit") {
+			t.Errorf("step %s keeps edit", step)
+		}
+	}
+	for _, step := range []string{"screening", "sizing"} {
+		if slices.Contains(profiles[step].Tools.Builtin, "bash") {
+			t.Errorf("step %s keeps bash", step)
 		}
 	}
 }

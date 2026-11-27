@@ -595,7 +595,7 @@ func AgentDocLoop(ctx context.Context, id, bin, bake string, v policy.Version) (
 
 	model.oc = &Opencode{
 		Binary: bin, WorkDir: dir, TokenFile: token,
-		Model: agentDocLoopSessionModel(mode, v), Stronger: "factory/" + policy.Big, Cheap: "factory/" + policy.Small,
+		Model: agentDocLoopSessionModel(mode, v), Stronger: "factory/" + policy.Big,
 		Budget:     TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384},
 		Steps:      v.Document.Limits.Steps,
 		GatewayURL: srv.URL,
@@ -643,30 +643,4 @@ func AgentDocLoop(ctx context.Context, id, bin, bake string, v policy.Version) (
 		spans = append(spans, msgSpans...)
 	}
 	return append(spans, wire...), rec, nil
-}
-
-// AgentDocAgentConfig answers the config's agent block verbatim: what
-// buildOpencodeConfig tells opencode about a coding session's build agent,
-// the general and explore subagents and the title agent — their model
-// and step cap, in the policy's own steps and the ladder's cheap rung, the
-// build agent's prompt and the title call off. The subagents' prompts are
-// opencode's own, inside the binary; no first call of ours exists to
-// capture, so this fragment is the config-level page's whole substance.
-func AgentDocAgentConfig(v policy.Version) (json.RawMessage, error) {
-	limit, err := (TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384}).OutputLimit()
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := buildOpencodeConfig("coding", "https://gateway.invalid", "factory", policy.Small,
-		limit, v.Document.Limits.Steps, nil, "factory/"+policy.Small, policy.Big)
-	if err != nil {
-		return nil, err
-	}
-	var whole struct {
-		Agent json.RawMessage `json:"agent"`
-	}
-	if err := json.Unmarshal(cfg, &whole); err != nil {
-		return nil, err
-	}
-	return whole.Agent, nil
 }

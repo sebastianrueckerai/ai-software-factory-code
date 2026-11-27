@@ -89,13 +89,13 @@ type TaskBrief struct {
 type PriorState struct {
 	Session string   `json:"session"`
 	Heading string   `json:"heading"`           // factoryd's words: the time, the outcome and the trip, the commit
-	Body    string   `json:"body"`              // copied content: the stop reason, todo list, report excerpts, files
-	Dir     string   `json:"dir,omitempty"`     // set by the worker: where the full reports sit
+	Body    string   `json:"body"`              // copied content: the stop reason, todo list, files
+	Dir     string   `json:"dir,omitempty"`     // set by the worker: where the record files sit
 	Reports []string `json:"reports,omitempty"` // their file names, set by the worker
 }
 
-// ReportFile is one full subagent report the worker writes beside the brief.
-type ReportFile struct{ Name, Text string }
+// RecordFile is a replan's record of one card, which the worker writes beside the brief.
+type RecordFile struct{ Name, Text string }
 
 // MaxProofsList is the largest proofs list the worker takes on POST
 // /proofs: the prover files at most 512 KiB of code, which JSON escaping
@@ -112,7 +112,7 @@ type BriefPush struct {
 	Handover string       `json:"handover"`
 	Digest   string       `json:"digest,omitempty"`
 	Prior    *PriorState  `json:"prior,omitempty"`
-	Files    []ReportFile `json:"files,omitempty"`
+	Files    []RecordFile `json:"files,omitempty"`
 	Proofs   []ProofFile  `json:"proofs,omitempty"`   // the plan's opened proofs, which the worker writes into the clone where the path holds no file
 	InClone  []string     `json:"in_clone,omitempty"` // set by the worker: the proofs' paths the clone holds, written now or there already
 }
@@ -134,7 +134,6 @@ type EventKind string
 //     output's last 4 KiB, whole lines)
 //   - tool_call: tool, status, args (long strings capped), args_sha256 (of
 //     the full arguments' canonical JSON), error when status is "error"
-//     result (the task tool only: the subagent's report, cut at 32 KiB)
 //   - file_change: path, sha256 of the content after the change (absent or
 //     empty when the file is gone or not a regular file)
 //   - command, tool_call and file_change also carry duration_ms (the tool's

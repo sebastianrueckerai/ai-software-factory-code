@@ -14,8 +14,6 @@ import (
 	"slices"
 	"strings"
 
-	"encoding/json"
-
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
@@ -50,15 +48,6 @@ func rowOf(a Agent, rec agentdoc.Recorded, spans []agentdoc.Span) (indexRow, err
 	harness, tools := wireWords(a, b, standing)
 	return indexRow{agent: a, model: b.Model, purpose: rec.Purpose, task: rec.Task,
 		tools: len(b.Tools), requestBytes: len(rec.Raw), parts: parts, harness: harness, toolWords: tools, spans: spans}, nil
-}
-
-// configRow is the config page's row: no request exists, the fragment is
-// its one span.
-func configRow(a Agent, frag json.RawMessage) indexRow {
-	return indexRow{agent: a, purpose: "config", spans: []agentdoc.Span{{
-		Name: "the agent block", Symbol: "buildOpencodeConfig",
-		Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: string(frag),
-	}}}
 }
 
 // index renders index.md from every agent's row, at code sha and policy

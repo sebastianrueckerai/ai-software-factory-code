@@ -1444,11 +1444,11 @@ func againLine(k Task) string {
 		"(git diff %s^1 %s shows them), make it build green, and land it.", k.IssueNumber, k.PlanKey, k.MergeCommit, k.MergeCommit)
 }
 
-// mapFirst is the planner's read discipline: discovery by grep, glob and
-// the cheap explore agent, a whole read kept for what the plan needs;
+// mapFirst is the planner's read discipline: discovery by grep and glob,
+// a whole read kept for what the plan needs;
 // digestBig its digest, for a session whose tools hold it.
 const (
-	mapFirst = "Map the repository before you read it: grep and glob find where things are, and the task tool's explore agent searches it on the cheaper model. " +
+	mapFirst = "Map the repository before you read it: grep and glob find where things are. " +
 		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
 	digestBig = "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
 )

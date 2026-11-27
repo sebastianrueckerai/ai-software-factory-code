@@ -6574,7 +6574,7 @@ func TestRunSessionRaisesTheBoundByTheOpenedProofsLines(t *testing.T) {
 func prevRig(t *testing.T, answer string) (*Runner, *fakeWorkerEndpoint) {
 	t.Helper()
 	runner, _, _, worker, _, _, objects := checkinRig(t, answer)
-	rec := carryRecord(t, todoEv(false, [2]string{"in_progress", "fix the gate"}), fileEv("/workspace/repo/g.go"))
+	rec := carryRecord(t, todoEv([2]string{"in_progress", "fix the gate"}), fileEv("/workspace/repo/g.go"))
 	if err := objects.Put(t.Context(), "sessions/t2/s-prev.jsonl", rec); err != nil {
 		t.Fatal(err)
 	}

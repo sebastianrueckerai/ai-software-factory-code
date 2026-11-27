@@ -37,7 +37,7 @@ func setRequiredEnv(t *testing.T) {
 		// the worker's own sandbox exports every other variable a start
 		// reads, and a test that runs there inherits them: each is empty
 		// unless a test sets it. The seeded repos hold no REPO_SHA commit
-		"REPO_SHA": "", "SESSION_ID": "", "START_WIP": "", "STRONGER_MODEL": "", "CHEAP_MODEL": "",
+		"REPO_SHA": "", "SESSION_ID": "", "START_WIP": "", "STRONGER_MODEL": "",
 		"AUTHOR": "", "AUTHOR_STANDING": "", "CARD_ROLE": "", "DOCS_DIR": "", "COMPANION_DIRS": "", "FACTS": "",
 		"MODE": "", "REPORT_GUIDE": "", "FINDINGS": "", "ANSWERS": "", "POSTER_INFO": "", "TOOLS": "",
 		"DIRECTORIES": "", "MIGRATION_GLOBS": "", "LEFT_OUT": "", "IMAGE_MANIFEST": "", "OTEL_EXPORTER_OTLP_ENDPOINT": "",
@@ -140,19 +140,16 @@ func TestLoadEnvReadsTheImage(t *testing.T) {
 	}
 }
 
-// The subagents' cheap model reaches opencode from factoryd's CHEAP_MODEL
-// (roadmap 222, item 6). Without it the worker runs opencode with no cheap
-// alias and every subagent falls back to the session's own model.
-func TestLoadEnvReadsTheCheapModel(t *testing.T) {
+// The stronger model reaches opencode from factoryd's STRONGER_MODEL.
+func TestLoadEnvReadsTheStrongerModel(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("STRONGER_MODEL", "factory/big")
-	t.Setenv("CHEAP_MODEL", "factory/small")
 	e, err := loadEnv()
 	if err != nil {
 		t.Fatalf("loadEnv: %v", err)
 	}
-	if e.strongerModel != "factory/big" || e.cheapModel != "factory/small" {
-		t.Fatalf("stronger = %q, cheap = %q; want the env values", e.strongerModel, e.cheapModel)
+	if e.strongerModel != "factory/big" {
+		t.Fatalf("stronger = %q, want the env value", e.strongerModel)
 	}
 }
 

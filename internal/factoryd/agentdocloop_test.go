@@ -278,39 +278,6 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 	}
 }
 
-// The config the subagents run under is the same tree the session reads:
-// what buildOpencodeConfig tells opencode about general and explore, in
-// the policy's own steps and the ladder's cheap rung.
-func TestAgentDocAgentConfigAnswersTheAgentBlock(t *testing.T) {
-	frag, err := AgentDocAgentConfig(agentDocLoopPolicy())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var agent struct {
-		Build   map[string]any `json:"build"`
-		General map[string]any `json:"general"`
-		Explore map[string]any `json:"explore"`
-	}
-	if err := json.Unmarshal(frag, &agent); err != nil {
-		t.Fatal(err)
-	}
-	if agent.General["model"] != "factory/"+policy.Small ||
-		agent.Explore["model"] != "factory/"+policy.Small {
-		t.Fatalf("the subagents are not on the cheap rung: %s", frag)
-	}
-	for _, sub := range []map[string]any{agent.General, agent.Explore} {
-		if sub["steps"] != float64(1500) {
-			t.Fatalf("the subagents' step cap is not the policy's steps: %s", frag)
-		}
-	}
-	if _, ok := agent.Build["model"]; ok {
-		t.Fatalf("the build agent carries a model the session does not set: %s", frag)
-	}
-	if string(mustJSON(agent.General)) != string(mustJSON(agent.Explore)) {
-		t.Fatalf("general and explore differ though the config sets them alike: %s", frag)
-	}
-}
-
 // The system prompt without the repository's AGENTS.md is a broken
 // capture, not a page with a hole.
 func TestAgentDocLoopWireSpansWantTheAgentsFile(t *testing.T) {

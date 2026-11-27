@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -39,13 +38,6 @@ func indexFixture() []indexRow {
 				{Name: "the writing guide", Symbol: "writingguide.Guide", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: shared},
 			},
 		},
-		{
-			agent:   Agent{ID: "opencode-subagents", Family: "A", Job: "delegation", Runs: "inside opencode"},
-			purpose: "config",
-			spans: []agentdoc.Span{
-				{Name: "the agent block", Symbol: "buildOpencodeConfig", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: `{"build":{}}`},
-			},
-		},
 	}
 }
 
@@ -64,7 +56,6 @@ func TestIndexRendersInventoryMatrixSelfCheck(t *testing.T) {
 		"[coding](coding.md)",
 		"`small`",
 		"`agentdoc-fixture`",
-		"[opencode-subagents](opencode-subagents.md)",
 		"29",
 	} {
 		if !strings.Contains(md, want) {
@@ -86,8 +77,7 @@ func TestIndexRendersInventoryMatrixSelfCheck(t *testing.T) {
 	}
 }
 
-// rowOf reads a capture's row facts from the wire body itself, and
-// configRow answers the config page's row: one span, no request.
+// rowOf reads a capture's row facts from the wire body itself.
 func TestRowOfReadsTheWire(t *testing.T) {
 	raw := []byte(`{"model":"small","tools":[{"type":"function","function":{"name":"bash"}}],"messages":[{"role":"user","content":"hi"}]}`)
 	row, err := rowOf(Agent{ID: "coding"}, agentdoc.Recorded{Raw: raw, Task: "t-1", Purpose: "session"},
@@ -97,11 +87,6 @@ func TestRowOfReadsTheWire(t *testing.T) {
 	}
 	if row.model != "small" || row.task != "t-1" || row.purpose != "session" || row.tools != 1 || row.requestBytes != len(raw) {
 		t.Fatalf("row: %+v", row)
-	}
-	cfg := configRow(Agent{ID: "opencode-subagents"}, json.RawMessage(`{"build":{}}`))
-	if cfg.purpose != "config" || cfg.model != "" || cfg.task != "" || cfg.tools != 0 ||
-		len(cfg.spans) != 1 || cfg.spans[0].Text != `{"build":{}}` {
-		t.Fatalf("config row: %+v", cfg)
 	}
 }
 
@@ -146,23 +131,6 @@ func TestIndexMatrixSkipsSingleCarrierBlocks(t *testing.T) {
 	}
 }
 
-// The config row has no request: its bytes cell and its word cells say
-// so, like the model cell, instead of reading as a request of zero bytes,
-// and it names no profile.
-func TestIndexMarksTheConfigRowAsNoRequest(t *testing.T) {
-	md, failures := index(indexFixture(), "deadbeef", "policyhash", "opencode 1.18.32")
-	if len(failures) != 0 {
-		t.Fatalf("failures: %v", failures)
-	}
-	for _, line := range strings.Split(md, "\n") {
-		if strings.HasPrefix(line, "|") && strings.Contains(line, "[opencode-subagents](opencode-subagents.md) |") {
-			if !strings.HasSuffix(line, "| inside opencode | 0 | — | none | — | — | — | — | — | — | — |") {
-				t.Fatalf("config row reads %q, want the request-bytes and word cells to say —", line)
-			}
-		}
-	}
-}
-
 // The inventory prints each agent's profile and its words by part beside
 // the words no profile made and the tools' words.
 func TestIndexPrintsWordsByPart(t *testing.T) {
@@ -195,7 +163,7 @@ func TestEveryAgentNamesItsSteps(t *testing.T) {
 		registered[r.Step] = true
 	}
 	for _, a := range registry {
-		if len(a.Steps) == 0 && !a.Config && !a.NoPrompt {
+		if len(a.Steps) == 0 && !a.NoPrompt {
 			t.Errorf("%s names no step: list the profiles its request is built from, or mark it NoPrompt", a.ID)
 		}
 		for _, step := range a.Steps {

@@ -1616,7 +1616,7 @@ const (
 // card that is not settled.
 type replanRecord struct {
 	findings, branches []string
-	files              []harness.ReportFile
+	files              []harness.RecordFile
 	work               []string
 }
 
@@ -1772,7 +1772,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		if err != nil {
 			return replanRecord{}, false, err
 		}
-		rec.files = append(rec.files, harness.ReportFile{Name: name, Text: textutil.Truncate(sanitize.Inbound(text), recordFileBytes)})
+		rec.files = append(rec.files, harness.RecordFile{Name: name, Text: textutil.Truncate(sanitize.Inbound(text), recordFileBytes)})
 	}
 	repo, err := SplitRepo(p.Repository)
 	if err != nil {

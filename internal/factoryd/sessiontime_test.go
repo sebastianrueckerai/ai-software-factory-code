@@ -12,9 +12,8 @@ import (
 
 // A session's time by what ran, as its transcript reads back: bash calls
 // by the project's classes, a failed bash call by its arguments' command,
-// the other tools by name. A subagent's calls sit inside the parent's task
-// call, which counts them once. A call's start adds nothing: its end holds
-// the duration.
+// the other tools by name. A call's start adds nothing: its end holds the
+// duration.
 func TestSessionTimeOf(t *testing.T) {
 	ms := func(n float64) float64 { return n }
 	events := []harness.Event{
@@ -25,8 +24,6 @@ func TestSessionTimeOf(t *testing.T) {
 		{Kind: harness.EventCommand, Detail: map[string]any{"command": "git status", "exit": ms(0), "duration_ms": ms(200)}},
 		{Kind: harness.EventFileChange, Detail: map[string]any{"tool": "edit", "path": "a.go", "duration_ms": ms(40)}},
 		{Kind: harness.EventToolCall, Detail: map[string]any{"tool": "read", "status": "completed", "duration_ms": ms(10)}},
-		{Kind: harness.EventToolCall, Detail: map[string]any{"tool": "task", "status": "completed", "duration_ms": ms(120000)}},
-		{Kind: harness.EventCommand, Detail: map[string]any{"command": "bash check", "exit": ms(0), "duration_ms": ms(50000), "subagent": true}},
 		{Kind: harness.EventModelCall, Detail: map[string]any{"reason": "stop"}},
 	}
 	started := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
@@ -40,7 +37,7 @@ func TestSessionTimeOf(t *testing.T) {
 			"check_changed": map[string]any{"ms": int64(90000), "count": 1, "runs": []int64{90000}},
 			"other":         map[string]any{"ms": int64(200), "count": 1},
 		},
-		"tools":   map[string]any{"edit": int64(40), "read": int64(10), "task": int64(120000)},
+		"tools":   map[string]any{"edit": int64(40), "read": int64(10)},
 		"longest": map[string]any{"class": "check", "ms": int64(600000), "command": "bash check"},
 	}
 	if !reflect.DeepEqual(ev.Detail, want) {

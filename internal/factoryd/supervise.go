@@ -261,19 +261,16 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		switch {
 		case ev.Kind == harness.EventCheckpoint:
 			s.traces.checkpoint(ev)
-		case ev.Kind == harness.EventCommand && !detailBool(ev, "subagent"):
+		case ev.Kind == harness.EventCommand:
 			if exit, ok := detailInt(ev, "exit"); ok && exit == 0 {
 				s.traces.passed(detailString(ev, "command"))
 			}
 		}
 		return s.limits(at)
 	}
-	subagentCall := (ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand) && detailBool(ev, "subagent")
 	switch {
 	case ev.Kind == harness.EventToolCall, ev.Kind == harness.EventCommand:
-		if !subagentCall {
-			s.sinceChange++
-		}
+		s.sinceChange++
 		if ev.Kind == harness.EventCommand {
 			// the command's running time is the machine's, not the agent's
 			s.noWriteFrom = s.noWriteFrom.Add(commandDuration(ev))
@@ -288,13 +285,8 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 			s.nudges = nil
 		}
 	}
-	// every detector sees every event, whichever trips, but a subagent's
-	// call: a nudge or trip about it would reach the main agent, which did
-	// not make it
-	var traced *Trip
-	if !subagentCall {
-		traced = s.traces.observe(ev)
-	}
+	// every detector sees every event, whichever trips
+	traced := s.traces.observe(ev)
 	if trip := s.limits(at); trip != nil {
 		return trip
 	}

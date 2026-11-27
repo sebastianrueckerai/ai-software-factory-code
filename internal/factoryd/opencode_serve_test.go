@@ -28,7 +28,7 @@ func TestOpencodeMapsRecordedServeSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	const session = "ses_f111daf97ffeEpTXXz2p2WARoR"
-	m := &serveMapper{session: session, sessions: map[string]bool{session: true}}
+	m := &serveMapper{session: session}
 	p := &opencodeParser{workDir: t.TempDir()}
 	var events []harness.Event
 	var asks []string
@@ -84,18 +84,20 @@ func TestOpencodeMapsRecordedServeSession(t *testing.T) {
 	}
 }
 
-func TestServeMapperFollowsSubagentAsksAndErrors(t *testing.T) {
-	m := &serveMapper{session: "ses_a", sessions: map[string]bool{"ses_a": true}}
+func TestServeMapperIgnoresOtherSessionsAndFollowsAsksAndErrors(t *testing.T) {
+	m := &serveMapper{session: "ses_a"}
 	ev := func(s string) served { return m.event([]byte(s), time.UnixMilli(5)) }
 	if out := ev(`{"type":"permission.asked","properties":{"id":"per_x","sessionID":"ses_b"}}`); out.permission != "" {
 		t.Fatalf("an unrelated session's ask answered: %+v", out)
 	}
-	ev(`{"type":"session.created","properties":{"info":{"id":"ses_b","parentID":"ses_a"}}}`)
-	if out := ev(`{"type":"permission.asked","properties":{"id":"per_y","sessionID":"ses_b"}}`); out.permission != "per_y" {
-		t.Fatalf("a subagent's ask = %+v, want per_y", out)
+	if out := ev(`{"type":"permission.asked","properties":{"id":"per_y","sessionID":"ses_a"}}`); out.permission != "per_y" {
+		t.Fatalf("the session's ask = %+v, want per_y", out)
 	}
 	if out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_b","type":"step-start"}}}`); out.line != nil {
-		t.Fatalf("a subagent's part became a line: %s", out.line)
+		t.Fatalf("another session's part became a line: %s", out.line)
+	}
+	if out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_b","type":"tool","tool":"edit","state":{"status":"completed"}}}}`); out.line != nil {
+		t.Fatalf("another session's tool call became a line: %s", out.line)
 	}
 	if out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_a","type":"text","text":"half"}}}`); out.line != nil {
 		t.Fatalf("an unfinished text part became a line: %s", out.line)
@@ -107,7 +109,7 @@ func TestServeMapperFollowsSubagentAsksAndErrors(t *testing.T) {
 		t.Fatalf("error line %s parsed to %q", out.line, p.errMessage())
 	}
 	if ev(`{"type":"session.status","properties":{"sessionID":"ses_b","status":{"type":"idle"}}}`); m.idle {
-		t.Fatal("a subagent's idle ended the session")
+		t.Fatal("another session's idle ended the session")
 	}
 	if ev(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"idle"}}}`); !m.idle {
 		t.Fatal("the session's idle not seen")
@@ -115,14 +117,13 @@ func TestServeMapperFollowsSubagentAsksAndErrors(t *testing.T) {
 }
 
 // The pinned v1.18.32 compaction event — the bus carries the session id
-// alone, no token figures — becomes the session's one compacted line; a
-// subagent's compaction stays out, like its other parts.
+// alone, no token figures — becomes the session's one compacted line;
+// another session's compaction stays out.
 func TestServeMapperMapsTheCompactionEvent(t *testing.T) {
-	m := &serveMapper{session: "ses_a", sessions: map[string]bool{"ses_a": true}}
+	m := &serveMapper{session: "ses_a"}
 	ev := func(s string) served { return m.event([]byte(s), time.UnixMilli(5)) }
-	ev(`{"type":"session.created","properties":{"info":{"id":"ses_b","parentID":"ses_a"}}}`)
 	if out := ev(`{"type":"session.compacted","properties":{"sessionID":"ses_b"}}`); out.line != nil {
-		t.Fatalf("a subagent's compaction became a line: %s", out.line)
+		t.Fatalf("another session's compaction became a line: %s", out.line)
 	}
 	out := ev(`{"type":"session.compacted","properties":{"sessionID":"ses_a"}}`)
 	p := &opencodeParser{}
@@ -361,22 +362,4 @@ func servedRequests(t *testing.T, dir string) []servedRequest {
 		out = append(out, r)
 	}
 	return out
-}
-
-// A subagent's finished tool call becomes the session's tool_use line, so
-// its writes keep the supervisor's write clock; its other parts stay out.
-func TestServeMapperCountsASubagentsToolCalls(t *testing.T) {
-	m := &serveMapper{session: "ses_a", sessions: map[string]bool{"ses_a": true}}
-	ev := func(s string) served { return m.event([]byte(s), time.UnixMilli(5)) }
-	ev(`{"type":"session.created","properties":{"info":{"id":"ses_b","parentID":"ses_a"}}}`)
-	out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_b","type":"tool","tool":"edit","state":{"status":"completed"}}}}`)
-	if out.line == nil || !strings.Contains(string(out.line), `"type":"tool_use"`) || !strings.Contains(string(out.line), `"sessionID":"ses_a"`) {
-		t.Fatalf("a subagent's tool call = %s, want the session's tool_use line", out.line)
-	}
-	if out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_b","type":"text","time":{"end":5}}}}`); out.line != nil {
-		t.Fatalf("a subagent's text became a line: %s", out.line)
-	}
-	if out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_c","type":"tool","state":{"status":"completed"}}}}`); out.line != nil {
-		t.Fatalf("an unrelated session's tool call became a line: %s", out.line)
-	}
 }

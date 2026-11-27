@@ -54,9 +54,9 @@ const (
 )
 
 // BuiltinTools are opencode's built-in tools a profile can keep. `edit`
-// stands for edit and write, which one permission switches. skill is
-// always off and is not listed.
-var BuiltinTools = []string{"bash", "edit", "glob", "grep", "read", "task", "todowrite", "webfetch"}
+// stands for edit and write, which one permission switches. The tools of
+// alwaysDenied are off for every step and are not listed.
+var BuiltinTools = []string{"bash", "edit", "glob", "grep", "read", "todowrite"}
 
 // writing is the guide and the forms a catalog joins.
 type writing struct {

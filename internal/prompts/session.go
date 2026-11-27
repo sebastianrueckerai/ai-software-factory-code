@@ -7,10 +7,15 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// alwaysDenied are the built-in tools no step is offered: task runs a
+// subsession the gates cannot see, webfetch reaches hosts the sandbox
+// cannot resolve, and skill lists skills no step has.
+var alwaysDenied = []string{"skill", "task", "webfetch"}
+
 // SessionConfig is the opencode config fragment for harness step: agent.build.prompt
-// (the step's Standing) and permission, with a deny for every BuiltinTools entry
-// the profile lacks and for every factory-tools_<tool> over policy.PaidTools and
-// policy.FreeTools the profile lacks.
+// (the step's Standing) and permission, with a deny for every alwaysDenied tool,
+// for every BuiltinTools entry the profile lacks and for every factory-tools_<tool>
+// over policy.PaidTools and policy.FreeTools the profile lacks.
 func SessionConfig(step string) (map[string]any, error) { return texts.sessionConfig(step) }
 
 // SessionEnv is the process environment: OPENCODE_DISABLE_PROJECT_CONFIG=1
@@ -38,6 +43,9 @@ func (c *catalog) sessionConfig(step string) (map[string]any, error) {
 		return nil, err
 	}
 	permission := map[string]any{}
+	for _, tool := range alwaysDenied {
+		permission[tool] = "deny"
+	}
 	for _, tool := range BuiltinTools {
 		if !slices.Contains(p.Tools.Builtin, tool) {
 			permission[tool] = "deny"

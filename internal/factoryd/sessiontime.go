@@ -49,14 +49,10 @@ type LongestCommand struct {
 }
 
 // SessionTimeOf sums a session's transcript: classOf names a command's
-// class, "" for other. A subagent's calls are left out, since the parent's
-// task call holds their time; a call's start holds none, its end does.
+// class, "" for other. A call's start holds no time, its end does.
 func SessionTimeOf(events []harness.Event, classOf func(command string) string) SessionTimeFact {
 	f := SessionTimeFact{Classes: map[string]*ClassTime{}, Tools: map[string]time.Duration{}}
 	for _, ev := range events {
-		if detailBool(ev, "subagent") {
-			continue
-		}
 		took := commandDuration(ev)
 		command, isCommand := "", false
 		switch {

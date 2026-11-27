@@ -493,7 +493,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// a stronger model comes only by the climb; a cheaper alias of the
-	// class (a subagent's, roadmap 222, item 6) runs on the session's key
+	// class runs on the session's key
 	if purpose == "" && chatReq.Model != task.ModelAlias && !s.cheaperThan(ctx, chatReq.Model, task.ModelAlias) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
 			fmt.Sprintf("model %q is not the model %q of the task's session (`tasks.model_alias`). A stronger model comes only by the climb", chatReq.Model, task.ModelAlias),

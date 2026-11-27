@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
@@ -246,7 +245,7 @@ func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 }
 
 func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
-	cfgJSON, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, nil, "")
+	cfgJSON, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +288,7 @@ func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
 // rejected call continues the loop (processor.ts:200-201, 647); steps caps
 // every agent that loops (session/prompt.ts:1178-1179).
 func TestOpencodeConfigGolden(t *testing.T) {
-	got, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, nil, "")
+	got, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +304,7 @@ func TestOpencodeConfigGolden(t *testing.T) {
 		t.Fatalf("config =\n%s\nwant\n%s", indented.String(), want)
 	}
 	for _, steps := range []int{0, -1} {
-		if _, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "factory-main", 10000, steps, nil, ""); err == nil {
+		if _, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "factory-main", 10000, steps, nil); err == nil {
 			t.Errorf("steps %d accepted: a session must not run uncapped", steps)
 		}
 	}
@@ -769,62 +768,6 @@ func TestOpencodeToolCallCarriesArguments(t *testing.T) {
 				t.Fatalf("failed call = %+v, want its arguments and their hash", ev)
 			}
 		}
-	}
-}
-
-func TestTaskToolCallCarriesItsReport(t *testing.T) {
-	out := "task_id: ses_1\n\n<task_result>\nfound 3 files\n</task_result>"
-	line, _ := json.Marshal(map[string]any{"type": "tool_use", "timestamp": 1, "part": map[string]any{"tool": "task", "state": map[string]any{
-		"status": "completed", "output": out,
-		"input": map[string]any{"description": "Map scheduler", "prompt": "map it", "subagent_type": "explore"}}}})
-	ev := parseLines(&opencodeParser{}, string(line))[0]
-	if ev.Kind != harness.EventToolCall || ev.Detail["tool"] != "task" || ev.Detail["result"] != out {
-		t.Fatalf("task call = %+v, want its report verbatim in result", ev)
-	}
-
-	read := `{"type":"tool_use","timestamp":1,"part":{"tool":"read","state":{"status":"completed","input":{"filePath":"/w/a.go"},"output":"package a"}}}`
-	if _, has := parseLines(&opencodeParser{}, read)[0].Detail["result"]; has {
-		t.Fatal("a read call carries a result; only task does")
-	}
-
-	big, _ := json.Marshal(map[string]any{"type": "tool_use", "timestamp": 1, "part": map[string]any{"tool": "task", "state": map[string]any{
-		"status": "completed", "output": strings.Repeat("é", 40<<10), "input": map[string]any{}}}})
-	res, _ := parseLines(&opencodeParser{}, string(big))[0].Detail["result"].(string)
-	if !utf8.ValidString(res) || len(res) > maxTaskResult+3 || !strings.HasSuffix(res, "…") || len(res) < maxTaskResult-3 {
-		t.Fatalf("long report: valid=%v len=%d, want valid UTF-8 cut near %d bytes ending …", utf8.ValidString(res), len(res), maxTaskResult)
-	}
-}
-
-// A subagent's tool calls reach the supervisor marked, on the served line
-// and on every event parsed from it; the session's own calls carry no mark.
-func TestSubagentToolCallsAreMarked(t *testing.T) {
-	m := &serveMapper{session: "s-main", sessions: map[string]bool{"s-main": true}}
-	m.event([]byte(`{"type":"session.created","properties":{"info":{"id":"s-child","parentID":"s-main"}}}`), time.UnixMilli(5))
-	out := m.event([]byte(`{"type":"message.part.updated","properties":{"part":{"sessionID":"s-child","type":"tool","tool":"read","state":{"status":"completed"}}}}`), time.UnixMilli(5))
-	var line map[string]any
-	if err := json.Unmarshal(out.line, &line); err != nil || line["subagent"] != true {
-		t.Fatalf("a subagent's line = %s (%v), want \"subagent\": true", out.line, err)
-	}
-	if events := parseLines(&opencodeParser{}, string(out.line)); len(events) != 1 || events[0].Kind != harness.EventToolCall || events[0].Detail["subagent"] != true {
-		t.Fatalf("a subagent's events = %+v, want one tool call marked subagent", events)
-	}
-	for _, part := range []string{
-		`{"tool":"bash","state":{"status":"completed","input":{"command":"ls"},"output":""}}`,
-		`{"tool":"edit","state":{"status":"completed","input":{"filePath":"/nonexistent/a.go"}}}`,
-		`{"tool":"read","state":{"status":"error","error":"no such file","input":{"filePath":"b.go"}}}`,
-	} {
-		events := parseLines(&opencodeParser{}, `{"type":"tool_use","timestamp":1,"subagent":true,"part":`+part+`}`)
-		if len(events) != 1 || events[0].Detail["subagent"] != true {
-			t.Fatalf("%s: events = %+v, want one marked subagent", part, events)
-		}
-	}
-	out = m.event([]byte(`{"type":"message.part.updated","properties":{"part":{"sessionID":"s-main","type":"tool","tool":"read","state":{"status":"completed"}}}}`), time.UnixMilli(5))
-	events := parseLines(&opencodeParser{}, string(out.line))
-	if len(events) != 1 {
-		t.Fatalf("the session's own events = %+v, want one tool call", events)
-	}
-	if _, marked := events[0].Detail["subagent"]; marked {
-		t.Fatalf("the session's own events = %+v, want one tool call without the subagent key", events)
 	}
 }
 
@@ -1390,7 +1333,7 @@ func TestFeatureGuideWritesTestsForTheItems(t *testing.T) {
 // The stronger model is declared beside the session's, so a running
 // session can switch to it (roadmap 222, item 5); none twice.
 func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
-	got, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "small", 10000, 40, nil, "", "big", "")
+	got, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "small", 10000, 40, nil, "big", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1413,34 +1356,39 @@ func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
 	}
 }
 
-// Under a frontier session the general and explore agents run on the cheap
-// model, declared beside the session's (roadmap 222, item 6); the work
-// guide names the rule once a class lists delegate.
-func TestOpencodeConfigSubagentsOnTheCheapRung(t *testing.T) {
-	got, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "big", 10000, 40, nil, "factory/small", "small")
+// The work guide names delegate once a class lists it.
+func TestWorkGuideNamesDelegateOnlyWithTheTool(t *testing.T) {
+	if g := workGuide([]string{policy.ToolEscalate, policy.ToolDelegate}, nil); !strings.Contains(g, delegateLine) {
+		t.Fatalf("guide without the delegate line: %s", g)
+	}
+	if g := workGuide([]string{policy.ToolEscalate}, nil); strings.Contains(g, "delegate") {
+		t.Fatalf("guide names delegate without the tool: %s", g)
+	}
+}
+
+// A session runs one agent: opencode's task tool is off and its
+// general and explore agents are not configured.
+func TestBuildOpencodeConfigHasNoTaskAgents(t *testing.T) {
+	got, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "big", 10000, 40, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var cfg struct {
-		Agent    map[string]map[string]any `json:"agent"`
-		Provider map[string]struct {
-			Models map[string]json.RawMessage `json:"models"`
-		} `json:"provider"`
+		Agent      map[string]any `json:"agent"`
+		Permission map[string]any `json:"permission"`
 	}
 	if err := json.Unmarshal(got, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Agent["general"]["model"] != "factory/small" || cfg.Agent["explore"]["model"] != "factory/small" || cfg.Agent["build"]["model"] != nil {
-		t.Fatalf("agents = %v, want general and explore on the cheap model, build on the session's", cfg.Agent)
+	for _, name := range []string{"general", "explore"} {
+		if _, ok := cfg.Agent[name]; ok {
+			t.Errorf("agent %q is configured: %v", name, cfg.Agent)
+		}
 	}
-	if models := cfg.Provider["factory"].Models; len(models) != 2 || models["small"] == nil {
-		t.Fatalf("models = %v, want the cheap model declared", models)
-	}
-	if g := workGuide([]string{policy.ToolEscalate, policy.ToolDelegate}, nil); !strings.Contains(g, downARung) {
-		t.Fatalf("guide without the rule: %s", g)
-	}
-	if g := workGuide([]string{policy.ToolEscalate}, nil); strings.Contains(g, "down a rung") {
-		t.Fatalf("guide names the rule without the tool: %s", g)
+	for _, tool := range []string{"task", "webfetch", "skill"} {
+		if cfg.Permission[tool] != "deny" {
+			t.Errorf("permission %q = %v, want deny", tool, cfg.Permission[tool])
+		}
 	}
 }
 
@@ -1461,7 +1409,7 @@ func TestBriefStatesTheSessionsFacts(t *testing.T) {
 // window.
 func TestOpencodeConfigDerivesLimitsFromTheServedWindows(t *testing.T) {
 	raw, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "big", 10000, 40,
-		map[string]int{"big": 1000000, "premium": 128000}, "", "premium")
+		map[string]int{"big": 1000000, "premium": 128000}, "premium")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1492,7 +1440,7 @@ func TestOpencodeConfigDerivesLimitsFromTheServedWindows(t *testing.T) {
 // A model whose window the gateway cannot name keeps the trust cap and
 // opencode's own threshold: no input line turns the auto compaction on.
 func TestOpencodeConfigWithoutAContextCapLeavesOpencodesDefault(t *testing.T) {
-	raw, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "small", 10000, 40, nil, "")
+	raw, err := buildOpencodeConfig("coding", "http://127.0.0.1:45678", "factory", "small", 10000, 40, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1705,7 +1653,7 @@ func TestObjectiveTextCarriesTheDigestAfterTheHandover(t *testing.T) {
 // keeps the question tool denied, and carries its own step's standing
 // text as the build agent's prompt: the sizing's, never the coding's.
 func TestBuildOpencodeConfigHasTheConstants(t *testing.T) {
-	raw, err := buildOpencodeConfig("sizing", "http://127.0.0.1:45678", "factory", "small", 10000, 40, nil, "")
+	raw, err := buildOpencodeConfig("sizing", "http://127.0.0.1:45678", "factory", "small", 10000, 40, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

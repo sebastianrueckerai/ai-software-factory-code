@@ -105,16 +105,6 @@ func run() int {
 		var failures []string
 		var row indexRow
 		switch {
-		case a.Config:
-			frag, err := factoryd.AgentDocAgentConfig(v)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", a.ID, err)
-				failed = true
-				continue
-			}
-			md, failures = configPage(a, sha, v.Commit, syms, frag)
-			raw = frag
-			row = configRow(a, frag)
 		case a.Loop:
 			spans, rec, err := factoryd.AgentDocLoop(ctx, a.ID, *opencode, bake, v)
 			if err != nil {
