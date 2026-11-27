@@ -107,8 +107,8 @@ type FollowEnding struct{ Outcome, Note string }
 // the merge, and the next run. A step that does not hold ends the move as
 // failed.
 func FollowMoveWorkflow(ctx workflow.Context, in FollowMoveInput) error {
-	waits := workflow.WithActivityOptions(ctx, followOptions(landChecksBound+mergeWaitBound+5*time.Minute, 0))
-	judges := workflow.WithActivityOptions(ctx, followOptions(rolloutCap+rolloutSettle+followJudgeSlack, 8*time.Minute))
+	waits := workflow.WithActivityOptions(ctx, followOptions(followWaitTimeout(), 0))
+	judges := workflow.WithActivityOptions(ctx, followOptions(followJudgeTimeout, 8*time.Minute))
 	ends := workflow.WithActivityOptions(ctx, finishOptions())
 	end := func(outcome, note string) error {
 		return workflow.ExecuteActivity(ends, ActivityFollowEnd, in, FollowEnding{outcome, note}).Get(ctx, nil)
@@ -121,7 +121,7 @@ func FollowMoveWorkflow(ctx workflow.Context, in FollowMoveInput) error {
 		if landed != nil {
 			f.Merged, f.Commit = true, landed.Commit
 			if returns {
-				rets := workflow.WithActivityOptions(ctx, followOptions(landChecksBound+mergeWaitBound+rolloutCap+followJudgeSlack, 0))
+				rets := workflow.WithActivityOptions(ctx, followOptions(followReturnTimeout(), 0))
 				if err := workflow.ExecuteActivity(rets, ActivityFollowReturn, in, *landed).Get(ctx, &f.Returned); err != nil {
 					f.Returned = FollowReturned{Why: "the return did not run: " + failureWords(err)}
 				}
@@ -205,6 +205,20 @@ func awaitHuman(ctx workflow.Context, in FollowMoveInput, short workflow.Context
 // followJudgeSlack is how long the judgment's activity may run past the
 // waits it holds.
 const followJudgeSlack = 10 * time.Minute
+
+// followJudgeTimeout is the judgment's timeout: the rollout window, the
+// settling and the slack.
+const followJudgeTimeout = rolloutCap + rolloutSettle + followJudgeSlack
+
+// followWaitTimeout is the timeout of the checks' read and of the merge:
+// the checks' wait, the merge's and 5 minutes.
+func followWaitTimeout() time.Duration { return landChecksBound + mergeWaitBound + 5*time.Minute }
+
+// followReturnTimeout is the return's timeout: its revert's checks and
+// merge, its rollout and the slack.
+func followReturnTimeout() time.Duration {
+	return landChecksBound + mergeWaitBound + rolloutCap + followJudgeSlack
+}
 
 func followOptions(bound, heartbeat time.Duration) workflow.ActivityOptions {
 	return workflow.ActivityOptions{

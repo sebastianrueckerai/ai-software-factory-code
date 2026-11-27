@@ -339,18 +339,21 @@ func TestBoundActivitiesAreTheRegisteredOnes(t *testing.T) {
 	}
 }
 
-// The long activities are bound one minute under their own timeouts: the
-// watcher must fire before the activity's deadline ends the run. The
-// judgment's timeout is the rollout window and its slack, a routine run's
-// the pods it holds.
+// The long activities are bound one minute under the timeouts their
+// workflows set: the watcher must fire before the activity's deadline ends
+// the run.
 func TestLongActivitiesAreBoundUnderTheirOwnTimeout(t *testing.T) {
 	const underDeadline = time.Minute
 	d := testTree(testPolicyYAML).Document
-	for name, want := range map[string]time.Duration{
-		ActivityFollowJudge: rolloutCap + rolloutSettle + followJudgeSlack - underDeadline,
-		ActivityRoutineRun:  routineRunBound() - underDeadline,
+	for name, timeout := range map[string]time.Duration{
+		ActivityFollowJudge:        followJudgeTimeout,
+		ActivityRoutineRun:         routineRunBound(),
+		ActivityCopyUpstreamImages: copyUpstreamTimeout,
+		ActivityFollowReturn:       followReturnTimeout(),
+		ActivityFollowChecks:       followWaitTimeout(),
+		ActivityFollowLand:         followWaitTimeout(),
 	} {
-		if got := d.Bound(name); got != want {
+		if got, want := d.Bound(name), timeout-underDeadline; got != want {
 			t.Errorf("Bound(%s) = %s, want %s", name, got, want)
 		}
 	}

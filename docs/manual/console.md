@@ -214,9 +214,12 @@ resources page, a period that recurs and no instant.
   activity still running at its policy bound, written once per run by the
   `GateWatch` worker interceptor (the policy's `bounds` section, seconds
   per activity and `default`; without it RunSession 1260, WaitChecks 3000,
-  GateReproduction 900, ModelReview 180, Merge 90, SuperviseGate 360,
-  every other activity 120). `supervisor_trip` is every detector trip the
-  supervisor decided; `continue` is `noise`, any other action `real`. The
+  GateReproduction, GateCriteria and ProofsAtMain 900, ModelReview 180,
+  Merge 90, SuperviseGate 360, CopyUpstreamImages, RoutineRun and the
+  follow move's FollowChecks, FollowLand, FollowJudge and FollowReturn a
+  minute under their timeouts, every other activity 120).
+  `supervisor_trip` is every detector trip the supervisor decided;
+  `continue` is `noise`, any other action `real`. The
   timeline shows both on its `supervisor` and `gate_supervisor` steps.
   An escalation writes no alert: its case is its record, and it shows as a
   needs-you card.
