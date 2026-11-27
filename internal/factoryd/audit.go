@@ -77,8 +77,8 @@ const (
 	auditListFull      = "the audit model listed its maximum; more may stand"
 	maxPreCheck        = 50
 	maxAuditField      = 500
+	maxAuditWhy        = 300
 )
-
 
 // auditPartPrompt is the prompt of the call on each later part of a diff
 // in parts.
@@ -157,7 +157,7 @@ func parseAudit(content string) ([]AuditFinding, string) {
 		if json.Unmarshal(f.Item, &n) != nil || n < 1 || n > len(auditItems) {
 			return nil, fmt.Sprintf("the answer named checklist item %s, which is not a number from 1 to %d", cmp.Or(string(f.Item), "none"), len(auditItems))
 		}
-		out = append(out, AuditFinding{Item: auditItems[n-1].Name, File: strings.TrimSpace(f.File), Line: max(f.Line, 0), Why: strings.TrimSpace(f.Why)})
+		out = append(out, AuditFinding{Item: auditItems[n-1].Name, File: strings.TrimSpace(f.File), Line: max(f.Line, 0), Why: textutil.Truncate(strings.TrimSpace(f.Why), maxAuditWhy)})
 	}
 	if answer.Verdict == AuditFindings && len(out) == 0 {
 		return nil, "verdict findings names none"

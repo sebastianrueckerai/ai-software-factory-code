@@ -1792,7 +1792,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 }
 
 const (
-	maxReviewSummary  = 1000
+	maxReviewSummary  = 500
 	maxReviewFindings = 10
 	maxReviewFinding  = 1000
 	// the parts' findings and summaries joined: what the result, the pull

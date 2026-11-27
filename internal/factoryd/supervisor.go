@@ -55,10 +55,6 @@ type Decision struct {
 	Judged bool `json:"-"`
 }
 
-// maxDecisionText caps guidance and reason; they become findings and
-// issue comments.
-const maxDecisionText = 2000
-
 // CostState is the deterministic cost and state block factoryd injects into
 // its supervisor inputs: the task row's settled figures (budget, spent,
 // remaining), its model calls and their tokens from the audit table, and

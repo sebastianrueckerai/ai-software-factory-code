@@ -122,6 +122,9 @@ func gateAnswerChoices(activity string) []gateAnswerChoice {
 	return out
 }
 
+// maxGateText caps a gate decision's diagnosis and recommendation.
+const maxGateText = 1000
+
 const (
 	bundleTimeline = 8 << 10  // bytes of the timeline's tail
 	bundleInput    = 8 << 10  // bytes of the activity's input
@@ -502,8 +505,8 @@ func parseGateDecision(content string, allowed []SupervisorAction, answers []str
 	if err := decodeAnswer(content, &d); err != nil {
 		return invalid(err.Error())
 	}
-	d.Diagnosis = textutil.Truncate(strings.TrimSpace(d.Diagnosis), maxDecisionText)
-	d.Recommendation = textutil.Truncate(strings.TrimSpace(d.Recommendation), maxDecisionText)
+	d.Diagnosis = textutil.Truncate(strings.TrimSpace(d.Diagnosis), maxGateText)
+	d.Recommendation = textutil.Truncate(strings.TrimSpace(d.Recommendation), maxGateText)
 	if d.Action != ActionEscalate || !slices.Contains(answers, d.Answer) {
 		d.Answer = ""
 	}

@@ -855,7 +855,7 @@ func TestModelReviewCapsTheLastSummary(t *testing.T) {
 	if err := json.Unmarshal([]byte(userMessage(ll.chats[0])), &in); err != nil {
 		t.Fatal(err)
 	}
-	if want := strings.Repeat("a", 600) + "\n\n" + strings.Repeat("b", 398) + "…"; in.LastReview.Summary != want {
+	if want := strings.Repeat("a", 500) + "…"; in.LastReview.Summary != want {
 		t.Fatalf("last review's summary = %d bytes, want %d", len(in.LastReview.Summary), len(want))
 	}
 	if timeline := string(objGet(objects, "sessions/t1/timeline.jsonl")); !strings.Contains(timeline, `"round":3`) {
