@@ -1292,10 +1292,11 @@ func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
 
 // The guides factoryd writes name verify commands the sandbox's shell tool
 // can run: a changeless round's brief names bash check static, and no
-// guide names a shell timeout past the tool's 600000 ms maximum.
+// guide names a shell timeout past the tool's 600000 ms maximum (the plan's
+// cards are clamped at the filing door, TestPlanBriefTimeoutIsClamped).
 func TestGuidesNameRunnableChecks(t *testing.T) {
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, "bash check static") || !strings.Contains(got, "600000 ms maximum") {
-		t.Fatalf("planGuide = %q, want the changeless round's bash check static and the 600000 ms cap", got)
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, "bash check static") {
+		t.Fatalf("planGuide = %q, want the changeless round's bash check static", got)
 	}
 	end := guideEnd(nil, nil)
 	if !strings.Contains(end, "bash check static") {

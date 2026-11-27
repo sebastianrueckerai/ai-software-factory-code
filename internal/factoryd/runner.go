@@ -396,17 +396,22 @@ func (r *Runner) heldAtStart(ctx context.Context, t Task, s sessionSpec) (AgentA
 	return AgentAsk{}, false
 }
 
-// AdmitAsk passes an agent's escalation on card t through the filing
-// door as an ask on the card: the question is the ask, the reason its why
-// line. A refusal goes back to the agent, until its BriefTries-th try,
-// which asks as it stands.
+// AdmitAsk passes an agent's escalation or information request on card t
+// through the filing door as an ask on the card: the question is the ask,
+// the reason (for an information request, what it needs) its why line. A
+// refusal goes back to the agent, until its BriefTries-th try, which asks
+// as it stands.
 func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
 	refs, err := botRefsOf(ctx, r.forgejo, r.cfg.Policy().Tree, t.Repository)
 	if err != nil {
 		return err
 	}
 	key := escalateBriefKey(t.ID)
-	if _, err := pass(BriefText{Title: ask.Question, Why: ask.Reason}, BriefAsk, refs, r.briefs.Try(key)); err != nil {
+	why := ask.Reason
+	if ask.Kind == AskInfo {
+		why = ask.Needs
+	}
+	if _, err := pass(BriefText{Title: ask.Question, Why: why}, BriefAsk, refs, r.briefs.Try(key)); err != nil {
 		r.briefs.Refused(key)
 		return err
 	}

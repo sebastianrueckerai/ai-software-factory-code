@@ -112,7 +112,7 @@ type BriefAnswer struct {
 
 // CaseBriefAnswer is the case writer's two story lines.
 type CaseBriefAnswer struct {
-	Happened string `json:"happened" max:"writerHappenedMax" desc:"one sentence: what stopped the card, in plain words; the card puts the money spent and the sessions before it: give no amount"`
+	Happened string `json:"happened" max:"writerHappenedMax" desc:"one sentence: what stopped the card, in plain words; the card puts the money spent and the sessions before it"`
 	Left     string `json:"left" max:"writerLeftMax" desc:"one sentence: what is left of the card's work now, in words; the card puts the open findings and what a session costs after it"`
 }
 

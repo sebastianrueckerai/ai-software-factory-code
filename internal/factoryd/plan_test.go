@@ -5683,3 +5683,16 @@ func TestLineBoundIsTheSizesAndTheProofs(t *testing.T) {
 		t.Fatalf("EffectiveLineBound = %d, want 640 (60%% of 1000 plus 40 proof lines)", got)
 	}
 }
+
+// A brief that names a shell timeout past the tool's 600000 ms ceiling
+// files with the ceiling: 900000 ms becomes 600000 ms, 120000 ms stays.
+func TestPlanBriefTimeoutIsClamped(t *testing.T) {
+	cards := []PlanCard{{Key: "a", Title: "Run the slow suite", Why: "So the suite's result is known.",
+		Brief: "Run `bash check changed` with a timeout of 900000 ms, then once more with 120000 ms."}}
+	if _, err := planBriefs(cards, filedRefs{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Run `bash check changed` with a timeout of 600000 ms, then once more with 120000 ms."; cards[0].Brief != want {
+		t.Fatalf("brief = %q, want %q", cards[0].Brief, want)
+	}
+}

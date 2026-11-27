@@ -167,6 +167,9 @@ func checkCaseBrief(a CaseBriefAnswer) (happened, left string, err error) {
 		return "", "", &noBriefError{"the happened line is empty"}
 	}
 	var faults []string
+	if m := currencyAmount.FindString(happened); m != "" {
+		faults = append(faults, fmt.Sprintf("happened names the amount %q, which the card shows with the money spent: tell what stopped the card in words of the work", m))
+	}
 	for _, l := range []struct {
 		name, text string
 		max        int
@@ -183,6 +186,10 @@ func checkCaseBrief(a CaseBriefAnswer) (happened, left string, err error) {
 	}
 	return happened, left, nil
 }
+
+// currencyAmount finds an amount of money in a line: a number beside a
+// currency code or sign, on either side.
+var currencyAmount = regexp.MustCompile(`(?i)\b(?:EUR|USD|GBP|CHF)\s?\d[\d.,]*|\d[\d.,]*\s?(?:EUR|USD|GBP|CHF|euros?|dollars?)\b|[€$£]\s?\d[\d.,]*|\d[\d.,]*\s?[€$£]`)
 
 // labelPattern finds an answer's label of the vocabulary as written, the
 // longest first.

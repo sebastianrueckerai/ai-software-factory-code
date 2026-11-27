@@ -430,9 +430,9 @@ type EscalateIn struct {
 }
 
 type RequestInfoIn struct {
-	Question string `json:"question" jsonschema:"what you ask the issue's author"`
+	Question string `json:"question" jsonschema:"one question for the issue's author"`
 	Tried    string `json:"tried" jsonschema:"what you tried to reproduce or find the fault"`
-	Needs    string `json:"needs" jsonschema:"what information would let you go on"`
+	Needs    string `json:"needs" jsonschema:"one sentence: what information would let you go on"`
 }
 
 type RequestToolIn struct {

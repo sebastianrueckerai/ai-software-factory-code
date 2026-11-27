@@ -1005,11 +1005,13 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 // card the last try files is stamped unchecked. A section the document
 // repository does not hold is a finding on every try: the planner drops
 // it or names one that is there. err is a read of refs that failed a try
-// before the last.
+// before the last. A shell timeout a brief names past the shell tool's
+// ceiling is folded to it (clampShellTimeouts).
 func planBriefs(cards []PlanCard, refs RefResolver, try int) ([]string, error) {
 	var out []string
 	for i := range cards {
 		c := &cards[i]
+		c.Brief = clampShellTimeouts(c.Brief)
 		var found []string
 		if no := sectionRefusal(c.Section, refs); no != "" {
 			found = append(found, no)
@@ -1528,8 +1530,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"questions: open points the spec leaves to the human; their answers come back to you with your last plan, " +
 		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
-		"A card whose round lands no changes names bash check static in its brief, not bash check changed, and every brief keeps the shell tool's bounds: " +
-		"no command and no timeout it names may exceed the shell tool's 600000 ms maximum. " +
+		"A card whose round lands no changes names bash check static in its brief, not bash check changed. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
 		"answer it again."
 }

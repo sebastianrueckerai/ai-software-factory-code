@@ -1024,3 +1024,26 @@ func TestAnEscalationsRecommendationNamesNoMachinery(t *testing.T) {
 		t.Errorf("a plain recommendation = %v", err)
 	}
 }
+
+// An information request passes the brief door as an ask: two questions
+// are refused with the fault and the fix, one question reaches the session.
+func TestRequestInfoRefusesTwoQuestions(t *testing.T) {
+	task := Task{ID: "t-a", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/ai-software-factory-code", IssueNumber: 5}
+	r, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	store := newFakeStore()
+	store.CreateTask(t.Context(), task)
+	post := func(question string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"task_id":"t-a","kind":"info_request","question":%q,"tried":"the steps","needs":"the version"}`, question)
+		EscalationHandler(store, r).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(body)))
+		return rec
+	}
+	rec := post("What broke? Where?")
+	if rec.Code != http.StatusBadRequest || rec.Header().Get(gateway.HeaderDecision) != gateway.RefusedBrief ||
+		!strings.Contains(rec.Body.String(), "An ask is one question or one instruction.") {
+		t.Fatalf("two questions = %d %q (%s), want the door's refusal naming the fault and the fix", rec.Code, rec.Body, rec.Header().Get(gateway.HeaderDecision))
+	}
+	if rec := post("Which browser?"); rec.Code == http.StatusBadRequest {
+		t.Fatalf("one question = %d %s, want it past the door", rec.Code, rec.Body)
+	}
+}

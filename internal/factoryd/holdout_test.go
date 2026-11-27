@@ -132,23 +132,27 @@ func TestProposeHoldoutsKeepsWhatTheBoundsAdmit(t *testing.T) {
 	}
 }
 
-// The proposer's guide asks the one-sentence claim, its instruction
-// pinned as literals so a drift from it is a red test: the guide, not
-// the rendering, holds the claim-shape contract.
-func TestHoldoutSystemAsksOnePlainSentence(t *testing.T) {
-	for _, want := range []string{"one plain sentence", "no background sentence before it", "no compound of sentences"} {
-		if !strings.Contains(holdoutSystem, want) {
-			t.Fatalf("holdoutSystem lacks %q:\n%s", want, holdoutSystem)
-		}
+// A claim of two sentences is a background or a compound, not one claim
+// to judge: it is dropped, and the one-sentence claim beside it stays.
+func TestHoldoutClaimOfTwoSentencesIsDropped(t *testing.T) {
+	r, _, _ := newTestRunner(t, holdoutPlanTask(), newFakeKube(), &fakeObjectStore{})
+	answer, _ := json.Marshal(map[string]any{"holdouts": []map[string]string{
+		{"id": "two_sentences", "claim": "It lists rows. It sorts them.", "inputs": "GET /rows", "expected": "200"},
+		{"id": "one_sentence", "claim": "It lists rows sorted by name.", "inputs": "GET /rows", "expected": "200"},
+	}})
+	ll := &fakeLiteLLM{contents: []string{string(answer)}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	task := holdoutPlanTask()
+	rows, err := r.proposeHoldouts(context.Background(), task, 1, holdoutCriteriaPlan(), r.callModel(task, policy.PurposeReview), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// The guide's ask is one sentence, pinned whole: the line that shapes
-// the claim a human can judge, so a drift from it is a red test.
-func TestGuideAsksOneSentence(t *testing.T) {
-	const ask = "The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no compound of sentences."
-	if !strings.Contains(holdoutSystem, ask) {
-		t.Fatalf("holdoutSystem lacks its one-sentence ask %q:\n%s", ask, holdoutSystem)
+	var ids []string
+	for _, h := range rows {
+		ids = append(ids, h.ID)
+	}
+	if !slices.Equal(ids, []string{"one_sentence"}) {
+		t.Fatalf("kept %v, want only one_sentence", ids)
 	}
 }
 

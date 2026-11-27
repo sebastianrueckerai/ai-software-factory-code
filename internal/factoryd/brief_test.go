@@ -1057,3 +1057,16 @@ func TestCaseBriefPromptTellsOfLastRefusalOnlyWhenSet(t *testing.T) {
 		}
 	}
 }
+
+// A happened line that holds an amount of money is refused, naming the
+// amount and what to tell instead; a line without one passes.
+func TestCaseBriefRefusesAnAmount(t *testing.T) {
+	_, _, err := checkCaseBrief(CaseBriefAnswer{Happened: "The card spent EUR 4.20 before it stopped.", Left: "Decide."})
+	var no *noBriefError
+	if !errors.As(err, &no) || !strings.Contains(no.Error(), `names the amount "EUR 4.20"`) || !strings.Contains(no.Error(), "tell what stopped the card") {
+		t.Fatalf("an amount: %v, want a refusal naming it and the fix", err)
+	}
+	if _, _, err := checkCaseBrief(CaseBriefAnswer{Happened: "The card stopped at its time bound.", Left: "Decide."}); err != nil {
+		t.Fatalf("no amount: %v", err)
+	}
+}

@@ -29,9 +29,9 @@ type EscalationStore interface {
 // means the session took it.
 type SessionEscalator interface {
 	EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error
-	// AdmitAsk passes an escalation's question and reason on card t
-	// through the filing door as an ask: a *BriefRefusal goes back to the
-	// agent.
+	// AdmitAsk passes an escalation's or an information request's
+	// question and reason on card t through the filing door as an ask: a
+	// *BriefRefusal goes back to the agent.
 	AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error
 }
 
@@ -551,7 +551,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			http.Error(w, "task "+in.TaskID+" is "+t.Status, http.StatusConflict)
 			return
 		}
-		if ask.Kind == AskEscalation {
+		if ask.Kind == AskEscalation || ask.Kind == AskInfo {
 			var no *BriefRefusal
 			if err := sessions.AdmitAsk(r.Context(), t, ask); errors.As(err, &no) {
 				refuseBrief(w, no)

@@ -245,8 +245,8 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 		claim, ok1 := field(pr.Claim)
 		inputs, ok2 := field(pr.Inputs)
 		expected, ok3 := field(pr.Expected)
-		if ok1 && strings.ContainsRune(claim, '?') {
-			ok1 = false // a claim that holds a question is an ask, not a claim
+		if ok1 && (strings.ContainsRune(claim, '?') || len(sentenceBreaks(claim)) > 0) {
+			ok1 = false // a claim is one statement: a question is an ask, and a second sentence a background or a compound
 		}
 		if !ok1 || !ok2 || !ok3 {
 			continue
@@ -259,7 +259,7 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 
 var holdoutSystem = `Rules:
 - Prefer none over a weak one.
-- The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no compound of sentences. State the behaviour, not why it matters.
+- The claim is a plain statement a human can judge true or false at the feature's surface. State the behaviour, not why it matters.
 - State each claim at the feature's surface: what it does for a caller through its HTTP API, its command line, its store or the files it writes.
 - A hold-out may come from one of the project's past failures; a gap in the spec itself is drafted from the spec.`
 
