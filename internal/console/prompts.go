@@ -32,5 +32,5 @@ func init() {
 		agentFacts{Project: "app", Human: "sebastian", Level: policy.AutonomyManual, Today: "2026-11-27", Now: "No card is open."})
 	prompts.RegisterStep("title", []string{"console.(*Console).nameThread"}, factoryd.TitlePrompt)
 	prompts.RegisterStep("compact", []string{"console.(*turn).compact"}, factoryd.CompactPrompt)
-	prompts.RegisterStep("research", []string{"console.(*turn).research"}, researchPrompt)
+	prompts.RegisterStep("research", []string{"console.(*turn).research"}, "")
 }

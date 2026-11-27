@@ -92,8 +92,9 @@ func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 		t.Fatalf("chats %v, purposes %v: want one review call on big with no tools", ll.chats, ll.purposes)
 	}
 	line, _ := writingguide.Form("line")
-	if got, want := systemMessage(ll.chats[0]), line+"\n\n"+readsCalm.Prompt+"\n\n"+judgementAnswer; got != want {
-		t.Fatalf("system prompt =\n%s\nwant\n%s", got, want)
+	got := systemMessage(ll.chats[0])
+	if !strings.HasPrefix(got, line+"\n\nYou judge one criterion of a plan.") || !strings.HasSuffix(got, "\n\n"+readsCalm.Prompt+"\n\n"+judgementAnswer) {
+		t.Fatalf("system prompt =\n%s\nwant the line form, the paragraph, the pinned prompt and the answer's form", got)
 	}
 	var in map[string]string
 	if err := json.Unmarshal([]byte(userMessage(ll.chats[0])), &in); err != nil {

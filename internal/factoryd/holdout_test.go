@@ -136,7 +136,7 @@ func TestProposeHoldoutsKeepsWhatTheBoundsAdmit(t *testing.T) {
 // pinned as literals so a drift from it is a red test: the guide, not
 // the rendering, holds the claim-shape contract.
 func TestHoldoutSystemAsksOnePlainSentence(t *testing.T) {
-	for _, want := range []string{"one plain sentence", "no background sentence before it", "no question", "no compound of sentences"} {
+	for _, want := range []string{"one plain sentence", "no background sentence before it", "no compound of sentences"} {
 		if !strings.Contains(holdoutSystem, want) {
 			t.Fatalf("holdoutSystem lacks %q:\n%s", want, holdoutSystem)
 		}
@@ -146,7 +146,7 @@ func TestHoldoutSystemAsksOnePlainSentence(t *testing.T) {
 // The guide's ask is one sentence, pinned whole: the line that shapes
 // the claim a human can judge, so a drift from it is a red test.
 func TestGuideAsksOneSentence(t *testing.T) {
-	const ask = "The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no question, no compound of sentences."
+	const ask = "The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no compound of sentences."
 	if !strings.Contains(holdoutSystem, ask) {
 		t.Fatalf("holdoutSystem lacks its one-sentence ask %q:\n%s", ask, holdoutSystem)
 	}

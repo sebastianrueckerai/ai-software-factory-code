@@ -263,11 +263,10 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 	return out, nil
 }
 
-var holdoutSystem = `You propose hold-out criteria for a software feature's spec: claims its criteria do not cover, each proven later by a test a separate session writes against the repository.
-Rules:
-- Propose at most the max named in the input; prefer none over a weak one.
+var holdoutSystem = `Rules:
+- Prefer none over a weak one.
 - Each hold-out: an id (lowercase letters, digits, underscores), the claim as one plain sentence in the spec's words, its inputs, and the numbers it expects. No code.
-- The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no question, no compound of sentences. State the behaviour, not why it matters.
+- The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no compound of sentences. State the behaviour, not why it matters.
 - State each claim at the feature's surface: what it does for a caller through its HTTP API, its command line, its store or the files it writes.
 - A hold-out may come from one of the project's past failures; a gap in the spec itself is drafted from the spec.
 Answer one JSON object: {"holdouts":[{"id","claim","inputs","expected"}]}.`

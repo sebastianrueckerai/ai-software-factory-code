@@ -297,8 +297,12 @@ func agentDocResearch(ctx context.Context, op *factoryd.OperatorModel, v policy.
 	if _, _, err := t.research(agentDocQuestion); err != nil {
 		return nil, err
 	}
+	system, err := prompts.Build("research", "")
+	if err != nil {
+		return nil, err
+	}
 	spans := []agentdoc.Span{
-		{Name: "the researcher's brief", Symbol: "researchPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: researchPrompt},
+		agentDocStanding(system),
 		{Name: "the agent's question", Symbol: "(*turn).researchTool", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocQuestion},
 	}
 	for _, name := range researchTools() {

@@ -45,14 +45,6 @@ func researchTools() []string {
 	return p.Tools.Chat
 }
 
-// researchPrompt is the researcher's whole brief.
-const researchPrompt = "You research one question for the project agent. Work alone: call a tool, read its answer, decide the next. " +
-	"Search the repository with tree, grep and file; the documents with read_doc; the web with web_search and web_scrape. " +
-	"Stop as soon as the question is answered; a narrow question needs one or two calls. " +
-	"Your last answer is the report the agent reads, nothing else follows it: the findings in plain sentences first, " +
-	"then the sources, each a path at its ref or a url, then the open questions you could not answer. " +
-	"Name no source you did not read."
-
 // research answers one question through the bounded loop and answers the
 // report with the trail of every step. The bounds' refusals name the stop
 // and the fitting action; a gateway refusal of the loop's own call comes
@@ -80,7 +72,7 @@ func (t *turn) research(question string) (string, string, error) {
 			defs = append(defs, tool.def(false))
 		}
 	}
-	system, err := prompts.Build("research", researchPrompt)
+	system, err := prompts.Build("research", "")
 	if err != nil {
 		return "", "", err
 	}

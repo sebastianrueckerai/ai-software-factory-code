@@ -922,7 +922,7 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 		// is the one on the review prompt
 		var first []any
 		for _, c := range ll.chats {
-			if msgs := c["messages"].([]any); strings.Contains(msgs[0].(map[string]any)["content"].(string), "You review a pull request an autonomous") {
+			if msgs := c["messages"].([]any); strings.Contains(msgs[0].(map[string]any)["content"].(string), "You review a pull request that an autonomous") {
 				first = append(first, msgs)
 			}
 		}
@@ -3756,13 +3756,13 @@ func TestReviewPromptOpensWithTheFindingForm(t *testing.T) {
 }
 
 // The concurrency summary says what it lists in its own first line, so
-// neither the review nor the audit prompt describes it; both name the
-// parts as context, the review its file list, and no longer a cut diff.
+// neither the review nor the audit prompt describes it; the review names
+// the parts as context and its file list, and no longer a cut diff.
 func TestReviewAndAuditPromptsNameTheConcurrencySummary(t *testing.T) {
-	for name, prompt := range map[string]string{"review": reviewPrompt, "audit": auditPrompt} {
-		if !strings.Contains(prompt, "When part is present, the diff comes in parts") {
-			t.Errorf("the %s prompt does not name the parts", name)
-		}
+	if !strings.Contains(reviewPrompt, "When part is present, the diff comes in parts") {
+		t.Error("the review prompt does not name the parts")
+	}
+	for name, prompt := range map[string]string{"review": reviewPrompt, "audit": auditChecklist} {
 		if strings.Contains(prompt, "goroutine") {
 			t.Errorf("the %s prompt describes the concurrency summary", name)
 		}

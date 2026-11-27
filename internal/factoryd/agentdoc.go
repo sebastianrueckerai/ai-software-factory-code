@@ -290,7 +290,7 @@ func agentDocAudit(ctx context.Context, gwURL string, v policy.Version, hc *http
 	return []agentdoc.Span{
 		agentDocInputLead,
 		agentDocStanding(system),
-		{Name: "the audit prompt", Symbol: "factoryd.auditPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: auditPrompt},
+		{Name: "the audit checklist", Symbol: "factoryd.auditChecklist", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: auditChecklist},
 		{Name: "the audit's facts", Symbol: "factoryd.auditInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
 		{Name: "the diff", Symbol: "factoryd.joinFiles", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(diff)},

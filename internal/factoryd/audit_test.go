@@ -52,7 +52,7 @@ const secretTestDiff = "diff --git a/internal/x/x_test.go b/internal/x/x_test.go
 // audit flagged internal/policy/policy.go and internal/factoryd/workflow.go).
 func TestAuditPromptItemFourIsConfigurationFiles(t *testing.T) {
 	var item string
-	for _, line := range strings.Split(auditPrompt, "\n") {
+	for _, line := range strings.Split(auditChecklist, "\n") {
 		if strings.HasPrefix(line, "4. ") {
 			item = line
 		}
@@ -725,14 +725,14 @@ func TestGateAuditReadsABigFileInPieces(t *testing.T) {
 	}
 }
 
-// Every audit call reads the finding form and then the whole checklist:
-// no call sees another's.
+// Every audit call reads the line form and then the whole checklist: no
+// call sees another's.
 func TestAuditPromptsCarryTheChecklist(t *testing.T) {
-	form, _ := writingguide.Form("finding")
+	form, _ := writingguide.Form("line")
 	for step, part := range map[string]bool{"security-audit": false, "security-audit-part": true} {
 		prompt := testPrompt(t, step, auditFacts{part}).Text()
 		if !strings.HasPrefix(prompt, form+"\n\n") || !strings.HasSuffix(prompt, auditChecklist) || !strings.Contains(auditChecklist, "\n6. sandbox contract: ") {
-			t.Errorf("the %s prompt does not open with the finding form and end with the checklist", step)
+			t.Errorf("the %s prompt does not open with the line form and end with the checklist", step)
 		}
 	}
 }

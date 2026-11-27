@@ -443,3 +443,51 @@ func TestTitleCarriesNoBounds(t *testing.T) {
 func TestPlanNamerCarriesNoBounds(t *testing.T) {
 	lacks(t, "plan-namer", "24 characters")
 }
+
+const (
+	lineFormSentence = "This text is one short line or one short paragraph that a human reads on a card."
+	findingForm      = "A finding names one fault"
+)
+
+// The audit's findings are lines a human reads before the merge: the line
+// form, not the finding form.
+func TestAuditCarriesTheLineForm(t *testing.T) {
+	for _, step := range []string{"security-audit", "security-audit-part"} {
+		if text := built(t, step).Text(); !strings.Contains(text, lineFormSentence) {
+			t.Errorf("step %s lacks the line form:\n%s", step, text)
+		}
+		lacks(t, step, findingForm)
+	}
+}
+
+func TestGateSupervisorCarriesTheLineForm(t *testing.T) {
+	if text := built(t, "gate-supervisor").Text(); !strings.Contains(text, lineFormSentence) {
+		t.Errorf("the gate supervisor lacks the line form:\n%s", text)
+	}
+	lacks(t, "gate-supervisor", findingForm)
+}
+
+// Only the part call's own text speaks of a part of the diff.
+func TestAuditPromptHasNoPartParagraph(t *testing.T) {
+	lacks(t, "security-audit", "When part is present", "each later part")
+}
+
+// The researcher's tools ride in the call's tool list, not in its text.
+func TestResearchNamesNoTools(t *testing.T) {
+	lacks(t, "research", "read_doc", "web_search", "web_scrape", "grep")
+}
+
+// The parser cuts a list past its maximum and refuses a claim that holds a
+// question: the prompt states neither.
+func TestHoldoutCarriesNoBoundLines(t *testing.T) {
+	lacks(t, "holdout-proposer", "Propose at most", "no question")
+}
+
+func TestModelReviewKeepsTheFindingForm(t *testing.T) {
+	for _, step := range []string{"model-review", "model-review-part"} {
+		if text := built(t, step).Text(); !strings.Contains(text, findingForm) {
+			t.Errorf("step %s lacks the finding form:\n%s", step, text)
+		}
+		lacks(t, step, lineFormSentence)
+	}
+}

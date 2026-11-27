@@ -18,7 +18,7 @@ func auditText(f auditFacts) (string, error) {
 	if f.Part {
 		return auditPartPrompt, nil
 	}
-	return auditPrompt, nil
+	return auditChecklist, nil
 }
 
 // sessionBrief is a session's brief and the tag of its markers.
