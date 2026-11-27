@@ -31,14 +31,31 @@ var jobs = []Job{JobChat, JobLine, JobTitle, JobWhy, JobSummary, JobBrief, JobAs
 //go:embed forms
 var formFiles embed.FS
 
-var forms = func() map[Job]string {
-	m := map[Job]string{}
-	for _, j := range jobs {
-		b, err := formFiles.ReadFile("forms/" + string(j) + ".md")
+// FormNames are the eight form names.
+var FormNames = []string{"chat", "line", "title", "why", "summary", "brief", "ask", "finding"}
+
+var formTexts = func() map[string]string {
+	m := map[string]string{}
+	for _, name := range FormNames {
+		b, err := formFiles.ReadFile("forms/" + name + ".md")
 		if err != nil {
 			panic(err)
 		}
-		m[j] = strings.TrimSpace(string(b))
+		m[name] = strings.TrimSpace(string(b))
+	}
+	return m
+}()
+
+// Form is the form file named name, trimmed, and whether it exists.
+func Form(name string) (string, bool) {
+	text, ok := formTexts[name]
+	return text, ok
+}
+
+var forms = func() map[Job]string {
+	m := map[Job]string{}
+	for _, j := range jobs {
+		m[j] = formTexts[string(j)]
 	}
 	m[JobChat] = strings.TrimSpace(Guide) + "\n\n" + m[JobChat]
 	return m
