@@ -1370,16 +1370,17 @@ var labShot = sync.OnceValue(func() string {
 func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.Task) string) ([]factoryd.ChatMessage, []factoryd.ChatProposal, []factoryd.ChatProposal) {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	ref := func(t factoryd.Task) string { return fmt.Sprintf("#%d %s %q", t.IssueNumber, t.ID, title(t)) }
-	steerArgs := fmt.Sprintf(`{"task_id":%q,"text":"Keep the drawer's objective unclamped; clamp only the board's chips."}`, running.ID)
+	tellArgs := fmt.Sprintf(`{"task_id":%q,"text":"Keep the drawer's objective unclamped; clamp only the board's chips."}`, running.ID)
 	depArgs := fmt.Sprintf(`{"task_id":%q,"depends_on":%q}`, queued.ID, running.ID)
 	const fileTitle = "Plan: Documents in the conversation (roadmap 300)"
 	const fileBody = "Drag the documents into the chat and read them by tool"
 	noTests := `{"title":"` + fileTitle + `","body":"` + fileBody + `","track":"plan","track_reason":"a feature that needs a plan","size":"medium"}`
 	withTests := noTests[:len(noTests)-1] + `,"acceptance":["the chat shows the documents a member sends","the agent reads them by tool"]}`
 	proposals := []factoryd.ChatProposal{
-		{Token: "labSteer606xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian", Tool: "steer",
-			Args: json.RawMessage(steerArgs), ExpiresAt: now.Add(30 * time.Minute),
-			Description: "Message a running card, " + ref(running) + ", text Keep the drawer's objective unclamped; clamp only the board's chips."},
+		{Token: "labTell606xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian", Tool: "tell_card",
+			Args: json.RawMessage(tellArgs), ExpiresAt: now.Add(30 * time.Minute),
+			Description: "Tell a card, " + ref(running) + ", text Keep the drawer's objective unclamped; clamp only the board's chips. → its session reads the message (" +
+				fmt.Sprintf("#%d", running.IssueNumber) + " running, event card_steered)"},
 		{Token: "labDepend617xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian", Tool: "set_dependency",
 			Args: json.RawMessage(depArgs), ExpiresAt: now.Add(30 * time.Minute),
 			Description: "Set a dependency, " + ref(queued) + ", depends on " + ref(running)},

@@ -220,7 +220,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "waiting-poster":
 		return "the poster must answer on the issue"
 	case "running":
-		return "steer sends its session a message, and its pull request comes when the session ends"
+		return "a message to it reaches its session, and its pull request comes when the session ends"
 	case "queued", "waiting-deps":
 		if t.Held() {
 			return "it is on hold until a human releases it with `release_hold`"

@@ -128,12 +128,12 @@ func TestAgentDocConsoleSendsThePurpose(t *testing.T) {
 }
 
 // The captures offer the tools production offers the fixture's writer:
-// the chat's config gates steer, request_image, the web tools and the
+// the chat's config gates request_image, the web tools and the
 // routine tools on doors factoryd always wires, so the fixture console
 // wires them too, and the research loop reads the web as the chat does.
 func TestAgentDocConsoleOffersTheProductionTools(t *testing.T) {
 	for id, want := range map[string][]string{
-		"project-agent": {"steer", "request_image", "web_search", "web_scrape", "routines", "routine_run", "routine_skip"},
+		"project-agent": {"request_image", "web_search", "web_scrape", "routines", "routine_run", "routine_skip"},
 		"research":      {"tree", "grep", "file", "read_doc", "web_search", "web_scrape"},
 	} {
 		t.Run(id, func(t *testing.T) {

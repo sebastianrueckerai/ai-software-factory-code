@@ -1626,7 +1626,7 @@ func TestChatTextReply(t *testing.T) {
 	for _, tool := range calls[0]["tools"].([]any) {
 		tools = append(tools, tool.(map[string]any)["function"].(map[string]any)["name"].(string))
 	}
-	equal(t, "tools", tools, slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" }))
+	equal(t, "tools", tools, policy.ChatTools)
 	task, ok, _ := r.tasks.Task(t.Context(), factoryd.ChatTaskID("ai-software-factory-code", time.Now()))
 	if !ok || task.Kind != factoryd.KindChat || task.Status != "running" || task.BudgetEUR != 10 || task.Repository != "sf/code" {
 		t.Fatalf("chat task = %v %+v, want kind chat, running, budget 10 on sf/code", ok, task)
@@ -2068,8 +2068,8 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		who, project string
 		want         []string
 	}{
-		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
-		{"controller", "ai-software-factory-code", []string{"system", "board", "find_cards", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
+		{"alice", "ai-software-factory-code", policy.ChatTools},
+		{"controller", "ai-software-factory-code", []string{"system", "board", "find_cards", "card", "history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "cluster_facts", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
@@ -2077,7 +2077,7 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
-		{"bob", "demo", []string{"system", "board", "find_cards", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
+		{"bob", "demo", []string{"system", "board", "find_cards", "card", "history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "cluster_facts", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_accent", "close", "edit", "give_room",
 			"set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
@@ -2113,16 +2113,16 @@ func TestChatNamesACardByItsIssue(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "done", Repository: "sf/code",
 		IssueNumber: 3, Objective: "Add the schema.", FinishedAt: &finished}})
 	r.tasks.mu.Unlock()
-	g.replies = [][]string{{call(1, "card_history", `{"task_id":"#5"}`, "card_history", `{"task_id":5}`, "card_history", `{"task_id":"#3"}`,
+	g.replies = [][]string{{call(1, "history", `{"task_id":"#5"}`, "history", `{"task_id":5}`, "history", `{"task_id":"#3"}`,
 		"card", `{"task_id":"#99"}`, "close", `{"task_id":"#5"}`, "set_dependency", `{"task_id":"5","depends_on":11}`)}}
 	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-m",
 		IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton})
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	moved := "2026-10-11 09:30 #5 t-m card_retried by sebastian via button"
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"n":20,"task_id":"#5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
-		`tool {"arguments":{"n":20,"task_id":"5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
-		`tool {"arguments":{"n":20,"task_id":"#3"},"duration_ms":0,"name":"card_history","result":"No events."}`,
+		`tool {"arguments":{"n":20,"task_id":"#5"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
+		`tool {"arguments":{"n":20,"task_id":"5"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
+		`tool {"arguments":{"n":20,"task_id":"#3"},"duration_ms":0,"name":"history","result":"No events."}`,
 		`tool {"arguments":{"task_id":"#99"},"duration_ms":0,"name":"card","result":"Refused: Project ai-software-factory-code has no card #99: find the card you mean by the words of its title."}`,
 		`proposal {"arguments":{"task_id":"t-m"},"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\"","expires":"EXPIRES","id":"TOKEN","tool":"close"}`,
 		`proposal {"arguments":{"task_id":"t-m","depends_on":"t-r"},"description":"Set a dependency, #5 t-m \"Fix the cache. It drops entries.\", ` +
@@ -2146,7 +2146,7 @@ func TestChatNamesACardByItsConsoleLink(t *testing.T) {
 	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-m",
 		IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton})
 	link := "https://console.aisoftwarefactory.world/#card="
-	g.replies = [][]string{{call(1, "card_history", `{"task_id":"`+link+`t-m"}`, "card_history", `{"task_id":"#card=t-m:receipt"}`,
+	g.replies = [][]string{{call(1, "history", `{"task_id":"`+link+`t-m"}`, "history", `{"task_id":"#card=t-m:receipt"}`,
 		"card", `{"task_id":"https://elsewhere.example/#card=t-x"}`,
 		"hold_card", `{"task_id":"`+link+`t-k1","release_card":"#card=t-d","reason":"it needs the lone card"}`,
 		"close", `{"task_id":" `+link+`t-m "}`, "set_dependency", `{"task_id":"#card=t-m","depends_on":"`+link+`t-r"}`)}}
@@ -2154,8 +2154,8 @@ func TestChatNamesACardByItsConsoleLink(t *testing.T) {
 	moved := "2026-10-11 09:30 #5 t-m card_retried by sebastian via button"
 	held := "#31 is on hold until #33 is merged or done, or a human releases it."
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"n":20,"task_id":"` + link + `t-m"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
-		`tool {"arguments":{"n":20,"task_id":"#card=t-m:receipt"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
+		`tool {"arguments":{"n":20,"task_id":"` + link + `t-m"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
+		`tool {"arguments":{"n":20,"task_id":"#card=t-m:receipt"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
 		`tool {"arguments":{"task_id":"https://elsewhere.example/#card=t-x"},"duration_ms":0,"name":"card","result":"Refused: There is no card t-x in this project."}`,
 		`tool {"arguments":{"task_id":"` + link + `t-k1","release_card":"#card=t-d","reason":"it needs the lone card"},"duration_ms":0,"name":"hold_card","result":"` + held + `"}`,
 		`applied {"result":"` + held + `","tool":"hold_card"}`,
@@ -2656,7 +2656,7 @@ func TestChatUndoOfAnEdgeTheCardStarted(t *testing.T) {
 	before := r.events.count()
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
 	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_dependency","result":"Refused: Card #22 runs an agent session, ` +
-		`not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."}`, `done {}`})
+		`not a card that has not started: a message to it reaches its session, and its pull request comes when the session ends."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
 }
@@ -2798,7 +2798,7 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 	chatTask := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "session", `{"task_id":"t-ls"}`,
 		"session_search", `{"task_id":"t-ls","query":"go"}`, "set_accent", `{"task_id":"t-ls","accent":"red"}`,
-		"close", `{"task_id":"t-ls"}`, "card_history", `{"task_id":"`+chatTask+`"}`)}, {say("None is here.")}}
+		"close", `{"task_id":"t-ls"}`, "history", `{"task_id":"`+chatTask+`"}`)}, {say("None is here.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look at linkshort's card"}})
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"card","result":"Refused: There is no card t-ls in this project."}`,
@@ -2808,7 +2808,7 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-ls","query":"go"},"duration_ms":0,"name":"session_search","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","accent":"red"},"duration_ms":0,"name":"set_accent","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"close","result":"Refused: There is no card t-ls in this project."}`,
-		`tool {"arguments":{"n":20,"task_id":"` + chatTask + `"},"duration_ms":0,"name":"card_history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,
+		`tool {"arguments":{"n":20,"task_id":"` + chatTask + `"},"duration_ms":0,"name":"history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,
 		`text {"text":"None is here."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	if k, _, _ := r.tasks.Task(t.Context(), "t-ls"); k.Accent != "" || len(r.fg.labelled) != 0 {
@@ -4526,6 +4526,41 @@ func TestChatRefusesANonWriter(t *testing.T) {
 	}
 }
 
+// The chat has no steer and no card_history: tell_card reaches a running
+// session and history takes the card.
+func TestSteerIsNoChatTool(t *testing.T) {
+	for _, gone := range []string{"steer", "card_history"} {
+		if slices.Contains(policy.ChatTools, gone) || slices.Contains(policy.DefaultChat.Confirm, gone) ||
+			slices.ContainsFunc(tools, func(tl chatTool) bool { return tl.name == gone }) {
+			t.Errorf("%s is still a chat tool", gone)
+		}
+	}
+}
+
+// history takes an optional card: with task_id it reads that card's
+// events, without it the project's, newest first.
+func TestHistoryTakesAnOptionalCard(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	at := time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)
+	for _, e := range []factoryd.Event{
+		{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton,
+			Detail: map[string]any{"replacement": 9}, At: at},
+		{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventTaskStatus, Actor: "factoryd", Via: factoryd.ViaFactoryd,
+			Detail: map[string]any{"status": "running", "gate": ""}, At: at.Add(time.Minute)},
+	} {
+		r.events.Record(t.Context(), e)
+	}
+	g.replies = [][]string{{call(1, "history", `{"task_id":"t-m"}`, "history", `{}`)}, {say("Read.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what happened?"}})
+	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
+	moved := `2026-10-11 09:30 #5 t-m card_retried by sebastian via button {\"replacement\":9}`
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"n":20,"task_id":"t-m"},"duration_ms":0,"name":"history","result":"` + moved + `"}`,
+		`tool {"arguments":{"n":20},"duration_ms":0,"name":"history","result":"` + status + `\n` + moved + `"}`,
+		`text {"text":"Read."}`, `done {}`})
+}
+
 // The reads: the project's history, a card's, the month's enforced
 // spend, and a pull request's diff read as the member.
 func TestChatReads(t *testing.T) {
@@ -4541,7 +4576,7 @@ func TestChatReads(t *testing.T) {
 		r.events.Record(t.Context(), e)
 	}
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "history", `{"n":1}`, "card_history", `{"task_id":"t-m"}`, "costs", "{}", "diff", `{"task_id":"t-r"}`)}, {say("Read.")}}
+	g.replies = [][]string{{call(1, "history", `{"n":1}`, "history", `{"task_id":"t-m"}`, "costs", "{}", "diff", `{"task_id":"t-r"}`)}, {say("Read.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what happened?"}})
 	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
 	moved := `2026-10-11 09:30 #5 t-m card_retried by sebastian via button {\"replacement\":9}`
@@ -4550,7 +4585,7 @@ func TestChatReads(t *testing.T) {
 		t.Fatalf("stream length = %d, want 6; events: %v", len(events), events)
 	}
 	equal(t, "stream history", events[0], `tool {"arguments":{"n":1},"duration_ms":0,"name":"history","result":"`+status+`"}`)
-	equal(t, "stream card_history", events[1], `tool {"arguments":{"n":20,"task_id":"t-m"},"duration_ms":0,"name":"card_history","result":"`+moved+`"}`)
+	equal(t, "stream history of a card", events[1], `tool {"arguments":{"n":20,"task_id":"t-m"},"duration_ms":0,"name":"history","result":"`+moved+`"}`)
 	equal(t, "stream costs", events[2], `tool {"arguments":{},"duration_ms":0,"name":"costs","result":"`+costs+`"}`)
 	if !strings.HasPrefix(events[3], `tool {"arguments":{"task_id":"t-r"},"duration_ms":0,"name":"diff","result":"diff --git a/cache.go b/cache.go`) {
 		t.Errorf("diff tool line prefix mismatch: %s", events[3])
@@ -4564,11 +4599,11 @@ func TestChatReads(t *testing.T) {
 	}
 }
 
-// A steer asks the member's OK by default, then reaches the running
-// card's session as their message on factoryd's path, one row, no undo; a
-// comment runs at once on the card's issue as the member, and its undo
-// deletes it.
-func TestChatSteerAndComment(t *testing.T) {
+// An agent's tell_card at a running card asks the member's OK by default,
+// then reaches the card's session as their message on factoryd's path,
+// one row, no undo; a comment runs at once on the card's issue as the
+// member, and its undo deletes it.
+func TestTellCardStillRoutesARunningCard(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	var steered []string
 	r.c.cfg.Steer = func(_ context.Context, taskID, user, text string) error {
@@ -4577,10 +4612,10 @@ func TestChatSteerAndComment(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "steer", `{"task_id":"t-r","text":"Rebase on main first."}`, "comment", `{"task_id":"t-m","text":"Looks right."}`)}}
+	g.replies = [][]string{{call(1, "tell_card", `{"task_id":"t-r","text":"Rebase on main first."}`, "comment", `{"task_id":"t-m","text":"Looks right."}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"tell #11 to rebase"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"description":"Message a running card, #11 t-r \"Speed up the board.\", text Rebase on main first.","expires":"EXPIRES","id":"TOKEN","tool":"steer"}`,
+		`proposal {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"description":"Tell a card, #11 t-r \"Speed up the board.\", text Rebase on main first. → its session reads the message (#11 running, event card_steered)","expires":"EXPIRES","id":"TOKEN","tool":"tell_card"}`,
 		`tool {"arguments":{"task_id":"t-m","text":"Looks right."},"duration_ms":0,"name":"comment","result":"Commented on #5."}`,
 		`applied {"result":"Commented on #5.","tool":"comment","undo":"TOKEN"}`,
 		`done {}`})
@@ -4588,17 +4623,17 @@ func TestChatSteerAndComment(t *testing.T) {
 	commented := factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardCommented, Detail: map[string]any{"comment": int64(1)}}
 	chatRows(t, r.events, before, "sebastian", commented)
 	if len(steered) != 0 {
-		t.Fatalf("a proposed steer was sent: %q", steered)
+		t.Fatalf("a proposed tell was sent: %q", steered)
 	}
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{
-		`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"steer","result":"The session of #11 has your message."}`,
-		`applied {"result":"The session of #11 has your message.","tool":"steer"}`, `done {}`})
+		`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"tell_card","result":"Told #11 (its session reads the message): The session of #11 has your message."}`,
+		`applied {"result":"Told #11 (its session reads the message): The session of #11 has your message.","tool":"tell_card"}`, `done {}`})
 	equal(t, "steered", steered, []string{"t-r sebastian: Rebase on main first."})
 	steer := factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered, Detail: map[string]any{"text": "Rebase on main first.", "thread": int64(1)}}
 	chatRows(t, r.events, before, "sebastian", commented, steer)
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
-	equal(t, "the steer's stored result", stored[0].ToolCalls[0].Result, "The session of #11 has your message. It cannot be undone.")
+	equal(t, "the tell's stored result", stored[0].ToolCalls[0].Result, "Told #11 (its session reads the message): The session of #11 has your message. It cannot be undone.")
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[1], nil)
 	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo comment","result":"Deleted the comment on #5."}`,
 		`applied {"result":"Deleted the comment on #5.","tool":"comment"}`, `done {}`})
@@ -4610,11 +4645,11 @@ func TestChatSteerAndComment(t *testing.T) {
 	for err, want := range steerRefusals() {
 		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
 		before := r.events.count()
-		g.replies = [][]string{{call(1, "steer", `{"task_id":"t-r","text":"Rebase on main first."}`)}, {say("It waits.")}}
+		g.replies = [][]string{{call(1, "tell_card", `{"task_id":"t-r","text":"Rebase on main first."}`)}, {say("It waits.")}}
 		_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"tell #11 to rebase"}})
 		_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 		equal(t, fmt.Sprintf("the Do it the session refuses with %v", err), events, []string{
-			`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"steer","result":"Refused: ` + want + `"}`,
+			`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"tell_card","result":"Refused: ` + want + `"}`,
 			`text {"text":"It waits."}`, `done {}`})
 		chatRows(t, r.events, before, "sebastian")
 	}
@@ -5039,9 +5074,9 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	g.replies = [][]string{{call(1,
 		"deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
 		"deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
-		"steer", `{"task_id":"t-m","text":"go"}`,
+		"tell_card", `{"task_id":"t-m","text":"go"}`,
 		"answer", `{"task_id":"t-r","text":"yes"}`,
-		"steer", `{"task_id":"t-mr","text":"go"}`,
+		"tell_card", `{"task_id":"t-mr","text":"go"}`,
 		"card", `{"task_id":"t-cap"}`,
 		"card", `{"task_id":"t-mr"}`,
 		"approve_merge", `{"task_id":"t-mr"}`)}}
@@ -5060,11 +5095,11 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 			"Refused: Card #14 "+human+", not a pending merge request: more room answers it (`give_room`), as does an answer with the findings (answer). Close ends it."),
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
 			"Refused: Card #13 "+human+", not a pending merge request: answer it (answer)."),
-		refused("steer", `{"task_id":"t-m","text":"go"}`, "Refused: Card #5 "+queued+", not a running session: nothing to do until it starts."),
+		refused("tell_card", `{"task_id":"t-m","text":"go"}`, "Refused: Card #5 t-m is queued ("+queued+"), not "+tellFits+": nothing to do until it starts."),
 		refused("answer", `{"task_id":"t-r","text":"yes"}`, "The session of #11 has your message."),
 		`applied {"result":"The session of #11 has your message.","tool":"answer"}`,
-		refused("steer", `{"task_id":"t-mr","text":"go"}`,
-			"Refused: Card #15 "+human+", not a running session: `approve_merge` or `deny_merge` decides its merge request."),
+		refused("tell_card", `{"task_id":"t-mr","text":"go"}`,
+			"Refused: Card #15 t-mr is waiting-human ("+human+"), not "+tellFits+": `approve_merge` or `deny_merge` decides its merge request."),
 	})
 	for i, wantPrefix := range []string{
 		`#14 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n#14 t-cap \"Trim the logs.\" waiting-human (` + human + `)`,
@@ -5236,7 +5271,7 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 		return "proposal " + string(b)
 	}
 	refused := `tool {"arguments":{"task_id":"t-c1"},"duration_ms":0,"name":"approve_merge","result":"Refused: Card #21 runs an agent session, ` +
-		`not a pending merge request: steer sends its session a message, and its pull request comes when the session ends."}`
+		`not a pending merge request: a message to it reaches its session, and its pull request comes when the session ends."}`
 	equal(t, "stream", events, []string{proposal("t-r", r11), proposal("t-m", r5), proposal("t-e", r13), refused, `done {}`})
 	stored, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "what the agent reads of the first", stored[0].ToolCalls[0].Result, "Proposed to sebastian: "+r11+" Nothing runs until they press Do it.")

@@ -192,11 +192,11 @@ const DefaultParallelTurns = 3
 
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
-var ChatTools = []string{"system", "board", "find_cards", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff",
+var ChatTools = []string{"system", "board", "find_cards", "card", "history", "card_step", "board_digest", "costs", "diff",
 	"plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "cluster_facts", "resources", "settings", "policy", "project_images",
 	"promote_resource", "release_resource",
-	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
+	"new_card", "request_image", "answer", "comment", "tell_card", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "give_room", "set_dependency", "hold_card", "release_hold", "replan", "set_pool",
 	"read_doc", "write_doc", "show_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
@@ -211,7 +211,7 @@ var VisionModels = []string{"vision"}
 
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 10,
-	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
+	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "retry", "request_changes",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "give_room", "set_dependency", "replan",
 		"promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
 
