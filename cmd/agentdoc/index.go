@@ -26,7 +26,8 @@ type indexRow struct {
 	model        string // the captured request's model alias; "" when no request exists
 	purpose      string
 	task         string
-	tools        int
+	tools        int // tools on the wire
+	behind       int // rare tools behind tool_schema
 	requestBytes int
 	parts        prompts.Parts // the profile's words, from Build(step, fixture)
 	harness      int           // words of the captured request that no profile made
@@ -46,8 +47,8 @@ func rowOf(a Agent, rec agentdoc.Recorded, spans []agentdoc.Span) (indexRow, err
 		return indexRow{}, err
 	}
 	harness, tools := wireWords(a, b, standing)
-	return indexRow{agent: a, model: b.Model, purpose: rec.Purpose, task: rec.Task,
-		tools: len(b.Tools), requestBytes: len(rec.Raw), parts: parts, harness: harness, toolWords: tools, spans: spans}, nil
+	return indexRow{agent: a, model: b.Model, purpose: rec.Purpose, task: rec.Task, tools: len(b.Tools), behind: len(behindToolSchema(b)),
+		requestBytes: len(rec.Raw), parts: parts, harness: harness, toolWords: tools, spans: spans}, nil
 }
 
 // index renders index.md from every agent's row, at code sha and policy
@@ -99,8 +100,8 @@ func (d *doc) writeSelfCheck(md *strings.Builder, rows []indexRow, opencodeVersi
 
 func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 	md.WriteString("## The inventory\n\n")
-	md.WriteString("| agent | family | job | model | purpose | runs | tools | request bytes | profile | harness words | guide words | forms words | chunks words | paragraph words | facts words | tool words |\n" +
-		"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	md.WriteString("| agent | family | job | model | purpose | runs | tools on the wire | tools behind tool_schema | request bytes | profile | harness words | guide words | forms words | chunks words | paragraph words | facts words | tool words |\n" +
+		"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rows {
 		model := r.model
 		if model == "" {
@@ -119,8 +120,8 @@ func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 			p := r.parts
 			profile, parts = strings.Join(r.agent.Steps, ", "), fmt.Sprintf("%d | %d | %d | %d | %d", p.Guide, p.Forms, p.Chunks, p.Paragraph, p.Facts)
 		}
-		fmt.Fprintf(md, "| [%s](%s.md) | %s | %s | `%s` | `%s` | %s | %d | %s | %s | %s | %s | %s |\n",
-			r.agent.ID, r.agent.ID, r.agent.Family, r.agent.Job, model, r.purpose, r.agent.Runs, r.tools, requestBytes, profile, harness, parts, toolWords)
+		fmt.Fprintf(md, "| [%s](%s.md) | %s | %s | `%s` | `%s` | %s | %d | %d | %s | %s | %s | %s | %s |\n",
+			r.agent.ID, r.agent.ID, r.agent.Family, r.agent.Job, model, r.purpose, r.agent.Runs, r.tools, r.behind, requestBytes, profile, harness, parts, toolWords)
 	}
 	md.WriteString("\n")
 }

@@ -77,8 +77,16 @@ type catalog struct {
 	paragraphs map[string]string
 }
 
-//go:embed chunks profiles all:steps
+//go:embed chunks profiles all:steps tools
 var embedded embed.FS
+
+// ToolText is the text internal/prompts/tools gives built-in tool name,
+// which the sandbox's plugin puts in place of the harness's own, and
+// whether there is one.
+func ToolText(name string) (string, bool) {
+	b, err := fs.ReadFile(embedded, "tools/"+name+".md")
+	return strings.TrimSpace(string(b)), err == nil
+}
 
 var texts = func() *catalog {
 	c, err := load(embedded, writing{writingguide.Guide, writingguide.Form})

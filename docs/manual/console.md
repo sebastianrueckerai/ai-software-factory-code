@@ -360,7 +360,8 @@ resources page, a period that recurs and no instant.
   checks, plan and sessions; a pending merge request names its risk, the
   review's verdict and whether it found a strict improvement, its head's
   first 7 characters and, on red checks, the jobs found red, or green
-  since a re-run on the head), `history`, `card_history`, `card_step` (one
+  since a re-run on the head), `history` (the project's events, or one
+  card's with `task_id`), `card_step` (one
   step of the card's life in full, by its number), `board_digest` (the
   board in a few lines: the live cards with their flags, a card whose
   life cannot be read with why, the queue with what holds each card, the
@@ -492,8 +493,15 @@ resources page, a period that recurs and no instant.
   below full auto the plan's guard refuses them, naming `attach_analysis`.
   A wake counts its cases. A project
   without a chat token gets no wake; the refusal names `tokens.chat`.
-  `steer` reaches a running session on the supervisor's message path
-  (`Runner.MessageSession`). The conversation
+  `tell_card` reaches a running session on the supervisor's message path
+  (`Runner.MessageSession`). The project agent's profile
+  (`internal/prompts/profiles/project-agent.yaml`) splits its tools in
+  three: the core tools stand in every request with their whole schema,
+  the rare ones as one line each of `tool_schema`'s description until a
+  call of `tool_schema` puts that tool's schema in the thread's tool list
+  from the next round on, and the three attachment tools only while a row
+  of the thread carries an attachment. A rare tool called before its
+  fetch is refused with the call that fetches it. The conversation
   is `chat_messages`, per project and human, each assistant row with its
   tool calls and their results; a turn's context is the project's status
   line (for a project without a board, one factoryd does not work on,
@@ -510,7 +518,7 @@ resources page, a period that recurs and no instant.
   `confirm`; defaults in `policy.DefaultChat`) sets the rest; a project
   file's keys replace the policy's, its `monthly_eur` at most the
   policy's. By default the OK is asked for `new_card`, `request_image`,
-  `answer` and `steer` (text injected into the board could otherwise make
+  `answer` and `tell_card` (text injected into the board could otherwise make
   the agent answer a waiting card or message a running session as the
   human), `retry`, `request_changes`, `approve_merge`, `deny_merge`,
   `invite`, `github_export`, `github_sync`, `close`, `edit`,

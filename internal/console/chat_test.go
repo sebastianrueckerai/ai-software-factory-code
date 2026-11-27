@@ -4614,10 +4614,10 @@ func TestChatReads(t *testing.T) {
 	}
 }
 
-// An agent's tell_card at a running card asks the member's OK by default,
+// An agent's tell_card at a running card asks the human's OK by default,
 // then reaches the card's session as their message on factoryd's path,
 // one row, no undo; a comment runs at once on the card's issue as the
-// member, and its undo deletes it.
+// human, and its undo deletes it.
 func TestTellCardStillRoutesARunningCard(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	var steered []string

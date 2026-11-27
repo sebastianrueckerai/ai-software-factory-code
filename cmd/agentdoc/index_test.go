@@ -52,7 +52,7 @@ func TestIndexRendersInventoryMatrixSelfCheck(t *testing.T) {
 		"`policyhash`",
 		"`opencode 1.18.32`",
 		"unlabelled spans: 0",
-		"| agent | family | job | model | purpose | runs | tools | request bytes |",
+		"| agent | family | job | model | purpose | runs | tools on the wire | tools behind tool_schema | request bytes |",
 		"[coding](coding.md)",
 		"`small`",
 		"`agentdoc-fixture`",
@@ -191,5 +191,30 @@ func TestWireWordsSplitTheHarnessFromTheTools(t *testing.T) {
 	}
 	if harness, tools := wireWords(Agent{}, b, 0); harness != 0 || tools != 12 {
 		t.Errorf("a direct agent's words = %d, %d; want 0 and 7 + 5 = 12", harness, tools)
+	}
+}
+
+// The project agent's row counts the tools on the wire and behind
+// tool_schema. The fixture's human writes the project and approves
+// nothing, so of the 46 core tools retry, approve_merge and answer_criteria
+// are not offered: 43 and tool_schema, 44 on the wire. Of the 30 rare
+// tools promote_resource, invite, github_export, github_sync, replan,
+// set_pool, set_autonomy, routine_write and routine_delete are not: 21
+// behind.
+func TestIndexPrintsToolTiers(t *testing.T) {
+	_, _, rec, spans := captureAgent(t, "project-agent")
+	row, err := rowOf(*agentByID("project-agent"), rec, spans)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.tools != 44 || row.behind != 21 {
+		t.Fatalf("the row counts %d on the wire and %d behind, want 44 and 21", row.tools, row.behind)
+	}
+	md, failures := index([]indexRow{row}, "deadbeef", "policyhash", "opencode 1.19.6")
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	if !strings.Contains(md, " | 44 | 21 | ") {
+		t.Errorf("the index lacks the row's 44 and 21:\n%s", md)
 	}
 }

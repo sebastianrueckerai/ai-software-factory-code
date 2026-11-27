@@ -127,7 +127,7 @@ func agentDocChatAgent(ctx context.Context, op *factoryd.OperatorModel, v policy
 	}
 	for _, d := range defs {
 		spans = append(spans, agentdoc.Span{Name: "tool " + d.Name, Symbol: "(*turn).offered",
-			Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceTools, Text: agentDocJSON(d)})
+			Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceTools, Text: agentDocJSON(d), Tier: chatTier(d.Name)})
 	}
 	return spans, nil
 }
@@ -307,7 +307,7 @@ func agentDocResearch(ctx context.Context, op *factoryd.OperatorModel, v policy.
 			return nil, fmt.Errorf("the research tool %s is none of the chat's tools", name)
 		}
 		spans = append(spans, agentdoc.Span{Name: "tool " + name, Symbol: "researchTools", Kind: agentdoc.KindBuilder,
-			Place: agentdoc.PlaceTools, Text: agentDocJSON(tool.def(false))})
+			Place: agentdoc.PlaceTools, Text: agentDocJSON(tool.def(false)), Tier: agentdoc.TierCore})
 	}
 	return spans, nil
 }

@@ -266,7 +266,7 @@ func TestChatCompactionWeighsTheTurnsReads(t *testing.T) {
 			}
 		}
 	}
-	// the second summary, the member's c1, the fetch's tool_schema, its
+	// the second summary, the human's c1, the fetch's tool_schema, its
 	// arguments and its result, the call's board and {}, and its result
 	schema := schemaResult(t, r, "ai-software-factory-code", "board")
 	equal(t, "the kept rows' estimate", last.After, (len("summary 2"+"c1"+"tool_schema"+`{"name":"board"}`+schema+"board"+"{}"+boardText)+3)/4)

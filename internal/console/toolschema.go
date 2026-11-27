@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
@@ -19,6 +20,21 @@ const ToolSchemaName = "tool_schema"
 func chatTiers() prompts.Tools {
 	p, _ := prompts.ProfileOf("project-agent")
 	return p.Tools
+}
+
+// chatTier is the tier of the project agent's tool name: tool_schema
+// stands in every request beside the core tools.
+func chatTier(name string) string {
+	tiers := chatTiers()
+	switch {
+	case name == ToolSchemaName || slices.Contains(tiers.Chat, name):
+		return agentdoc.TierCore
+	case slices.Contains(tiers.Rare, name):
+		return agentdoc.TierRare
+	case slices.Contains(tiers.Attached, name):
+		return agentdoc.TierAttached
+	}
+	return ""
 }
 
 // threadTools are the rare tools the thread has fetched: the names of its
