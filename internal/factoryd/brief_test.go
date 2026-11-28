@@ -23,36 +23,27 @@ import (
 func TestBriefAnswer(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
-		content string
+		answer  BriefAnswer
 		brief   string
 		detail  string
 		wantErr bool
 	}{{
-		name:    "plain json",
-		content: `{"brief": "PR #12 asks to merge the token refresh.", "detail": "- risk class small\n- review: pass"}`,
-		brief:   "PR #12 asks to merge the token refresh.",
-		detail:  "- risk class small\n- review: pass",
+		name:   "plain",
+		answer: BriefAnswer{Brief: "PR #12 asks to merge the token refresh.", Detail: "- risk class small\n- review: pass"},
+		brief:  "PR #12 asks to merge the token refresh.",
+		detail: "- risk class small\n- review: pass",
 	}, {
-		name:    "fenced json",
-		content: "```json\n{\"brief\": \"One.\", \"detail\": \"- a\\n- b\"}\n```",
-		brief:   "One.",
-		detail:  "- a\n- b",
-	}, {
-		name:    "detail lines trimmed",
-		content: `{"brief": "B", "detail": "\n  - a  \n\n- b \n"}`,
-		brief:   "B",
-		detail:  "- a\n- b",
+		name:   "detail lines trimmed",
+		answer: BriefAnswer{Brief: "B", Detail: "\n  - a  \n\n- b \n"},
+		brief:  "B",
+		detail: "- a\n- b",
 	}, {
 		name:    "no brief",
-		content: `{"brief": "", "detail": "- x"}`,
-		wantErr: true,
-	}, {
-		name:    "not json",
-		content: "The PR merges the refresh.",
+		answer:  BriefAnswer{Detail: "- x"},
 		wantErr: true,
 	}} {
 		t.Run(tt.name, func(t *testing.T) {
-			brief, detail, err := briefAnswer(tt.content)
+			brief, detail, err := briefAnswer(tt.answer)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("want an error, got %q / %q", brief, detail)
@@ -198,7 +189,7 @@ func planSpec(t *testing.T) json.RawMessage {
 func TestBriefWriterPass(t *testing.T) {
 	row := ApprovalRequest{ID: 7, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r",
 		Spec: planSpec(t), Reason: "a question", CreatedAt: time.Unix(0, 0).UTC()}
-	answer := `{"choices":[{"message":{"content":"{\"brief\": \"PR #12 waits on you.\", \"detail\": \"- small risk\"}"}}]}`
+	answer := answerReply(`{"brief": "PR #12 waits on you.", "detail": "- small risk"}`)
 	gw := briefGateway(t, http.StatusOK, answer)
 	defer gw.Close()
 	store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
@@ -226,7 +217,7 @@ func TestBriefWriterReadsTheCardsLife(t *testing.T) {
 	var body []byte
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"brief\": \"PR #12 waits on you.\", \"detail\": \"- small risk\"}"}}]}`))
+		_, _ = w.Write([]byte(answerReply(`{"brief": "PR #12 waits on you.", "detail": "- small risk"}`)))
 	}))
 	defer gw.Close()
 	row := ApprovalRequest{ID: 7, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r", Spec: planSpec(t)}
@@ -270,7 +261,7 @@ func TestBriefWriterReadsTheCardsLife(t *testing.T) {
 // policy's supervisor_timeout lets one: a model slower than the bound
 // fails the row, one inside it files the brief.
 func TestBriefWriterTakesThePolicysTimeout(t *testing.T) {
-	answer := `{"choices":[{"message":{"content":"{\"brief\": \"PR #12 waits on you.\", \"detail\": \"- small risk\"}"}}]}`
+	answer := answerReply(`{"brief": "PR #12 waits on you.", "detail": "- small risk"}`)
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		_, _ = w.Write([]byte(answer))
@@ -428,7 +419,7 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	var task, purpose, card string
 	happened, left := "The check-in found the change edits the importer, not the exporter it was asked to fix.", "The exporter still drops the accent on a round trip."
 	answer, _ := json.Marshal(map[string]any{"happened": happened, "left": left})
-	reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
+	reply := []byte(answerReply(string(answer)))
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ = io.ReadAll(r.Body)
 		task, purpose, card = r.Header.Get(gateway.HeaderFactoryTask), r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryCard)
@@ -464,15 +455,22 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	}
 }
 
-// The writer's prompt asks for the two story lines with the ask form of the
-// guide and each line's bound, and forbids naming a button.
+// The writer's prompt carries the line form of the guide and forbids
+// naming a button; what each story line holds is its answer field's
+// description, the bounds the field's limits.
 func TestCaseBriefPromptWritesTheStoryAndNamesNoButton(t *testing.T) {
-	form, _ := writingguide.Form("ask")
-	prompt := testPrompt(t, "case-brief-writer", caseBriefPrompt).Text()
-	for _, want := range []string{`{"happened": "...", "left": "..."}`, "happened: one sentence, at most 160 characters", "left: one sentence, at most 87 characters",
-		"Name no button, answer or action", form} {
-		if !strings.Contains(prompt, want) {
+	form, _ := writingguide.Form("line")
+	p := testPrompt(t, "case-brief-writer", caseBriefFacts{})
+	for _, want := range []string{"Name no button, answer or action", form} {
+		if !strings.Contains(p.Text(), want) {
 			t.Errorf("the prompt lacks %q", want)
+		}
+	}
+	tool, _ := p.Answer()
+	props := tool.Parameters["properties"].(map[string]any)
+	for field, want := range map[string]string{"happened": "one sentence: what stopped the card", "left": "one sentence: what is left"} {
+		if d, _ := props[field].(map[string]any)["description"].(string); !strings.HasPrefix(d, want) {
+			t.Errorf("the %s field's description = %q, want it to open with %q", field, d, want)
 		}
 	}
 }
@@ -494,10 +492,10 @@ func TestTheWritersLeftFitsBesideTheLongestComposedLeft(t *testing.T) {
 		t.Errorf("the longest composed left %q has %d runes; with the writer's %d and a space it passes %d", longest, n, writerLeftMax, StoryMax)
 	}
 	left := strings.Repeat("a", 87)
-	if _, got, err := parseCaseBrief(fmt.Sprintf(`{"happened": "The check-in found a fault.", "left": %q}`, left)); err != nil || got != left {
+	if _, got, err := checkCaseBrief(CaseBriefAnswer{Happened: "The check-in found a fault.", Left: left}); err != nil || got != left {
 		t.Errorf("an 87-rune left = %q, %v; want it taken", got, err)
 	}
-	if _, _, err := parseCaseBrief(fmt.Sprintf(`{"happened": "The check-in found a fault.", "left": %q}`, left+"a")); err == nil ||
+	if _, _, err := checkCaseBrief(CaseBriefAnswer{Happened: "The check-in found a fault.", Left: left + "a"}); err == nil ||
 		!strings.Contains(err.Error(), "left has 88 characters, at most 87") {
 		t.Errorf("an 88-rune left = %v, want the door's refusal naming its bound", err)
 	}
@@ -515,7 +513,7 @@ func TestBriefWriterRefusesAStoryLinePastItsBound(t *testing.T) {
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, string(body))
-		reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": answers[len(bodies)-1]}}}})
+		reply := []byte(answerReply(answers[len(bodies)-1]))
 		_, _ = w.Write(reply)
 	}))
 	defer gw.Close()
@@ -554,7 +552,7 @@ func TestStoryNamesNoButton(t *testing.T) {
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, string(body))
-		reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": answers[len(bodies)-1]}}}})
+		reply := []byte(answerReply(answers[len(bodies)-1]))
 		_, _ = w.Write(reply)
 	}))
 	defer gw.Close()
@@ -683,7 +681,7 @@ func TestBriefWriterSkipsASpentProjectAndTakesItUpAgain(t *testing.T) {
 	calls := 0
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"happened\": \"All told.\", \"left\": \"\"}"}}]}`))
+		_, _ = w.Write([]byte(answerReply(`{"happened": "All told.", "left": ""}`)))
 	}))
 	defer gw.Close()
 	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman}
@@ -717,7 +715,7 @@ func TestBriefWriterRetriesANoBriefAnswerOnce(t *testing.T) {
 	calls := 0
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"happened\": \"cut mid"}}]}`))
+		_, _ = w.Write([]byte(answerReply(`{"happened": "cut mid`)))
 	}))
 	defer gw.Close()
 	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman})
@@ -751,7 +749,7 @@ func TestBriefWriterNamesAnAnswerCutAtItsLimit(t *testing.T) {
 		limits = append(limits, limit)
 		users = append(users, userMessage(body))
 		w.Header().Set(gateway.HeaderOutputLimit, fmt.Sprint(limit))
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\""},"finish_reason":"length"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"answer","arguments":"{\""}}]},"finish_reason":"length"}]}`))
 	}))
 	defer gw.Close()
 	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman})
@@ -794,7 +792,7 @@ func TestBriefWriterMasksLineStartTokensAndQuotedHeaders(t *testing.T) {
 				user = m.Content
 			}
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"happened\": \"ok\", \"left\": \"\"}"}}]}`))
+		_, _ = w.Write([]byte(answerReply(`{"happened": "ok", "left": ""}`)))
 	}))
 	defer gw.Close()
 	const token, bearer = "0123456789abcdef0123456789abcdef01234567", "abc123def456ghi789"
@@ -807,7 +805,7 @@ func TestBriefWriterMasksLineStartTokensAndQuotedHeaders(t *testing.T) {
 	if store.caseBrief[5][0] != "ok" || len(store.caseFailed) != 0 {
 		t.Fatalf("brief %v, marks %v; want the brief filed", store.caseBrief[5], store.caseFailed)
 	}
-	if !json.Valid([]byte(strings.TrimPrefix(user, ChatInputLead))) {
+	if !json.Valid([]byte(user)) {
 		t.Fatalf("the facts are no JSON: %s", user)
 	}
 	for _, leak := range []string{token, bearer} {
@@ -988,7 +986,7 @@ func TestBriefWriterBriefsAHumanCardAsThePolicysClassesBrief(t *testing.T) {
 	var model, card string
 	happened, left := "The card used its three sessions.", "The fix is half written."
 	answer, _ := json.Marshal(map[string]any{"happened": happened, "left": left})
-	reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
+	reply := []byte(answerReply(string(answer)))
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Model string `json:"model"`
@@ -1023,7 +1021,7 @@ func TestBriefWriterBriefsAHumanCardAsThePolicysClassesBrief(t *testing.T) {
 // A human card's needs-you row is briefed under the policy's classes too.
 func TestBriefWriterBriefsAHumanCardsRowAsThePolicysClassesBrief(t *testing.T) {
 	var model, card string
-	reply := `{"choices":[{"message":{"content":"{\"brief\": \"b\", \"detail\": \"d\"}"}}]}`
+	reply := answerReply(`{"brief": "b", "detail": "d"}`)
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Model string `json:"model"`
@@ -1048,5 +1046,27 @@ func TestBriefWriterBriefsAHumanCardsRowAsThePolicysClassesBrief(t *testing.T) {
 	}
 	if model != "bb" || card != "alpha,beta,coder" || store.brief[7] != [2]string{"b", "d"} {
 		t.Fatalf("model %q card %q brief %v, want bb, alpha,beta,coder and the brief written", model, card, store.brief[7])
+	}
+}
+
+// The case writer is told of a refusal only when its message carries one.
+func TestCaseBriefPromptTellsOfLastRefusalOnlyWhenSet(t *testing.T) {
+	for refused, want := range map[bool]bool{false: false, true: true} {
+		if got := strings.Contains(testPrompt(t, "case-brief-writer", caseBriefFacts{Refused: refused}).Text(), "last_refusal"); got != want {
+			t.Errorf("refused %v: the prompt tells of it = %v, want %v", refused, got, want)
+		}
+	}
+}
+
+// A happened line that holds an amount of money is refused, naming the
+// amount and what to tell instead; a line without one passes.
+func TestCaseBriefRefusesAnAmount(t *testing.T) {
+	_, _, err := checkCaseBrief(CaseBriefAnswer{Happened: "The card spent EUR 4.20 before it stopped.", Left: "Decide."})
+	var no *noBriefError
+	if !errors.As(err, &no) || !strings.Contains(no.Error(), `names the amount "EUR 4.20"`) || !strings.Contains(no.Error(), "tell what stopped the card") {
+		t.Fatalf("an amount: %v, want a refusal naming it and the fix", err)
+	}
+	if _, _, err := checkCaseBrief(CaseBriefAnswer{Happened: "The card stopped at its time bound.", Left: "Decide."}); err != nil {
+		t.Fatalf("no amount: %v", err)
 	}
 }

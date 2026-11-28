@@ -6,10 +6,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
-// checkinPersona is the check-in's ask, whose moment and decisions its
-// persona names.
-type checkinPersona struct{ Ask *CheckInAsk }
-
 // checkinPromptStep is the check-in's step at moment: checkin-gate,
 // checkin-session or checkin-dead.
 func checkinPromptStep(moment string) string { return "checkin-" + moment }
@@ -20,9 +16,9 @@ type auditFacts struct{ Part bool }
 
 func auditText(f auditFacts) (string, error) {
 	if f.Part {
-		return auditPartPrompt, nil
+		return auditPartFacts, nil
 	}
-	return auditPrompt, nil
+	return "", nil
 }
 
 // sessionBrief is a session's brief and the tag of its markers.
@@ -43,27 +39,24 @@ func sessionFixture(step string, b harness.TaskBrief) sessionBrief {
 
 func init() {
 	prompts.RegisterFacts("session", func(f sessionBrief) (string, error) { return briefText(f.Brief, f.Tag), nil })
-	prompts.RegisterFacts("checkin", func(f checkinPersona) (string, error) { return checkinSystemFor(f.Ask), nil })
 	prompts.RegisterFacts("audit", auditText)
 	prompts.RegisterFacts("review", reviewCallPrompt)
 	prompts.RegisterFacts("delta", deltaPrompt)
 	prompts.RegisterFacts("judgement", judgementText)
 	prompts.RegisterFacts("answer", answerSystem)
 	prompts.RegisterFacts("brief", briefPrompt)
+	prompts.RegisterFacts("case-brief", caseBriefPrompt)
 
 	checkin := []string{"factoryd.(*Runner).runCheckin"}
-	prompts.RegisterStep("checkin-gate", checkin, checkinPersona{&CheckInAsk{Moment: CheckInGate,
-		Findings: []CheckFinding{{Text: "no test covers the handler", Source: "review"}}}})
-	prompts.RegisterStep("checkin-session", checkin, checkinPersona{&CheckInAsk{Moment: CheckInSession,
-		Trip: &TripReport{Detector: TripSize, Detail: "the card's remaining work"}}})
-	prompts.RegisterStep("checkin-dead", checkin, checkinPersona{&CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}})
-	prompts.RegisterStep("case-checkin", []string{"factoryd.(*Runner).rung1Converse"}, rungPrompt)
-	prompts.RegisterStep("case-brief-writer", []string{"factoryd.(*BriefWriter).askCase"}, caseBriefPrompt)
+	prompts.RegisterStep("checkin-gate", checkin, "")
+	prompts.RegisterStep("checkin-session", checkin, "")
+	prompts.RegisterStep("checkin-dead", checkin, "")
+	prompts.RegisterStep("case-checkin", []string{"factoryd.(*Runner).rung1Converse"}, "")
+	prompts.RegisterStep("case-brief-writer", []string{"factoryd.(*BriefWriter).askCase"}, caseBriefFacts{})
 	prompts.RegisterStep("brief-writer", []string{"factoryd.(*BriefWriter).ask"}, briefKind{ApprovalResource})
 	review := []string{"factoryd.(*Runner).ModelReview"}
 	prompts.RegisterStep("model-review", review, reviewFacts{Gates: GateResults{ChecksPassed: true}})
 	prompts.RegisterStep("model-review-part", review, reviewFacts{Part: true})
-	prompts.RegisterStep("review-behaviours", review, reviewBehavioursPrompt)
 	audit := []string{"factoryd.(*Runner).GateAudit"}
 	prompts.RegisterStep("security-audit", audit, auditFacts{})
 	prompts.RegisterStep("security-audit-part", audit, auditFacts{Part: true})
@@ -72,21 +65,25 @@ func init() {
 	prompts.RegisterStep("holdout-proposer", []string{"factoryd.(*Runner).proposeHoldouts"}, holdoutSystem)
 	prompts.RegisterStep("judgement", []string{"factoryd.(*Runner).judgeArtifacts"}, judgementFacts{"Does the page read calm?"})
 	prompts.RegisterStep("answer-screener", []string{"factoryd.(*Runner).ScreenAnswer"}, screenMarkers{"===ANSWER-T", "ANSWER-T==="})
-	prompts.RegisterStep("plan-namer", []string{"factoryd.(*Namer).Name"}, namerPrompt)
+	prompts.RegisterStep("plan-namer", []string{"factoryd.(*Namer).Name"}, "")
 	prompts.RegisterStep("follow-liveness", []string{"factoryd.(*Runner).followModelAnswers"}, followModelSystem)
 
 	coder := []string{policy.ToolEscalate, policy.ToolRequestInfo, policy.ToolDelegate}
 	prompts.RegisterStep("coding", []string{"factoryd.(*Runner).RunSession"}, sessionFixture("coding", harness.TaskBrief{Tools: coder}))
 	prompts.RegisterStep("coding-card", []string{"factoryd.(*Runner).RunSession"},
 		sessionFixture("coding-card", harness.TaskBrief{Tools: coder, CardRole: RoleFeature}))
-	prompts.RegisterStep("planner", []string{"factoryd.(*Runner).RunPlan"},
-		sessionFixture("planner", harness.TaskBrief{Report: planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil, nil)}))
+	for _, step := range plannerSteps {
+		prompts.RegisterStep(step, []string{"factoryd.(*Runner).planStep"},
+			sessionFixture(step, harness.TaskBrief{ReportMode: true, Report: planGuide(step, policy.PlanShape{MinCards: 1, MaxCards: 20}, nil, "")}))
+	}
 	prompts.RegisterStep("prover", []string{"factoryd.(*Runner).RunReport"},
-		sessionFixture("prover", harness.TaskBrief{Report: proverGuide(agentDocPlan(), nil, nil)}))
+		sessionFixture("prover", harness.TaskBrief{ReportMode: true, Report: proverGuide(agentDocPlan(), nil, nil)}))
 	prompts.RegisterStep("screening", []string{"factoryd.(*Runner).RunReport"},
-		sessionFixture("screening", harness.TaskBrief{Report: (&Runner{}).reportGuide()}))
+		sessionFixture("screening", harness.TaskBrief{ReportMode: true}))
+	prompts.RegisterStep("repo-map", []string{"factoryd.(*Runner).planMap"},
+		sessionFixture("repo-map", harness.TaskBrief{ReportMode: true, Map: agentDocLoopMap}))
 	prompts.RegisterStep("sizing", []string{"factoryd.(*Runner).RunReport"},
-		sessionFixture("sizing", harness.TaskBrief{Report: sizingGuide(sizeLines(600))}))
+		sessionFixture("sizing", harness.TaskBrief{ReportMode: true, Report: sizingFacts(sizeLines(600))}))
 	prompts.RegisterStep("message-responder", []string{"factoryd.(*Runner).MessageSession"}, sessionMessage("sebastian", "Why is the check red?"))
 	prompts.RegisterStep("supervisor-guidance", []string{"factoryd.(*Runner).message"}, "Run bash check changed before you end the session.")
 	prompts.RegisterStep("nudge", []string{"factoryd.(*Runner).nudge"}, Nudge{Tool: "bash", Call: "go test ./...", Count: 3}.Text())

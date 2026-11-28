@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/answers"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -107,11 +108,11 @@ func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var v sizeVerdict
+	var v answers.SizeAnswer
 	ok, reason := false, fmt.Sprintf("the sizing task %s ended %s", child.ID, child.Status)
 	if child.Status == "done" {
 		if v, ok = parseSizing(child.AgentSummary); !ok {
-			reason = "the sizing's answer is no size: " + textutil.Truncate(strings.TrimSpace(child.AgentSummary), maxSizeReason)
+			reason = "the sizing's answer is no size: " + textutil.Truncate(strings.TrimSpace(child.AgentSummary), answers.MaxSizeReason)
 		}
 	}
 	if !ok {

@@ -280,21 +280,19 @@ func applyVerdictGuards(findings []CheckFinding, verdicts map[string]CheckVerdic
 	return human, human == ""
 }
 
-// checkinStatement builds the check-in's opening statement: the moment and
-// the task, the rules with the evidence a drop stands on and the human shapes, the findings with their history, the review
-// and the gates that raised them, the tools, the parent session's tail,
-// and the budget left.
+// checkinStatement builds the check-in's opening statement: the trip or
+// the stop, the handover note's bound and the decisions the answer tool's
+// schema does not describe, the findings with their history, the review
+// and the gates that raised them, the parent session's tail, and the
+// budget left.
 func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float64, handoverCap int) string {
 	var b strings.Builder
 	switch ask.Moment {
 	case CheckInSession:
-		fmt.Fprintf(&b, "You are the factory's check-in inside session %s: the detector %s tripped (%s), and you decide what happens before the session continues. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Trip.Detector, ask.Trip.Detail)
-		b.WriteString("Rules:\n")
-		b.WriteString("- continue: the session runs on, and may carry guidance: the exact instruction the agent should take next.\n")
-		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
-		b.WriteString("- hand_up: if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
+		fmt.Fprintf(&b, "Session %s: the detector %s tripped (%s).\n", ask.ParentSession, ask.Trip.Detector, ask.Trip.Detail)
+		fmt.Fprintf(&b, "The handover note holds at most %d characters.\n", handoverCap)
 		if ask.Replan {
-			b.WriteString("- replan: the session stops, its work is pushed and kept, and the planner cuts the card's remaining work into smaller cards; the first one lands what the branch holds. Say why in reason; guidance may name the parts.\n")
+			b.WriteString("replan: the session stops, its work is pushed and kept, and the planner cuts the card's remaining work into smaller cards, the first of which lands what the branch holds. guidance may name the parts.\n")
 		}
 		if len(ask.Messages) > 0 {
 			b.WriteString("Guidance delivered to the agent this session:\n")
@@ -325,18 +323,16 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		if ask.Trip.Detector == TripAgentCut {
 			b.WriteString("The agent asks to cut the card. Answer replan if the cut holds. Answer continue, with its guidance, if the card should finish as one card.\n")
 		}
-		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")
+		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open.\n\n")
 	case CheckInDead:
-		fmt.Fprintf(&b, "You are the factory's check-in before a fresh session: the session %s ended without a result: %s. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Stop)
-		fmt.Fprintf(&b, "Your handover note to the next session is at most %d characters. It names: what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat. The agent's report per finding is the last message in its record; verify it, never take it on trust.\n\n", handoverCap)
+		fmt.Fprintf(&b, "Session %s ended without a result: %s.\n", ask.ParentSession, ask.Stop)
+		fmt.Fprintf(&b, "The handover note holds at most %d characters. It names what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat. The agent's report per finding is the last message in its record.\n\n", handoverCap)
 	default:
-		fmt.Fprintf(&b, "You are the factory's check-in at the %s moment: a round came back with findings, and you judge each one before the next session is bought. You never edit anything; you gather evidence and answer.\n\n", ask.Moment)
-		b.WriteString("Rules, one verdict per finding:\n")
-		b.WriteString("- confirmed: the finding is real and must be fixed.\n")
-		b.WriteString("- dropped: only with checkable evidence: a file and line at a ref, or a command and its output.\n")
-		b.WriteString("- remark: an opinion: say it, block nothing.\n")
-		b.WriteString("- if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
-		fmt.Fprintf(&b, "The handover note to the next session is at most %d characters.\n\n", handoverCap)
+		fmt.Fprintf(&b, "The handover note holds at most %d characters.\n", handoverCap)
+		if slices.Contains(askDecisions(ask), ActReverify) {
+			b.WriteString("reverify: every finding drops and the head is verified again.\n")
+		}
+		b.WriteString("\n")
 		if ask.Conflict != "" {
 			fmt.Fprintf(&b, "The pull request does not merge into main: %s.\n\n", ask.Conflict)
 		}
@@ -386,8 +382,6 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 				b.WriteString("- checks not green\n\n")
 			}
 		}
-
-		b.WriteString(checkinToolsLine + "\n")
 	}
 	if ask.Pace != nil {
 		b.WriteString(ask.Pace.Line() + "\n\n")
@@ -511,38 +505,6 @@ type CheckinResponse struct {
 
 // CheckinTool is one tool the check-in may call, in the OpenAI form.
 type CheckinTool = OperatorTool
-
-// checkinSystemFor is the persona of ask's moment, its answer's shape
-// naming the decisions the ask offers (askDecisions): the gate's, which
-// says what a reverify does while one is offered, or the one that fits
-// what the moment decides. A persona carries the answer's shape — the one
-// thing no guard in code can carry — and no rule the guards do. Findings
-// are named by the id the statement listed them under, so a verdict never
-// turns on the wording of the finding it judges.
-func checkinSystemFor(ask *CheckInAsk) string {
-	offered := askDecisions(ask)
-	decisions := strings.Join(offered, "|")
-	switch ask.Moment {
-	case CheckInSession:
-		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. A continue may carry guidance: the exact instruction the agent should take next. Keep the guidance inside what the agent's shell tool can run: no timeout past its 600000 ms maximum, and where nothing in the workspace changed, name bash check static, not bash check changed. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
-	case CheckInDead:
-		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
-	}
-	reverify := ""
-	if slices.Contains(offered, ActReverify) {
-		reverify = ` "reverify" drops every finding and verifies the head again.`
-	}
-	repeats, repeatsNote := "", ""
-	if len(ask.Priors) > 0 {
-		repeats = `,"repeats":"<id>"`
-		repeatsNote = ` repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id.`
-	}
-	return `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"..."` + repeats + `}],"decision":"` + decisions + `","reason_kind":"...","reason":"...","handover":"..."}.` + reverify + ` Each finding is named by the id the findings list gave it, f1 on down, not by its text.` + repeatsNote + ` When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
-}
-
-// checkinToolsLine is the statement's tool line: the evidence tools the
-// check-in's calls post beside the answer tool, one line.
-const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref, under a first line naming the ref's commit), git_log (the workspace's history), cluster_facts (what the cluster did to a session of the card, or the platform's incidents of a window)."
 
 // momentDecisions is one moment's closed decision vocabulary, derived the
 // way the rungs' decisionEnum is: the names of the actions the moment
@@ -699,20 +661,20 @@ func toolSchema(props map[string]any, required ...string) map[string]any {
 // checkinAnswerFinding is one finding's verdict as the model answers it:
 // named by the finding's id when it echoes one, with the text beside it.
 type checkinAnswerFinding struct {
-	ID       string `json:"id,omitempty"`
+	ID       string `json:"id,omitempty" desc:"the finding's id in the findings list, f1 on down"`
 	Text     string `json:"text,omitempty"`
-	Verdict  string `json:"verdict,omitempty"`
-	Evidence string `json:"evidence,omitempty"`
+	Verdict  string `json:"verdict,omitempty" desc:"confirmed: the finding is real and must be fixed. dropped: only on checkable evidence. remark: an opinion that blocks nothing."`
+	Evidence string `json:"evidence,omitempty" desc:"what the verdict stands on: a file and line at a ref, or a command and its output"`
 	Repeats  string `json:"repeats,omitempty" desc:"the id of an earlier finding that this one repeats in other words"`
 }
 
 // sessionAnswer is a session or a dead session's moment's final answer.
 type sessionAnswer struct {
-	Decision   string `json:"decision"`
-	Guidance   string `json:"guidance,omitempty"`
-	ReasonKind string `json:"reason_kind,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	Handover   string `json:"handover,omitempty"`
+	Decision   string `json:"decision" desc:"continue: the session runs on with your guidance. handover: the session stops and the next one starts from your note. hand_up: only a human can act."`
+	Guidance   string `json:"guidance,omitempty" desc:"the exact instruction the agent takes next"`
+	ReasonKind string `json:"reason_kind,omitempty" desc:"why only a human can act"`
+	Reason     string `json:"reason,omitempty" desc:"one sentence with the state of the work"`
+	Handover   string `json:"handover,omitempty" desc:"the note the next session starts from"`
 }
 
 // checkinAnswer is the final answer's JSON shape: a gate's moment judges
@@ -905,7 +867,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		rec.Decision, rec.ReasonKind, rec.Reason = RungHandUp, kind, reason
 		return CheckInOutcome{Decision: RungHandUp, ReasonKind: kind, Reason: reason, Record: rec}
 	}
-	system, err := prompts.Build(checkinPromptStep(ask.Moment), checkinPersona{ask})
+	system, err := prompts.Build(checkinPromptStep(ask.Moment), nil)
 	if err != nil {
 		return stop(CheckUnreadable, "check-in prompt: "+err.Error())
 	}

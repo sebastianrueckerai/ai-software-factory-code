@@ -94,7 +94,7 @@ func TestRunSessionStoresItsBrief(t *testing.T) {
 	if len(got) != 1 || got[0].Session != 1 || got[0].Brief != prompted || got[0].At.IsZero() {
 		t.Fatalf("session briefs %+v, want session 1 holding the prompt %q", got, prompted)
 	}
-	for _, part := range []string{repoMap, SandboxFacts(nil, nil), "FACTS: session 1 of 3", "Why: The nightly report undercounts."} {
+	for _, part := range []string{repoMap, SandboxFacts(nil), "FACTS: session 1 of 3", "Why: The nightly report undercounts."} {
 		if !strings.Contains(got[0].Brief, part) {
 			t.Errorf("the stored text lacks %q", part)
 		}

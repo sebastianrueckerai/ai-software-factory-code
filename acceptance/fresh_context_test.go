@@ -96,7 +96,7 @@ func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	statusEnd := statusHead + time.Now().UTC().Format("2006-01-02") + statusTail
 	for i, call := range calls {
 		sys, _ := messagesOf(call)[0]["content"].(string)
-		if !strings.HasPrefix(sys, strings.TrimSpace(writingguide.Guide)) || !strings.Contains(sys, "\n\nYou are the project agent of project ai-software-factory-code") || !strings.HasSuffix(sys, statusEnd) {
+		if !strings.HasPrefix(sys, strings.TrimSpace(writingguide.Guide)) || !strings.Contains(sys, "\n\nYou are the project agent. You work for a human") || !strings.Contains(sys, "Project: ai-software-factory-code") || !strings.HasSuffix(sys, statusEnd) {
 			t.Errorf("call %d's system message is not the guide and forms, the prompt, the status line and the images line alone:\n%s", i, sys)
 		}
 	}

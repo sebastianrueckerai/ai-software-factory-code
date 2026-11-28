@@ -152,13 +152,8 @@ func TestCheckinStatement(t *testing.T) {
 	tail := strings.Repeat("t", 100)
 	s := checkinStatement(ask, []byte(tail), 7, 1.5, 2000)
 	for _, want := range []string{
-		"at the gate moment",
-		"before the next session is bought",
-		"the finding is real and must be fixed",
-		"a file and line at a ref, or a command and its output",
-		"say it, block nothing",
-		"only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why",
-		"at most 2000 characters",
+		"The handover note holds at most 2000 characters.",
+		"reverify: every finding drops and the head is verified again.",
 		"f1: TasksByPR is undefined (from review)",
 		"f2: no test covers the handler (from review)",
 		"confirmed once before",
@@ -167,14 +162,6 @@ func TestCheckinStatement(t *testing.T) {
 		"risk class normal is auto",
 		`reproduction "go test ./..." exited 0`,
 		"checks green",
-		"transcript_search",
-		"transcript_read",
-		"card_facts",
-		"card_step",
-		"gates",
-		"read_file",
-		"grep",
-		"git_log",
 		"/workspace/.factory/sessions/s-parent-9.jsonl",
 		"<<<SESSION-TAIL>>>\n" + tail + "\nSESSION-TAIL>>>",
 		"calls left 7, 1.50 EUR left in the project's judgment budget this month",
@@ -186,12 +173,11 @@ func TestCheckinStatement(t *testing.T) {
 	if strings.Contains(s, "<parent>") {
 		t.Errorf("statement names the placeholder, not the concrete record:\n%s", s)
 	}
-	if system := testPrompt(t, "checkin-gate", checkinPersona{ask}).Text(); !strings.HasPrefix(system, checkinForms()+"\n\n") || strings.Contains(s, checkinForms()) {
-		t.Errorf("the forms of a line and a why line do not open the system prompt alone:\n%s", system)
+	if system := testPrompt(t, "checkin-gate", nil).Text(); !strings.HasPrefix(system, checkinForms()+"\n\n") || strings.Contains(s, checkinForms()) {
+		t.Errorf("the why form does not open the system prompt alone:\n%s", system)
 	}
 	order := []string{
-		"at the gate moment",
-		"only a human can act",
+		"The handover note holds at most 2000 characters.",
 		"TasksByPR is undefined",
 		"the handler grows a second cache layer without a test",
 		"risk class normal is auto",
@@ -888,15 +874,15 @@ func TestRunnerTools(t *testing.T) {
 // statement keeps its opening byte for byte, and the session and dead
 // statements open on their own sentences, never on another moment's.
 func TestCheckinStatementMoments(t *testing.T) {
-	const gateOpening = "You are the factory's check-in at the gate moment: a round came back with findings, and you judge each one before the next session is bought."
-	const sessionOpening = "You are the factory's check-in inside session s-live-3: the detector churn tripped (4 writes to the same file in 6 minutes), and you decide what happens before the session continues. You never edit anything; you gather evidence and answer."
-	const deadOpening = "You are the factory's check-in before a fresh session: the session s-dead-2 ended without a result: wall clock with the work uncommitted. You never edit anything; you gather evidence and answer."
+	const gateOpening = "The handover note holds at most 2000 characters.\nreverify: every finding drops and the head is verified again.\n\nFindings:"
+	const sessionOpening = "Session s-live-3: the detector churn tripped (4 writes to the same file in 6 minutes).\nThe handover note holds at most 2000 characters.\n"
+	const deadOpening = "Session s-dead-2 ended without a result: wall clock with the work uncommitted.\nThe handover note holds at most 2000 characters."
 
 	gate := checkinStatement(&CheckInAsk{
 		Moment: CheckInGate, ParentSession: "s-parent-9",
 		Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}},
 	}, []byte("the tail"), 7, 1.5, 2000)
-	if !strings.Contains(gate, gateOpening) {
+	if !strings.HasPrefix(gate, gateOpening) {
 		t.Fatalf("gate statement lost its opening:\n%s", gate)
 	}
 
@@ -905,13 +891,12 @@ func TestCheckinStatementMoments(t *testing.T) {
 		Trip:     &TripReport{Detector: TripChurn, Detail: "4 writes to the same file in 6 minutes"},
 		Messages: []string{"stop rewriting the table; write the test first"},
 	}, []byte("the tail"), 7, 1.5, 2000)
-	if !strings.HasPrefix(session, sessionOpening+"\n\n") {
+	if !strings.HasPrefix(session, sessionOpening) {
 		t.Fatalf("session statement does not open on the in-session sentence:\n%s", session)
 	}
 	for _, want := range []string{
 		"Guidance delivered to the agent this session:\n- stop rewriting the table; write the test first",
-		"at most 2000 characters",
-		"The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.",
+		"The agent's report per finding is the last message in its record: what it fixed, disputed or left open.\n\n",
 	} {
 		if !strings.Contains(session, want) {
 			t.Errorf("session statement lacks %q:\n%s", want, session)
@@ -928,10 +913,10 @@ func TestCheckinStatementMoments(t *testing.T) {
 		Moment: CheckInDead, ParentSession: "s-dead-2",
 		Stop: "wall clock with the work uncommitted",
 	}, []byte("the tail"), 7, 1.5, 2000)
-	if !strings.HasPrefix(dead, deadOpening+"\n\n") {
+	if !strings.HasPrefix(dead, deadOpening) {
 		t.Fatalf("dead statement does not open on the dead sentence:\n%s", dead)
 	}
-	if want := "Your handover note to the next session is at most 2000 characters. It names: what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat."; !strings.Contains(dead, want) {
+	if want := "It names what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat. The agent's report per finding is the last message in its record.\n\n"; !strings.Contains(dead, want) {
 		t.Errorf("dead statement lacks the note's contents:\n%s", dead)
 	}
 	if strings.Contains(dead, "\nFindings:\n") {
@@ -952,12 +937,12 @@ func TestCheckinStatementMoments(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ text, other, name string }{
-		{session, gateOpening, "session statement carries the gate opening"},
-		{dead, gateOpening, "dead statement carries the gate opening"},
-		{gate, sessionOpening, "gate statement carries the session opening"},
-		{dead, sessionOpening, "dead statement carries the session opening"},
-		{gate, deadOpening, "gate statement carries the dead opening"},
-		{session, deadOpening, "session statement carries the dead opening"},
+		{session, "reverify", "session statement names the gate's reverify"},
+		{dead, "reverify", "dead statement names the gate's reverify"},
+		{gate, "the detector", "gate statement names a trip"},
+		{dead, "the detector", "dead statement names a trip"},
+		{gate, "ended without a result", "gate statement names a stop"},
+		{session, "ended without a result", "session statement names a stop"},
 	} {
 		if strings.Contains(c.text, c.other) {
 			t.Error(c.name)
@@ -1006,20 +991,9 @@ func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 }
 
 // The session check-in's guidance stays inside what the agent's shell tool
-// runs: the persona bounds it (no timeout past the 600000 ms maximum, bash
-// check static where nothing changed), and the parser's guard clamps any
-// timeout the guidance names past the ceiling.
+// runs: the parser's guard clamps any timeout the guidance names past the
+// ceiling.
 func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
-	session := checkinSystemFor(&CheckInAsk{Moment: CheckInSession})
-	if !strings.Contains(session, "600000 ms") || !strings.Contains(session, "bash check static") {
-		t.Fatalf("session persona lacks the shell tool's bounds:\n%s", session)
-	}
-	gate, dead := checkinSystemFor(&CheckInAsk{Moment: CheckInGate}), checkinSystemFor(&CheckInAsk{Moment: CheckInDead})
-	for name, persona := range map[string]string{"gate": gate, "dead": dead} {
-		if strings.Contains(persona, "bash check static") || strings.Contains(persona, "600000 ms") {
-			t.Errorf("the %s persona carries the session guidance's bounds:\n%s", name, persona)
-		}
-	}
 	a, err := parseCheckinAnswer(`{"decision":"continue","guidance":"run bash check with a timeout of 1800000 ms"}`,
 		&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1"})
 	if err != nil {
@@ -1035,25 +1009,12 @@ func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
 	}
 }
 
-// gatePersona is the gate's persona while it offers the reverify, word
-// for word as it read before the decisions came from the ask.
-const gatePersona = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|reverify|hand_up","reason_kind":"...","reason":"...","handover":"..."}. "reverify" drops every finding and verifies the head again. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
-
-// The check-in offers repeats only when earlier findings exist: the persona
-// and the finding item's schema leave it out otherwise, the schema closed
-// against any property it does not name.
+// The check-in offers repeats only when earlier findings exist: the
+// finding item's schema leaves it out otherwise, the schema closed against
+// any property it does not name.
 func TestCheckinSystemOffersRepeatsOnlyWithPriors(t *testing.T) {
 	bare := &CheckInAsk{Moment: CheckInGate}
-	got := checkinSystemFor(bare)
-	for _, banned := range []string{`"repeats"`, "repeats is optional"} {
-		if strings.Contains(got, banned) {
-			t.Errorf("no priors: persona holds %q:\n%s", banned, got)
-		}
-	}
 	with := &CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "f1", Text: "p"}}}
-	if got = checkinSystemFor(with); !strings.Contains(got, `"repeats":"<id>"`) {
-		t.Errorf("priors: persona lacks the repeats example:\n%s", got)
-	}
 	item := func(a *CheckInAsk) map[string]any {
 		return momentAnswerSchema(a)["properties"].(map[string]any)["findings"].(map[string]any)["items"].(map[string]any)
 	}
@@ -1079,35 +1040,6 @@ func TestCheckinRepairsALastCallRefusal(t *testing.T) {
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000, time.Hour)
 	if out.Decision != CheckHandover || chat.calls != 2 {
 		t.Fatalf("decision %q after %d calls (%+v), want handover after 2", out.Decision, chat.calls, out)
-	}
-}
-
-// The gate persona reads as it did while the reverify is offered; the
-// session and dead personas name the rungs' action names, the session's
-// continue carrying the message's guidance, and none names the gate's
-// verdict vocabulary.
-func TestCheckinSystemPerMoment(t *testing.T) {
-	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "f1", Text: "p"}}}); got != gatePersona {
-		t.Fatalf("the gate persona = %q, want it as it read", got)
-	}
-	session := checkinSystemFor(&CheckInAsk{Moment: CheckInSession})
-	if !strings.Contains(session, `{"decision":"continue|handover|hand_up","guidance":"..."`) {
-		t.Fatalf("session persona lacks the answer's shape:\n%s", session)
-	}
-	if !strings.Contains(session, `A continue may carry guidance`) || !strings.Contains(session, `"handover" stops the session`) {
-		t.Fatalf("session persona does not carry the continue and handover rules:\n%s", session)
-	}
-	if with := checkinSystemFor(&CheckInAsk{Moment: CheckInSession, Replan: true}); !strings.Contains(with, `{"decision":"continue|handover|replan|hand_up"`) {
-		t.Fatalf("session persona offering replan lacks it:\n%s", with)
-	}
-	dead := checkinSystemFor(&CheckInAsk{Moment: CheckInDead})
-	if !strings.Contains(dead, `{"decision":"handover|hand_up","reason_kind":"..."`) {
-		t.Fatalf("dead persona lacks the answer's shape:\n%s", dead)
-	}
-	for name, persona := range map[string]string{"session": session, "dead": dead} {
-		if strings.Contains(persona, "verdict") || strings.Contains(persona, "reverify") {
-			t.Errorf("the %s persona names the gate's verdict vocabulary:\n%s", name, persona)
-		}
 	}
 }
 
@@ -1241,10 +1173,6 @@ func TestGateCheckinOffersNoReverifyOnAMergeConflict(t *testing.T) {
 	if _, err := parseCheckinAnswer(dropped, ask); err == nil || err.Error() != `unknown decision "reverify"; allowed: handover, hand_up` {
 		t.Fatalf("conflict: the reverify = %v, want it refused naming handover and hand_up", err)
 	}
-	persona := checkinSystemFor(ask)
-	if strings.Contains(persona, "reverify") || !strings.Contains(persona, `"decision":"handover|hand_up","reason_kind"`) {
-		t.Fatalf("the persona under a conflict = %q, want handover and hand_up alone and no reverify", persona)
-	}
 	said := "The pull request does not merge into main: the branch conflicts with its base: status 409.\n"
 	if got := checkinStatement(ask, nil, 3, 1, 500); !strings.Contains(got, said) || strings.Contains(got, "reverify") {
 		t.Fatalf("statement lacks %q or names a reverify:\n%s", said, got)
@@ -1326,9 +1254,6 @@ func TestCheckinToolsHoldNoRun(t *testing.T) {
 		if tool.Name == "run" {
 			t.Fatal("the check-in's tools hold run")
 		}
-	}
-	if strings.Contains(checkinToolsLine, "run (") {
-		t.Fatalf("the statement's tool line names run: %s", checkinToolsLine)
 	}
 }
 
@@ -1461,26 +1386,29 @@ func TestCheckinStatementOfAnAgentCutAsksWhetherTheCutHolds(t *testing.T) {
 // rule after the human line, the persona's answer shape, and the parser
 // all follow the ask's Replan.
 func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
-	const rule = "- replan: the session stops, its work is pushed and kept, and the planner cuts the card's remaining work into smaller cards; the first one lands what the branch holds. Say why in reason; guidance may name the parts.\n"
+	const rule = "replan: the session stops, its work is pushed and kept, and the planner cuts the card's remaining work into smaller cards, the first of which lands what the branch holds. guidance may name the parts.\n"
 	statement := func(replan bool) string {
 		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: replan,
 			Trip: &TripReport{Detector: TripRepetition, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
 	}
-	if got := statement(true); !strings.Contains(got, "with why.\n"+rule) {
-		t.Fatalf("a cuttable card's statement lacks the replan rule right after the human line:\n%s", got)
+	if got := statement(true); !strings.Contains(got, "at most 2000 characters.\n"+rule) {
+		t.Fatalf("a cuttable card's statement lacks the replan line right after the handover bound:\n%s", got)
 	}
-	if got := statement(false); strings.Contains(got, "- replan:") {
+	if got := statement(false); strings.Contains(got, "replan:") {
 		t.Fatalf("an uncuttable card's statement offers replan:\n%s", got)
 	}
-	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInSession, Replan: true}); !strings.Contains(got, `{"decision":"continue|handover|replan|hand_up","guidance":"..."`) {
-		t.Fatalf("a cuttable card's persona lacks replan in its answer shape:\n%s", got)
+	enum := func(a *CheckInAsk) []string {
+		return momentAnswerSchema(a)["properties"].(map[string]any)["decision"].(map[string]any)["enum"].([]string)
 	}
-	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInSession}); strings.Contains(got, "|replan") {
-		t.Fatalf("an uncuttable card's persona offers replan:\n%s", got)
+	if got := enum(&CheckInAsk{Moment: CheckInSession, Replan: true}); !slices.Contains(got, CheckReplan) {
+		t.Fatalf("a cuttable card's decisions %q lack replan", got)
+	}
+	if got := enum(&CheckInAsk{Moment: CheckInSession}); slices.Contains(got, CheckReplan) {
+		t.Fatalf("an uncuttable card's decisions %q offer replan", got)
 	}
 	for _, moment := range []string{CheckInGate, CheckInDead} {
-		if checkinSystemFor(&CheckInAsk{Moment: moment, Replan: true}) != checkinSystemFor(&CheckInAsk{Moment: moment}) {
-			t.Errorf("the %s persona follows replan", moment)
+		if !slices.Equal(enum(&CheckInAsk{Moment: moment, Replan: true}), enum(&CheckInAsk{Moment: moment})) {
+			t.Errorf("the %s decisions follow replan", moment)
 		}
 	}
 
@@ -1757,9 +1685,6 @@ func TestMomentAnswerSchemaOffersRepeatsOnlyWithPriors(t *testing.T) {
 	if !reflect.DeepEqual(got["enum"], []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb"}) {
 		t.Fatalf("repeats = %v, want the enum of the listed ids", got)
 	}
-	if !strings.Contains(checkinSystemFor(&CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "aaaaaaaaaaaa"}}}), `"repeats":"<id>"`) {
-		t.Fatal("the persona's answer shape omits repeats")
-	}
 }
 
 // Each moment's answer schema takes its decision enum from the rungs' one
@@ -1893,7 +1818,82 @@ func TestStageMemoryKeepsTheReviewsClaimResults(t *testing.T) {
 // checkinForms are the forms the check-in's profiles name: a short line
 // and a why line.
 func checkinForms() string {
-	line, _ := writingguide.Form("line")
 	why, _ := writingguide.Form("why")
-	return line + "\n\n" + why
+	return why
+}
+
+// lineSentence and whySentence are the first sentences of the line form
+// and the why form.
+const (
+	lineSentence = "This text is one short line or one short paragraph that a human reads on a card."
+	whySentence  = "The why line stands under the title."
+)
+
+// Each moment's prompt carries the why form, which a hand up's reason
+// takes, and not the line form, whose text no human reads.
+func TestCheckinCarriesTheWhyFormAlone(t *testing.T) {
+	for _, moment := range []string{CheckInGate, CheckInSession, CheckInDead} {
+		if text := testPrompt(t, checkinPromptStep(moment), nil).Text(); !strings.Contains(text, whySentence) || strings.Contains(text, lineSentence) {
+			t.Errorf("the %s prompt does not carry the why form alone:\n%s", moment, text)
+		}
+	}
+}
+
+// The case check-in carries the line form and not the why form: its
+// answer has no reason field.
+func TestCaseCheckinCarriesTheLineFormAlone(t *testing.T) {
+	if text := testPrompt(t, "case-checkin", nil).Text(); !strings.Contains(text, lineSentence) || strings.Contains(text, whySentence) {
+		t.Errorf("the case check-in's prompt does not carry the line form alone:\n%s", text)
+	}
+}
+
+// No prompt and no statement of a check-in lists its tools: their
+// descriptions ride in the same call.
+func TestNoCheckinToolsLine(t *testing.T) {
+	texts := map[string]string{"case-checkin": testPrompt(t, "case-checkin", nil).Text()}
+	for _, ask := range []*CheckInAsk{
+		{Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}},
+		{Moment: CheckInSession, Trip: &TripReport{Detector: TripSize, Detail: "d"}, Replan: true},
+		{Moment: CheckInDead, Stop: "wall clock"},
+	} {
+		texts[ask.Moment+" prompt"] = testPrompt(t, checkinPromptStep(ask.Moment), nil).Text()
+		texts[ask.Moment+" statement"] = checkinStatement(ask, nil, 3, 1, 500)
+	}
+	for name, text := range texts {
+		if strings.Contains(text, "Your tools:") {
+			t.Errorf("the %s lists its tools:\n%s", name, text)
+		}
+	}
+}
+
+// The answer tool's schema carries the decision's meanings, which the
+// persona spelled before, each description in 35 words or fewer.
+func TestMomentAnswerSchemaDescribesTheDecision(t *testing.T) {
+	props := momentAnswerSchema(&CheckInAsk{Moment: CheckInSession})["properties"].(map[string]any)
+	decision, _ := props["decision"].(map[string]any)["description"].(string)
+	for _, name := range []string{"continue:", "handover:", "hand_up:"} {
+		if !strings.Contains(decision, name) {
+			t.Errorf("the decision's description %q lacks %s", decision, name)
+		}
+	}
+	for _, field := range []string{"decision", "reason_kind", "reason", "handover", "guidance"} {
+		d, _ := props[field].(map[string]any)["description"].(string)
+		if n := len(strings.Fields(d)); n == 0 || n > 35 {
+			t.Errorf("the %s description holds %d words, want 1 to 35: %q", field, n, d)
+		}
+	}
+}
+
+// A check-in's paragraph names no answer shape: the answer tool's schema
+// carries it.
+func TestCheckinPersonaCarriesNoShape(t *testing.T) {
+	for _, step := range []string{"checkin-gate", "checkin-session", "checkin-dead", "case-checkin"} {
+		p := testPrompt(t, step, nil)
+		if p.Parts().Paragraph == 0 {
+			t.Errorf("step %s has no paragraph", step)
+		}
+		if text := p.Text(); strings.Contains(text, `"decision":`) || strings.Contains(text, "reason_kind") {
+			t.Errorf("step %s spells the answer's shape:\n%s", step, text)
+		}
+	}
 }

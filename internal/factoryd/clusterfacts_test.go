@@ -255,19 +255,6 @@ func TestSessionFactsTextOfARunningSessionReadsThePod(t *testing.T) {
 	}
 }
 
-func TestToolLinesNameEveryTool(t *testing.T) {
-	for _, tool := range checkinTools {
-		if !strings.Contains(checkinToolsLine, tool.Name+" (") {
-			t.Errorf("checkinToolsLine lacks %s", tool.Name)
-		}
-	}
-	for _, tool := range CaseEvidence() {
-		if !strings.Contains(rungToolsLine, tool.Name+" (") {
-			t.Errorf("rungToolsLine lacks %s", tool.Name)
-		}
-	}
-}
-
 func TestCheckinOffersClusterFacts(t *testing.T) {
 	g := skeletonRig(t)
 	cs := newFakeClusterStore()

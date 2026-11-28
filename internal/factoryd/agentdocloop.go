@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"testing/fstest"
 	"time"
 
 	pins "github.com/sebastianrueckerai/ai-software-factory-code"
@@ -25,16 +26,16 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
-// The loop's six modes are one session shape — the same brief builder, the
+// The loop's seven modes are one session shape — the same brief builder, the
 // same sandbox facts, the same markers — with the guide swapped: a coding
-// session works, the four report sessions read, the responder answers a
+// session works, the five report sessions read, the responder answers a
 // writer. Each mode is one page of the map; these fixtures build the brief
 // each mode's session really reads, and the capture drives the real
 // opencode loop on it.
 
-// AgentDocLoopIDs are the loop's six modes.
+// AgentDocLoopIDs are the loop's seven modes.
 func AgentDocLoopIDs() []string {
-	return []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}
+	return []string{"coding", "screening", "sizing", "repo-map", "planner", "prover", "message-responder"}
 }
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
@@ -68,13 +69,21 @@ func agentDocLoopClass(id string) string {
 	switch id {
 	case "screening", "sizing":
 		return "analyzer"
-	case "planner":
+	case "repo-map", "planner":
 		return "planner"
 	case "prover":
 		return policy.ClassProver
 	}
 	return "coder"
 }
+
+// agentDocLoopMap is the repository map the map step's session starts
+// from: the worker's map of the fixture repository's root.
+var agentDocLoopMap = RepoMap(fstest.MapFS{
+	"AGENTS.md":           {Data: []byte(agentDocLoopAgents)},
+	"go.mod":              {Data: []byte("module fixture.example/project\n")},
+	"internal/store/a.go": {Data: []byte("// Package store keeps the counter's rows.\npackage store\n")},
+}, []string{"."})
 
 // agentDocLoopPosters is the fixture issue's 21 author answers as the
 // worker's environment carries them: the real envFit cap keeps the newest
@@ -101,8 +110,11 @@ func agentDocLoopPosters() (kept []string, notes []string) {
 func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	b := agentDocObjective()
 	b.Step = id
-	if id == "message-responder" {
+	switch id {
+	case "message-responder":
 		b.Step = "coding"
+	case "planner":
+		b.Step = stepPlanReplan
 	}
 	b.IssueURL = "https://git.example/owner/name/issues/7"
 	b.Repository = agentDocLoopRepo
@@ -118,13 +130,15 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	case "coding":
 		b.Findings = agentDocDeathLines()
 	case "screening":
-		b.Report = (&Runner{}).reportGuide()
+		b.ReportMode = true
 	case "sizing":
-		b.Report = sizingGuide(sizeLines(v.Document.Risk.LargeLines))
+		b.ReportMode, b.Report = true, sizingFacts(sizeLines(v.Document.Risk.LargeLines))
+	case "repo-map":
+		b.ReportMode, b.Map = true, agentDocLoopMap
 	case "planner":
-		b.Report = planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
+		b.ReportMode, b.Report = true, planGuide(stepPlanReplan, policy.PlanShape{MinCards: 1, MaxCards: 20}, nil, "")
 	case "prover":
-		b.Report = proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
+		b.ReportMode, b.Report = true, proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
 			Claim: "The counter counts a row the query skips twice.", Inputs: "a table with two skipped rows", Expected: "a count of 2", State: ProofOkayed}}, nil)
 	}
 	return b
@@ -161,15 +175,14 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 	if len(b.PosterInfo) > 0 {
 		standing += fmt.Sprintf(" So are the author's answers to your requests for information, each between the lines %s and %s.", popen, pclose)
 	}
-	guide, symbol := b.Report, "workGuide"
+	guide, symbol := b.Report, "codingFacts"
 	if id == "coding" || id == "message-responder" {
-		guide = workGuide(b.Tools, b.Image)
+		guide = codingFacts(b)
 	} else {
 		symbol = map[string]string{
-			"screening": "(*Runner).reportGuide",
-			"sizing":    "sizingGuide",
-			"planner":   "planGuide",
-			"prover":    "proverGuide",
+			"sizing":  "sizingFacts",
+			"planner": "planGuide",
+			"prover":  "proverGuide",
 		}[id]
 	}
 	s := []agentdoc.Span{
@@ -180,7 +193,7 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 		{Name: "the session's facts", Symbol: "SessionFacts.Line", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: b.Facts + "\n"},
 		{Name: "the sandbox facts", Symbol: "SandboxFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: SandboxFacts(b.Image, b.Tools) + "\n"},
+			Text: SandboxFacts(b.Image) + "\n"},
 		{Name: "the issue link", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: fmt.Sprintf("Issue: %s\n", b.IssueURL)},
 		{Name: "the author's standing", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -212,9 +225,15 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 			s = append(s, agentdoc.Span{Name: "the line on how the session before ended", Symbol: "GateLines", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: l})
 		}
 	}
+	if b.Map != "" {
+		s = append(s, agentdoc.Span{Name: "the repository map", Symbol: "RepoMap", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: "\n\n" + b.Map})
+	}
 	if len(b.Tools) > 0 {
 		s = append(s, agentdoc.Span{Name: "the tools line", Symbol: "toolsLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: "\n\n" + toolsLine + "\n"})
+			Text: "\n\n" + toolsLine + strings.Repeat("\n", min(len(guide), 1))})
+	}
+	if guide == "" {
+		return s
 	}
 	return append(s, agentdoc.Span{Name: "the guide", Symbol: symbol, Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: guide})
 }
@@ -243,20 +262,26 @@ func agentDocLoopMessage() (prompts.Prompt, []agentdoc.Span, error) {
 
 // agentDocLoopWireSpans reads the wire parts of the recorded body: the
 // system prompt split around the session step's standing text, which
-// replaces the harness's preamble, and the repository's AGENTS.md, the
-// scripted turns that follow the brief, and the offered tools —
+// replaces the harness's preamble, and the repository's AGENTS.md when the
+// step's profile loads it (agents; a step that does not must hold none),
+// the scripted turns that follow the brief, and the offered tools —
 // opencode's own built-ins beside the gateway's MCP ones. The page shows
 // the wire, never a reconstruction.
-func agentDocLoopWireSpans(b agentdoc.Body, standing, agents string) ([]agentdoc.Span, error) {
+func agentDocLoopWireSpans(b agentdoc.Body, standing string, agents bool) ([]agentdoc.Span, error) {
 	var spans []agentdoc.Span
 	for _, m := range b.Messages {
 		if m.Role != "system" {
 			continue
 		}
 		sys := loopText(m)
-		i := strings.Index(sys, agents)
-		if i < 0 {
+		i := strings.Index(sys, agentDocLoopAgents)
+		switch {
+		case agents && i < 0:
 			return nil, errors.New("the system prompt holds no AGENTS.md")
+		case !agents && i >= 0:
+			return nil, errors.New("the system prompt holds the repository's AGENTS.md, which the step's profile does not load")
+		case !agents:
+			i = len(sys)
 		}
 		pre := sys[:i]
 		j := strings.Index(pre, standing)
@@ -273,9 +298,12 @@ func agentDocLoopWireSpans(b agentdoc.Body, standing, agents string) ([]agentdoc
 			spans = append(spans, agentdoc.Span{Name: "the harness's environment", Symbol: AgentDocOpencodeVersion,
 				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: env})
 		}
+		if !agents {
+			continue
+		}
 		spans = append(spans, agentdoc.Span{Name: "AGENTS.md", Symbol: "AGENTS.md",
-			Kind: agentdoc.KindFile, Place: agentdoc.PlaceSystem, Text: agents})
-		if tail := sys[i+len(agents):]; tail != "" {
+			Kind: agentdoc.KindFile, Place: agentdoc.PlaceSystem, Text: agentDocLoopAgents})
+		if tail := sys[i+len(agentDocLoopAgents):]; tail != "" {
 			spans = append(spans, agentdoc.Span{Name: "the harness tail", Symbol: AgentDocOpencodeVersion,
 				Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: tail})
 		}
@@ -520,9 +548,13 @@ func AgentDocBake(root, dir string) error {
 // runner picks it: the plan session starts on the stronger rung and the
 // others on the cheap one, and the class's session_model under the policy
 // replaces that for a plan or report class. A code session runs on the
-// ladder and takes no session_model.
+// ladder and takes no session_model, and the map step runs on the small
+// alias whatever its class names.
 func agentDocLoopSessionModel(id string, v policy.Version) string {
 	base := "factory/" + policy.Small
+	if id == "repo-map" {
+		return base
+	}
 	if id == "planner" {
 		base = "factory/" + policy.Big
 	}
@@ -633,7 +665,8 @@ func AgentDocLoop(ctx context.Context, id, bin, bake string, v policy.Version) (
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
 	}
-	wire, err := agentDocLoopWireSpans(body, prompt.Standing(), agentDocLoopAgents)
+	profile, _ := prompts.ProfileOf(brief.Step)
+	wire, err := agentDocLoopWireSpans(body, prompt.Standing(), profile.AgentsMD)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
 	}

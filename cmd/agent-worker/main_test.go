@@ -222,6 +222,18 @@ func TestCardMapReadsTheClone(t *testing.T) {
 	}
 }
 
+// A report session's finished map (REPO_MAP) is the planner's brief map and
+// replaces the one the worker reads from DIRECTORIES.
+func TestLoadEnvReadsAFinishedRepoMap(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("MODE", "report")
+	t.Setenv("REPO_MAP", "Repository map:\n- cmd: the binaries")
+	e, err := loadEnv()
+	if err != nil || e.repoMap != "Repository map:\n- cmd: the binaries" {
+		t.Fatalf("repoMap = %q, %v", e.repoMap, err)
+	}
+}
+
 // A resumed session starts from the branch head an earlier session pushed
 // to the fork: the base clone from the task's repository lacks it, so the
 // worker fetches the branch from the fork before the checkout.
@@ -2179,12 +2191,12 @@ func TestLoadEnvReportModeHasNoPushCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadEnv: %v", err)
 	}
-	if e.report != "write, do not code" || e.pushToken != "" {
+	if !e.report || e.reportGuide != "write, do not code" || e.pushToken != "" {
 		t.Fatalf("env = %+v", e)
 	}
 	env("report", "")
-	if _, err := loadEnv(); err == nil || !strings.Contains(err.Error(), "REPORT_GUIDE") {
-		t.Fatalf("report mode without a guide: err = %v", err)
+	if e, err := loadEnv(); err != nil || !e.report || e.reportGuide != "" {
+		t.Fatalf("report mode without a guide: %+v, %v", e, err)
 	}
 }
 
@@ -2282,8 +2294,8 @@ func TestLoadEnvCodingSessionHasNoReportGuide(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadEnv: %v", err)
 	}
-	if e.report != "" {
-		t.Fatalf("a coding session carries the report guide %q", e.report)
+	if e.report || e.reportGuide != "" {
+		t.Fatalf("a coding session is in report mode: %+v", e)
 	}
 }
 

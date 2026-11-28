@@ -302,14 +302,24 @@ func TestFilingRefusesUncarriedTest(t *testing.T) {
 			Why: "So the spec's criteria hold end to end.", Summary: "It turns the spec's criteria into acceptance tests. They pass against the built feature.",
 			Brief: "Turn the spec's criteria into acceptance/ tests.", Directories: []string{"acceptance/", "internal/stats"},
 			Acceptance: []factoryd.PlanItem{{Criterion: "links_crud", Text: "TestCreateLink in internal/links"}}, Size: "medium"}}}
-	raw, err := json.Marshal(plan)
-	if err != nil {
-		t.Fatal(err)
+	var found []string
+	for _, f := range []struct {
+		tool string
+		part map[string]any
+	}{
+		{policy.ToolFileSpec, map[string]any{"spec": plan.Spec, "summary": plan.Summary}},
+		{policy.ToolFileCriteria, map[string]any{"criteria": plan.Criteria}},
+		{policy.ToolFileCards, map[string]any{"cards": plan.Cards}},
+	} {
+		raw, err := json.Marshal(f.part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found, err = r.FileAnswer(ctx, "t-file", f.tool, raw); err != nil {
+			t.Fatal(err)
+		}
 	}
-	res, err := r.FilePlan(ctx, "t-file", string(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := factoryd.PlanResult{Findings: found}
 	refusal := "plan: criterion links_crud: its test TestCreateLink in internal/links is carried by no card: " +
 		"cite it in a card whose directories hold the suite, or file a card that writes its test"
 	if !slices.Equal(res.Findings, []string{refusal}) {
@@ -440,8 +450,8 @@ func TestNoGapCardForMissingProof(t *testing.T) {
 	}
 }
 
-// The planner guide names the carry rule, and the card facts name the
-// tests the cited criteria claim: the guide's sentence says a kind test
+// The criterion's kind description names the carry rule, and the card facts
+// name the tests the cited criteria claim: the description says a kind test
 // criterion names its suite and its test's name and that the citing
 // card - or a proof card the planner files - lands the test, a card
 // whose directories hold the suite writes its test, and the plan's
@@ -449,13 +459,13 @@ func TestNoGapCardForMissingProof(t *testing.T) {
 // cited criterion in full with its suite and its test's name.
 func TestGuideAndFactsNameCarriedTests(t *testing.T) {
 	ctx := context.Background()
-	src, err := os.ReadFile("../internal/factoryd/plan.go")
+	src, err := os.ReadFile("../internal/answers/answers.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const guide = "its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test"
+	const guide = "names claim, inputs, expected, suite and name; the citing card, or a proof card you file, lands the test, so a card whose directories hold the suite writes it"
 	if !strings.Contains(string(src), guide) {
-		t.Fatalf("the planner guide names no carry rule; want the sentence %q", guide)
+		t.Fatalf("the criterion's kind description names no carry rule; want the sentence %q", guide)
 	}
 	s, _ := accReceiptStore(t, "guide_facts")
 	if err := s.CreateTask(ctx, factoryd.Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7,

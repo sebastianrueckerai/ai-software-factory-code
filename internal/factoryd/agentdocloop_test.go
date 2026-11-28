@@ -67,6 +67,8 @@ classes:
     tools:
       escalate: {}
       request_info: {}
+      file_screening: {}
+      file_size: {}
       manual: {}
   planner:
     session: plan
@@ -77,7 +79,12 @@ classes:
     time: {agent_time: 30m, check_in: 0s}
     tools:
       escalate: {}
-      file_plan: {}
+      file_spec: {}
+      file_criteria: {}
+      file_cards: {}
+      file_replan: {}
+      file_revert: {}
+      file_map: {}
       manual: {}
   prover:
     session: report
@@ -126,10 +133,10 @@ func agentDocLoopPolicy() policy.Version {
 	return policy.Version{Commit: "fixture", Tree: tree}
 }
 
-// The loop's modes: coding, screening, sizing, the planner, the prover and
-// the message responder.
+// The loop's modes: coding, screening, sizing, the map step, the planner, the
+// prover and the message responder.
 func TestAgentDocLoopIDs(t *testing.T) {
-	if got, want := AgentDocLoopIDs(), []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}; !slices.Equal(got, want) {
+	if got, want := AgentDocLoopIDs(), []string{"coding", "screening", "sizing", "repo-map", "planner", "prover", "message-responder"}; !slices.Equal(got, want) {
 		t.Fatalf("AgentDocLoopIDs() = %q, want %q", got, want)
 	}
 }
@@ -253,7 +260,7 @@ func TestAgentDocLoopWireSpansReadTheBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans, err := agentDocLoopWireSpans(b, "STANDING", agentDocLoopAgents)
+	spans, err := agentDocLoopWireSpans(b, "STANDING", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,8 +292,48 @@ func TestAgentDocLoopWireSpansWantTheAgentsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agentDocLoopWireSpans(b, "only the harness", agentDocLoopAgents); err == nil {
+	if _, err := agentDocLoopWireSpans(b, "only the harness", true); err == nil {
 		t.Fatal("a system prompt without AGENTS.md derived spans")
+	}
+}
+
+// A step whose profile loads no AGENTS.md has none on the wire: the page
+// holds the harness around the standing text, and a body that holds the
+// file is a broken capture.
+func TestAgentDocLoopWireSpansForAStepWithoutAgents(t *testing.T) {
+	read := func(system string) ([]agentdoc.Span, error) {
+		b, err := agentdoc.ParseBody([]byte(`{"messages":[{"role":"system","content":` + strconv.Quote(system) + `}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentDocLoopWireSpans(b, "STANDING", false)
+	}
+	spans, err := read("LEADSTANDINGENV")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, sp := range spans {
+		names = append(names, sp.Name)
+	}
+	if want := []string{"the harness's lead", "the profile's texts", "the harness's environment"}; !slices.Equal(names, want) {
+		t.Errorf("spans = %q, want %q", names, want)
+	}
+	if _, err := read("LEADSTANDING" + agentDocLoopAgents); err == nil {
+		t.Error("a system prompt holding AGENTS.md derived spans for a step that loads none")
+	}
+}
+
+// The repository's AGENTS.md reaches the request of a step whose profile
+// loads it and no other: the coding request holds the fixture file, the
+// screening's and the sizing's none.
+func TestAgentDocLoopRequestsHoldAgentsOnlyWhereTheProfileLoadsIt(t *testing.T) {
+	v := agentDocLoopPolicy()
+	for id, want := range map[string]bool{"coding": true, "screening": false, "sizing": false} {
+		_, rec := fakeCapture(t, id, v, "Wed Nov 04 2026")
+		if got := bytes.Contains(rec.Raw, []byte("Rules of this repository")); got != want {
+			t.Errorf("%s: the request holds the AGENTS.md text = %v, want %v", id, got, want)
+		}
 	}
 }
 
@@ -365,12 +412,16 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			}
 			want := "factory-tools_escalate"
 			switch id {
+			case "repo-map":
+				want = "factory-tools_file_map"
 			case "planner":
-				want = "factory-tools_file_plan"
+				want = "factory-tools_file_replan"
 			case "prover":
 				want = "factory-tools_file_proofs"
-			case "screening", "sizing":
-				want = "factory-tools_manual"
+			case "screening":
+				want = "factory-tools_file_screening"
+			case "sizing":
+				want = "factory-tools_file_size"
 			}
 			if !slices.Contains(names, want) {
 				t.Errorf("%s: the wire offers no %s: %v", id, want, names)
@@ -559,25 +610,26 @@ func assertLoopModels(t *testing.T, v policy.Version, want map[string]string) {
 // starts on the stronger rung (big), a report or code session on the cheap
 // one (small), and a plan or report class's session_model replaces that.
 // With the planner's session_model set to small the planner's page names
-// small; the prover's keeps it on big.
+// small; the prover's keeps it on big, and the map step runs on small under
+// either.
 func TestAgentDocLoopNamesTheModelThePolicyGives(t *testing.T) {
 	yaml := strings.Replace(agentDocLoopPolicyYAML, "session_model: premium", "session_model: small", 1)
 	if yaml == agentDocLoopPolicyYAML {
 		t.Fatal("the fixture policy has no premium session_model to replace")
 	}
 	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
-		"planner": "small", "prover": "big", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
+		"planner": "small", "repo-map": "small", "prover": "big", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
 }
 
 // Without any session_model the base choice shows: the planner on big, the
-// prover and the rest on small.
+// prover, the map step and the rest on small.
 func TestAgentDocLoopNamesTheRunnersBaseModel(t *testing.T) {
 	yaml := regexp.MustCompile(`(?m)^    session_model: .*\n`).ReplaceAllString(agentDocLoopPolicyYAML, "")
 	if strings.Contains(yaml, "session_model") {
 		t.Fatal("a session_model line is left in the fixture policy")
 	}
 	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
-		"planner": "big", "prover": "small", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
+		"planner": "big", "repo-map": "small", "prover": "small", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
 }
 
 // session_model is for plan and report classes only; a code session runs on

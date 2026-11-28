@@ -1,0 +1,15 @@
+step: planner-spec
+purpose: session
+reader: human
+guide: false
+forms: [line, summary, ask]
+chunks: [factory, narration]
+paragraph: planner-spec
+facts: session
+answer: ""
+tools:
+  builtin: [bash, glob, grep, read]
+  gateway: [analyze_image, digest, file_spec, manual, web_scrape, web_search]
+  chat: []
+agents_md: false
+budget_words: 969

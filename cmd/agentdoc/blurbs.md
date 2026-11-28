@@ -5,7 +5,8 @@ changes.
 - coding: Writes the card's code in the sandbox and commits it. No other agent in the factory writes code.
 - screening: Reads a fresh issue before any code exists and answers clear or suspect as JSON. Only work it understands becomes a card.
 - sizing: Reads a clear issue and sizes the card small, medium or large before the first session starts.
-- planner: Reads the repository and files a plan through the file_plan tool before the session writes code.
+- repo-map: Reads the repository once per commit on the small alias and files a map of its directories, conventions and check command through the file_map tool. The planner reads that map instead of the repository.
+- planner: Files a plan in steps, each through its own tool: a spec, the criteria and the cards of a first plan, the cards of a later round, or a replan with the cards that come off main. The page shows the replan step, the largest.
 - prover: Writes one test per criterion on main before the cards build the feature, and files them through the file_proofs tool. The builder sees a test only after it has run once at the gate.
 - message-responder: Answers a writer's message pushed into a running session. The message becomes the loop's next turn.
 - opencode-title: opencode's own call that names a session from its first prompt, made at the start of every session. Its prompt lives inside the pinned binary, and the whole brief rides it.

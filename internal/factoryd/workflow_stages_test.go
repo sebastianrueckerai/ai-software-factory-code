@@ -2076,7 +2076,9 @@ func TestScreenAnswerFailsClosed(t *testing.T) {
 	}{
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
 			"the screening failed: refused by the gateway (refused_budget): task headroom 0.000000 EUR"},
-		"no verdict": {&fakeLiteLLM{content: "LGTM"}, "the screening's answer is no verdict: LGTM"},
+		"no verdict":                {&fakeLiteLLM{content: "LGTM"}, "the screening's answer is no verdict: step answer-screener answered in text, not through its answer tool: LGTM"},
+		"neither clear nor suspect": {&fakeLiteLLM{content: `{"verdict":"maybe","reasons":[]}`}, `the screening's answer is no verdict: the verdict "maybe" is neither clear nor suspect`},
+		"unknown field":             {&fakeLiteLLM{content: `{"verdict":"clear","reasons":[],"note":"x"}`}, `the screening's answer is no verdict: step answer-screener: its answer does not decode: json: unknown field "note"`},
 	} {
 		r, store, _ := newGateRunner(t, task, &gateForgejo{})
 		r.supervisor = testSupervisorModel(tc.model.srv(t).URL)

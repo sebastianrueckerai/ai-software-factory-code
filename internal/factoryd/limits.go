@@ -19,7 +19,7 @@ const (
 
 const (
 	codingWrapUp = "Finish what runs, run bash check changed if it is quick, and end the session with your last message, so the factory pushes your work."
-	planWrapUp   = "File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none."
+	planWrapUp   = "File your answer now with the filing tool of your step, with what you have read: an answer filed late is better than none."
 )
 
 type warning struct{ kind, text string }

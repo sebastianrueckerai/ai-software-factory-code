@@ -24,7 +24,7 @@ var screenTool = prompts.AnswerTool(reflect.TypeFor[screenAnswer]())
 func typedCall(t *testing.T, ll *fakeLiteLLM) (screenAnswer, string, error) {
 	t.Helper()
 	return answerWith[screenAnswer](context.Background(), testSupervisorModel(ll.srv(t).URL), "t1", "small", time.Minute,
-		testPrompt(t, "plan-namer", namerPrompt), screenTool, map[string]any{"title": "Count rows"})
+		testPrompt(t, "plan-namer", ""), screenTool, map[string]any{"title": "Count rows"})
 }
 
 // A call with an answer tool sends that tool and forces it: no JSON mode,
@@ -92,8 +92,8 @@ func TestAnswerCutAnswerRetriesAtLowDepth(t *testing.T) {
 func TestChatAnswerNeedsTheStepsAnswerType(t *testing.T) {
 	ll := &fakeLiteLLM{}
 	_, _, err := ChatAnswer[screenAnswer](context.Background(), testSupervisorModel(ll.srv(t).URL), "t1", "small", time.Minute,
-		testPrompt(t, "plan-namer", namerPrompt), map[string]any{})
-	if want := "step plan-namer: its profile names no answer type"; err == nil || err.Error() != want || len(ll.chats) != 0 {
+		testPrompt(t, "checkin-gate", nil), map[string]any{})
+	if want := "step checkin-gate: its profile names no answer type"; err == nil || err.Error() != want || len(ll.chats) != 0 {
 		t.Fatalf("ChatAnswer = %v after %d calls, want %s and no call", err, len(ll.chats), want)
 	}
 }
@@ -122,11 +122,13 @@ func TestMomentAnswerSchemaFromTheGenerator(t *testing.T) {
 	}
 	ask := &CheckInAsk{Moment: CheckInDead}
 	want := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"decision"}, "properties": map[string]any{
-		"decision":    map[string]any{"type": "string", "enum": []string{CheckHandover, RungHandUp}},
-		"guidance":    map[string]any{"type": "string"},
-		"reason_kind": map[string]any{"type": "string", "enum": []string{"", CheckGoalConflict, CheckSpend, CheckPolicyClass, CheckAccess}},
-		"reason":      map[string]any{"type": "string"},
-		"handover":    map[string]any{"type": "string"},
+		"decision": map[string]any{"type": "string", "enum": []string{CheckHandover, RungHandUp},
+			"description": "continue: the session runs on with your guidance. handover: the session stops and the next one starts from your note. hand_up: only a human can act."},
+		"guidance": map[string]any{"type": "string", "description": "the exact instruction the agent takes next"},
+		"reason_kind": map[string]any{"type": "string", "enum": []string{"", CheckGoalConflict, CheckSpend, CheckPolicyClass, CheckAccess},
+			"description": "why only a human can act"},
+		"reason":   map[string]any{"type": "string", "description": "one sentence with the state of the work"},
+		"handover": map[string]any{"type": "string", "description": "the note the next session starts from"},
 	}}
 	if got := momentAnswerSchema(ask); !reflect.DeepEqual(got, want) {
 		t.Errorf("the dead moment's schema =\n%#v\nwant\n%#v", got, want)

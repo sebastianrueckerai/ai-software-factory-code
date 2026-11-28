@@ -70,12 +70,6 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	}
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'
 	// findings, pinned by the table above, not the prose (roadmap 186).
-	g := planGuide(testShape, testLimits, nil, nil)
-	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "changes": ["what the first choice changes in the plan, one short line", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `) ||
-		!strings.Contains(g, "questions: open points the spec leaves to the human; their answers come back to you with your last plan, "+
-			"and a plan with open questions waits for their answers, while a plan with none files its cards at once.") || strings.Count(g, "question") != 5 {
-		t.Fatalf("planGuide names questions %d times, want 5 (the format's key, the attack sentence's one, the sentence's two, the two plans' one):\n%s", strings.Count(g, "question"), g)
-	}
 }
 
 // A question's text is bounded in runes, not bytes, so the planner reads
@@ -114,7 +108,7 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	}
 }
 
-// A plan question's choice is a button a human presses: file_plan refuses
+// A plan question's choice is a button a human presses: the last step's filing refuses
 // one in the planner's own voice.
 func TestQuestionBoundsRefuseAChoiceInTheFirstPerson(t *testing.T) {
 	qs := []PlanQuestion{{Text: "t", Choices: []string{"Keep 7 days", "I keep 30 days; it is safer"}, Recommended: "Keep 7 days", Grounds: "g", Changes: []string{"A week.", "A month."}}}
@@ -124,7 +118,7 @@ func TestQuestionBoundsRefuseAChoiceInTheFirstPerson(t *testing.T) {
 	}
 }
 
-// file_plan, where the planner writes, holds the question bound: a
+// The last step's filing, where the planner writes, holds the question bound: a
 // question of 301 characters is refused with the finding and nothing is
 // stored, and the same plan at 300 (of ü, 600 bytes) files as revision 1.
 func TestFilePlanBoundsAQuestion(t *testing.T) {
@@ -137,7 +131,7 @@ func TestFilePlanBoundsAQuestion(t *testing.T) {
 	ctx := context.Background()
 	p := questionPlan()
 	p.Questions[0].Text = strings.Repeat("q", 301)
-	res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, p))
+	res, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, p))
 	if want := []string{"plan: question 1: text is over 300 characters"}; err != nil || !slices.Equal(res.Findings, want) || res.Revision != 0 {
 		t.Fatalf("301 characters: (%+v, %v), want the findings %q", res, err, want)
 	}
@@ -145,7 +139,7 @@ func TestFilePlanBoundsAQuestion(t *testing.T) {
 		t.Fatal("a refused plan was stored")
 	}
 	p.Questions[0].Text = strings.Repeat("ü", 300)
-	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 1 || len(res.Findings) != 0 {
+	if res, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 1 || len(res.Findings) != 0 {
 		t.Fatalf("300 characters: (%+v, %v), want revision 1", res, err)
 	}
 }
@@ -531,7 +525,7 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -545,7 +539,7 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || f.Revision != 2 {
+	if f, err := fileWholePlan(runner, ctx, "t-plan", string(b)); err != nil || f.Revision != 2 {
 		t.Fatalf("the session's filing: %+v, %v", f, err)
 	}
 	kube.scriptPods(0, resultLine(true, "done"))

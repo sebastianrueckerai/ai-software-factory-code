@@ -114,8 +114,8 @@ func agentDocChatAgent(ctx context.Context, op *factoryd.OperatorModel, v policy
 
 	spans := []agentdoc.Span{
 		agentDocStanding(system),
-		{Name: "persona", Symbol: "factoryd.ProjectAgentPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: factoryd.ProjectAgentPrompt(f.Project, f.Human, f.Level)},
+		{Name: "project, human and autonomy", Symbol: "agentIdentity", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
+			Text: agentIdentity(f)},
 		{Name: "the project now", Symbol: "agentText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
 			Text: "\n\nThe project now:\nToday is " + f.Today + " UTC.\n" + now},
 		{Name: "board status", Symbol: "(*turn).snapshot", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: status},
@@ -164,13 +164,12 @@ func agentDocCompact(ctx context.Context, op *factoryd.OperatorModel, v policy.V
 	if len(chunk) != 1 {
 		return nil, fmt.Errorf("the fixture thread folds into %d calls, want one", len(chunk))
 	}
-	system, err := prompts.Build("compact", factoryd.CompactPrompt)
+	system, err := prompts.Build("compact", nil)
 	if err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocStanding(system),
-		{Name: "the summariser's rules", Symbol: "factoryd.CompactPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: factoryd.CompactPrompt},
 		{Name: "the compaction frame", Symbol: "(*turn).compact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: "The summary so far:\n(none yet)\n\nThe turns after it:\n"},
 		{Name: "the folded turns", Symbol: "transcript", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: chunk[0]},
@@ -297,8 +296,12 @@ func agentDocResearch(ctx context.Context, op *factoryd.OperatorModel, v policy.
 	if _, _, err := t.research(agentDocQuestion); err != nil {
 		return nil, err
 	}
+	system, err := prompts.Build("research", "")
+	if err != nil {
+		return nil, err
+	}
 	spans := []agentdoc.Span{
-		{Name: "the researcher's brief", Symbol: "researchPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: researchPrompt},
+		agentDocStanding(system),
 		{Name: "the agent's question", Symbol: "(*turn).researchTool", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocQuestion},
 	}
 	for _, name := range researchTools() {

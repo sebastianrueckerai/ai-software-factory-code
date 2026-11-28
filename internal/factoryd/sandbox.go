@@ -68,17 +68,8 @@ var sandboxIncidental = []string{"ca-certificates", "tzdata", "xz-utils", "libc6
 // reaches: the factory's image for a nil m, else the base's tools, m's and
 // m's registries. The names are those the sandbox's egress policy and DNS
 // allowlist are built from (sandboxRegistries for the factory's image).
-// How a missing tool comes is request_tool's where the session's tools
-// hold it; where they hold commission_server, a sentence follows on
-// reaching outside hosts from a throwaway server.
-func SandboxFacts(m *imagegen.Manifest, tools []string) string {
-	noInstall := "A tool those hosts do not serve cannot be installed at runtime."
-	if slices.Contains(tools, policy.ToolRequestTool) {
-		noInstall = "A tool those hosts do not serve cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
-	}
-	if slices.Contains(tools, policy.ToolCommission) {
-		noInstall += " commission_server rents a throwaway server that reaches outside hosts over SSH: run the lookups there and release it when done."
-	}
+func SandboxFacts(m *imagegen.Manifest) string {
+	const noInstall = "A tool those hosts do not serve cannot be installed at runtime."
 	has := make([]string, len(sandboxTools))
 	for i, t := range sandboxTools {
 		has[i] = t.text

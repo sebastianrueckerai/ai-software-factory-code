@@ -1177,7 +1177,6 @@ const (
 	ToolSSHCertificate = "ssh_certificate"
 	ToolRequestStatus  = "resource_request_status"
 	ToolRequestInfo    = "request_info"
-	ToolFilePlan       = "file_plan"
 	ToolManual         = "manual"
 	// ToolDeploymentHealth reads a Deployment of the task's project as
 	// factoryd sees it: its pods, restarts, last terminations and the last
@@ -1202,6 +1201,18 @@ const (
 	ToolDigest = "digest"
 	// ToolFileProofs is the prover's filing of its tests.
 	ToolFileProofs = "file_proofs"
+	// ToolFileScreening is the screening's filing of its verdict.
+	ToolFileScreening = "file_screening"
+	// ToolFileSize is the sizing's filing of its size.
+	ToolFileSize = "file_size"
+	// ToolFileMap is the repository map step's filing of its map.
+	ToolFileMap = "file_map"
+	// The planner's filings, one tool for each of its steps.
+	ToolFileSpec     = "file_spec"
+	ToolFileCriteria = "file_criteria"
+	ToolFileCards    = "file_cards"
+	ToolFileReplan   = "file_replan"
+	ToolFileRevert   = "file_revert"
 	// ToolTaskCosts answers the task's cost figures: its budget, spent
 	// and remaining EUR, the count of its model calls and their prompt,
 	// cached and output tokens. Without task_id they are the caller's
@@ -1251,7 +1262,7 @@ func CutAskRefusal(reason string, parts []string) string {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileProofs, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest, ToolTaskCosts}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFileSpec, ToolFileCriteria, ToolFileCards, ToolFileReplan, ToolFileRevert, ToolFileProofs, ToolFileScreening, ToolFileSize, ToolFileMap, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest, ToolTaskCosts}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

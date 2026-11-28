@@ -799,10 +799,16 @@ func sessionModel(d policy.Document, t Task, model string) string {
 	if m == "" {
 		return model
 	}
+	return onAlias(model, m)
+}
+
+// onAlias is alias under model's opencode provider, alias alone for a
+// model without one.
+func onAlias(model, alias string) string {
 	if provider, _, ok := strings.Cut(model, "/"); ok {
-		return provider + "/" + m
+		return provider + "/" + alias
 	}
-	return m
+	return alias
 }
 
 // aliasOf is model without its opencode provider prefix.

@@ -716,7 +716,7 @@ func (g *replayRig) runPlan(_ context.Context, taskID, _ string, _ int64, findin
 	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, taskID, s.CostEUR); err != nil {
 		return PlanResult{}, err
 	}
-	return PlanResult{Findings: noPlanFindings("", s.Summary, nil, nil)}, nil
+	return PlanResult{Findings: noPlanFindings(stepPlanSpec, "", s.Summary, nil, nil)}, nil
 }
 
 // replayNote is the note a session started with: its handover, else the

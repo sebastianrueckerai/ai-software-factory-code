@@ -639,7 +639,7 @@ func TestARungsReplanKeepsAHeldCardsKey(t *testing.T) {
 
 	next := testPlan()
 	next.Cards[2].Key, next.Cards[2].From = "redirects-2", "redirects"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, next)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
 		t.Fatalf("a revision that drops redirects: %+v, %v; want refused with %q", res, err, dropsRedirects)
 	}
 	if k := store.tasks[held.ID]; k.Status != "queued" || !k.Held() || *k.Hold != hold {
@@ -648,7 +648,7 @@ func TestARungsReplanKeepsAHeldCardsKey(t *testing.T) {
 
 	next = testPlan()
 	next.Cards[2].Title = "Redirects after the split"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("a revision that keeps redirects: %+v, %v", res, err)
 	}
 	k := store.tasks[held.ID]
@@ -670,7 +670,7 @@ func TestTheHumansReplanKeepsAHeldCardsKeyUntilTheyCloseIt(t *testing.T) {
 	setStatus(store, "t-plan", "running")
 	dropped := testPlan()
 	dropped.Cards[2].Key, dropped.Cards[2].From = "redirects-2", "redirects"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, dropped)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, dropped)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
 		t.Fatalf("the human's revision that drops redirects: %+v, %v; want refused with %q", res, err, dropsRedirects)
 	}
 
@@ -687,11 +687,11 @@ func TestTheHumansReplanKeepsAHeldCardsKeyUntilTheyCloseIt(t *testing.T) {
 	}
 	kept := testPlan()
 	kept.Cards[1].Title = "Links API, smaller"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, kept)); err != nil || res.Revision != 0 ||
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, kept)); err != nil || res.Revision != 0 ||
 		!slices.Equal(res.Findings, []string{"card redirects ended closed before it started: leave its key out, and add its work under a new key"}) {
 		t.Fatalf("a revision that keeps the closed card's key: %+v, %v", res, err)
 	}
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, dropped)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, dropped)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the revision that leaves the closed card out: %+v, %v", res, err)
 	}
 }
@@ -708,7 +708,7 @@ func TestARevisionThatDropsAHeldRunningCardsKeyIsRefused(t *testing.T) {
 	setStatus(store, "t-plan", "running")
 	dropped := testPlan()
 	dropped.Cards[2].Key, dropped.Cards[2].From = "redirects-2", "redirects"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, dropped)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, dropped)); err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{dropsRedirects}) {
 		t.Fatalf("a revision that drops redirects: %+v, %v; want refused with %q", res, err, dropsRedirects)
 	}
 	if k := store.tasks[held.ID]; k.Status != "running" || !k.Held() || *k.Hold != hold {

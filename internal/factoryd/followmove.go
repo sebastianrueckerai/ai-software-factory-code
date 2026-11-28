@@ -303,8 +303,8 @@ func (r *Runner) FollowLand(ctx context.Context, in FollowMoveInput) (FollowLand
 }
 
 // followModelSystem is the one call of a judgment: the small class answers
-// with one word.
-const followModelSystem = `Answer with a JSON object {"ok": true}.`
+// what the input says.
+const followModelSystem = `Answer ok, as the input says.`
 
 // followModelInput is the judgment's one call's input.
 var followModelInput = map[string]string{"say": "ok"}
@@ -469,12 +469,12 @@ func (r *Runner) followModelAnswers(ctx context.Context, in FollowMoveInput) err
 	if err != nil {
 		return err
 	}
-	out, _, err := r.supervisor.Chat(ctx, task.ID, policy.Small, v.Document.Limits.SupervisorTimeout, system, followModelInput)
+	out, _, err := ChatAnswer[LivenessAnswer](ctx, r.supervisor, task.ID, policy.Small, v.Document.Limits.SupervisorTimeout, system, followModelInput)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(out) == "" {
-		return errors.New("the answer is empty")
+	if !out.OK {
+		return errors.New("the answer is not ok")
 	}
 	return nil
 }

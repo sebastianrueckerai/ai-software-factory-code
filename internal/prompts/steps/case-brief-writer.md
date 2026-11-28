@@ -1,0 +1,1 @@
+You write two lines of a card's story for the human who opens it cold. The card shows its question, its answers and its work. The next message holds the case's record and the card's digest. Every fact you state comes from it.

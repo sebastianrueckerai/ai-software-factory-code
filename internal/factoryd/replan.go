@@ -1373,17 +1373,10 @@ func replanFindings(st replanState, next Plan) []string {
 			continue
 		}
 		named[x] = true
-		k, known := old[x]
 		_, keeps := kept[x]
-		switch {
-		case !known || k.PlanKey == "":
-			found = append(found, fmt.Sprintf("the revision takes %s off main, and %s is no card of this plan's record. Name the key of a merged card", x, x))
-		case !st.merged[k.ID]:
-			found = append(found, fmt.Sprintf("the revision takes %s off main, and %s has not merged: its work is not on main. Leave it out of the cards to take off main", x, x))
-		case st.reverted[k.ID]:
-			found = append(found, fmt.Sprintf("the revision takes %s off main, and %s was taken off main already. Leave it out of the cards to take off main", x, x))
-		case st.integration[k.ID]:
-			found = append(found, fmt.Sprintf("the revision takes %s off main, and %s is the integration card, whose code stays on main. Leave it out of the cards to take off main", x, x))
+		switch refusal := takeOffRefusal(st, old, x); {
+		case refusal != "":
+			found = append(found, refusal)
 		case keeps:
 			found = append(found, fmt.Sprintf("the revision keeps %s and takes it off main. Leave its key out of the revision's cards to take its work off main, or leave it out of the cards to take off main", x))
 		default:
@@ -1424,6 +1417,24 @@ func replanFindings(st replanState, next Plan) []string {
 		}
 	}
 	return found
+}
+
+// takeOffRefusal is the refusal of a take-off of key x that the plan's record
+// alone gives: x is no merged card of the plan, was taken off main already, or
+// is the integration card; "" when the record lets x come off main.
+func takeOffRefusal(st replanState, old map[string]Task, x string) string {
+	k, known := old[x]
+	switch {
+	case !known || k.PlanKey == "":
+		return fmt.Sprintf("the revision takes %s off main, and %s is no card of this plan's record. Name the key of a merged card", x, x)
+	case !st.merged[k.ID]:
+		return fmt.Sprintf("the revision takes %s off main, and %s has not merged: its work is not on main. Leave it out of the cards to take off main", x, x)
+	case st.reverted[k.ID]:
+		return fmt.Sprintf("the revision takes %s off main, and %s was taken off main already. Leave it out of the cards to take off main", x, x)
+	case st.integration[k.ID]:
+		return fmt.Sprintf("the revision takes %s off main, and %s is the integration card, whose code stays on main. Leave it out of the cards to take off main", x, x)
+	}
+	return ""
 }
 
 // metStill is which of met next's criteria still cite: the criteria a

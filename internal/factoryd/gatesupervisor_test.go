@@ -104,7 +104,7 @@ func (c *gateCase) supervise(t *testing.T, activity string, input []any, canWait
 	}
 	msgs := c.model.chats[0]["messages"].([]any)
 	var bundle map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), ChatInputLead)), &bundle); err != nil {
+	if err := json.Unmarshal([]byte(msgs[1].(map[string]any)["content"].(string)), &bundle); err != nil {
 		t.Fatal(err)
 	}
 	return d, bundle
@@ -735,15 +735,15 @@ func TestTheGateSupervisorRecommendsAnAnswerByField(t *testing.T) {
 		t.Errorf("a check wait's answers = %q, want %q", got, want)
 	}
 	allowed := []SupervisorAction{ActionWait, ActionEscalate}
-	for content, want := range map[string]string{
-		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"the limiter holds the bound","answer":"reverify"}`: "reverify",
-		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"start over on a fresh card","answer":"successor"}`: "successor",
-		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"wait for the checks","answer":"wait_checks"}`:      "",
-		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"reverify: the limiter holds the bound"}`:           "",
-		`{"action":"wait","diagnosis":"the review still runs","answer":"reverify"}`:                                               "",
+	for answer, want := range map[GateDecisionAnswer]string{
+		{Action: "escalate", Diagnosis: "the review hangs", Recommendation: "the limiter holds the bound", Answer: "reverify"}: "reverify",
+		{Action: "escalate", Diagnosis: "the review hangs", Recommendation: "start over on a fresh card", Answer: "successor"}: "successor",
+		{Action: "escalate", Diagnosis: "the review hangs", Recommendation: "wait for the checks", Answer: "wait_checks"}:      "",
+		{Action: "escalate", Diagnosis: "the review hangs", Recommendation: "reverify: the limiter holds the bound"}:           "",
+		{Action: "wait", Diagnosis: "the review still runs", Answer: "reverify"}:                                               "",
 	} {
-		if d := parseGateDecision(content, allowed, GateStopAnswers(ActivityModelReview)); d.Answer != want || d.Diagnosis == "" || strings.Contains(d.Diagnosis, "invalid") {
-			t.Errorf("%s: answer %q, diagnosis %q; want the answer %q on a valid decision", content, d.Answer, d.Diagnosis, want)
+		if d := checkGateDecision(answer, allowed, GateStopAnswers(ActivityModelReview)); d.Answer != want || d.Diagnosis == "" || strings.Contains(d.Diagnosis, "invalid") {
+			t.Errorf("%+v: answer %q, diagnosis %q; want the answer %q on a valid decision", answer, d.Answer, d.Diagnosis, want)
 		}
 	}
 	trip := GateTrip{Activity: ActivityModelReview, Attempt: 3, Bound: 20 * time.Minute}

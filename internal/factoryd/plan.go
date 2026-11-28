@@ -25,6 +25,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/answers"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
@@ -142,19 +143,6 @@ func (p Plan) TakeOffLines() []string {
 	return lines
 }
 
-// takeOffReasonFindings refuses a take-off with no reason. It judges only
-// a revision as the planner files it: a reason is text of the revision
-// alone, so the stored revision is not judged on it again.
-func takeOffReasonFindings(p Plan) []string {
-	var found []string
-	for _, x := range p.TakeOffMain {
-		if p.TakeOffReason(x) == "" {
-			found = append(found, fmt.Sprintf("`take_off_main` names %s with no reason: say in `take_off_reasons` what breaks if its work stays on main, or leave %s out of `take_off_main`", x, x))
-		}
-	}
-	return slices.Compact(found)
-}
-
 // PlanCriterion is one criterion of the spec, a piece of its proof (the
 // spec-intake concept, piece 1), stated at the feature's surface: kind
 // test names its claim, its inputs, the numbers it expects, its suite
@@ -187,10 +175,7 @@ type PlanCriterion struct {
 // work on a criterion is the sum of their items' citations and no second
 // list can drift out of step (the spec-intake concept, piece 2). The
 // criterion is empty where none is cited: a foundation card's contracts.
-type PlanItem struct {
-	Criterion string `json:"criterion,omitempty"`
-	Text      string `json:"text"`
-}
+type PlanItem = answers.Item
 
 // PlanQuestion is an open point the spec leaves to the member, with the
 // choices the planner offers; the store adds the member's answer, "" until
@@ -609,8 +594,8 @@ func questionFindings(qs []PlanQuestion) []string {
 // questionBounds are the findings on a plan's questions that only the
 // planner's filing judges: the length of the text and the grounds, at most
 // MaxQuestion runes each, each choice as the guide checks a button, and a
-// recommended answer that is one of the choices with its grounds. file_plan alone judges them, where the planner
-// writes, so a revision stored before the bound or the recommendation
+// recommended answer that is one of the choices with its grounds. The last
+// step's filing alone judges them, where the planner writes, so a revision stored before the bound or the recommendation
 // still files its round and its delta cards.
 func questionBounds(qs []PlanQuestion) []string {
 	var out []string
@@ -842,19 +827,25 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 // criteria and refuses the ones it holds: only the integration or a
 // delta card runs the criteria gate, and the plan has neither.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
+	return append(criterionFindings(p.Criteria, shape), citationFindings(p)...)
+}
+
+// criterionFindings are the findings on the criteria alone: their count, and
+// each criterion well formed for its kind.
+func criterionFindings(criteria []PlanCriterion, shape policy.PlanShape) []string {
 	var out []string
-	if n := len(p.Criteria); n > MaxCardAcceptance || (shape.Integration && n < 1) {
+	if n := len(criteria); n > MaxCardAcceptance || (shape.Integration && n < 1) {
 		want := "at most " + strconv.Itoa(MaxCardAcceptance)
 		if shape.Integration {
 			want = "1 to " + strconv.Itoa(MaxCardAcceptance)
 		}
 		out = append(out, fmt.Sprintf("plan: %d criteria, want %s", n, want))
 	}
-	if !shape.Integration && len(p.Criteria) > 0 {
+	if !shape.Integration && len(criteria) > 0 {
 		out = append(out, "plan: criteria want an integration card: no card of this plan runs the criteria gate")
 	}
 	ids := map[string]int{}
-	for i, c := range p.Criteria {
+	for i, c := range criteria {
 		if !criterionID.MatchString(c.ID) {
 			out = append(out, fmt.Sprintf("plan: criterion %d: id %q: lowercase letters, digits and underscores, 2 to 32", i+1, c.ID))
 		} else if ids[c.ID]++; ids[c.ID] == 2 {
@@ -908,6 +899,16 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			}
 		}
 	}
+	return out
+}
+
+// citationFindings are the findings on how the cards cite the criteria: every
+// citation names a criterion of the plan, every card of the round but the
+// foundation cites one, the integration card's items are the criteria, and
+// once no later round is left every criterion is cited and every test is
+// carried.
+func citationFindings(p Plan) []string {
+	var out []string
 	if len(p.Criteria) == 0 {
 		return out
 	}
@@ -1005,11 +1006,13 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 // card the last try files is stamped unchecked. A section the document
 // repository does not hold is a finding on every try: the planner drops
 // it or names one that is there. err is a read of refs that failed a try
-// before the last.
+// before the last. A shell timeout a brief names past the shell tool's
+// ceiling is folded to it (clampShellTimeouts).
 func planBriefs(cards []PlanCard, refs RefResolver, try int) ([]string, error) {
 	var out []string
 	for i := range cards {
 		c := &cards[i]
+		c.Brief = clampShellTimeouts(c.Brief)
 		var found []string
 		if no := sectionRefusal(c.Section, refs); no != "" {
 			found = append(found, no)
@@ -1445,60 +1448,27 @@ func againLine(k Task) string {
 		"(git diff %s^1 %s shows them), make it build green, and land it.", k.IssueNumber, k.PlanKey, k.MergeCommit, k.MergeCommit)
 }
 
-// mapFirst is the planner's read discipline: discovery by grep and glob,
-// a whole read kept for what the plan needs;
-// digestBig its digest, for a session whose tools hold it.
-const (
-	mapFirst = "Map the repository before you read it: grep and glob find where things are. " +
-		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
-	digestBig = "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
-)
+// planGuide is the guide a planner step's brief carries beside its
+// paragraph: what the step needs of the plan's shape and of the project, and
+// the earlier steps' filings, which the criteria and the cards stand on. The
+// shape's mechanical rules (counts, keys, bounds, cycles) are the filing
+// door's findings (judgePlan), not this prose. pins are the project's images
+// a card may name.
+func planGuide(step string, shape policy.PlanShape, pins map[string]policy.ImagePin, earlier string) string {
+	var g string
+	switch step {
+	case stepPlanCards:
+		g = "Once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
+			"The merged cards of earlier rounds are not in your last plan. " + cardGuide(shape, pins)
+	case stepPlanReplan:
+		g = cardGuide(shape, pins)
+	}
+	return join2(earlier, g)
+}
 
-// planGuide is the planner's guide: the spec is the issue, the answer a
-// plan filed with the file_plan tool, a card one session of the pinned
-// limits. The shape's mechanical rules (counts, keys, bounds, cycles) are
-// readPlan's findings, not this prose (roadmap 186). pins are the
-// project's images a card may name, tools the session's.
-func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin, tools []string) string {
-	first, butFoundation := "file the first round's cards", ""
-	if shape.Foundation {
-		first, butFoundation = "file the first round's cards, foundation first,", " but a foundation"
-	}
-	g := "You are the planner. " +
-		"The issue's text tells what to build; every card follows the repository's conventions. " + mapFirst
-	if slices.Contains(tools, policy.ToolDigest) {
-		g += digestBig
-	}
-	g += "Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
-		"when the repository carries a spec skeleton at docs/spec.md, draft into its shape and carry its standing criteria. " +
-		"Split the work into the cards of a plan. " +
-		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
-		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "promise": "...", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "why": "...", "summary": "...", "section": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "changes": ["what the first choice changes in the plan, one short line", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
-		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
-		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
-		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
-		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
-		"The merged cards of earlier rounds are not in your last plan. " +
-		"When the criteria fall into two sets whose cards share nothing" + butFoundation + ", you may ask in a question whether they should be two plans. " +
-		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
-		"Each criterion has an id in snake_case, a promise, which is its claim in plain words for a human who reads the board and not the plan, and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
-		"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
-		"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
-		"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
-		"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
-		"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
-		"kind human names a claim only a person settles, with the evidence the approver will see. " +
-		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
-		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it, unless it merged), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
-		"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
-		`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
-		"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-		"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main; take_off_reasons: by key, what breaks if that card's work stays on main; " +
-		"a card of a later revision that lands it again names it in from. A done card of this round that the revision leaves out of its cards stays on main and leaves the list: name it nowhere. " +
-		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
-	g += imagesLine(pins)
+// cardGuide is what a step that files cards needs of the process's shape.
+func cardGuide(shape policy.PlanShape, pins map[string]policy.ImagePin) string {
+	g := imagesLine(pins)
 	if shape.Foundation {
 		g += "The foundation card holds the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
 			"The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
@@ -1506,41 +1476,35 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 			"Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list. "
 	}
 	if shape.Integration {
+		butFoundation := ""
+		if shape.Foundation {
+			butFoundation = " but a foundation"
+		}
 		g += "The integration card turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. " +
-			"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim. "
+			"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim. " +
+			"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
+			"When the criteria fall into two sets whose cards share nothing" + butFoundation + ", you may ask in a question whether they should be two plans. "
 	}
 	if shape.Minimum() == 1 {
 		g += "A change that fits one card answers one card, its own integration, citing every criterion. "
 	}
 	if shape.Foundation || shape.Integration {
-		g += "factoryd adds the foundation and integration edges itself: " +
-			"list in depends_on only the dependencies among feature cards. "
+		g += "factoryd adds the foundation and integration edges itself: list in depends_on only the dependencies among feature cards. "
 	} else {
 		g += "depends_on lists the keys of the cards a card needs merged first. "
 	}
-	return g + writingguide.BriefLines + " section: optional, the part of a document the card builds, its path in the document repository with its #heading. " +
-		"brief: markdown, what to build and how it is checked. " +
-		"directories: paths relative to the repository's root, guidance for the card's agent; " +
-		"acceptance: each item what the card's tests prove, with the inputs and the numbers they expect, citing the criterion it works on; the foundation's items need cite none. " +
-		"size: small, medium or large; anything bigger is two cards. " +
-		"Attack your own draft once before you file: reread the spec, the criteria and the cards for contradictions, ambiguity and missing edge cases, " +
-		"and turn each finding into a question with origin self_attack. " +
-		"questions: open points the spec leaves to the human; their answers come back to you with your last plan, " +
-		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
-		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
-		"A card whose round lands no changes names bash check static in its brief, not bash check changed, and every brief keeps the shell tool's bounds: " +
-		"no command and no timeout it names may exceed the shell tool's 600000 ms maximum. " +
-		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
-		"answer it again."
+	return g + "Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run."
 }
 
-// imageField is a card's image field in the plan's shape where the
-// project pins images, "" where it pins none.
-func imageField(pins map[string]policy.ImagePin) string {
-	if len(pins) == 0 {
-		return ""
+// join2 joins the non-empty parts with one blank line between two.
+func join2(parts ...string) string {
+	var out []string
+	for _, s := range parts {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
 	}
-	return `, "image": "..."`
+	return strings.Join(out, "\n\n")
 }
 
 // imagesLine is the planner's line of the project's pinned images with
@@ -2867,15 +2831,18 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 	return *plan.Plan, name, nil
 }
 
-// RunPlan is one planner session under the pinned version, with findings,
-// the last plan as its planner reads it again (planView) and the members'
-// answers to its questions. The session answers by the file_plan tool,
-// which checks the whole plan json while it runs: RunPlan takes the
-// filing the tool stored (FilePlan) and returns it; a session that ends
-// without filing one says so, with its last message beside the finding.
+// RunPlan is one planning run under the pinned version, with findings, the
+// last plan as its planner reads it again (planView) and the humans'
+// answers to its questions. The run is the steps PlanStepsFor names, in
+// order: the map step, and a session for each planner step. A session
+// answers by the filing tool of its step, which checks its part while it
+// runs (FilePart); the last step's filing stores the revision, and RunPlan
+// returns it. A session that ends without filing says so, with its last
+// message beside the finding. A step whose part the plan draft holds
+// from an earlier run is not run again, unless its part was refused.
 // room is the time the workflow added to the activity's window for raises
-// during the session (versionRoomWindow), 0 for none, and added the agent
-// time added to the card's cap when the session was scheduled.
+// during the run (versionRoomWindow), 0 for none, and added the agent time
+// added to the card's cap when the run was scheduled.
 func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string, room, added time.Duration) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2897,12 +2864,12 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
 	}
+	step, pending, err := pendingIn(tl, taskID)
+	if err != nil {
+		return PlanResult{}, err
+	}
 	var answers []string
 	if last != nil {
-		step, pending, err := pendingIn(tl, taskID)
-		if err != nil {
-			return PlanResult{}, err
-		}
 		// the record the filing settles its keys by
 		cards, err := r.oldCardsOf(ctx, t, step, pending)
 		if err != nil {
@@ -2933,56 +2900,110 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 		}
 	}
-	if d, ok, err := r.store.PlanDraft(ctx, taskID); err != nil {
+	path := planPath(shape, last, step, pending)
+	draft, err := r.planDraftState(ctx, taskID, path)
+	if err != nil {
 		return PlanResult{}, err
-	} else if ok {
-		findings = append(slices.Clone(findings), r.draftBrief(d, findings))
 	}
 	extra, findings, err := r.planRecord(ctx, t, tl, findings)
 	if err != nil {
 		return PlanResult{}, err
 	}
 	extra.room, extra.added = room, added
-	r.takeFiled(taskID) // a filing an earlier session left is stale here
-	r.newBriefSession(taskID)
+	head := t.SHA
+	if head == "" {
+		if head, err = r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase); err != nil {
+			return PlanResult{}, err
+		}
+	}
+	r.takeFiled(taskID) // a filing an earlier run left is stale here
+	run := planRun{model, pin, room, added}
+	// a first path's findings belong to the step that failed: the first that runs
+	told := false
+	for i, name := range path {
+		if name == stepRepoMap {
+			if extra.repoMap, err = r.planMap(ctx, t, repo, head, run); err != nil {
+				return PlanResult{}, err
+			}
+			continue
+		}
+		if !draft.runs(path, i) {
+			continue
+		}
+		final := i == len(path)-1
+		own := findings
+		if last == nil && told {
+			own = nil
+		}
+		told = true
+		if name == draft.refused {
+			own = append(slices.Clone(own), r.draftBrief(draft.d, own))
+		}
+		res, filed, err := r.planStep(ctx, t, repo, v, shape, name, run, final, own, answers, extra)
+		if err != nil || !filed || final {
+			return res, err
+		}
+	}
+	return PlanResult{}, terminalError("task %s: the planner's path %v ends with no planner step", taskID, path)
+}
+
+// planStep is one planner step's session: filed tells whether the session
+// filed its part, and for the last step res is the revision stored. When it
+// did not, res says why: the findings, the stop that asks a human, a provider
+// refusal or a start that failed.
+func (r *Runner) planStep(ctx context.Context, t Task, repo Repo, v policy.Version, shape policy.PlanShape, step string, run planRun, final bool, findings, answers []string, extra reportExtra) (res PlanResult, filed bool, err error) {
+	r.newBriefSession(t.ID)
 	began := time.Now()
-	tools := prompts.Offered("planner", v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), "planner", pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
+	earlier, err := r.earlierParts(ctx, t.ID, step)
 	if err != nil {
-		return PlanResult{}, err
+		return PlanResult{}, false, err
+	}
+	tools := prompts.Offered(step, v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
+	extra.role = step
+	end, err := r.reportSession(ctx, t, repo, run.model, t.Standing(), step, run.pin, planGuide(step, shape, projectPins(r.cfg.Policy(), t.Repository), earlier), findings, answers, extra)
+	if err != nil {
+		return PlanResult{}, false, err
 	}
 	text, why := end.report, end.why
 	if end.start != nil {
 		reason := end.start.escalation(ThenAnswer)
-		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": reason})
-		return PlanResult{Escalate: reason, StartFailed: true}, nil
+		r.record(ctx, t.ID, "plan_escalated", map[string]any{"reason": reason})
+		return PlanResult{Escalate: reason, StartFailed: true}, false, nil
 	}
 	if text == "" {
 		if refused, err := r.providerRefusal(ctx, t.ID, began, why); err != nil || refused.Status != 0 {
-			return PlanResult{Refused: refused}, err
+			return PlanResult{Refused: refused}, false, err
 		}
 	}
 	if end.escalate != "" {
-		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": end.escalate})
-		return PlanResult{Escalate: end.escalate}, nil
+		r.record(ctx, t.ID, "plan_escalated", map[string]any{"reason": end.escalate})
+		return PlanResult{Escalate: end.escalate}, false, nil
 	}
-	if res, ok := r.takeFiled(taskID); ok {
-		return res, nil
+	if final {
+		if res, ok := r.takeFiled(t.ID); ok {
+			return res, true, nil
+		}
+	} else if d, ok, err := r.store.PlanDraft(ctx, t.ID); err != nil {
+		return PlanResult{}, false, err
+	} else if parts, err := r.heldParts(ctx, t.ID); err != nil {
+		return PlanResult{}, false, err
+	} else if _, held := parts[step]; ok && held && len(d.Findings) == 0 {
+		return PlanResult{}, true, nil
 	}
-	found := noPlanFindings(text, why, end.reads, tools)
-	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
-	res := PlanResult{Findings: found, Capped: end.capped}
+	found := noPlanFindings(step, text, why, end.reads, tools)
+	r.record(ctx, t.ID, "plan_invalid", map[string]any{"findings": found})
+	res = PlanResult{Findings: found, Capped: end.capped}
 	if end.pending != nil {
 		res.NotStarted = why
 	}
-	return res, nil
+	return res, false, nil
 }
 
-// noPlanFindings are the findings of a planner session that filed no plan:
-// the missing filing, the last message it answered or why it answered none,
-// and the files it read when it read any.
-func noPlanFindings(text, why string, reads, tools []string) []string {
-	found := []string{"plan: the session ended without filing a plan through the " + policy.ToolFilePlan + " tool"}
+// noPlanFindings are the findings of a planner step that filed nothing: the
+// missing filing, the last message it answered or why it answered none, and
+// the files it read when it read any.
+func noPlanFindings(step, text, why string, reads, tools []string) []string {
+	found := []string{"plan: the session ended without filing through the " + plannerTools[step] + " tool"}
 	if text == "" {
 		found = append(found, "plan: the session ended without a last message: "+why)
 	} else {
@@ -3044,7 +3065,7 @@ func (r *Runner) planDraftNote(ctx context.Context, taskID, reason string) (stri
 		return "", nil
 	}
 	d, ok, err := r.store.PlanDraft(ctx, taskID)
-	if err != nil || !ok {
+	if err != nil || !ok || len(d.Findings) == 0 {
 		return "", err
 	}
 	return fmt.Sprintf("The planner's last refused filing is kept as a draft, refused for %s.", plural(len(d.Findings), "finding")), nil
@@ -3094,52 +3115,21 @@ func readsFinding(paths, tools []string) string {
 		len(paths), textutil.Truncate(strings.Join(paths, ", "), maxPlanEcho), way)
 }
 
-// FilePlan is the file_plan tool's hand-over: the complete plan json of
-// the planner session that runs, checked at once under the version in
-// force. The plan files the round filingRound names: factoryd stamps it
-// on the plan and its cards, overwriting the planner's, and puts the
-// settled cards of earlier rounds first, as the newest revision holds
-// them. A refusal carries every finding back into the session; a valid
-// plan is stored as the task's next revision and held as the session's
-// answer, which RunPlan returns when the session ends.
-func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult, error) {
-	t, repo, err := r.task(ctx, taskID)
-	if err != nil {
-		return PlanResult{}, err
-	}
-	if t.Status != "running" {
-		return PlanResult{Findings: []string{"plan: the task is " + t.Status + ", not running"}}, nil
-	}
-	if t.Track != policy.TrackPlan {
-		return PlanResult{Findings: []string{"plan: the task is not on the plan track"}}, nil
-	}
-	v := r.cfg.Policy()
-	shape, _, err := planShape(v, t)
-	if err != nil {
-		return PlanResult{}, err
-	}
-	p, found := decodePlan("```json\n" + plan + "\n```")
-	if len(found) > 0 {
+// storePlan judges plan p, the whole plan a run's last planner step filed,
+// under the version in force and the record f read, and stores it as the task's next revision. The
+// plan files the round filingRound names: factoryd stamps it on the plan and
+// its cards, overwriting the planner's, and puts the settled cards of earlier
+// rounds first, as the newest revision holds them. A refusal is every finding;
+// a valid plan is stored and held as the session's answer, which RunPlan
+// returns when the session ends.
+func (r *Runner) storePlan(ctx context.Context, f planFiling, p Plan) (PlanResult, error) {
+	t, repo, v, shape, st, taskID := f.t, f.repo, f.v, f.shape, f.st, f.t.ID
+	refuse := func(found []string) (PlanResult, error) {
 		return PlanResult{Findings: found}, nil
 	}
-	filed, err := json.Marshal(p)
-	if err != nil {
-		return PlanResult{}, err
-	}
-	refuse := func(found []string) (PlanResult, error) {
-		return PlanResult{Findings: found}, r.store.SetPlanDraft(ctx, taskID, filed, found)
-	}
-	// the revision this one changes, when there is one: the amendment
+	// st is the revision this one changes, when there is one: the amendment
 	// rules judge the pair (piece 10), the replan rules the revision
 	// against the plan's record of cards
-	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
-	if err != nil {
-		return PlanResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
-	}
-	st, err := r.replanState(ctx, t, tl, 0)
-	if err != nil {
-		return PlanResult{}, err
-	}
 	round := filingRound(st.step, st.newest)
 	p.Round = round
 	for i := range p.Cards {
@@ -3173,13 +3163,17 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		p.Cards = append(settled, p.Cards...)
 	}
-	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
+	p, found := judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
 	if found = slices.Concat(found, PromiseBounds(p.Criteria), questionBounds(p.Questions), briefs); len(found) > 0 {
 		return refuse(found)
 	}
 	// a re-file of the newest revision by value: already stored. By
 	// value, not by hash: the stored row's hash can drift (a settled
 	// card gains its issue number) while the plan is the same.
+	heldMap, err := r.heldMap(ctx, taskID)
+	if err != nil {
+		return PlanResult{}, err
+	}
 	if st.newest != nil && reflect.DeepEqual(*st.newest, p) {
 		rev, _, err := r.store.PlanRevision(ctx, taskID, st.revision)
 		if err != nil {
@@ -3189,7 +3183,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		if err != nil {
 			return PlanResult{}, err
 		}
-		if err := r.store.DeletePlanDraft(ctx, taskID); err != nil {
+		if err := r.settleDraft(ctx, taskID, heldMap); err != nil {
 			return PlanResult{}, err
 		}
 		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate})
@@ -3203,7 +3197,6 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		found = revisionFindings(revisions, p)
 	}
-	found = append(found, takeOffReasonFindings(p)...)
 	held, err := r.heldFindings(ctx, st, p)
 	if err != nil {
 		return PlanResult{}, err
@@ -3218,6 +3211,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	n, err := r.store.AddPlanRevision(ctx, taskID, raw, sha)
 	if err != nil {
+		return PlanResult{}, err
+	}
+	if err := r.settleDraft(ctx, taskID, heldMap); err != nil {
 		return PlanResult{}, err
 	}
 	if r.Namer != nil && t.PlanName == "" {
@@ -3242,7 +3238,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 }
 
 // planBriefKey, escalateBriefKey and delegateBriefKey are task id's keys
-// in the tally of refused briefs: its planner's file_plan, its agent's
+// in the tally of refused briefs: its planner's plan filing, its agent's
 // escalate and its agent's delegate.
 func planBriefKey(id string) string     { return "plan " + id }
 func escalateBriefKey(id string) string { return "escalate " + id }
@@ -3264,7 +3260,7 @@ func (r *Runner) Briefs() *BriefTally { return &r.briefs }
 const planNameBudget = 2 * time.Minute
 
 // namePlan names plan t from its first revision p, off the filing's
-// path: the file_plan answer has 30 seconds and naming may take minutes.
+// path: the filing tool's answer has 30 seconds and naming may take minutes.
 func (r *Runner) namePlan(ctx context.Context, t Task, p Plan) {
 	ctx, cancel := context.WithTimeout(ctx, planNameBudget)
 	defer cancel()
@@ -3460,45 +3456,6 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 			Why: r.untrusted(t, c.Why), Summary: r.untrusted(t, c.Summary), BriefUnchecked: c.Unchecked}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
-	}
-}
-
-// PlanFileHandler answers the gateway's file_plan tool: the running
-// planner session's complete plan json, checked and stored as the
-// session's answer, and whether the human's confirmation waits on its
-// cards. A plan the check refuses answers 200 with its
-// findings — the refusal belongs in the session, not in a status.
-func PlanFileHandler(runner *Runner) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			TaskID string `json:"task_id"`
-			Plan   string `json:"plan"`
-		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
-			http.Error(w, "body: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		in.Plan = strings.TrimSpace(in.Plan)
-		if in.TaskID == "" || in.Plan == "" {
-			http.Error(w, "task_id and plan are required", http.StatusBadRequest)
-			return
-		}
-		res, err := runner.FilePlan(r.Context(), in.TaskID, in.Plan)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if isTerminal(err) {
-				status = http.StatusNotFound
-			}
-			http.Error(w, err.Error(), status)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(struct {
-			Revision int      `json:"revision"`
-			SHA256   string   `json:"sha256"`
-			Findings []string `json:"findings"`
-			Gate     bool     `json:"gate"`
-		}{res.Revision, res.SHA256, res.Findings, res.Gate}) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 	}
 }
 

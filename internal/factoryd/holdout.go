@@ -128,11 +128,11 @@ func holdoutDryVerdict(o proofOutcome) (dry, evidence string) {
 // JSON call answers. From, the past failure a proposal may cite, is
 // admitted so a citing answer decodes, and stored nowhere.
 type holdoutProposal struct {
-	ID       string `json:"id"`
-	Claim    string `json:"claim"`
-	Inputs   string `json:"inputs"`
-	Expected string `json:"expected"`
-	From     string `json:"from"`
+	ID       string `json:"id" desc:"lowercase letters, digits, underscores"`
+	Claim    string `json:"claim" max:"maxHoldoutText" desc:"one plain sentence in the spec's words, no code"`
+	Inputs   string `json:"inputs" max:"maxHoldoutText"`
+	Expected string `json:"expected" max:"maxHoldoutText" desc:"the numbers it expects"`
+	From     string `json:"from,omitempty" desc:"the past failure the claim comes from"`
 }
 
 // askHoldouts runs a confirmation round's proposal: the review model
@@ -203,15 +203,9 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 	if err != nil {
 		return nil, err
 	}
-	content, _, err := r.supervisor.Chat(ctx, t.ID, alias, r.cfg.Policy().Document.Limits.SupervisorTimeout, system, input)
+	answer, _, err := ChatAnswer[HoldoutAnswer](ctx, r.supervisor, t.ID, alias, r.cfg.Policy().Document.Limits.SupervisorTimeout, system, input)
 	if err != nil {
 		return nil, err
-	}
-	var answer struct {
-		Holdouts []holdoutProposal `json:"holdouts"`
-	}
-	if err := decodeAnswer(content, &answer); err != nil {
-		return nil, fmt.Errorf("the answer is not the hold-outs json: %w", err)
 	}
 	takenRows, err := r.store.PlanProofs(ctx, t.ID)
 	if err != nil {
@@ -251,8 +245,8 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 		claim, ok1 := field(pr.Claim)
 		inputs, ok2 := field(pr.Inputs)
 		expected, ok3 := field(pr.Expected)
-		if ok1 && strings.ContainsRune(claim, '?') {
-			ok1 = false // a claim that holds a question is an ask, not a claim
+		if ok1 && (strings.ContainsRune(claim, '?') || len(sentenceBreaks(claim)) > 0) {
+			ok1 = false // a claim is one statement: a question is an ask, and a second sentence a background or a compound
 		}
 		if !ok1 || !ok2 || !ok3 {
 			continue
@@ -263,14 +257,11 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 	return out, nil
 }
 
-var holdoutSystem = `You propose hold-out criteria for a software feature's spec: claims its criteria do not cover, each proven later by a test a separate session writes against the repository.
-Rules:
-- Propose at most the max named in the input; prefer none over a weak one.
-- Each hold-out: an id (lowercase letters, digits, underscores), the claim as one plain sentence in the spec's words, its inputs, and the numbers it expects. No code.
-- The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no question, no compound of sentences. State the behaviour, not why it matters.
+var holdoutSystem = `Rules:
+- Prefer none over a weak one.
+- The claim is a plain statement a human can judge true or false at the feature's surface. State the behaviour, not why it matters.
 - State each claim at the feature's surface: what it does for a caller through its HTTP API, its command line, its store or the files it writes.
-- A hold-out may come from one of the project's past failures; a gap in the spec itself is drafted from the spec.
-Answer one JSON object: {"holdouts":[{"id","claim","inputs","expected"}]}.`
+- A hold-out may come from one of the project's past failures; a gap in the spec itself is drafted from the spec.`
 
 // DecideHoldout is the console's okay or drop of hold-out idx of round
 // round of plan id, as a writer of its project: the round must be the

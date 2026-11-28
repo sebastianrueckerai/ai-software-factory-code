@@ -443,7 +443,7 @@ func eventsOfKind(store *fakeStore, kind string) []Event {
 // name the card.
 func TestReviewAndAuditFactsAreEachCards(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
-	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}, true)
+	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{content: `{"findings":[]}`}, true)
 	store := r.store.(*fakeStore)
 	succ := gateTask
 	succ.ID, succ.IssueNumber = "t2", 5

@@ -268,9 +268,8 @@ func TestOperatorTitles(t *testing.T) {
 	}
 	b, _ := json.Marshal(g.request)
 	form, _ := writingguide.Form("title")
-	system, _ := json.Marshal(form + "\n\nYou name a chat thread from its first message. " +
-		"Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. " +
-		"Answer in the message's language.")
+	system, _ := json.Marshal(form + "\n\nYou name a chat thread from its first message. The human picks threads by this name.\n\n" +
+		"Answer with the title alone: a name, not a sentence, a few words. Answer in the message's language.")
 	want := `{"max_tokens":200,"messages":[{"content":` + string(system) + `,"role":"system"},` +
 		`{"content":"Can you find the cache bug?","role":"user"}],"model":"small","stream":true}`
 	if string(b) != want {

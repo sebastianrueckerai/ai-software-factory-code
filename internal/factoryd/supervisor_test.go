@@ -274,6 +274,9 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 				w.Header().Set(gateway.HeaderOutputLimit, fmt.Sprint(limit))
 			}
 			choice := map[string]any{"message": map[string]any{"content": content}}
+			if args == "" && forcesTool(body) && json.Valid([]byte(content)) {
+				args = content
+			}
 			if args != "" {
 				choice["message"] = map[string]any{"content": "", "tool_calls": []any{map[string]any{"type": "function",
 					"function": map[string]any{"name": prompts.AnswerToolName, "arguments": args}}}}
@@ -291,6 +294,22 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// answerReply is a completion whose one tool call is the answer tool's,
+// with arguments as its arguments.
+func answerReply(arguments string) string {
+	out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": nil,
+		"tool_calls": []any{map[string]any{"type": "function", "function": map[string]any{"name": prompts.AnswerToolName, "arguments": arguments}}}}}}})
+	return string(out)
+}
+
+// forcesTool says the request forces a tool, whose arguments the fake gives
+// for a scripted content that is JSON: any other content stays text, the
+// answer a model gives in place of its tool.
+func forcesTool(body map[string]any) bool {
+	_, ok := body["tool_choice"]
+	return ok
+}
+
 // testPrompt is step's prompt on facts, as the step's call builds it.
 func testPrompt(t testing.TB, step string, facts any) prompts.Prompt {
 	t.Helper()
@@ -304,7 +323,7 @@ func testPrompt(t testing.TB, step string, facts any) prompts.Prompt {
 // Chat sends the prompt's text as the system message, under the purpose
 // the step's profile names: the plan namer's is title.
 func TestChatTakesAPrompt(t *testing.T) {
-	p := testPrompt(t, "plan-namer", namerPrompt)
+	p := testPrompt(t, "plan-namer", "")
 	ll := &fakeLiteLLM{content: `{"name":"Count skipped rows"}`}
 	if _, _, err := testSupervisorModel(ll.srv(t).URL).Chat(context.Background(), "t1", "small", time.Minute, p, map[string]any{}); err != nil {
 		t.Fatal(err)

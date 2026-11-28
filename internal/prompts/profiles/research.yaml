@@ -4,7 +4,7 @@ reader: model
 guide: false
 forms: []
 chunks: []
-paragraph: ""
+paragraph: research
 facts: text
 answer: ""
 tools:
@@ -12,5 +12,5 @@ tools:
   gateway: []
   chat: [tree, grep, file, read_doc, web_search, web_scrape]
 agents_md: false
-budget_words: 99
+budget_words: 54
 budget_tool_words: 209

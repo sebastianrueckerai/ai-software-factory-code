@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// answers resolves every host to ips.
-func answers(ips ...net.IP) func(context.Context, string) ([]net.IP, error) {
+// resolvesTo resolves every host to ips.
+func resolvesTo(ips ...net.IP) func(context.Context, string) ([]net.IP, error) {
 	return func(context.Context, string) ([]net.IP, error) { return ips, nil }
 }
 
@@ -96,7 +96,7 @@ func TestEgressGuardRefusesNonPublicAddresses(t *testing.T) {
 		{"224.0.0.5", "multicast (224/4, ff00::/8)"},
 		{"ff02::1", "multicast (224/4, ff00::/8)"},
 	} {
-		g, d := guarded(answers(net.ParseIP(tc.ip)))
+		g, d := guarded(resolvesTo(net.ParseIP(tc.ip)))
 		_, err := g.DialContext(context.Background(), "tcp", "evil.example:443")
 		if err == nil {
 			t.Fatalf("%s: dial succeeded", tc.ip)
@@ -115,7 +115,7 @@ func TestEgressGuardRefusesNonPublicAddresses(t *testing.T) {
 // TestEgressGuardPassesAPublicAddress: a public address passes and the
 // guard dials the address it checked, not the name.
 func TestEgressGuardPassesAPublicAddress(t *testing.T) {
-	g, d := guarded(answers(net.ParseIP("192.0.2.10")))
+	g, d := guarded(resolvesTo(net.ParseIP("192.0.2.10")))
 	if _, err := g.DialContext(context.Background(), "tcp", "provider.example:443"); err != nil {
 		t.Fatalf("public address refused: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestEgressGuardPassesAPublicAddress(t *testing.T) {
 		t.Fatalf("dialed %v, want the checked IP 192.0.2.10:443 alone", dials)
 	}
 
-	g6, d6 := guarded(answers(net.ParseIP("2001:db8::1")))
+	g6, d6 := guarded(resolvesTo(net.ParseIP("2001:db8::1")))
 	if _, err := g6.DialContext(context.Background(), "tcp", "provider.example:443"); err != nil {
 		t.Fatalf("public IPv6 address refused: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestEgressGuardAnswersRebindingWithNoConnection(t *testing.T) {
 // TestEgressGuardRefusesAMixedAnswer: a name answering both a public and
 // a forbidden address is refused whole, before any dial.
 func TestEgressGuardRefusesAMixedAnswer(t *testing.T) {
-	g, d := guarded(answers(net.ParseIP("192.0.2.10"), net.ParseIP("169.254.169.254")))
+	g, d := guarded(resolvesTo(net.ParseIP("192.0.2.10"), net.ParseIP("169.254.169.254")))
 	_, err := g.DialContext(context.Background(), "tcp", "provider.example:443")
 	if err == nil || !strings.Contains(err.Error(), "169.254.169.254") {
 		t.Fatalf("mixed answer not refused on its metadata address: %v", err)
@@ -199,7 +199,7 @@ func TestEgressGuardChecksIPLiterals(t *testing.T) {
 // call asked for the connection.
 func TestEgressRefusalIsAudited(t *testing.T) {
 	audit := &memAudit{}
-	g := &EgressGuard{Resolve: answers(net.ParseIP("10.0.0.5")), Dial: (&dialRecorder{}).dial, Audit: audit}
+	g := &EgressGuard{Resolve: resolvesTo(net.ParseIP("10.0.0.5")), Dial: (&dialRecorder{}).dial, Audit: audit}
 	if _, err := g.DialContext(context.Background(), "tcp", "evil.example:443"); err == nil {
 		t.Fatal("dial succeeded")
 	}

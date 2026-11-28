@@ -1,0 +1,15 @@
+step: planner-replan
+purpose: session
+reader: human
+guide: false
+forms: [line, title, why, summary, brief, ask]
+chunks: [factory, narration]
+paragraph: planner-replan
+facts: session
+answer: ""
+tools:
+  builtin: [bash, glob, grep, read]
+  gateway: [analyze_image, digest, file_replan, manual, web_scrape, web_search]
+  chat: []
+agents_md: false
+budget_words: 1605

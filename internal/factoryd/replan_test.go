@@ -1617,7 +1617,7 @@ func TestCutSiblingWaitsOnTheNewCard(t *testing.T) {
 	next := testPlan()
 	next.Cards[1].Key, next.Cards[1].From = "links-api-2", "links-api"
 	next.Cards[2].DependsOn = []string{"links-api-2"}
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("revision 2: %+v, %v", res, err)
 	}
 	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))

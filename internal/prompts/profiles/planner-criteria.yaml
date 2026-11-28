@@ -1,0 +1,15 @@
+step: planner-criteria
+purpose: session
+reader: human
+guide: false
+forms: [line]
+chunks: [factory, narration]
+paragraph: planner-criteria
+facts: session
+answer: ""
+tools:
+  builtin: [bash, glob, grep, read]
+  gateway: [analyze_image, digest, file_criteria, manual, web_scrape, web_search]
+  chat: []
+agents_md: false
+budget_words: 381

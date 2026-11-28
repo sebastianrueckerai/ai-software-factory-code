@@ -78,7 +78,7 @@ var noPage = map[string]string{
 
 // captureSites are the map's own captures that call a model client
 // themselves: no step of the factory, so they need no page.
-var captureSites = []string{"factoryd.agentDocAudit", "factoryd.agentDocBehaviours", "factoryd.agentDocDelta",
+var captureSites = []string{"factoryd.agentDocAudit", "factoryd.agentDocDelta",
 	"factoryd.agentDocGateSupervisor", "factoryd.agentDocJudgement", "factoryd.agentDocReview"}
 
 // builderCaptures are the direct pages whose capture drives the step's
@@ -86,12 +86,11 @@ var captureSites = []string{"factoryd.agentDocAudit", "factoryd.agentDocBehaviou
 // why: the function makes more calls than the one the page shows, or
 // runs on state no fixture stands in for. Each names one call.
 var builderCaptures = map[string]string{
-	"model-review":      "ModelReview reads the pull request from the forge and makes the behaviours call and one call per diff part, and the capture makes the first part's call",
-	"review-behaviours": "ModelReview makes the behaviours call beside its part calls, and the capture makes the behaviours call alone",
-	"security-audit":    "GateAudit reads the pull request from the forge and makes one call per diff part, and the capture makes the first part's call",
-	"gate-supervisor":   "SuperviseGate runs in a workflow on a stalled gate's live state, and the capture makes its call on a fixture bundle",
-	"judgement":         "judgeArtifacts stores each artifact and records each verdict, and the capture makes its call through callAll on the same judgementCall",
-	"delta-planner":     "draftDelta reads the plan's verdicts and files the delta card, and the capture makes its call on a fixture plan",
+	"model-review":    "ModelReview reads the pull request from the forge and makes one call per diff part, and the capture makes the first part's call",
+	"security-audit":  "GateAudit reads the pull request from the forge and makes one call per diff part, and the capture makes the first part's call",
+	"gate-supervisor": "SuperviseGate runs in a workflow on a stalled gate's live state, and the capture makes its call on a fixture bundle",
+	"judgement":       "judgeArtifacts stores each artifact and records each verdict, and the capture makes its call through callAll on the same judgementCall",
+	"delta-planner":   "draftDelta reads the plan's verdicts and files the delta card, and the capture makes its call on a fixture plan",
 }
 
 // sessionTransports are the walk's transports that start or message a
@@ -228,4 +227,13 @@ func stackOf(t *testing.T, a Agent) map[string]bool {
 		t.Fatalf("%s: capture: %v", a.ID, err)
 	}
 	return rec.funcs
+}
+
+func TestRegistryHasNoReviewBehaviours(t *testing.T) {
+	if agentByID("review-behaviours") != nil {
+		t.Fatal("the registry lists review-behaviours")
+	}
+	if slices.Contains(captureSites, "factoryd.agentDocBehaviours") {
+		t.Fatal("captureSites lists the behaviours capture")
+	}
 }

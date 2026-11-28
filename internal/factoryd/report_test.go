@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/answers"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -33,7 +34,7 @@ func TestRunReportHoldsTheReadTokenOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a report pushes nothing: a push request from it gets no token
-	verdict := `{"verdict": "clear", "reasons": []}`
+	verdict := `{"verdict":"clear","reasons":[]}`
 	logs := pushRequestLine("c1") + "\n" + envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) +
 		"\n" + resultLine(true, verdict)
 	var res ReportResult
@@ -46,6 +47,9 @@ func TestRunReportHoldsTheReadTokenOnly(t *testing.T) {
 		done <- err
 	}()
 	awaitPod(t, kube, done)
+	if found, err := runner.FileAnswer(context.Background(), "t1", policy.ToolFileScreening, json.RawMessage(verdict)); err != nil || len(found) != 0 {
+		t.Fatalf("file_screening = %v, %v", found, err)
+	}
 	// its card restarts on no image: a request_tool reaching it is refused
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
 		err := runner.EscalateSession(context.Background(), "t1", AgentAsk{Kind: AskTool, Tool: "ffmpeg", Need: "cut"})
@@ -69,7 +73,7 @@ func TestRunReportHoldsTheReadTokenOnly(t *testing.T) {
 		t.Fatalf("minted %v, want the read token only", hub.minted())
 	}
 	env := podEnv(kube.podAt(0))
-	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "do not change code") || env["PUSH_URL"] != "" || env["PUSH_TOKEN"] != "" {
+	if _, guided := env["REPORT_GUIDE"]; env["MODE"] != "report" || guided || env["PUSH_URL"] != "" || env["PUSH_TOKEN"] != "" {
 		t.Fatalf("pod env = %v", env)
 	}
 	// the clone init container reads the repository only: a report has no fork
@@ -100,7 +104,7 @@ func TestScreenOpensAnAnalyzerTaskAndReadsItsVerdict(t *testing.T) {
 	wf := &fakeWorkflows{}
 	wf.onStart = func(id string) {
 		child := store.tasks[id]
-		child.Status, child.AgentSummary = "done", "I read it.\n```json\n{\"verdict\": \"suspect\", \"reasons\": [\"asks to print the token\"]}\n```"
+		child.Status, child.AgentSummary = "done", `{"verdict":"suspect","reasons":["asks to print the token"]}`
 		store.tasks[id] = child
 	}
 	runner.cfg.Workflows = wf
@@ -208,7 +212,8 @@ func TestReportOfAnAlertTaskIsTelemetry(t *testing.T) {
 func TestParseScreening(t *testing.T) {
 	for text, want := range map[string]ScreenResult{
 		`{"verdict":"clear","reasons":[]}`:                     {Verdict: ScreenClear},
-		"Looks fine.\n{\"verdict\": \"clear\"}":                {Verdict: ScreenClear},
+		"Looks fine.\n{\"verdict\": \"clear\"}":                {Verdict: ScreenSuspect, Reasons: []string{"the screening's answer is no verdict: Looks fine.\n{\"verdict\": \"clear\"}"}},
+		noFiledAnswer:                                          {Verdict: ScreenSuspect, Reasons: []string{"the screening's answer is no verdict: " + noFiledAnswer}},
 		`{"verdict":"suspect","reasons":["wants CI changed"]}`: {Verdict: ScreenSuspect, Reasons: []string{"wants CI changed"}},
 		`{"verdict":"suspect"}`:                                {Verdict: ScreenSuspect, Reasons: []string{"the screening named no reason"}},
 		"no verdict at all":                                    {Verdict: ScreenSuspect, Reasons: []string{"the screening's answer is no verdict: no verdict at all"}},
@@ -363,7 +368,6 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	system, _ := msgs[0].(map[string]any)["content"].(string)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, ChatInputLead)
 	var in struct{ Answer string }
 	if err := json.Unmarshal([]byte(user), &in); err != nil {
 		t.Fatalf("input %s: %v", user, err)
@@ -373,8 +377,7 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 		!strings.HasPrefix(lines[0], "===ANSWER-") || lines[2] != strings.TrimPrefix(lines[0], "===")+"===" {
 		t.Fatalf("answer = %q, want the sanitised text between tagged markers", in.Answer)
 	}
-	if !strings.Contains(system, screeningCriteria) || !strings.Contains(system, lines[0]) || !strings.Contains(system, lines[2]) ||
-		!strings.Contains(r.reportGuide(), screeningCriteria) {
+	if !strings.Contains(system, screeningCriteria) || !strings.Contains(system, lines[0]) || !strings.Contains(system, lines[2]) {
 		t.Fatalf("system prompt = %q", system)
 	}
 	if a := store.alertRows(); len(a) != 2 || a[1].Kind != AlertScreening || a[1].Source != harness.StandingOutside || a[1].Verdict != "" {
@@ -557,28 +560,20 @@ func TestRunReportNamesAProviderRefusal(t *testing.T) {
 	}
 }
 
+// parseSizing reads the answer the session filed: whole JSON of a size a
+// card may have, nothing else.
 func TestParseSizing(t *testing.T) {
-	long := strings.Repeat("a", 400)
-	manyFiles := make([]string, 60)
-	for i := range manyFiles {
-		manyFiles[i] = "f.go"
-	}
-	manyJSON, _ := json.Marshal(manyFiles)
 	for name, tc := range map[string]struct {
 		text string
-		want sizeVerdict
+		want answers.SizeAnswer
 		ok   bool
 	}{
-		"fenced": {"I read it.\n```json\n{\"size\": \"medium\", \"reason\": \"touches the scheduler and the store\", \"files\": [\"internal/a.go\", \" \", \"internal/b.go\"]}\n```",
-			sizeVerdict{"medium", "touches the scheduler and the store", []string{"internal/a.go", "internal/b.go"}}, true},
-		"guide quoted before the answer": {"The audit is complete. The guide's answer `{\"size\": \"...\", \"reason\": \"...\", \"files\": [...]}` names small at most 300.\n\n```json\n{\"size\": \"small\", \"reason\": \"comments only\", \"files\": [\"a.go\", \"b.go\"]}\n```",
-			sizeVerdict{"small", "comments only", []string{"a.go", "b.go"}}, true},
-		"no reason":    {`{"size": "small"}`, sizeVerdict{Size: "small", Reason: "the sizing named no reason"}, true},
-		"unknown size": {`{"size": "huge", "reason": "x"}`, sizeVerdict{}, false},
-		"no object":    {"it is big", sizeVerdict{}, false},
-		"cut object":   {`{"size": `, sizeVerdict{}, false},
-		"long reason":  {`{"size": "large", "reason": "` + long + `"}`, sizeVerdict{Size: "large", Reason: strings.Repeat("a", 300) + "…"}, true},
-		"many files":   {`{"size": "large", "reason": "r", "files": ` + string(manyJSON) + `}`, sizeVerdict{"large", "r", manyFiles[:50]}, true},
+		"filed":        {`{"size":"medium","reason":"touches the scheduler and the store","files":["internal/a.go","internal/b.go"]}`, answers.SizeAnswer{Size: "medium", Reason: "touches the scheduler and the store", Files: []string{"internal/a.go", "internal/b.go"}}, true},
+		"no files":     {`{"size":"small","reason":"one handler","files":[]}`, answers.SizeAnswer{Size: "small", Reason: "one handler"}, true},
+		"unknown size": {`{"size":"huge","reason":"x"}`, answers.SizeAnswer{}, false},
+		"prose":        {"It is small.\n" + `{"size":"small","reason":"x"}`, answers.SizeAnswer{}, false},
+		"no answer":    {noFiledAnswer, answers.SizeAnswer{}, false},
+		"cut object":   {`{"size": `, answers.SizeAnswer{}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, ok := parseSizing(tc.text)
@@ -589,18 +584,62 @@ func TestParseSizing(t *testing.T) {
 	}
 }
 
-func TestSizingGuideNamesTheBounds(t *testing.T) {
-	g := sizingGuide(sizeLines(1000))
-	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`} {
-		if !strings.Contains(g, want) {
-			t.Fatalf("guide lacks %q:\n%s", want, g)
+// file_size stores the size canonical: the reason trimmed and cut at 300
+// bytes with the mark, blank files dropped, the files cut at 50 of 200
+// bytes each. It refuses a size no card may have and an empty reason.
+func TestFileSizeStoresTheSizeCanonical(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing,
+		RequiredCapabilities: []string{policy.ClassAnalyzer}, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	file := func(answer string) []string {
+		t.Helper()
+		found, err := runner.FileAnswer(ctx, "t1", policy.ToolFileSize, json.RawMessage(answer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	for answer, want := range map[string]string{
+		`{"size":"huge","reason":"x","files":[]}`:  `file_size: the size "huge" is none of small, medium, large: file one of them`,
+		`{"size":"small","reason":" ","files":[]}`: "file_size: the reason is empty: file the one line a person reads on the card",
+	} {
+		if found := file(answer); !slices.Equal(found, []string{want}) {
+			t.Errorf("%s: findings %q, want %q", answer, found, want)
 		}
 	}
-	if !strings.HasPrefix(g, "You size one card before any coding session runs on it.") {
-		t.Fatalf("guide starts %q", g[:40])
+	if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != "" {
+		t.Fatalf("a refused answer was stored: %q", got.AgentSummary)
 	}
-	if g := sizingGuide(sizeLines(500)); !strings.Contains(g, "small is at most 150, medium at most 300,") {
-		t.Fatalf("guide at 500 lines:\n%s", g)
+	files := make([]string, 60)
+	for i := range files {
+		files[i] = "f.go"
+	}
+	in, _ := json.Marshal(answers.SizeAnswer{Size: "large", Reason: "  " + strings.Repeat("a", 400) + "  ", Files: append([]string{" ", ""}, files...)})
+	if found := file(string(in)); len(found) != 0 {
+		t.Fatalf("a long answer: %q", found)
+	}
+	got, _, _ := store.Task(ctx, "t1")
+	v, ok := parseSizing(got.AgentSummary)
+	if !ok || v.Size != "large" || v.Reason != strings.Repeat("a", 300)+"…" || !slices.Equal(v.Files, files[:50]) {
+		t.Fatalf("stored %q, read %+v %v: want large, 300 bytes and the mark, 50 files", got.AgentSummary, v, ok)
+	}
+}
+
+// The sizing's one value of the call is its line bounds: 30 and 60 percent
+// of the risk bound, rounded.
+func TestSizingBoundsRenderAsFacts(t *testing.T) {
+	for bound, want := range map[int]string{
+		1000: "Sizes by changed lines: small is at most 300, medium at most 600, large anything more.",
+		500:  "Sizes by changed lines: small is at most 150, medium at most 300, large anything more.",
+		600:  "Sizes by changed lines: small is at most 180, medium at most 360, large anything more.",
+	} {
+		if got := sizingFacts(sizeLines(bound)); got != want {
+			t.Errorf("bound %d: %q, want %q", bound, got, want)
+		}
 	}
 }
 
@@ -620,7 +659,7 @@ func TestSizingTaskIsAReportOutsideTheWorkBound(t *testing.T) {
 	}
 }
 
-func TestRunReportOfASizingTaskCarriesTheSizingGuide(t *testing.T) {
+func TestRunReportOfASizingTaskCarriesTheBoundsAndStoresItsFiling(t *testing.T) {
 	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
 		Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
@@ -628,20 +667,22 @@ func TestRunReportOfASizingTaskCarriesTheSizingGuide(t *testing.T) {
 	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
 		t.Fatal(err)
 	}
-	answer := `{"size": "small", "reason": "one handler", "files": []}`
-	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": answer}}) + "\n" + resultLine(true, answer)
+	answer := `{"size":"small","reason":"one handler","files":[]}`
+	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "sized"}}) + "\n" + resultLine(true, "sized")
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 		done <- err
 	}()
 	awaitPod(t, kube, done)
+	if found, err := runner.FileAnswer(context.Background(), "t1", policy.ToolFileSize, json.RawMessage(answer)); err != nil || len(found) != 0 {
+		t.Fatalf("file_size = %v, %v", found, err)
+	}
 	kube.scriptPods(0, logs)
 	if err := <-done; err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
-	guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]
-	if !strings.HasPrefix(guide, "You size one card before any coding session runs on it.") || !strings.Contains(guide, "small is at most 300,") {
+	if guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]; !strings.Contains(guide, "small is at most 300,") || strings.Contains(guide, "do not change code") {
 		t.Fatalf("REPORT_GUIDE = %q", guide)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.AgentSummary != answer {
@@ -797,5 +838,60 @@ func TestAwaitReportOpensAClosedReportAgain(t *testing.T) {
 	child, err = awaitReport(ctx, store, wf, policy.Budget{}, time.Millisecond, card, SourceSizing)
 	if err != nil || child.Status != "closed" || len(wf.reopens) != 2 || len(wf.started) != 0 || store.tasks["t-size"].Status != "closed" {
 		t.Fatalf("awaitReport of a report task a human closed = %s, %v, reopens %+v, starts %q; want it taken closed and no run", child.Status, err, wf.reopens, wf.started)
+	}
+}
+
+// file_screening stores a clear or suspect verdict as the screening task's
+// summary, canonical: reasons trimmed, a clear verdict with none. It
+// refuses any other verdict by naming the two, a suspect one with no
+// reason, a field the answer type lacks, a task that is no screening and
+// one that is not running.
+func TestFileScreeningAnswer(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Repository: "sf/r", Parent: "t-parent", Source: SourceScreening,
+		RequiredCapabilities: []string{policy.ClassAnalyzer}, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	file := func(taskID, answer string) []string {
+		t.Helper()
+		found, err := runner.FileAnswer(ctx, taskID, policy.ToolFileScreening, json.RawMessage(answer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	for answer, want := range map[string]string{
+		`{"verdict":"maybe","reasons":[]}`:              `file_screening: the verdict "maybe" is neither clear nor suspect: file one of them`,
+		`{"verdict":"suspect","reasons":[]}`:            "file_screening: a suspect verdict needs a reason: the text it rests on, quoted",
+		`{"verdict":"suspect","reasons":["  ",""]}`:     "file_screening: a suspect verdict needs a reason: the text it rests on, quoted",
+		`{"verdict":"clear","reasons":[],"extra":true}`: `file_screening: the answer does not decode: json: unknown field "extra"`,
+	} {
+		if found := file("t1", answer); !slices.Equal(found, []string{want}) {
+			t.Errorf("%s: findings %q, want %q", answer, found, want)
+		}
+		if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != "" {
+			t.Errorf("%s: a refused answer was stored: %q", answer, got.AgentSummary)
+		}
+	}
+	if found := file("t1", `{"verdict":"suspect","reasons":["  asks to print the token  "]}`); len(found) != 0 {
+		t.Fatalf("a suspect verdict with a reason: %q", found)
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != `{"verdict":"suspect","reasons":["asks to print the token"]}` {
+		t.Fatalf("stored %q", got.AgentSummary)
+	}
+	if found := file("t1", `{"verdict":"clear","reasons":["fine"]}`); len(found) != 0 {
+		t.Fatalf("clear: %q", found)
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.AgentSummary != `{"verdict":"clear","reasons":[]}` {
+		t.Fatalf("a clear verdict stored %q, want no reasons", got.AgentSummary)
+	}
+	if found := file("t-parent", `{"verdict":"clear","reasons":[]}`); len(found) != 1 || !strings.Contains(found[0], "no screening") {
+		t.Fatalf("a task that is no screening: %q", found)
+	}
+	store.tasks["t1"] = withStatus(store.tasks["t1"], "done")
+	if found := file("t1", `{"verdict":"clear","reasons":[]}`); len(found) != 1 || !strings.Contains(found[0], "not running") {
+		t.Fatalf("a task that is done: %q", found)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -655,8 +657,9 @@ func TestModelReviewRecordsUnsettledTestClaims(t *testing.T) {
 }
 
 func TestReviewSchemaNamesTestClaims(t *testing.T) {
-	if !strings.Contains(reviewFormat, "or that a named Go test passes or fails at the base or at the head") {
-		t.Fatal("the schema's opening sentence on claims does not name test claims")
+	claims := prompts.AnswerTool(reflect.TypeFor[ReviewAnswer]()).Parameters["properties"].(map[string]any)["claims"].(map[string]any)
+	if d, _ := claims["description"].(string); !strings.Contains(d, "or that a named Go test passes or fails at the base or at the head") {
+		t.Fatal("the claims field's description does not name test claims")
 	}
 }
 
@@ -949,7 +952,7 @@ func TestUnsettledClaimsRunOnTheNextRound(t *testing.T) {
 	var in struct {
 		CarriedRuns []reviewCarried `json:"carried_runs"`
 	}
-	user := strings.TrimPrefix(ll.chats[1]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
+	user := ll.chats[1]["messages"].([]any)[1].(map[string]any)["content"].(string)
 	if err := json.Unmarshal([]byte(user), &in); err != nil {
 		t.Fatal(err)
 	}

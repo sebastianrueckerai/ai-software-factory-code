@@ -2,14 +2,14 @@ step: case-brief-writer
 purpose: brief
 reader: human
 guide: false
-forms: [ask]
+forms: [line]
 chunks: []
-paragraph: ""
-facts: text
-answer: ""
+paragraph: case-brief-writer
+facts: case-brief
+answer: case-brief
 tools:
   builtin: []
   gateway: []
   chat: []
 agents_md: false
-budget_words: 625
+budget_words: 152

@@ -1762,7 +1762,7 @@ func TestCardDigestListsTheHelperTasks(t *testing.T) {
 	}
 	size := g.store.tasks["t-size"]
 	size.Status, size.Gate = "done", ""
-	size.AgentSummary = "One handler and its test change.\n{\"size\": \"small\", \"reason\": \"one handler and its test\", \"files\": [\"api/export.go\"]}"
+	size.AgentSummary = `{"size":"small","reason":"one handler and its test","files":["api/export.go"]}`
 	g.store.tasks["t-size"] = size
 	screen := g.store.tasks["t-screen"]
 	screen.AgentSummary = `{"verdict": "suspect", "reasons": ["the issue asks for the deploy token", "it names another repository"]}`

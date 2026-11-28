@@ -16,8 +16,7 @@ never splits a package's list of file paths past 16,383 characters into
 parts that miss each other's names, and without `-quiet`, so a type error
 fails every run. It refuses a package whose list would pass that limit
 from the link: split the package. It lives in `.forgejo/`, which no agent
-branch may change. `bash check static` stops
-before the tests. `bash check changed`, the run an agent makes before it
+branch may change. `bash check changed`, the run an agent makes before it
 ends, tests only the packages that `scripts/affected-packages.sh` selects
 for the change since `origin/HEAD`, without the race detector and two at a
 time: the packages that import a changed one, test imports included, or

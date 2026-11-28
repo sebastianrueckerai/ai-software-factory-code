@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"slices"
 	"strings"
@@ -41,11 +42,6 @@ const recordWindow = 10 * time.Second
 // nameFactsBytes bounds each fact a naming ask carries.
 const nameFactsBytes = 600
 
-// namerPrompt is the naming ask's system prompt: the answer must work
-// as a plan's name on a card, one JSON field like every supervisor
-// answer.
-var namerPrompt = "You name build plans. Answer with a JSON object with one field \"name\": short plain words that say what the plan does, fixes or enables, at most 24 characters, one line, no trailing period."
-
 // NameStore is what the namer reads and writes.
 type NameStore interface {
 	// OpenPlanNames are the names of the project's open plans, every
@@ -78,17 +74,18 @@ func (n *Namer) Name(ctx context.Context, t Task, title, outcome, summary string
 	}
 	v := n.Current()
 	alias := v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeTitle)
-	system, err := prompts.Build("plan-namer", namerPrompt)
+	system, err := prompts.Build("plan-namer", "")
 	if err != nil {
 		log.Printf("names: %v", err)
 		return ""
 	}
 	for attempt := 1; attempt <= nameAttempts; attempt++ {
-		answer, _, err := n.Model.Chat(ctx, t.ID, alias, v.Document.Limits.SupervisorTimeout, system, nameFacts(title, outcome, summary, taken, attempt))
-		if err != nil {
+		answer, _, err := ChatAnswer[NameAnswer](ctx, n.Model, t.ID, alias, v.Document.Limits.SupervisorTimeout, system, nameFacts(title, outcome, summary, taken, attempt))
+		var bad *badAnswerError
+		if err != nil && !errors.As(err, &bad) {
 			break
 		}
-		if name, ok := PlanName(nameAnswer(answer), taken); ok {
+		if name, ok := PlanName(answer.Name, taken); ok {
 			n.record(ctx, t, name)
 			return name
 		}
@@ -160,20 +157,6 @@ func nameFacts(title, outcome, summary string, taken []string, attempt int) stri
 		b.WriteString("\nAlready taken by other open plans: " + strings.Join(taken, ", "))
 	}
 	return b.String()
-}
-
-// nameAnswer is the model's answer as the proposed name: one JSON
-// object with one field. Anything else — a bare string, a broken
-// object, an empty name — is the empty proposal, which normalization
-// refuses like any invalid answer.
-func nameAnswer(content string) string {
-	var a struct {
-		Name string `json:"name"`
-	}
-	if json.Unmarshal([]byte(content), &a) != nil {
-		return ""
-	}
-	return a.Name
 }
 
 // PlanName is s as a plan's name and whether it holds: normalized

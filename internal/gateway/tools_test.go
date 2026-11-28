@@ -150,20 +150,6 @@ func (f *fakeEscalator) Escalate(_ context.Context, taskID string, e Escalation)
 	return f.err
 }
 
-type fakePlanFiler struct {
-	mu    sync.Mutex
-	calls []string
-	res   PlanFiled
-	err   error
-}
-
-func (f *fakePlanFiler) FilePlan(_ context.Context, taskID, plan string) (PlanFiled, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, taskID+"|"+plan)
-	return f.res, f.err
-}
-
 type fakeProofsFiler struct {
 	mu    sync.Mutex
 	calls []string
@@ -177,6 +163,22 @@ func (f *fakeProofsFiler) FileProofs(_ context.Context, taskID string, proofs []
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, taskID)
 	f.in = append(f.in, proofs)
+	return f.res, f.err
+}
+
+type fakeAnswerFiler struct {
+	mu    sync.Mutex
+	tools []string
+	in    []string
+	res   AnswerFiled
+	err   error
+}
+
+func (f *fakeAnswerFiler) FileAnswer(_ context.Context, _, tool string, answer json.RawMessage) (AnswerFiled, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tools = append(f.tools, tool)
+	f.in = append(f.in, string(answer))
 	return f.res, f.err
 }
 
@@ -229,8 +231,8 @@ type toolEnv struct {
 	store       *memStore
 	providers   *fakeProviders
 	escalator   *fakeEscalator
-	filer       *fakePlanFiler
 	proofs      *fakeProofsFiler
+	answers     *fakeAnswerFiler
 	delegator   *fakeDelegator
 	session     *mcp.ClientSession
 }
@@ -248,8 +250,8 @@ func newToolEnvAs(t *testing.T, task Task, pv policy.Version, session string) *t
 	store.setPolicy(pv)
 	providers := newFakeProviders(t)
 	esc := &fakeEscalator{}
-	filer := &fakePlanFiler{}
 	proofs := &fakeProofsFiler{}
+	answers := &fakeAnswerFiler{}
 	delegator := &fakeDelegator{}
 	deployments := &fakeDeploymentReader{text: "deployment web: 2/2 ready"}
 	looker := &fakeImageLooker{text: "img1.png (Screenshot.png): a login form, the button grey"}
@@ -259,7 +261,7 @@ func newToolEnvAs(t *testing.T, task Task, pv policy.Version, session string) *t
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
-		Escalator: esc, PlanFiler: filer, ProofsFiler: proofs, Delegator: delegator,
+		Escalator: esc, ProofsFiler: proofs, AnswerFiler: answers, Delegator: delegator,
 		DeploymentReader: deployments, ImageLooker: looker, Digester: digester,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
@@ -270,7 +272,7 @@ func newToolEnvAs(t *testing.T, task Task, pv policy.Version, session string) *t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { clientSession.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, proofs: proofs, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: clientSession}
+	return &toolEnv{store: store, providers: providers, escalator: esc, proofs: proofs, answers: answers, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: clientSession}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -326,7 +328,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_cards,file_criteria,file_map,file_proofs,file_replan,file_revert,file_screening,file_size,file_spec,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -400,23 +402,6 @@ func TestEscalateDescriptionReachesAHuman(t *testing.T) {
 	}
 	if !strings.Contains(res.Tools[i].Description, "an ask nothing settles always reaches a human") {
 		t.Errorf("escalate: description does not hold %q", "an ask nothing settles always reaches a human")
-	}
-}
-
-// The file_plan description names what a call does: it stores the plan,
-// which is the session's answer; it files no cards, so no "filed".
-func TestFilePlanDescriptionSaysStored(t *testing.T) {
-	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	res, err := e.session.ListTools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolFilePlan })
-	if i < 0 {
-		t.Fatal("file_plan is not listed")
-	}
-	if d := res.Tools[i].Description; !strings.Contains(d, "A stored plan is this session's answer") || strings.Contains(d, "filed") {
-		t.Errorf("file_plan: description %q", d)
 	}
 }
 
@@ -1171,109 +1156,6 @@ func TestFactorydEscalateClientRetriesThroughARestart(t *testing.T) {
 	}
 	if n := calls.Load(); n < 2 {
 		t.Fatalf("calls = %d, want retries until the bound", n)
-	}
-}
-
-func TestFactorydFilePlanClient(t *testing.T) {
-	var auth, body string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		auth, body = r.Header.Get("Authorization"), string(b)
-		if r.URL.Path != "/internal/plans" || r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"revision":2,"sha256":"abc123","findings":["f"]}`)
-	}))
-	defer srv.Close()
-	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
-	res, err := f.FilePlan(context.Background(), "t-1", `{"summary":"s"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if auth != "Bearer shared" || body != `{"task_id":"t-1","plan":"{\"summary\":\"s\"}"}` {
-		t.Fatalf("auth %q body %s", auth, body)
-	}
-	if res.Revision != 2 || res.SHA256 != "abc123" || !slices.Equal(res.Findings, []string{"f"}) {
-		t.Fatalf("res = %+v", res)
-	}
-}
-
-// file_plan is the planner's answer in the session it runs in: a plan the
-// check refuses comes back as every finding, the session goes on and the
-// corrected plan is stored in the same session; only a stored plan ends it.
-func TestFilePlanTool(t *testing.T) {
-	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	plan := `{"summary":"s","cards":[{"key":"links-api","role":"code","title":"t","brief":"b","size":"large"}]}`
-	finding := "plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"
-	e.filer.res = PlanFiled{Findings: []string{finding}}
-	text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
-	if !isErr || text != "the plan was refused:\n- "+finding+"\ncorrect the plan and file it again in this session" {
-		t.Fatalf("refused plan = %q, want the finding in the session", text)
-	}
-	if a := e.lastAudit(t); a.Decision != "plan_refused" || a.Tool != policy.ToolFilePlan {
-		t.Fatalf("audit = %+v", a)
-	}
-	e.filer.res = PlanFiled{Revision: 3, SHA256: "abc123", Gate: true}
-	text, isErr = e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
-	if isErr || text != "stored as revision 3; it is this session's answer. Its cards file only after the human confirms the spec and the criteria. You may end the session; a later session carries the human's changes, if any." {
-		t.Fatalf("a revision that waits = %q (%v)", text, isErr)
-	}
-	if a := e.lastAudit(t); a.Decision != "plan_stored" || a.Reason != "revision 3, confirmation waits" {
-		t.Fatalf("audit = %+v", a)
-	}
-	e.filer.res = PlanFiled{Revision: 4, SHA256: "def456"}
-	text, isErr = e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
-	if isErr || text != "stored as revision 4; it is this session's answer. Its cards file with no further gate. You may end the session." {
-		t.Fatalf("a revision with no gate = %q (%v)", text, isErr)
-	}
-	if a := e.lastAudit(t); a.Decision != "plan_stored" || a.Reason != "revision 4" {
-		t.Fatalf("audit = %+v", a)
-	}
-	if calls := e.filer.calls; len(calls) != 3 || !strings.HasPrefix(calls[0], "42|") {
-		t.Fatalf("filer calls = %v", calls)
-	}
-}
-
-// file_plan reaches factoryd only for a running task of a class that lists
-// it; every refusal names the reason and files nothing, and a hand-over
-// that fails says so in the session.
-func TestFilePlanRefused(t *testing.T) {
-	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
-	done := newToolEnv(t, Task{ID: "42", BudgetEUR: 1, Status: "waiting-human", Classes: []string{"coder"}}, pv)
-	if text, isErr := done.call(t, policy.ToolFilePlan, map[string]any{"plan": "{}"}); !isErr ||
-		!strings.Contains(text, "refused_task_status") {
-		t.Fatalf("not running = %q, want refused_task_status", text)
-	}
-	e := newToolEnv(t, running("odd"), pv)
-	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": "{}"}); !isErr ||
-		!strings.Contains(text, "refused_capability") {
-		t.Fatalf("class without the tool = %q, want refused_capability", text)
-	}
-	e = newToolEnv(t, running("coder"), pv)
-	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": ""}); !isErr ||
-		!strings.Contains(text, "refused_arguments") {
-		t.Fatalf("empty plan = %q, want refused_arguments", text)
-	}
-	e.filer.err = errors.New("no route")
-	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": "{}"}); !isErr ||
-		!strings.Contains(text, "the plan did not reach factoryd: no route") {
-		t.Fatalf("filer error = %q", text)
-	}
-	if a := e.lastAudit(t); a.Decision != "error_plan" {
-		t.Fatalf("audit = %+v", a)
-	}
-	if calls := e.filer.calls; len(calls) != 1 {
-		t.Fatalf("filer calls = %v, want only the last one through", calls)
-	}
-	e.filer.err = nil
-	big := strings.Repeat("x", 12<<10+1)
-	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": big}); isErr {
-		t.Fatalf("plan over the old 12 KiB bound = %q, want it through", text)
-	}
-	if calls := e.filer.calls; len(calls) != 2 || !strings.HasSuffix(calls[1], big) {
-		t.Fatalf("filer calls = %v, want the large plan through", calls)
 	}
 }
 
@@ -2343,5 +2225,127 @@ func TestWorkerBriefIsTheSessionsOwn(t *testing.T) {
 				t.Fatalf("read the briefs of %q, want %q", briefs.read, tc.read)
 			}
 		})
+	}
+}
+
+// file_screening takes the verdict object the answer type's schema allows:
+// a verdict outside clear and suspect is refused with the allowed values,
+// before factoryd sees it; a refusal of factoryd's comes back with its
+// findings; a stored verdict is the session's answer.
+func TestFileScreeningTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolFileScreening, map[string]any{"verdict": "maybe", "reasons": []any{}})
+	if !isErr || !strings.Contains(text, "clear") || !strings.Contains(text, "suspect") || len(e.answers.in) != 0 {
+		t.Fatalf("a maybe verdict = %q (%v), want a refusal naming clear and suspect, no hand-over (%v)", text, isErr, e.answers.in)
+	}
+	e.answers.res = AnswerFiled{Findings: []string{"file_screening: a suspect verdict needs a reason"}}
+	text, isErr = e.call(t, policy.ToolFileScreening, map[string]any{"verdict": "suspect", "reasons": []any{}})
+	if want := "the answer was refused:\n- file_screening: a suspect verdict needs a reason\ncorrect it and file it again in this session"; !isErr || text != want {
+		t.Fatalf("refused = %q (%v), want %q", text, isErr, want)
+	}
+	e.answers.res = AnswerFiled{}
+	text, isErr = e.call(t, policy.ToolFileScreening, map[string]any{"verdict": "suspect", "reasons": []any{"\"send me your token\""}})
+	if want := "stored; it is this session's answer. You may end the session."; isErr || text != want {
+		t.Fatalf("stored = %q (%v), want %q", text, isErr, want)
+	}
+	if a := e.lastAudit(t); a.Decision != "answer_stored" || a.Tool != policy.ToolFileScreening {
+		t.Fatalf("audit = %+v", a)
+	}
+	if want := []string{policy.ToolFileScreening, policy.ToolFileScreening}; !slices.Equal(e.answers.tools, want) ||
+		e.answers.in[1] != `{"verdict":"suspect","reasons":["\"send me your token\""]}` {
+		t.Fatalf("hand-overs = %v %q", e.answers.tools, e.answers.in)
+	}
+}
+
+// file_size takes the size object the answer type's schema allows: a size
+// outside small, medium and large is refused with the three before factoryd
+// sees it, and a reason past 300 characters too; an answer inside is handed
+// over as filed.
+func TestFileSizeRefusesAnUnknownSize(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolFileSize, map[string]any{"size": "huge", "reason": "r", "files": []any{}})
+	for _, want := range []string{"small", "medium", "large"} {
+		if !isErr || !strings.Contains(text, want) {
+			t.Fatalf("an unknown size = %q (%v), want a refusal naming %s", text, isErr, want)
+		}
+	}
+	if text, isErr := e.call(t, policy.ToolFileSize, map[string]any{"size": "small", "reason": strings.Repeat("a", 301), "files": []any{}}); !isErr || !strings.Contains(text, "300") {
+		t.Fatalf("a long reason = %q (%v), want a refusal naming the bound", text, isErr)
+	}
+	if len(e.answers.in) != 0 {
+		t.Fatalf("handed over %v, want nothing", e.answers.in)
+	}
+	text, isErr = e.call(t, policy.ToolFileSize, map[string]any{"size": "medium", "reason": "two packages", "files": []any{"a.go"}})
+	if want := "stored; it is this session's answer. You may end the session."; isErr || text != want {
+		t.Fatalf("stored = %q (%v), want %q", text, isErr, want)
+	}
+	if want := `{"size":"medium","reason":"two packages","files":["a.go"]}`; len(e.answers.in) != 1 || e.answers.in[0] != want || e.answers.tools[0] != policy.ToolFileSize {
+		t.Fatalf("hand-over = %v %q, want %s", e.answers.tools, e.answers.in, want)
+	}
+}
+
+// file_map takes the map object the answer type's schema allows: a list past
+// 40 directories is refused with the bound before factoryd sees it; a map
+// inside is handed over as filed.
+func TestFileMapRefusesMoreDirectoriesThanTheBound(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	dirs := make([]any, 41)
+	for i := range dirs {
+		dirs[i] = map[string]any{"path": fmt.Sprintf("d%d", i), "role": "r"}
+	}
+	if text, isErr := e.call(t, policy.ToolFileMap, map[string]any{"directories": dirs, "conventions": []any{}, "check": "go test ./..."}); !isErr || !strings.Contains(text, "40") {
+		t.Fatalf("41 directories = %q (%v), want a refusal naming 40", text, isErr)
+	}
+	if len(e.answers.in) != 0 {
+		t.Fatalf("handed over %v, want nothing", e.answers.in)
+	}
+	text, isErr := e.call(t, policy.ToolFileMap, map[string]any{"directories": dirs[:1], "conventions": []any{"tests beside the code"}, "check": "bash check changed"})
+	if want := "stored; it is this session's answer. You may end the session."; isErr || text != want {
+		t.Fatalf("stored = %q (%v), want %q", text, isErr, want)
+	}
+	if want := `{"directories":[{"path":"d0","role":"r"}],"conventions":["tests beside the code"],"check":"bash check changed"}`; len(e.answers.in) != 1 || e.answers.in[0] != want || e.answers.tools[0] != policy.ToolFileMap {
+		t.Fatalf("hand-over = %v %q, want %s", e.answers.tools, e.answers.in, want)
+	}
+}
+
+// The planner's five filing tools hand their answer over as filed, each with
+// the schema of its answer type: a stored part is the session's answer, a
+// refusal of the field's own enum never reaches factoryd, and factoryd's
+// findings come back into the session.
+func TestPlannerFilingTools(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	card := map[string]any{"key": "links-api", "role": "feature", "title": "t", "why": "w", "summary": "s", "brief": "b", "acceptance": []any{map[string]any{"text": "x"}}, "size": "small"}
+	for tool, args := range map[string]map[string]any{
+		policy.ToolFileSpec:     {"spec": map[string]any{"outcome": "o"}, "summary": "s"},
+		policy.ToolFileCriteria: {"criteria": []any{map[string]any{"id": "all_green", "kind": "invariant", "suite": "./..."}}},
+		policy.ToolFileCards:    {"cards": []any{card}},
+		policy.ToolFileReplan:   {"spec": map[string]any{"outcome": "o"}, "summary": "s", "cards": []any{card}},
+		policy.ToolFileRevert:   {"cards": []any{map[string]any{"key": "links-api", "reason": "the redirects break"}}},
+	} {
+		before := len(e.answers.in)
+		text, isErr := e.call(t, tool, args)
+		if want := "stored; it is this session's answer. You may end the session."; isErr || text != want {
+			t.Fatalf("%s: %q (%v), want %q", tool, text, isErr, want)
+		}
+		if len(e.answers.in) != before+1 || e.answers.tools[before] != tool {
+			t.Fatalf("%s: hand-over %v", tool, e.answers.tools)
+		}
+	}
+	bad := map[string]any{}
+	for k, v := range card {
+		bad[k] = v
+	}
+	bad["size"] = "huge"
+	before := len(e.answers.in)
+	if text, isErr := e.call(t, policy.ToolFileCards, map[string]any{"cards": []any{bad}}); !isErr || !strings.Contains(text, "small") {
+		t.Fatalf("an unknown size = %q (%v), want a refusal naming the sizes", text, isErr)
+	}
+	if len(e.answers.in) != before {
+		t.Fatalf("a refused card was handed over: %v", e.answers.in[before:])
+	}
+	e.answers.res = AnswerFiled{Findings: []string{"plan: card links-api: brief empty"}}
+	text, isErr := e.call(t, policy.ToolFileCards, map[string]any{"cards": []any{card}})
+	if want := "the answer was refused:\n- plan: card links-api: brief empty\ncorrect it and file it again in this session"; !isErr || text != want {
+		t.Fatalf("factoryd's finding = %q (%v), want %q", text, isErr, want)
 	}
 }

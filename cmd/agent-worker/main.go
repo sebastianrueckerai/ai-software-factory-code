@@ -123,7 +123,7 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 		s.writeResult(stdout, startFailed(err))
 		return 1
 	}
-	if s.env.report != "" {
+	if s.env.report {
 		return runReport(ctx, s, stdout, log)
 	}
 	emit := s.emitter(stdout)
@@ -317,7 +317,8 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		PosterInfo:     s.env.posterInfo,
 		Author:         s.env.author,
 		AuthorStanding: s.env.authorStanding,
-		Report:         s.env.report,
+		Report:         s.env.reportGuide,
+		ReportMode:     s.env.report,
 		Tools:          s.env.tools,
 		CardRole:       s.env.cardRole,
 		LeftOut:        leftOut,
@@ -327,8 +328,10 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	s.brief.Docs, s.brief.DocsFailed = docsState(ws, s.env.docsDir)
 	s.brief.Companions = companionsState(ws, s.env.companionDirs)
 	resolveDocLinks(log, &s.brief, s.env.docsDir)
-	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
-		return s, startError{"repository map", err}
+	if s.brief.Map = s.env.repoMap; s.brief.Map == "" {
+		if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
+			return s, startError{"repository map", err}
+		}
 	}
 	if s.brief.Map != "" {
 		log("repository map: %d directories, %d bytes", len(s.env.directories), len(s.brief.Map))
@@ -354,7 +357,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	// one arrives within the wait, is the brief's first section
 	push := checkin.waitBrief(log)
 	s.brief.Handover, s.brief.Digest, s.brief.Prior, s.brief.Proofs = push.Handover, push.Digest, push.Prior, push.InClone
-	if s.env.report == "" {
+	if !s.env.report {
 		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base, s.mainHead); err != nil {
 			return s, startError{"checkpoint store", err}
 		}
@@ -598,16 +601,20 @@ type workerEnv struct {
 	// messageHash is sha256 of the session's message bearer, which only
 	// factoryd holds
 	messageHash [32]byte
-	// report is a report session's guide (MODE report): no
-	// push URL or token, nothing pushed, the last message the result
-	report string
+	// report marks a report session (MODE report): no push URL or token,
+	// nothing pushed, the last message the result; reportGuide is the text
+	// its brief ends with (REPORT_GUIDE), "" for none
+	report      bool
+	reportGuide string
 	// cardRole is a plan's card's role (CARD_ROLE)
 	cardRole string
 	// step is the session's prompt step (STEP), whose profile gives the
 	// session its system prompt, its tools and its first turn
 	step string
-	// directories are the card's (DIRECTORIES), for the brief's map
+	// directories are the card's (DIRECTORIES), for the brief's map;
+	// repoMap (REPO_MAP) is a finished map, which replaces it
 	directories []string
+	repoMap     string
 	// migrationGlobs are the policy's migration directory globs
 	// (MIGRATION_GLOBS) the push guard judges migration names against
 	migrationGlobs []string
@@ -679,8 +686,7 @@ func loadEnv() (workerEnv, error) {
 		"EGRESS_CANARY": e.egressCanary, "EGRESS_DIRECT_IP": e.egressDirectIP,
 	}
 	if str("MODE") == "report" {
-		e.report = str("REPORT_GUIDE")
-		required["REPORT_GUIDE"] = e.report
+		e.report, e.reportGuide, e.repoMap = true, str("REPORT_GUIDE"), str("REPO_MAP")
 	} else {
 		required["PUSH_URL"] = e.pushURL
 	}

@@ -46,7 +46,11 @@ classes:
       web_search: {max_requests: 30, max_eur: 0.20}
       escalate: {}
       manual: {}
-      file_plan: {}
+      file_spec: {}
+      file_criteria: {}
+      file_cards: {}
+      file_replan: {}
+      file_revert: {}
       task_costs: {}
 prices:
   firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}

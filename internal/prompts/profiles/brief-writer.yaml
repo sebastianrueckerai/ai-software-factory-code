@@ -4,12 +4,12 @@ reader: human
 guide: false
 forms: [ask]
 chunks: []
-paragraph: ""
+paragraph: brief-writer
 facts: brief
-answer: ""
+answer: brief
 tools:
   builtin: []
   gateway: []
   chat: []
 agents_md: false
-budget_words: 616
+budget_words: 516

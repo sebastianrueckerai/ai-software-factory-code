@@ -3,13 +3,13 @@ purpose: session
 reader: human
 guide: false
 forms: [line]
-chunks: [factory]
-paragraph: ""
+chunks: [factory, narration]
+paragraph: sizing
 facts: session
 answer: ""
 tools:
   builtin: [glob, grep, read]
-  gateway: [analyze_image, manual]
+  gateway: [analyze_image, file_size, manual]
   chat: []
-agents_md: true
-budget_words: 302
+agents_md: false
+budget_words: 385

@@ -91,11 +91,11 @@ func withBrief(b BriefText) Plan {
 }
 
 // filePlanCard files testPlan with its links-api card under brief b, as
-// the planner's file_plan does: the findings of a refusal, else the card
+// the planner's cards filing does: the findings of a refusal, else the card
 // the plan's first round files.
 func filePlanCard(t *testing.T, r *Runner, store *fakeStore, b BriefText) (string, Task) {
 	t.Helper()
-	res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, withBrief(b)))
+	res, err := fileWholePlan(r, context.Background(), "t-plan", planJSON(t, withBrief(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func filePlanCard(t *testing.T, r *Runner, store *fakeStore, b BriefText) (strin
 // deltaAnswer is a delta round's answer of the card fix-stats under b.
 func deltaAnswer(t *testing.T, b BriefText) string {
 	t.Helper()
-	card, err := json.Marshal(map[string]any{"key": "fix-stats", "title": b.Title, "why": b.Why, "summary": b.Summary, "brief": "Count each redirect once.",
+	card, err := json.Marshal(map[string]any{"title": b.Title, "why": b.Why, "summary": b.Summary, "brief": "Count each redirect once.",
 		"depends_on": []string{"stats"}, "size": "small",
 		"acceptance": []map[string]string{{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}}})
 	if err != nil {
@@ -295,7 +295,7 @@ func TestSectionMustResolve(t *testing.T) {
 	section := func(r *Runner, store *fakeStore, s string) []string {
 		p := withBrief(acceptedBrief)
 		p.Cards[1].Section = s
-		res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, p))
+		res, err := fileWholePlan(r, context.Background(), "t-plan", planJSON(t, p))
 		if err != nil {
 			t.Fatal(err)
 		}

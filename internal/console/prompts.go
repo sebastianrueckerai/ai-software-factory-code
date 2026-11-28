@@ -16,7 +16,7 @@ type agentFacts struct {
 }
 
 func agentText(f agentFacts) (string, error) {
-	text := factoryd.ProjectAgentPrompt(f.Project, f.Human, f.Level) + "\n\nThe project now:\nToday is " + f.Today + " UTC.\n" + f.Now
+	text := agentIdentity(f) + "\n\nThe project now:\nToday is " + f.Today + " UTC.\n" + f.Now
 	if f.Summary != "" {
 		text += "\n\nThis thread before its recent turns, summarised:\n" + f.Summary
 	}
@@ -26,11 +26,22 @@ func agentText(f agentFacts) (string, error) {
 	return text, nil
 }
 
+// agentIdentity is the project, the human, the autonomy and how a card is
+// named; the line on starting and filing work stands only above manual.
+func agentIdentity(f agentFacts) string {
+	text := "Project: " + f.Project + "\nHuman: " + f.Human + "\nAutonomy: " + f.Level +
+		"\nA card is named to the human by its title with its issue number, as #12."
+	if f.Level != policy.AutonomyManual {
+		text += "\nAt assisted and above you start and file ready work yourself."
+	}
+	return text
+}
+
 func init() {
 	prompts.RegisterFacts("project-agent", agentText)
 	prompts.RegisterStep("project-agent", []string{"console.(*turn).run"},
 		agentFacts{Project: "app", Human: "sebastian", Level: policy.AutonomyManual, Today: "2026-11-27", Now: "No card is open."})
 	prompts.RegisterStep("title", []string{"console.(*Console).nameThread"}, factoryd.TitlePrompt)
-	prompts.RegisterStep("compact", []string{"console.(*turn).compact"}, factoryd.CompactPrompt)
-	prompts.RegisterStep("research", []string{"console.(*turn).research"}, researchPrompt)
+	prompts.RegisterStep("compact", []string{"console.(*turn).compact"}, "")
+	prompts.RegisterStep("research", []string{"console.(*turn).research"}, "")
 }

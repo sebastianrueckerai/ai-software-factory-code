@@ -4,12 +4,12 @@ reader: human
 guide: false
 forms: [line]
 chunks: []
-paragraph: ""
+paragraph: judgement
 facts: judgement
-answer: ""
+answer: judgement
 tools:
   builtin: []
   gateway: []
   chat: []
 agents_md: false
-budget_words: 110
+budget_words: 118

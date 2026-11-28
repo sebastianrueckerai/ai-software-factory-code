@@ -2,14 +2,14 @@ step: checkin-dead
 purpose: checkin
 reader: human
 guide: false
-forms: [line, why]
-chunks: []
-paragraph: ""
-facts: checkin
+forms: [why]
+chunks: [factory]
+paragraph: checkin-dead
+facts: text
 answer: ""
 tools:
   builtin: []
   gateway: []
   chat: []
 agents_md: false
-budget_words: 298
+budget_words: 278

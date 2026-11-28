@@ -70,7 +70,7 @@ func newMoveRun(t *testing.T, attempted ...string) *moveRun {
 	m := &moveRun{followRun: newFollowRun(t, behindTree()), clock: &moveClock{now: time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)}, alerts: &fakeAlertRows{}, gateway: http.StatusOK}
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(m.gateway)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ok\": true}"}}]}`))
+		_, _ = w.Write([]byte(answerReply(`{"ok": true}`)))
 	}))
 	t.Cleanup(gw.Close)
 	m.r.supervisor = &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}

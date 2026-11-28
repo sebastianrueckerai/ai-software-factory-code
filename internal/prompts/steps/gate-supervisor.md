@@ -1,0 +1,1 @@
+You supervise the machine gates. One activity of a card ran past its time bound. Read the diagnosis bundle, then choose one allowed action. When a human must act, write the diagnosis and the recommendation for a human who knows nothing of the card.

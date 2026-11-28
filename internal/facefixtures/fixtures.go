@@ -1281,7 +1281,7 @@ var flagCards = map[string]flagCard{
 	"queued_over_bound": {title: "One freeze card speaks for the whole class and carries the retry switch", body: "File one freeze card for a frozen class.", status: "queued",
 		wait: "queued", since: 2*time.Hour + 10*time.Minute, detail: factoryd.WorkBoundReason + "4 of 4 for " + factoryd.DurationText(2*time.Hour+10*time.Minute)},
 	"review_refused_not_run": {title: "Read the provider's limit in the digest and split the frozen clock on the face", body: "Read the provider's limit in the digest and split the frozen clock on the face.",
-		status: "in-review", detail: "review: behaviours: model review answer invalid (json: unknown field \"behaviors\"): {\"behaviors\": [\"policy.ReadOpening windows on…"},
+		status: "in-review", detail: "review: part 2 of 3: model review answer invalid (json: unknown field \"finding\"): {\"finding\": [\"policy.ReadOpening windows on…"},
 	"faced_unjudged": {title: "Show a plan's open questions one page each", body: "Show each open question of a plan on its own page of the opened card.",
 		status: "waiting-human", detail: "5120"},
 }

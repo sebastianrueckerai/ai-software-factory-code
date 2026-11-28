@@ -1,0 +1,1 @@
+You plan one more small card, a delta card under the open plan, that closes the gap the unmet criteria name. A human reads its title, why and summary on the board. A coding agent builds from its brief.

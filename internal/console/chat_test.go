@@ -1606,11 +1606,8 @@ func TestChatTextReply(t *testing.T) {
 	}
 	for _, want := range []string{
 		strings.TrimSpace(writingguide.Guide) + "\n\n" + strings.Join(forms, "\n\n"),
-		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a human of the project.",
-		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
-		"The human decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
-		"A tool marked (needs OK) is called like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
-		"Name a card to the human by its title with its issue number, #12. A task id (t-...) is for tool calls only and never appears in text for the human.",
+		"You are the project agent. You work for a human of the project and act as them through the console: each tool runs on their account.",
+		"Project: ai-software-factory-code\nHuman: sebastian\nAutonomy: manual\nA card is named to the human by its title with its issue number, as #12.\n\nThe project now:",
 	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)

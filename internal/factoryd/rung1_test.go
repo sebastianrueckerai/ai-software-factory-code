@@ -495,7 +495,7 @@ func TestSessionDigestForSessionsAfterTheFirst(t *testing.T) {
 	if got := g.r.sessionDigest(ctx, g.store.tasks["t1410"], sessionSpec{id: "s1"}); got != "" {
 		t.Fatalf("the first session's digest = %q, want none", got)
 	}
-	if got := g.r.sessionDigest(ctx, g.store.tasks["t1410"], sessionSpec{id: "s2", parent: "s1", report: "weekly"}); got != "" {
+	if got := g.r.sessionDigest(ctx, g.store.tasks["t1410"], sessionSpec{id: "s2", parent: "s1", report: true}); got != "" {
 		t.Fatalf("a report's digest = %q, want none", got)
 	}
 }

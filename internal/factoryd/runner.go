@@ -204,11 +204,11 @@ type Runner struct {
 	// starting is when the task's session began its start check-in, by
 	// task, until the check-in ends
 	starting map[string]time.Time
-	// filed is what a running session's file_plan tool stored, by task:
+	// filed is what a running run's last planner step stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
 	// briefs counts each model writer's refused tries at a filing door:
-	// the planner's file_plan by its plan, an agent's escalate and its
+	// the planner's plan filing by its plan, an agent's escalate and its
 	// delegate by its card; a new session starts them anew
 	briefs BriefTally
 	// revertLocks holds a *sync.Mutex by project, so RevertGroup runs
@@ -396,17 +396,22 @@ func (r *Runner) heldAtStart(ctx context.Context, t Task, s sessionSpec) (AgentA
 	return AgentAsk{}, false
 }
 
-// AdmitAsk passes an agent's escalation on card t through the filing
-// door as an ask on the card: the question is the ask, the reason its why
-// line. A refusal goes back to the agent, until its BriefTries-th try,
-// which asks as it stands.
+// AdmitAsk passes an agent's escalation or information request on card t
+// through the filing door as an ask on the card: the question is the ask,
+// the reason (for an information request, what it needs) its why line. A
+// refusal goes back to the agent, until its BriefTries-th try, which asks
+// as it stands.
 func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
 	refs, err := botRefsOf(ctx, r.forgejo, r.cfg.Policy().Tree, t.Repository)
 	if err != nil {
 		return err
 	}
 	key := escalateBriefKey(t.ID)
-	if _, err := pass(BriefText{Title: ask.Question, Why: ask.Reason}, BriefAsk, refs, r.briefs.Try(key)); err != nil {
+	why := ask.Reason
+	if ask.Kind == AskInfo {
+		why = ask.Needs
+	}
+	if _, err := pass(BriefText{Title: ask.Question, Why: why}, BriefAsk, refs, r.briefs.Try(key)); err != nil {
 		r.briefs.Refused(key)
 		return err
 	}
@@ -414,7 +419,7 @@ func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
 	return nil
 }
 
-// noteFiled holds the plan a running session filed through the file_plan
+// noteFiled holds the plan a running session filed through its last step's
 // tool; takeFiled takes it, once: it is that session's answer, and a
 // filing no session takes (one an earlier session left) does not outlive
 // it.
@@ -677,7 +682,7 @@ type sessionSpec struct {
 	// sessions is the cap the attempt number counts against: the policy's
 	// session limit and the attempts a human answer granted
 	sessions int
-	// planner marks a plan card's session: its warning says file the plan
+	// planner marks a plan card's session: its warning says file the answer
 	planner bool
 	// planTrack: the card's project follows a process with a plan track,
 	// so a direct card's rest can go to the planner
@@ -709,9 +714,10 @@ type sessionSpec struct {
 	// step is the session's prompt step (prompts.Profiles), which the
 	// worker builds its prompt with
 	step string
-	// report is a report session's guide; "" for a coding
-	// session
-	report string
+	// report marks a report session, which pushes nothing; guide is the
+	// text its brief ends with, "" for none
+	report bool
+	guide  string
 	// standing overrides the task's author standing: a report reads its
 	// parent's issue
 	standing string
@@ -719,6 +725,9 @@ type sessionSpec struct {
 	cardRole string
 	// directories are the card's, which the worker maps from its clone
 	directories []string
+	// repoMap is the map step's map, which a planner's brief carries
+	// instead of a map the worker reads
+	repoMap string
 	// pull is the pull request a carry card carries, whose head the clone
 	// holds as branch pull/<pull>; 0 for none
 	pull int64
@@ -992,7 +1001,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// the supervisor's clocks start with the pod: a slow pull is no time
 	// the agent had
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
-	supCfg.ReadOnly = s.report != ""
+	supCfg.ReadOnly = s.report
 	supCfg.PriorPush = s.startRef != s.base && !s.interimStart
 	if spentAtStart != nil {
 		supCfg.SpentAtStart = *spentAtStart
@@ -1042,7 +1051,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// pod's death before the pod goes, from the end's evidence alone, once
 	// the over-bound push settled the last push its line names
 	defer func() {
-		delivered := out.commit != "" || s.report != "" && out.result != nil && out.result.Success
+		delivered := out.commit != "" || s.report && out.result != nil && out.result.Success
 		if err == nil && out.death == nil && !delivered {
 			keepDeath(deathNow(true))
 		}
@@ -1247,7 +1256,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return env.Event, false
 	}
 	// the agent's escalate reaches the session here until it stops
-	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s), holdStop: s.holdStop})
+	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report, cuttable: cuttable(t, s), holdStop: s.holdStop})
 	defer unregister()
 	// halt is the stop without its wait: the stop written to the session's
 	// row, the trip abandoned and the pod deleted; false when the session
@@ -1763,7 +1772,7 @@ func startCheckinTime(limits policy.Limits, deadline time.Time) time.Duration {
 // an extend's raises, the agent time of the earlier sessions plus this
 // one's. A report session has no card bound and no session count: nil.
 func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines int, started, deadline time.Time) *Pace {
-	if s.report != "" {
+	if s.report {
 		return nil
 	}
 	t, s = r.cardNow(ctx, t, s)
@@ -1858,7 +1867,7 @@ func (r *Runner) holds(ctx context.Context, taskID, owner string) bool {
 // card's diff has the line bound its size plans. A report and a planner
 // session write no card's code.
 func sizeBounded(t Task, s sessionSpec) bool {
-	return s.report == "" && !s.planner && t.Kind == "agent" && !t.Unbound()
+	return !s.report && !s.planner && t.Kind == "agent" && !t.Unbound()
 }
 
 // cuttable: the planner can cut the rest of the session's card into
@@ -1963,7 +1972,7 @@ func (r *Runner) checkinMoney(ctx context.Context, t Task) (callTask string, eur
 // sessionDigest is the card's digest a session after the first reads
 // after its handover, "" for the first session and for a report.
 func (r *Runner) sessionDigest(ctx context.Context, t Task, s sessionSpec) string {
-	if s.parent == "" || s.report != "" {
+	if s.parent == "" || s.report {
 		return ""
 	}
 	d, err := r.CardDigest(ctx, t.ID)
@@ -2981,7 +2990,7 @@ const workerContainer = "worker"
 
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	tools := prompts.Offered(s.step, s.policy.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
-	if s.report != "" {
+	if s.report {
 		// a report session's card restarts on no image
 		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestTool })
 	}
@@ -3052,8 +3061,11 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "TASK_PR", "value": strconv.FormatInt(t.PRNumber, 10)})
 	}
 	env = append(env, map[string]any{"name": "STEP", "value": s.step})
-	if s.report != "" {
-		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.report, "the report's guide")})
+	if s.report {
+		env = append(env, map[string]any{"name": "MODE", "value": "report"})
+		if s.guide != "" {
+			env = append(env, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.guide, "the report's guide")})
+		}
 		if len(s.branches) > 0 {
 			cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))})
 		}
@@ -3076,6 +3088,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if len(s.directories) > 0 {
 		env = append(env, map[string]any{"name": "DIRECTORIES", "value": fit.list("DIRECTORIES", s.directories, len(s.directories), false, "last", "directories")})
+	}
+	if s.repoMap != "" {
+		env = append(env, map[string]any{"name": "REPO_MAP", "value": fit.text("REPO_MAP", s.repoMap, "the repository map")})
 	}
 	// the worker's migration-name guard reads these (roadmap 186), where
 	// the guide's naming sentence used to be

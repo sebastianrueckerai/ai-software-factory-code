@@ -349,7 +349,7 @@ func TestStartStoresTheSessionsText(t *testing.T) {
 	if got := gw.stored(); len(got) != 1 || got[0] != s.prompt.Facts() {
 		t.Fatalf("stored %q, want the one first turn the run prompts, %q", got, s.prompt.Facts())
 	}
-	for _, part := range []string{"Do it\n\nWhy: It is due.", "docs/: not in the repository", "FACTS: session 1 of 3", factoryd.SandboxFacts(nil, nil)} {
+	for _, part := range []string{"Do it\n\nWhy: It is due.", "docs/: not in the repository", "FACTS: session 1 of 3", factoryd.SandboxFacts(nil)} {
 		if !strings.Contains(s.prompt.Facts(), part) {
 			t.Errorf("the session's text lacks %q", part)
 		}

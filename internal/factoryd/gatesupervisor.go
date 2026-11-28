@@ -122,6 +122,9 @@ func gateAnswerChoices(activity string) []gateAnswerChoice {
 	return out
 }
 
+// maxGateText caps a gate decision's diagnosis and recommendation.
+const maxGateText = 1000
+
 const (
 	bundleTimeline = 8 << 10  // bytes of the timeline's tail
 	bundleInput    = 8 << 10  // bytes of the activity's input
@@ -130,12 +133,7 @@ const (
 	bundleReads    = time.Minute
 )
 
-var gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's or the audit's last result when the timeline's tail does not hold it), and the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store. Then choose exactly one of allowed_actions:
-- "wait": the activity makes progress and needs more time (checks queued or running, a pod pulling its image). Its bound is extended once by its own length.
-- "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
-- "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
-- "escalate": a human must decide or act (access, infrastructure, a judgement). The task waits for a human with your diagnosis and recommendation.
-Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "...", "answer": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters. answer is optional: the key of the one of human_answers you recommend.`
+const gateSupervisorPrompt = `The activity that ran past its time bound is a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. The diagnosis bundle holds the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's or the audit's last result when the timeline's tail does not hold it), and the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store. The allowed action is one of allowed_actions.`
 
 // SuperviseGate asks the supervisor model what to do with a long gate's
 // attempt past its bound, acts on that attempt when it still runs here
@@ -175,13 +173,17 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		if err != nil {
 			return GateDecision{}, err
 		}
-		content, _, err := r.supervisor.Chat(ctx, t.ID, r.callModel(t, policy.PurposeGateSupervisor),
+		answer, _, err := ChatAnswer[GateDecisionAnswer](ctx, r.supervisor, t.ID, r.callModel(t, policy.PurposeGateSupervisor),
 			pinned.Limits.SupervisorTimeout, system, scrubbed(bundle, redact.New(secrets...)))
-		if err != nil {
+		var bad *badAnswerError
+		switch {
+		case errors.As(err, &bad):
+			d = invalidDecision(err.Error())
+		case err != nil:
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
 				Recommendation: fmt.Sprintf("look at %s of task %s yourself", in.Trip.Activity, t.ID)}
-		} else {
-			d = parseGateDecision(content, bundle.Allowed, GateStopAnswers(in.Trip.Activity))
+		default:
+			d = checkGateDecision(answer, bundle.Allowed, GateStopAnswers(in.Trip.Activity))
 		}
 		// the gate may have ended during the call: the answer
 		// is recorded and acts on nothing
@@ -489,31 +491,30 @@ func scrubbed(b gateBundle, s *redact.Scrubber) any {
 	return walk(v)
 }
 
-// parseGateDecision validates the answer: one JSON object, a known and
-// allowed action, a diagnosis, a recommendation for escalate. Anything
-// else escalates. A recommended answer the stop's face cannot hold is
-// dropped, and the recommendation stands as words.
-func parseGateDecision(content string, allowed []SupervisorAction, answers []string) GateDecision {
-	invalid := func(why string) GateDecision {
-		return GateDecision{Action: ActionEscalate, Diagnosis: "supervisor answer invalid (" + why + "): " + textutil.Truncate(content, 300),
-			Recommendation: "read the bundle on the alert's timeline and decide"}
-	}
-	var d GateDecision
-	if err := decodeAnswer(content, &d); err != nil {
-		return invalid(err.Error())
-	}
-	d.Diagnosis = textutil.Truncate(strings.TrimSpace(d.Diagnosis), maxDecisionText)
-	d.Recommendation = textutil.Truncate(strings.TrimSpace(d.Recommendation), maxDecisionText)
+// invalidDecision is the escalation of an answer that is no decision.
+func invalidDecision(why string) GateDecision {
+	return GateDecision{Action: ActionEscalate, Diagnosis: "supervisor answer invalid (" + why + ")",
+		Recommendation: "read the bundle on the alert's timeline and decide"}
+}
+
+// checkGateDecision validates the answer: a known and allowed action, a
+// diagnosis, a recommendation for escalate. Anything else escalates. A
+// recommended answer the stop's face cannot hold is dropped, and the
+// recommendation stands as words.
+func checkGateDecision(a GateDecisionAnswer, allowed []SupervisorAction, answers []string) GateDecision {
+	d := GateDecision{Action: SupervisorAction(a.Action), Diagnosis: a.Diagnosis, Recommendation: a.Recommendation, Answer: a.Answer}
+	d.Diagnosis = textutil.Truncate(strings.TrimSpace(d.Diagnosis), maxGateText)
+	d.Recommendation = textutil.Truncate(strings.TrimSpace(d.Recommendation), maxGateText)
 	if d.Action != ActionEscalate || !slices.Contains(answers, d.Answer) {
 		d.Answer = ""
 	}
 	switch {
 	case !slices.Contains([]SupervisorAction{ActionWait, ActionRetry, ActionCancel, ActionEscalate}, d.Action):
-		return invalid(fmt.Sprintf("unknown action %q", d.Action))
+		return invalidDecision(fmt.Sprintf("unknown action %q", d.Action))
 	case d.Diagnosis == "":
-		return invalid("no diagnosis")
+		return invalidDecision("no diagnosis")
 	case d.Action == ActionEscalate && d.Recommendation == "":
-		return invalid("escalate without a recommendation")
+		return invalidDecision("escalate without a recommendation")
 	case !slices.Contains(allowed, d.Action):
 		return GateDecision{Action: ActionEscalate, Diagnosis: fmt.Sprintf("%q is not allowed on this run any more; the supervisor's diagnosis: %s", d.Action, d.Diagnosis),
 			Recommendation: cmp.Or(d.Recommendation, "decide whether the activity may run on")}

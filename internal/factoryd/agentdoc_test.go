@@ -47,7 +47,10 @@ func agentDocSections(b agentdoc.Body) []string {
 // and its messages tile with no unlabelled byte: the capture is proven,
 // not assumed.
 func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
-	toolsByID := map[string]bool{"checkin": true, "case-checkin": true}
+	toolsByID := map[string]bool{}
+	for _, id := range AgentDocDirectIDs() {
+		toolsByID[id] = id != "digest" && id != "image-look"
+	}
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {
 			g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
@@ -113,13 +116,14 @@ func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
 	}
 }
 
-// The supervisor-family agents call in JSON mode on the task's account,
-// the plan namer and the follow's liveness call on the small alias. The
+// The supervisor-family agents call on the task's account forcing their
+// answer tool, with no response format, the plan namer and the follow's
+// liveness call on the small alias. The
 // check-ins call unstreamed with tools and no response format. The digest
 // streams on the small alias with a short answer, the look on the class's
 // vision alias with the operator's.
 func TestAgentDocDirectEnvelope(t *testing.T) {
-	jsonModel := map[string]string{"plan-namer": policy.Small, "follow-liveness": policy.Small}
+	forcedModel := map[string]string{"plan-namer": policy.Small, "follow-liveness": policy.Small}
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {
 			g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
@@ -148,8 +152,8 @@ func TestAgentDocDirectEnvelope(t *testing.T) {
 				}
 				return
 			}
-			if b.ResponseFormat != "json_object" || b.Stream || b.MaxTokens <= 0 || b.Model != cmp.Or(jsonModel[id], "big") {
-				t.Fatalf("the supervisor family calls in JSON mode on the class's alias, got %+v", b)
+			if b.ResponseFormat != "" || len(b.Tools) != 1 || b.Tools[0].Name != "answer" || b.Stream || b.MaxTokens <= 0 || b.Model != cmp.Or(forcedModel[id], "big") {
+				t.Fatalf("the supervisor family forces its answer tool on the class's alias, got %+v", b)
 			}
 		})
 	}
@@ -167,17 +171,17 @@ func TestAgentDocDirectMessages(t *testing.T) {
 		messages []message
 		tools    []string
 	}{
-		"case-checkin": {messages: []message{{role: "system", prefix: testPrompt(t, "case-checkin", rungPrompt).Text(), suffix: rungPrompt},
+		"case-checkin": {messages: []message{{role: "system", prefix: testPrompt(t, "case-checkin", nil).Text(), suffix: "A human reads the grounds."},
 			{role: "user", prefix: "The review keeps raising findings on this card. How should it go on?\n",
 				suffix: "\nCalls left 20; your answer is due within 28m30s."}},
 			tools: []string{"transcript_search", "transcript_read", "card_facts", "card_step", "gates", "read_file", "grep", "cluster_facts", "answer"}},
-		"plan-namer": {messages: []message{{role: "system", prefix: testPrompt(t, "plan-namer", namerPrompt).Text(), suffix: namerPrompt},
-			{role: "user", prefix: "The input, as JSON:\n" + `"Issue title: Count the skipped rows\nSpec outcome: The counter counts every row the query returns, skipped ones included.\nSummary: One card fixes the counter; one criterion proves it.\nAlready taken by other open plans: Nightly report"`}}},
+		"plan-namer": {messages: []message{{role: "system", prefix: testPrompt(t, "plan-namer", "").Text(), suffix: ""},
+			{role: "user", prefix: `"Issue title: Count the skipped rows\nSpec outcome: The counter counts every row the query returns, skipped ones included.\nSummary: One card fixes the counter; one criterion proves it.\nAlready taken by other open plans: Nightly report"`}}, tools: []string{"answer"}},
 		"digest": {messages: []message{{role: "user",
 			prefix: "Summarise this file.\n\n# The nightly job\n\nThe job counts the day's rows and writes the report at 02:00 UTC.\nA batch that fails is requeued once, and a second failure pages the human on call.\n"}}},
 		"image-look": {messages: []message{{role: "user", prefix: "Describe this image.data:image/png;base64,iVBORw0KGgo"}}},
-		"follow-liveness": {messages: []message{{role: "system", prefix: `Answer with a JSON object {"ok": true}.`},
-			{role: "user", prefix: "The input, as JSON:\n" + `{"say":"ok"}`}}},
+		"follow-liveness": {messages: []message{{role: "system", prefix: followModelSystem},
+			{role: "user", prefix: `{"say":"ok"}`}}, tools: []string{"answer"}},
 	} {
 		t.Run(id, func(t *testing.T) {
 			g := agentdoc.NewGateway(AgentDocDirectAnswer(id))
@@ -211,7 +215,7 @@ func TestAgentDocDirectMessages(t *testing.T) {
 }
 
 // The judgement capture drives judge's own call: its system prompt is the
-// criterion's pinned prompt with the answer's form, its input the
+// criterion's pinned prompt, its input the
 // artifact alone. The review's criterion call is gone from the map.
 func TestAgentDocJudgementDrivesTheJudgeCall(t *testing.T) {
 	ids := AgentDocDirectIDs()
@@ -228,8 +232,7 @@ func TestAgentDocJudgementDrivesTheJudgeCall(t *testing.T) {
 	for _, s := range spans {
 		symbols[s.Name] = s.Symbol
 	}
-	for name, symbol := range map[string]string{"the criterion's prompt": "factoryd.PlanCriterion.Prompt", "the answer's form": "factoryd.judgementAnswer",
-		"the artifact": "factoryd.GateArtifact"} {
+	for name, symbol := range map[string]string{"the criterion's prompt": "factoryd.PlanCriterion.Prompt", "the artifact": "factoryd.GateArtifact"} {
 		if symbols[name] != symbol {
 			t.Errorf("span %q has symbol %q, want %q", name, symbols[name], symbol)
 		}
@@ -238,8 +241,8 @@ func TestAgentDocJudgementDrivesTheJudgeCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Messages) != 2 || !strings.HasSuffix(b.Messages[0].Content, "\n\n"+judgementAnswer) || !strings.Contains(b.Messages[1].Content, `"artifact":`) {
-		t.Fatalf("messages = %+v, want the pinned prompt with the answer's form and the artifact", b.Messages)
+	if len(b.Messages) != 2 || !strings.HasSuffix(b.Messages[0].Content, "\n\n"+"Does the page read calm? Answer met or unmet.") || !strings.Contains(b.Messages[1].Content, `"artifact":`) {
+		t.Fatalf("messages = %+v, want the pinned prompt and the artifact", b.Messages)
 	}
 }
 
@@ -248,7 +251,7 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 	purposeByID := map[string]string{
 		"checkin": policy.PurposeCheckin, "model-review": policy.PurposeReview,
 		"security-audit": policy.PurposeAudit, "gate-supervisor": policy.PurposeGateSupervisor,
-		"judgement": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
+		"judgement":     policy.PurposeReview,
 		"delta-planner": policy.PurposeReview, "holdout-proposer": policy.PurposeReview,
 		"answer-screener": policy.PurposeReview, "brief-writer": policy.PurposeBrief, "case-brief-writer": policy.PurposeBrief,
 		"case-checkin": policy.PurposeCheckin, "plan-namer": policy.PurposeTitle,

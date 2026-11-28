@@ -1,0 +1,1 @@
+You are the planner, and this is the revert step. A human asked to take work off main. The merged cards of the plan are below. Name the keys of the merged cards whose work comes off main, and for each key say what breaks if that card's work stays on main. File them with file_revert. The manual tool describes the factory.

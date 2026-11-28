@@ -555,10 +555,10 @@ func main() {
 		Policy: func() policy.Tree { return policyLoader.Current().Tree }, Tries: runner.Briefs()})))
 	// the gateway's hand-over of an agent's deployment_health read
 	mux.Handle("POST /internal/deployment-health", requireBearer(gatewayToken, factoryd.DeploymentHealthHandler(store, kube, time.Now)))
-	// the gateway's hand-over of a planner's file_plan
-	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
 	// the gateway's hand-over of a prover's file_proofs
 	mux.Handle("POST /internal/proofs", requireBearer(gatewayToken, factoryd.ProofsFileHandler(runner)))
+	// the gateway's hand-over of a session's answer object: the screening, sizing, map and planner filings
+	mux.Handle("POST /internal/answers", requireBearer(gatewayToken, factoryd.AnswerFileHandler(runner)))
 	// the gateway's hand-over of a session's analyze_image: the chat's look,
 	// on the card's account
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}

@@ -21,8 +21,10 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/answers"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -66,23 +68,6 @@ type DelegateIn struct {
 // maxDelegateBrief bounds a delegate call's brief.
 const maxDelegateBrief = 16 << 10
 
-// PlanFiler files a planner session's plan (the file_plan tool):
-// factoryd checks the whole plan json and stores it as the session's
-// answer. Implemented by Factoryd; tests substitute a fake.
-type PlanFiler interface {
-	FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error)
-}
-
-// PlanFiled is a plan filing's result: a stored revision and whether its
-// cards wait on the human's confirmation, or every finding the check
-// raised, back into the same session.
-type PlanFiled struct {
-	Revision int      `json:"revision"`
-	SHA256   string   `json:"sha256"`
-	Gate     bool     `json:"gate"`
-	Findings []string `json:"findings"`
-}
-
 // ProofsFiler files a prover's tests (the file_proofs tool): factoryd
 // checks the filing's shape against the proofs the plan owes and keeps an
 // accepted one for its dry run on main after the session. Implemented by
@@ -96,6 +81,21 @@ type ProofsFiler interface {
 type ProofsFiled struct {
 	Filing   int      `json:"filing"`
 	Left     int      `json:"left"`
+	Findings []string `json:"findings"`
+}
+
+// AnswerFiler files a session's answer object (the file_screening,
+// file_size, file_map and the planner's file_spec, file_criteria,
+// file_cards, file_replan and file_revert tools):
+// factoryd checks it and stores it as the session's answer. Implemented by
+// Factoryd; tests substitute a fake.
+type AnswerFiler interface {
+	FileAnswer(ctx context.Context, taskID, tool string, answer json.RawMessage) (AnswerFiled, error)
+}
+
+// AnswerFiled is an answer filing's result: the findings that refused it,
+// none when it is stored.
+type AnswerFiled struct {
 	Findings []string `json:"findings"`
 }
 
@@ -157,8 +157,8 @@ const (
 
 var (
 	_ Escalator        = (*Factoryd)(nil)
-	_ PlanFiler        = (*Factoryd)(nil)
 	_ ProofsFiler      = (*Factoryd)(nil)
+	_ AnswerFiler      = (*Factoryd)(nil)
 	_ DeploymentReader = (*Factoryd)(nil)
 	_ ImageLooker      = (*Factoryd)(nil)
 	_ Digester         = (*Factoryd)(nil)
@@ -229,21 +229,6 @@ func (f *Factoryd) Delegate(ctx context.Context, taskID string, d Delegation) (D
 	return res, err
 }
 
-func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error) {
-	var res PlanFiled
-	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/plans",
-		http.Header{"Authorization": {"Bearer " + f.Token}},
-		struct {
-			TaskID string `json:"task_id"`
-			Plan   string `json:"plan"`
-		}{taskID, plan})
-	if err != nil {
-		return res, err
-	}
-	err = json.Unmarshal(b, &res)
-	return res, err
-}
-
 func (f *Factoryd) FileProofs(ctx context.Context, taskID string, proofs []ProofIn) (ProofsFiled, error) {
 	var res ProofsFiled
 	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/proofs",
@@ -252,6 +237,22 @@ func (f *Factoryd) FileProofs(ctx context.Context, taskID string, proofs []Proof
 			TaskID string    `json:"task_id"`
 			Proofs []ProofIn `json:"proofs"`
 		}{taskID, proofs})
+	if err != nil {
+		return res, err
+	}
+	err = json.Unmarshal(b, &res)
+	return res, err
+}
+
+func (f *Factoryd) FileAnswer(ctx context.Context, taskID, tool string, answer json.RawMessage) (AnswerFiled, error) {
+	var res AnswerFiled
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/answers",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string          `json:"task_id"`
+			Tool   string          `json:"tool"`
+			Answer json.RawMessage `json:"answer"`
+		}{taskID, tool, answer})
 	if err != nil {
 		return res, err
 	}
@@ -430,9 +431,9 @@ type EscalateIn struct {
 }
 
 type RequestInfoIn struct {
-	Question string `json:"question" jsonschema:"what you ask the issue's author"`
+	Question string `json:"question" jsonschema:"one question for the issue's author"`
 	Tried    string `json:"tried" jsonschema:"what you tried to reproduce or find the fault"`
-	Needs    string `json:"needs" jsonschema:"what information would let you go on"`
+	Needs    string `json:"needs" jsonschema:"one sentence: what information would let you go on"`
 }
 
 type RequestToolIn struct {
@@ -443,10 +444,6 @@ type RequestToolIn struct {
 type RequestCutIn struct {
 	Reason string   `json:"reason" jsonschema:"why the card is bigger than one card should be"`
 	Parts  []string `json:"parts" jsonschema:"the 2 to 5 parts you propose, each one card's work"`
-}
-
-type FilePlanIn struct {
-	Plan string `json:"plan" jsonschema:"the complete plan json: one object with spec, summary, criteria and cards"`
 }
 
 type ProofsIn struct {
@@ -613,14 +610,41 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DelegateIn) (*mcp.CallToolResult, any, error) {
 			return s.delegate(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFilePlan, Description: "File the plan: hand the complete plan json over and it is checked at once. " +
-		"A refusal names every finding; correct the plan and file it again in this session. A stored plan is this session's answer; end the session. Free."},
-		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
-			return s.filePlan(ctx, c, in), nil, nil
-		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFileProofs, Description: "File one test per criterion and hold-out, each with path, suite, name, whole code and what your run of bash check test on main showed. A refusal names every finding: fix it and file again, three filings at most. The last passing one stands.", InputSchema: proofsSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ProofsIn) (*mcp.CallToolResult, any, error) {
 			return s.fileProofs(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.ScreeningAnswer](policy.ToolFileScreening, "File your verdict on the issue. A refusal names what to fix: file again in this session. A stored verdict is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.ScreeningAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileScreening, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.SizeAnswer](policy.ToolFileSize, "File your size for the card. A refusal names what to fix: file again in this session. A stored size is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.SizeAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileSize, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.MapAnswer](policy.ToolFileMap, "File your map of the repository. A refusal names what to fix: file again in this session. A stored map is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.MapAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileMap, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.SpecAnswer](policy.ToolFileSpec, "File your spec, summary and questions. A refusal names what to fix: file again in this session. A stored spec is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.SpecAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileSpec, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.CriteriaAnswer](policy.ToolFileCriteria, "File the criteria of the spec. A refusal names what to fix: file again in this session. Stored criteria are your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.CriteriaAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileCriteria, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.CardsAnswer](policy.ToolFileCards, "File the cards of this round. A refusal names what to fix: file again in this session. A stored round is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.CardsAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileCards, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.ReplanAnswer](policy.ToolFileReplan, "File the plan again, changed. A refusal names what to fix: file again in this session. A stored plan is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.ReplanAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileReplan, in), nil, nil
+		})
+	mcp.AddTool(srv, filingTool[answers.RevertAnswer](policy.ToolFileRevert, "File the merged cards whose work comes off main. A refusal names what to fix: file again in this session. A stored list is your answer; end the session. Free."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in answers.RevertAnswer) (*mcp.CallToolResult, any, error) {
+			return s.fileAnswer(ctx, c, policy.ToolFileRevert, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
@@ -1402,44 +1426,6 @@ func (s *Server) digest(ctx context.Context, c *toolCaller, in DigestIn) *mcp.Ca
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
-// filePlan hands the planner's plan to factoryd, which checks the whole
-// json at once: a refusal carries every finding back into the session, a
-// stored plan is the session's answer, and the answer names whether the
-// human's confirmation waits on the revision's cards, because storing
-// files none. Free, for the classes that list it.
-func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mcp.CallToolResult {
-	tool := policy.ToolFilePlan
-	if c.task.Status != "running" {
-		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
-	}
-	if r := s.admitTool(c, tool); r != nil {
-		return r
-	}
-	if plan := strings.TrimSpace(in.Plan); plan == "" {
-		return s.refuseTool(c, tool, "refused_arguments", "plan is required")
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
-	defer cancel()
-	res, err := s.opts.PlanFiler.FilePlan(ctx, c.task.ID, strings.TrimSpace(in.Plan))
-	if err != nil {
-		s.auditTool(c, tool, "error_plan", err.Error(), &c.task.SpentEUR, nil)
-		return toolError("the plan did not reach factoryd: " + err.Error())
-	}
-	if len(res.Findings) > 0 {
-		s.auditTool(c, tool, "plan_refused", textutil.Truncate(strings.Join(res.Findings, "; "), 500), &c.task.SpentEUR, nil)
-		return toolError("the plan was refused:\n- " + strings.Join(res.Findings, "\n- ") +
-			"\ncorrect the plan and file it again in this session")
-	}
-	if res.Gate {
-		s.auditTool(c, tool, "plan_stored", fmt.Sprintf("revision %d, confirmation waits", res.Revision), &c.task.SpentEUR, nil)
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
-			Text: fmt.Sprintf("stored as revision %d; it is this session's answer. Its cards file only after the human confirms the spec and the criteria. You may end the session; a later session carries the human's changes, if any.", res.Revision)}}}
-	}
-	s.auditTool(c, tool, "plan_stored", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
-		Text: fmt.Sprintf("stored as revision %d; it is this session's answer. Its cards file with no further gate. You may end the session.", res.Revision)}}}
-}
-
 // fileProofs hands a prover's filing to factoryd, which checks its shape
 // against the proofs the plan owes: a refusal carries every finding back
 // into the session with the filings left, an accepted filing stands until
@@ -1484,6 +1470,53 @@ func (s *Server) fileProofs(ctx context.Context, c *toolCaller, in ProofsIn) *mc
 	s.auditTool(c, tool, "proofs_filed", fmt.Sprintf("filing %d, %d proofs", res.Filing, len(in.Proofs)), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
 		Text: fmt.Sprintf("filing %d stands; factoryd runs every test on main after this session. Filings left: %d. You may end the session.", res.Filing, res.Left)}}}
+}
+
+// filingTool is the tool name files a T answer through: its schema is the
+// answer tool's of T.
+func filingTool[T any](name, description string) *mcp.Tool {
+	b, err := json.Marshal(prompts.AnswerTool(reflect.TypeFor[T]()).Parameters)
+	if err != nil {
+		panic(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(b, &schema); err != nil {
+		panic(err)
+	}
+	return &mcp.Tool{Name: name, Description: description, InputSchema: &schema}
+}
+
+// fileAnswer hands a session's answer to factoryd, which checks it against
+// the task it answers for: a refusal carries every finding back into the
+// session, a stored answer is the session's answer. Free, for the classes
+// that list the tool.
+func (s *Server) fileAnswer(ctx context.Context, c *toolCaller, tool string, answer any) *mcp.CallToolResult {
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	if s.opts.AnswerFiler == nil {
+		return s.refuseTool(c, tool, "refused_capability", "no answer hand-over is wired")
+	}
+	raw, err := json.Marshal(answer)
+	if err != nil {
+		return s.refuseTool(c, tool, "refused_arguments", err.Error())
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
+	defer cancel()
+	res, err := s.opts.AnswerFiler.FileAnswer(ctx, c.task.ID, tool, raw)
+	if err != nil {
+		s.auditTool(c, tool, "error_answer", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError("the answer did not reach factoryd: " + err.Error())
+	}
+	if len(res.Findings) > 0 {
+		s.auditTool(c, tool, "answer_refused", fmt.Sprintf("%d findings", len(res.Findings)), &c.task.SpentEUR, nil)
+		return toolError("the answer was refused:\n- " + strings.Join(res.Findings, "\n- ") + "\ncorrect it and file it again in this session")
+	}
+	s.auditTool(c, tool, "answer_stored", "", &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "stored; it is this session's answer. You may end the session."}}}
 }
 
 // delegate files the child card with factoryd; the session goes on.
