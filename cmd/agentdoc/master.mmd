@@ -6,6 +6,7 @@ graph LR
     answer-screener["answer-screener"]
   end
   subgraph planning["planning"]
+    repo-map["repo-map"]
     planner["planner"]
     prover["prover"]
     delta-planner["delta-planner"]
@@ -46,7 +47,7 @@ graph LR
   follow-liveness["follow-liveness"]
   telemetry["telemetry"]
 
-  signals --> screening --> sizing --> planner --> coding
+  signals --> screening --> sizing --> repo-map --> planner --> coding
   signals -.-> answer-screener
   planner --> prover
   planner -.-> plan-namer

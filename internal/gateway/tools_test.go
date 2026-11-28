@@ -344,7 +344,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,file_screening,file_size,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_map,file_plan,file_proofs,file_screening,file_size,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -2416,6 +2416,30 @@ func TestFileSizeRefusesAnUnknownSize(t *testing.T) {
 		t.Fatalf("stored = %q (%v), want %q", text, isErr, want)
 	}
 	if want := `{"size":"medium","reason":"two packages","files":["a.go"]}`; len(e.answers.in) != 1 || e.answers.in[0] != want || e.answers.tools[0] != policy.ToolFileSize {
+		t.Fatalf("hand-over = %v %q, want %s", e.answers.tools, e.answers.in, want)
+	}
+}
+
+// file_map takes the map object the answer type's schema allows: a list past
+// 40 directories is refused with the bound before factoryd sees it; a map
+// inside is handed over as filed.
+func TestFileMapRefusesMoreDirectoriesThanTheBound(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	dirs := make([]any, 41)
+	for i := range dirs {
+		dirs[i] = map[string]any{"path": fmt.Sprintf("d%d", i), "role": "r"}
+	}
+	if text, isErr := e.call(t, policy.ToolFileMap, map[string]any{"directories": dirs, "conventions": []any{}, "check": "go test ./..."}); !isErr || !strings.Contains(text, "40") {
+		t.Fatalf("41 directories = %q (%v), want a refusal naming 40", text, isErr)
+	}
+	if len(e.answers.in) != 0 {
+		t.Fatalf("handed over %v, want nothing", e.answers.in)
+	}
+	text, isErr := e.call(t, policy.ToolFileMap, map[string]any{"directories": dirs[:1], "conventions": []any{"tests beside the code"}, "check": "bash check changed"})
+	if want := "stored; it is this session's answer. You may end the session."; isErr || text != want {
+		t.Fatalf("stored = %q (%v), want %q", text, isErr, want)
+	}
+	if want := `{"directories":[{"path":"d0","role":"r"}],"conventions":["tests beside the code"],"check":"bash check changed"}`; len(e.answers.in) != 1 || e.answers.in[0] != want || e.answers.tools[0] != policy.ToolFileMap {
 		t.Fatalf("hand-over = %v %q, want %s", e.answers.tools, e.answers.in, want)
 	}
 }

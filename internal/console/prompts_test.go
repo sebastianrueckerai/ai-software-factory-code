@@ -89,7 +89,7 @@ func budgetOf(t *testing.T, step string) int {
 	return 0
 }
 
-// sessionProfiles are the profiles of the six session steps, by step.
+// sessionProfiles are the profiles of the seven session steps, by step.
 func sessionProfiles(t *testing.T) map[string]prompts.Profile {
 	t.Helper()
 	out := map[string]prompts.Profile{}
@@ -98,21 +98,22 @@ func sessionProfiles(t *testing.T) map[string]prompts.Profile {
 			out[p.Step] = p
 		}
 	}
-	if want := []string{"coding", "coding-card", "planner", "prover", "screening", "sizing"}; !slices.Equal(slices.Sorted(maps.Keys(out)), want) {
+	if want := []string{"coding", "coding-card", "planner", "prover", "repo-map", "screening", "sizing"}; !slices.Equal(slices.Sorted(maps.Keys(out)), want) {
 		t.Fatalf("the session steps are %q, want %q", slices.Sorted(maps.Keys(out)), want)
 	}
 	return out
 }
 
 // Each session step keeps the built-in tools its job uses: the coder
-// all six, the prover no todo list, the planner no edit, and screening
-// and sizing only the three that read.
+// all six, the prover no todo list, the planner no edit, and screening,
+// sizing and the map step only the three that read.
 func TestSessionToolSets(t *testing.T) {
 	want := map[string][]string{
 		"coding":      {"bash", "edit", "glob", "grep", "read", "todowrite"},
 		"coding-card": {"bash", "edit", "glob", "grep", "read", "todowrite"},
 		"prover":      {"bash", "edit", "glob", "grep", "read"},
 		"planner":     {"bash", "glob", "grep", "read"},
+		"repo-map":    {"glob", "grep", "read"},
 		"sizing":      {"glob", "grep", "read"},
 		"screening":   {"glob", "grep", "read"},
 	}
@@ -123,17 +124,17 @@ func TestSessionToolSets(t *testing.T) {
 	}
 }
 
-// The steps that only read cannot write: screening, sizing and the
-// planner have no edit, and screening and sizing, which read text an
-// outsider wrote, no shell.
+// The steps that only read cannot write: screening, sizing, the planner and
+// the map step have no edit, and screening, sizing and the map step, which
+// read text an outsider wrote, no shell.
 func TestReadOnlyStepsCannotWrite(t *testing.T) {
 	profiles := sessionProfiles(t)
-	for _, step := range []string{"screening", "sizing", "planner"} {
+	for _, step := range []string{"screening", "sizing", "planner", "repo-map"} {
 		if slices.Contains(profiles[step].Tools.Builtin, "edit") {
 			t.Errorf("step %s keeps edit", step)
 		}
 	}
-	for _, step := range []string{"screening", "sizing"} {
+	for _, step := range []string{"screening", "sizing", "repo-map"} {
 		if slices.Contains(profiles[step].Tools.Builtin, "bash") {
 			t.Errorf("step %s keeps bash", step)
 		}
@@ -143,7 +144,7 @@ func TestReadOnlyStepsCannotWrite(t *testing.T) {
 // stepClass is the policy class each session step runs as.
 var stepClass = map[string]string{
 	"coding": "coder", "coding-card": "coder", "planner": "planner", "prover": policy.ClassProver,
-	"screening": "analyzer", "sizing": "analyzer",
+	"repo-map": "planner", "screening": "analyzer", "sizing": "analyzer",
 }
 
 // shippedClassTools are the gateway tools of the session classes in the
@@ -153,7 +154,7 @@ var shippedClassTools = map[string][]string{
 		"manual", "release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate",
 		"web_scrape", "web_search"},
 	"analyzer":         {"analyze_image", "deployment_health", "digest", "escalate", "file_screening", "file_size", "manual", "request_info", "web_scrape", "web_search"},
-	"planner":          {"analyze_image", "digest", "escalate", "file_plan", "manual", "web_scrape", "web_search"},
+	"planner":          {"analyze_image", "digest", "escalate", "file_map", "file_plan", "manual", "web_scrape", "web_search"},
 	policy.ClassProver: {"file_proofs", "manual"},
 }
 
@@ -201,6 +202,7 @@ func TestSessionGatewaySets(t *testing.T) {
 		"coding": coder, "coding-card": coder,
 		"planner":   {"analyze_image", "digest", "file_plan", "manual", "web_scrape", "web_search"},
 		"prover":    {"file_proofs", "manual"},
+		"repo-map":  {"file_map", "manual"},
 		"sizing":    {"analyze_image", "file_size", "manual"},
 		"screening": {"analyze_image", "file_screening", "manual"},
 	}
@@ -632,5 +634,31 @@ func TestProverStandingWords(t *testing.T) {
 	env, err := prompts.SessionEnv("prover")
 	if err != nil || !slices.Contains(env, "OPENCODE_DISABLE_PROJECT_CONFIG=1") {
 		t.Errorf("the prover's environment is %q (%v), want OPENCODE_DISABLE_PROJECT_CONFIG=1", env, err)
+	}
+}
+
+// The map step reads the repository's AGENTS.md once, so its session loads
+// the project config: its environment sets nothing that disables it.
+func TestRepoMapLoadsProjectConfig(t *testing.T) {
+	env, err := prompts.SessionEnv("repo-map")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(env) != 0 {
+		t.Errorf("the map step's environment is %q, want none", env)
+	}
+	p := sessionProfiles(t)["repo-map"]
+	if got := slices.Sorted(slices.Values(p.Tools.Builtin)); !slices.Equal(got, []string{"glob", "grep", "read"}) {
+		t.Errorf("the map step's built-in tools = %q, want glob, grep and read", got)
+	}
+}
+
+// Standing words, counted from the files: factory 55 and narration 59 (114
+// chunks), paragraph 63: 177.
+func TestRepoMapStandingWords(t *testing.T) {
+	parts := built(t, "repo-map").Parts()
+	got := [4]int{parts.Guide, parts.Forms, parts.Chunks, parts.Paragraph}
+	if want := [4]int{0, 0, 114, 63}; got != want {
+		t.Errorf("guide, forms, chunks, paragraph = %v, want %v", got, want)
 	}
 }

@@ -126,7 +126,7 @@ func TestFilePlanKeepsTheRefusedPlanAsADraft(t *testing.T) {
 	worker.start(t, runner)
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
+		_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
 		done <- err
 	}()
 	awaitPod(t, kube, done)
@@ -154,8 +154,8 @@ func TestFilePlanKeepsTheRefusedPlanAsADraft(t *testing.T) {
 	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
 		t.Fatalf("filed %+v, %v", res, err)
 	}
-	if _, ok, _ := store.PlanDraft(ctx, "t-plan"); ok {
-		t.Fatal("the draft outlived the stored revision")
+	if d, _, _ := store.PlanDraft(ctx, "t-plan"); len(d.Findings) != 0 || strings.Contains(string(d.Plan), "summary") {
+		t.Fatalf("the draft outlived the stored revision: %+v", d)
 	}
 }
 
@@ -352,7 +352,7 @@ func TestAcceptedRefileDropsTheDraft(t *testing.T) {
 	worker.start(t, runner)
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{})
+		_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string{})
 		done <- err
 	}()
 	awaitPod(t, kube, done)

@@ -566,23 +566,17 @@ func TestALegacyTestCriterionDecodesAndANewOneIsRefused(t *testing.T) {
 	}
 }
 
-// The guide maps before it reads and keeps the conventions sentence; it
-// names digest only to a session whose tools hold it.
+// The guide keeps the conventions sentence and leaves the read discipline
+// to the map step: no map-first passage and no digest advice.
 func TestPlanGuideReadDiscipline(t *testing.T) {
-	conventions := "The issue's text tells what to build; every card follows the repository's conventions. "
-	mapFirst := "Map the repository before you read it: grep and glob find where things are. " +
-		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
-	digest := "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
-	with := planGuide(testShape, testLimits, nil, []string{policy.ToolFilePlan, policy.ToolDigest})
-	if !strings.Contains(with, conventions+mapFirst+digest+"Draft the spec before the cards") {
-		t.Fatalf("planGuide with digest = %q, want %q", with, conventions+mapFirst+digest)
+	g := planGuide(testShape, testLimits, nil)
+	if !strings.Contains(g, "every card follows the repository's conventions. Draft the spec before the cards") {
+		t.Fatalf("planGuide = %q, want the conventions sentence and then the draft", g)
 	}
-	without := planGuide(testShape, testLimits, nil, []string{policy.ToolFilePlan})
-	if !strings.Contains(without, conventions+mapFirst+"Draft the spec before the cards") || strings.Contains(strings.ToLower(without), "digest") {
-		t.Fatalf("planGuide without digest = %q, want the map-first passage and no digest", without)
-	}
-	if strings.Contains(with, "Read it and the repository") {
-		t.Fatal("planGuide still asks to read the repository")
+	for _, gone := range []string{"Map the repository before you read it", "A file you read whole", "Digest a big file", "Read it and the repository"} {
+		if strings.Contains(g, gone) {
+			t.Errorf("planGuide still holds %q", gone)
+		}
 	}
 }
 
@@ -590,10 +584,10 @@ func TestPlanGuideReadDiscipline(t *testing.T) {
 // card when the process allows it, and stays quiet when it does not.
 func TestPlanGuideOneCard(t *testing.T) {
 	want := "A change that fits one card answers one card, its own integration, citing every criterion."
-	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits, nil, nil); !strings.Contains(got, want) {
+	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits, nil, nil); strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want no one-card sentence under a two-card minimum", got)
 	}
 }
@@ -630,11 +624,11 @@ func TestPlanCardNamesAPinnedImage(t *testing.T) {
 func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium", "fonts-liberation"}}}
 	want := "Images: browser (chromium, fonts-liberation), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
-	got := planGuide(testShape, testLimits, pins, nil)
+	got := planGuide(testShape, testLimits, pins)
 	if !strings.Contains(got, want) || !strings.Contains(got, `"rung_reason": "one line", "image": "..."}`) {
 		t.Fatalf("planGuide = %q, want the image field and %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits, nil, nil); strings.Contains(got, "Images:") || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "one line"}]`) {
+	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, "Images:") || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "one line"}]`) {
 		t.Fatalf("planGuide without pins = %q, want no image field and no Images line", got)
 	}
 }
@@ -643,7 +637,7 @@ func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 // step budget (the guide gives no time estimate any more).
 func TestPlanGuideCardSizeSentence(t *testing.T) {
 	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -652,7 +646,7 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 // and in the field rules. The line figures are readPlan's size
 // findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil, nil)
+	got := planGuide(testShape, testLimits, nil)
 	if !strings.Contains(got, `"size": "small|medium|large"`) ||
 		!strings.Contains(got, "size: small, medium or large; anything bigger is two cards.") {
 		t.Fatalf("planGuide = %q, want the three sizes", got)
@@ -665,7 +659,7 @@ func TestPlanGuideSizes(t *testing.T) {
 // (the spec-intake concept, piece 2).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
 	want := "acceptance: each item what the card's tests prove, with the inputs and the numbers they expect, citing the criterion it works on; the foundation's items need cite none."
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -676,7 +670,7 @@ func TestPlanGuideAcceptanceRule(t *testing.T) {
 // test criterion names its suite and its test's name, and a card whose
 // directories hold the suite writes its test.
 func TestPlanGuideCriteria(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil, nil)
+	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "promise": "...", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}]`,
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
@@ -712,7 +706,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 // confirmation that fixes the criteria, and the planner's one attack on
 // its own draft.
 func TestPlanGuideSpec(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil, nil)
+	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order"`,
 		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
@@ -733,7 +727,7 @@ func TestPlanGuideSpec(t *testing.T) {
 // out, so the planner answers it again, not the whole plan. A shape
 // without a foundation card reads no foundation in the paragraph.
 func TestPlanGuideRounds(t *testing.T) {
-	bare := planGuide(policy.PlanShape{MaxCards: 12, Integration: true}, testLimits, nil, nil)
+	bare := planGuide(policy.PlanShape{MaxCards: 12, Integration: true}, testLimits, nil)
 	want := "A feature too big for one round of cards is planned in rounds: file the first round's cards and keep the rest in outline; " +
 		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
 		"The merged cards of earlier rounds are not in your last plan. " +
@@ -741,7 +735,7 @@ func TestPlanGuideRounds(t *testing.T) {
 	if !strings.Contains(bare, want) || strings.Contains(bare, "foundation first") || strings.Contains(bare, "but a foundation") {
 		t.Fatalf("planGuide without a foundation = %q, want %q and no foundation in it", bare, want)
 	}
-	got := planGuide(testShape, testLimits, nil, nil)
+	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`"summary": "a paragraph: what gets built and in which order", "outline": ["..."]`,
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
@@ -765,10 +759,10 @@ func TestPlanGuideRounds(t *testing.T) {
 func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 	want := "The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
 		"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise)."
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits, nil, nil), want) {
+	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits, nil), want) {
 		t.Fatal("a shape with no foundation card still gets the foundation's contracts sentence")
 	}
 }
@@ -777,7 +771,7 @@ func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 // bash check, so it never asks a card to verify some other way.
 func TestPlanGuideBashCheckLine(t *testing.T) {
 	want := "Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run."
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -786,7 +780,7 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 // the planner's guide does not ask for it.
 func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 	for _, shape := range []policy.PlanShape{testShape, {MaxCards: 12}} {
-		if got := planGuide(shape, testLimits, nil, nil); strings.Contains(got, "AGENTS.md") {
+		if got := planGuide(shape, testLimits, nil); strings.Contains(got, "AGENTS.md") {
 			t.Fatalf("planGuide = %q, want no AGENTS.md", got)
 		}
 	}
@@ -797,7 +791,7 @@ func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 // so this sentence is the rule's only carrier.
 func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 	want := "Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list."
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -806,7 +800,7 @@ func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 // (defect 178): RunPlan refuses a session that ends without filing one.
 func TestPlanGuideFilesThroughTheTool(t *testing.T) {
 	want := "You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding "
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -3350,7 +3344,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -3369,7 +3363,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	}
 	env := podEnv(kube.podAt(0))
 	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "You are the planner") ||
-		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") || !strings.Contains(env["REPORT_GUIDE"], digestBig) ||
+		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") ||
 		env["FINDINGS"] != `["an earlier finding"]` {
 		t.Fatalf("pod env %v", env)
 	}
@@ -3426,7 +3420,7 @@ func TestRunPlanFencesTheWorkSoFar(t *testing.T) {
 			}
 			done := make(chan error)
 			go func() {
-				_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), tc.findings)
+				_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), tc.findings)
 				done <- err
 			}()
 			awaitPod(t, kube, done)
@@ -3456,7 +3450,7 @@ func TestRunPlanCarriesTheRecord(t *testing.T) {
 	worker.start(t, runner)
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
+		_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
 		done <- err
 	}()
 	awaitPod(t, kube, done)
@@ -3520,7 +3514,7 @@ func TestRunPlanKeepsTheLastPlanBeforeManyOldCards(t *testing.T) {
 	}
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), sixty)
+		_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), sixty)
 		done <- err
 	}()
 	awaitPod(t, kube, done)
@@ -3550,7 +3544,7 @@ func TestRunPlanGuideListsThePinsInForce(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return inForce }
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		done <- err
 	}()
 	awaitPod(t, kube, done)
@@ -3582,7 +3576,7 @@ func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -3623,7 +3617,7 @@ func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -3672,7 +3666,7 @@ func TestReportSessionLeavesADayCapToTheCapWait(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -4398,7 +4392,7 @@ func TestRunPlanTakesAToolFiling(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -4483,7 +4477,7 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(true, "no plan yet")
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{})
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string{})
 		if err == nil {
 			var res PlanResult
 			err = val.Get(&res)
@@ -4530,7 +4524,7 @@ func TestRunPlanRunsOnTheClassSessionModel(t *testing.T) {
 	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(true, "no plan yet")
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{})
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string{})
 		if err == nil {
 			var res PlanResult
 			err = val.Get(&res)
@@ -4678,7 +4672,7 @@ func TestRunPlanNamesAProviderRefusal(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -4709,7 +4703,7 @@ func TestRunPlanNamesACap(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -4743,7 +4737,7 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}

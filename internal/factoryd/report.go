@@ -193,7 +193,8 @@ type reportEnd struct {
 // replan's planner the fork's branches its clone fetches and the record
 // its brief carries, the prover its role on its timeline lines, the time
 // its activity keeps for the dry run after it, and its session_end
-// summary in factoryd's words.
+// summary in factoryd's words; the map step its alias, the directories its
+// worker maps and, for the planner, the finished map its brief carries.
 type reportExtra struct {
 	branches []string
 	record   *carryState
@@ -202,6 +203,11 @@ type reportExtra struct {
 	room     time.Duration // the raise headroom the activity's window holds past the session's own time
 	added    time.Duration // with room, the agent time added to the card's cap when the session was scheduled
 	summary  func() string // the session_end summary in factoryd's words; nil keeps the agent's
+	alias    string        // the model alias the session runs on, over its class's session model; "" keeps that
+	// directories are what the worker maps from its clone, repoMap a
+	// finished map its brief carries instead
+	directories []string
+	repoMap     string
 }
 
 // minReportTime is the least agent time a session keeps once its
@@ -234,11 +240,14 @@ func reportDeadline(activityDeadline time.Time, agentTime, reserve time.Duration
 // fork when extra has branches to fetch; no push token.
 func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing, step string, pin int64, guide string, findings, answers []string, extra reportExtra) (end reportEnd, err error) {
 	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), model: model, repo: repo, startRef: t.SHA, step: step, report: true, guide: guide, standing: standing, findings: findings, answers: answers, planner: step == "planner",
-		branches: extra.branches, record: extra.record}
+		branches: extra.branches, record: extra.record, directories: extra.directories, repoMap: extra.repoMap}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return reportEnd{}, err
 	}
 	s.model = sessionModel(s.policy, t, s.model)
+	if extra.alias != "" {
+		s.model = onAlias(s.model, extra.alias)
+	}
 	tc, err := r.TaskConfig(ctx, t.ID, pin)
 	if err != nil {
 		return reportEnd{}, err
@@ -435,10 +444,11 @@ func parseScreening(text string) ScreenResult {
 	return screenResult(v, invalid)
 }
 
-// FileAnswer is the hand-over of file_screening and file_size, the filing
-// tools that store one answer object: the running report task it answers for, its object checked and
-// kept as the task's summary, which the report's reader parses. The
-// findings are why a filing is refused, none when it is stored.
+// FileAnswer is the hand-over of file_screening, file_size and file_map,
+// the filing tools that store one answer object: the running task it
+// answers for, its object checked and kept, a report task's as its
+// summary, which the report's reader parses, the map step's in the plan
+// draft. The findings are why a filing is refused, none when it is stored.
 func (r *Runner) FileAnswer(ctx context.Context, taskID, tool string, raw json.RawMessage) ([]string, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -447,6 +457,8 @@ func (r *Runner) FileAnswer(ctx context.Context, taskID, tool string, raw json.R
 	var source string
 	var check func(json.RawMessage) (string, []string)
 	switch tool {
+	case policy.ToolFileMap:
+		return r.fileMap(ctx, t, raw)
 	case policy.ToolFileScreening:
 		source, check = SourceScreening, checkScreeningFiling
 	case policy.ToolFileSize:

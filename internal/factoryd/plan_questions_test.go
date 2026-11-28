@@ -70,7 +70,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	}
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'
 	// findings, pinned by the table above, not the prose (roadmap 186).
-	g := planGuide(testShape, testLimits, nil, nil)
+	g := planGuide(testShape, testLimits, nil)
 	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "changes": ["what the first choice changes in the plan, one short line", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `) ||
 		!strings.Contains(g, "questions: open points the spec leaves to the human; their answers come back to you with your last plan, "+
 			"and a plan with open questions waits for their answers, while a plan with none files its cards at once.") || strings.Count(g, "question") != 5 {
@@ -531,7 +531,7 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		val, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}

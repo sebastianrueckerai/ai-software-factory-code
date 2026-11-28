@@ -1,0 +1,15 @@
+step: repo-map
+purpose: session
+reader: model
+guide: false
+forms: []
+chunks: [factory, narration]
+paragraph: repo-map
+facts: session
+answer: ""
+tools:
+  builtin: [glob, grep, read]
+  gateway: [file_map, manual]
+  chat: []
+agents_md: true
+budget_words: 290

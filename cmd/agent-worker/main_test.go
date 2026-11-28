@@ -222,6 +222,18 @@ func TestCardMapReadsTheClone(t *testing.T) {
 	}
 }
 
+// A report session's finished map (REPO_MAP) is the planner's brief map and
+// replaces the one the worker reads from DIRECTORIES.
+func TestLoadEnvReadsAFinishedRepoMap(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("MODE", "report")
+	t.Setenv("REPO_MAP", "Repository map:\n- cmd: the binaries")
+	e, err := loadEnv()
+	if err != nil || e.repoMap != "Repository map:\n- cmd: the binaries" {
+		t.Fatalf("repoMap = %q, %v", e.repoMap, err)
+	}
+}
+
 // A resumed session starts from the branch head an earlier session pushed
 // to the fork: the base clone from the task's repository lacks it, so the
 // worker fetches the branch from the fork before the checkout.

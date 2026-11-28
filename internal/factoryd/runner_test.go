@@ -4455,7 +4455,7 @@ func TestASessionsOwnTimeEndsWhereItsRoomBegins(t *testing.T) {
 			runner.store = spy
 			done := make(chan error)
 			go func() {
-				_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil), tc.room)
+				_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil), tc.room)
 				done <- err
 			}()
 			awaitPod(t, kube, done)
@@ -6433,7 +6433,7 @@ func TestPlannerSessionClonesTheOldBranches(t *testing.T) {
 			worker.start(t, runner)
 			done := make(chan error)
 			go func() {
-				_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+				_, err := execRunPlan(t, runner, "t-plan", "factory/big", int64(7), []string(nil))
 				done <- err
 			}()
 			awaitPod(t, kube, done)

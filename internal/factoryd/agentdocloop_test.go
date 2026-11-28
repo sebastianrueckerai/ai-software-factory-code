@@ -80,6 +80,7 @@ classes:
     tools:
       escalate: {}
       file_plan: {}
+      file_map: {}
       manual: {}
   prover:
     session: report
@@ -128,10 +129,10 @@ func agentDocLoopPolicy() policy.Version {
 	return policy.Version{Commit: "fixture", Tree: tree}
 }
 
-// The loop's modes: coding, screening, sizing, the planner, the prover and
-// the message responder.
+// The loop's modes: coding, screening, sizing, the map step, the planner, the
+// prover and the message responder.
 func TestAgentDocLoopIDs(t *testing.T) {
-	if got, want := AgentDocLoopIDs(), []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}; !slices.Equal(got, want) {
+	if got, want := AgentDocLoopIDs(), []string{"coding", "screening", "sizing", "repo-map", "planner", "prover", "message-responder"}; !slices.Equal(got, want) {
 		t.Fatalf("AgentDocLoopIDs() = %q, want %q", got, want)
 	}
 }
@@ -407,6 +408,8 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			}
 			want := "factory-tools_escalate"
 			switch id {
+			case "repo-map":
+				want = "factory-tools_file_map"
 			case "planner":
 				want = "factory-tools_file_plan"
 			case "prover":
@@ -603,25 +606,26 @@ func assertLoopModels(t *testing.T, v policy.Version, want map[string]string) {
 // starts on the stronger rung (big), a report or code session on the cheap
 // one (small), and a plan or report class's session_model replaces that.
 // With the planner's session_model set to small the planner's page names
-// small; the prover's keeps it on big.
+// small; the prover's keeps it on big, and the map step runs on small under
+// either.
 func TestAgentDocLoopNamesTheModelThePolicyGives(t *testing.T) {
 	yaml := strings.Replace(agentDocLoopPolicyYAML, "session_model: premium", "session_model: small", 1)
 	if yaml == agentDocLoopPolicyYAML {
 		t.Fatal("the fixture policy has no premium session_model to replace")
 	}
 	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
-		"planner": "small", "prover": "big", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
+		"planner": "small", "repo-map": "small", "prover": "big", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
 }
 
 // Without any session_model the base choice shows: the planner on big, the
-// prover and the rest on small.
+// prover, the map step and the rest on small.
 func TestAgentDocLoopNamesTheRunnersBaseModel(t *testing.T) {
 	yaml := regexp.MustCompile(`(?m)^    session_model: .*\n`).ReplaceAllString(agentDocLoopPolicyYAML, "")
 	if strings.Contains(yaml, "session_model") {
 		t.Fatal("a session_model line is left in the fixture policy")
 	}
 	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
-		"planner": "big", "prover": "small", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
+		"planner": "big", "repo-map": "small", "prover": "small", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
 }
 
 // session_model is for plan and report classes only; a code session runs on

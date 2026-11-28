@@ -1447,31 +1447,19 @@ func againLine(k Task) string {
 		"(git diff %s^1 %s shows them), make it build green, and land it.", k.IssueNumber, k.PlanKey, k.MergeCommit, k.MergeCommit)
 }
 
-// mapFirst is the planner's read discipline: discovery by grep and glob,
-// a whole read kept for what the plan needs;
-// digestBig its digest, for a session whose tools hold it.
-const (
-	mapFirst = "Map the repository before you read it: grep and glob find where things are. " +
-		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
-	digestBig = "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
-)
-
 // planGuide is the planner's guide: the spec is the issue, the answer a
 // plan filed with the file_plan tool, a card one session of the pinned
 // limits. The shape's mechanical rules (counts, keys, bounds, cycles) are
 // readPlan's findings, not this prose (roadmap 186). pins are the
-// project's images a card may name, tools the session's.
-func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin, tools []string) string {
+// project's images a card may name.
+func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) string {
 	first, butFoundation := "file the first round's cards", ""
 	if shape.Foundation {
 		first, butFoundation = "file the first round's cards, foundation first,", " but a foundation"
 	}
 	g := "You are the planner. " +
-		"The issue's text tells what to build; every card follows the repository's conventions. " + mapFirst
-	if slices.Contains(tools, policy.ToolDigest) {
-		g += digestBig
-	}
-	g += "Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
+		"The issue's text tells what to build; every card follows the repository's conventions. " +
+		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
 		"when the repository carries a spec skeleton at docs/spec.md, draft into its shape and carry its standing criteria. " +
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
@@ -2936,7 +2924,10 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	if d, ok, err := r.store.PlanDraft(ctx, taskID); err != nil {
 		return PlanResult{}, err
-	} else if ok {
+	} else if ok && len(d.Findings) > 0 {
+		if d.Plan, _, err = splitMap(d.Plan); err != nil {
+			return PlanResult{}, err
+		}
 		findings = append(slices.Clone(findings), r.draftBrief(d, findings))
 	}
 	extra, findings, err := r.planRecord(ctx, t, tl, findings)
@@ -2944,11 +2935,20 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		return PlanResult{}, err
 	}
 	extra.room, extra.added = room, added
+	head := t.SHA
+	if head == "" {
+		if head, err = r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase); err != nil {
+			return PlanResult{}, err
+		}
+	}
+	if extra.repoMap, err = r.planMap(ctx, t, repo, head, planRun{model, pin, room, added}); err != nil {
+		return PlanResult{}, err
+	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	r.newBriefSession(taskID)
 	began := time.Now()
 	tools := prompts.Offered("planner", v.Document.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage)))
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), "planner", pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), "planner", pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository)), findings, answers, extra)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -3045,7 +3045,7 @@ func (r *Runner) planDraftNote(ctx context.Context, taskID, reason string) (stri
 		return "", nil
 	}
 	d, ok, err := r.store.PlanDraft(ctx, taskID)
-	if err != nil || !ok {
+	if err != nil || !ok || len(d.Findings) == 0 {
 		return "", err
 	}
 	return fmt.Sprintf("The planner's last refused filing is kept as a draft, refused for %s.", plural(len(d.Findings), "finding")), nil
@@ -3128,7 +3128,17 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		return PlanResult{}, err
 	}
 	refuse := func(found []string) (PlanResult, error) {
-		return PlanResult{Findings: found}, r.store.SetPlanDraft(ctx, taskID, filed, found)
+		held, err := r.heldMap(ctx, taskID)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		kept := filed
+		if held != nil {
+			if kept, err = withMap(filed, held); err != nil {
+				return PlanResult{}, err
+			}
+		}
+		return PlanResult{Findings: found}, r.store.SetPlanDraft(ctx, taskID, kept, found)
 	}
 	// the revision this one changes, when there is one: the amendment
 	// rules judge the pair (piece 10), the replan rules the revision
@@ -3181,6 +3191,10 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	// a re-file of the newest revision by value: already stored. By
 	// value, not by hash: the stored row's hash can drift (a settled
 	// card gains its issue number) while the plan is the same.
+	heldMap, err := r.heldMap(ctx, taskID)
+	if err != nil {
+		return PlanResult{}, err
+	}
 	if st.newest != nil && reflect.DeepEqual(*st.newest, p) {
 		rev, _, err := r.store.PlanRevision(ctx, taskID, st.revision)
 		if err != nil {
@@ -3190,7 +3204,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		if err != nil {
 			return PlanResult{}, err
 		}
-		if err := r.store.DeletePlanDraft(ctx, taskID); err != nil {
+		if err := r.settleDraft(ctx, taskID, heldMap); err != nil {
 			return PlanResult{}, err
 		}
 		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate})
@@ -3219,6 +3233,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	n, err := r.store.AddPlanRevision(ctx, taskID, raw, sha)
 	if err != nil {
+		return PlanResult{}, err
+	}
+	if err := r.settleDraft(ctx, taskID, heldMap); err != nil {
 		return PlanResult{}, err
 	}
 	if r.Namer != nil && t.PlanName == "" {

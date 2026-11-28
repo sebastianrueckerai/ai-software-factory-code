@@ -987,8 +987,8 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"feature":       featureGuide(RoleFeature, nil, nil),
 		"integration":   featureGuide(RoleIntegration, nil, nil),
 		"end":           guideEnd(nil, nil),
-		"plan":          planGuide(testShape, testLimits, nil, nil),
-		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits, nil, nil),
+		"plan":          planGuide(testShape, testLimits, nil),
+		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits, nil),
 	}
 	rules := []string{
 		// the worker's push guard refuseMisnamedMigrations, pinned by
@@ -1264,7 +1264,7 @@ func TestCodingGuideCarriesNoForm(t *testing.T) {
 // No guide asks for a build without -race any more (stage12-design 5.2):
 // the sandbox now has gcc.
 func TestGuideEndNoLongerForbidsRace(t *testing.T) {
-	for _, g := range []string{workGuide(nil, nil), featureGuide(RoleFeature, nil, nil), planGuide(testShape, testLimits, nil, nil)} {
+	for _, g := range []string{workGuide(nil, nil), featureGuide(RoleFeature, nil, nil), planGuide(testShape, testLimits, nil)} {
 		if strings.Contains(g, "without -race") {
 			t.Fatalf("guide still forbids -race: %q", g)
 		}
@@ -1305,7 +1305,7 @@ func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
 // guide names a shell timeout past the tool's 600000 ms maximum (the plan's
 // cards are clamped at the filing door, TestPlanBriefTimeoutIsClamped).
 func TestGuidesNameRunnableChecks(t *testing.T) {
-	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, "bash check static") {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, "bash check static") {
 		t.Fatalf("planGuide = %q, want the changeless round's bash check static", got)
 	}
 	end := guideEnd(nil, nil)

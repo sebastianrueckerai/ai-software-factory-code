@@ -191,7 +191,7 @@ func TestARoundSettlesAKeyItsSuccessorMerged(t *testing.T) {
 		r, _, kube, _ := rig(t)
 		done := make(chan error)
 		go func() {
-			_, err := execActivity(t, r, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+			_, err := execRunPlan(t, r, "t-plan", "factory/big", int64(7), []string(nil))
 			done <- err
 		}()
 		awaitPod(t, kube, done)
@@ -352,7 +352,7 @@ func TestRunPlanReadsTheTimelineOnce(t *testing.T) {
 	r.objects, r.timeline.Objects = objs, objs
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, r, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		_, err := execRunPlan(t, r, "t-plan", "factory/big", int64(7), []string(nil))
 		done <- err
 	}()
 	awaitPod(t, kube, done)
@@ -437,7 +437,7 @@ func TestRunPlanShowsTheRoundWithoutTheSettled(t *testing.T) {
 			}
 			done := make(chan error)
 			go func() {
-				_, err := execActivity(t, r, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+				_, err := execRunPlan(t, r, "t-plan", "factory/big", int64(7), []string(nil))
 				done <- err
 			}()
 			awaitPod(t, kube, done)

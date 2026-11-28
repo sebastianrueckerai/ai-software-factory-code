@@ -725,6 +725,9 @@ type sessionSpec struct {
 	cardRole string
 	// directories are the card's, which the worker maps from its clone
 	directories []string
+	// repoMap is the map step's map, which a planner's brief carries
+	// instead of a map the worker reads
+	repoMap string
 	// pull is the pull request a carry card carries, whose head the clone
 	// holds as branch pull/<pull>; 0 for none
 	pull int64
@@ -3085,6 +3088,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if len(s.directories) > 0 {
 		env = append(env, map[string]any{"name": "DIRECTORIES", "value": fit.list("DIRECTORIES", s.directories, len(s.directories), false, "last", "directories")})
+	}
+	if s.repoMap != "" {
+		env = append(env, map[string]any{"name": "REPO_MAP", "value": fit.text("REPO_MAP", s.repoMap, "the repository map")})
 	}
 	// the worker's migration-name guard reads these (roadmap 186), where
 	// the guide's naming sentence used to be

@@ -25,6 +25,7 @@
     "factory-tools_cloud_prices": "deny",
     "factory-tools_commission_server": "deny",
     "factory-tools_fal_run": "deny",
+    "factory-tools_file_map": "deny",
     "factory-tools_file_plan": "deny",
     "factory-tools_file_proofs": "deny",
     "factory-tools_file_screening": "deny",

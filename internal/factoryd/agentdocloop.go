@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"testing/fstest"
 	"time"
 
 	pins "github.com/sebastianrueckerai/ai-software-factory-code"
@@ -25,16 +26,16 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/prompts"
 )
 
-// The loop's six modes are one session shape — the same brief builder, the
+// The loop's seven modes are one session shape — the same brief builder, the
 // same sandbox facts, the same markers — with the guide swapped: a coding
-// session works, the four report sessions read, the responder answers a
+// session works, the five report sessions read, the responder answers a
 // writer. Each mode is one page of the map; these fixtures build the brief
 // each mode's session really reads, and the capture drives the real
 // opencode loop on it.
 
-// AgentDocLoopIDs are the loop's six modes.
+// AgentDocLoopIDs are the loop's seven modes.
 func AgentDocLoopIDs() []string {
-	return []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}
+	return []string{"coding", "screening", "sizing", "repo-map", "planner", "prover", "message-responder"}
 }
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
@@ -68,13 +69,21 @@ func agentDocLoopClass(id string) string {
 	switch id {
 	case "screening", "sizing":
 		return "analyzer"
-	case "planner":
+	case "repo-map", "planner":
 		return "planner"
 	case "prover":
 		return policy.ClassProver
 	}
 	return "coder"
 }
+
+// agentDocLoopMap is the repository map the map step's session starts
+// from: the worker's map of the fixture repository's root.
+var agentDocLoopMap = RepoMap(fstest.MapFS{
+	"AGENTS.md":           {Data: []byte(agentDocLoopAgents)},
+	"go.mod":              {Data: []byte("module fixture.example/project\n")},
+	"internal/store/a.go": {Data: []byte("// Package store keeps the counter's rows.\npackage store\n")},
+}, []string{"."})
 
 // agentDocLoopPosters is the fixture issue's 21 author answers as the
 // worker's environment carries them: the real envFit cap keeps the newest
@@ -121,8 +130,10 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 		b.ReportMode = true
 	case "sizing":
 		b.ReportMode, b.Report = true, sizingFacts(sizeLines(v.Document.Risk.LargeLines))
+	case "repo-map":
+		b.ReportMode, b.Map = true, agentDocLoopMap
 	case "planner":
-		b.ReportMode, b.Report = true, planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
+		b.ReportMode, b.Report = true, planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil)
 	case "prover":
 		b.ReportMode, b.Report = true, proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
 			Claim: "The counter counts a row the query skips twice.", Inputs: "a table with two skipped rows", Expected: "a count of 2", State: ProofOkayed}}, nil)
@@ -210,6 +221,9 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 		for _, l := range agentDocDeathLines() {
 			s = append(s, agentdoc.Span{Name: "the line on how the session before ended", Symbol: "GateLines", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: l})
 		}
+	}
+	if b.Map != "" {
+		s = append(s, agentdoc.Span{Name: "the repository map", Symbol: "RepoMap", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: "\n\n" + b.Map})
 	}
 	if len(b.Tools) > 0 {
 		s = append(s, agentdoc.Span{Name: "the tools line", Symbol: "toolsLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -531,9 +545,13 @@ func AgentDocBake(root, dir string) error {
 // runner picks it: the plan session starts on the stronger rung and the
 // others on the cheap one, and the class's session_model under the policy
 // replaces that for a plan or report class. A code session runs on the
-// ladder and takes no session_model.
+// ladder and takes no session_model, and the map step runs on the small
+// alias whatever its class names.
 func agentDocLoopSessionModel(id string, v policy.Version) string {
 	base := "factory/" + policy.Small
+	if id == "repo-map" {
+		return base
+	}
 	if id == "planner" {
 		base = "factory/" + policy.Big
 	}

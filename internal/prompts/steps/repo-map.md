@@ -1,0 +1,1 @@
+Your step maps the repository for the planner, which reads your map instead of the repository. Find where things are with grep and glob, and read the AGENTS.md your session loaded. File the map with file_map: the directories that matter with the role of each, the conventions every card follows, and the command that checks a change. The manual tool describes the factory.

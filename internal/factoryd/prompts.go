@@ -73,11 +73,13 @@ func init() {
 	prompts.RegisterStep("coding-card", []string{"factoryd.(*Runner).RunSession"},
 		sessionFixture("coding-card", harness.TaskBrief{Tools: coder, CardRole: RoleFeature}))
 	prompts.RegisterStep("planner", []string{"factoryd.(*Runner).RunPlan"},
-		sessionFixture("planner", harness.TaskBrief{ReportMode: true, Report: planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil, nil)}))
+		sessionFixture("planner", harness.TaskBrief{ReportMode: true, Report: planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil)}))
 	prompts.RegisterStep("prover", []string{"factoryd.(*Runner).RunReport"},
 		sessionFixture("prover", harness.TaskBrief{ReportMode: true, Report: proverGuide(agentDocPlan(), nil, nil)}))
 	prompts.RegisterStep("screening", []string{"factoryd.(*Runner).RunReport"},
 		sessionFixture("screening", harness.TaskBrief{ReportMode: true}))
+	prompts.RegisterStep("repo-map", []string{"factoryd.(*Runner).planMap"},
+		sessionFixture("repo-map", harness.TaskBrief{ReportMode: true, Map: agentDocLoopMap}))
 	prompts.RegisterStep("sizing", []string{"factoryd.(*Runner).RunReport"},
 		sessionFixture("sizing", harness.TaskBrief{ReportMode: true, Report: sizingFacts(sizeLines(600))}))
 	prompts.RegisterStep("message-responder", []string{"factoryd.(*Runner).MessageSession"}, sessionMessage("sebastian", "Why is the check red?"))
