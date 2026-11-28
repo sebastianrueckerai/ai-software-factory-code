@@ -726,7 +726,8 @@ type accReply struct {
 	content  string
 }
 
-// accGateway answers every chat call with the reply the test set last.
+// accGateway answers every chat call with the reply the test set last, as
+// the forced tool's arguments when the call forces one.
 type accGateway struct {
 	mu     sync.Mutex
 	reply  accReply
@@ -748,6 +749,11 @@ func (g *accGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Messages []struct {
 			Content string `json:"content"`
 		} `json:"messages"`
+		ToolChoice *struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tool_choice"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	g.mu.Lock()
@@ -762,7 +768,11 @@ func (g *accGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"error":{"message":"task headroom 0.00 EUR","type":"budget_exceeded"}}`)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": reply.content}}}})
+	message := map[string]any{"content": reply.content}
+	if body.ToolChoice != nil {
+		message = map[string]any{"content": nil, "tool_calls": []any{map[string]any{"function": map[string]any{"name": body.ToolChoice.Function.Name, "arguments": reply.content}}}}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": message}}})
 }
 
 func (accWorkflows) Terminate(context.Context, string, string, string) error { return nil }
