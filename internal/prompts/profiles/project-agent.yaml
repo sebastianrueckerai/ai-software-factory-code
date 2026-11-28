@@ -14,5 +14,5 @@ tools:
   rare: [board, ci, alerts, deployment_health, cluster_facts, resources, settings, policy, project_images, promote_resource, release_resource, request_image, rerun_checks, set_accent, invite, github_export, github_sync, set_dependency, replan, set_pool, write_doc, show_doc, set_autonomy, routines, routine_write, routine_delete, routine_run, routine_skip, board_view, board_view_reset]
   attached: [analyze_image, read_attachment, summarize_attachment]
 agents_md: false
-budget_words: 2643
+budget_words: 2548
 budget_tool_words: 2230

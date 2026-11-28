@@ -375,7 +375,6 @@ func TestEveryProfileHasAStep(t *testing.T) {
 // The factory chunk goes to the steps that act across the factory's flow,
 // the narration chunk to the sessions that write most.
 func TestChunkCarriers(t *testing.T) {
-	t.Skip("carriers land task by task")
 	producers := []string{"coding", "coding-card", "prover", "repo-map", "screening", "sizing"}
 	planner := []string{"planner-cards", "planner-criteria", "planner-replan", "planner-revert", "planner-spec"}
 	want := map[string][]string{
