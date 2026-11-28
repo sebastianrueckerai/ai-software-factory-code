@@ -543,20 +543,6 @@ func ProofsFileHandler(r *Runner) http.HandlerFunc {
 	}
 }
 
-// The prover's guide: the surface its tests bind to, and how it works.
-const (
-	proverSurface = "Test each criterion at a surface that stays put while the cards are built: the HTTP API through the server constructor " +
-		"the foundation names (internal/server.New unless it names another), the command line of a binary, the store through its test harness, " +
-		"seeded and read back, or the files and output the feature writes. Reach into an internal contract only when a criterion cannot be stated at a surface."
-	proverWork = "How to work: write each test in a file of its own that the project's tools run, such as proofs/<id>/<id>_test.go, and change no other file. " +
-		"Run each one as the gate will: mkdir -p /tmp/art && CHECK_REPORT=/tmp/<id>.xml CHECK_ARTIFACTS=/tmp/art bash check test <suite> <name>. " +
-		"A test of kind test, and every hold-out, must fail on main for the feature's absence: a test green before the feature exists proves nothing. " +
-		"A judgement or human test must run on main and write its artifact. Then file the whole set with file_proofs: per criterion its id, path, suite, name, code, " +
-		"your run's outcome on main and, for judgement and human, the artifact's file name. " +
-		"A refusal names what to fix; file again, three filings at most; the last filing stands. " +
-		"Report each outcome as your run saw it: the third filing takes a test still green or unrunnable on main, which factoryd flags. You push nothing."
-)
-
 // sentence is s trimmed and ending in a full stop, unless it ends in one
 // or another stop of its own.
 func sentence(s string) string {
@@ -567,15 +553,13 @@ func sentence(s string) string {
 	return s + "."
 }
 
-// proverGuide is the prover's brief: the opening, the spec, one line per
-// criterion of kind test, judgement and human and per hold-out, the
-// surface rule, the foundation's contracts when the plan has a foundation
-// card, and the way of work. A judgement's prompt stays out: the model
-// that judges the artifact reads it, not the test's writer.
+// proverGuide is the prover's brief: the spec, one line per criterion of
+// kind test, judgement and human and per hold-out, and the foundation's
+// contracts when the plan has a foundation card. A judgement's prompt
+// stays out: the model that judges the artifact reads it, not the test's
+// writer.
 func proverGuide(p Plan, holdouts []PlanProof, foundation *PlanCard) string {
 	var b strings.Builder
-	b.WriteString("You are the prover. You write one test per criterion and hold-out below, against the repository's main head, " +
-		"before the plan's cards build the feature. The builder never sees your tests until each has run once at the gate.\n\n")
 	if spec := specBlock(p); spec != "" {
 		b.WriteString(spec + "\n\n")
 	}
@@ -593,13 +577,11 @@ func proverGuide(p Plan, holdouts []PlanProof, foundation *PlanCard) string {
 	for _, h := range holdouts {
 		fmt.Fprintf(&b, "- %s (hold-out, kind test): %s Inputs: %s Expected: %s\n", briefID(p, h), sentence(h.Claim), sentence(h.Inputs), sentence(h.Expected))
 	}
-	b.WriteString("\n" + proverSurface + "\n")
 	if foundation != nil {
 		fmt.Fprintf(&b, "\nThe foundation card %s is on main. Its brief named the contracts every card builds on; read them there:\n%s\n",
 			foundation.Key, strings.TrimSpace(foundation.Brief))
 	}
-	b.WriteString("\n" + proverWork)
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // proverBrief is plan's prover guide: its filed plan, its okayed and filed

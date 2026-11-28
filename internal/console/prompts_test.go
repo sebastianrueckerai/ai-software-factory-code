@@ -603,3 +603,34 @@ func TestSizingStandingWords(t *testing.T) {
 		t.Errorf("standing words = %d, want 287", total)
 	}
 }
+
+// The refusals, the filing cap, report mode and the tool's schema carry the
+// filing rules: the prover's text names none.
+func TestProverCarriesNoFilingRules(t *testing.T) {
+	lacks(t, "prover", "three filings at most", "must fail on main", "You push nothing", "per criterion its id, path, suite")
+}
+
+// The command the gate runs is the paragraph's, whole.
+func TestProverKeepsTheRunCommand(t *testing.T) {
+	const run = "mkdir -p /tmp/art && CHECK_REPORT=/tmp/<id>.xml CHECK_ARTIFACTS=/tmp/art bash check test <suite> <name>"
+	if p := built(t, "prover"); !strings.Contains(p.Standing(), run) {
+		t.Errorf("the prover's standing text lacks %q:\n%s", run, p.Standing())
+	}
+}
+
+// Standing words, counted from the files: no form, factory 55 and
+// narration 59 (114 chunks), paragraph 148: 262.
+func TestProverStandingWords(t *testing.T) {
+	parts := built(t, "prover").Parts()
+	got := [4]int{parts.Guide, parts.Forms, parts.Chunks, parts.Paragraph}
+	if want := [4]int{0, 0, 114, 148}; got != want {
+		t.Errorf("guide, forms, chunks, paragraph = %v, want %v", got, want)
+	}
+	if total := got[0] + got[1] + got[2] + got[3]; total != 262 {
+		t.Errorf("standing words = %d, want 262", total)
+	}
+	env, err := prompts.SessionEnv("prover")
+	if err != nil || !slices.Contains(env, "OPENCODE_DISABLE_PROJECT_CONFIG=1") {
+		t.Errorf("the prover's environment is %q (%v), want OPENCODE_DISABLE_PROJECT_CONFIG=1", env, err)
+	}
+}

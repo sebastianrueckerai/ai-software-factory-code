@@ -410,10 +410,12 @@ func TestProofsFileHandlerTakesTheGatewaysCall(t *testing.T) {
 	}
 }
 
-func TestProverGuideHoldsTheCriteriaTheSurfaceAndTheRun(t *testing.T) {
+// The guide is the plan's own values: its spec, one line per criterion and
+// hold-out, the foundation's brief. It holds no opening and no rule.
+func TestProverGuideHoldsTheCriteriaAndTheFoundation(t *testing.T) {
 	foundation := proverPlan().Cards[0]
 	g := proverGuide(proverPlan(), []PlanProof{keyLog()}, &foundation)
-	if !strings.HasPrefix(g, "You are the prover. ") {
+	if !strings.HasPrefix(g, "Spec: ") || strings.HasSuffix(g, "\n") {
 		t.Fatalf("guide = %q", g)
 	}
 	for _, want := range []string{
@@ -422,24 +424,20 @@ func TestProverGuideHoldsTheCriteriaTheSurfaceAndTheRun(t *testing.T) {
 		"- door (test): A door opens for its key. Inputs: POST /doors/1/open with key 7. Expected: 200.\n",
 		"- reads_calm (judgement): The sizes page reads calm. The artifact shows: the sizes page with three sizes. Write it to $CHECK_ARTIFACTS/reads_calm.<ext>.\n",
 		"- key_log (hold-out, kind test): Every key turn lands in the log. Inputs: three turns of key 7. Expected: three log rows.\n",
-		"the HTTP API through the server constructor the foundation names (internal/server.New unless it names another)",
 		"The foundation card foundation is on main. Its brief named the contracts every card builds on; read them there:\nLay out internal/server.New, ",
-		"mkdir -p /tmp/art && CHECK_REPORT=/tmp/<id>.xml CHECK_ARTIFACTS=/tmp/art bash check test <suite> <name>",
-		"three filings at most; the last filing stands",
-		"the third filing takes a test still green or unrunnable on main, which factoryd flags",
 	} {
 		if !strings.Contains(g, want) {
 			t.Errorf("guide lacks %q:\n%s", want, g)
 		}
 	}
-	for _, leak := range []string{"all_green", "Does the page read calm"} {
+	for _, leak := range []string{"all_green", "Does the page read calm", "You are the prover", "How to work", "file_proofs"} {
 		if strings.Contains(g, leak) {
 			t.Errorf("guide holds %q", leak)
 		}
 	}
 	human := Plan{Criteria: []PlanCriterion{{ID: "pages_ok", Kind: CriterionHuman, Claim: "The pages look right.", Evidence: "a screenshot of each page"}}}
 	if g := proverGuide(human, nil, nil); strings.Contains(g, "The foundation card") || strings.Contains(g, "Spec:") ||
-		!strings.Contains(g, "- pages_ok (human): The pages look right. The artifact shows: a screenshot of each page. Write it to $CHECK_ARTIFACTS/pages_ok.<ext>.\n") {
+		!strings.Contains(g, "- pages_ok (human): The pages look right. The artifact shows: a screenshot of each page. Write it to $CHECK_ARTIFACTS/pages_ok.<ext>.") {
 		t.Fatalf("guide without a foundation or a spec = %q", g)
 	}
 }
@@ -546,7 +544,7 @@ func TestRunReportOfTheProverHandsTheSessionItsGuideAndRole(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
-	if guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]; !strings.HasPrefix(guide, "You are the prover.") || !strings.Contains(guide, "- size_bound (test): ") {
+	if guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]; !strings.Contains(guide, "- size_bound (test): ") || strings.Contains(guide, "You are the prover") {
 		t.Fatalf("REPORT_GUIDE = %q", guide)
 	}
 	if env := podEnv(kube.podAt(1)); env["MODE"] != "proofs" {

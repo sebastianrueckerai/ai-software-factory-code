@@ -1,15 +1,15 @@
 step: prover
 purpose: session
-reader: model
+reader: code
 guide: false
 forms: []
-chunks: [factory]
-paragraph: ""
+chunks: [factory, narration]
+paragraph: prover
 facts: session
 answer: ""
 tools:
   builtin: [bash, edit, glob, grep, read]
   gateway: [file_proofs, manual]
   chat: []
-agents_md: true
-budget_words: 438
+agents_md: false
+budget_words: 386
