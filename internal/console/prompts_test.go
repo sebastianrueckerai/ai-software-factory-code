@@ -738,3 +738,14 @@ func TestFilePlanIsGone(t *testing.T) {
 		}
 	}
 }
+
+// The compaction keeps the line form, which the human reads as a turn,
+// and its paragraph: 71 + 80 = 151 standing words. It keeps issue numbers
+// only, since a task id is no text for a human.
+func TestCompactKeepsTheLineFormAndIssueNumbersOnly(t *testing.T) {
+	p := built(t, "compact")
+	if got := p.Parts().Forms + p.Parts().Paragraph; got != 151 {
+		t.Errorf("the compaction's standing holds %d words, want 151", got)
+	}
+	lacks(t, "compact", "task ids", "t-...")
+}

@@ -164,13 +164,12 @@ func agentDocCompact(ctx context.Context, op *factoryd.OperatorModel, v policy.V
 	if len(chunk) != 1 {
 		return nil, fmt.Errorf("the fixture thread folds into %d calls, want one", len(chunk))
 	}
-	system, err := prompts.Build("compact", factoryd.CompactPrompt)
+	system, err := prompts.Build("compact", nil)
 	if err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocStanding(system),
-		{Name: "the summariser's rules", Symbol: "factoryd.CompactPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: factoryd.CompactPrompt},
 		{Name: "the compaction frame", Symbol: "(*turn).compact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: "The summary so far:\n(none yet)\n\nThe turns after it:\n"},
 		{Name: "the folded turns", Symbol: "transcript", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: chunk[0]},

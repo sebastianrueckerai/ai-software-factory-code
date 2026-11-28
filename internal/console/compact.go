@@ -170,7 +170,7 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 	if start == 0 {
 		return false, nil
 	}
-	system, err := prompts.Build("compact", factoryd.CompactPrompt)
+	system, err := prompts.Build("compact", nil)
 	if err != nil {
 		return false, err
 	}

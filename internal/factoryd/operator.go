@@ -213,14 +213,6 @@ func (m *OperatorModel) Vision(ctx context.Context, taskID, alias, thread, ask s
 	return answer.Content, err
 }
 
-// CompactPrompt is the system prompt of a chat thread's compaction: its
-// summary shows as a turn of the thread and stands in for the turns it
-// folds in the project agent's context.
-const CompactPrompt = `You keep the running summary of a human's thread with the project agent of a software factory.
-Write the new summary from the summary so far and the turns after it: what the human asked for and decided, what the agent did (cards filed, moved, answered, steered, approved, with their issue numbers and task ids), what is open, and the facts a later turn needs.
-Keep issue numbers (#12), task ids (t-...), names, numbers and quoted decisions exactly. Leave out greetings, tool output nobody needs, and anything the turns settled and left behind.
-Answer with the summary alone, as short paragraphs, at most 400 words.`
-
 // titleTokens bounds a thread naming call's answer (roadmap 304): a
 // title is a few words.
 const titleTokens = 200
