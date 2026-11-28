@@ -1670,6 +1670,19 @@ func TestOpencodeMessageSendsAStepsStandingTextOnce(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("the session read %q, want %q", got, want)
 	}
+	const guideFirst = "**Changes to this guide need the user's OK.**"
+	const lead = "Lead with what the human must do"
+	if !strings.Contains(got[1], guideFirst) || !strings.Contains(got[1], lead) {
+		t.Errorf("the first message lacks the guide's first sentence or %q: %q", lead, got[1])
+	}
+	if strings.Contains(got[2], guideFirst) || strings.Contains(got[2], lead) || !strings.Contains(got[2], "A message from Ann, a writer of this project: ") {
+		t.Errorf("the second message = %q, want the speaker's line alone", got[2])
+	}
+	for i, m := range got[1:3] {
+		if strings.Contains(m, "You are the agent session of card") {
+			t.Errorf("message %d holds the basics paragraph: %q", i+1, m)
+		}
+	}
 }
 
 // factoryInstall is the install sentence of a brief on the factory's image
