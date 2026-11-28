@@ -3,8 +3,8 @@ purpose: session
 reader: human
 guide: false
 forms: [title, why, summary, brief, ask]
-chunks: [factory]
-paragraph: ""
+chunks: [factory, narration]
+paragraph: coding
 facts: session
 answer: ""
 tools:

@@ -175,9 +175,9 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 	if len(b.PosterInfo) > 0 {
 		standing += fmt.Sprintf(" So are the author's answers to your requests for information, each between the lines %s and %s.", popen, pclose)
 	}
-	guide, symbol := b.Report, "workGuide"
+	guide, symbol := b.Report, "codingFacts"
 	if id == "coding" || id == "message-responder" {
-		guide = workGuide(b.Tools, b.Image)
+		guide = codingFacts(b)
 	} else {
 		symbol = map[string]string{
 			"sizing":  "sizingFacts",
@@ -193,7 +193,7 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 		{Name: "the session's facts", Symbol: "SessionFacts.Line", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: b.Facts + "\n"},
 		{Name: "the sandbox facts", Symbol: "SandboxFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: SandboxFacts(b.Image, b.Tools) + "\n"},
+			Text: SandboxFacts(b.Image) + "\n"},
 		{Name: "the issue link", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: fmt.Sprintf("Issue: %s\n", b.IssueURL)},
 		{Name: "the author's standing", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,

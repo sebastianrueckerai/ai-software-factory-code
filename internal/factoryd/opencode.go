@@ -743,7 +743,7 @@ func briefText(brief harness.TaskBrief, tag string) string {
 	if brief.Facts != "" {
 		b.WriteString(brief.Facts + "\n")
 	}
-	b.WriteString(SandboxFacts(brief.Image, brief.Tools) + "\n")
+	b.WriteString(SandboxFacts(brief.Image) + "\n")
 	switch {
 	case brief.Docs:
 		b.WriteString("The project's document repository (the roadmap, the plans, the architecture, the design rounds and their prototypes) is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.\n")
@@ -826,12 +826,8 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		b.WriteString("\n\n" + brief.Map)
 	}
 	guide := brief.Report
-	switch {
-	case brief.ReportMode:
-	case brief.CardRole != "":
-		guide = featureGuide(brief.CardRole, brief.Image, brief.Tools)
-	default:
-		guide = workGuide(brief.Tools, brief.Image)
+	if !brief.ReportMode {
+		guide = codingFacts(brief)
 	}
 	b.WriteString("\n\n")
 	if len(brief.Tools) > 0 {
@@ -855,43 +851,35 @@ const answersHeading = "These are the answers to this task's escalations (newest
 // when to call each, the MCP server's tool list says.
 const toolsLine = "Factory tools: the MCP server factory-tools, each as factory-tools_<tool>."
 
-// workGuide ends every brief on image m (nil: the factory's): reproduce
-// first, and how to end a session. When to call
-// request_info or escalate is their descriptions'.
-func workGuide(tools []string, m *imagegen.Manifest) string {
-	g := "How to work: reproduce the reported fault before you change code. When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
-		"holding the shell command that reproduced it: the factory runs it at the reproduction base — the commit that was live when the alert fired, pinned at the card's filing — " +
-		"where it must fail, and on your change, where it must pass. " +
-		"When your change is a guard for a condition main no longer has (main already holds the fixed condition, so no tree shows the bug), open the block as " +
-		"```repro-in-test instead: a command that constructs the pre-fix state within the test itself, which the factory runs on your change alone, the base the head. " +
-		"If you fix a fault you could not reproduce exactly, " +
-		"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. " + noAnswer
-	if slices.Contains(tools, policy.ToolDelegate) {
-		g += delegateLine
+// codingFacts ends a coding session's brief with what its paragraph does
+// not say: the integration card's task, the alert's repro blocks and
+// what the checks need installed. When to call a tool is the tool's
+// description's.
+func codingFacts(brief harness.TaskBrief) string {
+	var parts []string
+	if brief.CardRole == RoleIntegration {
+		parts = append(parts, integrationLine)
 	}
-	return g + guideEnd(m, tools)
+	if brief.AuthorStanding == harness.StandingTelemetry {
+		parts = append(parts, alertLines)
+	}
+	if line := installLine(brief.Image, brief.Tools); line != "" {
+		parts = append(parts, line)
+	}
+	return strings.Join(parts, " ")
 }
 
-// noAnswer is both coding guides' one sentence on asking; when to ask, and
-// whom, the ask tools' descriptions say.
-const noAnswer = "Nobody answers a question in a message. "
+const integrationLine = "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass."
 
-// delegateLine points at the delegate tool; what it files, its description says.
-const delegateLine = "For work after this card, call delegate. "
-
-// guideEnd closes every coding guide on image m (nil: the factory's) with
-// the session's tools: the checks, the push, the sandbox, the last
+// alertLines is what a card filed from a SigNoz alert owes its last
 // message.
-func guideEnd(m *imagegen.Manifest, tools []string) string {
-	return "If the repository has a check file at its root, run bash check changed in the foreground with a timeout of 600000 ms: the repository's checks of what you changed, where CI runs all of them. When it passes, end the session at once with your last message: " +
-		"	no further tests, re-runs or reading of library sources to confirm. " +
-		"When your round landed no changes, bash check static stops before the tests and answers faster. " +
-		"When you end, the factory commits your working tree, pushes it and opens the pull request. " +
-		installLine(m, tools) + "Give a command that may run over two minutes a timeout of up to 600000 ms. " +
-		"End with a short last message: what you changed, and whether you recommend merging it and why."
-}
+const alertLines = "When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
+	"holding the shell command that reproduced it: the factory runs it at the reproduction base — the commit that was live when the alert fired, pinned at the card's filing — " +
+	"where it must fail, and on your change, where it must pass. " +
+	"When your change is a guard for a condition main no longer has (main already holds the fixed condition, so no tree shows the bug), open the block as " +
+	"```repro-in-test instead: a command that constructs the pre-fix state within the test itself, which the factory runs on your change alone, the base the head."
 
-// installLine is guideEnd's sentence on what the checks need: go install
+// installLine is the sentence on what the checks need: go install
 // and go run where image m has Go, npm where it has Node (the factory's
 // image, nil, has both), and request_tool for any other tool where tools
 // hold it.
@@ -906,7 +894,7 @@ func installLine(m *imagegen.Manifest, tools []string) string {
 	}
 	switch {
 	case len(with) == 0 && ask:
-		return "Ask for a tool the checks need and the sandbox lacks with request_tool. "
+		return "Ask for a tool the checks need and the sandbox lacks with request_tool."
 	case len(with) == 0:
 		return ""
 	}
@@ -917,20 +905,7 @@ func installLine(m *imagegen.Manifest, tools []string) string {
 	if ask {
 		list += ", and ask for any other tool with request_tool"
 	}
-	return "Install what the checks need with " + list + "; the caches under /cache persist for this project. "
-}
-
-// featureGuide ends the brief of a plan's card of role instead of
-// workGuide: build the card, a test per acceptance item; the integration
-// card turns the spec's acceptance tests into acceptance/. The harness
-// reads the repository's AGENTS.md into the session itself.
-func featureGuide(role string, m *imagegen.Manifest, tools []string) string {
-	g := "How to work: build what this card's brief asks, and only that: other agents build the plan's other cards. " +
-		"Write tests for the acceptance items, with the inputs and numbers they give; no probe tests or debug programs. "
-	if role == RoleIntegration {
-		g += "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass. "
-	}
-	return g + noAnswer + guideEnd(m, tools)
+	return "Install what the checks need with " + list + "; the caches under /cache persist for this project."
 }
 
 // mcpTimeoutMS is opencode's per-request timeout on the gateway's MCP

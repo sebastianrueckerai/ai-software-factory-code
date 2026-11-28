@@ -136,13 +136,9 @@ func holdTools(t *testing.T, where string, installed []string) {
 }
 
 // The brief states the image the session runs: the factory's, as before,
-// or the base's tools, then the project image's, and its registries. How a
-// missing tool comes is request_tool's where the session has it.
+// or the base's tools, then the project image's, and its registries.
 func TestSandboxFactsFollowTheImage(t *testing.T) {
-	const (
-		requestTool = "A tool those hosts do not serve cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
-		noTool      = "A tool those hosts do not serve cannot be installed at runtime."
-	)
+	const noTool = "A tool those hosts do not serve cannot be installed at runtime."
 	base := "The sandbox has git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests)"
 	for name, c := range map[string]struct {
 		m    *imagegen.Manifest
@@ -155,14 +151,10 @@ func TestSandboxFactsFollowTheImage(t *testing.T) {
 		"offline": {&imagegen.Manifest{Tools: []string{"jq"}},
 			base + ", jq. It reaches the factory's gateway and Git server and no package registries; every other name fails to resolve. "},
 	} {
-		tools := []string{policy.ToolEscalate, policy.ToolRequestTool}
-		if got := SandboxFacts(c.m, tools); got != c.want+requestTool {
-			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want+requestTool)
+		if got := SandboxFacts(c.m); got != c.want+noTool {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want+noTool)
 		}
-		if got := SandboxFacts(c.m, nil); got != c.want+noTool {
-			t.Errorf("%s without request_tool:\n got %q\nwant %q", name, got, c.want+noTool)
-		}
-		if got := briefText(harness.TaskBrief{Objective: "o", Image: c.m, Tools: tools}, "T"); !strings.Contains(got, c.want+requestTool+"\n") {
+		if got := briefText(harness.TaskBrief{Objective: "o", Image: c.m}, "T"); !strings.Contains(got, c.want+noTool+"\n") {
 			t.Errorf("%s: the brief lacks its facts:\n%s", name, got)
 		}
 	}
@@ -370,35 +362,18 @@ func egressNames(spec map[string]any) (fqdns, dns []string) {
 	return fqdns, dns
 }
 
-func TestSandboxFactsNameToolsNamesAndRequestTool(t *testing.T) {
-	got := SandboxFacts(nil, []string{policy.ToolRequestTool})
+func TestSandboxFactsNameTheToolsAndNoToolOfTheSession(t *testing.T) {
+	got := SandboxFacts(nil)
 	for _, want := range []string{"git", "ripgrep (rg)", "gcc and make", "Go 1.26", "Node 24 with npm", "PostgreSQL 17",
-		"proxy.golang.org", "registry.npmjs.org", "request_tool"} {
+		"proxy.golang.org", "registry.npmjs.org"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("SandboxFacts lacks %q:\n%s", want, got)
 		}
 	}
-}
-
-func TestSandboxFactsNameCommissionServerForOutsideHosts(t *testing.T) {
-	const sentence = "commission_server rents a throwaway server that reaches outside hosts over SSH: run the lookups there and release it when done"
-	for name, m := range map[string]*imagegen.Manifest{"factory image": nil, "project image": {Tools: []string{"jq"}}} {
-		if got := SandboxFacts(m, []string{policy.ToolCommission}); !strings.Contains(got, sentence) {
-			t.Errorf("%s: SandboxFacts lacks the commission_server sentence:\n%s", name, got)
+	for _, gone := range []string{"request_tool", "commission_server"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("SandboxFacts names %s, which the tool's description says:\n%s", gone, got)
 		}
-		if got := SandboxFacts(m, []string{policy.ToolRequestTool}); strings.Contains(got, "commission_server") {
-			t.Errorf("%s: SandboxFacts names commission_server without the tool:\n%s", name, got)
-		}
-	}
-}
-
-func TestSandboxFactsOrderWithBothTools(t *testing.T) {
-	want := "The sandbox has git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests), Go 1.26, Node 24 with npm. " +
-		"It reaches the factory's gateway and Git server and proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. " +
-		"A tool those hosts do not serve cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image. " +
-		"commission_server rents a throwaway server that reaches outside hosts over SSH: run the lookups there and release it when done."
-	if got := SandboxFacts(nil, []string{policy.ToolRequestTool, policy.ToolCommission}); got != want {
-		t.Errorf("SandboxFacts =\n%s\nwant\n%s", got, want)
 	}
 }
 

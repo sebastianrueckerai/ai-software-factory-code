@@ -3,8 +3,8 @@ purpose: session
 reader: human
 guide: false
 forms: [title, why, summary, brief, ask]
-chunks: [factory]
-paragraph: ""
+chunks: [factory, narration]
+paragraph: coding-card
 facts: session
 answer: ""
 tools:
@@ -12,4 +12,4 @@ tools:
   gateway: [analyze_image, delegate, deployment_health, digest, escalate, manual, request_cut, request_info, request_tool, web_scrape, web_search]
   chat: []
 agents_md: true
-budget_words: 1517
+budget_words: 1584

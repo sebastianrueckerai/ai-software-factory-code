@@ -2898,7 +2898,7 @@ func TestChildBriefCarriesItsRole(t *testing.T) {
 	}
 	text := briefText(harness.TaskBrief{Objective: card.Objective, Repository: "sf/r", Author: "sebastian", AuthorStanding: harness.StandingWriter,
 		CardRole: RoleIntegration, Tools: []string{policy.ToolEscalate}}, "t")
-	if !strings.HasSuffix(text, toolsLine+"\n"+featureGuide(RoleIntegration, nil, nil)) ||
+	if !strings.HasSuffix(text, toolsLine+"\n"+integrationLine+" "+factoryInstall) ||
 		!strings.Contains(text, "turn the spec's acceptance tests into Go tests under acceptance/") || strings.Contains(text, "reproduce the reported fault") {
 		t.Fatalf("brief:\n%s", text)
 	}
