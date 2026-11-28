@@ -100,28 +100,27 @@ func (d *doc) writeSelfCheck(md *strings.Builder, rows []indexRow, opencodeVersi
 
 func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 	md.WriteString("## The inventory\n\n")
-	md.WriteString("| agent | family | job | model | purpose | runs | tools on the wire | tools behind tool_schema | request bytes | profile | harness words | guide words | forms words | chunks words | paragraph words | facts words | tool words |\n" +
-		"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	md.WriteString("The table counts each agent's first request: every word the model reads before its first answer. `tools` is the number of tools offered, and for the project agent also the rare tools that come on request through tool_schema. `words` is the total. `harness` is opencode's own text, which a direct call has none of. `guide and forms` is the writing guide and the forms of the job. `job` is the two factory chunks, the step's paragraph and the card's facts. `tool text` is the descriptions of the offered tools. Each agent's page shows every part with the code that wrote it.\n\n")
+	md.WriteString("| agent | model | tools | words | harness | guide and forms | job | tool text |\n|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rows {
 		model := r.model
 		if model == "" {
 			model = "—"
 		}
-		requestBytes := fmt.Sprintf("%d", r.requestBytes)
+		tools := fmt.Sprintf("%d", r.tools)
+		if r.behind > 0 {
+			tools = fmt.Sprintf("%d + %d on request", r.tools, r.behind)
+		}
+		p := r.parts
+		if len(r.agent.Steps) == 0 {
+			p = prompts.Parts{}
+		}
+		writing, job := p.Guide+p.Forms, p.Chunks+p.Paragraph+p.Facts
+		cells := fmt.Sprintf("%d | %d | %d | %d | %d", r.harness+writing+job+r.toolWords, r.harness, writing, job, r.toolWords)
 		if r.requestBytes == 0 {
-			requestBytes = "—"
+			cells = "— | — | — | — | —"
 		}
-		harness, toolWords := fmt.Sprintf("%d", r.harness), fmt.Sprintf("%d", r.toolWords)
-		if r.requestBytes == 0 {
-			harness, toolWords = "—", "—"
-		}
-		profile, parts := "none", "— | — | — | — | —"
-		if len(r.agent.Steps) > 0 {
-			p := r.parts
-			profile, parts = strings.Join(r.agent.Steps, ", "), fmt.Sprintf("%d | %d | %d | %d | %d", p.Guide, p.Forms, p.Chunks, p.Paragraph, p.Facts)
-		}
-		fmt.Fprintf(md, "| [%s](%s.md) | %s | %s | `%s` | `%s` | %s | %d | %d | %s | %s | %s | %s | %s |\n",
-			r.agent.ID, r.agent.ID, r.agent.Family, r.agent.Job, model, r.purpose, r.agent.Runs, r.tools, r.behind, requestBytes, profile, harness, parts, toolWords)
+		fmt.Fprintf(md, "| [%s](%s.md) | `%s` | %s | %s |\n", r.agent.ID, r.agent.ID, model, tools, cells)
 	}
 	md.WriteString("\n")
 }

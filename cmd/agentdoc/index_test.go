@@ -52,7 +52,7 @@ func TestIndexRendersInventoryMatrixSelfCheck(t *testing.T) {
 		"`policyhash`",
 		"`opencode 1.18.32`",
 		"unlabelled spans: 0",
-		"| agent | family | job | model | purpose | runs | tools on the wire | tools behind tool_schema | request bytes |",
+		"| agent | model | tools | words | harness | guide and forms | job | tool text |",
 		"[coding](coding.md)",
 		"`small`",
 		"`agentdoc-fixture`",
@@ -132,7 +132,7 @@ func TestIndexMatrixSkipsSingleCarrierBlocks(t *testing.T) {
 }
 
 // The inventory prints each agent's profile and its words by part beside
-// the words no profile made and the tools' words.
+// the words no profile made and the tools' words, summed into the four columns.
 func TestIndexPrintsWordsByPart(t *testing.T) {
 	rows := []indexRow{{
 		agent: Agent{ID: "fake", Family: "B", Job: "fakes", Runs: "nowhere", Steps: []string{"x"}},
@@ -145,8 +145,8 @@ func TestIndexPrintsWordsByPart(t *testing.T) {
 		t.Fatalf("failures: %v", failures)
 	}
 	for _, want := range []string{
-		"| profile | harness words | guide words | forms words | chunks words | paragraph words | facts words | tool words |",
-		"| x | 100 | 10 | 20 | 3 | 40 | 7 | 50 |",
+		"| agent | model | tools | words | harness | guide and forms | job | tool text |",
+		"| [fake](fake.md) | `small` | 0 | 230 | 100 | 30 | 50 | 50 |",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("index lacks %q:\n%s", want, md)
@@ -214,7 +214,7 @@ func TestIndexPrintsToolTiers(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
-	if !strings.Contains(md, " | 44 | 21 | ") {
+	if !strings.Contains(md, " | 44 + 21 on request | ") {
 		t.Errorf("the index lacks the row's 44 and 21:\n%s", md)
 	}
 }
