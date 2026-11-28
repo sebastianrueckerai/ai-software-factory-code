@@ -422,7 +422,7 @@ type FalIn struct {
 
 type EscalateIn struct {
 	Question       string `json:"question" jsonschema:"what the human must answer or decide"`
-	Reason         string `json:"reason"`
+	Reason         string `json:"reason" jsonschema:"why the question comes up now and what waiting for the answer costs"`
 	Recommendation string `json:"recommendation" jsonschema:"what you would do and why, at most 2000 bytes"`
 	// a choice a button cannot carry is refused; a list factoryd cannot offer is
 	// dropped there
@@ -538,16 +538,9 @@ func withBriefLines(s *jsonschema.Schema) *jsonschema.Schema {
 	return s
 }
 
-// withWhyLine is s with property why described by the brief's why line,
-// the reason an ask's door checks as its why line.
-func withWhyLine(s *jsonschema.Schema, why string) *jsonschema.Schema {
-	s.Properties[why].Description = writingguide.WhyLine
-	return s
-}
-
 var (
 	delegateSchema = withBriefLines(plainArrays[DelegateIn]())
-	escalateSchema = withWhyLine(plainArrays[EscalateIn](), "reason")
+	escalateSchema = plainArrays[EscalateIn]()
 	cutSchema      = plainArrays[RequestCutIn]()
 	proofsSchema   = plainArrays[ProofsIn]()
 )

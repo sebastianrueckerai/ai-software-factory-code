@@ -363,6 +363,9 @@ func TestEscalateSchemaOffersChoices(t *testing.T) {
 		choices.Description != "offer 2 to 5 short answers the human can pick with one click, each at most 60 characters in plain words; always leave free text possible" {
 		t.Fatalf("choices = %+v in %s", choices, b)
 	}
+	if got, want := schema.Properties["reason"].Description, "why the question comes up now and what waiting for the answer costs"; got != want {
+		t.Fatalf("reason = %q, want %q", got, want)
+	}
 	if !slices.Equal(schema.Required, []string{"question", "reason", "recommendation"}) {
 		t.Fatalf("required = %q, want the three without choices", schema.Required)
 	}
