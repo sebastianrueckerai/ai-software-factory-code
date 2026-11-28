@@ -110,8 +110,11 @@ func agentDocLoopPosters() (kept []string, notes []string) {
 func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	b := agentDocObjective()
 	b.Step = id
-	if id == "message-responder" {
+	switch id {
+	case "message-responder":
 		b.Step = "coding"
+	case "planner":
+		b.Step = stepPlanReplan
 	}
 	b.IssueURL = "https://git.example/owner/name/issues/7"
 	b.Repository = agentDocLoopRepo
@@ -133,7 +136,7 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	case "repo-map":
 		b.ReportMode, b.Map = true, agentDocLoopMap
 	case "planner":
-		b.ReportMode, b.Report = true, planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil)
+		b.ReportMode, b.Report = true, planGuide(stepPlanReplan, policy.PlanShape{MinCards: 1, MaxCards: 20}, nil, "")
 	case "prover":
 		b.ReportMode, b.Report = true, proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
 			Claim: "The counter counts a row the query skips twice.", Inputs: "a table with two skipped rows", Expected: "a count of 2", State: ProofOkayed}}, nil)

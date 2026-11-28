@@ -72,8 +72,10 @@ func init() {
 	prompts.RegisterStep("coding", []string{"factoryd.(*Runner).RunSession"}, sessionFixture("coding", harness.TaskBrief{Tools: coder}))
 	prompts.RegisterStep("coding-card", []string{"factoryd.(*Runner).RunSession"},
 		sessionFixture("coding-card", harness.TaskBrief{Tools: coder, CardRole: RoleFeature}))
-	prompts.RegisterStep("planner", []string{"factoryd.(*Runner).RunPlan"},
-		sessionFixture("planner", harness.TaskBrief{ReportMode: true, Report: planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil)}))
+	for _, step := range plannerSteps {
+		prompts.RegisterStep(step, []string{"factoryd.(*Runner).planStep"},
+			sessionFixture(step, harness.TaskBrief{ReportMode: true, Report: planGuide(step, policy.PlanShape{MinCards: 1, MaxCards: 20}, nil, "")}))
+	}
 	prompts.RegisterStep("prover", []string{"factoryd.(*Runner).RunReport"},
 		sessionFixture("prover", harness.TaskBrief{ReportMode: true, Report: proverGuide(agentDocPlan(), nil, nil)}))
 	prompts.RegisterStep("screening", []string{"factoryd.(*Runner).RunReport"},

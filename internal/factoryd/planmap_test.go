@@ -124,7 +124,7 @@ func TestPlanMapRunsOncePerHead(t *testing.T) {
 		}
 		return out
 	}
-	if want := []string{"repo-map@factory/small", "planner@factory/big"}; !slices.Equal(steps(), want) {
+	if want := []string{"repo-map@factory/small", "planner-spec@factory/big"}; !slices.Equal(steps(), want) {
 		t.Fatalf("sessions = %q, want %q", steps(), want)
 	}
 	if got := runPlanOnce(t, r, kube, false, ""); got != 3 {
@@ -222,7 +222,7 @@ func TestPlannerFactsCarryTheMap(t *testing.T) {
 		t.Fatalf("pods = %d, want the planner's alone: the draft holds the map", got)
 	}
 	env := podEnv(kube.podAt(0))
-	if env["STEP"] != "planner" || env["REPO_MAP"] != testMapText {
+	if env["STEP"] != "planner-spec" || env["REPO_MAP"] != testMapText {
 		t.Fatalf("planner pod: step %q, REPO_MAP\n%s\nwant\n%s", env["STEP"], env["REPO_MAP"], testMapText)
 	}
 }
@@ -245,7 +245,7 @@ func TestPlanDraftHoldsTheMapBesideARefusedFiling(t *testing.T) {
 	}
 	over := testPlan()
 	over.Cards[1].Size = "huge"
-	if _, err := r.FilePlan(ctx, "t-plan", planJSON(t, over)); err != nil {
+	if _, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, over)); err != nil {
 		t.Fatal(err)
 	}
 	d, _, _ = store.PlanDraft(ctx, "t-plan")
@@ -256,7 +256,7 @@ func TestPlanDraftHoldsTheMapBesideARefusedFiling(t *testing.T) {
 	if brief := r.draftBrief(PlanDraft{Plan: rest, Findings: d.Findings}, nil); strings.Contains(brief, "Postgres store") {
 		t.Fatalf("the draft brief shows the map:\n%s", brief)
 	}
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
 		t.Fatalf("filed %+v, %v", res, err)
 	}
 	d, ok, _ = store.PlanDraft(ctx, "t-plan")

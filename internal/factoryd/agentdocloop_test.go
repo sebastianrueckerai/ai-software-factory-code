@@ -79,7 +79,11 @@ classes:
     time: {agent_time: 30m, check_in: 0s}
     tools:
       escalate: {}
-      file_plan: {}
+      file_spec: {}
+      file_criteria: {}
+      file_cards: {}
+      file_replan: {}
+      file_revert: {}
       file_map: {}
       manual: {}
   prover:
@@ -411,7 +415,7 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			case "repo-map":
 				want = "factory-tools_file_map"
 			case "planner":
-				want = "factory-tools_file_plan"
+				want = "factory-tools_file_replan"
 			case "prover":
 				want = "factory-tools_file_proofs"
 			case "screening":

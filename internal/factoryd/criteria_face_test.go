@@ -27,7 +27,7 @@ func TestPromiseIsChecked(t *testing.T) {
 		r, _ := plannerRig(t, nil)
 		p := withBrief(acceptedBrief)
 		edit(&p)
-		res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, p))
+		res, err := fileWholePlan(r, context.Background(), "t-plan", planJSON(t, p))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -547,7 +547,7 @@ func TestAPlanQuestionSaysWhatEachChoiceChanges(t *testing.T) {
 		r, _ := plannerRig(t, nil)
 		p := withBrief(acceptedBrief)
 		p.Questions = []PlanQuestion{q}
-		res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, p))
+		res, err := fileWholePlan(r, context.Background(), "t-plan", planJSON(t, p))
 		if err != nil {
 			t.Fatal(err)
 		}

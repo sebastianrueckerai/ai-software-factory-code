@@ -104,7 +104,7 @@ var spendRailRows = []spendRow{
 	{"limits.plan_warn_at",
 		"the same for a planner session",
 		"0 and absent read DefaultPlanWarnAt 67",
-		"\"factoryd: %.0f percent of this card's budget is spent, %s of %s EUR are left for its calls (the model review and the audit hold %s EUR of it). File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none.\""},
+		"\"factoryd: %.0f percent of this card's budget is spent, %s of %s EUR are left for its calls (the model review and the audit hold %s EUR of it). File your answer now with the filing tool of your step, with what you have read: an answer filed late is better than none.\""},
 	{"limits.no_push_spend",
 		"the percent of what a card had left at a session's start that the session spends with nothing pushed, at which the session supervisor is called, 1 to 99",
 		"0 and absent read DefaultNoPushSpend 60",

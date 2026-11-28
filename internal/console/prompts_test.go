@@ -98,7 +98,7 @@ func sessionProfiles(t *testing.T) map[string]prompts.Profile {
 			out[p.Step] = p
 		}
 	}
-	if want := []string{"coding", "coding-card", "planner", "prover", "repo-map", "screening", "sizing"}; !slices.Equal(slices.Sorted(maps.Keys(out)), want) {
+	if want := []string{"coding", "coding-card", "planner-cards", "planner-criteria", "planner-replan", "planner-revert", "planner-spec", "prover", "repo-map", "screening", "sizing"}; !slices.Equal(slices.Sorted(maps.Keys(out)), want) {
 		t.Fatalf("the session steps are %q, want %q", slices.Sorted(maps.Keys(out)), want)
 	}
 	return out
@@ -109,13 +109,14 @@ func sessionProfiles(t *testing.T) map[string]prompts.Profile {
 // sizing and the map step only the three that read.
 func TestSessionToolSets(t *testing.T) {
 	want := map[string][]string{
-		"coding":      {"bash", "edit", "glob", "grep", "read", "todowrite"},
-		"coding-card": {"bash", "edit", "glob", "grep", "read", "todowrite"},
-		"prover":      {"bash", "edit", "glob", "grep", "read"},
-		"planner":     {"bash", "glob", "grep", "read"},
-		"repo-map":    {"glob", "grep", "read"},
-		"sizing":      {"glob", "grep", "read"},
-		"screening":   {"glob", "grep", "read"},
+		"coding":       {"bash", "edit", "glob", "grep", "read", "todowrite"},
+		"coding-card":  {"bash", "edit", "glob", "grep", "read", "todowrite"},
+		"prover":       {"bash", "edit", "glob", "grep", "read"},
+		"planner-spec": {"bash", "glob", "grep", "read"}, "planner-criteria": {"bash", "glob", "grep", "read"}, "planner-cards": {"bash", "glob", "grep", "read"},
+		"planner-replan": {"bash", "glob", "grep", "read"}, "planner-revert": {"bash", "glob", "grep", "read"},
+		"repo-map":  {"glob", "grep", "read"},
+		"sizing":    {"glob", "grep", "read"},
+		"screening": {"glob", "grep", "read"},
 	}
 	for step, p := range sessionProfiles(t) {
 		if got := slices.Sorted(slices.Values(p.Tools.Builtin)); !slices.Equal(got, want[step]) {
@@ -129,7 +130,7 @@ func TestSessionToolSets(t *testing.T) {
 // read text an outsider wrote, no shell.
 func TestReadOnlyStepsCannotWrite(t *testing.T) {
 	profiles := sessionProfiles(t)
-	for _, step := range []string{"screening", "sizing", "planner", "repo-map"} {
+	for _, step := range []string{"screening", "sizing", "planner-spec", "planner-criteria", "planner-cards", "planner-replan", "planner-revert", "repo-map"} {
 		if slices.Contains(profiles[step].Tools.Builtin, "edit") {
 			t.Errorf("step %s keeps edit", step)
 		}
@@ -143,7 +144,8 @@ func TestReadOnlyStepsCannotWrite(t *testing.T) {
 
 // stepClass is the policy class each session step runs as.
 var stepClass = map[string]string{
-	"coding": "coder", "coding-card": "coder", "planner": "planner", "prover": policy.ClassProver,
+	"coding": "coder", "coding-card": "coder", "prover": policy.ClassProver,
+	"planner-spec": "planner", "planner-criteria": "planner", "planner-cards": "planner", "planner-replan": "planner", "planner-revert": "planner",
 	"repo-map": "planner", "screening": "analyzer", "sizing": "analyzer",
 }
 
@@ -154,7 +156,7 @@ var shippedClassTools = map[string][]string{
 		"manual", "release_resource", "replicate_predict", "request_cut", "request_info", "request_tool", "resource_request_status", "ssh_certificate",
 		"web_scrape", "web_search"},
 	"analyzer":         {"analyze_image", "deployment_health", "digest", "escalate", "file_screening", "file_size", "manual", "request_info", "web_scrape", "web_search"},
-	"planner":          {"analyze_image", "digest", "escalate", "file_map", "file_plan", "manual", "web_scrape", "web_search"},
+	"planner":          {"analyze_image", "digest", "escalate", "file_cards", "file_criteria", "file_map", "file_replan", "file_revert", "file_spec", "manual", "web_scrape", "web_search"},
 	policy.ClassProver: {"file_proofs", "manual"},
 }
 
@@ -200,11 +202,15 @@ func TestSessionGatewaySets(t *testing.T) {
 	coder := []string{"analyze_image", "delegate", "deployment_health", "digest", "escalate", "manual", "request_cut", "request_info", "request_tool", "web_scrape", "web_search"}
 	want := map[string][]string{
 		"coding": coder, "coding-card": coder,
-		"planner":   {"analyze_image", "digest", "file_plan", "manual", "web_scrape", "web_search"},
-		"prover":    {"file_proofs", "manual"},
-		"repo-map":  {"file_map", "manual"},
-		"sizing":    {"analyze_image", "file_size", "manual"},
-		"screening": {"analyze_image", "file_screening", "manual"},
+		"planner-spec":     {"analyze_image", "digest", "file_spec", "manual", "web_scrape", "web_search"},
+		"planner-criteria": {"analyze_image", "digest", "file_criteria", "manual", "web_scrape", "web_search"},
+		"planner-cards":    {"analyze_image", "digest", "file_cards", "manual", "web_scrape", "web_search"},
+		"planner-replan":   {"analyze_image", "digest", "file_replan", "manual", "web_scrape", "web_search"},
+		"planner-revert":   {"analyze_image", "digest", "file_revert", "manual", "web_scrape", "web_search"},
+		"prover":           {"file_proofs", "manual"},
+		"repo-map":         {"file_map", "manual"},
+		"sizing":           {"analyze_image", "file_size", "manual"},
+		"screening":        {"analyze_image", "file_screening", "manual"},
 	}
 	for step, p := range sessionProfiles(t) {
 		if got := slices.Sorted(slices.Values(p.Tools.Gateway)); !slices.Equal(got, want[step]) {
@@ -660,5 +666,75 @@ func TestRepoMapStandingWords(t *testing.T) {
 	got := [4]int{parts.Guide, parts.Forms, parts.Chunks, parts.Paragraph}
 	if want := [4]int{0, 0, 114, 63}; got != want {
 		t.Errorf("guide, forms, chunks, paragraph = %v, want %v", got, want)
+	}
+}
+
+// Each planner step keeps the forms its reader needs: the spec the line,
+// summary and ask forms and no brief, the criteria the line form alone, the
+// cards the title, why, summary, brief and ask forms, the replan all six and
+// the revert the line form alone.
+func TestEachPlannerStepKeepsItsForms(t *testing.T) {
+	want := map[string][]string{
+		"planner-spec":     {"line", "summary", "ask"},
+		"planner-criteria": {"line"},
+		"planner-cards":    {"title", "why", "summary", "brief", "ask"},
+		"planner-replan":   {"line", "title", "why", "summary", "brief", "ask"},
+		"planner-revert":   {"line"},
+	}
+	for step, forms := range want {
+		p := sessionProfiles(t)[step]
+		if !slices.Equal(p.Forms, forms) {
+			t.Errorf("step %s: forms %q, want %q", step, p.Forms, forms)
+		}
+		if p.Guide || p.AgentsMD || p.Reader != prompts.ReaderHuman {
+			t.Errorf("step %s: guide %v, agents_md %v, reader %s, want a human reader, no guide and no AGENTS.md", step, p.Guide, p.AgentsMD, p.Reader)
+		}
+		if env, err := prompts.SessionEnv(step); err != nil || !slices.Contains(env, "OPENCODE_DISABLE_PROJECT_CONFIG=1") {
+			t.Errorf("step %s: environment %q (%v), want the project config off", step, env, err)
+		}
+	}
+}
+
+// Standing words, counted from the files by hand: the form words are line
+// 71, summary 162, title 71, why 157, brief 358 and ask 434; the chunks are
+// 114 (factory 55, narration 59). Spec 667 + 114 + 104 = 885, criteria
+// 71 + 114 + 114 = 299, cards 1,182 + 114 + 111 = 1,407, replan
+// 1,253 + 114 + 106 = 1,473 and revert 71 + 114 + 62 = 247.
+func TestPlannerStepsStandingWords(t *testing.T) {
+	for step, want := range map[string][5]int{
+		"planner-spec":     {0, 667, 114, 104, 885},
+		"planner-criteria": {0, 71, 114, 114, 299},
+		"planner-cards":    {0, 1182, 114, 111, 1407},
+		"planner-replan":   {0, 1253, 114, 106, 1473},
+		"planner-revert":   {0, 71, 114, 62, 247},
+	} {
+		parts := built(t, step).Parts()
+		got := [5]int{parts.Guide, parts.Forms, parts.Chunks, parts.Paragraph, parts.Guide + parts.Forms + parts.Chunks + parts.Paragraph}
+		if got != want {
+			t.Errorf("step %s: guide, forms, chunks, paragraph, standing = %v, want %v", step, got, want)
+		}
+	}
+}
+
+// file_plan and the planner profile are gone: the five planner steps and
+// their tools replace them.
+func TestFilePlanIsGone(t *testing.T) {
+	if _, ok := prompts.ProfileOf("planner"); ok {
+		t.Error("the planner profile is still there")
+	}
+	for _, tool := range slices.Concat(policy.FreeTools, policy.PaidTools) {
+		if tool == "file_plan" {
+			t.Error("file_plan is still a tool")
+		}
+	}
+	for _, p := range prompts.Profiles() {
+		if slices.Contains(p.Tools.Gateway, "file_plan") {
+			t.Errorf("step %s still lists file_plan", p.Step)
+		}
+	}
+	for _, tool := range []string{"file_spec", "file_criteria", "file_cards", "file_replan", "file_revert"} {
+		if !slices.Contains(policy.FreeTools, tool) {
+			t.Errorf("%s is no tool", tool)
+		}
 	}
 }

@@ -239,7 +239,7 @@ func reportDeadline(activityDeadline time.Time, agentTime, reserve time.Duration
 // the repository and the project's document repository, and on the bot's
 // fork when extra has branches to fetch; no push token.
 func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing, step string, pin int64, guide string, findings, answers []string, extra reportExtra) (end reportEnd, err error) {
-	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), model: model, repo: repo, startRef: t.SHA, step: step, report: true, guide: guide, standing: standing, findings: findings, answers: answers, planner: step == "planner",
+	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), model: model, repo: repo, startRef: t.SHA, step: step, report: true, guide: guide, standing: standing, findings: findings, answers: answers, planner: slices.Contains(plannerSteps, step),
 		branches: extra.branches, record: extra.record, directories: extra.directories, repoMap: extra.repoMap}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return reportEnd{}, err
@@ -444,11 +444,11 @@ func parseScreening(text string) ScreenResult {
 	return screenResult(v, invalid)
 }
 
-// FileAnswer is the hand-over of file_screening, file_size and file_map,
-// the filing tools that store one answer object: the running task it
-// answers for, its object checked and kept, a report task's as its
-// summary, which the report's reader parses, the map step's in the plan
-// draft. The findings are why a filing is refused, none when it is stored.
+// FileAnswer is the hand-over of the filing tools that store one answer
+// object: the running task it answers for, its object checked and kept, a
+// report task's as its summary, which the report's reader parses, the map
+// step's and a planner step's in the plan draft (FilePart). The findings are
+// why a filing is refused, none when it is stored.
 func (r *Runner) FileAnswer(ctx context.Context, taskID, tool string, raw json.RawMessage) ([]string, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -456,6 +456,10 @@ func (r *Runner) FileAnswer(ctx context.Context, taskID, tool string, raw json.R
 	}
 	var source string
 	var check func(json.RawMessage) (string, []string)
+	if step, ok := plannerStepOf(tool); ok {
+		res, err := r.FilePart(ctx, taskID, step, raw)
+		return res.Findings, err
+	}
 	switch tool {
 	case policy.ToolFileMap:
 		return r.fileMap(ctx, t, raw)

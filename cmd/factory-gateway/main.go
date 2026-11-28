@@ -102,7 +102,6 @@ func main() {
 		Fal: &gateway.Fal{RunURL: "https://fal.run", APIURL: "https://api.fal.ai", Key: cfg.FalKey,
 			HTTP: egress.Client(120 * time.Second)},
 		Escalator:        factoryd,
-		PlanFiler:        factoryd,
 		ProofsFiler:      factoryd,
 		AnswerFiler:      factoryd,
 		Delegator:        factoryd,

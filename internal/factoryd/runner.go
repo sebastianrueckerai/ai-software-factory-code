@@ -204,11 +204,11 @@ type Runner struct {
 	// starting is when the task's session began its start check-in, by
 	// task, until the check-in ends
 	starting map[string]time.Time
-	// filed is what a running session's file_plan tool stored, by task:
+	// filed is what a running run's last planner step stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
 	// briefs counts each model writer's refused tries at a filing door:
-	// the planner's file_plan by its plan, an agent's escalate and its
+	// the planner's plan filing by its plan, an agent's escalate and its
 	// delegate by its card; a new session starts them anew
 	briefs BriefTally
 	// revertLocks holds a *sync.Mutex by project, so RevertGroup runs
@@ -419,7 +419,7 @@ func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
 	return nil
 }
 
-// noteFiled holds the plan a running session filed through the file_plan
+// noteFiled holds the plan a running session filed through its last step's
 // tool; takeFiled takes it, once: it is that session's answer, and a
 // filing no session takes (one an earlier session left) does not outlive
 // it.
@@ -682,7 +682,7 @@ type sessionSpec struct {
 	// sessions is the cap the attempt number counts against: the policy's
 	// session limit and the attempts a human answer granted
 	sessions int
-	// planner marks a plan card's session: its warning says file the plan
+	// planner marks a plan card's session: its warning says file the answer
 	planner bool
 	// planTrack: the card's project follows a process with a plan track,
 	// so a direct card's rest can go to the planner

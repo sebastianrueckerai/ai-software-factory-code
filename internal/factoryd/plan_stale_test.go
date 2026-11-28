@@ -15,7 +15,7 @@ import (
 )
 
 // runPlanTask puts the plan task back into its running session, the state
-// the file_plan tool files from.
+// the planner's filing tools file from.
 func runPlanTask(store *fakeStore) {
 	t := store.tasks["t-plan"]
 	t.Status = "running"
@@ -46,7 +46,7 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 		"replaces an id the previous revision does not hold": {renamed, "criterion links_crud_v2: replaces gone, an id the previous revision does not hold"},
 		"the same id with another definition":                {changed, "criterion links_crud: revision 1 holds this id with another definition; a changed criterion files under a new id"},
 	} {
-		res, err := r.FilePlan(ctx, "t-plan", planJSON(t, tc.p))
+		res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, tc.p))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -59,7 +59,7 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 	}
 	// the same bytes re-filed return the revision they already are and
 	// write no records
-	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, testPlan()))
+	res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, testPlan()))
 	if err != nil || res.Revision != 1 {
 		t.Fatalf("re-filed the same plan: %+v, %v", res, err)
 	}
@@ -84,10 +84,10 @@ func TestFilePlanRefusesADroppedIdBackWithAnotherDefinition(t *testing.T) {
 	pinned := fixtureVersion(t)
 	r.cfg.Policy = func() policy.Version { return pinned }
 	runPlanTask(store)
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, testPlan())); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("revision 2 drops pages_ok: %+v, %v, findings %q", res, err, res.Findings)
 	}
-	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, withPages("the pages read calm")))
+	res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, withPages("the pages read calm")))
 	want := []string{"criterion pages_ok: revision 1 holds this id with another definition; a changed criterion files under a new id"}
 	if err != nil || !slices.Equal(res.Findings, want) {
 		t.Fatalf("pages_ok back with a new claim: %+v, %v; want the findings %q", res, err, want)
@@ -95,7 +95,7 @@ func TestFilePlanRefusesADroppedIdBackWithAnotherDefinition(t *testing.T) {
 	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 2 {
 		t.Fatalf("a refused amendment landed as revision %d", rev.Revision)
 	}
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, withPages("the pages read well"))); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, withPages("the pages read well"))); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
 		t.Fatalf("pages_ok back as it was: %+v, %v, findings %q", res, err, res.Findings)
 	}
 }
@@ -117,13 +117,13 @@ func TestFilePlanRefileOfTheNewestIsANoop(t *testing.T) {
 	amend.Criteria[0].Replaces = "links_crud"
 	amend.Cards[1].Acceptance[0].Criterion = "links_crud_v2"
 	amend.Cards[3].Acceptance[1].Criterion = "links_crud_v2"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v, findings %q", res, err, res.Findings)
 	}
 	starts := len(wf.started)
 	before, _ := store.PlanCatches(ctx, "t-plan")
 
-	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend))
+	res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, amend))
 	if err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the re-file: %+v, %v, findings %q", res, err, res.Findings)
 	}
@@ -140,7 +140,7 @@ func TestFilePlanRefileOfTheNewestIsANoop(t *testing.T) {
 	rev, _, _ := store.PlanRevision(ctx, "t-plan", 2)
 	rev.SHA256 = "drifted"
 	store.plans["t-plan"][1] = rev
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the re-file after the hash drifted: %+v, %v, findings %q", res, err, res.Findings)
 	}
 	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 2 {
@@ -164,13 +164,13 @@ func TestFilePlanUnchangedCriterionKeepsItsReplacesMarker(t *testing.T) {
 	amend.Criteria[0].Replaces = "links_crud"
 	amend.Cards[1].Acceptance[0].Criterion = "links_crud_v2"
 	amend.Cards[3].Acceptance[1].Criterion = "links_crud_v2"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v, findings %q", res, err, res.Findings)
 	}
 
 	retold := amend
 	retold.Summary = amend.Summary + " A card's brief changed with it."
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, retold)); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, retold)); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
 		t.Fatalf("the re-file with the retold summary: %+v, %v, findings %q", res, err, res.Findings)
 	}
 	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 3 {
@@ -216,7 +216,7 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	amend.Cards[1].Acceptance[0].Criterion = "links_crud_v2"
 	amend.Cards[2].Acceptance = []PlanItem{amend.Cards[2].Acceptance[0], amend.Cards[2].Acceptance[1]}
 	amend.Cards[2].Acceptance[1].Criterion = "links_crud_v2"
-	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend))
+	res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, amend))
 	if err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v, findings %q", res, err, res.Findings)
 	}
@@ -302,7 +302,7 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	// a rebrief would count the cards "of 5"
 	amend.Cards = slices.Insert(amend.Cards, 3, PlanCard{Key: "stats", Role: RoleFeature, Title: "Click stats", Why: "So the plan's feature gets built.", Summary: "It builds the card's part of the plan. Its acceptance tests check it.", Brief: "GET /api/links/<slug>/stats answers the clicks.",
 		Directories: []string{"internal/stats"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestStats in internal/stats answers 200"}}, Size: "small"})
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v", res, err)
 	}
 	cards := cardsByKey(t, store)
@@ -324,7 +324,7 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 func refusedStartedChange(t *testing.T, r *Runner, store *fakeStore, p Plan) {
 	t.Helper()
 	ctx := context.Background()
-	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
+	res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, p))
 	want := []string{"card redirects started against revision 1: keep its entry as revision 1 has it, or leave its key out to stop it"}
 	if err != nil || !slices.Equal(res.Findings, want) {
 		t.Fatalf("a started card's entry changed: %+v, %v, want the findings %q", res, err, want)
@@ -595,7 +595,7 @@ func TestFilePlanAmendmentRefreshesAnUnstartedCardsRungAndSize(t *testing.T) {
 
 	amend := testPlan()
 	amend.Cards[1].Size, amend.Cards[1].Rung, amend.Cards[1].RungReason = "medium", RungFrontier, "the store's schema moves"
-	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+	if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v", res, err)
 	}
 	cards := cardsByKey(t, store)
@@ -926,7 +926,7 @@ func TestDivideConquerPlanningFacts(t *testing.T) {
 	next.Cards = slices.Clone(rebrief.Cards)
 	next.Cards[1].Key, next.Cards[1].From = "links-api-2", "links-api"
 	next.Cards[2].DependsOn = []string{"links-api-2"}
-	if res, err := rA.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
+	if res, err := fileWholePlan(rA, ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
 		t.Fatalf("plan A's revision 3: %+v, %v", res, err)
 	}
 	plan, repo, err = rA.task(ctx, "t-plan")
@@ -1168,7 +1168,7 @@ func TestFilePlanRecordsTheRevisionOnce(t *testing.T) {
 	r.timeline.Events = rec
 	runPlanTask(store)
 	for range 2 {
-		if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 2 {
+		if res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 2 {
 			t.Fatalf("filing revision 2: %+v, %v", res, err)
 		}
 	}
@@ -1204,7 +1204,7 @@ func TestFilePlanRecordsNoRowForARevisionTheStoreAlreadyHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := r.FilePlan(ctx, "t-plan", string(raw))
+	res, err := fileWholePlan(r, ctx, "t-plan", string(raw))
 	if err != nil || res.Revision != 1 || len(res.Findings) != 0 {
 		t.Fatalf("filing the same plan with an empty take_off_main: %+v, %v", res, err)
 	}
@@ -1285,7 +1285,7 @@ func TestFilePlanFilesAWorkflowCardForAHuman(t *testing.T) {
 
 	mixed := testPlan()
 	mixed.Cards[1].Directories = []string{".forgejo/workflows/pr.yml", "internal/links"}
-	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, mixed))
+	res, err := fileWholePlan(r, ctx, "t-plan", planJSON(t, mixed))
 	want := []string{"plan: card links-api: directories mix workflow paths (.forgejo, .gitea, .github) with others: put the workflow paths in a card of their own, which a human does"}
 	if err != nil || !slices.Equal(res.Findings, want) {
 		t.Fatalf("a mixed card: findings %q, %v; want %q", res.Findings, err, want)
@@ -1296,7 +1296,7 @@ func TestFilePlanFilesAWorkflowCardForAHuman(t *testing.T) {
 		Directories: []string{".forgejo/workflows/pr.yml"}, Acceptance: []PlanItem{{Criterion: "all_green", Text: "go test ./... passes with the new workflow"}}}
 	p.Cards = slices.Insert(p.Cards, 1, ci)
 	p.Cards[2].DependsOn = []string{"ci"}
-	res, err = r.FilePlan(ctx, "t-plan", planJSON(t, p))
+	res, err = fileWholePlan(r, ctx, "t-plan", planJSON(t, p))
 	if err != nil || len(res.Findings) != 0 {
 		t.Fatalf("the plan: %+v, %v", res, err)
 	}

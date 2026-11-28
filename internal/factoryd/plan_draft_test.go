@@ -106,7 +106,7 @@ func TestFilePlanKeepsTheRefusedPlanAsADraft(t *testing.T) {
 	ctx := context.Background()
 	over := testPlan()
 	over.Cards[1].Size = "huge"
-	res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, over))
+	res, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, over))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,14 +144,14 @@ func TestFilePlanKeepsTheRefusedPlanAsADraft(t *testing.T) {
 
 	other := testPlan()
 	other.Cards[0].Size = "huge"
-	if _, err := runner.FilePlan(ctx, "t-plan", planJSON(t, other)); err != nil {
+	if _, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, other)); err != nil {
 		t.Fatal(err)
 	}
 	if d, _, _ := store.PlanDraft(ctx, "t-plan"); len(d.Findings) != 1 || strings.Contains(d.Findings[0], "links-api") {
 		t.Fatalf("the second refusal did not replace the draft: %+v", d)
 	}
 
-	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
+	if res, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
 		t.Fatalf("filed %+v, %v", res, err)
 	}
 	if d, _, _ := store.PlanDraft(ctx, "t-plan"); len(d.Findings) != 0 || strings.Contains(string(d.Plan), "summary") {
@@ -331,18 +331,18 @@ func TestDraftBriefIsBounded(t *testing.T) {
 func TestAcceptedRefileDropsTheDraft(t *testing.T) {
 	runner, store, kube := draftRig(t)
 	ctx := context.Background()
-	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
+	if res, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
 		t.Fatalf("revision 1: %+v, %v", res, err)
 	}
 	over := testPlan()
 	over.Cards[1].Size = "huge"
-	if _, err := runner.FilePlan(ctx, "t-plan", planJSON(t, over)); err != nil {
+	if _, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, over)); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := store.PlanDraft(ctx, "t-plan"); !ok {
 		t.Fatal("no draft after the refusal")
 	}
-	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
+	if res, err := fileWholePlan(runner, ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
 		t.Fatalf("the re-file: %+v, %v", res, err)
 	}
 	if _, ok, _ := store.PlanDraft(ctx, "t-plan"); ok {
@@ -412,7 +412,7 @@ func TestEveryRefusalKeepsADraft(t *testing.T) {
 		}, "question 1: text is over"},
 		"a criterion changed under its id": {func(t *testing.T) (*Runner, *fakeStore, string) {
 			r, store, _ := draftRig(t)
-			if res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
+			if res, err := fileWholePlan(r, context.Background(), "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
 				t.Fatalf("revision 1: %+v, %v", res, err)
 			}
 			changed := testPlan()
@@ -421,19 +421,22 @@ func TestEveryRefusalKeepsADraft(t *testing.T) {
 		}, "revision 1 holds this id with another definition"},
 		"a take-off with no reason": {func(t *testing.T) (*Runner, *fakeStore, string) {
 			r, store, _ := draftRig(t)
-			if res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
+			if res, err := fileWholePlan(r, context.Background(), "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 {
 				t.Fatalf("revision 1: %+v, %v", res, err)
+			}
+			if err := r.timeline.Append(context.Background(), "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "revision": 1, "off_main": true}); err != nil {
+				t.Fatal(err)
 			}
 			off := testPlan()
 			off.Cards[1].Brief = "Create and list links."
 			off.TakeOffMain = []string{"links-api"}
 			return r, store, planJSON(t, off)
-		}, "`take_off_main` names links-api with no reason"},
+		}, "the card links-api has no reason"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, plan := tc.rig(t)
 			ctx := context.Background()
-			res, err := r.FilePlan(ctx, "t-plan", plan)
+			res, err := fileWholePlan(r, ctx, "t-plan", plan)
 			if err != nil || res.Revision > 1 || !strings.Contains(strings.Join(res.Findings, "\n"), tc.want) {
 				t.Fatalf("filing %+v, %v; want a refusal naming %q", res, err, tc.want)
 			}

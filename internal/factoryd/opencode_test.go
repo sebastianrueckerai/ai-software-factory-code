@@ -982,13 +982,13 @@ func TestGuidesLeaveTheAskToTheTools(t *testing.T) {
 // its own test or construction pins it.
 func TestGuidesCarryNoCheckedRule(t *testing.T) {
 	guides := map[string]string{
-		"work":          workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}, nil),
-		"work-bare":     workGuide(nil, nil),
-		"feature":       featureGuide(RoleFeature, nil, nil),
-		"integration":   featureGuide(RoleIntegration, nil, nil),
-		"end":           guideEnd(nil, nil),
-		"plan":          planGuide(testShape, testLimits, nil),
-		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits, nil),
+		"work":        workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}, nil),
+		"work-bare":   workGuide(nil, nil),
+		"feature":     featureGuide(RoleFeature, nil, nil),
+		"integration": featureGuide(RoleIntegration, nil, nil),
+		"end":         guideEnd(nil, nil),
+		"plan-cards":  planGuide(stepPlanCards, testShape, nil, ""),
+		"plan-replan": planGuide(stepPlanReplan, policy.PlanShape{MaxCards: 12}, nil, ""),
 	}
 	rules := []string{
 		// the worker's push guard refuseMisnamedMigrations, pinned by
@@ -1053,7 +1053,7 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"to land it again from salvage",
 		// replanFindings, a take-off of a card the criteria still rely on
 		"lose their proof",
-		// takeOffReasonFindings
+		// revertFindings
 		"with no reason",
 		// replanFindings, a name of take_off_main that takes nothing off main
 		"leave it out of take_off_main",
@@ -1264,7 +1264,7 @@ func TestCodingGuideCarriesNoForm(t *testing.T) {
 // No guide asks for a build without -race any more (stage12-design 5.2):
 // the sandbox now has gcc.
 func TestGuideEndNoLongerForbidsRace(t *testing.T) {
-	for _, g := range []string{workGuide(nil, nil), featureGuide(RoleFeature, nil, nil), planGuide(testShape, testLimits, nil)} {
+	for _, g := range []string{workGuide(nil, nil), featureGuide(RoleFeature, nil, nil), planGuide(stepPlanCards, testShape, nil, "")} {
 		if strings.Contains(g, "without -race") {
 			t.Fatalf("guide still forbids -race: %q", g)
 		}
@@ -1301,12 +1301,14 @@ func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
 }
 
 // The guides factoryd writes name verify commands the sandbox's shell tool
-// can run: a changeless round's brief names bash check static, and no
-// guide names a shell timeout past the tool's 600000 ms maximum (the plan's
-// cards are clamped at the filing door, TestPlanBriefTimeoutIsClamped).
+// can run: no planner guide names bash check static, a mode the template
+// lacks, and no guide names a shell timeout past the tool's 600000 ms maximum
+// (the plan's cards are clamped at the filing door, TestPlanBriefTimeoutIsClamped).
 func TestGuidesNameRunnableChecks(t *testing.T) {
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, "bash check static") {
-		t.Fatalf("planGuide = %q, want the changeless round's bash check static", got)
+	for _, step := range plannerSteps {
+		if got := planGuide(step, testShape, nil, ""); strings.Contains(got, "bash check static") {
+			t.Fatalf("the %s guide = %q, want no bash check static", step, got)
+		}
 	}
 	end := guideEnd(nil, nil)
 	if !strings.Contains(end, "bash check static") {

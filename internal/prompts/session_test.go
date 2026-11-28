@@ -24,8 +24,8 @@ budget_words: 1
 `
 
 // A harness session is offered only what its profile names: 4 of the 6
-// built-in tools a profile may keep, the 3 tools no step keeps and 24 of
-// the 25 gateway tools (4 paid, 21 free) are denied, 4 + 3 + 24 = 31
+// built-in tools a profile may keep, the 3 tools no step keeps and 28 of
+// the 29 gateway tools (4 paid, 25 free) are denied, 4 + 3 + 28 = 35
 // keys, and its standing text replaces the harness preamble.
 func TestSessionConfigDeniesWhatTheProfileDrops(t *testing.T) {
 	c, err := load(fstest.MapFS{"profiles/s.yaml": {Data: []byte(sessionProfile)}, "chunks/s.md": {Data: []byte("S\n")}}, testWriting)
@@ -40,8 +40,8 @@ func TestSessionConfigDeniesWhatTheProfileDrops(t *testing.T) {
 		t.Errorf("agent.build.prompt = %q, want S", got)
 	}
 	permission := cfg["permission"].(map[string]any)
-	if len(permission) != 31 {
-		t.Errorf("permission holds %d keys, want 31: %v", len(permission), permission)
+	if len(permission) != 35 {
+		t.Errorf("permission holds %d keys, want 35: %v", len(permission), permission)
 	}
 	for _, tool := range []string{"edit", "glob", "grep", "todowrite", "skill", "task", "webfetch", "factory-tools_web_search", "factory-tools_escalate"} {
 		if permission[tool] != "deny" {
@@ -83,7 +83,7 @@ func TestSessionConfigAlwaysDeniesTheConstants(t *testing.T) {
 			}
 		}
 	}
-	if sessions != 7 {
-		t.Errorf("%d profiles list built-in tools, want the 7 session steps", sessions)
+	if sessions != 11 {
+		t.Errorf("%d profiles list built-in tools, want the 11 session steps", sessions)
 	}
 }

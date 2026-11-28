@@ -63,7 +63,7 @@ var wantTrip = map[string][]string{
 	"limits.checkin_calls":      {`"check-in call cap reached after %d calls"`},
 	"limits.checkin_time":       {`"check-in time cap reached after %s"`},
 	"limits.warn_at":            {`"factoryd: %.0f percent of this card's budget is spent, %s of %s EUR are left for its calls (the model review and the audit hold %s EUR of it). Finish what runs, run bash check changed if it is quick, and end the session with your last message, so the factory pushes your work."`},
-	"limits.plan_warn_at":       {`"factoryd: %.0f percent of this card's budget is spent, %s of %s EUR are left for its calls (the model review and the audit hold %s EUR of it). File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none."`},
+	"limits.plan_warn_at":       {`"factoryd: %.0f percent of this card's budget is spent, %s of %s EUR are left for its calls (the model review and the audit hold %s EUR of it). File your answer now with the filing tool of your step, with what you have read: an answer filed late is better than none."`},
 	"limits.gate_reserve_eur":   {`"; the card spent %s EUR, and %s EUR is held for the review and the audit"`, "refused_budget"},
 	"limits.no_push_spend":      {`"this session spent %s EUR of the %s EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed"`},
 	"budget.task_default_eur":   {`"free headroom %s EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d"`},

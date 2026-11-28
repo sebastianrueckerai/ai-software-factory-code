@@ -162,7 +162,7 @@ func TestFilePlanNamesTheGateItReached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := runner.FilePlan(ctx, "t-plan", string(b))
+	res, err := fileWholePlan(runner, ctx, "t-plan", string(b))
 	if err != nil || res.Revision != 1 || !res.Gate {
 		t.Fatalf("a first filing = %+v, %v; want revision 1 with the confirmation waiting", res, err)
 	}
@@ -172,7 +172,7 @@ func TestFilePlanNamesTheGateItReached(t *testing.T) {
 	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionConfirm, "", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
-	res, err = runner.FilePlan(ctx, "t-plan", string(b))
+	res, err = fileWholePlan(runner, ctx, "t-plan", string(b))
 	if err != nil || res.Revision != 1 || res.Gate {
 		t.Fatalf("the spec unchanged under a confirmed revision = %+v, %v; want no gate", res, err)
 	}
@@ -218,7 +218,7 @@ func TestAReviseFixesNoSpec(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return fixtureVersion(t) }
 	p := testPlan()
 	b, _ := json.Marshal(p)
-	if res, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || res.Revision != 1 || !res.Gate {
+	if res, err := fileWholePlan(runner, ctx, "t-plan", string(b)); err != nil || res.Revision != 1 || !res.Gate {
 		t.Fatalf("revision 1: %+v, %v", res, err)
 	}
 	store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Confirm the plan?"})
@@ -227,7 +227,7 @@ func TestAReviseFixesNoSpec(t *testing.T) {
 	}
 	p.Summary = "The same spec, the cards cut finer."
 	b, _ = json.Marshal(p)
-	if res, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || res.Revision != 2 || !res.Gate {
+	if res, err := fileWholePlan(runner, ctx, "t-plan", string(b)); err != nil || res.Revision != 2 || !res.Gate {
 		t.Fatalf("revision 2 after the revise: %+v, %v; want the confirmation to wait", res, err)
 	}
 }
