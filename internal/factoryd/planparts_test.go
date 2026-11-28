@@ -64,8 +64,9 @@ func partOfPlan(step string, p Plan) (json.RawMessage, error) {
 }
 
 // fileWholePlan files plan, a whole plan as json, through the parts the
-// task's run holds steps for: each step's part in order, the first refusal
-// or the stored revision as the result.
+// task's run holds steps for, as the run's sessions file them: each part in
+// order from the step the run is at, the first refusal or the stored
+// revision as the result.
 func fileWholePlan(r *Runner, ctx context.Context, taskID, plan string) (PlanResult, error) {
 	p, found := decodePlan("```json\n" + plan + "\n```")
 	if len(found) > 0 {
@@ -91,9 +92,14 @@ func fileWholePlan(r *Runner, ctx context.Context, taskID, plan string) (PlanRes
 	if err != nil {
 		return PlanResult{}, err
 	}
+	path := planPath(shape, newest, step, pending)
+	draft, err := r.planDraftState(ctx, taskID, path)
+	if err != nil {
+		return PlanResult{}, err
+	}
 	var res PlanResult
-	for _, name := range planPath(shape, newest, step, pending) {
-		if name == stepRepoMap {
+	for i, name := range path {
+		if name == stepRepoMap || !draft.runs(path, i) {
 			continue
 		}
 		part, err := partOfPlan(name, p)
@@ -224,6 +230,9 @@ func TestFilePartRefusalNamesTheField(t *testing.T) {
 	r, store, _ := draftRig(t)
 	ctx := context.Background()
 	plan := testPlan()
+	if res, err := r.FilePart(ctx, "t-plan", stepPlanSpec, mustPart(t, stepPlanSpec, plan)); err != nil || len(res.Findings) != 0 {
+		t.Fatalf("spec: %+v, %v", res, err)
+	}
 	plan.Criteria[1].ID = "links_crud"
 	part, err := partOfPlan(stepPlanCriteria, plan)
 	if err != nil {
@@ -269,6 +278,64 @@ func TestFilePartRefusesAStepOffThePath(t *testing.T) {
 	}
 }
 
+// A spec session's file_cards, filed while the draft holds nothing, is
+// refused with the step the run is at and its tool, and is kept nowhere.
+func TestFilePartRefusesALaterStep(t *testing.T) {
+	r, store, _ := draftRig(t)
+	ctx := context.Background()
+	res, err := r.FilePart(ctx, "t-plan", stepPlanCards, mustPart(t, stepPlanCards, testPlan()))
+	want := []string{"file_cards: the run is at its spec step: file it with file_spec"}
+	if err != nil || !slices.Equal(res.Findings, want) || res.Revision != 0 {
+		t.Fatalf("%+v, %v; want findings %q", res, err, want)
+	}
+	if d, ok, _ := store.PlanDraft(ctx, "t-plan"); ok {
+		t.Fatalf("the refused filing left the draft %s", d.Plan)
+	}
+}
+
+// A spec part refused at its door keeps the run at the spec step: the
+// session's next file_spec is taken, and the draft holds it with no findings.
+func TestFilePartTakesARefilingOfItsStep(t *testing.T) {
+	r, store, _ := draftRig(t)
+	ctx := context.Background()
+	res, err := r.FilePart(ctx, "t-plan", stepPlanSpec, json.RawMessage(`{"spec":{"outcome":"o"},"summary":"s","round":1}`))
+	if err != nil || len(res.Findings) != 1 || !strings.HasPrefix(res.Findings[0], "file_spec: the answer does not decode") {
+		t.Fatalf("the unknown field: %+v, %v", res, err)
+	}
+	spec := mustPart(t, stepPlanSpec, testPlan())
+	if res, err = r.FilePart(ctx, "t-plan", stepPlanSpec, spec); err != nil || len(res.Findings) != 0 {
+		t.Fatalf("the refiling: %+v, %v; want it taken", res, err)
+	}
+	held, err := r.heldParts(ctx, "t-plan")
+	if err != nil || string(held[stepPlanSpec]) != string(spec) {
+		t.Fatalf("the draft holds %s, %v; want the refiled part %s", held[stepPlanSpec], err, spec)
+	}
+	if d, _, _ := store.PlanDraft(ctx, "t-plan"); len(d.Findings) != 0 {
+		t.Fatalf("the taken refiling left findings %q", d.Findings)
+	}
+}
+
+// Once the spec part is held, the run is at the criteria step: a second
+// file_spec is refused with file_criteria and leaves the held spec part.
+func TestFilePartRefusesAnEarlierStep(t *testing.T) {
+	r, _, _ := draftRig(t)
+	ctx := context.Background()
+	spec := mustPart(t, stepPlanSpec, testPlan())
+	if res, err := r.FilePart(ctx, "t-plan", stepPlanSpec, spec); err != nil || len(res.Findings) != 0 {
+		t.Fatalf("spec: %+v, %v", res, err)
+	}
+	other := testPlan()
+	other.Summary = "Another summary."
+	res, err := r.FilePart(ctx, "t-plan", stepPlanSpec, mustPart(t, stepPlanSpec, other))
+	want := []string{"file_spec: the run is at its criteria step: file it with file_criteria"}
+	if err != nil || !slices.Equal(res.Findings, want) {
+		t.Fatalf("findings %q, %v; want %q", res.Findings, err, want)
+	}
+	if held, err := r.heldParts(ctx, "t-plan"); err != nil || string(held[stepPlanSpec]) != string(spec) {
+		t.Fatalf("the draft holds %s, %v; want the first spec part %s", held[stepPlanSpec], err, spec)
+	}
+}
+
 // The plan draft keeps the parts between sessions, with no schema change: the
 // draft's plan is one JSON object, each part one key beside the map. A map
 // written between two parts leaves them, the draft's state tells the step a
@@ -286,11 +353,25 @@ func TestPlanDraftHoldsPartsAcrossSessions(t *testing.T) {
 		t.Fatalf("spec: %+v, %v", res, err)
 	}
 	seedMap(t, r, "t-plan", "abc123")
+	path := []string{stepRepoMap, stepPlanSpec, stepPlanCriteria, stepPlanCards}
+	dup := testPlan()
+	dup.Criteria[1].ID = "links_crud"
+	bad, _ := partOfPlan(stepPlanCriteria, dup)
+	if res, err := r.FilePart(ctx, "t-plan", stepPlanCriteria, bad); err != nil || len(res.Findings) != 1 {
+		t.Fatalf("a duplicate: %+v, %v", res, err)
+	}
+	state, err := r.planDraftState(ctx, "t-plan", path)
+	if err != nil || state.refused != stepPlanCriteria || !state.held[stepPlanSpec] {
+		t.Fatalf("state %+v, %v; want the refusal at the criteria step and the spec held", state, err)
+	}
+	d, _, _ := store.PlanDraft(ctx, "t-plan")
+	if len(d.Findings) != 1 {
+		t.Fatalf("draft findings %q", d.Findings)
+	}
 	if res, err := r.FilePart(ctx, "t-plan", stepPlanCriteria, criteria); err != nil || len(res.Findings) != 0 {
 		t.Fatalf("criteria: %+v, %v", res, err)
 	}
-	path := []string{stepRepoMap, stepPlanSpec, stepPlanCriteria, stepPlanCards}
-	state, err := r.planDraftState(ctx, "t-plan", path)
+	state, err = r.planDraftState(ctx, "t-plan", path)
 	if err != nil || !state.held[stepPlanSpec] || !state.held[stepPlanCriteria] || state.held[stepPlanCards] || state.refused != "" {
 		t.Fatalf("state %+v, %v; want spec and criteria held, none refused", state, err)
 	}
@@ -302,19 +383,6 @@ func TestPlanDraftHoldsPartsAcrossSessions(t *testing.T) {
 	}
 	if note, err := r.planDraftNote(ctx, "t-plan", PlannerOutOfTime); err != nil || note != "" {
 		t.Fatalf("held parts are a refused filing: %q, %v", note, err)
-	}
-	plan.Criteria[1].ID = "links_crud"
-	bad, _ := partOfPlan(stepPlanCriteria, plan)
-	if res, err := r.FilePart(ctx, "t-plan", stepPlanCriteria, bad); err != nil || len(res.Findings) != 1 {
-		t.Fatalf("a duplicate: %+v, %v", res, err)
-	}
-	state, err = r.planDraftState(ctx, "t-plan", path)
-	if err != nil || state.refused != stepPlanCriteria || !state.held[stepPlanSpec] {
-		t.Fatalf("state %+v, %v; want the refusal at the criteria step and the spec held", state, err)
-	}
-	d, _, _ := store.PlanDraft(ctx, "t-plan")
-	if len(d.Findings) != 1 {
-		t.Fatalf("draft findings %q", d.Findings)
 	}
 }
 

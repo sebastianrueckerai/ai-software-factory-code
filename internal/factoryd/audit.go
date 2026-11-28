@@ -107,14 +107,15 @@ type auditPartInput struct {
 }
 
 // parseAudit reads the model's answer: its findings, or why it gave no
-// verdict. No finding is a clear audit.
+// verdict. An empty findings list is a clear audit; a missing one is no
+// verdict.
 func parseAudit(content string) ([]AuditFinding, string) {
 	s := strings.TrimSpace(content)
 	if strings.HasPrefix(s, "```") && strings.HasSuffix(s, "```") && len(s) >= 6 {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
 	}
 	var answer struct {
-		Findings []struct {
+		Findings *[]struct {
 			Item json.RawMessage `json:"item"`
 			File string          `json:"file"`
 			Line int             `json:"line"`
@@ -128,8 +129,11 @@ func parseAudit(content string) ([]AuditFinding, string) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, "the answer is not one JSON object: text after it"
 	}
+	if answer.Findings == nil {
+		return nil, "the answer holds no findings key: an empty findings list is a clear audit"
+	}
 	var out []AuditFinding
-	for _, f := range answer.Findings {
+	for _, f := range *answer.Findings {
 		var n int
 		if json.Unmarshal(f.Item, &n) != nil || n < 1 || n > len(auditItems) {
 			return nil, fmt.Sprintf("the answer named checklist item %s, which is not a number from 1 to %d", cmp.Or(string(f.Item), "none"), len(auditItems))

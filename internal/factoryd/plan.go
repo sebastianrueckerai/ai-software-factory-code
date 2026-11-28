@@ -2927,10 +2927,10 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 			continue
 		}
-		final := i == len(path)-1
-		if !final && draft.held[name] && draft.refused != name {
+		if !draft.runs(path, i) {
 			continue
 		}
+		final := i == len(path)-1
 		own := findings
 		if last == nil && told {
 			own = nil

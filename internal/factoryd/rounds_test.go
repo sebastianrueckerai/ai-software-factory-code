@@ -273,6 +273,7 @@ func TestFilePlanRefusesASettledKeyInTakeOffMain(t *testing.T) {
 			t.Fatalf("finding %q asks to leave a settled key out", f)
 		}
 	}
+	r, store, _, _ = roundTwoRigAs(t, map[string]any{"origin": ReplanPerson, "by": "ana", "revision": 1, "round": 2, "off_main": true}, nil)
 	answer.TakeOffMain = []string{"links-api", "links-api"}
 	res, err = fileWholePlan(r, context.Background(), "t-plan", planJSON(t, answer))
 	if again := []string{"plan: the card links-api is named twice"}; err != nil || !slices.Equal(res.Findings, again) {

@@ -3357,7 +3357,7 @@ func TestGatesRefuseAMovedHead(t *testing.T) {
 	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || rv.MovedTo != "c2" || len(ll.chats) != 0 {
 		t.Fatalf("review = %+v after %d model calls", rv, len(ll.chats))
 	}
-	ar, _ := newAuditRunner(t, &gateForgejo{head: "c2", diff: "d"}, &fakeLiteLLM{content: `{"verdict":"clear"}`}, true)
+	ar, _ := newAuditRunner(t, &gateForgejo{head: "c2", diff: "d"}, &fakeLiteLLM{content: `{"findings":[]}`}, true)
 	val, err = execActivity(t, ar, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
 	if a := getInto[AuditResult](t, val, err); a.MovedTo != "c2" || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict {
 		t.Fatalf("audit = %+v, want no verdict and the head c2 named", a)
@@ -3814,7 +3814,7 @@ func TestReviewPromptOpensWithTheFindingForm(t *testing.T) {
 
 // The concurrency summary says what it lists in its own first line, so
 // neither the review nor the audit prompt describes it; the review names
-// the parts as context and its file list, and no longer a cut diff.
+// the parts as context and its file list.
 func TestReviewAndAuditPromptsNameTheConcurrencySummary(t *testing.T) {
 	review := reviewPromptFor(GateResults{ChecksPassed: true}, reviewAllNotes())
 	if !strings.Contains(review, "When part is present, the diff comes in parts") {
@@ -4485,7 +4485,7 @@ func TestSessionsStopAtTheReserveAndTheGatesRun(t *testing.T) {
 		t.Fatalf("spent after the review = %v, want 4.78", got)
 	}
 
-	ll.content = `{"verdict":"clear"}`
+	ll.content = `{"findings":[]}`
 	val, err = execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	if len(res.Findings) != 0 || len(ll.chats) != 8 {

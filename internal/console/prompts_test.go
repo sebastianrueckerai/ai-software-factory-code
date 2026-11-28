@@ -696,12 +696,12 @@ func TestEachPlannerStepKeepsItsForms(t *testing.T) {
 
 // Standing words, counted from the files by hand: the form words are line
 // 71, summary 162, title 71, why 157, brief 358 and ask 434; the chunks are
-// 114 (factory 55, narration 59). Spec 667 + 114 + 104 = 885, criteria
+// 114 (factory 55, narration 59). Spec 667 + 114 + 106 = 887, criteria
 // 71 + 114 + 114 = 299, cards 1,182 + 114 + 111 = 1,407, replan
 // 1,253 + 114 + 106 = 1,473 and revert 71 + 114 + 62 = 247.
 func TestPlannerStepsStandingWords(t *testing.T) {
 	for step, want := range map[string][5]int{
-		"planner-spec":     {0, 667, 114, 104, 885},
+		"planner-spec":     {0, 667, 114, 106, 887},
 		"planner-criteria": {0, 71, 114, 114, 299},
 		"planner-cards":    {0, 1182, 114, 111, 1407},
 		"planner-replan":   {0, 1253, 114, 106, 1473},
@@ -715,8 +715,6 @@ func TestPlannerStepsStandingWords(t *testing.T) {
 	}
 }
 
-// file_plan and the planner profile are gone: the five planner steps and
-// their tools replace them.
 func TestFilePlanIsGone(t *testing.T) {
 	if _, ok := prompts.ProfileOf("planner"); ok {
 		t.Error("the planner profile is still there")

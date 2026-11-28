@@ -203,7 +203,8 @@ func (r *Runner) readPlanFiling(ctx context.Context, t Task, repo Repo) (planFil
 // between sessions. The last step of the run's path judges the whole plan
 // against the version in force and stores it as the task's next revision,
 // which the run takes as its answer (storePlan). A refusal carries every
-// finding back into the session and keeps the part with them.
+// finding back into the session and keeps the part with them. A filing of
+// a step other than the one the run is at is refused and kept nowhere.
 func (r *Runner) FilePart(ctx context.Context, taskID, step string, part json.RawMessage) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -222,6 +223,13 @@ func (r *Runner) FilePart(ctx context.Context, taskID, step string, part json.Ra
 	}
 	if !slices.Contains(f.path, step) {
 		return PlanResult{Findings: notOnPath(tool, f.path)}, nil
+	}
+	draft, err := r.planDraftState(ctx, taskID, f.path)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if at := draft.at(f.path); step != at {
+		return PlanResult{Findings: []string{fmt.Sprintf("%s: the run is at its %s step: file it with %s", tool, strings.TrimPrefix(at, "planner-"), plannerTools[at])}}, nil
 	}
 	refuse := func(found []string) (PlanResult, error) {
 		return PlanResult{Findings: found}, r.setPart(ctx, taskID, step, part, found)
@@ -374,6 +382,22 @@ func (r *Runner) planDraftState(ctx context.Context, taskID string, path []strin
 		}
 	}
 	return s, nil
+}
+
+// runs tells whether a run over path runs its step i: the last always, an
+// earlier one when the draft holds no part of it or its part was refused.
+func (s planDraftState) runs(path []string, i int) bool {
+	return i == len(path)-1 || !s.held[path[i]] || s.refused == path[i]
+}
+
+// at is the planner step a run over path is at: the first one it runs.
+func (s planDraftState) at(path []string) string {
+	for i, step := range path {
+		if step != stepRepoMap && s.runs(path, i) {
+			return step
+		}
+	}
+	return ""
 }
 
 // earlierParts are the parts of the steps before step on the first path,

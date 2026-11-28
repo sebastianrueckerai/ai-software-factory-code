@@ -229,7 +229,6 @@ func stackOf(t *testing.T, a Agent) map[string]bool {
 	return rec.funcs
 }
 
-// The review's behaviours call is deleted: no page, no capture.
 func TestRegistryHasNoReviewBehaviours(t *testing.T) {
 	if agentByID("review-behaviours") != nil {
 		t.Fatal("the registry lists review-behaviours")
